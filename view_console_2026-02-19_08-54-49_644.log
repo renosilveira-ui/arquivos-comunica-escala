@@ -1,0 +1,22 @@
+> 
+console.clear();
+console.log('=== VERIFICAÇÃO DO BUTTON HTML ===');
+
+const buttons = Array.from(document.querySelectorAll('button'));
+console.log('Total buttons:', buttons.length);
+
+if (buttons.length > 0) {
+  const btn = buttons[0];
+  console.log('Button text:', btn.textContent);
+  console.log('Button has onclick:', !!btn.onclick);
+  console.log('Button type:', btn.type);
+  console.log('Button disabled:', btn.disabled);
+  
+  // Tentar clicar diretamente
+  console.log('Clicando no button...');
+  btn.click();
+}
+
+'Verificação completa';
+
+< "Verificação completa"

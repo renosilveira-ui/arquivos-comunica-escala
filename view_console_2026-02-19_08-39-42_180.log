@@ -1,0 +1,39 @@
+> 
+// Encontrar todos os elementos com texto "Assumir Vaga"
+const allElements = Array.from(document.querySelectorAll('*')).filter(el => 
+  el.textContent && el.textContent.includes('Assumir Vaga') && el.textContent.length < 50
+);
+
+console.log('Total elementos com "Assumir Vaga":', allElements.length);
+
+// Pegar o primeiro botão
+const firstButton = allElements.find(el => {
+  const text = el.textContent.trim();
+  return text === 'Assumir Vaga' || text.startsWith('Assumir Vaga');
+});
+
+if (firstButton) {
+  console.log('Botão encontrado:', firstButton.tagName, firstButton.className);
+  console.log('Computed style:', {
+    pointerEvents: window.getComputedStyle(firstButton).pointerEvents,
+    zIndex: window.getComputedStyle(firstButton).zIndex,
+    position: window.getComputedStyle(firstButton).position,
+  });
+  
+  // Verificar se tem onclick
+  console.log('Has onclick:', !!firstButton.onclick);
+  
+  // Tentar disparar evento de clique manualmente
+  const clickEvent = new MouseEvent('click', {
+    view: window,
+    bubbles: true,
+    cancelable: true
+  });
+  firstButton.dispatchEvent(clickEvent);
+  
+  'Evento de clique disparado';
+} else {
+  'Botão não encontrado';
+}
+
+< "Evento de clique disparado"
