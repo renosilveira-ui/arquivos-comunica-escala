@@ -1,3 +1,4 @@
+import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, boolean, time, json } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -145,4 +146,79 @@ export const shiftTemplates = mysqlTable("shift_templates", {
   priority: int("priority").notNull().default(0), // Ordenação na UI (menor = mais prioritário)
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+});
+
+// ========================================
+// INSTÂNCIAS DE TURNO E ALOCAÇÕES (V2)
+// ========================================
+
+/**
+ * Instâncias de turno (uma instância = um bloco de horário real no calendário)
+ */
+export const shiftInstances = mysqlTable("shift_instances", {
+  id: int("id").primaryKey().autoincrement(),
+  institutionId: int("institution_id").notNull().references(() => institutions.id),
+  hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
+  sectorId: int("sector_id").notNull().references(() => sectors.id),
+  label: varchar("label", { length: 100 }).notNull(),
+  startAt: timestamp("start_at").notNull(),
+  endAt: timestamp("end_at").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("VAGO"),
+  createdBy: int("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+});
+
+/**
+ * Alocações de profissionais a turnos (V2)
+ */
+export const shiftAssignmentsV2 = mysqlTable("shift_assignments_v2", {
+  id: int("id").primaryKey().autoincrement(),
+  shiftInstanceId: int("shift_instance_id").notNull().references(() => shiftInstances.id),
+  institutionId: int("institution_id").notNull().references(() => institutions.id),
+  hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
+  sectorId: int("sector_id").notNull().references(() => sectors.id),
+  professionalId: int("professional_id").notNull().references(() => professionals.id),
+  assignmentType: assignmentTypeEnum.notNull().default("ON_DUTY"),
+  status: varchar("status", { length: 20 }).notNull().default("PENDENTE"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: int("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+});
+
+/**
+ * Audit log para turnos (governança e compliance)
+ */
+export const shiftAuditLog = mysqlTable("shift_audit_log", {
+  id: int("id").primaryKey().autoincrement(),
+  event: varchar("event", { length: 50 }).notNull(),
+  shiftInstanceId: int("shift_instance_id").notNull().references(() => shiftInstances.id),
+  professionalId: int("professional_id").references(() => professionals.id),
+  reason: text("reason"),
+  metadata: json("metadata"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+/**
+ * Push notification tokens
+ */
+export const pushTokens = mysqlTable("push_tokens", {
+  id: int("id").primaryKey().autoincrement(),
+  userId: int("user_id").notNull().references(() => users.id),
+  token: varchar("token", { length: 512 }).notNull(),
+  platform: varchar("platform", { length: 20 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+/**
+ * Notifications
+ */
+export const notifications = mysqlTable("notifications", {
+  id: int("id").primaryKey().autoincrement(),
+  userId: int("user_id").notNull().references(() => users.id),
+  title: varchar("title", { length: 255 }).notNull(),
+  body: text("body"),
+  read: boolean("read").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });

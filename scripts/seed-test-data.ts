@@ -1,3 +1,4 @@
+/**
  * Seed de Dados de Teste para Workflow de Vagas
  * 
  * Cria 4 profissionais com roles diferentes e casos de teste:
@@ -97,3 +98,10 @@ export async function seedTestData() {
     user2Id = existingUsers[1].id;
     user3Id = existingUsers[2].id;
     user4Id = existingUsers[3].id;
+  } else {
+    console.log("⚠️ Não há users suficientes para seed de teste. Pulando...");
+    return;
+  }
+
+  console.log("✅ Seed de dados de teste finalizado!");
+}

@@ -5,11 +5,11 @@
  * 3. Conferir turno volta para VAGO
  */
 
-import { getDb } from "./server/db";
-import { shiftAssignmentsV2, shiftInstances, professionals } from "./drizzle/schema";
+import { getDb } from "../server/db";
+import { shiftAssignmentsV2, shiftInstances, professionals } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
-import { canApproveAssignment } from "./server/rbac-validations";
-import { auditLog } from "./server/audit-log";
+import { canApproveAssignment } from "../server/rbac-validations";
+import { auditLog } from "../server/audit-log";
 
 async function testRejectManual() {
   const db = await getDb();
@@ -74,7 +74,7 @@ async function testRejectManual() {
 
   // 5. Validar permissão RBAC
   console.log("🔒 Validando permissão RBAC...");
-  const permission = await canApproveAssignment(maria.id, vagoShift.id);
+  const permission = await canApproveAssignment(maria.id, vagoShift.hospitalId, vagoShift.sectorId);
   if (!permission.allowed) {
     console.error(`❌ FORBIDDEN: ${permission.reason}`);
     process.exit(1);

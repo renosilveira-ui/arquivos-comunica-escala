@@ -18,7 +18,7 @@ import {
   managerScope,
 } from "../drizzle/schema.js";
 import { eq, and, sql } from "drizzle-orm";
-import { getOrCreateShiftInstanceId, GET_OR_CREATE_SHIFT_VERSION } from "./helpers/getOrCreateShiftInstanceId.js";
+import { getOrCreateShiftInstanceId, GET_OR_CREATE_SHIFT_VERSION } from "../server/helpers/getOrCreateShiftInstanceId.js";
 
 const USER_ID = 30003;
 const GESTOR_ID = 30001;
@@ -251,7 +251,7 @@ async function main() {
 
     const gestorCaller = await createCaller(GESTOR_ID);
 
-    const pendingList = await gestorCaller.shiftAssignments.listPending({});
+    const pendingList = await gestorCaller.shiftAssignments.listPending();
 
     assert(pendingList.length > 0, "GESTOR sees pending assignments");
 

@@ -3,12 +3,12 @@
  * Simula Dra. Maria (GESTOR_MEDICO) aprovando assignment do Dr. Pedro
  */
 
-import { getDb } from "./server/db";
-import { shiftAssignmentsV2, shiftInstances, professionals } from "./drizzle/schema";
+import { getDb } from "../server/db";
+import { shiftAssignmentsV2, shiftInstances, professionals } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
-import { canApproveAssignment } from "./server/rbac-validations";
-import { validateAssignment } from "./server/shift-validations";
-import { auditLog } from "./server/audit-log";
+import { canApproveAssignment } from "../server/rbac-validations";
+import { validateAssignment } from "../server/shift-validations";
+import { auditLog } from "../server/audit-log";
 
 async function testApproveManual() {
   const db = await getDb();
@@ -48,7 +48,7 @@ async function testApproveManual() {
 
   // 4. Validar permissão RBAC
   console.log("🔒 Validando permissão RBAC...");
-  const permission = await canApproveAssignment(maria.id, shiftInstance.id);
+  const permission = await canApproveAssignment(maria.id, shiftInstance.hospitalId, shiftInstance.sectorId);
   if (!permission.allowed) {
     console.error(`❌ FORBIDDEN: ${permission.reason}`);
     process.exit(1);

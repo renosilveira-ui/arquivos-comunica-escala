@@ -1,5 +1,6 @@
 import { shiftAuditLog } from "../drizzle/schema";
 import { eq, desc } from "drizzle-orm";
+import { getDb } from "./db";
 
 /**
  * Sistema de Auditoria Obrigatória
@@ -46,4 +47,12 @@ export async function auditLog(params: AuditLogParams): Promise<void> {
     throw new Error("RETROACTIVE_EDIT exige motivo obrigatório");
   }
 
+  await db.insert(shiftAuditLog).values({
+    event,
+    shiftInstanceId,
+    professionalId,
+    reason: reason ?? null,
+    metadata: metadata ? JSON.stringify(metadata) : null,
+  });
+}
   // Inserir log de auditoria

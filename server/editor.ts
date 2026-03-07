@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "../_core/trpc";
-import { getDb } from "../db";
-import { ForbiddenError } from "../../shared/_core/errors";
-import { yearMonthFromDate } from "../../lib/date-utils";
-import { assertMonthEditable } from "../month-guards";
-import { auditLog } from "../audit-log";
+import { router, protectedProcedure } from "./_core/trpc";
+import { getDb } from "./db";
+import { ForbiddenError } from "../shared/_core/errors";
+import { yearMonthFromDate } from "../lib/date-utils";
+import { assertMonthEditable } from "./month-guards";
+import { auditLog } from "./audit-log";
 import { sql } from "drizzle-orm";
 
 /**
@@ -34,7 +34,7 @@ export const editorRouter = router({
       const { shiftInstanceId, professionalId, assignmentType, reason } = input;
       const userId = ctx.user?.id;
       if (!userId) {
-        throw ForbiddenError("Autenticação necessária");
+        throw new ForbiddenError("Autenticação necessária");
       }
 
       const db = await getDb();
@@ -46,7 +46,7 @@ export const editorRouter = router({
       );
       const managerRows = (managerResult as any).rows || (managerResult as any[]);
       if (!managerRows[0]) {
-        throw ForbiddenError("Profissional não encontrado");
+        throw new ForbiddenError("Profissional não encontrado");
       }
 
       const managerId = managerRows[0].id;
@@ -54,7 +54,7 @@ export const editorRouter = router({
 
       // USER não pode alocar diretamente
       if (role === "USER") {
-        throw ForbiddenError("Apenas gestores podem alocar profissionais diretamente");
+        throw new ForbiddenError("Apenas gestores podem alocar profissionais diretamente");
       }
 
       // 2. Buscar shift_instance
@@ -83,7 +83,7 @@ export const editorRouter = router({
         );
         const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
         if (scopeRows[0]?.count === 0) {
-          throw ForbiddenError("Você não tem permissão para alocar neste hospital/setor");
+          throw new ForbiddenError("Você não tem permissão para alocar neste hospital/setor");
         }
       }
 
@@ -183,7 +183,7 @@ export const editorRouter = router({
       const { shiftInstanceId, reason } = input;
       const userId = ctx.user?.id;
       if (!userId) {
-        throw ForbiddenError("Autenticação necessária");
+        throw new ForbiddenError("Autenticação necessária");
       }
 
       const db = await getDb();
@@ -195,7 +195,7 @@ export const editorRouter = router({
       );
       const managerRows = (managerResult as any).rows || (managerResult as any[]);
       if (!managerRows[0]) {
-        throw ForbiddenError("Profissional não encontrado");
+        throw new ForbiddenError("Profissional não encontrado");
       }
 
       const managerId = managerRows[0].id;
@@ -203,7 +203,7 @@ export const editorRouter = router({
 
       // USER não pode marcar vago
       if (role === "USER") {
-        throw ForbiddenError("Apenas gestores podem marcar turnos como vago");
+        throw new ForbiddenError("Apenas gestores podem marcar turnos como vago");
       }
 
       // 2. Buscar shift_instance
@@ -231,7 +231,7 @@ export const editorRouter = router({
         );
         const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
         if (scopeRows[0]?.count === 0) {
-          throw ForbiddenError("Você não tem permissão para editar este hospital/setor");
+          throw new ForbiddenError("Você não tem permissão para editar este hospital/setor");
         }
       }
 
@@ -283,7 +283,7 @@ export const editorRouter = router({
       const { assignmentId, reason } = input;
       const userId = ctx.user?.id;
       if (!userId) {
-        throw ForbiddenError("Autenticação necessária");
+        throw new ForbiddenError("Autenticação necessária");
       }
 
       const db = await getDb();
@@ -295,7 +295,7 @@ export const editorRouter = router({
       );
       const managerRows = (managerResult as any).rows || (managerResult as any[]);
       if (!managerRows[0]) {
-        throw ForbiddenError("Profissional não encontrado");
+        throw new ForbiddenError("Profissional não encontrado");
       }
 
       const managerId = managerRows[0].id;
@@ -303,7 +303,7 @@ export const editorRouter = router({
 
       // USER não pode remover alocação
       if (role === "USER") {
-        throw ForbiddenError("Apenas gestores podem remover alocações");
+        throw new ForbiddenError("Apenas gestores podem remover alocações");
       }
 
       // 2. Buscar assignment + shift_instance
@@ -334,7 +334,7 @@ export const editorRouter = router({
         );
         const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
         if (scopeRows[0]?.count === 0) {
-          throw ForbiddenError("Você não tem permissão para remover alocações neste hospital/setor");
+          throw new ForbiddenError("Você não tem permissão para remover alocações neste hospital/setor");
         }
       }
 

@@ -1,5 +1,6 @@
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { eq } from "drizzle-orm";
+import { InsertUser, users, type User } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -46,3 +47,26 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     };
 
     textFields.forEach(assignNullable);
+
+    if (user.lastSignedIn !== undefined) {
+      values.lastSignedIn = user.lastSignedIn ?? new Date();
+      updateSet.lastSignedIn = values.lastSignedIn;
+    }
+
+    await db
+      .insert(users)
+      .values(values)
+      .onDuplicateKeyUpdate({ set: updateSet });
+  } catch (error) {
+    console.error("[Database] Failed to upsert user:", error);
+    throw error;
+  }
+}
+
+export async function getUserByOpenId(openId: string): Promise<User | null> {
+  const db = await getDb();
+  if (!db) return null;
+
+  const [user] = await db.select().from(users).where(eq(users.openId, openId));
+  return user ?? null;
+}

@@ -1,3 +1,4 @@
+import type { Request } from "express";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
@@ -27,3 +28,13 @@ function getParentDomain(hostname: string): string | undefined {
   // Don't set domain for localhost or IP addresses
   if (LOCAL_HOSTS.has(hostname) || isIpAddress(hostname)) {
     return undefined;
+  }
+
+  const parts = hostname.split(".");
+  if (parts.length < 2) return undefined;
+
+  // Return the last two parts as parent domain
+  return "." + parts.slice(-2).join(".");
+}
+
+export { isSecureRequest, getParentDomain };

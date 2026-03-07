@@ -1,5 +1,6 @@
 import { professionals, managerScope, institutionConfig, shiftInstances } from "../drizzle/schema";
 import { eq, and, isNull } from "drizzle-orm";
+import { getDb } from "./db";
 
 /**
  * Validações RBAC + Jurisdição + Janela Temporal
@@ -96,3 +97,87 @@ export async function checkJurisdiction(
   // Verificar se tem acesso ao setor específico
   const hasGeneralAccess = scopes.some((s) => s.sectorId === null); // Acesso a todo o hospital
   const hasSpecificAccess = scopes.some((s) => s.sectorId === sectorId); // Acesso ao setor específico
+
+  if (!hasGeneralAccess && !hasSpecificAccess) {
+    return {
+      hasAccess: false,
+      reason: `Gestor não tem jurisdição sobre o setor ${sectorId}`,
+    };
+  }
+
+  return { hasAccess: true };
+}
+
+/**
+ * Validação B: Janela Temporal (edit_window_days)
+ *
+ * Verifica se a data do turno está dentro da janela de edição retroativa.
+ * GESTOR_PLUS ignora a janela.
+ */
+export async function checkEditWindow(
+  professionalId: number,
+  institutionId: number,
+  shiftDate: Date
+): Promise<EditWindowCheck> {
+  const role = await getProfessionalRole(professionalId);
+
+  const isRetroactive = shiftDate < new Date();
+
+  // GESTOR_PLUS pode tudo
+  if (role === "GESTOR_PLUS") {
+    return { canEdit: true, isRetroactive };
+  }
+
+  // USER não pode editar
+  if (role === "USER") {
+    return { canEdit: false, isRetroactive, reason: "Usuários não podem editar turnos retroativos" };
+  }
+
+  if (!isRetroactive) {
+    return { canEdit: true, isRetroactive: false };
+  }
+
+  // GESTOR_MEDICO: verificar janela
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [config] = await db
+    .select()
+    .from(institutionConfig)
+    .where(eq(institutionConfig.institutionId, institutionId));
+
+  const editWindowDays = config?.editWindowDays ?? 3;
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - editWindowDays);
+
+  if (shiftDate < cutoffDate) {
+    return {
+      canEdit: false,
+      isRetroactive: true,
+      reason: `Turno fora da janela de edição (${editWindowDays} dias)`,
+    };
+  }
+
+  return { canEdit: true, isRetroactive };
+}
+
+/**
+ * Validação C: Pode aprovar alocação (GESTOR_MEDICO com jurisdição ou GESTOR_PLUS)
+ */
+export async function canApproveAssignment(
+  managerId: number,
+  hospitalId: number,
+  sectorId: number
+): Promise<PermissionCheck> {
+  const role = await getProfessionalRole(managerId);
+  if (!role) return { allowed: false, reason: "Profissional não encontrado" };
+  if (role === "USER") return { allowed: false, reason: "Apenas gestores podem aprovar" };
+  if (role === "GESTOR_PLUS") return { allowed: true };
+
+  const jurisdiction = await checkJurisdiction(managerId, hospitalId, sectorId);
+  if (!jurisdiction.hasAccess) {
+    return { allowed: false, reason: jurisdiction.reason };
+  }
+
+  return { allowed: true };
+}

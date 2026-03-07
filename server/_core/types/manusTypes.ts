@@ -18,12 +18,14 @@ export interface GetUserInfoResponse {
   name: string;
   email: string;
   avatar?: string;
+  platform?: string;
   loginMethod?: string;
   platforms?: string[];
 }
 
 export interface GetUserInfoWithJwtRequest {
-  jwt: string;
+  jwtToken: string;
+  projectId: string;
 }
 
 export interface GetUserInfoWithJwtResponse extends GetUserInfoResponse {}

@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "../_core/trpc";
-import { getDb } from "../db";
-import { ForbiddenError } from "../../shared/_core/errors";
-import { yearMonthFromDate } from "../../lib/date-utils";
+import { router, protectedProcedure } from "./_core/trpc";
+import { getDb } from "./db";
+import { ForbiddenError } from "../shared/_core/errors";
+import { yearMonthFromDate } from "../lib/date-utils";
 import { sql } from "drizzle-orm";
 
 /**
@@ -129,7 +129,7 @@ export const calendarRouter = router({
       const { institutionId, hospitalId, sectorId, yearMonth } = input;
       const userId = ctx.user?.id;
       if (!userId) {
-        throw ForbiddenError("Autenticação necessária");
+        throw new ForbiddenError("Autenticação necessária");
       }
 
       const db = await getDb();
@@ -145,7 +145,7 @@ export const calendarRouter = router({
       );
 
       if (!canAccess) {
-        throw ForbiddenError("Você não tem permissão para acessar este calendário");
+        throw new ForbiddenError("Você não tem permissão para acessar este calendário");
       }
 
       // 2. Calcular range do mês
@@ -215,7 +215,7 @@ export const calendarRouter = router({
       const { institutionId, hospitalId, sectorId, date } = input;
       const userId = ctx.user?.id;
       if (!userId) {
-        throw ForbiddenError("Autenticação necessária");
+        throw new ForbiddenError("Autenticação necessária");
       }
 
       const db = await getDb();
@@ -234,7 +234,7 @@ export const calendarRouter = router({
       );
 
       if (!canAccess) {
-        throw ForbiddenError("Você não tem permissão para acessar este dia");
+        throw new ForbiddenError("Você não tem permissão para acessar este dia");
       }
 
       // 3. Buscar shift_instances do dia

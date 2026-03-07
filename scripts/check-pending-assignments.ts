@@ -1,12 +1,15 @@
-import { db } from "../server/_core/db";
-import { shiftAssignments } from "../shared/schema";
+import { getDb } from "../server/db";
+import { shiftAssignmentsV2 } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 
 async function main() {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
   const pending = await db
     .select()
-    .from(shiftAssignments)
-    .where(eq(shiftAssignments.status, "PENDING"));
+    .from(shiftAssignmentsV2)
+    .where(eq(shiftAssignmentsV2.isActive, true));
 
   console.log(`\n📋 Pendências no banco: ${pending.length}\n`);
 
