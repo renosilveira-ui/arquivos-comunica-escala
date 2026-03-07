@@ -3,8 +3,24 @@
  * Armazena chamadas pendentes no AsyncStorage e processa quando API disponível
  */
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { HOSPITAL_ALERT_CONFIG } from "./hospitalAlertConfig";
+
+// Lazy accessor: in tests globalThis.AsyncStorage is mocked;
+// at runtime we load the real module on first use.
+function getAsyncStorage(): typeof import("@react-native-async-storage/async-storage").default {
+  if ((globalThis as any).AsyncStorage) {
+    return (globalThis as any).AsyncStorage;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require("@react-native-async-storage/async-storage");
+  return mod?.default ?? mod;
+}
+
+const AsyncStorage = new Proxy({} as any, {
+  get(_target, prop) {
+    return (getAsyncStorage() as any)[prop];
+  },
+});
 
 // ============================================================================
 // TYPES

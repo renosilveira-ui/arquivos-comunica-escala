@@ -3,14 +3,22 @@
  * API key e URLs sensíveis devem vir de env/secure store
  */
 
-import Constants from "expo-constants";
+// Lazy accessor for expo-constants — returns undefined in Node/test environments
+function getExpoConstants(): { expoConfig?: { extra?: Record<string, string> } } | undefined {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("expo-constants")?.default;
+  } catch {
+    return undefined;
+  }
+}
 
 export const HOSPITAL_ALERT_CONFIG = {
   // Base URL do HospitalAlert (configurável via env)
-  BASE_URL: process.env.HOSPITAL_ALERT_URL || Constants.expoConfig?.extra?.hospitalAlertUrl || "http://localhost:3001",
+  BASE_URL: process.env.HOSPITAL_ALERT_URL || getExpoConstants()?.expoConfig?.extra?.hospitalAlertUrl || "http://localhost:3001",
   
   // API Key para autenticação (NUNCA hardcoded - deve vir de env)
-  API_KEY: process.env.HOSPITAL_ALERT_API_KEY || Constants.expoConfig?.extra?.hospitalAlertApiKey || "",
+  API_KEY: process.env.HOSPITAL_ALERT_API_KEY || getExpoConstants()?.expoConfig?.extra?.hospitalAlertApiKey || "",
   
   // Organization ID
   ORGANIZATION_ID: "hsc",
