@@ -45,8 +45,14 @@ export async function seedTestData() {
   ];
   const nameList = TEST_NAMES.map((n) => `'${n}'`).join(",");
 
+  // Limpar dummy UTI assignments + professionals + users
+  await db.execute("DELETE FROM shift_assignments_v2 WHERE professional_id IN (SELECT id FROM professionals WHERE name LIKE 'UTI Dummy%')");
+  await db.execute("DELETE FROM professional_access WHERE professional_id IN (SELECT id FROM professionals WHERE name LIKE 'UTI Dummy%')");
+  await db.execute("DELETE FROM professionals WHERE name LIKE 'UTI Dummy%'");
+  await db.execute("DELETE FROM users WHERE openId LIKE 'uti-dummy-%'");
+
   await db.execute(`DELETE FROM shift_assignments_v2 WHERE professional_id IN (SELECT id FROM professionals WHERE name IN (${nameList}))`);
-  await db.execute("DELETE FROM shift_instances WHERE label LIKE '%VAGO%' OR label LIKE '%OCUPADO%' OR label LIKE '%PENDENTE%' OR label LIKE '%Retroativo%' OR label LIKE '%UTI%'");
+  await db.execute("DELETE FROM shift_instances WHERE label LIKE '%VAGO%' OR label LIKE '%OCUPADO%' OR label LIKE '%PENDENTE%' OR label LIKE '%Retroativo%' OR label LIKE '%UTI%' OR label LIKE '%Conflito%'");
   await db.execute(`DELETE FROM professional_access WHERE professional_id IN (SELECT id FROM professionals WHERE name IN (${nameList}))`);
   await db.execute(`DELETE FROM manager_scope WHERE manager_professional_id IN (SELECT id FROM professionals WHERE name IN (${nameList}))`);
   await db.execute(`DELETE FROM professionals WHERE name IN (${nameList})`);
@@ -127,6 +133,23 @@ export async function seedTestData() {
     console.log("✅ Setor criado:", sector.name);
   }
 
+  // ── 3b. Garantir setor "UTI" (fora da jurisdição da Maria) ──────────────
+  await db.execute(`DELETE FROM sectors WHERE hospital_id = ${hospital.id} AND name = 'UTI'`);
+  await db.insert(sectors).values({
+    hospitalId: hospital.id,
+    name: "UTI",
+    category: "internacao",
+    color: "#4ECDC4",
+  });
+  const sectorUti = (await first(
+    db
+      .select()
+      .from(sectors)
+      .where(eq(sectors.name, "UTI"))
+      .limit(1),
+  ))!;
+  console.log(`✅ Setor UTI criado: ${sectorUti.name}`);
+
   console.log(`✅ Instituição: ${institution.name}`);
   console.log(`✅ Hospital: ${hospital.name}`);
   console.log(`✅ Setor: ${sector.name}`);
@@ -186,6 +209,12 @@ export async function seedTestData() {
       professionalId: prof.id,
       hospitalId: hospital.id,
       sectorId: sector.id,
+    });
+    // Also give access to UTI sector (for validateAssignment limit tests)
+    await db.insert(professionalAccess).values({
+      professionalId: prof.id,
+      hospitalId: hospital.id,
+      sectorId: sectorUti.id,
     });
   }
 
@@ -262,11 +291,11 @@ export async function seedTestData() {
     status: "VAGO",
   });
 
-  // Shift UTI (20 profissionais)
+  // Shift UTI (20 profissionais) — em setor UTI, fora da jurisdição da Maria
   await db.insert(shiftInstances).values({
     institutionId: institution.id,
     hospitalId: hospital.id,
-    sectorId: sector.id,
+    sectorId: sectorUti.id,
     label: "Plantão UTI (20 profissionais)",
     startAt: makeTime(tomorrow, 7),
     endAt: makeTime(tomorrow, 19),
@@ -312,6 +341,62 @@ export async function seedTestData() {
       status: "PENDENTE",
       isActive: false,
     });
+  }
+
+  // ── 10. Criar 20 dummy professionals + assignments para o turno UTI ────
+  const [shiftUti] = await db
+    .select()
+    .from(shiftInstances)
+    .where(eq(shiftInstances.label, "Plantão UTI (20 profissionais)"))
+    .limit(1);
+
+  if (shiftUti) {
+    for (let i = 1; i <= 20; i++) {
+      const openId = `uti-dummy-${i}`;
+      // Ensure user exists
+      const existing = await first(
+        db.select().from(users).where(eq(users.openId, openId)).limit(1),
+      );
+      let userId: number;
+      if (existing) {
+        userId = existing.id;
+      } else {
+        await db.insert(users).values({ openId, name: `UTI Dummy ${i}` });
+        userId = (await first(
+          db.select().from(users).where(eq(users.openId, openId)).limit(1),
+        ))!.id;
+      }
+
+      await db.insert(professionals).values({
+        userId,
+        institutionId: institution.id,
+        name: `UTI Dummy ${i}`,
+        role: "Médico",
+        userRole: "USER",
+      });
+      const [dummyProf] = await db
+        .select()
+        .from(professionals)
+        .where(eq(professionals.name, `UTI Dummy ${i}`))
+        .limit(1);
+
+      await db.insert(professionalAccess).values({
+        professionalId: dummyProf.id,
+        hospitalId: hospital.id,
+        sectorId: sectorUti.id,
+      });
+
+      await db.insert(shiftAssignmentsV2).values({
+        shiftInstanceId: shiftUti.id,
+        institutionId: institution.id,
+        hospitalId: hospital.id,
+        sectorId: sectorUti.id,
+        professionalId: dummyProf.id,
+        status: "CONFIRMADO",
+        isActive: true,
+      });
+    }
+    console.log("✅ 20 UTI dummy assignments criados!");
   }
 
   console.log("✅ Assignments de teste criados!");

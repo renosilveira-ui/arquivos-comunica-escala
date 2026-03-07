@@ -29,6 +29,24 @@ export interface PermissionCheck {
   reason?: string;
 }
 
+// ── shared helper ────────────────────────────────────────────────────────────
+
+/** Resolve shiftInstanceId → institution / hospital / sector / startAt */
+async function resolveShift(shiftInstanceId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const [row] = await db
+    .select({
+      institutionId: shiftInstances.institutionId,
+      hospitalId: shiftInstances.hospitalId,
+      sectorId: shiftInstances.sectorId,
+      startAt: shiftInstances.startAt,
+    })
+    .from(shiftInstances)
+    .where(eq(shiftInstances.id, shiftInstanceId));
+  return row ?? null;
+}
+
 /**
  * Buscar role do profissional
  */
@@ -163,21 +181,80 @@ export async function checkEditWindow(
 
 /**
  * Validação C: Pode aprovar alocação (GESTOR_MEDICO com jurisdição ou GESTOR_PLUS)
+ * Aceita (managerId, hospitalId, sectorId) OU (managerId, shiftInstanceId).
  */
 export async function canApproveAssignment(
   managerId: number,
-  hospitalId: number,
-  sectorId: number
+  hospitalIdOrShiftId: number,
+  sectorId?: number,
 ): Promise<PermissionCheck> {
+  let hospitalId: number;
+  let resolvedSectorId: number;
+
+  if (sectorId !== undefined) {
+    hospitalId = hospitalIdOrShiftId;
+    resolvedSectorId = sectorId;
+  } else {
+    const shift = await resolveShift(hospitalIdOrShiftId);
+    if (!shift) return { allowed: false, reason: "Turno não encontrado" };
+    hospitalId = shift.hospitalId;
+    resolvedSectorId = shift.sectorId;
+  }
+
   const role = await getProfessionalRole(managerId);
   if (!role) return { allowed: false, reason: "Profissional não encontrado" };
   if (role === "USER") return { allowed: false, reason: "Apenas gestores podem aprovar" };
   if (role === "GESTOR_PLUS") return { allowed: true };
 
-  const jurisdiction = await checkJurisdiction(managerId, hospitalId, sectorId);
+  const jurisdiction = await checkJurisdiction(managerId, hospitalId, resolvedSectorId);
   if (!jurisdiction.hasAccess) {
     return { allowed: false, reason: jurisdiction.reason };
   }
 
+  return { allowed: true };
+}
+
+// ── Convenience helpers used by tests / endpoints ────────────────────────────
+
+/**
+ * canEditShift — combina jurisdiction + edit-window para um shift concreto.
+ * USER não pode editar; GESTOR_PLUS sempre pode; GESTOR_MEDICO depende de
+ * jurisdição + janela temporal.
+ */
+export async function canEditShift(
+  professionalId: number,
+  shiftInstanceId: number,
+): Promise<PermissionCheck> {
+  const shift = await resolveShift(shiftInstanceId);
+  if (!shift) return { allowed: false, reason: "Turno não encontrado" };
+
+  const role = await getProfessionalRole(professionalId);
+  if (!role) return { allowed: false, reason: "Profissional não encontrado" };
+  if (role === "USER") return { allowed: false, reason: "Usuários comuns não podem editar turnos" };
+  if (role === "GESTOR_PLUS") return { allowed: true };
+
+  // GESTOR_MEDICO: jurisdiction + edit window
+  const jurisdiction = await checkJurisdiction(professionalId, shift.hospitalId, shift.sectorId);
+  if (!jurisdiction.hasAccess) {
+    return { allowed: false, reason: jurisdiction.reason };
+  }
+
+  const editWindow = await checkEditWindow(professionalId, shift.institutionId, shift.startAt);
+  if (!editWindow.canEdit) {
+    return { allowed: false, reason: editWindow.reason };
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * canAssumeVacancy — qualquer profissional existente pode assumir uma vaga.
+ * Conflitos de horário são validados separadamente por validateAssignment.
+ */
+export async function canAssumeVacancy(
+  professionalId: number,
+): Promise<PermissionCheck> {
+  const role = await getProfessionalRole(professionalId);
+  if (!role) return { allowed: false, reason: "Profissional não encontrado" };
   return { allowed: true };
 }

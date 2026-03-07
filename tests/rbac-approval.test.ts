@@ -78,7 +78,7 @@ describe("RBAC - Aprovação de Alocações", () => {
     const permission = await canApproveAssignment(userComumId, shiftInstanceId);
 
     expect(permission.allowed).toBe(false);
-    expect(permission.reason).toContain("Usuários comuns");
+    expect(permission.reason).toContain("gestores");
     
     console.log("\n✅ Teste 1 PASSOU: USER comum bloqueado");
     console.log(`   Motivo: ${permission.reason}`);

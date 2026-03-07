@@ -196,13 +196,10 @@ describe("Workflow de Vagas - Validações RBAC", () => {
         institutionId: shiftOcupado.institutionId,
         hospitalId: shiftOcupado.hospitalId,
         sectorId: shiftOcupado.sectorId,
-        templateId: null,
         startAt: conflictStart,
         endAt: conflictEnd,
         label: "Turno Conflito (teste)",
-        source: "MANUAL",
         status: "VAGO",
-        createdBy: shiftOcupado.createdBy,
       });
 
     const validation = await validateAssignment(

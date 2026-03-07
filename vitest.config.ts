@@ -10,6 +10,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    fileParallelism: false,
     setupFiles: ["./tests/setup.ts"],
     env: {
       DATABASE_URL: "mysql://root:root@127.0.0.1:3306/escalas_test",
