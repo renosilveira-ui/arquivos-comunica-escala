@@ -23,6 +23,9 @@ const storage: Record<string, string> = {};
 
 // Configurar ambiente de teste
 beforeAll(async () => {
+  // Evitar rodar seed múltiplas vezes (1x por suite)
+  if ((globalThis as any).__SEED_DONE__) return;
+
   console.log("🧪 Iniciando ambiente de testes...");
   
   // Validar que estamos em ambiente de teste
@@ -51,6 +54,8 @@ beforeAll(async () => {
     console.error("❌ Erro ao executar seed:", error);
     throw error;
   }
+
+  (globalThis as any).__SEED_DONE__ = true;
 });
 
 // Fechar conexões após todos os testes

@@ -11,6 +11,10 @@ export default defineConfig({
     globals: true,
     environment: "node",
     setupFiles: ["./tests/setup.ts"],
+    env: {
+      DATABASE_URL: "mysql://root:root@127.0.0.1:3306/escalas_test",
+      NODE_ENV: "test",
+    },
     exclude: [
       "**/node_modules/**",
       "**/dist/**",
