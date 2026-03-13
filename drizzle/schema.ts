@@ -1,4 +1,4 @@
-import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, boolean, time, json } from "drizzle-orm/mysql-core";
+import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, boolean, time, json, unique, index } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -222,3 +222,25 @@ export const notifications = mysqlTable("notifications", {
   read: boolean("read").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+/**
+ * Controle de estado mensal da escala (DRAFT → PUBLISHED → LOCKED)
+ * Usado por month-guards.ts para restringir edições em meses publicados/trancados.
+ */
+export const monthlyRosters = mysqlTable(
+  "monthly_rosters",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
+    yearMonth: varchar("year_month", { length: 7 }).notNull(), // formato "YYYY-MM"
+    status: mysqlEnum("status", ["DRAFT", "PUBLISHED", "LOCKED"]).notNull().default("DRAFT"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    uniquePerMonth: unique().on(table.institutionId, table.hospitalId, table.yearMonth),
+    fkInstitution: index("idx_monthly_rosters_institution").on(table.institutionId),
+    fkHospital: index("idx_monthly_rosters_hospital").on(table.hospitalId),
+  })
+);
