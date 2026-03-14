@@ -10,6 +10,8 @@ import { getDb } from "./db";
  */
 
 export type AuditEvent =
+  | "SHIFT_CREATED"
+  | "SHIFT_UPDATED"
   | "SHIFT_ASSIGNED"
   | "SHIFT_UNASSIGNED"
   | "SHIFT_MARKED_VACANT"

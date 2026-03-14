@@ -2,9 +2,28 @@ import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { getDb, getUserByEmail } from "../db";
-import { users } from "../../drizzle/schema";
+import { users, professionals } from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
 import { COOKIE_NAME } from "../../shared/const.js";
+
+type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
+
+function mapRoleToProRole(role: UserRole): "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS" {
+  if (role === "admin") return "GESTOR_PLUS";
+  if (role === "manager") return "GESTOR_MEDICO";
+  return "USER";
+}
+
+function mapRoleToLabel(role: UserRole): string {
+  const labels: Record<UserRole, string> = {
+    admin: "Administrador",
+    manager: "Gestor",
+    doctor: "Médico",
+    nurse: "Enfermeiro",
+    tech: "Técnico de Enfermagem",
+  };
+  return labels[role];
+}
 
 export const authRouter = Router();
 
@@ -132,6 +151,22 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
     loginMethod: "email",
   });
 
-  const newUser = { id: (result as any).insertId as number, name, email: normalizedEmail, role: normalizedRole };
+  const newUserId = (result as any).insertId as number;
+
+  // Auto-create professional record so the user can be assigned to shifts.
+  // Defaults to institutionId=1; fails silently if no institution exists yet.
+  try {
+    await db.insert(professionals).values({
+      userId: newUserId,
+      institutionId: 1,
+      name,
+      role: mapRoleToLabel(normalizedRole),
+      userRole: mapRoleToProRole(normalizedRole),
+    });
+  } catch (err) {
+    console.warn("[register] Could not auto-create professional record:", (err as Error).message);
+  }
+
+  const newUser = { id: newUserId, name, email: normalizedEmail, role: normalizedRole };
   res.status(201).json({ user: newUser });
 });
