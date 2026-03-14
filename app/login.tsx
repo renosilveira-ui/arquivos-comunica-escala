@@ -18,20 +18,21 @@ import { useAuth } from "@/hooks/use-auth";
 const LABEL_STYLE = {
   fontSize: 11,
   fontWeight: "600" as const,
-  color: "rgba(255,255,255,0.55)",
-  letterSpacing: 1.2,
+  color: "#94A3B8",
+  letterSpacing: 1.5,
   textTransform: "uppercase" as const,
+  marginBottom: 6,
 };
 
 const INPUT_STYLE = {
-  backgroundColor: "rgba(255,255,255,0.10)",
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.25)",
+  backgroundColor: "#0F172A",
+  borderRadius: 10,
+  borderWidth: 1.5,
+  borderColor: "rgba(148, 163, 184, 0.35)",
   paddingHorizontal: 16,
   paddingVertical: 14,
   fontSize: 16,
-  color: "#FFFFFF",
+  color: "#F8FAFC",
 };
 
 const INPUT_FOCUSED_STYLE = {
@@ -102,19 +103,19 @@ export default function LoginScreen() {
               </Text>
             </View>
 
-            {/* Card do formulário — degrau 1 acima do fundo */}
+            {/* Card do formulário */}
             <View
               style={{
-                backgroundColor: "rgba(255,255,255,0.06)",
+                backgroundColor: "rgba(15, 23, 42, 0.85)",
                 borderRadius: 20,
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
-                padding: 24,
+                borderColor: "rgba(148, 163, 184, 0.20)",
+                padding: 28,
                 gap: 16,
               }}
             >
-              {/* Campo e-mail — degrau 2 (inputs mais claros que o card) */}
-              <View style={{ gap: 6 }}>
+              {/* Campo e-mail */}
+              <View>
                 <Text style={LABEL_STYLE}>E-mail</Text>
                 <TextInput
                   value={email}
@@ -125,14 +126,14 @@ export default function LoginScreen() {
                   returnKeyType="next"
                   onFocus={() => setFocusedField("email")}
                   onBlur={() => setFocusedField(null)}
-                  placeholderTextColor="rgba(255,255,255,0.40)"
+                  placeholderTextColor="#475569"
                   placeholder="seu@email.com"
                   style={focusedField === "email" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
               </View>
 
               {/* Campo senha */}
-              <View style={{ gap: 6 }}>
+              <View>
                 <Text style={LABEL_STYLE}>Senha</Text>
                 <TextInput
                   value={password}
@@ -143,7 +144,7 @@ export default function LoginScreen() {
                   onFocus={() => setFocusedField("password")}
                   onBlur={() => setFocusedField(null)}
                   onSubmitEditing={handleLogin}
-                  placeholderTextColor="rgba(255,255,255,0.40)"
+                  placeholderTextColor="#475569"
                   placeholder="••••••••"
                   style={focusedField === "password" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
@@ -166,16 +167,16 @@ export default function LoginScreen() {
                 </View>
               )}
 
-              {/* Botão principal — degrau 3 (ponto mais brilhante da tela) */}
+              {/* Botão principal */}
               <TouchableOpacity
                 onPress={handleLogin}
                 activeOpacity={0.85}
                 disabled={submitting}
                 style={{
-                  marginTop: 4,
+                  marginTop: 8,
                   backgroundColor: submitting ? "#2563EB" : "#3B82F6",
                   height: 52,
-                  borderRadius: 14,
+                  borderRadius: 12,
                   justifyContent: "center",
                   alignItems: "center",
                   width: "100%",
@@ -195,12 +196,12 @@ export default function LoginScreen() {
               <TouchableOpacity
                 onPress={() => router.replace("/(tabs)")}
                 activeOpacity={0.7}
-                style={{ alignItems: "center", paddingTop: 4 }}
+                style={{ alignSelf: "center", marginTop: 16 }}
               >
                 <Text
                   style={{
                     fontSize: 13,
-                    color: "rgba(255,255,255,0.45)",
+                    color: "#64748B",
                     textDecorationLine: "underline",
                   }}
                 >
