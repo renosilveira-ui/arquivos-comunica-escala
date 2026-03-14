@@ -4,6 +4,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   TouchableWithoutFeedback,
@@ -12,22 +13,21 @@ import {
 import { useRouter } from "expo-router";
 import { Activity } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
-import { PrimaryButton } from "@/components/ui/PrimaryButton";
 import { useAuth } from "@/hooks/use-auth";
 
 const LABEL_STYLE = {
   fontSize: 11,
   fontWeight: "600" as const,
-  color: "rgba(242,246,255,0.60)",
+  color: "rgba(255,255,255,0.55)",
   letterSpacing: 1.2,
   textTransform: "uppercase" as const,
 };
 
 const INPUT_STYLE = {
-  backgroundColor: "rgba(0,0,0,0.30)",
+  backgroundColor: "rgba(255,255,255,0.10)",
   borderRadius: 12,
   borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.28)",
+  borderColor: "rgba(255,255,255,0.25)",
   paddingHorizontal: 16,
   paddingVertical: 14,
   fontSize: 16,
@@ -75,13 +75,8 @@ export default function LoginScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View
-            style={{
-              flex: 1,
-              justifyContent: "center",
-              paddingHorizontal: 16,
-            }}
-          >
+          <View style={{ flex: 1, justifyContent: "center", paddingHorizontal: 16 }}>
+
             {/* Logo / título */}
             <View style={{ alignItems: "center", marginBottom: 40 }}>
               <Activity size={56} color="#4DA3FF" strokeWidth={1.5} />
@@ -107,18 +102,18 @@ export default function LoginScreen() {
               </Text>
             </View>
 
-            {/* Formulário */}
+            {/* Card do formulário — degrau 1 acima do fundo */}
             <View
               style={{
-                backgroundColor: "rgba(255,255,255,0.08)",
+                backgroundColor: "rgba(255,255,255,0.06)",
                 borderRadius: 20,
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.15)",
+                borderColor: "rgba(255,255,255,0.12)",
                 padding: 24,
                 gap: 16,
               }}
             >
-              {/* Campo e-mail */}
+              {/* Campo e-mail — degrau 2 (inputs mais claros que o card) */}
               <View style={{ gap: 6 }}>
                 <Text style={LABEL_STYLE}>E-mail</Text>
                 <TextInput
@@ -130,7 +125,7 @@ export default function LoginScreen() {
                   returnKeyType="next"
                   onFocus={() => setFocusedField("email")}
                   onBlur={() => setFocusedField(null)}
-                  placeholderTextColor="rgba(242,246,255,0.35)"
+                  placeholderTextColor="rgba(255,255,255,0.40)"
                   placeholder="seu@email.com"
                   style={focusedField === "email" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
@@ -148,7 +143,7 @@ export default function LoginScreen() {
                   onFocus={() => setFocusedField("password")}
                   onBlur={() => setFocusedField(null)}
                   onSubmitEditing={handleLogin}
-                  placeholderTextColor="rgba(242,246,255,0.35)"
+                  placeholderTextColor="rgba(255,255,255,0.40)"
                   placeholder="••••••••"
                   style={focusedField === "password" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
@@ -171,19 +166,30 @@ export default function LoginScreen() {
                 </View>
               )}
 
-              {/* Botão principal */}
-              <PrimaryButton
-                label="Entrar"
-                loading={submitting}
-                disabled={submitting}
+              {/* Botão principal — degrau 3 (ponto mais brilhante da tela) */}
+              <TouchableOpacity
                 onPress={handleLogin}
+                activeOpacity={0.85}
+                disabled={submitting}
                 style={{
                   marginTop: 4,
-                  backgroundColor: "#3B82F6",
-                  borderRadius: 14,
+                  backgroundColor: submitting ? "#2563EB" : "#3B82F6",
                   height: 52,
+                  borderRadius: 14,
+                  justifyContent: "center",
+                  alignItems: "center",
+                  width: "100%",
+                  opacity: submitting ? 0.8 : 1,
                 }}
-              />
+              >
+                {submitting ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={{ color: "#FFFFFF", fontSize: 17, fontWeight: "700", letterSpacing: 0.5 }}>
+                    Entrar
+                  </Text>
+                )}
+              </TouchableOpacity>
 
               {/* Modo Demo */}
               <TouchableOpacity
@@ -194,7 +200,7 @@ export default function LoginScreen() {
                 <Text
                   style={{
                     fontSize: 13,
-                    color: "rgba(242,246,255,0.45)",
+                    color: "rgba(255,255,255,0.45)",
                     textDecorationLine: "underline",
                   }}
                 >
@@ -202,9 +208,11 @@ export default function LoginScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+
           </View>
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </ScreenGradient>
   );
 }
+
