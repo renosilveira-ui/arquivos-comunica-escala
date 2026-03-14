@@ -1,5 +1,5 @@
 import { Text, View, ScrollView, TouchableOpacity, Animated, RefreshControl } from "react-native";
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useRef } from "react";
 import { Calendar, Clock, MapPin, Plus } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -9,20 +9,20 @@ import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { MonthCalendar } from "@/components/ui/MonthCalendar";
 import { Badge } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
-import { DEMO_SHIFTS, SHIFT_TIMES, type ShiftType, isDemoMode, getSelectedService, DEMO_SERVICES } from "@/lib/demo-mode";
+import { SHIFT_TIMES, type ShiftType } from "@/lib/demo-mode";
 import { trpc } from "@/lib/trpc";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 type ShiftWithDetails = {
   id: number;
-  sector: { id: number; name: string };
+  label: string;
   shiftType: ShiftType;
   startTime: Date;
   endTime: Date;
-  status: "confirmada" | "pendente" | "cancelada";
-  notes: string | null;
-  assignments?: Array<{ professionalId: number; professionalName: string; confirmed: boolean }>;
+  status: string;
+  assignmentCount: number;
+  professionalNames: string[];
 };
 
 export default function CalendarScreen() {
@@ -30,83 +30,62 @@ export default function CalendarScreen() {
   const router = useRouter();
   const utils = trpc.useUtils();
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [isDemo, setIsDemo] = useState(false);
-  const [selectedService, setSelectedService] = useState<number | null>(null);
+  const [visibleMonth, setVisibleMonth] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
   const [refreshing, setRefreshing] = useState(false);
   const [selectedTurnFilter, setSelectedTurnFilter] = useState<ShiftType | "todos">("todos");
 
-  // Verificar modo demo e serviço selecionado
-  useEffect(() => {
-    async function init() {
-      const demo = await isDemoMode();
-      setIsDemo(demo);
-      const service = await getSelectedService();
-      setSelectedService(service);
-    }
-    init();
-  }, []);
+  // Query period = entire visible month
+  const periodStart = useMemo(() => {
+    const d = new Date(visibleMonth.year, visibleMonth.month, 1);
+    return d.toISOString();
+  }, [visibleMonth]);
+  const periodEnd = useMemo(() => {
+    const d = new Date(visibleMonth.year, visibleMonth.month + 1, 0, 23, 59, 59);
+    return d.toISOString();
+  }, [visibleMonth]);
 
-  // Buscar escalas do banco (apenas se não estiver em modo demo)
-  const { data: shiftsData } = trpc.shifts.listByPeriod.useQuery(
-    { 
-      startDate: new Date(), 
-      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) 
-    },
-    { enabled: !!user?.id && !isDemo }
+  const { data: shiftsData, refetch } = trpc.shifts.listByPeriod.useQuery(
+    { startDate: periodStart, endDate: periodEnd },
+    { enabled: !!user?.id },
   );
 
-  // Usar dados demo ou dados reais (filtrados por serviço)
   const allShifts: ShiftWithDetails[] = useMemo(() => {
-    if (isDemo) {
-      // Filtrar por serviço (exceto Gestão que vê tudo)
-      const filtered = selectedService === 8 
-        ? DEMO_SHIFTS 
-        : DEMO_SHIFTS.filter((s: any) => s.serviceId === selectedService);
-      
-      return filtered.map((item) => ({
-        id: item.shift.id,
-        sector: item.sector,
-        shiftType: item.shiftType!,
-        startTime: new Date(item.shift.startTime),
-        endTime: new Date(item.shift.endTime),
-        status: item.shift.status,
-        notes: item.shift.notes,
-        assignments: item.assignments,
-      }));
-    }
-    
     if (!shiftsData) return [];
-    
     return shiftsData.map((item) => {
-      const start = new Date(item.shift.startTime);
+      const start = new Date(item.startAt);
       const hour = start.getHours();
       let shiftType: ShiftType = "manha";
       if (hour >= 7 && hour < 13) shiftType = "manha";
       else if (hour >= 13 && hour < 19) shiftType = "tarde";
       else shiftType = "noite";
-      
       return {
-        id: item.shift.id,
-        sector: item.sector!,
+        id: item.id,
+        label: item.label,
         shiftType,
         startTime: start,
-        endTime: new Date(item.shift.endTime),
-        status: item.shift.status,
-        notes: item.shift.notes,
-        assignments: (item as any).assignments?.map((a: any) => ({
-          professionalId: a.professionalId,
-          professionalName: a.professional?.name || "Profissional",
-          confirmed: a.confirmed,
-        })),
+        endTime: new Date(item.endAt),
+        status: item.status,
+        assignmentCount: item.assignments.length,
+        professionalNames: [],
       };
     });
-  }, [isDemo, shiftsData]);
+  }, [shiftsData]);
 
-  // Calcular quantidade de escalas por dia
+  const getBadgeVariant = (status: string) => {
+    if (status === "OCUPADO") return "success";
+    if (status === "PENDENTE") return "warning";
+    return "critical"; // VAGO
+  };
+
+  // Mapa de escalas por dia (para MarkedDates no MonthCalendar)
   const shiftsPerDay = useMemo(() => {
     const map = new Map<string, number>();
     allShifts.forEach((shift) => {
-      const dateKey = `${shift.startTime.getFullYear()}-${String(shift.startTime.getMonth() + 1).padStart(2, "0")}-${String(shift.startTime.getDate()).padStart(2, "0")}`;
+      const d = shift.startTime;
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       map.set(dateKey, (map.get(dateKey) || 0) + 1);
     });
     return map;
@@ -142,16 +121,9 @@ export default function CalendarScreen() {
     return groups;
   }, [shiftsOnSelectedDate, selectedTurnFilter]);
 
-  const getBadgeVariant = (status: string) => {
-    if (status === "confirmada") return "success";
-    if (status === "cancelada") return "critical";
-    return "warning";
-  };
-
   const onRefresh = async () => {
     setRefreshing(true);
-    // Simular atualização de dados (aguarda 1s)
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await refetch();
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setRefreshing(false);
   };
@@ -181,20 +153,6 @@ export default function CalendarScreen() {
             <Text style={{ fontSize: 16, color: "rgba(255,255,255,0.7)" }}>
               Selecione um dia para ver os turnos
             </Text>
-            {selectedService && (
-              <View style={{ 
-                paddingHorizontal: 10, 
-                paddingVertical: 4, 
-                borderRadius: 10, 
-                backgroundColor: "rgba(77,163,255,0.2)",
-                borderWidth: 1,
-                borderColor: "rgba(77,163,255,0.4)"
-              }}>
-                <Text style={{ fontSize: 12, fontWeight: "600", color: "#4DA3FF" }}>
-                  {DEMO_SERVICES.find(s => s.id === selectedService)?.name}
-                </Text>
-              </View>
-            )}
           </View>
         </View>
 
@@ -285,26 +243,22 @@ export default function CalendarScreen() {
                 </View>
                 <View style={{ gap: 12 }}>
                   {shiftsByTurn.manha.map((shift) => (
-                    <TintedGlassCard key={shift.id}>
+                    <TintedGlassCard key={shift.id} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push({ pathname: "/edit-shift", params: { id: shift.id } }); }}>
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <MapPin size={18} color="#4DA3FF" />
                           <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
-                            {shift.sector.name}
+                            {shift.label}
                           </Text>
                         </View>
                         <Badge variant={getBadgeVariant(shift.status)}>
                           {shift.status}
                         </Badge>
                       </View>
-                      {shift.assignments && shift.assignments.length > 0 && (
-                        <View style={{ marginTop: 8, gap: 4 }}>
-                          {shift.assignments.map((assignment, idx) => (
-                            <Text key={idx} style={{ fontSize: 14, color: "rgba(255,255,255,0.7)" }}>
-                              • {assignment.professionalName}
-                            </Text>
-                          ))}
-                        </View>
+                      {shift.assignmentCount > 0 && (
+                        <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+                          {shift.assignmentCount} profissional{shift.assignmentCount !== 1 ? "is" : ""} alocado{shift.assignmentCount !== 1 ? "s" : ""}
+                        </Text>
                       )}
                     </TintedGlassCard>
                   ))}
@@ -326,26 +280,22 @@ export default function CalendarScreen() {
                 </View>
                 <View style={{ gap: 12 }}>
                   {shiftsByTurn.tarde.map((shift) => (
-                    <TintedGlassCard key={shift.id}>
+                    <TintedGlassCard key={shift.id} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push({ pathname: "/edit-shift", params: { id: shift.id } }); }}>
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <MapPin size={18} color="#4DA3FF" />
                           <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
-                            {shift.sector.name}
+                            {shift.label}
                           </Text>
                         </View>
                         <Badge variant={getBadgeVariant(shift.status)}>
                           {shift.status}
                         </Badge>
                       </View>
-                      {shift.assignments && shift.assignments.length > 0 && (
-                        <View style={{ marginTop: 8, gap: 4 }}>
-                          {shift.assignments.map((assignment, idx) => (
-                            <Text key={idx} style={{ fontSize: 14, color: "rgba(255,255,255,0.7)" }}>
-                              • {assignment.professionalName}
-                            </Text>
-                          ))}
-                        </View>
+                      {shift.assignmentCount > 0 && (
+                        <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+                          {shift.assignmentCount} profissional{shift.assignmentCount !== 1 ? "is" : ""} alocado{shift.assignmentCount !== 1 ? "s" : ""}
+                        </Text>
                       )}
                     </TintedGlassCard>
                   ))}
@@ -367,26 +317,22 @@ export default function CalendarScreen() {
                 </View>
                 <View style={{ gap: 12 }}>
                   {shiftsByTurn.noite.map((shift) => (
-                    <TintedGlassCard key={shift.id}>
+                    <TintedGlassCard key={shift.id} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push({ pathname: "/edit-shift", params: { id: shift.id } }); }}>
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <MapPin size={18} color="#4DA3FF" />
                           <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
-                            {shift.sector.name}
+                            {shift.label}
                           </Text>
                         </View>
                         <Badge variant={getBadgeVariant(shift.status)}>
                           {shift.status}
                         </Badge>
                       </View>
-                      {shift.assignments && shift.assignments.length > 0 && (
-                        <View style={{ marginTop: 8, gap: 4 }}>
-                          {shift.assignments.map((assignment, idx) => (
-                            <Text key={idx} style={{ fontSize: 14, color: "rgba(255,255,255,0.7)" }}>
-                              • {assignment.professionalName}
-                            </Text>
-                          ))}
-                        </View>
+                      {shift.assignmentCount > 0 && (
+                        <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+                          {shift.assignmentCount} profissional{shift.assignmentCount !== 1 ? "is" : ""} alocado{shift.assignmentCount !== 1 ? "s" : ""}
+                        </Text>
                       )}
                     </TintedGlassCard>
                   ))}

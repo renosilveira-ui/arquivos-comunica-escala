@@ -2,8 +2,7 @@ import { View, Text, ScrollView, ActivityIndicator, RefreshControl } from "react
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
-import { isDemoMode, enableDemoMode, DEMO_USER, DEMO_SHIFTS, getSelectedService, DEMO_SERVICES } from "@/lib/demo-mode";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import Animated, { FadeIn, SlideInUp } from "react-native-reanimated";
@@ -29,49 +28,24 @@ import { formatDateBR } from "@/lib/datetime";
 export default function HomeScreen() {
   const { user } = useAuth();
   const { can, isManager } = usePermissions();
-  const [demoMode, setDemoMode] = useState(false);
-  const [demoUser, setDemoUser] = useState<typeof DEMO_USER | null>(null);
-  const [selectedServiceId, setSelectedServiceId] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const router = useRouter();
+  const utils = trpc.useUtils();
 
-  // Verificar modo demo (sem redirecionamento para service-selection)
-  useEffect(() => {
-    async function checkDemo() {
-      const isDemo = await isDemoMode();
-      setDemoMode(isDemo);
-      
-      // Carregar serviço selecionado se existir (mas não redirecionar se não tiver)
-      if (isDemo || user) {
-        const selectedService = await getSelectedService();
-        setSelectedServiceId(selectedService);
-      }
-    }
-    checkDemo();
-  }, [user]);
-
-  // Ativar modo demo
-  const handleEnableDemoMode = async () => {
-    await enableDemoMode();
-    setDemoMode(true);
-    setDemoUser(DEMO_USER);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-  };
-
-  const currentUser = demoMode ? demoUser : user;
-
-  // Buscar escala ativa (ou usar dados demo)
+  // Buscar escala ativa
   const { data: activeShift, isLoading: loadingActive } = trpc.shifts.getActiveShift.useQuery(
-    { userId: currentUser?.id || 0 },
-    { enabled: !demoMode && !!currentUser }
+    undefined,
+    { enabled: !!user }
   );
 
-  // Buscar próximas escalas (ou usar dados demo)
-  const upcomingShifts: any = null;
-  const loadingUpcoming = false;
-
-  const currentActiveShift: any = demoMode ? DEMO_SHIFTS[0] : activeShift;
-  const currentUpcomingShifts: any = demoMode ? DEMO_SHIFTS : upcomingShifts;
+  // Buscar próximas escalas (1 semana)
+  const todayISO = new Date().toISOString();
+  const nextWeekISO = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: upcomingData, isLoading: loadingUpcoming } = trpc.shifts.listByPeriod.useQuery(
+    { startDate: todayISO, endDate: nextWeekISO },
+    { enabled: !!user }
+  );
+  const upcomingShifts = upcomingData || [];
 
   const handleViewCalendar = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -86,14 +60,16 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    // Simular atualização de dados (aguarda 1s)
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await Promise.all([
+      utils.shifts.getActiveShift.invalidate(),
+      utils.shifts.listByPeriod.invalidate(),
+    ]);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setRefreshing(false);
   };
 
-  // Tela de boas-vindas (sem login e sem demo)
-  if (!currentUser) {
+  // Tela de boas-vindas (sem login)
+  if (!user) {
     return (
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
@@ -104,12 +80,6 @@ export default function HomeScreen() {
           <Text style={{ fontSize: 18, lineHeight: 24, color: "rgba(242,246,255,0.70)", marginTop: 16, textAlign: "center" }}>
             Gerencie plantões, sincronize com HospitalAlert e receba notificações de mudanças
           </Text>
-          <View style={{ marginTop: 32, width: "100%" }}>
-            <PrimaryButton 
-              label="Explorar em Modo Demo" 
-              onPress={handleEnableDemoMode}
-            />
-          </View>
         </View>
       </ScreenGradient>
     );
@@ -133,22 +103,6 @@ export default function HomeScreen() {
           <Text style={{ fontSize: 30, fontWeight: "800", lineHeight: 36, color: "#FFFFFF" }}>
             Minha Escala
           </Text>
-          {selectedServiceId && (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <View style={{ 
-                paddingHorizontal: 12, 
-                paddingVertical: 6, 
-                borderRadius: 12, 
-                backgroundColor: "rgba(77,163,255,0.2)",
-                borderWidth: 1,
-                borderColor: "rgba(77,163,255,0.4)"
-              }}>
-                <Text style={{ fontSize: 14, fontWeight: "600", color: "#4DA3FF" }}>
-                  {DEMO_SERVICES.find(s => s.id === selectedServiceId)?.name || "Serviço"}
-                </Text>
-              </View>
-            </View>
-          )}
         </Animated.View>
 
         {/* 1. Card "Escala ativa agora" */}
@@ -157,7 +111,7 @@ export default function HomeScreen() {
           <TintedGlassCard>
             <ActivityIndicator color="#4DA3FF" />
           </TintedGlassCard>
-        ) : currentActiveShift ? (
+        ) : activeShift ? (
           <TintedGlassCard>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
               <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF" }}>
@@ -167,15 +121,15 @@ export default function HomeScreen() {
             </View>
             
             <Text style={{ fontSize: 18, lineHeight: 24, color: "#FFFFFF", fontWeight: "600", marginBottom: 8 }}>
-              {currentActiveShift.sector?.name || "Setor não definido"}
+              {activeShift.label}
             </Text>
             
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Clock size={18} color="rgba(242,246,255,0.70)" />
               <Text style={{ fontSize: 16, lineHeight: 20, color: "rgba(242,246,255,0.70)" }}>
-                {typeof currentActiveShift.startTime === 'string' ? currentActiveShift.startTime : new Date(currentActiveShift.startTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                {new Date(activeShift.startAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                 {' - '}
-                {typeof currentActiveShift.endTime === 'string' ? currentActiveShift.endTime : new Date(currentActiveShift.endTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                {new Date(activeShift.endAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
               </Text>
             </View>
           </TintedGlassCard>
@@ -220,36 +174,36 @@ export default function HomeScreen() {
             <TintedGlassCard>
               <ActivityIndicator color="#4DA3FF" />
             </TintedGlassCard>
-          ) : currentUpcomingShifts && currentUpcomingShifts.length > 0 ? (
+          ) : upcomingShifts.length > 0 ? (
             <View style={{ gap: 12 }}>
-              {currentUpcomingShifts.slice(0, 3).map((shift: any, index: number) => (
+              {upcomingShifts.slice(0, 3).map((shift, index) => (
                 <TintedGlassCard 
-                  key={index}
+                  key={shift.id ?? index}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    // TODO: Navegar para detalhes
+                    router.push({ pathname: "/edit-shift", params: { id: shift.id } });
                   }}
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                     <Text style={{ fontSize: 18, lineHeight: 24, color: "#FFFFFF", fontWeight: "600" }}>
-                      {shift.sector?.name || "Setor não definido"}
+                      {shift.label}
                     </Text>
-                    <Badge variant="warning" label={shift.status || "Pendente"} />
+                    <Badge variant="warning" label={shift.status} />
                   </View>
                   
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                     <Calendar size={16} color="rgba(242,246,255,0.70)" />
                     <Text style={{ fontSize: 16, lineHeight: 20, color: "rgba(242,246,255,0.70)" }}>
-                      {shift.date || formatDateBR(shift.shift?.startTime || Date.now())}
+                      {formatDateBR(new Date(shift.startAt).toISOString().split('T')[0])}
                     </Text>
                   </View>
                   
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 }}>
                     <Clock size={16} color="rgba(242,246,255,0.70)" />
                     <Text style={{ fontSize: 16, lineHeight: 20, color: "rgba(242,246,255,0.70)" }}>
-                      {shift.startTime || new Date(shift.shift?.startTime || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                      {new Date(shift.startAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                       {' - '}
-                      {shift.endTime || new Date(shift.shift?.endTime || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                      {new Date(shift.endAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                     </Text>
                   </View>
                 </TintedGlassCard>
