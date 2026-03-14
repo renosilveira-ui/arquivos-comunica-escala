@@ -15,6 +15,7 @@ import {
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -31,10 +32,16 @@ import { normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
  */
 export default function EditShiftScreen() {
   const { user } = useAuth();
+  const { can } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const shiftId = Number(params.id);
   const [isDemo, setIsDemo] = useState(false);
+
+  // Guard: somente admin/manager podem editar escalas
+  useEffect(() => {
+    if (!can("edit:shift")) router.back();
+  }, []);
 
   // Estados do formulário
   const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>();

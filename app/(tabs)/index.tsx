@@ -1,5 +1,6 @@
 import { View, Text, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { isDemoMode, enableDemoMode, DEMO_USER, DEMO_SHIFTS, getSelectedService, DEMO_SERVICES } from "@/lib/demo-mode";
 import { useState, useEffect } from "react";
@@ -27,6 +28,7 @@ import { formatDateBR } from "@/lib/datetime";
  */
 export default function HomeScreen() {
   const { user } = useAuth();
+  const { can, isManager } = usePermissions();
   const [demoMode, setDemoMode] = useState(false);
   const [demoUser, setDemoUser] = useState<typeof DEMO_USER | null>(null);
   const [selectedServiceId, setSelectedServiceId] = useState<number | null>(null);
@@ -270,6 +272,35 @@ export default function HomeScreen() {
           onPress={handleViewCalendar}
         />
         </Animated.View>
+
+        {/* Ações de Gestão — visível apenas para admin/manager */}
+        {isManager && (
+          <Animated.View entering={SlideInUp.duration(400).delay(500)}>
+            <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF", marginBottom: 12 }}>
+              Gerenciar
+            </Text>
+            <View style={{ flexDirection: "row", gap: 12 }}>
+              {can("create:shift") && (
+                <TintedGlassCard
+                  style={{ flex: 1 }}
+                  onPress={() => { router.push("/create-shift"); }}
+                >
+                  <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF", marginBottom: 4 }}>+ Criar Plantão</Text>
+                  <Text style={{ fontSize: 13, color: "rgba(242,246,255,0.55)" }}>Escala nova</Text>
+                </TintedGlassCard>
+              )}
+              {can("approve:swaps") && (
+                <TintedGlassCard
+                  style={{ flex: 1 }}
+                  onPress={() => { router.push("/approve-swaps"); }}
+                >
+                  <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF", marginBottom: 4 }}>Trocas</Text>
+                  <Text style={{ fontSize: 13, color: "rgba(242,246,255,0.55)" }}>Aprovar trocas</Text>
+                </TintedGlassCard>
+              )}
+            </View>
+          </Animated.View>
+        )}
       </View>
     </ScreenGradient>
   );
