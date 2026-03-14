@@ -8,12 +8,9 @@ const USER_INFO_KEY = "user_info";
 
 export interface User {
   id: number;
-  openId: string;
   name: string | null;
   email: string | null;
-  loginMethod: string | null;
-  lastSignedIn: Date;
-  role?: string;
+  role: "admin" | "manager" | "doctor" | "nurse" | "tech";
 }
 
 // --- Token ---
@@ -59,11 +56,7 @@ export async function getUserInfo(): Promise<User | null> {
   try {
     const raw = await AsyncStorage.getItem(USER_INFO_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return {
-      ...parsed,
-      lastSignedIn: new Date(parsed.lastSignedIn),
-    };
+    return JSON.parse(raw) as User;
   } catch {
     return null;
   }

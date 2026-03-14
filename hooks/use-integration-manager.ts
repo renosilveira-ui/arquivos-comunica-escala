@@ -86,7 +86,6 @@ export function useIntegrationManager() {
     
     Orchestrator.syncUser({
       id: user.id,
-      openId: user.openId,
       name: user.name || "",
       email: user.email || "",
       role: "MEDICO", // TODO: Adicionar role ao User type
@@ -110,7 +109,6 @@ export function useIntegrationManager() {
           Orchestrator.startShift(
             {
               id: user.id,
-              openId: user.openId,
               name: user.name || "",
               email: user.email || "",
               role: "MEDICO", // TODO: Adicionar role ao User type
@@ -137,7 +135,6 @@ export function useIntegrationManager() {
           Orchestrator.endShift(
             {
               id: user.id,
-              openId: user.openId,
               name: user.name || "",
               email: user.email || "",
               role: "MEDICO", // TODO: Adicionar role ao User type

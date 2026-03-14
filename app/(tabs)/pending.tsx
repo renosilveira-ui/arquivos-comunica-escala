@@ -21,7 +21,7 @@ const uiAlert = (title: string, message: string) => {
 
 export default function PendingScreen() {
   const [refreshing, setRefreshing] = useState(false);
-  const { user, loading: authLoading } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   const testUserId = useTestUserId(); // 🧪 Adicionar para detectar modo de teste
 
   // ✅ Mostrar diagnóstico SEMPRE (inclusive quando não autenticado)
