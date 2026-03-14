@@ -8,6 +8,7 @@ import { auditLog } from "./audit-log";
 import { canApproveAssignment } from "./rbac-validations";
 import { editorRouter } from "./editor";
 import { calendarRouter } from "./calendar";
+import { shiftsRouter } from "./shifts-crud";
 
 const shiftAssignmentsRouter = router({
   // Assumir vaga (USER solicita alocação PENDENTE)
@@ -199,6 +200,7 @@ export const appRouter = router({
   shiftInstances: shiftInstancesRouter,
   editor: editorRouter,
   calendar: calendarRouter,
+  shifts: shiftsRouter,
 });
 
 export type AppRouter = typeof appRouter;
