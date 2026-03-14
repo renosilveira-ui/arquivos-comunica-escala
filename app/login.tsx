@@ -3,6 +3,7 @@ import {
   View,
   Text,
   TextInput,
+  TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   TouchableWithoutFeedback,
@@ -14,11 +15,36 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
 import { useAuth } from "@/hooks/use-auth";
 
+const LABEL_STYLE = {
+  fontSize: 11,
+  fontWeight: "600" as const,
+  color: "rgba(242,246,255,0.60)",
+  letterSpacing: 1.2,
+  textTransform: "uppercase" as const,
+};
+
+const INPUT_STYLE = {
+  backgroundColor: "rgba(0,0,0,0.30)",
+  borderRadius: 12,
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.28)",
+  paddingHorizontal: 16,
+  paddingVertical: 14,
+  fontSize: 16,
+  color: "#FFFFFF",
+};
+
+const INPUT_FOCUSED_STYLE = {
+  ...INPUT_STYLE,
+  borderColor: "#3B82F6",
+};
+
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [focusedField, setFocusedField] = useState<"email" | "password" | null>(null);
 
   const { login } = useAuth();
   const router = useRouter();
@@ -53,13 +79,11 @@ export default function LoginScreen() {
             style={{
               flex: 1,
               justifyContent: "center",
-              paddingHorizontal: 4,
+              paddingHorizontal: 16,
             }}
           >
             {/* Logo / título */}
-            <View
-              style={{ alignItems: "center", marginBottom: 40 }}
-            >
+            <View style={{ alignItems: "center", marginBottom: 40 }}>
               <Activity size={56} color="#4DA3FF" strokeWidth={1.5} />
               <Text
                 style={{
@@ -89,23 +113,14 @@ export default function LoginScreen() {
                 backgroundColor: "rgba(255,255,255,0.08)",
                 borderRadius: 20,
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
+                borderColor: "rgba(255,255,255,0.15)",
                 padding: 24,
                 gap: 16,
               }}
             >
-              <View style={{ gap: 8 }}>
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: "600",
-                    color: "rgba(242,246,255,0.70)",
-                    letterSpacing: 0.5,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  Email
-                </Text>
+              {/* Campo e-mail */}
+              <View style={{ gap: 6 }}>
+                <Text style={LABEL_STYLE}>E-mail</Text>
                 <TextInput
                   value={email}
                   onChangeText={setEmail}
@@ -113,80 +128,79 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   autoComplete="email"
                   returnKeyType="next"
-                  placeholderTextColor="rgba(242,246,255,0.30)"
+                  onFocus={() => setFocusedField("email")}
+                  onBlur={() => setFocusedField(null)}
+                  placeholderTextColor="rgba(242,246,255,0.35)"
                   placeholder="seu@email.com"
-                  style={{
-                    backgroundColor: "rgba(255,255,255,0.06)",
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.15)",
-                    paddingHorizontal: 16,
-                    paddingVertical: 14,
-                    fontSize: 16,
-                    color: "#FFFFFF",
-                  }}
+                  style={focusedField === "email" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
               </View>
 
-              <View style={{ gap: 8 }}>
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: "600",
-                    color: "rgba(242,246,255,0.70)",
-                    letterSpacing: 0.5,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  Senha
-                </Text>
+              {/* Campo senha */}
+              <View style={{ gap: 6 }}>
+                <Text style={LABEL_STYLE}>Senha</Text>
                 <TextInput
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry
                   autoComplete="current-password"
                   returnKeyType="done"
+                  onFocus={() => setFocusedField("password")}
+                  onBlur={() => setFocusedField(null)}
                   onSubmitEditing={handleLogin}
-                  placeholderTextColor="rgba(242,246,255,0.30)"
+                  placeholderTextColor="rgba(242,246,255,0.35)"
                   placeholder="••••••••"
-                  style={{
-                    backgroundColor: "rgba(255,255,255,0.06)",
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.15)",
-                    paddingHorizontal: 16,
-                    paddingVertical: 14,
-                    fontSize: 16,
-                    color: "#FFFFFF",
-                  }}
+                  style={focusedField === "password" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
               </View>
 
+              {/* Erro */}
               {errorMsg && (
                 <View
                   style={{
                     backgroundColor: "rgba(239,68,68,0.15)",
                     borderRadius: 10,
                     borderWidth: 1,
-                    borderColor: "rgba(239,68,68,0.30)",
+                    borderColor: "rgba(239,68,68,0.35)",
                     padding: 12,
                   }}
                 >
-                  <Text
-                    style={{ color: "#FCA5A5", fontSize: 14, textAlign: "center" }}
-                  >
+                  <Text style={{ color: "#FCA5A5", fontSize: 14, textAlign: "center" }}>
                     {errorMsg}
                   </Text>
                 </View>
               )}
 
+              {/* Botão principal */}
               <PrimaryButton
                 label="Entrar"
                 loading={submitting}
                 disabled={submitting}
                 onPress={handleLogin}
-                style={{ marginTop: 4 }}
+                style={{
+                  marginTop: 4,
+                  backgroundColor: "#3B82F6",
+                  borderRadius: 14,
+                  height: 52,
+                }}
               />
+
+              {/* Modo Demo */}
+              <TouchableOpacity
+                onPress={() => router.replace("/(tabs)")}
+                activeOpacity={0.7}
+                style={{ alignItems: "center", paddingTop: 4 }}
+              >
+                <Text
+                  style={{
+                    fontSize: 13,
+                    color: "rgba(242,246,255,0.45)",
+                    textDecorationLine: "underline",
+                  }}
+                >
+                  Explorar em Modo Demo
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
         </TouchableWithoutFeedback>
