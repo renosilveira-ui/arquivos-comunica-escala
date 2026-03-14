@@ -2,7 +2,7 @@ import { View, Text, ScrollView, ActivityIndicator, RefreshControl } from "react
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import Animated, { FadeIn, SlideInUp } from "react-native-reanimated";
@@ -10,7 +10,8 @@ import {
   Clock, 
   Calendar, 
   Activity,
-  ExternalLink
+  Plus,
+  RefreshCw,
 } from "lucide-react-native";
 
 // Componentes UI Premium
@@ -47,15 +48,17 @@ export default function HomeScreen() {
   );
   const upcomingShifts = upcomingData || [];
 
+  // Resumo para admin/manager
+  const weekStats = useMemo(() => ({
+    total: upcomingShifts.length,
+    vago: upcomingShifts.filter(s => s.status === "VAGO").length,
+    pendente: upcomingShifts.filter(s => s.status === "PENDENTE").length,
+    ocupado: upcomingShifts.filter(s => s.status === "OCUPADO").length,
+  }), [upcomingShifts]);
+
   const handleViewCalendar = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push("/calendar");
-  };
-
-  const handleOpenHospitalAlert = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // TODO: Implementar deep link para HospitalAlert
-    alert("Abrindo HospitalAlert...");
   };
 
   const onRefresh = async () => {
@@ -135,44 +138,50 @@ export default function HomeScreen() {
           </TintedGlassCard>
         ) : (
           <TintedGlassCard>
-            <Text style={{ fontSize: 18, lineHeight: 24, color: "rgba(242,246,255,0.70)", textAlign: "center" }}>
-              Nenhum plantão ativo no momento
-            </Text>
+            <View style={{ alignItems: "center", paddingVertical: 8, gap: 12 }}>
+              <Clock size={32} color="rgba(242,246,255,0.25)" strokeWidth={1.5} />
+              <View style={{ alignItems: "center", gap: 4 }}>
+                <Text style={{ fontSize: 16, fontWeight: "600", color: "rgba(242,246,255,0.55)", textAlign: "center" }}>
+                  Nenhum plantão ativo agora
+                </Text>
+                <Text style={{ fontSize: 13, color: "rgba(242,246,255,0.35)", textAlign: "center" }}>
+                  Você não tem turnos atribuídos para este momento
+                </Text>
+              </View>
+            </View>
           </TintedGlassCard>
         )}
         </Animated.View>
 
-        {/* 2. Card "Integração HospitalAlert" */}
+        {/* 2. Próximas escalas / Semana em resumo */}
         <Animated.View entering={SlideInUp.duration(400).delay(200)}>
-        <TintedGlassCard>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF" }}>
-              Integração HospitalAlert
-            </Text>
-            <Badge variant="success" label="Conectado" />
-          </View>
-          
-          <Text style={{ fontSize: 16, lineHeight: 20, color: "rgba(242,246,255,0.70)", marginBottom: 16 }}>
-            Sincronizado automaticamente
-          </Text>
-          
-          <PrimaryButton
-            label="Abrir HospitalAlert"
-            icon={<ExternalLink size={20} color="#FFFFFF" />}
-            onPress={handleOpenHospitalAlert}
-          />
-        </TintedGlassCard>
-        </Animated.View>
-
-        {/* 3. Card "Próximas escalas" (3 itens) */}
-        <Animated.View entering={SlideInUp.duration(400).delay(300)}>
           <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF", marginBottom: 12 }}>
-            Próximas Escalas
+            {isManager ? "Semana em Resumo" : "Próximas Escalas"}
           </Text>
 
           {loadingUpcoming ? (
             <TintedGlassCard>
               <ActivityIndicator color="#4DA3FF" />
+            </TintedGlassCard>
+          ) : isManager ? (
+            <TintedGlassCard>
+              <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                {[
+                  { label: "Total", value: weekStats.total, color: "#FFFFFF" },
+                  { label: "Vagos", value: weekStats.vago, color: "#F87171" },
+                  { label: "Pendentes", value: weekStats.pendente, color: "#FBBF24" },
+                  { label: "Ocupados", value: weekStats.ocupado, color: "#34D399" },
+                ].map(item => (
+                  <View key={item.label} style={{ alignItems: "center", flex: 1 }}>
+                    <Text style={{ fontSize: 28, fontWeight: "800", color: item.color, lineHeight: 34 }}>
+                      {item.value}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: "rgba(242,246,255,0.50)", marginTop: 2 }}>
+                      {item.label}
+                    </Text>
+                  </View>
+                ))}
+              </View>
             </TintedGlassCard>
           ) : upcomingShifts.length > 0 ? (
             <View style={{ gap: 12 }}>
@@ -190,14 +199,12 @@ export default function HomeScreen() {
                     </Text>
                     <Badge variant="warning" label={shift.status} />
                   </View>
-                  
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                     <Calendar size={16} color="rgba(242,246,255,0.70)" />
                     <Text style={{ fontSize: 16, lineHeight: 20, color: "rgba(242,246,255,0.70)" }}>
                       {formatDateBR(new Date(shift.startAt).toISOString().split('T')[0])}
                     </Text>
                   </View>
-                  
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 }}>
                     <Clock size={16} color="rgba(242,246,255,0.70)" />
                     <Text style={{ fontSize: 16, lineHeight: 20, color: "rgba(242,246,255,0.70)" }}>
@@ -211,15 +218,18 @@ export default function HomeScreen() {
             </View>
           ) : (
             <TintedGlassCard>
-              <Text style={{ fontSize: 18, lineHeight: 24, color: "rgba(242,246,255,0.70)", textAlign: "center" }}>
-                Nenhuma escala agendada
-              </Text>
+              <View style={{ alignItems: "center", paddingVertical: 8, gap: 8 }}>
+                <Calendar size={28} color="rgba(242,246,255,0.25)" strokeWidth={1.5} />
+                <Text style={{ fontSize: 15, color: "rgba(242,246,255,0.55)", textAlign: "center" }}>
+                  Nenhuma escala agendada próxima semana
+                </Text>
+              </View>
             </TintedGlassCard>
           )}
         </Animated.View>
 
         {/* Botão Ver Calendário */}
-        <Animated.View entering={SlideInUp.duration(400).delay(400)}>
+        <Animated.View entering={SlideInUp.duration(400).delay(300)}>
         <PrimaryButton
           label="Ver Calendário Completo"
           icon={<Calendar size={20} color="#FFFFFF" />}
@@ -229,26 +239,32 @@ export default function HomeScreen() {
 
         {/* Ações de Gestão — visível apenas para admin/manager */}
         {isManager && (
-          <Animated.View entering={SlideInUp.duration(400).delay(500)}>
+          <Animated.View entering={SlideInUp.duration(400).delay(400)}>
             <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF", marginBottom: 12 }}>
               Gerenciar
             </Text>
             <View style={{ flexDirection: "row", gap: 12 }}>
               {can("create:shift") && (
                 <TintedGlassCard
-                  style={{ flex: 1 }}
-                  onPress={() => { router.push("/create-shift"); }}
+                  style={{ flex: 1, backgroundColor: "rgba(77,163,255,0.12)", borderColor: "rgba(77,163,255,0.30)" }}
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push("/create-shift"); }}
                 >
-                  <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF", marginBottom: 4 }}>+ Criar Plantão</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <Plus size={18} color="#4DA3FF" />
+                    <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF" }}>Criar Plantão</Text>
+                  </View>
                   <Text style={{ fontSize: 13, color: "rgba(242,246,255,0.55)" }}>Escala nova</Text>
                 </TintedGlassCard>
               )}
               {can("approve:swaps") && (
                 <TintedGlassCard
-                  style={{ flex: 1 }}
-                  onPress={() => { router.push("/approve-swaps"); }}
+                  style={{ flex: 1, backgroundColor: "rgba(251,191,36,0.10)", borderColor: "rgba(251,191,36,0.25)" }}
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push("/approve-swaps"); }}
                 >
-                  <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF", marginBottom: 4 }}>Trocas</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <RefreshCw size={18} color="#FBBF24" />
+                    <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF" }}>Trocas</Text>
+                  </View>
                   <Text style={{ fontSize: 13, color: "rgba(242,246,255,0.55)" }}>Aprovar trocas</Text>
                 </TintedGlassCard>
               )}

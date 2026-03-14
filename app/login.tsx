@@ -7,8 +7,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  TouchableWithoutFeedback,
-  Keyboard,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Activity } from "lucide-react-native";
@@ -75,8 +73,7 @@ export default function LoginScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={{ flex: 1, justifyContent: "center", paddingHorizontal: 16 }}>
+        <View style={{ flex: 1, justifyContent: "center", paddingHorizontal: 16 }}>
 
             {/* Logo / título */}
             <View style={{ alignItems: "center", marginBottom: 40 }}>
@@ -210,8 +207,7 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </View>
 
-          </View>
-        </TouchableWithoutFeedback>
+        </View>
       </KeyboardAvoidingView>
     </ScreenGradient>
   );
