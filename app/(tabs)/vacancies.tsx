@@ -12,7 +12,7 @@ import { AppButton } from "@/components/ui/AppButton";
 import { confirmAction } from "@/lib/ui/confirm";
 
 export default function VacanciesScreen() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(

@@ -9,19 +9,19 @@ function getBaseUrl(): string {
   return "http://localhost:3000";
 }
 
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T | null> {
+async function apiFetch<T>(
+  path: string,
+  options?: RequestInit,
+): Promise<{ ok: boolean; status: number; data: T | null }> {
   const url = `${getBaseUrl()}${path}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options?.headers as Record<string, string>),
   };
 
-  // Em native, anexar token de sessão
   if (Platform.OS !== "web") {
     const token = await Auth.getSessionToken();
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
+    if (token) headers["Authorization"] = `Bearer ${token}`;
   }
 
   const res = await fetch(url, {
@@ -30,16 +30,51 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T | nul
     credentials: Platform.OS === "web" ? "include" : undefined,
   });
 
-  if (!res.ok) return null;
-  return res.json();
+  let data: T | null = null;
+  try {
+    data = await res.json();
+  } catch {
+    // ignore empty body
+  }
+
+  return { ok: res.ok, status: res.status, data };
 }
 
-/** Busca o usuário autenticado no server */
-export async function getMe(): Promise<Auth.User | null> {
-  return apiFetch<Auth.User>("/api/trpc/auth.me");
-}
+export type AuthUser = {
+  id: number;
+  name: string | null;
+  email: string | null;
+  role: "admin" | "manager" | "doctor" | "nurse" | "tech";
+};
 
-/** Faz logout no server */
-export async function logout(): Promise<void> {
-  await apiFetch("/api/trpc/auth.logout", { method: "POST" });
-}
+type LoginResponse = { user: AuthUser };
+type MeResponse = { user: AuthUser };
+
+export const authApi = {
+  async login(
+    email: string,
+    password: string,
+  ): Promise<{ ok: boolean; user?: AuthUser; error?: string }> {
+    const res = await apiFetch<LoginResponse>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    if (res.ok && res.data?.user) {
+      // Na native, o server retorna o token no header ou cookie — para native
+      // usamos Bearer via SecureStore; o cookie session é suficiente para web.
+      return { ok: true, user: res.data.user };
+    }
+    const errMsg =
+      (res.data as any)?.error ?? "Credenciais inválidas";
+    return { ok: false, error: errMsg };
+  },
+
+  async logout(): Promise<void> {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  },
+
+  async me(): Promise<AuthUser | null> {
+    const res = await apiFetch<MeResponse>("/api/auth/me");
+    return res.ok ? (res.data?.user ?? null) : null;
+  },
+};

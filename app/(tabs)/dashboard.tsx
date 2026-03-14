@@ -13,7 +13,7 @@ import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Typography } from "@/constants/typography";
 
 export default function DashboardScreen() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
   
   // Buscar profissional associado ao usuário logado

@@ -16,7 +16,7 @@ import { DiagnosticBadge } from "@/components/diagnostic-badge";
  * - Análise de cobertura e gaps
  */
 export default function ReportsScreen() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
 
   if (authLoading) {
     return (

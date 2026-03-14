@@ -189,7 +189,6 @@ export function useHospitalAlertSync(): HospitalAlertSyncReturn {
       // 1. syncUser
       await Orchestrator.syncUser({
         id: user.id,
-        openId: user.openId,
         name: user.name || "",
         email: user.email || "",
         role: "MEDICO", // TODO: Adicionar role ao User type
@@ -240,7 +239,6 @@ export function useHospitalAlertSync(): HospitalAlertSyncReturn {
       if (result.ok && result.data && !result.data.user.exists) {
         await Orchestrator.syncUser({
           id: user.id,
-          openId: user.openId,
           name: user.name || "",
           email: user.email || "",
           role: "MEDICO",
@@ -251,7 +249,6 @@ export function useHospitalAlertSync(): HospitalAlertSyncReturn {
       await Orchestrator.startShift(
         {
           id: user.id,
-          openId: user.openId,
           name: user.name || "",
           email: user.email || "",
           role: "MEDICO",
@@ -294,7 +291,6 @@ export function useHospitalAlertSync(): HospitalAlertSyncReturn {
       await Orchestrator.endShift(
         {
           id: user.id,
-          openId: user.openId,
           name: user.name || "",
           email: user.email || "",
           role: "MEDICO",
@@ -395,7 +391,6 @@ export function useHospitalAlertSync(): HospitalAlertSyncReturn {
     
     Orchestrator.syncUser({
       id: user.id,
-      openId: user.openId,
       name: user.name || "",
       email: user.email || "",
       role: "MEDICO",

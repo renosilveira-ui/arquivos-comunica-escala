@@ -15,7 +15,6 @@ import * as SyncErrorNotifier from "./syncErrorNotifier";
 
 export interface UserData {
   id: number;
-  openId: string;
   name: string;
   email: string;
   role?: string;
