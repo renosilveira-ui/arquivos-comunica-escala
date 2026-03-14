@@ -4,6 +4,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -18,10 +19,16 @@ import { formatDateBR, formatTimeBR } from "@/lib/datetime";
  */
 export default function RequestSwapScreen() {
   const { user } = useAuth();
+  const { can } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const shiftId = Number(params.id);
   const [isDemo, setIsDemo] = useState(false);
+
+  // Guard: tech não pode solicitar trocas
+  useEffect(() => {
+    if (!can("request:swap")) router.back();
+  }, []);
   const [selectedService, setSelectedService] = useState<number | null>(null);
   const [selectedColleague, setSelectedColleague] = useState<number | null>(null);
   const [reason, setReason] = useState("");

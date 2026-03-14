@@ -1,10 +1,12 @@
 import { Tabs } from "expo-router";
 import { TabIcon } from "@/components/ui/TabIcon";
 import { useColorScheme } from "react-native";
+import { usePermissions } from "@/hooks/use-permissions";
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
+  const { can } = usePermissions();
 
   return (
     <Tabs
@@ -37,6 +39,7 @@ export default function TabLayout() {
         options={{
           title: "Dashboard",
           tabBarIcon: ({ color, size }) => <TabIcon name="dashboard" color={color} size={size} />,
+          href: can("view:dashboard") ? undefined : null,
         }}
       />
       <Tabs.Screen
@@ -51,6 +54,7 @@ export default function TabLayout() {
         options={{
           title: "Vagas",
           tabBarIcon: ({ color, size }) => <TabIcon name="work" color={color} size={size} />,
+          href: can("view:vacancies") ? undefined : null,
         }}
       />
       <Tabs.Screen
@@ -58,6 +62,7 @@ export default function TabLayout() {
         options={{
           title: "Relatórios",
           tabBarIcon: ({ color, size }) => <TabIcon name="dashboard" color={color} size={size} />,
+          href: can("view:reports") ? undefined : null,
         }}
       />
       <Tabs.Screen
@@ -65,6 +70,7 @@ export default function TabLayout() {
         options={{
           title: "Admin",
           tabBarIcon: ({ color, size }) => <TabIcon name="admin" color={color} size={size} />,
+          href: can("view:admin") ? undefined : null,
         }}
       />
       <Tabs.Screen

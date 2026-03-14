@@ -4,6 +4,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, CheckCircle, XCircle, Calendar, Clock, User } from "lucide-react-native";
@@ -17,10 +18,16 @@ import { formatDateBR } from "@/lib/datetime";
  */
 export default function ApproveSwapsScreen() {
   const { user } = useAuth();
+  const { can } = usePermissions();
   const router = useRouter();
   const [isDemo, setIsDemo] = useState(false);
   const [swapRequests, setSwapRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Guard: somente admin/manager podem aprovar trocas
+  useEffect(() => {
+    if (!can("approve:swaps")) router.back();
+  }, []);
 
   // Verificar modo demo
   useEffect(() => {

@@ -3,6 +3,7 @@ import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, Scr
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -28,10 +29,16 @@ const SHIFT_TIMES: Record<ShiftType, { start: string; end: string }> = {
  */
 export default function CreateShiftScreen() {
   const { user } = useAuth();
+  const { can } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const utils = trpc.useUtils();
   const [isDemo, setIsDemo] = useState(false);
+
+  // Guard: somente admin/manager podem criar escalas
+  useEffect(() => {
+    if (!can("create:shift")) router.back();
+  }, []);
 
   // Verificar modo demo
   useEffect(() => {
