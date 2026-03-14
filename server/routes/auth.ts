@@ -95,7 +95,19 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const normalizedRole = role === "admin" ? "admin" : "user";
+  const VALID_ROLES = ["admin", "manager", "doctor", "nurse", "tech"] as const;
+  type ValidRole = typeof VALID_ROLES[number];
+  const normalizedRole: ValidRole = !role
+    ? "doctor"
+    : VALID_ROLES.includes(role as ValidRole)
+    ? (role as ValidRole)
+    : null!;
+
+  if (!normalizedRole) {
+    res.status(400).json({ error: `role inválido. Valores aceitos: ${VALID_ROLES.join(", ")}` });
+    return;
+  }
+
   const normalizedEmail = email.toLowerCase().trim();
 
   const existing = await getUserByEmail(normalizedEmail);
