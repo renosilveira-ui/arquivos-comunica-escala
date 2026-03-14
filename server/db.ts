@@ -1,7 +1,6 @@
 import { drizzle } from "drizzle-orm/mysql2";
 import { eq } from "drizzle-orm";
-import { InsertUser, users, type User } from "../drizzle/schema";
-import { ENV } from "./_core/env";
+import { users, type User } from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -18,55 +17,24 @@ export async function getDb() {
   return _db;
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
+export async function getUserByEmail(email: string): Promise<User | null> {
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn ?? new Date();
-      updateSet.lastSignedIn = values.lastSignedIn;
-    }
-
-    await db
-      .insert(users)
-      .values(values)
-      .onDuplicateKeyUpdate({ set: updateSet });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
+  if (!db) return null;
+  const [user] = await db.select().from(users).where(eq(users.email, email));
+  return user ?? null;
 }
 
+export async function getUserById(id: number): Promise<User | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const [user] = await db.select().from(users).where(eq(users.id, id));
+  return user ?? null;
+}
+
+/** @deprecated kept for any legacy code referencing openId */
 export async function getUserByOpenId(openId: string): Promise<User | null> {
   const db = await getDb();
   if (!db) return null;
-
   const [user] = await db.select().from(users).where(eq(users.openId, openId));
   return user ?? null;
 }
