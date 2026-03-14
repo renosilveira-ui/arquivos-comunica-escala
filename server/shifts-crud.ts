@@ -252,6 +252,19 @@ export const shiftsRouter = router({
     }),
 
   // ------------------------------------------------------------------
+  // shifts.listTemplates — any authenticated user
+  // Returns all active shift templates (used by create-shift form).
+  // ------------------------------------------------------------------
+  listTemplates: protectedProcedure.query(async () => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    return db
+      .select()
+      .from(shiftTemplates)
+      .where(eq(shiftTemplates.isActive, true));
+  }),
+
+  // ------------------------------------------------------------------
   // shifts.getActiveShift — any authenticated user
   // Returns the shift that is currently in progress for the logged-in user.
   // Resolves: user.id → professionals.id → shiftAssignmentsV2 → shiftInstances

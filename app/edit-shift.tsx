@@ -20,7 +20,6 @@ import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, Save, Calendar, Clock } from "lucide-react-native";
-import { isDemoMode, DEMO_SHIFTS, DEMO_SECTORS } from "@/lib/demo-mode";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
 import { normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
@@ -36,7 +35,6 @@ export default function EditShiftScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const shiftId = Number(params.id);
-  const [isDemo, setIsDemo] = useState(false);
 
   // Guard: somente admin/manager podem editar escalas
   useEffect(() => {
@@ -61,26 +59,15 @@ export default function EditShiftScreen() {
   const [tempStartDate, setTempStartDate] = useState<Date | null>(null);
   const [tempEndDate, setTempEndDate] = useState<Date | null>(null);
 
-  // Verificar modo demo
-  useEffect(() => {
-    async function checkDemo() {
-      const demo = await isDemoMode();
-      setIsDemo(demo);
-    }
-    checkDemo();
-  }, []);
+  // Buscar setores
+  const { data: sectors } = trpc.sectors.list.useQuery();
+  const availableSectors = sectors || [];
 
-  // Buscar setores (API ou demo)
-  const { data: sectors } = trpc.sectors.list.useQuery(undefined, { enabled: !isDemo });
-  const demoSectors = isDemo ? DEMO_SECTORS : [];
-  const availableSectors = isDemo ? demoSectors : (sectors || []);
-
-  // Buscar detalhes da escala (API ou demo)
+  // Buscar detalhes da escala
   const { data: shiftData, isLoading: loadingShift } = trpc.shifts.get.useQuery(
     { id: shiftId },
-    { enabled: !isDemo }
+    { enabled: !!shiftId }
   );
-  const demoShift = isDemo ? DEMO_SHIFTS.find(s => s.shift.id === shiftId) : null;
   const utils = trpc.useUtils();
 
   // Mutation para atualizar escala
@@ -98,31 +85,15 @@ export default function EditShiftScreen() {
 
   // Carregar dados da escala no formulário
   useEffect(() => {
-    if (isDemo && demoShift) {
-      setSelectedSectorId(demoShift.shift.sectorId);
-      setNotes(demoShift.shift.notes || "");
-      
-      const start = new Date(demoShift.shift.startTime);
-      const end = new Date(demoShift.shift.endTime);
-      
-      setStartDate(toISODateString(start));
-      setStartTime(formatTimeBR(start));
-      setEndDate(toISODateString(end));
-      setEndTime(formatTimeBR(end));
-    } else if (shiftData?.shift) {
-      const shift = shiftData.shift;
-      setSelectedSectorId(shift.sectorId);
-      setNotes(shift.notes || "");
-
-      const start = new Date(shift.startTime);
-      const end = new Date(shift.endTime);
-
+    if (shiftData) {
+      const start = new Date(shiftData.startAt);
+      const end = new Date(shiftData.endAt);
       setStartDate(toISODateString(start));
       setStartTime(formatTimeBR(start));
       setEndDate(toISODateString(end));
       setEndTime(formatTimeBR(end));
     }
-  }, [shiftData, demoShift, isDemo]);
+  }, [shiftData]);
 
   // Handlers para DateTimePicker
   const handleStartDateChange = (event: any, date?: Date) => {
@@ -216,7 +187,7 @@ export default function EditShiftScreen() {
   };
 
   const handleSave = () => {
-    if (!selectedSectorId || !startDate || !startTime || !endDate || !endTime) {
+    if (!startDate || !startTime || !endDate || !endTime) {
       Alert.alert("Erro", "Preencha todos os campos obrigatórios");
       return;
     }
@@ -237,24 +208,15 @@ export default function EditShiftScreen() {
       return;
     }
 
-    if (isDemo) {
-      // Em modo demo, apenas simular sucesso
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Sucesso", "Escala atualizada (modo demo)");
-      router.back();
-    } else {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      updateShift.mutate({
-        id: shiftId,
-        sectorId: selectedSectorId,
-        startTime: startDateTime,
-        endTime: endDateTime,
-        notes: notes || undefined,
-      });
-    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    updateShift.mutate({
+      id: shiftId,
+      startAt: startDateTime.toISOString(),
+      endAt: endDateTime.toISOString(),
+    });
   };
 
-  if (!user && !isDemo) {
+  if (!user) {
     return (
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
@@ -266,7 +228,7 @@ export default function EditShiftScreen() {
     );
   }
 
-  if (loadingShift && !isDemo) {
+  if (loadingShift) {
     return (
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>

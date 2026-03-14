@@ -7,10 +7,8 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, Calendar, Clock, Users, Repeat, AlertTriangle } from "lucide-react-native";
-import { isDemoMode, DEMO_SECTORS, DEMO_USER, DEMO_SHIFTS } from "@/lib/demo-mode";
+import { ChevronLeft, Calendar, Clock, Repeat } from "lucide-react-native";
 import { scheduleShiftReminder } from "@/lib/notifications";
-import { checkMultipleProfessionalsConflicts } from "@/lib/shift-validation";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR, toISODateString } from "@/lib/datetime";
 import { normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
@@ -33,16 +31,10 @@ export default function CreateShiftScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const utils = trpc.useUtils();
-  const [isDemo, setIsDemo] = useState(false);
 
   // Guard: somente admin/manager podem criar escalas
   useEffect(() => {
     if (!can("create:shift")) router.back();
-  }, []);
-
-  // Verificar modo demo
-  useEffect(() => {
-    isDemoMode().then(setIsDemo);
   }, []);
 
   // Estados do formulário
@@ -54,7 +46,7 @@ export default function CreateShiftScreen() {
     params.shift as ShiftType || undefined
   );
   
-  // 3 profissionais por turno (A, B, C)
+  // 3 profissionais por turno (A, B, C) — kept for compile compatibility
   const [professionalA, setProfessionalA] = useState<number | undefined>(undefined);
   const [professionalB, setProfessionalB] = useState<number | undefined>(undefined);
   const [professionalC, setProfessionalC] = useState<number | undefined>(undefined);
@@ -63,24 +55,12 @@ export default function CreateShiftScreen() {
   const [enableRepeat, setEnableRepeat] = useState(false);
   const [repeatWeeks, setRepeatWeeks] = useState("1");
   const [repeatEndDate, setRepeatEndDate] = useState("");
-  
+
   const [notes, setNotes] = useState("");
-  const [conflictWarning, setConflictWarning] = useState<string | null>(null);
 
-  // Buscar setores (API ou demo)
-  const { data: apiSectors, isLoading: loadingSectors } = trpc.sectors.list.useQuery(undefined, {
-    enabled: !isDemo,
-  });
-  const sectors = isDemo ? DEMO_SECTORS : apiSectors;
-
-  // Lista de profissionais demo (API não disponível)
-  const loadingUsers = false;
-  const professionals = isDemo ? [
-    { id: 1, name: "Dr. Ana Silva" },
-    { id: 2, name: "Dr. Carlos Santos" },
-    { id: 3, name: "Dra. Maria Oliveira" },
-    { id: 4, name: "Dr. Pedro Costa" },
-  ] : [];
+  // Buscar setores e templates
+  const { data: sectors, isLoading: loadingSectors } = trpc.sectors.list.useQuery();
+  const { data: templates } = trpc.shifts.listTemplates.useQuery();
 
   // Mutation para criar escala
   const createShift = trpc.shifts.create.useMutation({
@@ -122,13 +102,14 @@ export default function CreateShiftScreen() {
   };
 
   const handleCreateShift = () => {
-    if (!selectedSectorId || !selectedDate || !selectedShift) {
+    if (!selectedDate || !selectedShift) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
-    // Pelo menos 1 profissional deve ser selecionado
-    if (!professionalA && !professionalB && !professionalC) {
+    // Encontrar template correspondente ao turno selecionado
+    const template = templates?.find(t => t.name === selectedShift);
+    if (!template) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
@@ -137,100 +118,18 @@ export default function CreateShiftScreen() {
     if (enableRepeat && repeatEndDate) {
       const startDate = new Date(selectedDate);
       const endDate = new Date(repeatEndDate);
-      
       if (endDate <= startDate) {
-        setConflictWarning("Data de término da repetição deve ser posterior à data inicial da escala");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;
       }
     }
 
-    const shiftTimes = SHIFT_TIMES[selectedShift];
-    const startDateTime = new Date(`${selectedDate}T${shiftTimes.start}:00`);
-    let endDateTime = new Date(`${selectedDate}T${shiftTimes.end}:00`);
-    
-    // Se termina antes do início (turno noite), adiciona 1 dia
-    if (endDateTime <= startDateTime) {
-      endDateTime.setDate(endDateTime.getDate() + 1);
-    }
-
-    // Validar conflitos de horários
-    const selectedProfessionals = [professionalA, professionalB, professionalC].filter(
-      (id): id is number => id !== undefined
-    );
-
-    if (selectedProfessionals.length > 0) {
-      // Buscar escalas existentes (demo ou API)
-      const allShifts = isDemo
-        ? DEMO_SHIFTS.flatMap((demoShift) =>
-            demoShift.assignments.map((assignment) => ({
-              id: demoShift.shift.id,
-              userId: assignment.professionalId,
-              sectorName: demoShift.sector.name,
-              startTime: demoShift.shift.startTime,
-              endTime: demoShift.shift.endTime,
-              position: "A", // Demo não tem posições A/B/C
-            }))
-          )
-        : [];
-
-      const conflicts = checkMultipleProfessionalsConflicts(
-        selectedProfessionals,
-        startDateTime,
-        endDateTime,
-        allShifts
-      );
-
-      if (conflicts.size > 0) {
-        // Mostrar aviso de conflito
-        const conflictMessages = Array.from(conflicts.entries())
-          .map(([userId, conflict]) => {
-            const professional = professionals.find((p) => p.id === userId);
-            return `${professional?.name}: ${conflict.message}`;
-          })
-          .join("\n");
-
-        setConflictWarning(conflictMessages);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        return;
-      }
-    }
-
-    // Limpar aviso de conflito
-    setConflictWarning(null);
-
-    if (isDemo) {
-      // Modo demo: agendar lembrete e feedback visual
-      const sector = sectors?.find(s => s.id === selectedSectorId);
-      const shiftTimes = SHIFT_TIMES[selectedShift];
-      const startDateTime = new Date(`${selectedDate}T${shiftTimes.start}:00`);
-      
-      if (sector) {
-        scheduleShiftReminder(
-          sector.name,
-          startDateTime,
-          `${selectedShift} (${shiftTimes.start} - ${shiftTimes.end})`
-        );
-      }
-      
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.back();
-      return;
-    }
-
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Coletar IDs dos profissionais selecionados
-    const userIds = [professionalA, professionalB, professionalC].filter((id): id is number => id !== undefined);
-
     createShift.mutate({
+      date: selectedDate,
+      shiftTemplateId: template.id,
       sectorId: selectedSectorId,
-      startTime: startDateTime,
-      endTime: endDateTime,
-      userIds,
-      notes: notes.trim() || undefined,
-      createdBy: user?.id || DEMO_USER.id,
-      // repeatFrequencyWeeks e repeatEndDate serão adicionados à API posteriormente
     });
   };
 
@@ -288,7 +187,7 @@ export default function CreateShiftScreen() {
     setShowDatePicker(true);
   };
 
-  if (!user && !isDemo) {
+  if (!user) {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
@@ -323,7 +222,7 @@ export default function CreateShiftScreen() {
             <Text className="text-lg font-semibold text-white">Setor *</Text>
           </View>
 
-          {loadingSectors && !isDemo ? (
+          {loadingSectors ? (
             <View className="items-center py-6">
               <ActivityIndicator size="small" color="#4DA3FF" />
             </View>
@@ -433,116 +332,6 @@ export default function CreateShiftScreen() {
           </View>
         </TintedGlassCard>
 
-        {/* Profissionais (A, B, C) */}
-        <TintedGlassCard className="gap-4">
-          <View className="flex-row items-center gap-3">
-            <Users size={24} color="#FFFFFF" />
-            <Text className="text-lg font-semibold text-white">Profissionais *</Text>
-          </View>
-          <Text className="text-sm text-white/50">Selecione até 3 profissionais para o turno</Text>
-
-          {loadingUsers && !isDemo ? (
-            <View className="items-center py-6">
-              <ActivityIndicator size="small" color="#4DA3FF" />
-            </View>
-          ) : (
-            <View className="gap-4">
-              {/* Profissional A */}
-              <View>
-                <Text className="text-sm text-white/70 mb-2">Profissional A (Principal)</Text>
-                <View className="flex-row flex-wrap gap-2">
-                  {professionals?.map((prof: any) => (
-                    <TouchableOpacity
-                      key={`a-${prof.id}`}
-                      onPress={() => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setProfessionalA(prof.id === professionalA ? undefined : prof.id);
-                      }}
-                      className="px-4 py-2 rounded-xl"
-                      style={{
-                        backgroundColor:
-                          professionalA === prof.id
-                            ? "#4DA3FF"
-                            : "rgba(255,255,255,0.05)",
-                        borderWidth: 1,
-                        borderColor:
-                          professionalA === prof.id
-                            ? "#4DA3FF"
-                            : "rgba(255,255,255,0.12)",
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text className="text-sm font-medium text-white">{prof.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              {/* Profissional B */}
-              <View>
-                <Text className="text-sm text-white/70 mb-2">Profissional B (Secundário)</Text>
-                <View className="flex-row flex-wrap gap-2">
-                  {professionals?.map((prof: any) => (
-                    <TouchableOpacity
-                      key={`b-${prof.id}`}
-                      onPress={() => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setProfessionalB(prof.id === professionalB ? undefined : prof.id);
-                      }}
-                      className="px-4 py-2 rounded-xl"
-                      style={{
-                        backgroundColor:
-                          professionalB === prof.id
-                            ? "#4DA3FF"
-                            : "rgba(255,255,255,0.05)",
-                        borderWidth: 1,
-                        borderColor:
-                          professionalB === prof.id
-                            ? "#4DA3FF"
-                            : "rgba(255,255,255,0.12)",
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text className="text-sm font-medium text-white">{prof.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              {/* Profissional C */}
-              <View>
-                <Text className="text-sm text-white/70 mb-2">Profissional C (Terciário)</Text>
-                <View className="flex-row flex-wrap gap-2">
-                  {professionals?.map((prof: any) => (
-                    <TouchableOpacity
-                      key={`c-${prof.id}`}
-                      onPress={() => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setProfessionalC(prof.id === professionalC ? undefined : prof.id);
-                      }}
-                      className="px-4 py-2 rounded-xl"
-                      style={{
-                        backgroundColor:
-                          professionalC === prof.id
-                            ? "#4DA3FF"
-                            : "rgba(255,255,255,0.05)",
-                        borderWidth: 1,
-                        borderColor:
-                          professionalC === prof.id
-                            ? "#4DA3FF"
-                            : "rgba(255,255,255,0.12)",
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text className="text-sm font-medium text-white">{prof.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-            </View>
-          )}
-        </TintedGlassCard>
-
         {/* Repetição Automática */}
         <TintedGlassCard className="gap-4">
           <View className="flex-row items-center justify-between">
@@ -619,29 +408,6 @@ export default function CreateShiftScreen() {
             }}
           />
         </TintedGlassCard>
-
-        {/* Aviso de Conflito */}
-        {conflictWarning && (
-          <TintedGlassCard 
-            className="gap-3"
-            style={{
-              backgroundColor: "rgba(239,68,68,0.12)",
-              borderColor: "rgba(239,68,68,0.4)",
-            }}
-          >
-            <View className="flex-row items-start gap-3">
-              <AlertTriangle size={24} color="#F87171" />
-              <View className="flex-1">
-                <Text className="text-base font-semibold text-[#F87171] mb-2">
-                  Conflito de Horários
-                </Text>
-                <Text className="text-sm text-white/90 leading-relaxed">
-                  {conflictWarning}
-                </Text>
-              </View>
-            </View>
-          </TintedGlassCard>
-        )}
 
         {/* Botão Criar */}
         <TouchableOpacity
