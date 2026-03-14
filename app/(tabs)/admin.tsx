@@ -9,6 +9,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { Settings, Plus, TrendingUp, Calendar, Lock, RefreshCw, FileText } from "lucide-react-native";
 import { formatDateBR } from "@/lib/datetime";
+import { theme } from "@/lib/theme";
 
 /**
  * Tela de Administração
@@ -110,7 +111,7 @@ export default function AdminScreen() {
           >
             <TintedGlassCard>
               <View className="items-center py-4">
-                <View className="w-16 h-16 rounded-full items-center justify-center mb-4" style={{ backgroundColor: "#3B82F6" }}>
+                <View className="w-16 h-16 rounded-full items-center justify-center mb-4" style={{ backgroundColor: theme.colors.primary }}>
                   <Plus size={32} color="#FFFFFF" />
                 </View>
                 <Text className="text-2xl font-bold text-white">Criar Nova Escala</Text>

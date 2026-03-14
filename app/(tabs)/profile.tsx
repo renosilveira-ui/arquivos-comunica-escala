@@ -10,6 +10,7 @@ import { useState, useEffect } from "react";
 import { User, Bell, Link2, LogOut, Briefcase, Activity, CheckCircle, XCircle } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { clearSelectedService } from "@/lib/demo-mode";
+import { theme } from "@/lib/theme";
 import { 
   requestNotificationPermissions, 
   notifyNewShift, 
@@ -155,7 +156,7 @@ export default function ProfileScreen() {
               {/* Conectado */}
               {hospitalAlert.meta.isLoading ? (
                 <View className="py-8 items-center">
-                  <ActivityIndicator color="#4DA3FF" />
+                  <ActivityIndicator color={theme.colors.primary} />
                 </View>
               ) : hospitalAlert.status ? (
                 <>
@@ -287,7 +288,7 @@ export default function ProfileScreen() {
                 <Switch
                   value={enableShiftChanges}
                   onValueChange={handleToggleShiftChanges}
-                  trackColor={{ false: "rgba(255,255,255,0.2)", true: "#3B82F6" }}
+                  trackColor={{ false: "rgba(255,255,255,0.2)", true: theme.colors.primary }}
                   thumbColor="#FFFFFF"
                 />
               </View>
@@ -305,7 +306,7 @@ export default function ProfileScreen() {
                 <Switch
                   value={enableReminders}
                   onValueChange={handleToggleReminders}
-                  trackColor={{ false: "rgba(255,255,255,0.2)", true: "#3B82F6" }}
+                  trackColor={{ false: "rgba(255,255,255,0.2)", true: theme.colors.primary }}
                   thumbColor="#FFFFFF"
                 />
               </View>
@@ -323,9 +324,8 @@ export default function ProfileScreen() {
                 <Switch
                   value={enableHospitalAlert}
                   onValueChange={handleToggleHospitalAlert}
-                  trackColor={{ false: "rgba(255,255,255,0.2)", true: "#3B82F6" }}
-                  thumbColor="#FFFFFF"
-                />
+                  trackColor={{ false: "rgba(255,255,255,0.2)", true: theme.colors.primary }}
+                  thumbColor="#FFFFFF" />
               </View>
             </View>
           </TintedGlassCard>

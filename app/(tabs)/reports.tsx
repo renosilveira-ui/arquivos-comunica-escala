@@ -3,8 +3,6 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { useAuth } from "@/hooks/use-auth";
 import { FileText, BarChart3, Calendar, Users } from "lucide-react-native";
-import { TestUserBadge } from "@/components/test-user-badge";
-import { DiagnosticBadge } from "@/components/diagnostic-badge";
 
 /**
  * Tela de Relatórios
@@ -45,14 +43,10 @@ export default function ReportsScreen() {
       <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 24 }}>
         {/* Header */}
         <View className="mb-6">
-          <View className="flex-row items-center justify-between mb-2">
-            <Text className="text-white text-3xl font-bold">Relatórios</Text>
-            <TestUserBadge />
-          </View>
-          <Text className="text-white/70 text-base">
+          <Text className="text-white text-3xl font-bold">Relatórios</Text>
+          <Text className="text-white/70 text-base mt-1">
             Análises e estatísticas de escalas
           </Text>
-          <DiagnosticBadge />
         </View>
 
         {/* Placeholder Cards */}

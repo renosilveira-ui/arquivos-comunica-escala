@@ -6,9 +6,6 @@ import { useState, useCallback } from "react";
 import { Check, X, Clock, MapPin, User, Briefcase, ClipboardCheck, Lock } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
-import { useTestUserId } from "@/hooks/use-test-user-id";
-import { TestUserBadge } from "@/components/test-user-badge";
-import { DiagnosticBadge } from "@/components/diagnostic-badge";
 
 // 🔧 Função uiAlert para funcionar no web
 const uiAlert = (title: string, message: string) => {
@@ -22,15 +19,6 @@ const uiAlert = (title: string, message: string) => {
 export default function PendingScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const { user, isLoading: authLoading } = useAuth();
-  const testUserId = useTestUserId(); // 🧪 Adicionar para detectar modo de teste
-
-  // ✅ Mostrar diagnóstico SEMPRE (inclusive quando não autenticado)
-  const Diagnostics = () => (
-    <View style={{ marginBottom: 12 }}>
-      <DiagnosticBadge />
-      <TestUserBadge />
-    </View>
-  );
   
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(
@@ -102,42 +90,26 @@ export default function PendingScreen() {
   });
 
   const handleApprove = (assignmentId: number, professionalName: string) => {
-    console.log(">>> CLIQUE DETECTADO NO BOTÃO APROVAR <<<");
-    console.log("assignmentId:", assignmentId);
-    console.log("professional (gestor):", professional);
-
     if (!professional?.id) {
-      console.error("ERRO: professional.id ausente!");
       uiAlert("Erro Interno", "ID do gestor não encontrado para aprovação.");
       return;
     }
 
-    // ✅ Confirmar de um jeito que funciona no web
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Aprovar alocação de ${professionalName}?`);
     }
 
-    if (!confirmed) {
-      console.log("Aprovação cancelada pelo usuário");
-      return;
-    }
-
-    console.log(">>> CHAMANDO MUTATION approveAssignment <<<", {
-      assignmentId,
-      professionalId: professional.id,
-    });
+    if (!confirmed) return;
 
     approveAssignment.mutate(
       { assignmentId, professionalId: professional.id },
       {
         onSuccess: () => {
-          console.log("✅ approveAssignment onSuccess");
           refetch();
           uiAlert("Sucesso", "Alocação aprovada!");
         },
         onError: (err: any) => {
-          console.error("❌ approveAssignment onError:", err);
           uiAlert("Erro", err?.message ?? "Falha ao aprovar");
         },
       }
@@ -145,42 +117,26 @@ export default function PendingScreen() {
   };
 
   const handleReject = (assignmentId: number, professionalName: string) => {
-    console.log(">>> CLIQUE DETECTADO NO BOTÃO REJEITAR <<<");
-    console.log("assignmentId:", assignmentId);
-    console.log("professional (gestor):", professional);
-
     if (!professional?.id) {
-      console.error("ERRO: professional.id ausente!");
       uiAlert("Erro Interno", "ID do gestor não encontrado para rejeição.");
       return;
     }
 
-    // ✅ Confirmar de um jeito que funciona no web
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Rejeitar alocação de ${professionalName}?`);
     }
 
-    if (!confirmed) {
-      console.log("Rejeição cancelada pelo usuário");
-      return;
-    }
-
-    console.log(">>> CHAMANDO MUTATION rejectAssignment <<<", {
-      assignmentId,
-      professionalId: professional.id,
-    });
+    if (!confirmed) return;
 
     rejectAssignment.mutate(
       { assignmentId, professionalId: professional.id, reason: "Rejeitado pelo gestor" },
       {
         onSuccess: () => {
-          console.log("✅ rejectAssignment onSuccess");
           refetch();
           uiAlert("Sucesso", "Alocação rejeitada!");
         },
         onError: (err: any) => {
-          console.error("❌ rejectAssignment onError:", err);
           uiAlert("Erro", err?.message ?? "Falha ao rejeitar");
         },
       }
@@ -200,11 +156,9 @@ export default function PendingScreen() {
     });
   };
 
-  // ✅ Se estiver carregando auth OU se tiver um testUserId mas o user ainda for null (transição)
-  if (authLoading || (testUserId && !user)) {
+  if (authLoading) {
     return (
       <ScreenGradient>
-        <Diagnostics />
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
           <Text className="mt-4 text-base text-white/60">Carregando autenticação...</Text>
@@ -213,11 +167,9 @@ export default function PendingScreen() {
     );
   }
 
-  // Só bloqueia se não for modo de teste E não tiver usuário
-  if (!user && !testUserId) {
+  if (!user) {
     return (
       <ScreenGradient>
-        <Diagnostics />
         <View className="flex-1 items-center justify-center">
           <ClipboardCheck size={64} color="#94A3B8" />
           <Text className="text-xl font-semibold text-white mt-4">Autenticação Necessária</Text>
@@ -227,11 +179,9 @@ export default function PendingScreen() {
     );
   }
 
-  // Verificar se profissional foi encontrado
   if (!professionalLoading && user && !professional) {
     return (
       <ScreenGradient>
-        <Diagnostics />
         <View className="flex-1 items-center justify-center">
           <ClipboardCheck size={64} color="#94A3B8" />
           <Text className="text-xl font-semibold text-white mt-4">Profissional Não Encontrado</Text>
@@ -244,7 +194,6 @@ export default function PendingScreen() {
   if (isLoading || authLoading || professionalLoading) {
     return (
       <ScreenGradient>
-        <Diagnostics />
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
           <Text className="mt-4 text-base text-white/60">Carregando pendências...</Text>
@@ -258,8 +207,7 @@ export default function PendingScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <Diagnostics />
-          <Text className="text-3xl font-bold text-white mt-3">Pendências</Text>
+          <Text className="text-3xl font-bold text-white">Pendências</Text>
           <Text className="mt-1 text-base text-white/60">
             {pendingAssignments?.length || 0} alocações aguardando aprovação
           </Text>

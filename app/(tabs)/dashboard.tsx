@@ -2,19 +2,15 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
 import { useState, useCallback } from "react";
-import { View, Text, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
-import { BarChart3, Clock, AlertTriangle, TrendingUp } from "lucide-react-native";
+import { View, Text, ScrollView, ActivityIndicator } from "react-native";
+import { Clock, AlertTriangle } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
-import { TestUserBadge } from "@/components/test-user-badge";
-import { DiagnosticBadge } from "@/components/diagnostic-badge";
-import { useRouter } from "expo-router";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Typography } from "@/constants/typography";
 
 export default function DashboardScreen() {
   const { user, isLoading: authLoading } = useAuth();
-  const router = useRouter();
   
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(
@@ -43,22 +39,8 @@ export default function DashboardScreen() {
   // Determinar se usuário pode ver "Todos os hospitais"
   const allowAllHospitals = professional?.role === "GESTOR_PLUS";
 
-  // Buscar resumo do dashboard (com cache de 60s)
-  const { data: summary, isLoading: summaryLoading } = trpc.dashboard.getSummary.useQuery(
-    {
-      hospitalId: filters.hospitalId ?? undefined,
-      sectorId: filters.sectorId ?? undefined,
-      date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
-      shiftLabel: filters.shiftLabel ?? undefined,
-    },
-    { 
-      enabled: !!user?.id,
-      staleTime: 60 * 1000, // Cache de 60 segundos
-    }
-  );
-
-  // Buscar contadores para os filtros (com cache de 60s)
-  const { data: counts } = trpc.filters.summaryCounts.useQuery(
+  // Buscar contadores para os filtros e KPIs (com cache de 60s)
+  const { data: counts, isLoading: countsLoading } = trpc.filters.summaryCounts.useQuery(
     {
       date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
     },
@@ -82,11 +64,9 @@ export default function DashboardScreen() {
     );
   }
 
-  // Dados resumo
-  const totalShifts = summary?.totalShifts ?? 0;
-  const pendingCount = summary?.pendingCount ?? 0;
-  const confirmedCount = summary?.confirmedCount ?? 0;
-  const vacancyCount = summary?.vacancyCount ?? 0;
+  // KPI data derived from summaryCounts
+  const vacancyCount = (Object.values(counts?.vacanciesByHospital ?? {}) as number[]).reduce((a, b) => a + b, 0);
+  const pendingCount = (Object.values(counts?.pendingByHospital ?? {}) as number[]).reduce((a, b) => a + b, 0);
 
   return (
     <ScreenGradient>
@@ -97,8 +77,6 @@ export default function DashboardScreen() {
           <Text className={`${Typography.textSubtext} text-white/70 mt-1`}>
             Resumo das escalas
           </Text>
-          <TestUserBadge />
-          <DiagnosticBadge />
         </View>
 
         {/* Filtros */}
@@ -112,36 +90,16 @@ export default function DashboardScreen() {
         />
 
         {/* KPI Cards */}
-        {summaryLoading ? (
+        {countsLoading ? (
           <ActivityIndicator size="large" color="#fff" className="mt-8" />
         ) : (
           <View className="mt-4 gap-3">
             <TintedGlassCard>
               <View className="flex-row items-center gap-3 p-4">
-                <BarChart3 size={24} color="#60A5FA" />
-                <View>
-                  <Text className={`${Typography.textLabel} text-white/60`}>Total de Plantões</Text>
-                  <Text className={`${Typography.titleSection} text-white`}>{totalShifts}</Text>
-                </View>
-              </View>
-            </TintedGlassCard>
-
-            <TintedGlassCard>
-              <View className="flex-row items-center gap-3 p-4">
                 <Clock size={24} color="#FBBF24" />
                 <View>
-                  <Text className={`${Typography.textLabel} text-white/60`}>Pendentes</Text>
+                  <Text className={`${Typography.textLabel} text-white/60`}>Pendências</Text>
                   <Text className={`${Typography.titleSection} text-white`}>{pendingCount}</Text>
-                </View>
-              </View>
-            </TintedGlassCard>
-
-            <TintedGlassCard>
-              <View className="flex-row items-center gap-3 p-4">
-                <TrendingUp size={24} color="#34D399" />
-                <View>
-                  <Text className={`${Typography.textLabel} text-white/60`}>Confirmados</Text>
-                  <Text className={`${Typography.titleSection} text-white`}>{confirmedCount}</Text>
                 </View>
               </View>
             </TintedGlassCard>

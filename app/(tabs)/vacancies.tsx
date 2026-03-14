@@ -6,8 +6,6 @@ import { useState, useCallback } from "react";
 import { Briefcase, Clock, MapPin, Building2, Calendar, CheckCircle } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
-import { TestUserBadge } from "@/components/test-user-badge";
-import { DiagnosticBadge } from "@/components/diagnostic-badge";
 import { AppButton } from "@/components/ui/AppButton";
 import { confirmAction } from "@/lib/ui/confirm";
 
@@ -172,9 +170,7 @@ export default function VacanciesScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <DiagnosticBadge />
-          <TestUserBadge />
-          <Text className="text-3xl font-bold text-white mt-3">Vagas Disponíveis</Text>
+          <Text className="text-3xl font-bold text-white">Vagas Disponíveis</Text>
           <Text className="mt-1 text-base text-white/60">
             {vacancies.length} turnos disponíveis para assumir
           </Text>
