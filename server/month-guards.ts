@@ -1,7 +1,8 @@
 import { getDb } from "./db";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { auditLog } from "./audit-log";
-import { sql } from "drizzle-orm";
+import { sql, eq, and } from "drizzle-orm";
+import { monthlyRosters } from "../drizzle/schema";
 
 /**
  * Guardrail de edição de mês (usado em TODA mutation de edição de turnos)
@@ -84,5 +85,76 @@ export async function assertMonthEditable(
         previousStatus: status,
       },
     });
+  }
+}
+
+
+/**
+ * Publica um mês DRAFT → PUBLISHED.
+ * Preenche published_at, published_by_user_id e incrementa version.
+ */
+export async function publishMonth(
+  institutionId: number,
+  hospitalId: number,
+  yearMonth: string,
+  userId: number
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db
+    .update(monthlyRosters)
+    .set({
+      status: "PUBLISHED",
+      publishedAt: new Date(),
+      publishedByUserId: userId,
+      version: sql`version + 1`,
+    })
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonth),
+        eq(monthlyRosters.status, "DRAFT")
+      )
+    );
+
+  if ((result as any)[0].affectedRows === 0) {
+    throw new Error("Mês não encontrado ou não está em DRAFT");
+  }
+}
+
+/**
+ * Tranca um mês PUBLISHED → LOCKED.
+ * Preenche locked_at, locked_by_user_id e incrementa version.
+ */
+export async function lockMonth(
+  institutionId: number,
+  hospitalId: number,
+  yearMonth: string,
+  userId: number
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db
+    .update(monthlyRosters)
+    .set({
+      status: "LOCKED",
+      lockedAt: new Date(),
+      lockedByUserId: userId,
+      version: sql`version + 1`,
+    })
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonth),
+        eq(monthlyRosters.status, "PUBLISHED")
+      )
+    );
+
+  if ((result as any)[0].affectedRows === 0) {
+    throw new Error("Mês não encontrado ou não está PUBLISHED");
   }
 }

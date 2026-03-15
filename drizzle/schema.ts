@@ -1,4 +1,4 @@
-import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, boolean, time, json, unique, index } from "drizzle-orm/mysql-core";
+import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -238,6 +238,11 @@ export const monthlyRosters = mysqlTable(
     status: mysqlEnum("status", ["DRAFT", "PUBLISHED", "LOCKED"]).notNull().default("DRAFT"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+    publishedAt: datetime("published_at"),
+    publishedByUserId: int("published_by_user_id"),
+    lockedAt: datetime("locked_at"),
+    lockedByUserId: int("locked_by_user_id"),
+    version: int("version").notNull().default(1),
   },
   (table) => ({
     uniquePerMonth: unique().on(table.institutionId, table.hospitalId, table.yearMonth),
