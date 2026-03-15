@@ -1,22 +1,19 @@
 import { Tabs } from "expo-router";
 import { TabIcon } from "@/components/ui/TabIcon";
-import { useColorScheme } from "react-native";
 import { usePermissions } from "@/hooks/use-permissions";
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
   const { can } = usePermissions();
 
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: isDark ? "#60A5FA" : "#2563EB",
-        tabBarInactiveTintColor: isDark ? "#6B7280" : "#9CA3AF",
+        tabBarActiveTintColor: "#60A5FA",
+        tabBarInactiveTintColor: "#6B7280",
         tabBarStyle: {
-          backgroundColor: isDark ? "#111827" : "#FFFFFF",
-          borderTopColor: isDark ? "#1F2937" : "#E5E7EB",
+          backgroundColor: "#111827",
+          borderTopColor: "#1F2937",
         },
       }}
     >

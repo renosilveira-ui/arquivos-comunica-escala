@@ -5,7 +5,11 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { ActivityIndicator, Platform, View } from "react-native";
+import { ActivityIndicator, Platform, Text, TextInput, View } from "react-native";
+
+// Force white text globally for dark theme
+(Text as any).defaultProps = { ...(Text as any).defaultProps, style: { color: "#F1F5F9" } };
+(TextInput as any).defaultProps = { ...(TextInput as any).defaultProps, style: { color: "#F1F5F9" }, placeholderTextColor: "#64748B" };
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
