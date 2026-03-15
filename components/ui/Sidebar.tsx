@@ -14,7 +14,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
   if (collapsed) return null;
   return (
     <View>
-      <Text>Sidebar placeholder</Text>
+      <Text className="text-white">Sidebar placeholder</Text>
     </View>
   );
 }
