@@ -32,9 +32,9 @@ export function StatPill({ label, value, icon, className, style, ...props }: Sta
     >
       <View className="flex-row items-center gap-1.5 mb-1">
         {icon}
-        <Text className="text-text2 text-sm font-medium">{label}</Text>
+        <Text className="text-slate-400 text-sm font-medium">{label}</Text>
       </View>
-      <Text className="text-text text-xl font-bold">{value}</Text>
+      <Text className="text-white text-xl font-bold">{value}</Text>
     </View>
   );
 }

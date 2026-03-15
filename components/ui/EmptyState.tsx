@@ -43,9 +43,9 @@ export function EmptyState({
       {...props}
     >
       <View className="mb-4 opacity-60">{icon}</View>
-      <Text className="text-text text-xl font-bold text-center mb-2">{title}</Text>
+      <Text className="text-white text-xl font-bold text-center mb-2">{title}</Text>
       {description && (
-        <Text className="text-text2 text-base text-center mb-6">{description}</Text>
+        <Text className="text-slate-400 text-base text-center mb-6">{description}</Text>
       )}
       {action && <View className="w-full">{action}</View>}
     </View>

@@ -41,7 +41,7 @@ export function SecondaryButton({
       {loading ? (
         <ActivityIndicator color="#A7B3C2" />
       ) : (
-        <Text className="text-text text-lg font-semibold">{label}</Text>
+        <Text className="text-white text-lg font-semibold">{label}</Text>
       )}
     </TouchableOpacity>
   );
