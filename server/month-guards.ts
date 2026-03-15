@@ -3,6 +3,7 @@ import { yearMonthFromDate } from "../lib/date-utils";
 import { auditLog } from "./audit-log";
 import { sql, eq, and } from "drizzle-orm";
 import { monthlyRosters } from "../drizzle/schema";
+import { notifyRosterPublished } from "./integrations/comunica-plus";
 
 /**
  * Guardrail de edição de mês (usado em TODA mutation de edição de turnos)
@@ -122,6 +123,35 @@ export async function publishMonth(
   if ((result as any)[0].affectedRows === 0) {
     throw new Error("Mês não encontrado ou não está em DRAFT");
   }
+
+  // Fire-and-forget: notify Comunica+ about published roster
+  (async () => {
+    try {
+      const emailRows = await db.execute<any>(
+        sql`SELECT DISTINCT u.email
+            FROM shift_instances si
+            JOIN shift_assignments_v2 sa ON sa.shift_instance_id = si.id AND sa.is_active = 1
+            JOIN professionals p ON p.id = sa.professional_id
+            JOIN users u ON u.id = p.user_id
+            WHERE si.hospital_id = ${hospitalId}
+            AND si.start_at >= ${yearMonth + '-01'}
+            AND si.start_at < DATE_ADD(${yearMonth + '-01'}, INTERVAL 1 MONTH)`,
+      );
+      const rows = (emailRows as any).rows || (emailRows as any[]);
+      const emails = (rows || []).map((r: any) => r.email).filter(Boolean);
+      if (emails.length > 0) {
+        await notifyRosterPublished({
+          hospitalId,
+          yearMonth,
+          version: 1,
+          publishedByUserId: userId,
+          professionalEmails: emails,
+        });
+      }
+    } catch (err) {
+      console.error("[Comunica+] notifyRosterPublished error:", err);
+    }
+  })();
 }
 
 /**
