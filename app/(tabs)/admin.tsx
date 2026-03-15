@@ -1,333 +1,901 @@
-import { useState } from "react";
-import { Text, View, TouchableOpacity, ScrollView, ActivityIndicator, TextInput } from "react-native";
+import { useCallback, useState } from "react";
+import {
+  Text,
+  View,
+  TouchableOpacity,
+  ActivityIndicator,
+  TextInput,
+  Modal,
+  Platform,
+  RefreshControl,
+  KeyboardAvoidingView,
+} from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
-import { trpc } from "@/lib/trpc";
-import { useRouter } from "expo-router";
-import * as Haptics from "expo-haptics";
-import { Settings, Plus, TrendingUp, Calendar, Lock, RefreshCw, FileText } from "lucide-react-native";
-import { formatDateBR } from "@/lib/datetime";
+import * as Auth from "@/lib/_core/auth";
+import { Lock, Plus, Pencil, Users, X } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+import { useFocusEffect } from "expo-router";
 
-/**
- * Tela de Administração
- * Dashboard administrativo para gestores criarem e gerenciarem escalas
- */
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
+
+interface AdminUser {
+  id: number;
+  name: string | null;
+  email: string | null;
+  role: UserRole;
+  createdAt: string;
+  professional: { id: number; userRole: string } | null;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getBaseUrl(): string {
+  if (Platform.OS === "web") return "";
+  return "http://localhost:3000";
+}
+
+async function adminFetch<T>(
+  path: string,
+  options?: RequestInit,
+): Promise<{ ok: boolean; data: T | null }> {
+  const url = getBaseUrl() + path;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
+  };
+  if (Platform.OS !== "web") {
+    const token = await Auth.getSessionToken();
+    if (token) headers["Authorization"] = "Bearer " + token;
+  }
+  const res = await fetch(url, {
+    ...options,
+    headers,
+    credentials: Platform.OS === "web" ? "include" : undefined,
+  });
+  let data: T | null = null;
+  try {
+    data = await res.json();
+  } catch {}
+  return { ok: res.ok, data };
+}
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  admin: "Administrador",
+  manager: "Gestor",
+  doctor: "Médico",
+  nurse: "Enfermeiro(a)",
+  tech: "Técnico(a)",
+};
+
+const ROLE_BADGE: Record<UserRole, BadgeVariant> = {
+  admin: "critical",
+  manager: "warning",
+  doctor: "info",
+  nurse: "success",
+  tech: "neutral",
+};
+
+const ROLES: UserRole[] = ["admin", "manager", "doctor", "nurse", "tech"];
+
+// ---------------------------------------------------------------------------
+// CreateUserModal
+// ---------------------------------------------------------------------------
+
+function CreateUserModal({
+  visible,
+  onClose,
+  onCreated,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<UserRole>("doctor");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const reset = () => {
+    setName("");
+    setEmail("");
+    setPassword("");
+    setRole("doctor");
+    setError("");
+  };
+
+  const handleCreate = async () => {
+    if (!name.trim() || !email.trim() || !password.trim()) {
+      setError("Preencha todos os campos");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    const res = await adminFetch<{ user?: unknown; error?: string }>(
+      "/api/auth/register",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+          role,
+        }),
+      },
+    );
+    setLoading(false);
+    if (res.ok) {
+      reset();
+      onCreated();
+      onClose();
+    } else {
+      setError(res.data?.error ?? "Erro ao criar usuário");
+    }
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: "rgba(0,0,0,0.6)",
+        }}
+      >
+        <View
+          style={{
+            width: "90%",
+            maxWidth: 420,
+            backgroundColor: theme.colors.cardBg,
+            borderRadius: 16,
+            padding: 24,
+          }}
+        >
+          {/* Header */}
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 20,
+            }}
+          >
+            <Text
+              style={{
+                color: theme.colors.textPrimary,
+                fontSize: 20,
+                fontWeight: "700",
+              }}
+            >
+              Novo Profissional
+            </Text>
+            <TouchableOpacity onPress={onClose} hitSlop={12}>
+              <X size={22} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Nome */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            Nome
+          </Text>
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Nome completo"
+            placeholderTextColor={theme.colors.textMuted}
+            style={{
+              backgroundColor: theme.colors.inputBg,
+              color: theme.colors.textPrimary,
+              borderRadius: theme.borderRadius.input,
+              padding: 12,
+              fontSize: 16,
+              marginBottom: 14,
+            }}
+          />
+
+          {/* Email */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            E-mail
+          </Text>
+          <TextInput
+            value={email}
+            onChangeText={setEmail}
+            placeholder="email@exemplo.com"
+            placeholderTextColor={theme.colors.textMuted}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            style={{
+              backgroundColor: theme.colors.inputBg,
+              color: theme.colors.textPrimary,
+              borderRadius: theme.borderRadius.input,
+              padding: 12,
+              fontSize: 16,
+              marginBottom: 14,
+            }}
+          />
+
+          {/* Senha */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            Senha
+          </Text>
+          <TextInput
+            value={password}
+            onChangeText={setPassword}
+            placeholder="Min. 6 caracteres"
+            placeholderTextColor={theme.colors.textMuted}
+            secureTextEntry
+            style={{
+              backgroundColor: theme.colors.inputBg,
+              color: theme.colors.textPrimary,
+              borderRadius: theme.borderRadius.input,
+              padding: 12,
+              fontSize: 16,
+              marginBottom: 14,
+            }}
+          />
+
+          {/* Role selector */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            Cargo
+          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: 8,
+              marginBottom: 20,
+            }}
+          >
+            {ROLES.map((r) => (
+              <TouchableOpacity
+                key={r}
+                onPress={() => setRole(r)}
+                style={{
+                  backgroundColor:
+                    role === r ? theme.colors.primary : theme.colors.inputBg,
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    color:
+                      role === r ? "#FFFFFF" : theme.colors.textSecondary,
+                    fontSize: 14,
+                    fontWeight: "600",
+                  }}
+                >
+                  {ROLE_LABELS[r]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {error ? (
+            <Text
+              style={{
+                color: theme.colors.danger,
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
+              {error}
+            </Text>
+          ) : null}
+
+          <TouchableOpacity
+            onPress={handleCreate}
+            disabled={loading}
+            style={{
+              backgroundColor: theme.colors.primary,
+              borderRadius: theme.borderRadius.button,
+              padding: 14,
+              alignItems: "center",
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text
+                style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "700" }}
+              >
+                Criar Usuário
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EditUserModal
+// ---------------------------------------------------------------------------
+
+function EditUserModal({
+  visible,
+  user: editUser,
+  onClose,
+  onUpdated,
+}: {
+  visible: boolean;
+  user: AdminUser | null;
+  onClose: () => void;
+  onUpdated: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<UserRole>("doctor");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Populate when modal opens or editUser changes
+  useFocusEffect(
+    useCallback(() => {
+      if (visible && editUser) {
+        setName(editUser.name ?? "");
+        setEmail(editUser.email ?? "");
+        setRole(editUser.role);
+        setError("");
+      }
+    }, [visible, editUser]),
+  );
+
+  const handleUpdate = async () => {
+    if (!editUser) return;
+    if (!name.trim() || !email.trim()) {
+      setError("Nome e e-mail são obrigatórios");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    const res = await adminFetch<{ user?: unknown; error?: string }>(
+      `/api/admin/users/${editUser.id}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          role,
+        }),
+      },
+    );
+    setLoading(false);
+    if (res.ok) {
+      onUpdated();
+      onClose();
+    } else {
+      setError(res.data?.error ?? "Erro ao atualizar");
+    }
+  };
+
+  if (!editUser) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: "rgba(0,0,0,0.6)",
+        }}
+      >
+        <View
+          style={{
+            width: "90%",
+            maxWidth: 420,
+            backgroundColor: theme.colors.cardBg,
+            borderRadius: 16,
+            padding: 24,
+          }}
+        >
+          {/* Header */}
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 20,
+            }}
+          >
+            <Text
+              style={{
+                color: theme.colors.textPrimary,
+                fontSize: 20,
+                fontWeight: "700",
+              }}
+            >
+              Editar Profissional
+            </Text>
+            <TouchableOpacity onPress={onClose} hitSlop={12}>
+              <X size={22} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Nome */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            Nome
+          </Text>
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Nome completo"
+            placeholderTextColor={theme.colors.textMuted}
+            style={{
+              backgroundColor: theme.colors.inputBg,
+              color: theme.colors.textPrimary,
+              borderRadius: theme.borderRadius.input,
+              padding: 12,
+              fontSize: 16,
+              marginBottom: 14,
+            }}
+          />
+
+          {/* Email */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            E-mail
+          </Text>
+          <TextInput
+            value={email}
+            onChangeText={setEmail}
+            placeholder="email@exemplo.com"
+            placeholderTextColor={theme.colors.textMuted}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            style={{
+              backgroundColor: theme.colors.inputBg,
+              color: theme.colors.textPrimary,
+              borderRadius: theme.borderRadius.input,
+              padding: 12,
+              fontSize: 16,
+              marginBottom: 14,
+            }}
+          />
+
+          {/* Role selector */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            Cargo
+          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: 8,
+              marginBottom: 20,
+            }}
+          >
+            {ROLES.map((r) => (
+              <TouchableOpacity
+                key={r}
+                onPress={() => setRole(r)}
+                style={{
+                  backgroundColor:
+                    role === r ? theme.colors.primary : theme.colors.inputBg,
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    color:
+                      role === r ? "#FFFFFF" : theme.colors.textSecondary,
+                    fontSize: 14,
+                    fontWeight: "600",
+                  }}
+                >
+                  {ROLE_LABELS[r]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {error ? (
+            <Text
+              style={{
+                color: theme.colors.danger,
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
+              {error}
+            </Text>
+          ) : null}
+
+          <TouchableOpacity
+            onPress={handleUpdate}
+            disabled={loading}
+            style={{
+              backgroundColor: theme.colors.primary,
+              borderRadius: theme.borderRadius.button,
+              padding: 14,
+              alignItems: "center",
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text
+                style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "700" }}
+              >
+                Salvar Alterações
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Screen
+// ---------------------------------------------------------------------------
+
 export default function AdminScreen() {
   const { user } = useAuth();
-  const router = useRouter();
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Buscar setores
-  const { data: sectors, isLoading: loadingSectors } = trpc.sectors.list.useQuery();
+  // Modals
+  const [showCreate, setShowCreate] = useState(false);
+  const [editTarget, setEditTarget] = useState<AdminUser | null>(null);
 
-  // Buscar escalas futuras (próximos 30 dias)
-  const startDate = new Date();
-  const endDate = new Date();
-  endDate.setDate(endDate.getDate() + 30);
+  const fetchUsers = useCallback(async () => {
+    const res = await adminFetch<{ users: AdminUser[] }>("/api/admin/users");
+    if (res.ok && res.data?.users) {
+      setUsers(res.data.users);
+    }
+    setLoading(false);
+    setRefreshing(false);
+  }, []);
 
-  const { data: upcomingShifts, isLoading: loadingShifts } = trpc.shifts.listByPeriod.useQuery({
-    startDate,
-    endDate,
-  });
+  useFocusEffect(
+    useCallback(() => {
+      fetchUsers();
+    }, [fetchUsers]),
+  );
 
-  const handleCreateShift = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push("/create-shift");
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchUsers();
   };
 
-  const handleApproveSwaps = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push("/approve-swaps");
-  };
+  // Filter users by search
+  const filtered = searchQuery.trim()
+    ? users.filter(
+        (u) =>
+          (u.name ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+          (u.email ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+          ROLE_LABELS[u.role].toLowerCase().includes(searchQuery.toLowerCase()),
+      )
+    : users;
 
-  const handleReport = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push("/report");
-  };
-
+  // Guards
   if (!user) {
     return (
       <ScreenGradient scrollable={false}>
-        <View className="flex-1 justify-center items-center">
-          <Text className="text-lg" style={{ color: "rgba(255,255,255,0.7)" }}>Faça login para continuar</Text>
+        <View
+          style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
+        >
+          <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 16 }}>
+            Faça login para continuar
+          </Text>
         </View>
       </ScreenGradient>
     );
   }
 
-  // TODO: Verificar se usuário é admin - por enquanto permitir acesso a todos
-  const isAdmin = true; // user.role === "admin";
-
-  if (!isAdmin) {
+  if (user.role !== "admin") {
     return (
       <ScreenGradient scrollable={false}>
-        <View className="flex-1 justify-center items-center gap-4">
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            gap: 16,
+          }}
+        >
           <Lock size={48} color="rgba(255,255,255,0.5)" />
-          <Text className="text-lg" style={{ color: "rgba(255,255,255,0.7)" }}>Acesso restrito a administradores</Text>
+          <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 16 }}>
+            Acesso restrito a administradores
+          </Text>
         </View>
       </ScreenGradient>
     );
   }
 
+  // Render
   return (
-    <ScreenGradient scrollable>
-      <View className="gap-6">
+    <ScreenGradient
+      scrollable
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
+          tintColor="#FFFFFF"
+        />
+      }
+    >
+      <View style={{ gap: 20 }}>
         {/* Header */}
-        <View className="gap-2">
-          <View className="flex-row items-center gap-3">
-            <Settings size={28} color="#FFFFFF" />
-            <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Administração</Text>
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <View
+            style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
+          >
+            <Users size={28} color="#FFFFFF" />
+            <Text
+              style={{ color: "#FFFFFF", fontSize: 26, fontWeight: "800" }}
+            >
+              Administração
+            </Text>
           </View>
-          <Text className="text-lg" style={{ color: "rgba(255,255,255,0.7)" }}>Gerenciar escalas e setores</Text>
-        </View>
-
-        {/* Campo de Busca */}
-        <TintedGlassCard>
-          <View className="flex-row items-center gap-3">
-            <Text style={{ color: "rgba(255,255,255,0.5)" }}>🔍</Text>
-            <TextInput
-              placeholder="Buscar profissional, setor ou período..."
-              placeholderTextColor="rgba(255,255,255,0.5)"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              style={{
-                flex: 1,
-                fontSize: 16,
-                color: "#FFFFFF",
-                paddingVertical: 8,
-              }}
-            />
-          </View>
-        </TintedGlassCard>
-
-        {/* Ações Rápidas */}
-        <View className="gap-4">
           <TouchableOpacity
-            onPress={handleCreateShift}
-            activeOpacity={0.7}
+            onPress={() => setShowCreate(true)}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              backgroundColor: theme.colors.primary,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+              borderRadius: theme.borderRadius.button,
+            }}
           >
-            <TintedGlassCard>
-              <View className="items-center py-4">
-                <View className="w-16 h-16 rounded-full items-center justify-center mb-4" style={{ backgroundColor: theme.colors.primary }}>
-                  <Plus size={32} color="#FFFFFF" />
-                </View>
-                <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Criar Nova Escala</Text>
-                <Text className="text-base mt-2 text-center" style={{ color: "rgba(255,255,255,0.7)" }}>
-                  Alocar profissionais em setores e horários
-                </Text>
-              </View>
-            </TintedGlassCard>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={handleApproveSwaps}
-            activeOpacity={0.7}
-          >
-            <TintedGlassCard>
-              <View className="flex-row items-center gap-4 py-3">
-                <View className="w-12 h-12 rounded-full items-center justify-center" style={{ backgroundColor: "rgba(59,130,246,0.2)" }}>
-                  <RefreshCw size={24} color="#3B82F6" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-xl font-bold" style={{ color: "#FFFFFF" }}>Aprovar Trocas de Plantão</Text>
-                  <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
-                    Gerenciar solicitações pendentes
-                  </Text>
-                </View>
-              </View>
-            </TintedGlassCard>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={handleReport}
-            activeOpacity={0.7}
-          >
-            <TintedGlassCard>
-              <View className="flex-row items-center gap-4 py-3">
-                <View className="w-12 h-12 rounded-full items-center justify-center" style={{ backgroundColor: "rgba(59,130,246,0.2)" }}>
-                  <FileText size={24} color="#3B82F6" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-xl font-bold" style={{ color: "#FFFFFF" }}>Relatório de Escalas</Text>
-                  <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
-                    Estatísticas e exportação PDF
-                  </Text>
-                </View>
-              </View>
-            </TintedGlassCard>
+            <Plus size={18} color="#FFFFFF" />
+            <Text
+              style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}
+            >
+              Novo
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Estatísticas */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <TrendingUp size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Estatísticas</Text>
+        {/* Search */}
+        <View
+          style={{
+            backgroundColor: theme.colors.inputBg,
+            borderRadius: theme.borderRadius.input,
+            flexDirection: "row",
+            alignItems: "center",
+            paddingHorizontal: 14,
+          }}
+        >
+          <Text style={{ color: theme.colors.textMuted, fontSize: 16 }}>
+            🔍
+          </Text>
+          <TextInput
+            placeholder="Buscar por nome, e-mail ou cargo..."
+            placeholderTextColor={theme.colors.textMuted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            style={{
+              flex: 1,
+              color: theme.colors.textPrimary,
+              fontSize: 16,
+              paddingVertical: 12,
+              paddingHorizontal: 10,
+            }}
+          />
+        </View>
+
+        {/* Stats */}
+        <View style={{ flexDirection: "row", gap: 12 }}>
+          <View style={{ flex: 1 }}>
+            <TintedGlassCard>
+              <Text
+                style={{ color: theme.colors.textSecondary, fontSize: 13 }}
+              >
+                Total de Usuários
+              </Text>
+              <Text
+                style={{
+                  color: "#FFFFFF",
+                  fontSize: 28,
+                  fontWeight: "800",
+                  marginTop: 4,
+                }}
+              >
+                {users.length}
+              </Text>
+            </TintedGlassCard>
           </View>
-          <View className="flex-row gap-4">
-            <View className="flex-1">
-              <TintedGlassCard>
-                <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Total de Setores</Text>
-                {loadingSectors ? (
-                  <ActivityIndicator size="small" color="#3B82F6" className="mt-2" />
-                ) : (
-                  <Text className="text-4xl font-bold mt-2" style={{ color: "#FFFFFF" }}>
-                    {sectors?.length || 0}
-                  </Text>
-                )}
-              </TintedGlassCard>
+          <View style={{ flex: 1 }}>
+            <TintedGlassCard>
+              <Text
+                style={{ color: theme.colors.textSecondary, fontSize: 13 }}
+              >
+                Administradores
+              </Text>
+              <Text
+                style={{
+                  color: "#FFFFFF",
+                  fontSize: 28,
+                  fontWeight: "800",
+                  marginTop: 4,
+                }}
+              >
+                {users.filter((u) => u.role === "admin").length}
+              </Text>
+            </TintedGlassCard>
+          </View>
+        </View>
+
+        {/* User list */}
+        {loading ? (
+          <View style={{ alignItems: "center", paddingVertical: 40 }}>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+          </View>
+        ) : filtered.length === 0 ? (
+          <TintedGlassCard>
+            <View style={{ alignItems: "center", paddingVertical: 32 }}>
+              <Users size={48} color="rgba(255,255,255,0.3)" />
+              <Text
+                style={{
+                  color: "rgba(255,255,255,0.5)",
+                  fontSize: 16,
+                  marginTop: 16,
+                }}
+              >
+                {searchQuery
+                  ? "Nenhum resultado encontrado"
+                  : "Nenhum usuário cadastrado"}
+              </Text>
             </View>
-            <View className="flex-1">
-              <TintedGlassCard>
-                <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Escalas Futuras</Text>
-                {loadingShifts ? (
-                  <ActivityIndicator size="small" color="#3B82F6" className="mt-2" />
-                ) : (
-                  <Text className="text-4xl font-bold mt-2" style={{ color: "#FFFFFF" }}>
-                    {upcomingShifts?.length || 0}
-                  </Text>
-                )}
-              </TintedGlassCard>
-            </View>
-          </View>
-        </View>
-
-        {/* Setores */}
-        <View className="gap-4">
-          <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Setores Cadastrados</Text>
-          {loadingSectors ? (
-            <TintedGlassCard>
-              <View className="items-center py-4">
-                <ActivityIndicator size="small" color="#3B82F6" />
-              </View>
-            </TintedGlassCard>
-          ) : sectors && sectors.length > 0 ? (
-            <TintedGlassCard>
-              <View className="gap-3">
-                {sectors.slice(0, 10).map((sector) => (
+          </TintedGlassCard>
+        ) : (
+          <View style={{ gap: 10 }}>
+            {filtered.map((u) => (
+              <TintedGlassCard key={u.id} onPress={() => setEditTarget(u)}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <View style={{ flex: 1, gap: 4 }}>
+                    <Text
+                      style={{
+                        color: "#FFFFFF",
+                        fontSize: 17,
+                        fontWeight: "700",
+                      }}
+                    >
+                      {u.name ?? "Sem nome"}
+                    </Text>
+                    <Text
+                      style={{
+                        color: theme.colors.textSecondary,
+                        fontSize: 14,
+                      }}
+                    >
+                      {u.email ?? "\u2014"}
+                    </Text>
+                  </View>
                   <View
-                    key={sector.id}
-                    className="flex-row items-center justify-between py-3"
                     style={{
-                      borderBottomWidth: 1,
-                      borderBottomColor: "rgba(255,255,255,0.08)",
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 10,
                     }}
                   >
-                    <View className="flex-row items-center gap-3 flex-1">
-                      <View
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: sector.color }}
-                      />
-                      <View className="flex-1">
-                        <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
-                          {sector.name}
-                        </Text>
-                        <Text className="text-base capitalize" style={{ color: "rgba(255,255,255,0.7)" }}>{sector.category}</Text>
-                      </View>
-                    </View>
-                    <View className="px-3 py-1 rounded-full" style={{ backgroundColor: "rgba(59,130,246,0.2)" }}>
-                      <Text className="text-sm font-semibold" style={{ color: "#FFFFFF" }}>
-                        {sector.minStaffCount} min
-                      </Text>
-                    </View>
+                    <Badge variant={ROLE_BADGE[u.role]}>
+                      {ROLE_LABELS[u.role]}
+                    </Badge>
+                    <TouchableOpacity
+                      onPress={() => setEditTarget(u)}
+                      hitSlop={10}
+                      style={{
+                        backgroundColor: "rgba(59,130,246,0.15)",
+                        padding: 8,
+                        borderRadius: 8,
+                      }}
+                    >
+                      <Pencil size={16} color={theme.colors.primary} />
+                    </TouchableOpacity>
                   </View>
-                ))}
-                {sectors.length > 10 && (
-                  <Text className="text-base text-center mt-2" style={{ color: "rgba(255,255,255,0.5)" }}>
-                    + {sectors.length - 10} setores
-                  </Text>
-                )}
-              </View>
-            </TintedGlassCard>
-          ) : (
-            <TintedGlassCard>
-              <View className="items-center py-8">
-                <Settings size={48} color="rgba(255,255,255,0.3)" />
-                <Text className="text-lg mt-4" style={{ color: "rgba(255,255,255,0.5)" }}>Nenhum setor cadastrado</Text>
-              </View>
-            </TintedGlassCard>
-          )}
-        </View>
-
-        {/* Próximas Escalas */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <Calendar size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Próximas Escalas</Text>
+                </View>
+              </TintedGlassCard>
+            ))}
           </View>
-          {loadingShifts ? (
-            <TintedGlassCard>
-              <View className="items-center py-4">
-                <ActivityIndicator size="small" color="#3B82F6" />
-              </View>
-            </TintedGlassCard>
-          ) : upcomingShifts && upcomingShifts.length > 0 ? (
-            <View className="gap-3">
-              {upcomingShifts.slice(0, 5).map((item) => {
-                if (!item.shift) return null;
-                const shift = item.shift;
-                const sector = item.sector;
-                const startDate = new Date(shift.startTime);
-                const endDate = new Date(shift.endTime);
+        )}
 
-                return (
-                  <TintedGlassCard key={shift.id}>
-                    <View className="flex-row justify-between items-start mb-2">
-                      <View className="flex-1">
-                        <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
-                          {sector?.name || "Setor não definido"}
-                        </Text>
-                        <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
-                          {formatDateBR(startDate)}
-                        </Text>
-                      </View>
-                      <Badge
-                        variant={
-                          shift.status === "confirmada"
-                            ? "success"
-                            : shift.status === "cancelada"
-                            ? "critical"
-                            : "warning"
-                        }
-                      >
-                        {shift.status === "confirmada"
-                          ? "Confirmada"
-                          : shift.status === "cancelada"
-                          ? "Cancelada"
-                          : "Pendente"}
-                      </Badge>
-                    </View>
-                    <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>
-                      {startDate.toLocaleTimeString("pt-BR", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}{" "}
-                      -{" "}
-                      {endDate.toLocaleTimeString("pt-BR", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Text>
-                  </TintedGlassCard>
-                );
-              })}
-            </View>
-          ) : (
-            <TintedGlassCard>
-              <View className="items-center py-8">
-                <Calendar size={48} color="rgba(255,255,255,0.3)" />
-                <Text className="text-lg mt-4" style={{ color: "rgba(255,255,255,0.5)" }}>Nenhuma escala programada</Text>
-              </View>
-            </TintedGlassCard>
-          )}
-        </View>
-
-        {/* Espaçamento inferior */}
-        <View className="h-8" />
+        {/* Bottom spacing */}
+        <View style={{ height: 32 }} />
       </View>
+
+      {/* Modals */}
+      <CreateUserModal
+        visible={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreated={fetchUsers}
+      />
+      <EditUserModal
+        visible={!!editTarget}
+        user={editTarget}
+        onClose={() => setEditTarget(null)}
+        onUpdated={fetchUsers}
+      />
     </ScreenGradient>
   );
 }

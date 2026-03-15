@@ -6,6 +6,7 @@ import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { authRouter } from "../routes/auth";
+import { adminRouter } from "../routes/admin";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 
@@ -58,6 +59,7 @@ async function startServer() {
 
   registerOAuthRoutes(app);
   app.use("/api/auth", authRouter);
+  app.use("/api/admin", adminRouter);
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, timestamp: Date.now() });
