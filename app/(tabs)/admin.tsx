@@ -39,7 +39,9 @@ interface AdminUser {
 // ---------------------------------------------------------------------------
 
 function getBaseUrl(): string {
-  if (Platform.OS === "web") return "";
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (envUrl) return envUrl;
+  if (Platform.OS === "android") return "http://10.0.2.2:3000";
   return "http://localhost:3000";
 }
 
@@ -614,12 +616,18 @@ export default function AdminScreen() {
   const [editTarget, setEditTarget] = useState<AdminUser | null>(null);
 
   const fetchUsers = useCallback(async () => {
-    const res = await adminFetch<{ users: AdminUser[] }>("/api/admin/users");
-    if (res.ok && res.data?.users) {
-      setUsers(res.data.users);
+    try {
+      const res = await adminFetch<{ users: AdminUser[] }>("/api/admin/users");
+      console.log("[AdminScreen] fetchUsers response:", res.ok, "count:", res.data?.users?.length);
+      if (res.ok && res.data?.users) {
+        setUsers(res.data.users);
+      }
+    } catch (err) {
+      console.error("[AdminScreen] fetchUsers error:", err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-    setLoading(false);
-    setRefreshing(false);
   }, []);
 
   useFocusEffect(
