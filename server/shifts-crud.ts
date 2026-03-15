@@ -10,6 +10,7 @@ import {
   professionals,
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
+import { notifyVacancyOpened } from "./integrations/comunica-plus";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -196,6 +197,19 @@ export const shiftsRouter = router({
         professionalId: null,
         metadata: { updatedBy: ctx.user.id, changes: patch },
       });
+
+      // Fire-and-forget: notify Comunica+ if shift became vacant
+      if (input.status === "VAGO" && existing.status !== "VAGO") {
+        notifyVacancyOpened({
+          shiftInstanceId: input.id,
+          startAt: existing.startAt.toISOString(),
+          endAt: existing.endAt.toISOString(),
+          templateName: existing.label,
+          sectorName: null, // TODO: resolve sector name from sectorId
+        }).catch((err) =>
+          console.error("[Comunica+] notifyVacancyOpened error:", err),
+        );
+      }
 
       const [updated] = await db
         .select()
