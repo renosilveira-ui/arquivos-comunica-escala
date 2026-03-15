@@ -52,7 +52,7 @@ export default function AdminScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg text-white/70">Faça login para continuar</Text>
+          <Text className="text-lg" style={{ color: "rgba(255,255,255,0.7)" }}>Faça login para continuar</Text>
         </View>
       </ScreenGradient>
     );
@@ -66,7 +66,7 @@ export default function AdminScreen() {
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center gap-4">
           <Lock size={48} color="rgba(255,255,255,0.5)" />
-          <Text className="text-lg text-white/70">Acesso restrito a administradores</Text>
+          <Text className="text-lg" style={{ color: "rgba(255,255,255,0.7)" }}>Acesso restrito a administradores</Text>
         </View>
       </ScreenGradient>
     );
@@ -79,15 +79,15 @@ export default function AdminScreen() {
         <View className="gap-2">
           <View className="flex-row items-center gap-3">
             <Settings size={28} color="#FFFFFF" />
-            <Text className="text-3xl font-bold text-white">Administração</Text>
+            <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Administração</Text>
           </View>
-          <Text className="text-lg text-white/70">Gerenciar escalas e setores</Text>
+          <Text className="text-lg" style={{ color: "rgba(255,255,255,0.7)" }}>Gerenciar escalas e setores</Text>
         </View>
 
         {/* Campo de Busca */}
         <TintedGlassCard>
           <View className="flex-row items-center gap-3">
-            <Text className="text-white/50">🔍</Text>
+            <Text style={{ color: "rgba(255,255,255,0.5)" }}>🔍</Text>
             <TextInput
               placeholder="Buscar profissional, setor ou período..."
               placeholderTextColor="rgba(255,255,255,0.5)"
@@ -114,8 +114,8 @@ export default function AdminScreen() {
                 <View className="w-16 h-16 rounded-full items-center justify-center mb-4" style={{ backgroundColor: theme.colors.primary }}>
                   <Plus size={32} color="#FFFFFF" />
                 </View>
-                <Text className="text-2xl font-bold text-white">Criar Nova Escala</Text>
-                <Text className="text-base text-white/70 mt-2 text-center">
+                <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Criar Nova Escala</Text>
+                <Text className="text-base mt-2 text-center" style={{ color: "rgba(255,255,255,0.7)" }}>
                   Alocar profissionais em setores e horários
                 </Text>
               </View>
@@ -132,8 +132,8 @@ export default function AdminScreen() {
                   <RefreshCw size={24} color="#3B82F6" />
                 </View>
                 <View className="flex-1">
-                  <Text className="text-xl font-bold text-white">Aprovar Trocas de Plantão</Text>
-                  <Text className="text-base text-white/70 mt-1">
+                  <Text className="text-xl font-bold" style={{ color: "#FFFFFF" }}>Aprovar Trocas de Plantão</Text>
+                  <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
                     Gerenciar solicitações pendentes
                   </Text>
                 </View>
@@ -151,8 +151,8 @@ export default function AdminScreen() {
                   <FileText size={24} color="#3B82F6" />
                 </View>
                 <View className="flex-1">
-                  <Text className="text-xl font-bold text-white">Relatório de Escalas</Text>
-                  <Text className="text-base text-white/70 mt-1">
+                  <Text className="text-xl font-bold" style={{ color: "#FFFFFF" }}>Relatório de Escalas</Text>
+                  <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
                     Estatísticas e exportação PDF
                   </Text>
                 </View>
@@ -165,16 +165,16 @@ export default function AdminScreen() {
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <TrendingUp size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Estatísticas</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Estatísticas</Text>
           </View>
           <View className="flex-row gap-4">
             <View className="flex-1">
               <TintedGlassCard>
-                <Text className="text-base text-white/70">Total de Setores</Text>
+                <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Total de Setores</Text>
                 {loadingSectors ? (
                   <ActivityIndicator size="small" color="#3B82F6" className="mt-2" />
                 ) : (
-                  <Text className="text-4xl font-bold text-white mt-2">
+                  <Text className="text-4xl font-bold mt-2" style={{ color: "#FFFFFF" }}>
                     {sectors?.length || 0}
                   </Text>
                 )}
@@ -182,11 +182,11 @@ export default function AdminScreen() {
             </View>
             <View className="flex-1">
               <TintedGlassCard>
-                <Text className="text-base text-white/70">Escalas Futuras</Text>
+                <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Escalas Futuras</Text>
                 {loadingShifts ? (
                   <ActivityIndicator size="small" color="#3B82F6" className="mt-2" />
                 ) : (
-                  <Text className="text-4xl font-bold text-white mt-2">
+                  <Text className="text-4xl font-bold mt-2" style={{ color: "#FFFFFF" }}>
                     {upcomingShifts?.length || 0}
                   </Text>
                 )}
@@ -197,7 +197,7 @@ export default function AdminScreen() {
 
         {/* Setores */}
         <View className="gap-4">
-          <Text className="text-2xl font-bold text-white">Setores Cadastrados</Text>
+          <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Setores Cadastrados</Text>
           {loadingSectors ? (
             <TintedGlassCard>
               <View className="items-center py-4">
@@ -222,21 +222,21 @@ export default function AdminScreen() {
                         style={{ backgroundColor: sector.color }}
                       />
                       <View className="flex-1">
-                        <Text className="text-lg font-semibold text-white">
+                        <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
                           {sector.name}
                         </Text>
-                        <Text className="text-base text-white/70 capitalize">{sector.category}</Text>
+                        <Text className="text-base capitalize" style={{ color: "rgba(255,255,255,0.7)" }}>{sector.category}</Text>
                       </View>
                     </View>
                     <View className="px-3 py-1 rounded-full" style={{ backgroundColor: "rgba(59,130,246,0.2)" }}>
-                      <Text className="text-sm font-semibold text-white">
+                      <Text className="text-sm font-semibold" style={{ color: "#FFFFFF" }}>
                         {sector.minStaffCount} min
                       </Text>
                     </View>
                   </View>
                 ))}
                 {sectors.length > 10 && (
-                  <Text className="text-base text-white/50 text-center mt-2">
+                  <Text className="text-base text-center mt-2" style={{ color: "rgba(255,255,255,0.5)" }}>
                     + {sectors.length - 10} setores
                   </Text>
                 )}
@@ -246,7 +246,7 @@ export default function AdminScreen() {
             <TintedGlassCard>
               <View className="items-center py-8">
                 <Settings size={48} color="rgba(255,255,255,0.3)" />
-                <Text className="text-lg text-white/50 mt-4">Nenhum setor cadastrado</Text>
+                <Text className="text-lg mt-4" style={{ color: "rgba(255,255,255,0.5)" }}>Nenhum setor cadastrado</Text>
               </View>
             </TintedGlassCard>
           )}
@@ -256,7 +256,7 @@ export default function AdminScreen() {
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <Calendar size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Próximas Escalas</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Próximas Escalas</Text>
           </View>
           {loadingShifts ? (
             <TintedGlassCard>
@@ -277,10 +277,10 @@ export default function AdminScreen() {
                   <TintedGlassCard key={shift.id}>
                     <View className="flex-row justify-between items-start mb-2">
                       <View className="flex-1">
-                        <Text className="text-lg font-semibold text-white">
+                        <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
                           {sector?.name || "Setor não definido"}
                         </Text>
-                        <Text className="text-base text-white/70 mt-1">
+                        <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
                           {formatDateBR(startDate)}
                         </Text>
                       </View>
@@ -300,7 +300,7 @@ export default function AdminScreen() {
                           : "Pendente"}
                       </Badge>
                     </View>
-                    <Text className="text-base text-white/70">
+                    <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>
                       {startDate.toLocaleTimeString("pt-BR", {
                         hour: "2-digit",
                         minute: "2-digit",
@@ -319,7 +319,7 @@ export default function AdminScreen() {
             <TintedGlassCard>
               <View className="items-center py-8">
                 <Calendar size={48} color="rgba(255,255,255,0.3)" />
-                <Text className="text-lg text-white/50 mt-4">Nenhuma escala programada</Text>
+                <Text className="text-lg mt-4" style={{ color: "rgba(255,255,255,0.5)" }}>Nenhuma escala programada</Text>
               </View>
             </TintedGlassCard>
           )}

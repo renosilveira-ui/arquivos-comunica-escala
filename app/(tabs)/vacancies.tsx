@@ -135,7 +135,7 @@ export default function VacanciesScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
-          <Text className="mt-4 text-base text-white/60">Carregando...</Text>
+          <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando...</Text>
         </View>
       </ScreenGradient>
     );
@@ -146,8 +146,8 @@ export default function VacanciesScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold text-white mt-4">Autenticação Necessária</Text>
-          <Text className="text-white/60 text-center mt-2">Faça login para visualizar vagas</Text>
+          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Autenticação Necessária</Text>
+          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Faça login para visualizar vagas</Text>
         </View>
       </ScreenGradient>
     );
@@ -158,8 +158,8 @@ export default function VacanciesScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold text-white mt-4">Profissional Não Encontrado</Text>
-          <Text className="text-white/60 text-center mt-2">Seu usuário não está associado a um profissional</Text>
+          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Profissional Não Encontrado</Text>
+          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Seu usuário não está associado a um profissional</Text>
         </View>
       </ScreenGradient>
     );
@@ -170,8 +170,8 @@ export default function VacanciesScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold text-white">Vagas Disponíveis</Text>
-          <Text className="mt-1 text-base text-white/60">
+          <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Vagas Disponíveis</Text>
+          <Text className="mt-1 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>
             {vacancies.length} turnos disponíveis para assumir
           </Text>
         </View>
@@ -192,7 +192,7 @@ export default function VacanciesScreen() {
         {vacanciesLoading && (
           <View className="flex-1 items-center justify-center py-20">
             <ActivityIndicator size="large" color="#4DA3FF" />
-            <Text className="mt-4 text-base text-white/60">Carregando vagas...</Text>
+            <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando vagas...</Text>
           </View>
         )}
 
@@ -210,7 +210,7 @@ export default function VacanciesScreen() {
                   <View className="flex-row items-center justify-between mb-3">
                     <View className="flex-row items-center gap-2">
                       <Briefcase size={20} color="#4DA3FF" />
-                      <Text className="text-lg font-semibold text-white">
+                      <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
                         {vacancy.shift}
                       </Text>
                     </View>
@@ -225,21 +225,21 @@ export default function VacanciesScreen() {
                   <View className="gap-2 mb-4">
                     <View className="flex-row items-center gap-2">
                       <Calendar size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm text-white/60">{formatDate(vacancy.date)}</Text>
+                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{formatDate(vacancy.date)}</Text>
                     </View>
                     <View className="flex-row items-center gap-2">
                       <Clock size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm text-white/60">
+                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
                         {vacancy.startTime} - {vacancy.endTime}
                       </Text>
                     </View>
                     <View className="flex-row items-center gap-2">
                       <MapPin size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm text-white/60">{vacancy.sector}</Text>
+                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{vacancy.sector}</Text>
                     </View>
                     <View className="flex-row items-center gap-2">
                       <Building2 size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm text-white/60">{vacancy.hospital}</Text>
+                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{vacancy.hospital}</Text>
                     </View>
                   </View>
 
@@ -270,10 +270,10 @@ export default function VacanciesScreen() {
         ) : !vacanciesLoading ? (
           <View className="flex-1 items-center justify-center py-20">
             <Briefcase size={64} color="rgba(255,255,255,0.2)" />
-            <Text className="mt-4 text-lg font-semibold text-white/60">
+            <Text className="mt-4 text-lg font-semibold" style={{ color: "rgba(255,255,255,0.6)" }}>
               Nenhuma vaga disponível
             </Text>
-            <Text className="mt-1 text-sm text-white/40">
+            <Text className="mt-1 text-sm" style={{ color: "rgba(255,255,255,0.4)" }}>
               Todas as vagas foram preenchidas
             </Text>
           </View>

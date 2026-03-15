@@ -114,7 +114,7 @@ export default function ProfileScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg text-white/70">Faça login para continuar</Text>
+          <Text className="text-lg" style={{ color: "rgba(255,255,255,0.7)" }}>Faça login para continuar</Text>
         </View>
       </ScreenGradient>
     );
@@ -126,7 +126,7 @@ export default function ProfileScreen() {
         {/* Header */}
         <View className="flex-row items-center gap-3">
           <User size={28} color="#FFFFFF" />
-          <Text className="text-3xl font-bold text-white">Perfil</Text>
+          <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Perfil</Text>
         </View>
 
         {/* Informações do Usuário */}
@@ -136,12 +136,12 @@ export default function ProfileScreen() {
               className="w-24 h-24 rounded-full items-center justify-center mb-4"
               style={{ backgroundColor: "rgba(59,130,246,0.3)" }}
             >
-              <Text className="text-4xl font-bold text-white">
+              <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>
                 {user.name?.charAt(0).toUpperCase() || "U"}
               </Text>
             </View>
-            <Text className="text-2xl font-bold text-white">{user.name || "Usuário"}</Text>
-            <Text className="text-base text-white/70 mt-2">{user.email}</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>{user.name || "Usuário"}</Text>
+            <Text className="text-base mt-2" style={{ color: "rgba(255,255,255,0.7)" }}>{user.email}</Text>
           </View>
         </TintedGlassCard>
 
@@ -149,7 +149,7 @@ export default function ProfileScreen() {
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <Activity size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Status HospitalAlert</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Status HospitalAlert</Text>
           </View>
           <TintedGlassCard>
             <View className="gap-4">
@@ -168,7 +168,7 @@ export default function ProfileScreen() {
                       ) : (
                         <XCircle size={24} color="#F87171" />
                       )}
-                      <Text className="text-lg font-medium text-white">Conectado ao HospitalAlert</Text>
+                      <Text className="text-lg font-medium" style={{ color: "#FFFFFF" }}>Conectado ao HospitalAlert</Text>
                     </View>
                     <Badge 
                       variant={hospitalAlert.status.connected ? "success" : "critical"} 
@@ -178,7 +178,7 @@ export default function ProfileScreen() {
 
                   {/* Plantão ativo no HospitalAlert */}
                   <View className="flex-row items-center justify-between py-3" style={{ borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.08)" }}>
-                    <Text className="text-lg font-medium text-white">Plantão ativo no HospitalAlert</Text>
+                    <Text className="text-lg font-medium" style={{ color: "#FFFFFF" }}>Plantão ativo no HospitalAlert</Text>
                     <Badge 
                       variant={hospitalAlert.status.shiftActive ? "success" : "neutral"} 
                       label={hospitalAlert.status.shiftActive ? "Sim" : "Não"} 
@@ -187,8 +187,8 @@ export default function ProfileScreen() {
 
                   {/* Última Sincronização */}
                   <View className="flex-row items-center justify-between py-3" style={{ borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.08)" }}>
-                    <Text className="text-lg font-medium text-white">Última sincronização</Text>
-                    <Text className="text-base font-semibold text-white/70">
+                    <Text className="text-lg font-medium" style={{ color: "#FFFFFF" }}>Última sincronização</Text>
+                    <Text className="text-base font-semibold" style={{ color: "rgba(255,255,255,0.7)" }}>
                       {hospitalAlert.status.lastSyncAt
                         ? new Date(hospitalAlert.status.lastSyncAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
                         : "Nunca"}
@@ -208,14 +208,14 @@ export default function ProfileScreen() {
                       ) : (
                         <>
                           <Link2 size={20} color="#FFFFFF" />
-                          <Text className="text-base font-semibold text-white">Sincronizar Agora</Text>
+                          <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>Sincronizar Agora</Text>
                         </>
                       )}
                     </TouchableOpacity>
                   </View>
                 </>
               ) : (
-                <Text className="text-base text-white/70 text-center py-4">
+                <Text className="text-base text-center py-4" style={{ color: "rgba(255,255,255,0.7)" }}>
                   Erro ao carregar status
                 </Text>
               )}
@@ -227,15 +227,15 @@ export default function ProfileScreen() {
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <Briefcase size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Estatísticas do Mês</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Estatísticas do Mês</Text>
           </View>
           <View className="flex-row gap-4">
             {/* Total de Horas */}
             <View className="flex-1">
               <TintedGlassCard>
                 <View className="items-center py-4">
-                  <Text className="text-4xl font-bold text-white">120</Text>
-                  <Text className="text-base text-white/70 mt-2">Horas Trabalhadas</Text>
+                  <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>120</Text>
+                  <Text className="text-base mt-2" style={{ color: "rgba(255,255,255,0.7)" }}>Horas Trabalhadas</Text>
                 </View>
               </TintedGlassCard>
             </View>
@@ -243,27 +243,27 @@ export default function ProfileScreen() {
             <View className="flex-1">
               <TintedGlassCard>
                 <View className="items-center py-4">
-                  <Text className="text-4xl font-bold text-white">15</Text>
-                  <Text className="text-base text-white/70 mt-2">Plantões</Text>
+                  <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>15</Text>
+                  <Text className="text-base mt-2" style={{ color: "rgba(255,255,255,0.7)" }}>Plantões</Text>
                 </View>
               </TintedGlassCard>
             </View>
           </View>
           {/* Distribuição de Turnos */}
           <TintedGlassCard>
-            <Text className="text-lg font-semibold text-white mb-4">Distribuição de Turnos</Text>
+            <Text className="text-lg font-semibold mb-4" style={{ color: "#FFFFFF" }}>Distribuição de Turnos</Text>
             <View className="gap-3">
               <View className="flex-row items-center justify-between">
-                <Text className="text-base text-white/70">Manhã (7h-13h)</Text>
-                <Text className="text-lg font-bold text-white">5 plantões</Text>
+                <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Manhã (7h-13h)</Text>
+                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>5 plantões</Text>
               </View>
               <View className="flex-row items-center justify-between">
-                <Text className="text-base text-white/70">Tarde (13h-19h)</Text>
-                <Text className="text-lg font-bold text-white">4 plantões</Text>
+                <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Tarde (13h-19h)</Text>
+                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>4 plantões</Text>
               </View>
               <View className="flex-row items-center justify-between">
-                <Text className="text-base text-white/70">Noite (19h-7h)</Text>
-                <Text className="text-lg font-bold text-white">6 plantões</Text>
+                <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Noite (19h-7h)</Text>
+                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>6 plantões</Text>
               </View>
             </View>
           </TintedGlassCard>
@@ -273,15 +273,15 @@ export default function ProfileScreen() {
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <Bell size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Notificações</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Notificações</Text>
           </View>
           <TintedGlassCard>
             {/* Mudanças de Escala */}
             <View className="py-4" style={{ borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.08)" }}>
               <View className="flex-row items-center justify-between">
                 <View className="flex-1 pr-4">
-                  <Text className="text-lg font-semibold text-white">Mudanças de Escala</Text>
-                  <Text className="text-base text-white/70 mt-1">
+                  <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Mudanças de Escala</Text>
+                  <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
                     Receber notificações quando uma escala for alterada ou cancelada
                   </Text>
                 </View>
@@ -298,8 +298,8 @@ export default function ProfileScreen() {
             <View className="py-4" style={{ borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.08)" }}>
               <View className="flex-row items-center justify-between">
                 <View className="flex-1 pr-4">
-                  <Text className="text-lg font-semibold text-white">Lembretes de Plantão</Text>
-                  <Text className="text-base text-white/70 mt-1">
+                  <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Lembretes de Plantão</Text>
+                  <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
                     Receber lembrete 30 minutos antes do início do plantão
                   </Text>
                 </View>
@@ -316,8 +316,8 @@ export default function ProfileScreen() {
             <View className="py-4">
               <View className="flex-row items-center justify-between">
                 <View className="flex-1 pr-4">
-                  <Text className="text-lg font-semibold text-white">Integração HospitalAlert</Text>
-                  <Text className="text-base text-white/70 mt-1">
+                  <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Integração HospitalAlert</Text>
+                  <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
                     Receber notificações do sistema HospitalAlert
                   </Text>
                 </View>
@@ -335,7 +335,7 @@ export default function ProfileScreen() {
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <Link2 size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Integração</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Integração</Text>
           </View>
           <TintedGlassCard>
             <View className="flex-row items-center justify-between">
@@ -344,8 +344,8 @@ export default function ProfileScreen() {
                   <Link2 size={24} color="#FFFFFF" />
                 </View>
                 <View>
-                  <Text className="text-lg font-semibold text-white">HospitalAlert</Text>
-                  <Text className="text-base text-white/70">Sistema de alertas hospitalares</Text>
+                  <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>HospitalAlert</Text>
+                  <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Sistema de alertas hospitalares</Text>
                 </View>
               </View>
               <Badge variant="success">Conectado</Badge>
@@ -357,7 +357,7 @@ export default function ProfileScreen() {
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <Bell size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Testar Notificações</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Testar Notificações</Text>
           </View>
           <TintedGlassCard>
             <View className="gap-3">
@@ -373,7 +373,7 @@ export default function ProfileScreen() {
                 style={{ backgroundColor: "rgba(34,197,94,0.1)", borderWidth: 1, borderColor: "rgba(34,197,94,0.3)" }}
                 activeOpacity={0.7}
               >
-                <Text className="text-base font-semibold text-white">🏥 Nova Escala</Text>
+                <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>🏥 Nova Escala</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -388,7 +388,7 @@ export default function ProfileScreen() {
                 style={{ backgroundColor: "rgba(59,130,246,0.1)", borderWidth: 1, borderColor: "rgba(59,130,246,0.3)" }}
                 activeOpacity={0.7}
               >
-                <Text className="text-base font-semibold text-white">🔄 Troca de Plantão</Text>
+                <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>🔄 Troca de Plantão</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -403,7 +403,7 @@ export default function ProfileScreen() {
                 style={{ backgroundColor: "rgba(239,68,68,0.1)", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" }}
                 activeOpacity={0.7}
               >
-                <Text className="text-base font-semibold text-white">❌ Cancelamento</Text>
+                <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>❌ Cancelamento</Text>
               </TouchableOpacity>
             </View>
           </TintedGlassCard>
@@ -417,7 +417,7 @@ export default function ProfileScreen() {
           activeOpacity={0.7}
         >
           <Briefcase size={20} color="#FFFFFF" />
-          <Text className="text-lg font-semibold text-white">Trocar Serviço</Text>
+          <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Trocar Serviço</Text>
         </TouchableOpacity>
 
         {/* Botão de Logout */}
@@ -428,7 +428,7 @@ export default function ProfileScreen() {
           activeOpacity={0.7}
         >
           <LogOut size={20} color="#FFFFFF" />
-          <Text className="text-lg font-semibold text-white">Sair</Text>
+          <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Sair</Text>
         </TouchableOpacity>
 
         {/* Espaçamento inferior */}

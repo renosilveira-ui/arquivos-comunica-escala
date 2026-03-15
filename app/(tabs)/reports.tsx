@@ -30,7 +30,7 @@ export default function ReportsScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center px-5">
-          <Text className="text-white text-lg text-center">
+          <Text className="text-lg text-center" style={{ color: "#FFFFFF" }}>
             Faça login para acessar os relatórios
           </Text>
         </View>
@@ -43,8 +43,8 @@ export default function ReportsScreen() {
       <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 24 }}>
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-white text-3xl font-bold">Relatórios</Text>
-          <Text className="text-white/70 text-base mt-1">
+          <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Relatórios</Text>
+          <Text className="text-base mt-1" style={{ color: "rgba(255,255,255,0.7)" }}>
             Análises e estatísticas de escalas
           </Text>
         </View>
@@ -58,11 +58,11 @@ export default function ReportsScreen() {
                 <FileText size={24} color="#3B82F6" />
               </View>
               <View className="flex-1">
-                <Text className="text-white text-lg font-semibold">Relatório de Escalas</Text>
-                <Text className="text-white/60 text-sm">Por período e setor</Text>
+                <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Relatório de Escalas</Text>
+                <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>Por período e setor</Text>
               </View>
             </View>
-            <Text className="text-white/70 text-base leading-relaxed">
+            <Text className="text-base leading-relaxed" style={{ color: "rgba(255,255,255,0.7)" }}>
               Visualize e exporte relatórios detalhados de escalas por período, incluindo alocações, 
               pendências e estatísticas de cobertura.
             </Text>
@@ -75,11 +75,11 @@ export default function ReportsScreen() {
                 <BarChart3 size={24} color="#10B981" />
               </View>
               <View className="flex-1">
-                <Text className="text-white text-lg font-semibold">Estatísticas de Alocação</Text>
-                <Text className="text-white/60 text-sm">Análise por setor e profissional</Text>
+                <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Estatísticas de Alocação</Text>
+                <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>Análise por setor e profissional</Text>
               </View>
             </View>
-            <Text className="text-white/70 text-base leading-relaxed">
+            <Text className="text-base leading-relaxed" style={{ color: "rgba(255,255,255,0.7)" }}>
               Analise a distribuição de turnos por setor, profissional e tipo de alocação 
               (Plantão, Retaguarda, Sobreaviso).
             </Text>
@@ -92,11 +92,11 @@ export default function ReportsScreen() {
                 <Calendar size={24} color="#F59E0B" />
               </View>
               <View className="flex-1">
-                <Text className="text-white text-lg font-semibold">Análise de Cobertura</Text>
-                <Text className="text-white/60 text-sm">Gaps e vagas por período</Text>
+                <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Análise de Cobertura</Text>
+                <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>Gaps e vagas por período</Text>
               </View>
             </View>
-            <Text className="text-white/70 text-base leading-relaxed">
+            <Text className="text-base leading-relaxed" style={{ color: "rgba(255,255,255,0.7)" }}>
               Identifique gaps de cobertura, vagas não preenchidas e períodos com baixa alocação 
               para planejamento estratégico.
             </Text>
@@ -109,11 +109,11 @@ export default function ReportsScreen() {
                 <Users size={24} color="#A855F7" />
               </View>
               <View className="flex-1">
-                <Text className="text-white text-lg font-semibold">Relatório de Profissionais</Text>
-                <Text className="text-white/60 text-sm">Horas e turnos por profissional</Text>
+                <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Relatório de Profissionais</Text>
+                <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>Horas e turnos por profissional</Text>
               </View>
             </View>
-            <Text className="text-white/70 text-base leading-relaxed">
+            <Text className="text-base leading-relaxed" style={{ color: "rgba(255,255,255,0.7)" }}>
               Visualize total de horas trabalhadas, distribuição de turnos e histórico de alocações 
               por profissional.
             </Text>
@@ -121,8 +121,8 @@ export default function ReportsScreen() {
 
           {/* Nota de Desenvolvimento */}
           <TintedGlassCard className="p-5 border border-white/10">
-            <Text className="text-white/60 text-sm text-center leading-relaxed">
-              <Text className="font-semibold text-white/60">Em desenvolvimento:</Text> Esta tela será expandida com 
+            <Text className="text-sm text-center leading-relaxed" style={{ color: "rgba(255,255,255,0.6)" }}>
+              <Text className="font-semibold" style={{ color: "rgba(255,255,255,0.6)" }}>Em desenvolvimento:</Text> Esta tela será expandida com 
               funcionalidades completas de relatórios, filtros avançados e exportação em múltiplos formatos.
             </Text>
           </TintedGlassCard>

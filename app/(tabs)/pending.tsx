@@ -161,7 +161,7 @@ export default function PendingScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
-          <Text className="mt-4 text-base text-white/60">Carregando autenticação...</Text>
+          <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando autenticação...</Text>
         </View>
       </ScreenGradient>
     );
@@ -172,8 +172,8 @@ export default function PendingScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ClipboardCheck size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold text-white mt-4">Autenticação Necessária</Text>
-          <Text className="text-white/60 text-center mt-2">Faça login para visualizar pendências</Text>
+          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Autenticação Necessária</Text>
+          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Faça login para visualizar pendências</Text>
         </View>
       </ScreenGradient>
     );
@@ -184,8 +184,8 @@ export default function PendingScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ClipboardCheck size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold text-white mt-4">Profissional Não Encontrado</Text>
-          <Text className="text-white/60 text-center mt-2">Seu usuário não está associado a um profissional</Text>
+          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Profissional Não Encontrado</Text>
+          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Seu usuário não está associado a um profissional</Text>
         </View>
       </ScreenGradient>
     );
@@ -196,7 +196,7 @@ export default function PendingScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
-          <Text className="mt-4 text-base text-white/60">Carregando pendências...</Text>
+          <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando pendências...</Text>
         </View>
       </ScreenGradient>
     );
@@ -207,8 +207,8 @@ export default function PendingScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold text-white">Pendências</Text>
-          <Text className="mt-1 text-base text-white/60">
+          <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Pendências</Text>
+          <Text className="mt-1 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>
             {pendingAssignments?.length || 0} alocações aguardando aprovação
           </Text>
         </View>
@@ -237,7 +237,7 @@ export default function PendingScreen() {
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center gap-2">
                     <User size={20} color="#4DA3FF" />
-                    <Text className="text-lg font-semibold text-white">
+                    <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
                       {pending.professionalName}
                     </Text>
                   </View>
@@ -252,17 +252,17 @@ export default function PendingScreen() {
                 <View className="gap-2 mb-4">
                   <View className="flex-row items-center gap-2">
                     <MapPin size={16} color="rgba(255,255,255,0.6)" />
-                    <Text className="text-sm text-white/60">{pending.sectorName}</Text>
+                    <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{pending.sectorName}</Text>
                   </View>
                   <View className="flex-row items-center gap-2">
                     <Clock size={16} color="rgba(255,255,255,0.6)" />
-                    <Text className="text-sm text-white/60">
+                    <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
                       {formatDate(pending.shiftStartAt)} - {formatDate(pending.shiftEndAt)}
                     </Text>
                   </View>
                   <View className="flex-row items-center gap-2">
                     <Briefcase size={16} color="rgba(255,255,255,0.6)" />
-                    <Text className="text-sm text-white/60">
+                    <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
                       {pending.assignmentType === "ON_DUTY"
                         ? "Plantão"
                         : pending.assignmentType === "BACKUP"
@@ -277,7 +277,7 @@ export default function PendingScreen() {
                   // 🔒 Usuário comum: mostrar mensagem de permissão
                   <View className="flex-row items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 py-3 px-4">
                     <Lock size={18} color="rgba(255,255,255,0.4)" />
-                    <Text className="text-sm font-medium text-white/60">
+                    <Text className="text-sm font-medium" style={{ color: "rgba(255,255,255,0.6)" }}>
                       Somente gestores podem aprovar pendências
                     </Text>
                   </View>
@@ -290,7 +290,7 @@ export default function PendingScreen() {
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-green-500 py-3 active:opacity-80"
                     >
                       <Check size={20} color="white" />
-                      <Text className="text-base font-semibold text-white">Aprovar</Text>
+                      <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>Aprovar</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
@@ -299,7 +299,7 @@ export default function PendingScreen() {
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-red-500 py-3 active:opacity-80"
                     >
                       <X size={20} color="white" />
-                      <Text className="text-base font-semibold text-white">Rejeitar</Text>
+                      <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>Rejeitar</Text>
                     </TouchableOpacity>
                   </View>
                 )}
@@ -309,10 +309,10 @@ export default function PendingScreen() {
         ) : (
           <View className="flex-1 items-center justify-center py-20">
             <ClipboardCheck size={64} color="rgba(255,255,255,0.2)" />
-            <Text className="mt-4 text-lg font-semibold text-white/60">
+            <Text className="mt-4 text-lg font-semibold" style={{ color: "rgba(255,255,255,0.6)" }}>
               Nenhuma pendência no momento
             </Text>
-            <Text className="mt-1 text-sm text-white/40">
+            <Text className="mt-1 text-sm" style={{ color: "rgba(255,255,255,0.4)" }}>
               Todas as alocações foram processadas
             </Text>
           </View>
