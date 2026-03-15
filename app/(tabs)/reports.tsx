@@ -122,7 +122,7 @@ export default function ReportsScreen() {
           {/* Nota de Desenvolvimento */}
           <TintedGlassCard className="p-5 border border-white/10">
             <Text className="text-white/60 text-sm text-center leading-relaxed">
-              <Text className="font-semibold">Em desenvolvimento:</Text> Esta tela será expandida com 
+              <Text className="font-semibold text-white/60">Em desenvolvimento:</Text> Esta tela será expandida com 
               funcionalidades completas de relatórios, filtros avançados e exportação em múltiplos formatos.
             </Text>
           </TintedGlassCard>
