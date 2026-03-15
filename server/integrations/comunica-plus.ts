@@ -96,6 +96,38 @@ async function trpcCall<T = unknown>(
   return data?.[0]?.result?.data as T;
 }
 
+async function trpcQuery<T = unknown>(
+  procedure: string,
+  input: Record<string, unknown>,
+  retried = false,
+): Promise<T> {
+  const cookie = await ensureSession();
+  const config = getConfig();
+  const encodedInput = encodeURIComponent(
+    JSON.stringify({ "0": input }),
+  );
+  const res = await fetch(
+    `${config.baseUrl}/api/trpc/${procedure}?batch=1&input=${encodedInput}`,
+    {
+      method: "GET",
+      headers: { Cookie: cookie },
+    },
+  );
+
+  if (res.status === 401 && !retried) {
+    clearSession();
+    return trpcQuery<T>(procedure, input, true);
+  }
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Comunica+ ${procedure} query failed: ${res.status} ${txt}`);
+  }
+
+  const data = await res.json();
+  return data?.[0]?.result?.data as T;
+}
+
 // ---------------------------------------------------------------------------
 // Resolve userId by email (Comunica+ usa UUID, Escalas usa int)
 // ---------------------------------------------------------------------------
@@ -109,7 +141,7 @@ async function resolveUserIdByEmail(
   if (cached) return cached;
 
   try {
-    const result = await trpcCall<{ userId: string }>(
+    const result = await trpcQuery<{ userId: string }>(
       "integrations.resolveUserIdByEmail",
       { email },
     );
