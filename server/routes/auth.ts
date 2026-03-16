@@ -5,6 +5,7 @@ import { getDb, getUserByEmail } from "../db";
 import { users, professionals } from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
 import { COOKIE_NAME } from "../../shared/const.js";
+import { recordAudit } from "../audit-trail";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 
@@ -168,5 +169,17 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
   }
 
   const newUser = { id: newUserId, name, email: normalizedEmail, role: normalizedRole };
+
+  recordAudit({
+    action: "USER_CREATED",
+    entityType: "USER",
+    entityId: newUserId,
+    actorUserId: caller.id,
+    actorRole: caller.role,
+    actorName: caller.name ?? undefined,
+    description: `Usuário ${name} (${normalizedRole}) criado por ${caller.name ?? "admin"}`,
+    metadata: { email: normalizedEmail, role: normalizedRole },
+  });
+
   res.status(201).json({ user: newUser });
 });

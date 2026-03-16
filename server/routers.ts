@@ -6,6 +6,8 @@ import { professionals, shiftInstances, shiftAssignmentsV2, sectors, hospitals }
 import { validateAssignment } from "./shift-validations";
 import { auditLog } from "./audit-log";
 import { canApproveAssignment } from "./rbac-validations";
+import { assertNoTimeConflict } from "./shift-validations-v2";
+import { recordAudit } from "./audit-trail";
 import { editorRouter } from "./editor";
 import { calendarRouter } from "./calendar";
 import { shiftsRouter } from "./shifts-crud";
@@ -191,6 +193,19 @@ const shiftInstancesRouter = router({
         metadata: { assignmentId: input.assignmentId, approvedBy: userId },
       });
 
+      await recordAudit({
+        actorUserId: userId,
+        actorRole: ctx.user.role ?? "unknown",
+        actorName: ctx.user.name ?? undefined,
+        action: "ASSIGNMENT_APPROVED",
+        entityType: "SHIFT_ASSIGNMENT",
+        entityId: input.assignmentId,
+        description: "Alocacao aprovada",
+        shiftInstanceId: assignment.shiftInstanceId,
+        hospitalId: assignment.hospitalId,
+        sectorId: assignment.sectorId,
+      });
+
       return { ok: true };
     }),
 
@@ -241,6 +256,19 @@ const shiftInstancesRouter = router({
         professionalId: input.professionalId,
         reason: input.reason ?? null,
         metadata: { assignmentId: input.assignmentId, rejectedBy: userId },
+      });
+
+      await recordAudit({
+        actorUserId: userId,
+        actorRole: ctx.user.role ?? "unknown",
+        actorName: ctx.user.name ?? undefined,
+        action: "ASSIGNMENT_REJECTED",
+        entityType: "SHIFT_ASSIGNMENT",
+        entityId: input.assignmentId,
+        description: "Alocacao rejeitada" + (input.reason ? ": " + input.reason : ""),
+        shiftInstanceId: assignment.shiftInstanceId,
+        hospitalId: assignment.hospitalId,
+        sectorId: assignment.sectorId,
       });
 
       return { ok: true };
