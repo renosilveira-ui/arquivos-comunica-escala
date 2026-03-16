@@ -250,3 +250,96 @@ export const monthlyRosters = mysqlTable(
     fkHospital: index("idx_monthly_rosters_hospital").on(table.hospitalId),
   })
 );
+
+/**
+ * Tabela de audit trail completo para governança e compliance.
+ * Regista TODOS os eventos relevantes com ator, entidade, contexto e metadados.
+ */
+export const auditTrail = mysqlTable(
+  "audit_trail",
+  {
+    id: int("id").primaryKey().autoincrement(),
+
+    // Quem fez
+    actorUserId: int("actor_user_id").notNull(),
+    actorRole: varchar("actor_role", { length: 20 }).notNull(),
+    actorName: varchar("actor_name", { length: 255 }),
+
+    // O que fez
+    action: mysqlEnum("action", [
+      // Shifts
+      "SHIFT_CREATED",
+      "SHIFT_UPDATED",
+      "SHIFT_DELETED",
+      // Assignments
+      "ASSIGNMENT_CREATED",
+      "ASSIGNMENT_REMOVED",
+      "ASSIGNMENT_ASSUMED_VACANCY",
+      "ASSIGNMENT_APPROVED",
+      "ASSIGNMENT_REJECTED",
+      // Swaps
+      "SWAP_REQUESTED",
+      "SWAP_ACCEPTED",
+      "SWAP_REJECTED",
+      "SWAP_APPROVED_BY_MANAGER",
+      "SWAP_CANCELLED",
+      // Transfers (repasse)
+      "TRANSFER_OFFERED",
+      "TRANSFER_ACCEPTED",
+      "TRANSFER_REJECTED",
+      "TRANSFER_APPROVED_BY_MANAGER",
+      "TRANSFER_CANCELLED",
+      // Roster
+      "ROSTER_PUBLISHED",
+      "ROSTER_LOCKED",
+      // User management
+      "USER_CREATED",
+      "USER_UPDATED",
+      "USER_ROLE_CHANGED",
+      // Conflict
+      "CONFLICT_DETECTED",
+      "CONFLICT_OVERRIDDEN",
+    ]).notNull(),
+
+    // Contexto
+    entityType: mysqlEnum("entity_type", [
+      "SHIFT_INSTANCE",
+      "SHIFT_ASSIGNMENT",
+      "SWAP_REQUEST",
+      "TRANSFER_REQUEST",
+      "MONTHLY_ROSTER",
+      "USER",
+      "PROFESSIONAL",
+    ]).notNull(),
+    entityId: int("entity_id").notNull(),
+
+    // Detalhes
+    description: varchar("description", { length: 500 }).notNull(),
+    metadata: json("metadata"),
+
+    // Origem e destino (para trocas/transferências)
+    fromProfessionalId: int("from_professional_id"),
+    toProfessionalId: int("to_professional_id"),
+    fromUserId: int("from_user_id"),
+    toUserId: int("to_user_id"),
+
+    // Contexto organizacional
+    institutionId: int("institution_id"),
+    hospitalId: int("hospital_id"),
+    sectorId: int("sector_id"),
+    shiftInstanceId: int("shift_instance_id"),
+
+    // Timestamp
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+
+    // IP/device (para auditoria de segurança)
+    ipAddress: varchar("ip_address", { length: 45 }),
+    userAgent: varchar("user_agent", { length: 500 }),
+  },
+  (table) => ({
+    idxAuditActor: index("idx_audit_actor").on(table.actorUserId),
+    idxAuditEntity: index("idx_audit_entity").on(table.entityType, table.entityId),
+    idxAuditShift: index("idx_audit_shift").on(table.shiftInstanceId),
+    idxAuditDate: index("idx_audit_date").on(table.createdAt),
+  })
+);

@@ -10,6 +10,7 @@ import {
   professionals,
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
+import { recordAudit } from "./audit-trail";
 import { notifyVacancyOpened } from "./integrations/comunica-plus";
 import { publishMonth, lockMonth } from "./month-guards";
 
@@ -96,6 +97,19 @@ export const shiftsRouter = router({
         shiftInstanceId: insertId,
         professionalId: null,
         metadata: { createdBy: ctx.user.id, templateId: input.shiftTemplateId, date: input.date },
+      });
+
+      await recordAudit({
+        actorUserId: ctx.user.id,
+        actorRole: ctx.user.role,
+        actorName: ctx.user.name ?? undefined,
+        action: "SHIFT_CREATED",
+        entityType: "SHIFT_INSTANCE",
+        entityId: insertId,
+        description: "Turno criado (" + template.name + " em " + input.date + ")",
+        hospitalId: template.hospitalId,
+        sectorId: sectorId,
+        shiftInstanceId: insertId,
       });
 
       const [created] = await db
@@ -197,6 +211,20 @@ export const shiftsRouter = router({
         shiftInstanceId: input.id,
         professionalId: null,
         metadata: { updatedBy: ctx.user.id, changes: patch },
+      });
+
+      await recordAudit({
+        actorUserId: ctx.user.id,
+        actorRole: ctx.user.role,
+        actorName: ctx.user.name ?? undefined,
+        action: "SHIFT_UPDATED",
+        entityType: "SHIFT_INSTANCE",
+        entityId: input.id,
+        description: "Turno atualizado",
+        shiftInstanceId: input.id,
+        hospitalId: existing.hospitalId,
+        sectorId: existing.sectorId,
+        metadata: { changes: patch },
       });
 
       // Fire-and-forget: notify Comunica+ if shift became vacant
@@ -336,6 +364,19 @@ export const shiftsRouter = router({
         input.yearMonth,
         ctx.user.id,
       );
+
+      await recordAudit({
+        actorUserId: ctx.user.id,
+        actorRole: ctx.user.role,
+        actorName: ctx.user.name ?? undefined,
+        action: "ROSTER_PUBLISHED",
+        entityType: "MONTHLY_ROSTER",
+        entityId: 0,
+        description: "Escala publicada (" + input.yearMonth + ")",
+        institutionId: input.institutionId,
+        hospitalId: input.hospitalId,
+      });
+
       return { ok: true };
     }),
 
@@ -358,6 +399,19 @@ export const shiftsRouter = router({
         input.yearMonth,
         ctx.user.id,
       );
+
+      await recordAudit({
+        actorUserId: ctx.user.id,
+        actorRole: ctx.user.role,
+        actorName: ctx.user.name ?? undefined,
+        action: "ROSTER_LOCKED",
+        entityType: "MONTHLY_ROSTER",
+        entityId: 0,
+        description: "Escala trancada (" + input.yearMonth + ")",
+        institutionId: input.institutionId,
+        hospitalId: input.hospitalId,
+      });
+
       return { ok: true };
     }),
 });

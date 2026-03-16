@@ -5,6 +5,8 @@ import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { assertMonthEditable } from "./month-guards";
 import { auditLog } from "./audit-log";
+import { recordAudit } from "./audit-trail";
+import { assertNoTimeConflict } from "./shift-validations-v2";
 import { sql } from "drizzle-orm";
 
 /**
@@ -165,6 +167,20 @@ export const editorRouter = router({
         metadata: { assignmentId, allocatedProfessionalId: professionalId, assignmentType },
       });
 
+      recordAudit({
+        action: "ASSIGNMENT_CREATED",
+        entityType: "SHIFT_ASSIGNMENT",
+        entityId: assignmentId,
+        actorUserId: userId,
+        actorRole: role,
+        description: `Alocação direta do profissional #${professionalId} no turno #${shiftInstanceId}`,
+        shiftInstanceId,
+        hospitalId: shift.hospital_id as number,
+        sectorId: shift.sector_id as number,
+        toProfessionalId: professionalId,
+        metadata: { assignmentType },
+      });
+
       return { ok: true, assignmentId };
     }),
 
@@ -263,6 +279,18 @@ export const editorRouter = router({
         professionalId: managerId,
         reason: reason || "Turno marcado como vago",
         metadata: {},
+      });
+
+      await recordAudit({
+        actorUserId: userId,
+        actorRole: role,
+        action: "ASSIGNMENT_REMOVED",
+        entityType: "SHIFT_INSTANCE",
+        entityId: shiftInstanceId,
+        description: "Turno marcado como vago",
+        shiftInstanceId,
+        hospitalId: shift.hospital_id as number,
+        sectorId: shift.sector_id as number,
       });
 
       return { ok: true };

@@ -1,8 +1,9 @@
 import { Router, type Request, type Response } from "express";
-import { eq, asc } from "drizzle-orm";
+import { eq, asc, desc, and, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { users, professionals } from "../../drizzle/schema";
+import { users, professionals, auditTrail } from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
+import { recordAudit } from "../audit-trail";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 
@@ -130,6 +131,20 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
     return;
   }
 
+  const caller = (req as any).user;
+  recordAudit({
+    action: role ? "USER_ROLE_CHANGED" : "USER_UPDATED",
+    entityType: "USER",
+    entityId: userId,
+    actorUserId: caller.id,
+    actorRole: caller.role,
+    actorName: caller.name ?? undefined,
+    description: role
+      ? `Role de usuário #${userId} alterado para ${role} por ${caller.name ?? "admin"}`
+      : `Usuário #${userId} atualizado por ${caller.name ?? "admin"}`,
+    metadata: { changes: updates },
+  });
+
   res.json({
     user: {
       id: updated.id,
@@ -137,6 +152,61 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
       email: updated.email,
       role: updated.role,
     },
+  });
+});
+
+// GET /api/admin/audit — query audit trail
+adminRouter.get("/audit", async (req: Request, res: Response): Promise<void> => {
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponivel" });
+    return;
+  }
+
+  const {
+    entityType,
+    entityId,
+    actorUserId,
+    startDate,
+    endDate,
+    action,
+    limit: rawLimit,
+    offset: rawOffset,
+  } = req.query as Record<string, string | undefined>;
+
+  const conditions = [];
+
+  if (entityType) conditions.push(eq(auditTrail.entityType, entityType as any));
+  if (entityId) conditions.push(eq(auditTrail.entityId, Number(entityId)));
+  if (actorUserId) conditions.push(eq(auditTrail.actorUserId, Number(actorUserId)));
+  if (action) conditions.push(eq(auditTrail.action, action as any));
+  if (startDate) conditions.push(gte(auditTrail.createdAt, new Date(startDate)));
+  if (endDate) conditions.push(lte(auditTrail.createdAt, new Date(endDate)));
+
+  const pageLimit = Math.min(Number(rawLimit) || 50, 200);
+  const pageOffset = Number(rawOffset) || 0;
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const [rows, countResult] = await Promise.all([
+    db
+      .select()
+      .from(auditTrail)
+      .where(where)
+      .orderBy(desc(auditTrail.createdAt))
+      .limit(pageLimit)
+      .offset(pageOffset),
+    db
+      .select({ total: sql<number>`count(*)` })
+      .from(auditTrail)
+      .where(where),
+  ]);
+
+  res.json({
+    data: rows,
+    total: Number(countResult[0]?.total ?? 0),
+    limit: pageLimit,
+    offset: pageOffset,
   });
 });
 
