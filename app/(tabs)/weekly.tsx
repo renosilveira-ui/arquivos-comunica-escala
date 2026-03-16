@@ -23,8 +23,7 @@ import { theme } from "@/lib/theme";
 const DAY_LABELS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"] as const;
 const SLOT_LABELS = ["Manhã", "Tarde", "Noite"] as const;
 
-const CELL_WIDTH = 140;
-const SLOT_HEIGHT = 90;
+const CELL_WIDTH = 120;
 const HEADER_HEIGHT = 36;
 
 /** Return Monday 00:00 of the week containing `d`. */
@@ -183,6 +182,8 @@ export default function WeeklyScreen() {
   const goToPrevWeek = () => setWeekStart((prev) => addDays(prev, -7));
   const goToNextWeek = () => setWeekStart((prev) => addDays(prev, 7));
 
+  const todayFmt = fmtDate(new Date());
+
   const weekLabel = useMemo(() => {
     const end = addDays(weekStart, 6);
     const months = [
@@ -252,64 +253,63 @@ export default function WeeklyScreen() {
   return (
     <ScreenGradient>
       {/* Header */}
-      <View style={{ marginBottom: 16, paddingHorizontal: 4 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <Grid3X3 size={28} color="#4DA3FF" />
-          <Text style={{ fontSize: 28, fontWeight: "700", color: theme.colors.textPrimary }}>
+      <View style={{ paddingHorizontal: 4, marginBottom: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <Grid3X3 size={24} color="#4DA3FF" />
+          <Text style={{ fontSize: 22, fontWeight: "700", color: theme.colors.textPrimary }}>
             Escala Semanal
           </Text>
         </View>
 
-        {/* Week navigation */}
+        {/* Week navigation + replicate inline */}
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-          <TouchableOpacity onPress={goToPrevWeek} activeOpacity={0.7} style={{ padding: 8 }}>
-            <ChevronLeft size={24} color={theme.colors.textSecondary} />
-          </TouchableOpacity>
-          <Text style={{ fontSize: 16, fontWeight: "600", color: theme.colors.textPrimary }}>
-            {weekLabel}
-          </Text>
-          <TouchableOpacity onPress={goToNextWeek} activeOpacity={0.7} style={{ padding: 8 }}>
-            <ChevronRight size={24} color={theme.colors.textSecondary} />
+          <View style={{ flexDirection: "row", alignItems: "center", flex: 1 }}>
+            <TouchableOpacity onPress={goToPrevWeek} activeOpacity={0.7} style={{ padding: 6 }}>
+              <ChevronLeft size={22} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.textPrimary }}>
+              {weekLabel}
+            </Text>
+            <TouchableOpacity onPress={goToNextWeek} activeOpacity={0.7} style={{ padding: 6 }}>
+              <ChevronRight size={22} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            onPress={handleReplicate}
+            disabled={replicating}
+            activeOpacity={0.7}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
+              paddingVertical: 6,
+              paddingHorizontal: 10,
+              borderRadius: 8,
+              backgroundColor: "rgba(59,130,246,0.15)",
+              borderWidth: 1,
+              borderColor: "rgba(59,130,246,0.3)",
+            }}
+          >
+            {replicating ? (
+              <ActivityIndicator size="small" color={theme.colors.primary} />
+            ) : (
+              <Copy size={14} color={theme.colors.primary} />
+            )}
+            <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.primary }}>
+              Replicar
+            </Text>
           </TouchableOpacity>
         </View>
-
-        {/* Replicate button */}
-        <TouchableOpacity
-          onPress={handleReplicate}
-          disabled={replicating}
-          activeOpacity={0.7}
-          style={{
-            marginTop: 12,
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 8,
-            paddingVertical: 10,
-            paddingHorizontal: 16,
-            borderRadius: theme.borderRadius.button,
-            backgroundColor: "rgba(59,130,246,0.2)",
-            borderWidth: 1,
-            borderColor: "rgba(59,130,246,0.4)",
-          }}
-        >
-          {replicating ? (
-            <ActivityIndicator size="small" color={theme.colors.primary} />
-          ) : (
-            <Copy size={16} color={theme.colors.primary} />
-          )}
-          <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.primary }}>
-            Replicar Semana
-          </Text>
-        </TouchableOpacity>
       </View>
 
-      {/* Grid */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View>
+      {/* Grid — fills remaining vertical space */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
+        <View style={{ flex: 1 }}>
           {/* Day headers */}
           <View style={{ flexDirection: "row", marginLeft: 60 }}>
             {DAY_LABELS.map((label, dayIdx) => {
               const dayDate = addDays(weekStart, dayIdx);
+              const isToday = fmtDate(dayDate) === todayFmt;
               return (
                 <View
                   key={dayIdx}
@@ -318,24 +318,41 @@ export default function WeeklyScreen() {
                     height: HEADER_HEIGHT,
                     alignItems: "center",
                     justifyContent: "center",
+                    marginHorizontal: 2,
                   }}
                 >
-                  <Text style={{ fontSize: 12, fontWeight: "700", color: theme.colors.textSecondary }}>
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: isToday ? theme.colors.primary : theme.colors.textSecondary,
+                    }}
+                  >
                     {dayDate.getDate()} {label}
                   </Text>
+                  {isToday && (
+                    <View
+                      style={{
+                        width: 24,
+                        height: 2,
+                        backgroundColor: theme.colors.primary,
+                        borderRadius: 1,
+                        marginTop: 2,
+                      }}
+                    />
+                  )}
                 </View>
               );
             })}
           </View>
 
-          {/* Slot rows */}
+          {/* Slot rows — each row takes equal vertical space */}
           {SLOT_LABELS.map((slotLabel, slotIdx) => (
-            <View key={slotIdx} style={{ flexDirection: "row" }}>
+            <View key={slotIdx} style={{ flexDirection: "row", flex: 1 }}>
               {/* Slot label */}
               <View
                 style={{
                   width: 60,
-                  height: SLOT_HEIGHT,
                   justifyContent: "center",
                   alignItems: "center",
                 }}
@@ -348,7 +365,7 @@ export default function WeeklyScreen() {
               {/* Cells */}
               {grid[slotIdx].map((cell, dayIdx) => {
                 const isEmpty = cell.shifts.length === 0;
-                const bColor = isEmpty ? theme.colors.cardBorder : borderColorForStatus(cell.status);
+                const statusColor = isEmpty ? "transparent" : borderColorForStatus(cell.status);
 
                 return (
                   <TouchableOpacity
@@ -358,49 +375,52 @@ export default function WeeklyScreen() {
                     disabled={isEmpty}
                     style={{
                       width: CELL_WIDTH,
-                      height: SLOT_HEIGHT,
-                      borderWidth: 1.5,
-                      borderColor: bColor,
+                      flex: 1,
+                      minHeight: 120,
+                      borderWidth: 1,
+                      borderColor: theme.colors.cardBorder,
+                      borderLeftWidth: 3,
+                      borderLeftColor: statusColor,
                       borderRadius: theme.borderRadius.card,
                       backgroundColor: theme.colors.cardBg,
                       margin: 2,
-                      padding: 6,
+                      padding: 8,
                       justifyContent: "space-between",
                     }}
                   >
                     {isEmpty ? (
                       <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                        <Text style={{ fontSize: 11, color: theme.colors.textMuted }}>—</Text>
+                        <Plus size={22} color={theme.colors.textMuted} strokeWidth={1.5} />
                       </View>
                     ) : cell.status === "VAGO" && cell.professionalNames.length === 0 ? (
-                      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 4 }}>
-                        <Plus size={18} color={theme.colors.danger} />
-                        <Text style={{ fontSize: 10, color: theme.colors.danger }}>Vago</Text>
+                      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        <Plus size={28} color={theme.colors.danger} />
+                        <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.danger }}>Vago</Text>
                       </View>
                     ) : (
                       <>
-                        <View style={{ flex: 1 }}>
-                          {cell.professionalNames.slice(0, 2).map((name, i) => (
+                        <View style={{ flex: 1, gap: 2 }}>
+                          {cell.professionalNames.slice(0, 3).map((name, i) => (
                             <Text
                               key={i}
                               numberOfLines={1}
-                              style={{ fontSize: 10, color: theme.colors.textPrimary }}
+                              style={{ fontSize: 11, fontWeight: "600", color: theme.colors.textPrimary }}
                             >
                               {name}
                             </Text>
                           ))}
-                          {cell.professionalNames.length > 2 && (
-                            <Text style={{ fontSize: 9, color: theme.colors.textMuted }}>
-                              +{cell.professionalNames.length - 2}
+                          {cell.professionalNames.length > 3 && (
+                            <Text style={{ fontSize: 10, color: theme.colors.textMuted }}>
+                              +{cell.professionalNames.length - 3}
                             </Text>
                           )}
                         </View>
-                        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                          <Text style={{ fontSize: 9, color: theme.colors.textMuted }}>
+                        <View style={{ gap: 4 }}>
+                          <Text style={{ fontSize: 10, color: theme.colors.textMuted }}>
                             {cell.timeRange}
                           </Text>
-                          <Badge variant={badgeVariantForStatus(cell.status)} style={{ paddingHorizontal: 6, paddingVertical: 2 }}>
-                            <Text style={{ fontSize: 8 }}>{cell.shifts.length}</Text>
+                          <Badge variant={badgeVariantForStatus(cell.status)} style={{ paddingHorizontal: 6, paddingVertical: 2, alignSelf: "flex-start" }}>
+                            <Text style={{ fontSize: 9 }}>{cell.shifts.length} escala{cell.shifts.length !== 1 ? "s" : ""}</Text>
                           </Badge>
                         </View>
                       </>
