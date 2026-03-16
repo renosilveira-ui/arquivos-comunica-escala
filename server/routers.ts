@@ -9,6 +9,7 @@ import { canApproveAssignment } from "./rbac-validations";
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
 import { editorRouter } from "./editor";
+import { swapRouter } from "./swap-router";
 import { calendarRouter } from "./calendar";
 import { shiftsRouter } from "./shifts-crud";
 import { professionalsRouter, hospitalsRouter, sectorsRouter, filtersRouter } from "./aux-routers";
@@ -361,6 +362,7 @@ export const appRouter = router({
   hospitals:        hospitalsRouter,
   sectors:          sectorsRouter,
   filters:          filtersRouter,
+  swaps:            swapRouter,
 });
 
 export type AppRouter = typeof appRouter;

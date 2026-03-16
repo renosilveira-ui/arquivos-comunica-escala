@@ -343,3 +343,64 @@ export const auditTrail = mysqlTable(
     idxAuditDate: index("idx_audit_date").on(table.createdAt),
   })
 );
+
+
+/**
+ * Solicitações de troca (SWAP) e repasse (TRANSFER) entre profissionais.
+ */
+export const swapRequests = mysqlTable("swap_requests", {
+  id: int("id").primaryKey().autoincrement(),
+
+  // Tipo da operação
+  type: mysqlEnum("type", ["SWAP", "TRANSFER"]).notNull(),
+
+  // Status do fluxo
+  status: mysqlEnum("status", [
+    "PENDING",
+    "ACCEPTED",
+    "APPROVED",
+    "REJECTED_BY_PEER",
+    "REJECTED_BY_MANAGER",
+    "CANCELLED",
+    "EXPIRED",
+  ]).notNull().default("PENDING"),
+
+  // Quem está oferecendo
+  fromProfessionalId: int("from_professional_id").notNull(),
+  fromUserId: int("from_user_id").notNull(),
+  fromShiftInstanceId: int("from_shift_instance_id").notNull(),
+  fromAssignmentId: int("from_assignment_id").notNull(),
+
+  // Quem aceitou (preenchido quando alguém aceita)
+  toProfessionalId: int("to_professional_id"),
+  toUserId: int("to_user_id"),
+  // Para SWAP: qual shift o receptor está oferecendo em troca
+  toShiftInstanceId: int("to_shift_instance_id"),
+  toAssignmentId: int("to_assignment_id"),
+
+  // Quem aprovou/rejeitou (gestor)
+  reviewedByUserId: int("reviewed_by_user_id"),
+  reviewedAt: datetime("reviewed_at"),
+  reviewNote: varchar("review_note", { length: 500 }),
+
+  // Contexto
+  institutionId: int("institution_id").notNull(),
+  hospitalId: int("hospital_id").notNull(),
+  sectorId: int("sector_id"),
+
+  // Detalhes
+  reason: varchar("reason", { length: 500 }),
+
+  // Controle
+  expiresAt: datetime("expires_at"),
+  version: int("version").notNull().default(1),
+
+  // Timestamps
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  idxFrom: index("idx_swap_from").on(table.fromProfessionalId),
+  idxTo: index("idx_swap_to").on(table.toProfessionalId),
+  idxStatus: index("idx_swap_status").on(table.status),
+  idxShift: index("idx_swap_shift").on(table.fromShiftInstanceId),
+}));
