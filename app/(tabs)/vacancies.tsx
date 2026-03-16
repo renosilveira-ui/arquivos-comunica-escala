@@ -11,6 +11,7 @@ import { confirmAction } from "@/lib/ui/confirm";
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
+  const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
   
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(
@@ -37,7 +38,7 @@ export default function VacanciesScreen() {
   });
 
   // Determinar se usuário pode ver "Todos os hospitais"
-  const allowAllHospitals = professional?.role === "GESTOR_PLUS";
+  const allowAllHospitals = professional?.role === "GESTOR_PLUS" || isAdminOrManager;
 
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
@@ -244,7 +245,7 @@ export default function VacanciesScreen() {
                   </View>
 
                   {/* Botão de ação */}
-                  {isAssumed ? (
+                  {isAdminOrManager ? null : isAssumed ? (
                     <View className="flex-row items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 py-3 px-4">
                       <CheckCircle size={18} color="rgba(251, 191, 36, 0.8)" />
                       <Text className="text-sm font-medium" style={{ color: '#FBBF24' }}>

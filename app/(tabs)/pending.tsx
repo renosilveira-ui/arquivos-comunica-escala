@@ -19,6 +19,7 @@ const uiAlert = (title: string, message: string) => {
 export default function PendingScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const { user, isLoading: authLoading } = useAuth();
+  const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
   
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(
@@ -45,7 +46,7 @@ export default function PendingScreen() {
   });
 
   // Determinar se usuário pode ver "Todos os hospitais"
-  const allowAllHospitals = professional?.role === "GESTOR_PLUS";
+  const allowAllHospitals = professional?.role === "GESTOR_PLUS" || isAdminOrManager;
   
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
