@@ -5,9 +5,8 @@ import { Badge } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
 import * as Haptics from "expo-haptics";
 import { trpc } from "@/lib/trpc";
-import { useHospitalAlertSync } from "@/hooks/use-hospital-alert-sync";
 import { useState, useEffect, useMemo } from "react";
-import { User, Bell, Link2, LogOut, Briefcase, Activity, CheckCircle, XCircle } from "lucide-react-native";
+import { User, Bell, Link2, LogOut, Briefcase } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { 
   requestNotificationPermissions, 
@@ -93,29 +92,11 @@ export default function ProfileScreen() {
   const [enableShiftChanges, setEnableShiftChanges] = useState(true);
   const [enableReminders, setEnableReminders] = useState(true);
   const [enableHospitalAlert, setEnableHospitalAlert] = useState(true);
-
-  // Status da integração HospitalAlert (API real)
-  // Hook de sincronização HospitalAlert
-  const hospitalAlert = useHospitalAlertSync();
-
-  const handleSyncNow = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    try {
-      await hospitalAlert.actions.syncNow();
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error) {
-      console.error("[Profile] Erro ao sincronizar:", error);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-    }
-  };
-
   // Atualizar estados quando settings carrega
   useEffect(() => {
     if (settings) {
       setEnableShiftChanges(settings.enableShiftChanges);
       setEnableReminders(settings.enableReminders);
-      setEnableHospitalAlert(settings.enableHospitalAlertNotifications);
     }
   }, [settings]);
 
@@ -145,12 +126,7 @@ export default function ProfileScreen() {
   };
 
   const handleToggleHospitalAlert = (value: boolean) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setEnableHospitalAlert(value);
-    updateSettings.mutate({
-      userId: user?.id ?? 0,
-      enableHospitalAlertNotifications: value,
-    });
   };
 
   const handleLogout = () => {
@@ -193,83 +169,6 @@ export default function ProfileScreen() {
           </View>
         </TintedGlassCard>
 
-        {/* Status HospitalAlert */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <Activity size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold" style={{ color: "#FFFFFF" }}>Status HospitalAlert</Text>
-          </View>
-          <TintedGlassCard>
-            <View className="gap-4">
-              {/* Conectado */}
-              {hospitalAlert.meta.isLoading ? (
-                <View className="py-8 items-center">
-                  <ActivityIndicator color={theme.colors.primary} />
-                </View>
-              ) : hospitalAlert.status ? (
-                <>
-                  {/* Conectado */}
-                  <View className="flex-row items-center justify-between py-3" style={{ borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.08)" }}>
-                    <View className="flex-row items-center gap-3">
-                      {hospitalAlert.status.connected ? (
-                        <CheckCircle size={24} color="#34D399" />
-                      ) : (
-                        <XCircle size={24} color="#F87171" />
-                      )}
-                      <Text className="text-lg font-medium" style={{ color: "#FFFFFF" }}>Conectado ao HospitalAlert</Text>
-                    </View>
-                    <Badge 
-                      variant={hospitalAlert.status.connected ? "success" : "critical"} 
-                      label={hospitalAlert.status.connected ? "Sim" : "Não"} 
-                    />
-                  </View>
-
-                  {/* Plantão ativo no HospitalAlert */}
-                  <View className="flex-row items-center justify-between py-3" style={{ borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.08)" }}>
-                    <Text className="text-lg font-medium" style={{ color: "#FFFFFF" }}>Plantão ativo no HospitalAlert</Text>
-                    <Badge 
-                      variant={hospitalAlert.status.shiftActive ? "success" : "neutral"} 
-                      label={hospitalAlert.status.shiftActive ? "Sim" : "Não"} 
-                    />
-                  </View>
-
-                  {/* Última Sincronização */}
-                  <View className="flex-row items-center justify-between py-3" style={{ borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.08)" }}>
-                    <Text className="text-lg font-medium" style={{ color: "#FFFFFF" }}>Última sincronização</Text>
-                    <Text className="text-base font-semibold" style={{ color: "rgba(255,255,255,0.7)" }}>
-                      {hospitalAlert.status.lastSyncAt
-                        ? new Date(hospitalAlert.status.lastSyncAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-                        : "Nunca"}
-                    </Text>
-                  </View>
-
-                  {/* Botão Sincronizar Agora */}
-                  <View className="pt-2">
-                    <TouchableOpacity
-                      onPress={handleSyncNow}
-                      disabled={hospitalAlert.meta.isSyncing}
-                      className="bg-[#4DA3FF] rounded-xl h-12 items-center justify-center flex-row gap-2"
-                      activeOpacity={0.7}
-                    >
-                      {hospitalAlert.meta.isSyncing ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
-                      ) : (
-                        <>
-                          <Link2 size={20} color="#FFFFFF" />
-                          <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>Sincronizar Agora</Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </>
-              ) : (
-                <Text className="text-base text-center py-4" style={{ color: "rgba(255,255,255,0.7)" }}>
-                  Erro ao carregar status
-                </Text>
-              )}
-            </View>
-          </TintedGlassCard>
-        </View>
 
         {/* Estatísticas do Mês */}
         <View className="gap-4">
