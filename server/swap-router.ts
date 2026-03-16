@@ -672,7 +672,7 @@ export const swapRouter = router({
         OFFSET ${input.offset}
       `);
 
-      const data = ((rows as any).rows ?? (rows as any[])) as any[];
+      const data = (rows as any)[0] as any[];
 
       return data.map((r: any) => ({
         id: r.id,
@@ -748,7 +748,7 @@ export const swapRouter = router({
         LIMIT 1
       `);
 
-      const data = ((rows as any).rows ?? (rows as any[])) as any[];
+      const data = (rows as any)[0] as any[];
       if (!data[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       const r = data[0];
@@ -846,7 +846,7 @@ export const swapRouter = router({
         ORDER BY fsi.start_at ASC
       `);
 
-      const data = ((rows as any).rows ?? (rows as any[])) as any[];
+      const data = (rows as any)[0] as any[];
 
       // Filter out swaps the user has a time conflict with
       const available = [];
@@ -865,7 +865,7 @@ export const swapRouter = router({
             AND si.start_at < ${shiftEnd.toISOString().slice(0, 19).replace("T", " ")}
             AND si.end_at   > ${shiftStart.toISOString().slice(0, 19).replace("T", " ")}
         `);
-        const conflictRows = ((conflictResult as any).rows ?? (conflictResult as any[])) as any[];
+        const conflictRows = (conflictResult as any)[0] as any[];
         if (conflictRows[0]?.cnt > 0) continue;
 
         available.push({

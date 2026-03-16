@@ -54,7 +54,7 @@ export async function checkTimeConflict(
         : sql``}
   `);
 
-  const rows = ((results as any).rows ?? (results as any[])) as any[];
+  const rows = (results as any)[0] as any[];
 
   return {
     hasConflict: rows.length > 0,

@@ -132,7 +132,7 @@ const shiftAssignmentsRouter = router({
             ORDER BY si.start_at ASC`
       );
 
-      const data = (rows as any).rows ?? (rows as any[]);
+      const data = (rows as any)[0];
       return (data as any[]).map((r) => ({
         assignmentId:     r.assignmentId     as number,
         professionalId:   r.professionalId   as number,
@@ -318,7 +318,7 @@ const shiftInstancesRouter = router({
             ORDER BY si.start_at ASC`
       );
 
-      const data = (rows as any).rows ?? (rows as any[]);
+      const data = (rows as any)[0];
 
       const [pro] = await db
         .select({ id: professionals.id })
