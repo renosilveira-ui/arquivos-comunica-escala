@@ -32,6 +32,14 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="weekly"
+        options={{
+          title: "Semanal",
+          tabBarIcon: ({ color, size }) => <TabIcon name="weekly" color={color} size={size} />,
+          href: can("view:weekly") ? undefined : null,
+        }}
+      />
+      <Tabs.Screen
         name="dashboard"
         options={{
           title: "Dashboard",
