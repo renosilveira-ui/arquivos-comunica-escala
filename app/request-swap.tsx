@@ -1,114 +1,229 @@
-import { useState, useEffect } from "react";
-import { Text, View, TouchableOpacity, ScrollView, TextInput, Alert } from "react-native";
+import { useState, useEffect, useMemo } from "react";
+import {
+  Text,
+  View,
+  TouchableOpacity,
+  ScrollView,
+  TextInput,
+  Alert,
+  ActivityIndicator,
+  Platform,
+} from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
-import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
-import { usePermissions } from "@/hooks/use-permissions";
-import { trpc } from "@/lib/trpc";
-import { useRouter, useLocalSearchParams } from "expo-router";
-import * as Haptics from "expo-haptics";
-import { ChevronLeft, RefreshCw, Users, Send } from "lucide-react-native";
-import { isDemoMode, DEMO_SHIFTS, getSelectedService, DEMO_SERVICES } from "@/lib/demo-mode";
-import { notifyShiftChange } from "@/lib/notifications";
-import { formatDateBR, formatTimeBR } from "@/lib/datetime";
+import * as Auth from "@/lib/_core/auth";
+import { useRouter } from "expo-router";
+import { ChevronLeft, Send, RefreshCw, ArrowRightLeft } from "lucide-react-native";
 
-/**
- * Tela de Solicitação de Troca de Plantão
- * Permite profissionais solicitarem troca com colegas do mesmo serviço
- */
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (envUrl) return envUrl;
+  if (Platform.OS === "android") return "http://10.0.2.2:3000";
+  return "http://localhost:3000";
+}
+
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<{ ok: boolean; data: T | null }> {
+  const url = getBaseUrl() + path;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
+  };
+  if (Platform.OS !== "web") {
+    const token = await Auth.getSessionToken();
+    if (token) headers["Authorization"] = "Bearer " + token;
+  }
+  const res = await fetch(url, { ...options, headers, credentials: Platform.OS === "web" ? "include" : undefined });
+  let data: T | null = null;
+  try { data = await res.json(); } catch {}
+  return { ok: res.ok, data };
+}
+
+const uiAlert = (title: string, message: string, onOk?: () => void) => {
+  if (Platform.OS === "web") {
+    window.alert(`${title}\n\n${message}`);
+    onOk?.();
+  } else {
+    Alert.alert(title, message, [{ text: "OK", onPress: onOk }]);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface ShiftInstance {
+  id: number;
+  label: string;
+  startAt: string;
+  endAt: string;
+  hospitalId: number;
+  sectorId: number;
+  assignments: {
+    id: number;
+    professionalId: number;
+    shiftInstanceId: number;
+    isActive: boolean;
+  }[];
+}
+
+interface ProfessionalInfo {
+  id: number;
+  name: string;
+  role: string;
+  userId: number;
+}
+
+type OfferType = "SWAP" | "TRANSFER";
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export default function RequestSwapScreen() {
   const { user } = useAuth();
-  const { can } = usePermissions();
   const router = useRouter();
-  const params = useLocalSearchParams();
-  const shiftId = Number(params.id);
-  const [isDemo, setIsDemo] = useState(false);
 
-  // Guard: tech não pode solicitar trocas
-  useEffect(() => {
-    if (!can("request:swap")) router.back();
-  }, []);
-  const [selectedService, setSelectedService] = useState<number | null>(null);
-  const [selectedColleague, setSelectedColleague] = useState<number | null>(null);
+  const [type, setType] = useState<OfferType>("SWAP");
+  const [myShifts, setMyShifts] = useState<ShiftInstance[]>([]);
+  const [otherShifts, setOtherShifts] = useState<ShiftInstance[]>([]);
+  const [professional, setProfessional] = useState<ProfessionalInfo | null>(null);
+  const [selectedFrom, setSelectedFrom] = useState<ShiftInstance | null>(null);
+  const [selectedFromAssignmentId, setSelectedFromAssignmentId] = useState<number | null>(null);
+  const [selectedTo, setSelectedTo] = useState<ShiftInstance | null>(null);
   const [reason, setReason] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Verificar modo demo e serviço selecionado
+  // Fetch user's professional record + shifts
   useEffect(() => {
-    async function init() {
-      const demo = await isDemoMode();
-      setIsDemo(demo);
-      const service = await getSelectedService();
-      setSelectedService(service);
+    if (!user?.id) return;
+    (async () => {
+      setLoading(true);
+      try {
+        // Get professional
+        const proRes = await apiFetch<any>(
+          `/api/trpc/professionals.getByUserId?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: { userId: user.id } } }))}`,
+        );
+        const proData = (proRes.data as any)?.[0]?.result?.data?.json;
+        if (proData) setProfessional(proData);
+
+        // Get shifts for next 60 days
+        const now = new Date();
+        const future = new Date();
+        future.setDate(future.getDate() + 60);
+        const startDate = now.toISOString().slice(0, 10);
+        const endDate = future.toISOString().slice(0, 10);
+
+        const shiftRes = await apiFetch<any>(
+          `/api/trpc/shifts.listByPeriod?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: { startDate, endDate } } }))}`,
+        );
+        const allShifts: ShiftInstance[] = (shiftRes.data as any)?.[0]?.result?.data?.json ?? [];
+
+        // Filter future shifts only
+        const futureShifts = allShifts.filter((s: ShiftInstance) => new Date(s.startAt) > now);
+
+        // My shifts = those where I have an active assignment
+        if (proData) {
+          const mine = futureShifts.filter((s: ShiftInstance) =>
+            s.assignments.some((a) => a.professionalId === proData.id && a.isActive),
+          );
+          setMyShifts(mine);
+
+          // Other shifts = those where someone else is assigned (not me)
+          const others = futureShifts.filter((s: ShiftInstance) =>
+            s.assignments.some((a) => a.professionalId !== proData.id && a.isActive) &&
+            !s.assignments.some((a) => a.professionalId === proData.id && a.isActive),
+          );
+          setOtherShifts(others);
+        }
+      } catch (e: any) {
+        setError(e.message ?? "Erro ao carregar dados");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [user?.id]);
+
+  const handleSelectFrom = (shift: ShiftInstance) => {
+    setSelectedFrom(shift);
+    if (professional) {
+      const assignment = shift.assignments.find((a) => a.professionalId === professional.id && a.isActive);
+      setSelectedFromAssignmentId(assignment?.id ?? null);
     }
-    init();
-  }, []);
-
-  // Buscar escala
-  const { data: shiftData } = trpc.shifts.get.useQuery(
-    { id: shiftId },
-    { enabled: !isDemo }
-  );
-
-  const demoShift = isDemo ? DEMO_SHIFTS.find(s => s.shift.id === shiftId) : null;
-  const shift = isDemo ? demoShift?.shift : shiftData?.shift;
-
-  // Buscar colegas do mesmo serviço (simulado em demo)
-  const colleagues = isDemo
-    ? [
-        { id: 2, name: "Dr. Carlos Silva", specialty: "Anestesia" },
-        { id: 3, name: "Dra. Ana Costa", specialty: "Anestesia" },
-        { id: 4, name: "Dr. Pedro Santos", specialty: "Anestesia" },
-      ]
-    : [];
-
-  // Mutation para solicitar troca (comentado até API estar disponível)
-  // const requestSwap = trpc.shifts.requestSwap.useMutation({
-  //   onSuccess: () => {
-  //     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-  //     Alert.alert(
-  //       "Solicitação Enviada",
-  //       "Seu colega receberá uma notificação para aprovar a troca.",
-  //       [{ text: "OK", onPress: () => router.back() }]
-  //     );
-  //   },
-  //   onError: (error: any) => {
-  //     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-  //     Alert.alert("Erro", error.message);
-  //   },
-  // });
-
-  const handleRequestSwap = () => {
-    if (!shift) return;
-
-    if (!selectedColleague) {
-      Alert.alert("Atenção", "Selecione um colega para trocar o plantão.");
-      return;
-    }
-
-    if (!reason.trim()) {
-      Alert.alert("Atenção", "Informe o motivo da troca.");
-      return;
-    }
-
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-    // Simular envio (API não disponível ainda)
-    const oldDate = new Date(shift.startTime);
-    const newDate = new Date(shift.startTime);
-    notifyShiftChange("Solicitação de Troca", oldDate, newDate);
-    Alert.alert(
-      "Solicitação Enviada",
-      "Seu colega receberá uma notificação para aprovar a troca.",
-      [{ text: "OK", onPress: () => router.back() }]
-    );
+    // Reset "to" selection when "from" changes
+    setSelectedTo(null);
   };
 
-  if (!shift) {
+  const handleSubmit = async () => {
+    if (!selectedFrom || !selectedFromAssignmentId) {
+      uiAlert("Atenção", "Selecione seu plantão para oferecer.");
+      return;
+    }
+    if (type === "SWAP" && !selectedTo) {
+      uiAlert("Atenção", "Selecione o plantão desejado para a troca.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    const body: Record<string, any> = {
+      type,
+      fromShiftInstanceId: selectedFrom.id,
+      fromAssignmentId: selectedFromAssignmentId,
+      reason: reason.trim() || undefined,
+    };
+    if (type === "SWAP" && selectedTo) {
+      body.toShiftInstanceId = selectedTo.id;
+    }
+
+    const res = await apiFetch<any>("/api/trpc/swaps.offer?batch=1", {
+      method: "POST",
+      body: JSON.stringify({ "0": { json: body } }),
+    });
+
+    setSubmitting(false);
+
+    const result = (res.data as any)?.[0];
+    if (result?.error) {
+      const msg = result.error.json?.message ?? result.error.message ?? "Erro desconhecido";
+      setError(msg);
+      return;
+    }
+
+    uiAlert("Sucesso", type === "SWAP" ? "Troca oferecida com sucesso!" : "Repasse oferecido com sucesso!", () => {
+      router.back();
+    });
+  };
+
+  const formatShiftDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
+  };
+
+  const formatShiftTime = (startIso: string, endIso: string) => {
+    const s = new Date(startIso);
+    const e = new Date(endIso);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(s.getHours())}:${pad(s.getMinutes())} – ${pad(e.getHours())}:${pad(e.getMinutes())}`;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  if (loading) {
     return (
       <ScreenGradient scrollable={false}>
-        <View className="flex-1 justify-center items-center">
-          <Text className="text-lg text-white/70">Carregando...</Text>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+          <ActivityIndicator size="large" color="#3B82F6" />
+          <Text style={{ color: "#94A3B8", marginTop: 12, fontSize: 16 }}>Carregando turnos...</Text>
         </View>
       </ScreenGradient>
     );
@@ -116,113 +231,170 @@ export default function RequestSwapScreen() {
 
   return (
     <ScreenGradient scrollable>
-      <View className="gap-6">
+      <View style={{ gap: 24, paddingBottom: 40 }}>
         {/* Header */}
         <View>
           <TouchableOpacity
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.back();
-            }}
-            className="flex-row items-center gap-2 mb-4"
+            onPress={() => router.back()}
+            style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 }}
           >
-            <ChevronLeft size={24} color="#FFFFFF" />
-            <Text className="text-lg text-white">Voltar</Text>
+            <ChevronLeft size={24} color="#F1F5F9" />
+            <Text style={{ color: "#F1F5F9", fontSize: 16 }}>Voltar</Text>
           </TouchableOpacity>
 
-          <View className="flex-row items-center gap-3 mb-2">
-            <RefreshCw size={28} color="#4DA3FF" />
-            <Text className="text-3xl font-bold text-white">Solicitar Troca</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <ArrowRightLeft size={28} color="#3B82F6" />
+            <Text style={{ color: "#F1F5F9", fontSize: 28, fontWeight: "700" }}>Oferecer Troca ou Repasse</Text>
           </View>
-          <Text className="text-lg text-white/70">
-            Encontre um colega para trocar o plantão
-          </Text>
         </View>
 
-        {/* Informações da Escala */}
-        <TintedGlassCard>
-          <Text className="text-lg font-semibold text-white mb-3">Plantão a ser trocado</Text>
-          <View className="gap-2">
-            <Text className="text-base text-white/70">
-              Data: {formatDateBR(shift.startTime)}
-            </Text>
-            <Text className="text-base text-white/70">
-              Horário: {formatTimeBR(shift.startTime)} - {formatTimeBR(shift.endTime)}
-            </Text>
-          </View>
-        </TintedGlassCard>
-
-        {/* Selecionar Colega */}
+        {/* S1 — Tipo de operação */}
         <View>
-          <View className="flex-row items-center gap-2 mb-4">
-            <Users size={20} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">Selecionar Colega</Text>
-          </View>
-          <View className="gap-3">
-            {colleagues.map((colleague) => (
+          <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Tipo de operação</Text>
+          <View style={{ flexDirection: "row", gap: 12 }}>
+            {(["SWAP", "TRANSFER"] as OfferType[]).map((t) => (
               <TouchableOpacity
-                key={colleague.id}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setSelectedColleague(colleague.id);
+                key={t}
+                onPress={() => { setType(t); setSelectedTo(null); }}
+                style={{
+                  flex: 1,
+                  paddingVertical: 16,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  backgroundColor: type === t ? "#3B82F6" : "#1E293B",
+                  borderWidth: 1,
+                  borderColor: type === t ? "#3B82F6" : "rgba(148,163,184,0.15)",
                 }}
-                activeOpacity={0.7}
               >
-                <TintedGlassCard
-                  style={{
-                    borderWidth: 2,
-                    borderColor: selectedColleague === colleague.id ? "#4DA3FF" : "transparent",
-                  }}
-                >
-                  <View className="flex-row items-center justify-between">
-                    <View>
-                      <Text className="text-lg font-semibold text-white">{colleague.name}</Text>
-                      <Text className="text-base text-white/70 mt-1">{colleague.specialty}</Text>
-                    </View>
-                    {selectedColleague === colleague.id && (
-                      <Badge variant="neutral">Selecionado</Badge>
-                    )}
-                  </View>
-                </TintedGlassCard>
+                <Text style={{ color: "#F1F5F9", fontSize: 16, fontWeight: "600" }}>
+                  {t === "SWAP" ? "TROCA" : "REPASSE"}
+                </Text>
+                <Text style={{ color: type === t ? "#E2E8F0" : "#64748B", fontSize: 12, marginTop: 4 }}>
+                  {t === "SWAP" ? "Meu turno ↔ outro turno" : "Entrego meu turno"}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
         </View>
 
-        {/* Motivo da Troca */}
+        {/* S2 — Meu plantão */}
         <View>
-          <Text className="text-2xl font-bold text-white mb-4">Motivo da Troca</Text>
-          <TintedGlassCard>
+          <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
+            Meu plantão {selectedFrom ? "✓" : "(selecione)"}
+          </Text>
+          {myShifts.length === 0 ? (
+            <Text style={{ color: "#64748B", fontSize: 14 }}>Nenhum turno futuro encontrado.</Text>
+          ) : (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+              {myShifts.map((s) => (
+                <TouchableOpacity
+                  key={s.id}
+                  onPress={() => handleSelectFrom(s)}
+                  style={{
+                    width: 200,
+                    padding: 14,
+                    borderRadius: 12,
+                    backgroundColor: selectedFrom?.id === s.id ? "rgba(59,130,246,0.2)" : "#141B2D",
+                    borderWidth: 1.5,
+                    borderColor: selectedFrom?.id === s.id ? "#3B82F6" : "rgba(148,163,184,0.15)",
+                  }}
+                >
+                  <Text style={{ color: "#F1F5F9", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
+                  <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>{formatShiftDate(s.startAt)}</Text>
+                  <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 2 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+
+        {/* S3 — Plantão desejado (só SWAP) */}
+        {type === "SWAP" && (
+          <View>
+            <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
+              Plantão desejado {selectedTo ? "✓" : "(selecione)"}
+            </Text>
+            {otherShifts.length === 0 ? (
+              <Text style={{ color: "#64748B", fontSize: 14 }}>Nenhum turno de outro profissional encontrado.</Text>
+            ) : (
+              <View style={{ gap: 10 }}>
+                {otherShifts.map((s) => (
+                  <TouchableOpacity
+                    key={s.id}
+                    onPress={() => setSelectedTo(s)}
+                    style={{
+                      padding: 14,
+                      borderRadius: 12,
+                      backgroundColor: selectedTo?.id === s.id ? "rgba(59,130,246,0.2)" : "#141B2D",
+                      borderWidth: 1.5,
+                      borderColor: selectedTo?.id === s.id ? "#3B82F6" : "rgba(148,163,184,0.15)",
+                    }}
+                  >
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ color: "#F1F5F9", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
+                      <Text style={{ color: "#94A3B8", fontSize: 12 }}>{formatShiftDate(s.startAt)}</Text>
+                    </View>
+                    <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* S4 — Motivo */}
+        <View>
+          <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Motivo (opcional)</Text>
+          <View style={{
+            backgroundColor: "#141B2D",
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: "rgba(148,163,184,0.15)",
+            padding: 14,
+          }}>
             <TextInput
-              placeholder="Ex: Compromisso familiar, viagem, etc."
-              placeholderTextColor="rgba(255,255,255,0.5)"
+              placeholder="Motivo da troca/repasse..."
+              placeholderTextColor="#64748B"
               value={reason}
               onChangeText={setReason}
               multiline
-              numberOfLines={4}
-              style={{
-                fontSize: 16,
-                color: "#FFFFFF",
-                minHeight: 100,
-                textAlignVertical: "top",
-              }}
+              numberOfLines={3}
+              style={{ color: "#F1F5F9", fontSize: 15, minHeight: 80, textAlignVertical: "top" }}
             />
-          </TintedGlassCard>
+          </View>
         </View>
 
-        {/* Botão Enviar Solicitação */}
+        {/* Error */}
+        {error && (
+          <View style={{ backgroundColor: "rgba(239,68,68,0.15)", borderRadius: 12, padding: 14, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" }}>
+            <Text style={{ color: "#EF4444", fontSize: 14 }}>{error}</Text>
+          </View>
+        )}
+
+        {/* Submit button */}
         <TouchableOpacity
-          onPress={handleRequestSwap}
-          className="rounded-2xl h-16 items-center justify-center"
+          onPress={handleSubmit}
+          disabled={submitting}
           style={{
-            backgroundColor: "#4DA3FF",
+            backgroundColor: submitting ? "#1E3A5F" : "#3B82F6",
+            borderRadius: 12,
+            height: 56,
+            alignItems: "center",
+            justifyContent: "center",
+            flexDirection: "row",
+            gap: 10,
+            opacity: submitting ? 0.7 : 1,
           }}
           activeOpacity={0.8}
         >
-          <View className="flex-row items-center gap-3">
-            <Send size={24} color="#FFFFFF" />
-            <Text className="text-xl font-bold text-white">Enviar Solicitação</Text>
-          </View>
+          {submitting ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <>
+              <Send size={20} color="#FFFFFF" />
+              <Text style={{ color: "#FFFFFF", fontSize: 18, fontWeight: "700" }}>Enviar Oferta</Text>
+            </>
+          )}
         </TouchableOpacity>
       </View>
     </ScreenGradient>
