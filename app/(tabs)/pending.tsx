@@ -2,10 +2,49 @@ import { View, Text, TouchableOpacity, ActivityIndicator, Platform, Alert, Scrol
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
-import { useState, useCallback } from "react";
-import { Check, X, Clock, MapPin, User, Briefcase, ClipboardCheck, Lock } from "lucide-react-native";
+import { useState, useCallback, useEffect } from "react";
+import { Check, X, Clock, MapPin, User, Briefcase, ClipboardCheck, Lock, ArrowRightLeft } from "lucide-react-native";
+import * as Auth from "@/lib/_core/auth";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
+
+// ---------------------------------------------------------------------------
+// Helpers for Available Swaps section
+// ---------------------------------------------------------------------------
+
+function getBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (envUrl) return envUrl;
+  if (Platform.OS === "android") return "http://10.0.2.2:3000";
+  return "http://localhost:3000";
+}
+
+async function swapFetch<T>(path: string, options?: RequestInit): Promise<{ ok: boolean; data: T | null }> {
+  const url = getBaseUrl() + path;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
+  };
+  if (Platform.OS !== "web") {
+    const token = await Auth.getSessionToken();
+    if (token) headers["Authorization"] = "Bearer " + token;
+  }
+  const res = await fetch(url, { ...options, headers, credentials: Platform.OS === "web" ? "include" : undefined });
+  let data: T | null = null;
+  try { data = await res.json(); } catch {}
+  return { ok: res.ok, data };
+}
+
+interface AvailableSwap {
+  id: number;
+  type: "SWAP" | "TRANSFER";
+  reason: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  fromProfessional: { name: string; role: string };
+  fromShift: { id: number; label: string; startAt: string; endAt: string; hospitalName: string; sectorName: string };
+  toShift: { id: number; label: string; startAt: string; endAt: string; hospitalName: string; sectorName: string } | null;
+}
 
 // 🔧 Função uiAlert para funcionar no web
 const uiAlert = (title: string, message: string) => {
@@ -20,6 +59,52 @@ export default function PendingScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const { user, isLoading: authLoading } = useAuth();
   const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
+
+  // ── Available Swaps state ──
+  const [availableSwaps, setAvailableSwaps] = useState<AvailableSwap[]>([]);
+  const [swapsLoading, setSwapsLoading] = useState(false);
+  const [swapActionId, setSwapActionId] = useState<number | null>(null);
+
+  const fetchAvailableSwaps = useCallback(async () => {
+    if (!user?.id) return;
+    setSwapsLoading(true);
+    const res = await swapFetch<any>(
+      `/api/trpc/swaps.listAvailable?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: {} } }))}`,
+    );
+    const data: AvailableSwap[] = (res.data as any)?.[0]?.result?.data?.json ?? [];
+    setAvailableSwaps(data);
+    setSwapsLoading(false);
+  }, [user?.id]);
+
+  useEffect(() => { fetchAvailableSwaps(); }, [fetchAvailableSwaps]);
+
+  const handleSwapAction = async (swapId: number, action: "accept" | "reject") => {
+    setSwapActionId(swapId);
+    const endpoint = action === "accept" ? "swaps.accept" : "swaps.reject";
+    const res = await swapFetch<any>(`/api/trpc/${endpoint}?batch=1`, {
+      method: "POST",
+      body: JSON.stringify({ "0": { json: { swapRequestId: swapId } } }),
+    });
+    setSwapActionId(null);
+    const result = (res.data as any)?.[0];
+    if (result?.error) {
+      uiAlert("Erro", result.error.json?.message ?? "Erro ao processar");
+      return;
+    }
+    uiAlert("Sucesso", action === "accept" ? "Oferta aceita!" : "Oferta recusada!");
+    fetchAvailableSwaps();
+  };
+
+  const fmtSwapDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
+  };
+
+  const fmtSwapTime = (s: string, e: string) => {
+    const sd = new Date(s); const ed = new Date(e);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${p(sd.getHours())}:${p(sd.getMinutes())} – ${p(ed.getHours())}:${p(ed.getMinutes())}`;
+  };
   
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(
@@ -213,6 +298,120 @@ export default function PendingScreen() {
             {pendingAssignments?.length || 0} alocações aguardando aprovação
           </Text>
         </View>
+
+        {/* ── Trocas Disponíveis para Você ── */}
+        {availableSwaps.length > 0 && (
+          <View style={{ marginBottom: 24 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <ArrowRightLeft size={22} color="#3B82F6" />
+              <Text style={{ color: "#F1F5F9", fontSize: 20, fontWeight: "700" }}>Trocas Disponíveis</Text>
+              <View style={{ backgroundColor: "#3B82F6", borderRadius: 10, minWidth: 22, height: 22, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 }}>
+                <Text style={{ color: "#FFF", fontSize: 12, fontWeight: "700" }}>{availableSwaps.length}</Text>
+              </View>
+            </View>
+            {availableSwaps.map((sw) => (
+              <View
+                key={sw.id}
+                style={{
+                  backgroundColor: "#141B2D",
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: "rgba(148,163,184,0.15)",
+                  padding: 14,
+                  marginBottom: 10,
+                }}
+              >
+                {/* Type badge */}
+                <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+                  <View style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                    borderRadius: 999,
+                    backgroundColor: sw.type === "SWAP" ? "rgba(59,130,246,0.18)" : "rgba(245,158,11,0.18)",
+                    borderWidth: 1,
+                    borderColor: sw.type === "SWAP" ? "rgba(59,130,246,0.55)" : "rgba(245,158,11,0.55)",
+                  }}>
+                    <Text style={{ color: "#F2F6FF", fontSize: 11, fontWeight: "600" }}>
+                      {sw.type === "SWAP" ? "TROCA" : "REPASSE"}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* From info */}
+                <Text style={{ color: "#F1F5F9", fontSize: 14, fontWeight: "600" }}>
+                  {sw.fromProfessional.name}
+                  <Text style={{ color: "#94A3B8", fontWeight: "400" }}>{" "}• {sw.fromProfessional.role}</Text>
+                </Text>
+                <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>
+                  {sw.fromShift.label} — {fmtSwapDate(sw.fromShift.startAt)} • {fmtSwapTime(sw.fromShift.startAt, sw.fromShift.endAt)}
+                </Text>
+                <Text style={{ color: "#64748B", fontSize: 12 }}>
+                  {sw.fromShift.hospitalName} / {sw.fromShift.sectorName}
+                </Text>
+
+                {/* To shift if SWAP */}
+                {sw.toShift && (
+                  <View style={{ marginTop: 6, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: "#F59E0B" }}>
+                    <Text style={{ color: "#94A3B8", fontSize: 12 }}>Quer em troca:</Text>
+                    <Text style={{ color: "#F1F5F9", fontSize: 13 }}>
+                      {sw.toShift.label} — {fmtSwapDate(sw.toShift.startAt)} • {fmtSwapTime(sw.toShift.startAt, sw.toShift.endAt)}
+                    </Text>
+                  </View>
+                )}
+
+                {sw.reason && (
+                  <Text style={{ color: "#94A3B8", fontSize: 12, fontStyle: "italic", marginTop: 4 }}>"{sw.reason}"</Text>
+                )}
+
+                {/* Action buttons */}
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                  <TouchableOpacity
+                    onPress={() => handleSwapAction(sw.id, "accept")}
+                    disabled={swapActionId === sw.id}
+                    style={{
+                      flex: 1,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      paddingVertical: 10,
+                      borderRadius: 10,
+                      backgroundColor: "#22C55E",
+                      opacity: swapActionId === sw.id ? 0.6 : 1,
+                    }}
+                  >
+                    {swapActionId === sw.id ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <>
+                        <Check size={16} color="#FFF" />
+                        <Text style={{ color: "#FFF", fontSize: 14, fontWeight: "600" }}>Aceitar</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleSwapAction(sw.id, "reject")}
+                    disabled={swapActionId === sw.id}
+                    style={{
+                      flex: 1,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      paddingVertical: 10,
+                      borderRadius: 10,
+                      backgroundColor: "#EF4444",
+                      opacity: swapActionId === sw.id ? 0.6 : 1,
+                    }}
+                  >
+                    <X size={16} color="#FFF" />
+                    <Text style={{ color: "#FFF", fontSize: 14, fontWeight: "600" }}>Recusar</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Filtros */}
         <View className="mb-6">
