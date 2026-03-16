@@ -11,6 +11,7 @@ import {
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { notifyVacancyOpened } from "./integrations/comunica-plus";
+import { publishMonth, lockMonth } from "./month-guards";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -315,4 +316,48 @@ export const shiftsRouter = router({
 
     return rows.length > 0 ? rows[0].instance : null;
   }),
+
+  // ------------------------------------------------------------------
+  // shifts.publish — DRAFT → PUBLISHED
+  // ------------------------------------------------------------------
+  publish: protectedProcedure
+    .input(
+      z.object({
+        institutionId: z.number().int(),
+        hospitalId: z.number().int(),
+        yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireManagerOrAdmin(ctx.user.role);
+      await publishMonth(
+        input.institutionId,
+        input.hospitalId,
+        input.yearMonth,
+        ctx.user.id,
+      );
+      return { ok: true };
+    }),
+
+  // ------------------------------------------------------------------
+  // shifts.lock — PUBLISHED → LOCKED
+  // ------------------------------------------------------------------
+  lock: protectedProcedure
+    .input(
+      z.object({
+        institutionId: z.number().int(),
+        hospitalId: z.number().int(),
+        yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireManagerOrAdmin(ctx.user.role);
+      await lockMonth(
+        input.institutionId,
+        input.hospitalId,
+        input.yearMonth,
+        ctx.user.id,
+      );
+      return { ok: true };
+    }),
 });
