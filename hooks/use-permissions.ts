@@ -7,6 +7,7 @@ export type Permission =
   | "view:reports"
   | "view:vacancies"
   | "view:admin"
+  | "view:weekly"
   | "create:shift"
   | "edit:shift"
   | "approve:swaps"
@@ -18,6 +19,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "view:reports",
     "view:vacancies",
     "view:admin",
+    "view:weekly",
     "create:shift",
     "edit:shift",
     "approve:swaps",
@@ -27,6 +29,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "view:dashboard",
     "view:reports",
     "view:vacancies",
+    "view:weekly",
     "create:shift",
     "edit:shift",
     "approve:swaps",

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, and, gte, lte } from "drizzle-orm";
+import { eq, and, gte, lte, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   shiftInstances,
@@ -413,5 +413,78 @@ export const shiftsRouter = router({
       });
 
       return { ok: true };
+    }),
+
+  // ------------------------------------------------------------------
+  // shifts.replicateWeek — admin/manager only
+  // Copies shiftInstances (without assignments) from one week to another.
+  // ------------------------------------------------------------------
+  replicateWeek: protectedProcedure
+    .input(
+      z.object({
+        fromStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
+        toStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
+        hospitalId: z.number().int(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireManagerOrAdmin(ctx.user.role);
+
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      const fromStart = new Date(`${input.fromStartDate}T00:00:00`);
+      const fromEnd = new Date(fromStart);
+      fromEnd.setDate(fromEnd.getDate() + 7);
+
+      const sourceShifts = await db
+        .select()
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.hospitalId, input.hospitalId),
+            gte(shiftInstances.startAt, fromStart),
+            lt(shiftInstances.startAt, fromEnd),
+          ),
+        );
+
+      if (sourceShifts.length === 0) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Nenhum turno encontrado na semana de origem" });
+      }
+
+      const dayOffsetMs =
+        new Date(`${input.toStartDate}T00:00:00`).getTime() -
+        new Date(`${input.fromStartDate}T00:00:00`).getTime();
+
+      let created = 0;
+      for (const shift of sourceShifts) {
+        const newStart = new Date(shift.startAt.getTime() + dayOffsetMs);
+        const newEnd = new Date(shift.endAt.getTime() + dayOffsetMs);
+
+        await db.insert(shiftInstances).values({
+          institutionId: shift.institutionId,
+          hospitalId: shift.hospitalId,
+          sectorId: shift.sectorId,
+          label: shift.label,
+          startAt: newStart,
+          endAt: newEnd,
+          status: "VAGO",
+          createdBy: ctx.user.id,
+        });
+        created++;
+      }
+
+      await recordAudit({
+        actorUserId: ctx.user.id,
+        actorRole: ctx.user.role,
+        actorName: ctx.user.name ?? undefined,
+        action: "SHIFT_CREATED",
+        entityType: "SHIFT_INSTANCE",
+        entityId: 0,
+        description: `Replicou ${created} turnos de ${input.fromStartDate} para ${input.toStartDate}`,
+        hospitalId: input.hospitalId,
+      });
+
+      return { created };
     }),
 });

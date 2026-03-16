@@ -5,10 +5,11 @@ import {
   User,
   ClipboardCheck,
   Briefcase,
-  BarChart3
+  BarChart3,
+  Grid3X3,
 } from "lucide-react-native";
 
-export type TabIconName = "home" | "calendar" | "dashboard" | "work" | "pending" | "admin" | "profile";
+export type TabIconName = "home" | "calendar" | "weekly" | "dashboard" | "work" | "pending" | "admin" | "profile";
 
 interface TabIconProps {
   name: TabIconName;
@@ -20,6 +21,7 @@ export function TabIcon({ name, color, size = 24 }: TabIconProps) {
   const icons = {
     home: LayoutDashboard,
     calendar: CalendarDays,
+    weekly: Grid3X3,
     dashboard: BarChart3,
     work: Briefcase,
     pending: ClipboardCheck,
