@@ -215,7 +215,7 @@ export default function VacanciesScreen() {
                       </Text>
                     </View>
                     <View className={`rounded-full px-3 py-1 ${isAssumed ? "bg-amber-500/20" : "bg-green-500/20"}`}>
-                      <Text className={`text-xs font-semibold ${isAssumed ? "text-amber-400" : "text-green-400"}`}>
+                      <Text className="text-xs font-semibold" style={{ color: isAssumed ? '#FBBF24' : '#4ADE80' }}>
                         {isAssumed ? "PENDENTE" : "VAGO"}
                       </Text>
                     </View>
@@ -247,7 +247,7 @@ export default function VacanciesScreen() {
                   {isAssumed ? (
                     <View className="flex-row items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 py-3 px-4">
                       <CheckCircle size={18} color="rgba(251, 191, 36, 0.8)" />
-                      <Text className="text-sm font-medium text-amber-400">
+                      <Text className="text-sm font-medium" style={{ color: '#FBBF24' }}>
                         Aguardando aprovação do gestor
                       </Text>
                     </View>

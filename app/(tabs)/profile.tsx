@@ -6,10 +6,8 @@ import { useAuth } from "@/hooks/use-auth";
 import * as Haptics from "expo-haptics";
 import { trpc } from "@/lib/trpc";
 import { useHospitalAlertSync } from "@/hooks/use-hospital-alert-sync";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { User, Bell, Link2, LogOut, Briefcase, Activity, CheckCircle, XCircle } from "lucide-react-native";
-import { useRouter } from "expo-router";
-import { clearSelectedService } from "@/lib/demo-mode";
 import { theme } from "@/lib/theme";
 import { 
   requestNotificationPermissions, 
@@ -25,6 +23,64 @@ import {
 export default function ProfileScreen() {
   const { user, logout } = useAuth();
   const utils = trpc.useUtils();
+
+  // ── Estatísticas do mês atual ──────────────────────────────────────────
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    .toISOString()
+    .split("T")[0];
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+    .toISOString()
+    .split("T")[0];
+
+  const { data: professional } = trpc.professionals.getByUserId.useQuery(
+    { userId: user?.id ?? 0 },
+    { enabled: !!user?.id }
+  );
+
+  const { data: monthShifts } = trpc.shifts.listByPeriod.useQuery(
+    { startDate: monthStart, endDate: monthEnd },
+    { enabled: !!user?.id }
+  );
+
+  const monthStats = useMemo(() => {
+    const empty = { totalHours: 0, totalShifts: 0, manha: 0, tarde: 0, noite: 0 };
+    if (!monthShifts) return empty;
+
+    const isManager =
+      professional?.role === "GESTOR_MEDICO" ||
+      professional?.role === "GESTOR_PLUS";
+
+    const relevant = (monthShifts as any[]).filter((shift) => {
+      if (isManager) return true;
+      return (shift.assignments as any[]).some(
+        (a: any) => a.professionalId === professional?.id && a.isActive
+      );
+    });
+
+    let totalHours = 0;
+    let manha = 0;
+    let tarde = 0;
+    let noite = 0;
+
+    for (const shift of relevant) {
+      const start = new Date(shift.startAt);
+      const end = new Date(shift.endAt);
+      totalHours += (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+      const label: string = shift.label ?? "";
+      if (label === "Manhã") manha++;
+      else if (label === "Tarde") tarde++;
+      else if (label === "Noite") noite++;
+    }
+
+    return {
+      totalHours: Math.round(totalHours),
+      totalShifts: relevant.length,
+      manha,
+      tarde,
+      noite,
+    };
+  }, [monthShifts, professional]);
 
   // TODO: Buscar configurações de notificação quando API estiver disponível
   const settings = {
@@ -95,14 +151,6 @@ export default function ProfileScreen() {
       userId: user?.id ?? 0,
       enableHospitalAlertNotifications: value,
     });
-  };
-
-  const router = useRouter();
-
-  const handleChangeService = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await clearSelectedService();
-    router.replace("/service-selection");
   };
 
   const handleLogout = () => {
@@ -234,7 +282,7 @@ export default function ProfileScreen() {
             <View className="flex-1">
               <TintedGlassCard>
                 <View className="items-center py-4">
-                  <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>120</Text>
+                  <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>{monthStats.totalHours}</Text>
                   <Text className="text-base mt-2" style={{ color: "rgba(255,255,255,0.7)" }}>Horas Trabalhadas</Text>
                 </View>
               </TintedGlassCard>
@@ -243,7 +291,7 @@ export default function ProfileScreen() {
             <View className="flex-1">
               <TintedGlassCard>
                 <View className="items-center py-4">
-                  <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>15</Text>
+                  <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>{monthStats.totalShifts}</Text>
                   <Text className="text-base mt-2" style={{ color: "rgba(255,255,255,0.7)" }}>Plantões</Text>
                 </View>
               </TintedGlassCard>
@@ -255,15 +303,15 @@ export default function ProfileScreen() {
             <View className="gap-3">
               <View className="flex-row items-center justify-between">
                 <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Manhã (7h-13h)</Text>
-                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>5 plantões</Text>
+                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>{monthStats.manha} plantão{monthStats.manha !== 1 ? "ões" : ""}</Text>
               </View>
               <View className="flex-row items-center justify-between">
                 <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Tarde (13h-19h)</Text>
-                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>4 plantões</Text>
+                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>{monthStats.tarde} plantão{monthStats.tarde !== 1 ? "ões" : ""}</Text>
               </View>
               <View className="flex-row items-center justify-between">
                 <Text className="text-base" style={{ color: "rgba(255,255,255,0.7)" }}>Noite (19h-7h)</Text>
-                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>6 plantões</Text>
+                <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>{monthStats.noite} plantão{monthStats.noite !== 1 ? "ões" : ""}</Text>
               </View>
             </View>
           </TintedGlassCard>
@@ -408,19 +456,7 @@ export default function ProfileScreen() {
             </View>
           </TintedGlassCard>
         </View>
-
-        {/* Botão Trocar Serviço */}
-        <TouchableOpacity
-          onPress={handleChangeService}
-          className="rounded-2xl p-5 items-center flex-row justify-center gap-3"
-          style={{ backgroundColor: "rgba(77,163,255,0.2)", borderWidth: 1, borderColor: "rgba(77,163,255,0.5)" }}
-          activeOpacity={0.7}
-        >
-          <Briefcase size={20} color="#FFFFFF" />
-          <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Trocar Serviço</Text>
-        </TouchableOpacity>
-
-        {/* Botão de Logout */}
+                {/* Botão de Logout */}
         <TouchableOpacity
           onPress={handleLogout}
           className="rounded-2xl p-5 items-center flex-row justify-center gap-3"

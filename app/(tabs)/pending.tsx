@@ -242,7 +242,7 @@ export default function PendingScreen() {
                     </Text>
                   </View>
                   <View className="rounded-full bg-amber-500/20 px-3 py-1">
-                    <Text className="text-xs font-semibold text-amber-400">
+                    <Text className="text-xs font-semibold" style={{ color: '#FBBF24' }}>
                       {pending.professionalRole}
                     </Text>
                   </View>
