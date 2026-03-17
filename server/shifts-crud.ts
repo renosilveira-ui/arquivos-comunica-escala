@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, and, gte, lte, lt } from "drizzle-orm";
+import { eq, and, gte, lte, lt, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   shiftInstances,
@@ -273,16 +273,29 @@ export const shiftsRouter = router({
 
       if (instances.length === 0) return [];
 
-      // Attach active assignments to each instance
+      // Attach active assignments (with professional name) to each instance
       const instanceIds = instances.map((i) => i.id);
       const allAssignments = await db
-        .select()
+        .select({
+          id: shiftAssignmentsV2.id,
+          shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
+          professionalId: shiftAssignmentsV2.professionalId,
+          assignmentType: shiftAssignmentsV2.assignmentType,
+          status: shiftAssignmentsV2.status,
+          isActive: shiftAssignmentsV2.isActive,
+          professionalName: professionals.name,
+        })
         .from(shiftAssignmentsV2)
-        .where(eq(shiftAssignmentsV2.isActive, true));
+        .leftJoin(professionals, eq(shiftAssignmentsV2.professionalId, professionals.id))
+        .where(
+          and(
+            eq(shiftAssignmentsV2.isActive, true),
+            inArray(shiftAssignmentsV2.shiftInstanceId, instanceIds),
+          ),
+        );
 
       const assignmentsByShift = new Map<number, typeof allAssignments>();
       for (const a of allAssignments) {
-        if (!instanceIds.includes(a.shiftInstanceId)) continue;
         const list = assignmentsByShift.get(a.shiftInstanceId) ?? [];
         list.push(a);
         assignmentsByShift.set(a.shiftInstanceId, list);

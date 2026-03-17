@@ -225,7 +225,7 @@ export default function WeeklyScreen() {
 
   /* ── cell tap ── */
   const handleCellPress = (cell: GridCell) => {
-    if (cell.status === "VAGO" && cell.shifts.length > 0) {
+    if (cell.shifts.length > 0) {
       setSelectedCell(cell);
       setSearchText("");
       setAllocModalVisible(true);
@@ -466,37 +466,57 @@ export default function WeeklyScreen() {
                 <Text style={{ fontSize: 14, color: theme.colors.textSecondary }}>
                   {DAY_LABELS[selectedCell.dayIndex]} — {SLOT_LABELS[selectedCell.slotIndex]} ({selectedCell.timeRange})
                 </Text>
-                <Text style={{ fontSize: 12, color: theme.colors.textMuted, marginTop: 4 }}>
-                  {selectedCell.shifts.length} escala{selectedCell.shifts.length !== 1 ? "s" : ""} neste horário
-                </Text>
+                <Badge
+                  variant={badgeVariantForStatus(selectedCell.status)}
+                  style={{ marginTop: 6, alignSelf: "flex-start" }}
+                >
+                  {selectedCell.status} — {selectedCell.shifts.length} escala{selectedCell.shifts.length !== 1 ? "s" : ""}
+                </Badge>
+
+                {/* Show assigned professionals */}
+                {selectedCell.professionalNames.length > 0 && (
+                  <View style={{ marginTop: 12, gap: 6 }}>
+                    <Text style={{ fontSize: 13, fontWeight: "600", color: theme.colors.textPrimary }}>
+                      Profissionais:
+                    </Text>
+                    {selectedCell.professionalNames.map((name, i) => (
+                      <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                        <User size={14} color={theme.colors.textSecondary} />
+                        <Text style={{ fontSize: 13, color: theme.colors.textPrimary }}>{name}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
               </View>
             )}
 
-            {/* Search */}
-            <TextInput
-              placeholder="Buscar profissional..."
-              placeholderTextColor={theme.colors.textMuted}
-              value={searchText}
-              onChangeText={setSearchText}
-              style={{
-                backgroundColor: theme.colors.inputBg,
-                borderRadius: theme.borderRadius.input,
-                paddingHorizontal: 14,
-                paddingVertical: 10,
-                fontSize: 14,
-                color: theme.colors.textPrimary,
-                marginBottom: 16,
-              }}
-            />
-
-            {/* Placeholder: professional list would go here */}
-            <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: 32 }}>
-              <User size={32} color={theme.colors.textMuted} />
-              <Text style={{ fontSize: 14, color: theme.colors.textMuted, marginTop: 8, textAlign: "center" }}>
-                Integração com lista de profissionais em breve.{"\n"}
-                Use a tela de edição individual por enquanto.
-              </Text>
-            </View>
+            {/* Search — only show for VAGO cells (allocation) */}
+            {selectedCell?.status === "VAGO" && (
+              <>
+                <TextInput
+                  placeholder="Buscar profissional..."
+                  placeholderTextColor={theme.colors.textMuted}
+                  value={searchText}
+                  onChangeText={setSearchText}
+                  style={{
+                    backgroundColor: theme.colors.inputBg,
+                    borderRadius: theme.borderRadius.input,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                    fontSize: 14,
+                    color: theme.colors.textPrimary,
+                    marginBottom: 16,
+                  }}
+                />
+                <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: 24 }}>
+                  <User size={28} color={theme.colors.textMuted} />
+                  <Text style={{ fontSize: 13, color: theme.colors.textMuted, marginTop: 8, textAlign: "center" }}>
+                    Integração com lista de profissionais em breve.{"\n"}
+                    Use a tela de edição individual por enquanto.
+                  </Text>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
