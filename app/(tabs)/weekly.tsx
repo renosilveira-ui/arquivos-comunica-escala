@@ -50,11 +50,11 @@ function fmtTime(d: Date): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** Classify a shift start hour into a slot index (0=Manhã, 1=Tarde, 2=Noite). */
-function classifyShift(hour: number): number {
-  if (hour >= 7 && hour < 13) return 0;
-  if (hour >= 13 && hour < 19) return 1;
-  return 2;
+/** Classify a shift by its label into a slot index (0=Manhã, 1=Tarde, 2=Noite). */
+function classifyShift(label: string): number {
+  if (label.includes("Manhã") || label.includes("Manha")) return 0;
+  if (label.includes("Tarde")) return 1;
+  return 2; // Noite
 }
 
 /** Friendly time range for a slot. */
@@ -157,9 +157,9 @@ export default function WeeklyScreen() {
 
     for (const item of shiftsData as ShiftWithAssignments[]) {
       const start = new Date(item.startAt);
-      const dayOfWeek = start.getDay(); // 0=Sun
+      const dayOfWeek = start.getUTCDay(); // 0=Sun, UTC to match DB
       const dayIdx = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // convert to Mon=0..Sun=6
-      const slotIdx = classifyShift(start.getHours());
+      const slotIdx = classifyShift(item.label);
 
       if (dayIdx >= 0 && dayIdx < 7 && slotIdx >= 0 && slotIdx < 3) {
         const cell = g[slotIdx][dayIdx];
