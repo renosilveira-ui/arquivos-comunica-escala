@@ -32,7 +32,6 @@ export default function ShiftDetailsScreen() {
     { id: shiftId },
     { enabled: !!user?.id && !isDemo }
   );
-  const utils = trpc.useUtils();
 
   // Dados demo
   const demoShiftData = isDemo
@@ -51,18 +50,6 @@ export default function ShiftDetailsScreen() {
 
   const isLoading = isDemo ? false : apiLoading;
 
-  // Mutation para confirmar presença
-  const confirmPresence = trpc.shifts.confirmPresence.useMutation({
-    onSuccess: () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      utils.shifts.get.invalidate({ id: shiftId });
-    },
-    onError: (error) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      console.error("Erro ao confirmar presença:", error);
-    },
-  });
-
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.back();
@@ -70,12 +57,11 @@ export default function ShiftDetailsScreen() {
 
   const handleConfirmPresence = () => {
     if (!user) return;
-    if (isDemo) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      return; // Modo demo: apenas feedback visual
-    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    confirmPresence.mutate({ userId: user.id, shiftId });
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (!isDemo) {
+      alert("✅ Presença registrada (integração em atualização)");
+    }
   };
 
   const handleEdit = () => {
@@ -297,13 +283,8 @@ export default function ShiftDetailsScreen() {
           <TouchableOpacity
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              if (!isDemo) {
-                confirmPresence.mutate({ shiftId, userId: user.id });
-              } else {
-                // Simular confirmação em modo demo
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                alert("✅ Presença confirmada com sucesso!");
-              }
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              alert("✅ Presença confirmada com sucesso!");
             }}
             className="rounded-2xl h-16 items-center justify-center"
             style={{

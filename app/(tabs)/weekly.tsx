@@ -81,10 +81,10 @@ function badgeVariantForStatus(status: string): BadgeVariant {
 type ShiftWithAssignments = {
   id: number;
   label: string;
-  startAt: string;
-  endAt: string;
+  startAt: string | Date;
+  endAt: string | Date;
   status: string;
-  assignments: { professionalId: number; professionalName?: string }[];
+  assignments: { professionalId: number; professionalName?: string | null }[];
 };
 
 type GridCell = {
@@ -155,7 +155,7 @@ export default function WeeklyScreen() {
 
     if (!shiftsData) return g;
 
-    for (const item of shiftsData as ShiftWithAssignments[]) {
+    for (const item of shiftsData) {
       const start = new Date(item.startAt);
       const dayOfWeek = start.getUTCDay(); // 0=Sun, UTC to match DB
       const dayIdx = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // convert to Mon=0..Sun=6

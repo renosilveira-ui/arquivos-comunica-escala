@@ -849,7 +849,7 @@ export const swapRouter = router({
       const data = (rows as any)[0] as any[];
 
       // Filter out swaps the user has a time conflict with
-      const available = [];
+      const available: any[] = [];
       for (const r of data) {
         const shiftStart = new Date(r.fromShiftStartAt);
         const shiftEnd = new Date(r.fromShiftEndAt);
