@@ -645,7 +645,7 @@ export default function CalendarScreen() {
         }}
         activeOpacity={0.8}
       >
-        <Plus size={28} color="#FFFFFF" strokeWidth={3} />
+        <Plus size={28} color="#0F172A" strokeWidth={3} />
       </TouchableOpacity>
     </ScreenGradient>
   );

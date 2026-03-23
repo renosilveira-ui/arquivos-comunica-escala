@@ -304,7 +304,7 @@ function CreateUserModal({
                 <Text
                   style={{
                     color:
-                      role === r ? "#FFFFFF" : theme.colors.textSecondary,
+                      role === r ? "#0F172A" : theme.colors.textSecondary,
                     fontSize: 14,
                     fontWeight: "600",
                   }}
@@ -339,10 +339,10 @@ function CreateUserModal({
             }}
           >
             {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color="#0F172A" />
             ) : (
               <Text
-                style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "700" }}
+                style={{ color: "#0F172A", fontSize: 16, fontWeight: "700" }}
               >
                 Criar Usuário
               </Text>
@@ -550,7 +550,7 @@ function EditUserModal({
                 <Text
                   style={{
                     color:
-                      role === r ? "#FFFFFF" : theme.colors.textSecondary,
+                      role === r ? "#0F172A" : theme.colors.textSecondary,
                     fontSize: 14,
                     fontWeight: "600",
                   }}
@@ -585,10 +585,10 @@ function EditUserModal({
             }}
           >
             {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color="#0F172A" />
             ) : (
               <Text
-                style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "700" }}
+                style={{ color: "#0F172A", fontSize: 16, fontWeight: "700" }}
               >
                 Salvar Alterações
               </Text>
@@ -658,7 +658,7 @@ export default function AdminScreen() {
         <View
           style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
         >
-          <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 16 }}>
+          <Text style={{ color: "#475569", fontSize: 16 }}>
             Faça login para continuar
           </Text>
         </View>
@@ -677,8 +677,8 @@ export default function AdminScreen() {
             gap: 16,
           }}
         >
-          <Lock size={48} color="rgba(255,255,255,0.5)" />
-          <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 16 }}>
+          <Lock size={48} color="#64748B" />
+          <Text style={{ color: "#475569", fontSize: 16 }}>
             Acesso restrito a administradores
           </Text>
         </View>
@@ -694,7 +694,7 @@ export default function AdminScreen() {
         <RefreshControl
           refreshing={refreshing}
           onRefresh={handleRefresh}
-          tintColor="#FFFFFF"
+          tintColor="#0F172A"
         />
       }
     >
@@ -710,9 +710,9 @@ export default function AdminScreen() {
           <View
             style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
           >
-            <Users size={28} color="#FFFFFF" />
+            <Users size={28} color="#0F172A" />
             <Text
-              style={{ color: "#FFFFFF", fontSize: 26, fontWeight: "800" }}
+              style={{ color: "#0F172A", fontSize: 26, fontWeight: "800" }}
             >
               Administração
             </Text>
@@ -729,9 +729,9 @@ export default function AdminScreen() {
               borderRadius: theme.borderRadius.button,
             }}
           >
-            <Plus size={18} color="#FFFFFF" />
+            <Plus size={18} color="#0F172A" />
             <Text
-              style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}
+              style={{ color: "#0F172A", fontSize: 14, fontWeight: "700" }}
             >
               Novo
             </Text>
@@ -777,7 +777,7 @@ export default function AdminScreen() {
               </Text>
               <Text
                 style={{
-                  color: "#FFFFFF",
+                  color: "#0F172A",
                   fontSize: 28,
                   fontWeight: "800",
                   marginTop: 4,
@@ -796,7 +796,7 @@ export default function AdminScreen() {
               </Text>
               <Text
                 style={{
-                  color: "#FFFFFF",
+                  color: "#0F172A",
                   fontSize: 28,
                   fontWeight: "800",
                   marginTop: 4,
@@ -816,10 +816,10 @@ export default function AdminScreen() {
         ) : filtered.length === 0 ? (
           <TintedGlassCard>
             <View style={{ alignItems: "center", paddingVertical: 32 }}>
-              <Users size={48} color="rgba(255,255,255,0.3)" />
+              <Users size={48} color="#94A3B8" />
               <Text
                 style={{
-                  color: "rgba(255,255,255,0.5)",
+                  color: "#64748B",
                   fontSize: 16,
                   marginTop: 16,
                 }}
@@ -844,7 +844,7 @@ export default function AdminScreen() {
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text
                       style={{
-                        color: "#FFFFFF",
+                        color: "#0F172A",
                         fontSize: 17,
                         fontWeight: "700",
                       }}

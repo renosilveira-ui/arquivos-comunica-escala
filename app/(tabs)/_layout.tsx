@@ -41,7 +41,7 @@ export default function TabLayout() {
                   backgroundColor: theme.colors.primaryNavy,
                 }}
               >
-                <Menu size={20} color="#FFFFFF" />
+                <Menu size={20} color="#0F172A" />
               </TouchableOpacity>
             </View>
           )}

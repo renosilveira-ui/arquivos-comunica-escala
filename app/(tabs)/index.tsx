@@ -77,7 +77,7 @@ export default function HomeScreen() {
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
           <Activity size={64} color="#4DA3FF" strokeWidth={1.5} />
-          <Text style={{ fontSize: 30, fontWeight: "800", lineHeight: 36, color: "#FFFFFF", marginTop: 24, textAlign: "center" }}>
+          <Text style={{ fontSize: 30, fontWeight: "800", lineHeight: 36, color: "#0F172A", marginTop: 24, textAlign: "center" }}>
             Escalas Hospitalares
           </Text>
           <Text style={{ fontSize: 18, lineHeight: 24, color: "rgba(242,246,255,0.70)", marginTop: 16, textAlign: "center" }}>
@@ -103,7 +103,7 @@ export default function HomeScreen() {
       <View style={{ gap: 16 }}>
         {/* Header */}
         <Animated.View entering={FadeIn.duration(400)} style={{ marginTop: 16, gap: 12 }}>
-          <Text style={{ fontSize: 30, fontWeight: "800", lineHeight: 36, color: "#FFFFFF" }}>
+          <Text style={{ fontSize: 30, fontWeight: "800", lineHeight: 36, color: "#0F172A" }}>
             Minha Escala
           </Text>
         </Animated.View>
@@ -117,13 +117,13 @@ export default function HomeScreen() {
         ) : activeShift ? (
           <TintedGlassCard>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF" }}>
+              <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#0F172A" }}>
                 Plantão Ativo
               </Text>
               <Badge variant="success" label="Ativo agora" />
             </View>
             
-            <Text style={{ fontSize: 18, lineHeight: 24, color: "#FFFFFF", fontWeight: "600", marginBottom: 8 }}>
+            <Text style={{ fontSize: 18, lineHeight: 24, color: "#0F172A", fontWeight: "600", marginBottom: 8 }}>
               {activeShift.label}
             </Text>
             
@@ -155,7 +155,7 @@ export default function HomeScreen() {
 
         {/* 2. Próximas escalas / Semana em resumo */}
         <Animated.View entering={SlideInUp.duration(400).delay(200)}>
-          <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF", marginBottom: 12 }}>
+          <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#0F172A", marginBottom: 12 }}>
             {isManager ? "Semana em Resumo" : "Próximas Escalas"}
           </Text>
 
@@ -167,7 +167,7 @@ export default function HomeScreen() {
             <TintedGlassCard>
               <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
                 {[
-                  { label: "Total", value: weekStats.total, color: "#FFFFFF" },
+                  { label: "Total", value: weekStats.total, color: "#0F172A" },
                   { label: "Vagos", value: weekStats.vago, color: "#F87171" },
                   { label: "Pendentes", value: weekStats.pendente, color: "#FBBF24" },
                   { label: "Ocupados", value: weekStats.ocupado, color: "#34D399" },
@@ -194,7 +194,7 @@ export default function HomeScreen() {
                   }}
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <Text style={{ fontSize: 18, lineHeight: 24, color: "#FFFFFF", fontWeight: "600" }}>
+                    <Text style={{ fontSize: 18, lineHeight: 24, color: "#0F172A", fontWeight: "600" }}>
                       {shift.label}
                     </Text>
                     <Badge variant="warning" label={shift.status} />
@@ -232,7 +232,7 @@ export default function HomeScreen() {
         <Animated.View entering={SlideInUp.duration(400).delay(300)}>
         <PrimaryButton
           label="Ver Calendário Completo"
-          icon={<Calendar size={20} color="#FFFFFF" />}
+          icon={<Calendar size={20} color="#0F172A" />}
           onPress={handleViewCalendar}
         />
         </Animated.View>
@@ -240,7 +240,7 @@ export default function HomeScreen() {
         {/* Ações de Gestão — visível apenas para admin/manager */}
         {isManager && (
           <Animated.View entering={SlideInUp.duration(400).delay(400)}>
-            <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#FFFFFF", marginBottom: 12 }}>
+            <Text style={{ fontSize: 24, fontWeight: "700", lineHeight: 28, color: "#0F172A", marginBottom: 12 }}>
               Gerenciar
             </Text>
             <View style={{ flexDirection: "row", gap: 12 }}>
@@ -251,7 +251,7 @@ export default function HomeScreen() {
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
                     <Plus size={18} color="#4DA3FF" />
-                    <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF" }}>Criar Plantão</Text>
+                    <Text style={{ fontSize: 15, fontWeight: "700", color: "#0F172A" }}>Criar Plantão</Text>
                   </View>
                   <Text style={{ fontSize: 13, color: "rgba(242,246,255,0.55)" }}>Escala nova</Text>
                 </TintedGlassCard>
@@ -263,7 +263,7 @@ export default function HomeScreen() {
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
                     <RefreshCw size={18} color="#FBBF24" />
-                    <Text style={{ fontSize: 15, fontWeight: "700", color: "#FFFFFF" }}>Trocas</Text>
+                    <Text style={{ fontSize: 15, fontWeight: "700", color: "#0F172A" }}>Trocas</Text>
                   </View>
                   <Text style={{ fontSize: 13, color: "rgba(242,246,255,0.55)" }}>Aprovar trocas</Text>
                 </TintedGlassCard>

@@ -12,6 +12,7 @@ import { useRouter } from "expo-router";
 import { Activity } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { useAuth } from "@/hooks/use-auth";
+import { theme } from "@/lib/theme";
 
 const LABEL_STYLE = {
   fontSize: 11,
@@ -82,7 +83,7 @@ export default function LoginScreen() {
                 style={{
                   fontSize: 28,
                   fontWeight: "800",
-                  color: "#FFFFFF",
+                  color: theme.colors.textPrimary,
                   marginTop: 16,
                   letterSpacing: -0.5,
                 }}
@@ -92,7 +93,7 @@ export default function LoginScreen() {
               <Text
                 style={{
                   fontSize: 15,
-                  color: "rgba(242,246,255,0.60)",
+                  color: theme.colors.textSecondary,
                   marginTop: 6,
                 }}
               >
@@ -198,7 +199,7 @@ export default function LoginScreen() {
                 <Text
                   style={{
                     fontSize: 13,
-                    color: "#64748B",
+                    color: theme.colors.accent,
                     textDecorationLine: "underline",
                   }}
                 >
@@ -212,4 +213,3 @@ export default function LoginScreen() {
     </ScreenGradient>
   );
 }
-

@@ -86,7 +86,7 @@ export default function ShiftDetailsScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg text-white/70">Faça login para continuar</Text>
+          <Text className="text-lg text-slate-600">Faça login para continuar</Text>
         </View>
       </ScreenGradient>
     );
@@ -97,7 +97,7 @@ export default function ShiftDetailsScreen() {
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center gap-4">
           <ActivityIndicator size="large" color="#4DA3FF" />
-          <Text className="text-base text-white/70">Carregando detalhes...</Text>
+          <Text className="text-base text-slate-600">Carregando detalhes...</Text>
         </View>
       </ScreenGradient>
     );
@@ -107,14 +107,14 @@ export default function ShiftDetailsScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center gap-6">
-          <AlertCircle size={64} color="rgba(255,255,255,0.5)" />
-          <Text className="text-lg text-white/70">Escala não encontrada</Text>
+          <AlertCircle size={64} color="#64748B" />
+          <Text className="text-lg text-slate-600">Escala não encontrada</Text>
           <TouchableOpacity
             onPress={handleBack}
             className="bg-[#4DA3FF] rounded-2xl px-8 h-14 justify-center"
             activeOpacity={0.7}
           >
-            <Text className="text-lg font-semibold text-white">Voltar</Text>
+            <Text className="text-lg font-semibold text-slate-900">Voltar</Text>
           </TouchableOpacity>
         </View>
       </ScreenGradient>
@@ -139,10 +139,10 @@ export default function ShiftDetailsScreen() {
             activeOpacity={0.7}
             className="w-10 h-10 items-center justify-center"
           >
-            <ChevronLeft size={28} color="#FFFFFF" />
+            <ChevronLeft size={28} color="#0F172A" />
           </TouchableOpacity>
           <View className="flex-1">
-            <Text className="text-3xl font-bold text-white">Detalhes da Escala</Text>
+            <Text className="text-3xl font-bold text-slate-900">Detalhes da Escala</Text>
           </View>
         </View>
 
@@ -154,32 +154,32 @@ export default function ShiftDetailsScreen() {
               className="w-12 h-12 rounded-2xl items-center justify-center"
               style={{ backgroundColor: sector?.color || "#4DA3FF" }}
             >
-              <Calendar size={24} color="#FFFFFF" />
+              <Calendar size={24} color="#0F172A" />
             </View>
             <View className="flex-1">
-              <Text className="text-sm text-white/50 mb-1">Setor</Text>
-              <Text className="text-2xl font-bold text-white">
+              <Text className="text-sm text-slate-500 mb-1">Setor</Text>
+              <Text className="text-2xl font-bold text-slate-900">
                 {sector?.name || "Não definido"}
               </Text>
-              <Text className="text-sm text-white/50 capitalize mt-1">{sector?.category}</Text>
+              <Text className="text-sm text-slate-500 capitalize mt-1">{sector?.category}</Text>
             </View>
           </View>
 
           {/* Data e Horário */}
           <View className="gap-4">
             <View>
-              <Text className="text-sm text-white/50 mb-2">Data</Text>
-              <Text className="text-lg font-semibold text-white">
+              <Text className="text-sm text-slate-500 mb-2">Data</Text>
+              <Text className="text-lg font-semibold text-slate-900">
                 {formatDateBR(startDate)}
               </Text>
             </View>
 
             <View className="flex-row gap-4">
               <View className="flex-1">
-                <Text className="text-sm text-white/50 mb-2">Início</Text>
+                <Text className="text-sm text-slate-500 mb-2">Início</Text>
                 <View className="flex-row items-center gap-2">
-                  <Clock size={18} color="rgba(255,255,255,0.7)" />
-                  <Text className="text-lg font-semibold text-white">
+                  <Clock size={18} color="#475569" />
+                  <Text className="text-lg font-semibold text-slate-900">
                     {startDate.toLocaleTimeString("pt-BR", {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -188,10 +188,10 @@ export default function ShiftDetailsScreen() {
                 </View>
               </View>
               <View className="flex-1">
-                <Text className="text-sm text-white/50 mb-2">Término</Text>
+                <Text className="text-sm text-slate-500 mb-2">Término</Text>
                 <View className="flex-row items-center gap-2">
-                  <Clock size={18} color="rgba(255,255,255,0.7)" />
-                  <Text className="text-lg font-semibold text-white">
+                  <Clock size={18} color="#475569" />
+                  <Text className="text-lg font-semibold text-slate-900">
                     {endDate.toLocaleTimeString("pt-BR", {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -203,8 +203,8 @@ export default function ShiftDetailsScreen() {
 
             {/* Duração */}
             <View>
-              <Text className="text-sm text-white/50 mb-2">Duração</Text>
-              <Text className="text-lg font-semibold text-white">
+              <Text className="text-sm text-slate-500 mb-2">Duração</Text>
+              <Text className="text-lg font-semibold text-slate-900">
                 {Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60))} horas
               </Text>
             </View>
@@ -212,7 +212,7 @@ export default function ShiftDetailsScreen() {
 
           {/* Status */}
           <View className="pt-4 border-t border-white/10">
-            <Text className="text-sm text-white/50 mb-3">Status</Text>
+            <Text className="text-sm text-slate-500 mb-3">Status</Text>
             <Badge
               variant={
                 (shift.status === "confirmada" || shift.status === "OCUPADO")
@@ -233,8 +233,8 @@ export default function ShiftDetailsScreen() {
           {/* Observações */}
           {shift.notes && (
             <View className="pt-4 border-t border-white/10">
-              <Text className="text-sm text-white/50 mb-2">Observações</Text>
-              <Text className="text-base text-white/70">{shift.notes}</Text>
+              <Text className="text-sm text-slate-500 mb-2">Observações</Text>
+              <Text className="text-base text-slate-600">{shift.notes}</Text>
             </View>
           )}
         </TintedGlassCard>
@@ -242,8 +242,8 @@ export default function ShiftDetailsScreen() {
         {/* Lista de Profissionais Alocados */}
         <View>
           <View className="flex-row items-center gap-3 mb-4">
-            <Users size={24} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">
+            <Users size={24} color="#0F172A" />
+            <Text className="text-2xl font-bold text-slate-900">
               Profissionais ({assignments?.length || 0})
             </Text>
           </View>
@@ -255,7 +255,7 @@ export default function ShiftDetailsScreen() {
                   <View className="flex-row items-center justify-between">
                     <View className="flex-1">
                       <View className="flex-row items-center gap-2 mb-1">
-                        <Text className="text-lg font-semibold text-white">
+                        <Text className="text-lg font-semibold text-slate-900">
                           {assignment.professionalName || `Profissional #${assignment.userId || assignment.professionalId}`}
                         </Text>
                         {assignment.isSubstitute && (
@@ -265,7 +265,7 @@ export default function ShiftDetailsScreen() {
                         )}
                       </View>
                       {assignment.confirmedAt && (
-                        <Text className="text-sm text-white/50 mt-1">
+                        <Text className="text-sm text-slate-500 mt-1">
                           Confirmado em{" "}
                           {formatDateBR(assignment.confirmedAt)}
                         </Text>
@@ -285,8 +285,8 @@ export default function ShiftDetailsScreen() {
             </View>
           ) : (
             <TintedGlassCard className="items-center py-8">
-              <Users size={48} color="rgba(255,255,255,0.3)" />
-              <Text className="text-base text-white/50 mt-3">Nenhum profissional alocado</Text>
+              <Users size={48} color="#94A3B8" />
+              <Text className="text-base text-slate-500 mt-3">Nenhum profissional alocado</Text>
             </TintedGlassCard>
           )}
         </View>
@@ -302,8 +302,8 @@ export default function ShiftDetailsScreen() {
             activeOpacity={0.8}
           >
             <View className="flex-row items-center gap-3">
-              <CheckCircle2 size={24} color="#FFFFFF" />
-              <Text className="text-xl font-bold text-white">Confirmar Presença</Text>
+              <CheckCircle2 size={24} color="#0F172A" />
+              <Text className="text-xl font-bold text-slate-900">Confirmar Presença</Text>
             </View>
           </TouchableOpacity>
         )}
@@ -316,13 +316,13 @@ export default function ShiftDetailsScreen() {
               onPress={handleEdit}
               className="rounded-2xl h-14 items-center justify-center"
               style={{
-                backgroundColor: "rgba(255,255,255,0.05)",
+                backgroundColor: "#F8FAFC",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
+                borderColor: "#E2E8F0",
               }}
               activeOpacity={0.7}
             >
-              <Text className="text-lg font-semibold text-white">Editar Escala</Text>
+              <Text className="text-lg font-semibold text-slate-900">Editar Escala</Text>
             </TouchableOpacity>
 
             {/* Botão de Solicitar Troca */}
@@ -349,7 +349,7 @@ export default function ShiftDetailsScreen() {
                 className="bg-[#4DA3FF] rounded-2xl h-14 items-center justify-center"
                 activeOpacity={0.7}
               >
-                <Text className="text-lg font-semibold text-white">Confirmar Presença</Text>
+                <Text className="text-lg font-semibold text-slate-900">Confirmar Presença</Text>
               </TouchableOpacity>
             )}
           </View>
