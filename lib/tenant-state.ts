@@ -1,4 +1,14 @@
 import { Platform } from "react-native";
+import {
+  createElement,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 const TENANT_KEY = "activeInstitutionId";
 
@@ -79,4 +89,62 @@ export async function clearActiveInstitutionId(): Promise<void> {
   } catch {
     // ignore storage errors
   }
+}
+
+type TenantStateValue = {
+  activeInstitutionId: number | null;
+  isHydrating: boolean;
+  setActiveInstitutionId: (id: number) => Promise<void>;
+  clearInstitutionSelection: () => Promise<void>;
+};
+
+const TenantStateContext = createContext<TenantStateValue | null>(null);
+
+export function TenantStateProvider({ children }: { children: ReactNode }) {
+  const [activeInstitutionIdState, setActiveInstitutionIdState] = useState<number | null>(null);
+  const [isHydrating, setIsHydrating] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    getActiveInstitutionId()
+      .then((id) => {
+        if (mounted) setActiveInstitutionIdState(id);
+      })
+      .finally(() => {
+        if (mounted) setIsHydrating(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const setActiveInstitutionIdFn = useCallback(async (id: number) => {
+    await setActiveInstitutionId(id);
+    setActiveInstitutionIdState(id);
+  }, []);
+
+  const clearInstitutionSelection = useCallback(async () => {
+    await clearActiveInstitutionId();
+    setActiveInstitutionIdState(null);
+  }, []);
+
+  const value = useMemo<TenantStateValue>(
+    () => ({
+      activeInstitutionId: activeInstitutionIdState,
+      isHydrating,
+      setActiveInstitutionId: setActiveInstitutionIdFn,
+      clearInstitutionSelection,
+    }),
+    [activeInstitutionIdState, clearInstitutionSelection, isHydrating, setActiveInstitutionIdFn],
+  );
+
+  return createElement(TenantStateContext.Provider, { value }, children);
+}
+
+export function useTenantState(): TenantStateValue {
+  const ctx = useContext(TenantStateContext);
+  if (!ctx) {
+    throw new Error("useTenantState must be used within TenantStateProvider");
+  }
+  return ctx;
 }

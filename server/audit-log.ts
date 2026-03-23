@@ -1,4 +1,4 @@
-import { shiftAuditLog } from "../drizzle/schema";
+import { shiftAuditLog, shiftInstances } from "../drizzle/schema";
 import { eq, desc } from "drizzle-orm";
 import { getDb } from "./db";
 
@@ -27,6 +27,7 @@ export type AuditEvent =
 export interface AuditLogParams {
   event: AuditEvent;
   shiftInstanceId: number;
+  institutionId?: number;
   professionalId: number | null;
   reason?: string | null;
   metadata?: Record<string, any> | null;
@@ -42,14 +43,30 @@ export async function auditLog(params: AuditLogParams): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const { event, shiftInstanceId, professionalId, reason, metadata } = params;
+  const { event, shiftInstanceId, institutionId, professionalId, reason, metadata } = params;
 
   // Validar que RETROACTIVE_EDIT exige motivo obrigatório
   if (event === "RETROACTIVE_EDIT" && !reason) {
     throw new Error("RETROACTIVE_EDIT exige motivo obrigatório");
   }
 
+  let resolvedInstitutionId = institutionId ?? null;
+  if (!resolvedInstitutionId && shiftInstanceId > 0) {
+    const [shift] = await db
+      .select({ institutionId: shiftInstances.institutionId })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftInstanceId))
+      .limit(1);
+    resolvedInstitutionId = shift?.institutionId ?? null;
+  }
+
+  if (!resolvedInstitutionId) {
+    // Fallback defensivo para cenários legados sem contexto de instituição.
+    resolvedInstitutionId = 1;
+  }
+
   await db.insert(shiftAuditLog).values({
+    institutionId: resolvedInstitutionId,
     event,
     shiftInstanceId,
     professionalId,

@@ -34,9 +34,10 @@ export default function ProfileScreen() {
   const monthStart = toDateKey(monthStartDate);
   const monthEnd = toDateKey(monthEndDateExclusive);
 
-  const { data: professional } = trpc.professionals.me.useQuery(undefined, {
-    enabled: !!user?.id,
-  });
+  const { data: professional } = trpc.professionals.getByUserId.useQuery(
+    { userId: user?.id ?? 0 },
+    { enabled: !!user?.id },
+  );
 
   const { data: monthShifts } = trpc.shifts.listByPeriod.useQuery(
     { startDate: monthStart, endDate: monthEnd },

@@ -112,9 +112,9 @@ async function findAvailableBaseDate(
 }
 
 async function createCaller(userId: number, institutionId: number) {
+  void institutionId;
   return appRouter.createCaller({
     user: { id: userId } as any,
-    institutionId,
     req: { headers: {}, ip: "127.0.0.1" } as any,
     res: {} as any,
   });
@@ -338,6 +338,7 @@ async function main() {
 
     await gestorCaller.shiftInstances.approveAssignment({
       assignmentId: (pendingAssignment as any).assignmentId,
+      professionalId: (pendingAssignment as any).professionalId,
     });
 
     const [shiftAfterApprove] = await db
@@ -376,6 +377,7 @@ async function main() {
 
     await gestorCaller.shiftInstances.rejectAssignment({
       assignmentId: assumeResult2.assignmentId,
+      professionalId: userProfessional.id,
       reason: "Teste de rejeição E2E",
     });
 
@@ -473,6 +475,7 @@ async function main() {
     // GESTOR aprova vaga A
     await gestorCaller.shiftInstances.approveAssignment({
       assignmentId: conflictAssumeA.assignmentId,
+      professionalId: userProfessional.id,
     });
 
     const [conflictShiftAAfterApprove] = await db
@@ -519,6 +522,7 @@ async function main() {
       try {
         await gestorCaller.shiftInstances.approveAssignment({
           assignmentId: conflictAssumeB.assignmentId,
+          professionalId: userProfessional.id,
         });
         throw new Error(
           "approveAssignment da vaga B deveria ter falhado por conflito global"

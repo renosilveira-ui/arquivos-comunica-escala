@@ -111,9 +111,11 @@ export default function PendingScreen() {
   };
   
   // Buscar profissional associado ao usuário logado
-  const { data: professional, isLoading: professionalLoading } = trpc.professionals.me.useQuery(undefined, {
-    enabled: !!user?.id,
-  });
+  const { data: professional, isLoading: professionalLoading } =
+    trpc.professionals.getByUserId.useQuery(
+      { userId: user?.id ?? 0 },
+      { enabled: !!user?.id },
+    );
 
   // Buscar hospitais e setores para os filtros
   const { data: hospitalsData } = trpc.hospitals.list.useQuery(undefined, { enabled: !!user?.id });
@@ -221,7 +223,7 @@ export default function PendingScreen() {
     },
   });
 
-  const handleApprove = (assignmentId: number, professionalName: string) => {
+  const handleApprove = (assignmentId: number, professionalId: number, professionalName: string) => {
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Aprovar alocação de ${professionalName}?`);
@@ -230,7 +232,7 @@ export default function PendingScreen() {
     if (!confirmed) return;
 
     approveAssignment.mutate(
-      { assignmentId },
+      { assignmentId, professionalId },
       {
         onSuccess: () => {
           refetch();
@@ -243,7 +245,7 @@ export default function PendingScreen() {
     );
   };
 
-  const handleReject = (assignmentId: number, professionalName: string) => {
+  const handleReject = (assignmentId: number, professionalId: number, professionalName: string) => {
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Rejeitar alocação de ${professionalName}?`);
@@ -252,7 +254,7 @@ export default function PendingScreen() {
     if (!confirmed) return;
 
     rejectAssignment.mutate(
-      { assignmentId, reason: "Rejeitado pelo gestor" },
+      { assignmentId, professionalId, reason: "Rejeitado pelo gestor" },
       {
         onSuccess: () => {
           refetch();
@@ -651,7 +653,13 @@ export default function PendingScreen() {
                   // ✅ Gestor: mostrar botões de aprovação/rejeição
                   <View className="flex-row gap-3">
                     <TouchableOpacity
-                      onPress={() => handleApprove(pending.assignmentId, pending.professionalName)}
+                      onPress={() =>
+                        handleApprove(
+                          pending.assignmentId,
+                          pending.professionalId,
+                          pending.professionalName,
+                        )
+                      }
                       disabled={approveAssignment.isPending || rejectAssignment.isPending}
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-green-500 py-3 active:opacity-80"
                     >
@@ -660,7 +668,13 @@ export default function PendingScreen() {
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      onPress={() => handleReject(pending.assignmentId, pending.professionalName)}
+                      onPress={() =>
+                        handleReject(
+                          pending.assignmentId,
+                          pending.professionalId,
+                          pending.professionalName,
+                        )
+                      }
                       disabled={approveAssignment.isPending || rejectAssignment.isPending}
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-red-500 py-3 active:opacity-80"
                     >

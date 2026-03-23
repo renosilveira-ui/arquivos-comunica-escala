@@ -46,6 +46,9 @@ const COOKIE_OPTIONS = {
 const DEFAULT_INSTITUTION = {
   id: 1,
   name: "Hospital das Clínicas",
+  cnpj: "00000000000000",
+  legalName: "Hospital das Clínicas",
+  tradeName: "Hospital das Clínicas",
 } as const;
 
 function resolveProfessionalName(user: User): string {
@@ -71,9 +74,17 @@ async function ensureProfessionalLink(user: User): Promise<void> {
     .values({
       id: DEFAULT_INSTITUTION.id,
       name: DEFAULT_INSTITUTION.name,
+      cnpj: DEFAULT_INSTITUTION.cnpj,
+      legalName: DEFAULT_INSTITUTION.legalName,
+      tradeName: DEFAULT_INSTITUTION.tradeName,
     })
     .onDuplicateKeyUpdate({
-      set: { name: DEFAULT_INSTITUTION.name },
+      set: {
+        name: DEFAULT_INSTITUTION.name,
+        cnpj: DEFAULT_INSTITUTION.cnpj,
+        legalName: DEFAULT_INSTITUTION.legalName,
+        tradeName: DEFAULT_INSTITUTION.tradeName,
+      },
     });
 
   let professionalId = existingProfessional?.id;
@@ -81,7 +92,6 @@ async function ensureProfessionalLink(user: User): Promise<void> {
     if (!professionalId) {
       const [proInsert] = await db.insert(professionals).values({
         userId: user.id,
-        institutionId: DEFAULT_INSTITUTION.id,
         name: resolveProfessionalName(user),
         role: mapRoleToLabel(user.role),
         userRole: mapRoleToProRole(user.role),
@@ -242,7 +252,6 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
   try {
     const [proInsert] = await db.insert(professionals).values({
       userId: newUserId,
-      institutionId: DEFAULT_INSTITUTION.id,
       name,
       role: mapRoleToLabel(normalizedRole),
       userRole: mapRoleToProRole(normalizedRole),
@@ -252,9 +261,17 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
       .values({
         id: DEFAULT_INSTITUTION.id,
         name: DEFAULT_INSTITUTION.name,
+        cnpj: DEFAULT_INSTITUTION.cnpj,
+        legalName: DEFAULT_INSTITUTION.legalName,
+        tradeName: DEFAULT_INSTITUTION.tradeName,
       })
       .onDuplicateKeyUpdate({
-        set: { name: DEFAULT_INSTITUTION.name },
+        set: {
+          name: DEFAULT_INSTITUTION.name,
+          cnpj: DEFAULT_INSTITUTION.cnpj,
+          legalName: DEFAULT_INSTITUTION.legalName,
+          tradeName: DEFAULT_INSTITUTION.tradeName,
+        },
       });
   } catch (err) {
     console.warn("[register] Could not auto-create professional record:", (err as Error).message);

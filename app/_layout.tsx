@@ -33,57 +33,14 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 /** Handles auth-gated navigation. Must be rendered inside providers. */
 function AuthGuard() {
   const { user, isLoading } = useAuth();
-  const queryClient = useQueryClient();
   const pathname = usePathname();
   const {
-    activeInstitutionId,
-    clearInstitutionSelection,
     isHydrating: isHydratingTenant,
-    setActiveInstitutionId,
   } = useTenantState();
-  const { data: institutions, isLoading: isLoadingInstitutions } =
-    trpc.professionals.listInstitutions.useQuery(undefined, {
-      enabled: Boolean(user),
-      staleTime: 30_000,
-    });
-  const { data: upcomingShift, isLoading: isLoadingUpcomingShift } =
-    trpc.shifts.getUpcomingShift.useQuery(undefined, {
-      enabled: Boolean(user) && !activeInstitutionId,
-      staleTime: 15_000,
-    });
-
-  useEffect(() => {
-    if (!institutions) return;
-    if (institutions.length === 1 && !activeInstitutionId) {
-      void setActiveInstitutionId(institutions[0]!.institutionId);
-    }
-  }, [activeInstitutionId, institutions, setActiveInstitutionId]);
-
-  useEffect(() => {
-    if (!institutions || activeInstitutionId || !upcomingShift) return;
-    const linkedInstitution = institutions.some(
-      (institution) => institution.institutionId === upcomingShift.institutionId,
-    );
-    if (linkedInstitution) {
-      queryClient.clear();
-      void setActiveInstitutionId(upcomingShift.institutionId);
-    }
-  }, [activeInstitutionId, institutions, upcomingShift, queryClient, setActiveInstitutionId]);
-
-  useEffect(() => {
-    if (!institutions || !activeInstitutionId) return;
-    const isValidTenant = institutions.some(
-      (institution) => institution.institutionId === activeInstitutionId,
-    );
-    if (!isValidTenant) {
-      void clearInstitutionSelection();
-    }
-  }, [activeInstitutionId, clearInstitutionSelection, institutions]);
 
   if (
     isLoading ||
-    isHydratingTenant ||
-    (Boolean(user) && (isLoadingInstitutions || isLoadingUpcomingShift))
+    isHydratingTenant
   ) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0a1929" }}>
@@ -96,15 +53,8 @@ function AuthGuard() {
     return <Redirect href="/login" />;
   }
 
-  const hasMultiTenant = (institutions?.length ?? 0) > 1;
-  const needsTenantSelection = hasMultiTenant && !activeInstitutionId;
-
-  if (needsTenantSelection && pathname !== "/select-institution") {
-    return <Redirect href="/select-institution" />;
-  }
-
-  if (!needsTenantSelection && pathname === "/select-institution") {
-    return <Redirect href={upcomingShift ? "/(tabs)/calendar" : "/(tabs)"} />;
+  if (pathname === "/select-institution") {
+    return <Redirect href="/(tabs)" />;
   }
 
   return null;
