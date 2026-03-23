@@ -9,6 +9,9 @@ import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { startShiftRadarWorker } from "../workers/shift-radar";
+import { startNotificationsDispatcher } from "../notifications-service";
+import { startGarbageCollectorWorker } from "../workers/garbage-collector";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -20,30 +23,53 @@ function isPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-async function findAvailablePort(startPort: number = 3000): Promise<number> {
-  for (let port = startPort; port < startPort + 20; port++) {
-    if (await isPortAvailable(port)) {
-      return port;
-    }
-  }
-  throw new Error(`No available port found starting from ${startPort}`);
-}
-
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  const defaultDevOrigins = new Set([
+    "http://localhost:8081",
+    "http://localhost:3000",
+    "http://localhost:3001",
+  ]);
+  const expoApiUrl = (process.env.EXPO_PUBLIC_API_URL ?? "").trim();
+  if (expoApiUrl) {
+    try {
+      const parsed = new URL(expoApiUrl);
+      defaultDevOrigins.add(`${parsed.protocol}//${parsed.hostname}:8081`);
+    } catch {
+      // Ignore invalid URL and keep safe defaults.
+    }
+  }
+  const envOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const allowedOrigins = new Set(
+    envOrigins.length > 0
+      ? envOrigins
+      : process.env.NODE_ENV === "production"
+        ? []
+        : Array.from(defaultDevOrigins),
+  );
+  const allowedHeaders = [
+    "Origin",
+    "X-Requested-With",
+    "Content-Type",
+    "Accept",
+    "Authorization",
+    "x-tenant-id",
+    "x-test-user-id",
+  ].join(", ");
 
-  // Enable CORS for all routes - reflect the request origin to support credentials
+  // CORS from env (production) with localhost fallback only in non-production.
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin) {
+    if (origin && allowedOrigins.has(origin)) {
       res.header("Access-Control-Allow-Origin", origin);
+      res.header("Vary", "Origin");
     }
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header(
-      "Access-Control-Allow-Headers",
-      "Origin, X-Requested-With, Content-Type, Accept, Authorization",
-    );
+    res.header("Access-Control-Allow-Headers", allowedHeaders);
     res.header("Access-Control-Allow-Credentials", "true");
 
     // Handle preflight requests
@@ -73,15 +99,19 @@ async function startServer() {
     }),
   );
 
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  const port = await findAvailablePort(preferredPort);
-
-  if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+  const port = parseInt(process.env.PORT || "3000", 10);
+  const portFree = await isPortAvailable(port);
+  if (!portFree) {
+    throw new Error(
+      `Port ${port} is already in use. Stop the conflicting process and retry (fixed API port policy).`,
+    );
   }
 
-  server.listen(port, () => {
-    console.log(`[api] server listening on port ${port}`);
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`[api] server listening on 0.0.0.0:${port}`);
+    startShiftRadarWorker();
+    startNotificationsDispatcher();
+    startGarbageCollectorWorker();
   });
 }
 
