@@ -5,10 +5,11 @@
 
 import { getDb } from "./db";
 import { sectors, hospitals } from "../drizzle/schema";
+import { eq } from "drizzle-orm";
 
 // NOTA: Execute seed-institutions.ts primeiro para criar hospital padrão
 
-async function getSectorsData(hospitalId: number) {
+async function getSectorsData(hospitalId: number, institutionId: number) {
   return [
   // Internação (13 setores)
   { name: "UTI Térreo", category: "internacao" as const, color: "#DC2626", minStaffCount: 4 },
@@ -38,7 +39,7 @@ async function getSectorsData(hospitalId: number) {
   { name: "Farmácia", category: "servico" as const, color: "#16A34A", minStaffCount: 2 },
   { name: "Recepção", category: "servico" as const, color: "#16A34A", minStaffCount: 2 },
   { name: "Administração", category: "servico" as const, color: "#16A34A", minStaffCount: 1 },
-  ].map(sector => ({ ...sector, hospitalId }));
+  ].map((sector) => ({ ...sector, hospitalId, institutionId }));
 }
 
 async function seed() {
@@ -58,31 +59,26 @@ async function seed() {
       throw new Error("No hospitals found. Run seed-institutions.ts first.");
     }
     
-    const hospitalId = allHospitals[0].id;
-    console.log(`📍 Usando hospital ID: ${hospitalId} (${allHospitals[0].name})`);
-    
-    // Verificar se já existem setores
-    const existingSectors = await db.select().from(sectors);
-    
-    if (existingSectors.length > 0) {
-      console.log(`✅ ${existingSectors.length} setores já cadastrados. Pulando seed.`);
-      return;
+    for (const hospital of allHospitals) {
+      console.log(`📍 Processando hospital ID: ${hospital.id} (${hospital.name})`);
+
+      const existingSectors = await db
+        .select()
+        .from(sectors)
+        .where(eq(sectors.hospitalId, hospital.id));
+
+      if (existingSectors.length > 0) {
+        console.log(`⏭️  ${existingSectors.length} setores já existem para ${hospital.name}. Pulando.`);
+        continue;
+      }
+
+      const sectorsData = await getSectorsData(hospital.id, hospital.institutionId);
+      await db.insert(sectors).values(sectorsData);
+      console.log(`✅ ${sectorsData.length} setores cadastrados para ${hospital.name}`);
     }
-    
-    // Obter dados dos setores com hospitalId
-    const sectorsData = await getSectorsData(hospitalId);
-    
-    // Inserir setores
-    await db.insert(sectors).values(sectorsData);
-    
-    console.log(`✅ ${sectorsData.length} setores cadastrados com sucesso!`);
-    
-    // Listar setores cadastrados
+
     const allSectors = await db.select().from(sectors);
-    console.log("\n📋 Setores cadastrados:");
-    allSectors.forEach((sector: typeof sectors.$inferSelect) => {
-      console.log(`  - ${sector.name} (${sector.category}) - ${sector.color}`);
-    });
+    console.log(`\n📋 Total de setores cadastrados: ${allSectors.length}`);
     
   } catch (error) {
     console.error("❌ Erro ao popular setores:", error);

@@ -5,6 +5,7 @@
  * Usage: pnpm e2e:workflow
  */
 
+import "dotenv/config";
 import { getDb } from "../server/db.js";
 import { appRouter } from "../server/routers.js";
 import {
@@ -20,8 +21,8 @@ import {
 import { eq, and, sql } from "drizzle-orm";
 import { getOrCreateShiftInstanceId, GET_OR_CREATE_SHIFT_VERSION } from "../server/helpers/getOrCreateShiftInstanceId.js";
 
-const USER_ID = 30003;
-const GESTOR_ID = 30001;
+const USER_ID = process.env.E2E_USER_ID ? Number(process.env.E2E_USER_ID) : null;
+const GESTOR_ID = process.env.E2E_GESTOR_ID ? Number(process.env.E2E_GESTOR_ID) : null;
 
 const colors = {
   reset: "\x1b[0m",
@@ -55,10 +56,66 @@ function isConflictError(err: any): boolean {
   );
 }
 
-async function createCaller(userId: number) {
+async function hasUserTimeConflict(
+  db: Awaited<ReturnType<typeof getDb>>,
+  userId: number,
+  startAt: Date,
+  endAt: Date
+): Promise<boolean> {
+  const result = await db!.execute<any>(
+    sql`SELECT COUNT(*) AS count
+        FROM shift_assignments_v2 sa
+        INNER JOIN shift_instances si ON si.id = sa.shift_instance_id
+        INNER JOIN professionals p ON p.id = sa.professional_id
+        WHERE sa.is_active = true
+          AND p.user_id = ${userId}
+          AND si.start_at < ${endAt}
+          AND si.end_at > ${startAt}`
+  );
+
+  const rows = Array.isArray(result) && Array.isArray((result as any)[0]) ? (result as any)[0] : [];
+  const count = Number(rows?.[0]?.count ?? 0);
+  return count > 0;
+}
+
+async function findAvailableBaseDate(
+  db: Awaited<ReturnType<typeof getDb>>,
+  userId: number,
+  windows: Array<{ startHour: number; endHour: number }>,
+  startOffsetDays = 30,
+  searchDays = 180
+): Promise<Date> {
+  for (let offset = startOffsetDays; offset < startOffsetDays + searchDays; offset++) {
+    const day = new Date();
+    day.setDate(day.getDate() + offset);
+    day.setHours(0, 0, 0, 0);
+
+    let hasConflict = false;
+    for (const window of windows) {
+      const startAt = new Date(day);
+      startAt.setHours(window.startHour, 0, 0, 0);
+      const endAt = new Date(day);
+      endAt.setHours(window.endHour, 0, 0, 0);
+
+      if (await hasUserTimeConflict(db, userId, startAt, endAt)) {
+        hasConflict = true;
+        break;
+      }
+    }
+
+    if (!hasConflict) {
+      return day;
+    }
+  }
+
+  throw new Error("Não foi possível encontrar janela sem conflito para o usuário no período de busca.");
+}
+
+async function createCaller(userId: number, institutionId: number) {
   return appRouter.createCaller({
     user: { id: userId } as any,
-    req: {} as any,
+    institutionId,
+    req: { headers: {}, ip: "127.0.0.1" } as any,
     res: {} as any,
   });
 }
@@ -84,20 +141,34 @@ async function main() {
     assert(!!hospital, "Hospital exists");
     assert(!!sector, "Sector exists");
 
-    const [userProfessional] = await db
-      .select()
-      .from(professionals)
-      .where(eq(professionals.userId, USER_ID))
-      .limit(1);
+    const [userProfessional] = USER_ID
+      ? await db
+          .select()
+          .from(professionals)
+          .where(eq(professionals.userId, USER_ID))
+          .limit(1)
+      : await db
+          .select()
+          .from(professionals)
+          .where(eq(professionals.userRole, "USER"))
+          .limit(1);
 
-    const [gestorProfessional] = await db
-      .select()
-      .from(professionals)
-      .where(eq(professionals.userId, GESTOR_ID))
-      .limit(1);
+    const [gestorProfessional] = GESTOR_ID
+      ? await db
+          .select()
+          .from(professionals)
+          .where(eq(professionals.userId, GESTOR_ID))
+          .limit(1)
+      : await db
+          .select()
+          .from(professionals)
+          .where(eq(professionals.userRole, "GESTOR_PLUS"))
+          .limit(1);
 
     assert(!!userProfessional, "USER professional exists");
     assert(!!gestorProfessional, "GESTOR professional exists");
+    const userId = userProfessional.userId;
+    const gestorUserId = gestorProfessional.userId;
 
     // Limpar turnos PENDENTE e assignments de testes anteriores
     const testShifts = await db
@@ -136,6 +207,7 @@ async function main() {
 
     if (!existingScope[0]) {
       await db.insert(managerScope).values({
+        institutionId: institution.id,
         managerProfessionalId: gestorProfessional.id,
         hospitalId: hospital.id,
         sectorId: sector.id, // Permissão sector-level (setor específico)
@@ -154,62 +226,63 @@ async function main() {
     log(`  managerScopeSectorId: ${sector.id}`, "cyan");
     log(`  gestorProfessionalId: ${gestorProfessional.id}`, "cyan");
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const firstShiftWindow = { startHour: 7, endHour: 13 };
+    const secondShiftWindow = { startHour: 13, endHour: 19 };
+
+    const baseDayFirstShift = await findAvailableBaseDate(
+      db,
+      userId,
+      [firstShiftWindow],
+      30,
+      180
+    );
+    const baseDaySecondShift = await findAvailableBaseDate(
+      db,
+      userId,
+      [secondShiftWindow],
+      31,
+      180
+    );
+    log(
+      `  📅 Base days selected: ${baseDayFirstShift.toISOString().slice(0, 10)} / ${baseDaySecondShift.toISOString().slice(0, 10)} (sem conflito para USER)`
+    );
 
     const shifts = [
-      { label: "E2E Test - Manhã", startHour: 7, endHour: 13 },
-      { label: "E2E Test - Tarde", startHour: 13, endHour: 19 },
+      { label: "E2E Test - Manhã", startHour: 7, endHour: 13, baseDay: baseDayFirstShift },
+      { label: "E2E Test - Tarde", startHour: 13, endHour: 19, baseDay: baseDaySecondShift },
     ];
 
     const createdShiftIds: number[] = [];
 
-    for (const shift of shifts) {
-      const startAt = new Date(today);
+    for (const [index, shift] of shifts.entries()) {
+      const startAt = new Date(shift.baseDay);
       startAt.setHours(shift.startHour, 0, 0, 0);
 
-      const endAt = new Date(today);
+      const endAt = new Date(shift.baseDay);
       endAt.setHours(shift.endHour, 0, 0, 0);
 
-      const existing = await db
-        .select()
-        .from(shiftInstances)
-        .where(eq(shiftInstances.label, shift.label))
-        .limit(1);
+      const shiftId = await db.transaction(async (tx: any) =>
+        getOrCreateShiftInstanceId(tx, {
+          institutionId: institution.id,
+          hospitalId: hospital.id,
+          sectorId: sector.id,
+          startAt,
+          endAt,
+          label: shift.label,
+          createdBy: gestorUserId,
+        })
+      );
 
-      if (existing[0]) {
-        log(`  ⏭️  Shift "${shift.label}" already exists (ID: ${existing[0].id})`);
-        createdShiftIds.push(existing[0].id);
-        continue;
-      }
-
-      await db.insert(shiftInstances).values({
-        institutionId: institution.id,
-        hospitalId: hospital.id,
-        sectorId: sector.id,
-        label: shift.label,
-        status: "VAGO",
-        startAt,
-        endAt,
-        createdBy: GESTOR_ID,
-        createdAt: new Date(),
-      });
-
-      const [created] = await db
-        .select()
-        .from(shiftInstances)
-        .where(eq(shiftInstances.label, shift.label))
-        .limit(1);
-
-      log(`  ✅ Created shift "${shift.label}" (ID: ${created.id})`);
-      createdShiftIds.push(created.id);
+      const action = index < 2 ? "prepared" : "created";
+      log(`  ✅ Shift "${shift.label}" ${action} (ID: ${shiftId})`);
+      createdShiftIds.push(shiftId);
     }
 
     assert(createdShiftIds.length === 2, "2 VAGO shifts created");
 
     log("\n📋 PASSO B: USER assume vaga", "blue");
 
-    const userCaller = await createCaller(USER_ID);
+    const userCaller = await createCaller(userId, institution.id);
     const shiftToAssume = createdShiftIds[0];
 
     log(`  Assuming shift ID: ${shiftToAssume}`);
@@ -249,7 +322,7 @@ async function main() {
 
     log("\n📋 PASSO C: GESTOR vê pendência", "blue");
 
-    const gestorCaller = await createCaller(GESTOR_ID);
+    const gestorCaller = await createCaller(gestorUserId, institution.id);
 
     const pendingList = await gestorCaller.shiftAssignments.listPending();
 
@@ -265,7 +338,6 @@ async function main() {
 
     await gestorCaller.shiftInstances.approveAssignment({
       assignmentId: (pendingAssignment as any).assignmentId,
-      professionalId: gestorProfessional.id, // Quem está aprovando (GESTOR)
     });
 
     const [shiftAfterApprove] = await db
@@ -304,7 +376,6 @@ async function main() {
 
     await gestorCaller.shiftInstances.rejectAssignment({
       assignmentId: assumeResult2.assignmentId,
-      professionalId: gestorProfessional.id, // Quem está rejeitando (GESTOR)
       reason: "Teste de rejeição E2E",
     });
 
@@ -338,9 +409,16 @@ async function main() {
     log("\n📍 PASSO F: Teste de conflito global", "blue");
 
     // Criar 2 turnos no mesmo horário em hospitais diferentes
-    const conflictStartAt = new Date();
+    const conflictDay = await findAvailableBaseDate(
+      db,
+      userId,
+      [{ startHour: 14, endHour: 18 }],
+      60,
+      180
+    );
+    const conflictStartAt = new Date(conflictDay);
     conflictStartAt.setHours(14, 0, 0, 0); // 14h
-    const conflictEndAt = new Date();
+    const conflictEndAt = new Date(conflictDay);
     conflictEndAt.setHours(18, 0, 0, 0); // 18h
 
     // Buscar segundo hospital/setor para conflito
@@ -365,7 +443,7 @@ async function main() {
         startAt: conflictStartAt,
         endAt: conflictEndAt,
         label: "E2E Test - Conflito A",
-        createdBy: GESTOR_ID,
+        createdBy: gestorUserId,
       });
 
       const conflictShiftBId = await getOrCreateShiftInstanceId(tx, {
@@ -375,7 +453,7 @@ async function main() {
         startAt: conflictStartAt,
         endAt: conflictEndAt,
         label: "E2E Test - Conflito B",
-        createdBy: GESTOR_ID,
+        createdBy: gestorUserId,
       });
 
       return { conflictShiftAId, conflictShiftBId };
@@ -395,7 +473,6 @@ async function main() {
     // GESTOR aprova vaga A
     await gestorCaller.shiftInstances.approveAssignment({
       assignmentId: conflictAssumeA.assignmentId,
-      professionalId: gestorProfessional.id,
     });
 
     const [conflictShiftAAfterApprove] = await db
@@ -442,7 +519,6 @@ async function main() {
       try {
         await gestorCaller.shiftInstances.approveAssignment({
           assignmentId: conflictAssumeB.assignmentId,
-          professionalId: gestorProfessional.id,
         });
         throw new Error(
           "approveAssignment da vaga B deveria ter falhado por conflito global"
