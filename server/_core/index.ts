@@ -9,9 +9,6 @@ import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
-import { startShiftRadarWorker } from "../workers/shift-radar";
-import { startNotificationsDispatcher } from "../notifications-service";
-import { startGarbageCollectorWorker } from "../workers/garbage-collector";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -109,9 +106,6 @@ async function startServer() {
 
   server.listen(port, "0.0.0.0", () => {
     console.log(`[api] server listening on 0.0.0.0:${port}`);
-    startShiftRadarWorker();
-    startNotificationsDispatcher();
-    startGarbageCollectorWorker();
   });
 }
 

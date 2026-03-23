@@ -3,7 +3,7 @@ import { View, Text } from "react-native";
 interface SidebarProps {
   collapsed?: boolean;
   onToggle?: () => void;
-  counts?: Record<string, number>;
+  counts?: unknown;
 }
 
 /**

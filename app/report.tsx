@@ -30,11 +30,11 @@ export default function ReportScreen() {
   }, []);
 
   // Buscar escalas do mês (API ou demo)
-  const startDate = new Date(selectedYear, selectedMonth, 1);
-  const endDate = new Date(selectedYear, selectedMonth + 1, 0);
+  const periodStart = format(new Date(selectedYear, selectedMonth, 1), "yyyy-MM-dd");
+  const periodEnd = format(new Date(selectedYear, selectedMonth + 1, 0), "yyyy-MM-dd");
 
   const { data: apiShifts, isLoading: apiLoading } = trpc.shifts.listByPeriod.useQuery(
-    { startDate, endDate },
+    { startDate: periodStart, endDate: periodEnd },
     { enabled: !!user?.id && !isDemo }
   );
 
