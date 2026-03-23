@@ -3,13 +3,20 @@ import { Platform } from "react-native";
 import * as Auth from "./auth";
 
 function getBaseUrl(): string {
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl) return envUrl;
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    return window.location.origin;
+  const envUrl = (process.env.EXPO_PUBLIC_API_URL || "").trim();
+  if (envUrl) return envUrl.replace(/\/$/, "");
+
+  // Fallback permitido apenas em desenvolvimento local.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("EXPO_PUBLIC_API_URL não configurado em produção");
   }
-  if (Platform.OS === "android") return "http://10.0.2.2:3000";
-  return "http://localhost:3000";
+
+  const fallbackPort = (process.env.EXPO_PUBLIC_API_PORT || "3000").trim();
+  if (Platform.OS === "android") return `http://10.0.2.2:${fallbackPort}`;
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:${fallbackPort}`;
+  }
+  return `http://localhost:${fallbackPort}`;
 }
 
 async function apiFetch<T>(

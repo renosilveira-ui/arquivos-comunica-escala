@@ -3,7 +3,7 @@ import { TabIcon } from "@/components/ui/TabIcon";
 import { usePermissions } from "@/hooks/use-permissions";
 
 export default function TabLayout() {
-  const { can } = usePermissions();
+  const { can, isManager } = usePermissions();
 
   return (
     <Tabs
@@ -51,6 +51,15 @@ export default function TabLayout() {
         name="pending"
         options={{
           title: "Pendentes",
+          href: isManager ? undefined : null,
+          tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
+        }}
+      />
+      <Tabs.Screen
+        name="meus"
+        options={{
+          title: "Meus",
+          href: isManager ? null : undefined,
           tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
         }}
       />

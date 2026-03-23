@@ -2,29 +2,24 @@
 import { createTRPCReact, httpBatchLink } from "@trpc/react-query";
 import superjson from "superjson";
 import { Platform } from "react-native";
+import * as Auth from "@/lib/_core/auth";
+import { getActiveInstitutionId } from "@/lib/tenant-state";
+import type { AppRouter } from "@/server/routers";
 
-// Para typecheck do client, precisamos do tipo AppRouter do server.
-// Quando o server/routers.ts estiver completo, substituir por:
-//   import type { AppRouter } from "@/server/routers";
-//   export const trpc = createTRPCReact<AppRouter>();
-//
-// Por enquanto, usamos createTRPCReact sem tipo específico.
-// O "as any" silencia erros de tipo nas chamadas trpc.X.useQuery(...)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const trpc = createTRPCReact<any>() as any;
+export const trpc = createTRPCReact<AppRouter>();
 
 function getBaseUrl(): string {
-  // 1) Variável de ambiente explícita (útil pra staging/prod)
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl) return envUrl;
+  const envUrl = (process.env.EXPO_PUBLIC_API_URL || "").trim();
+  if (envUrl) return envUrl.replace(/\/$/, "");
 
-  // 2) Dev defaults por plataforma
-  if (Platform.OS === "android") {
-    // Emulador Android usa 10.0.2.2 para acessar localhost do host
-    return "http://10.0.2.2:3000";
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("EXPO_PUBLIC_API_URL não configurado em produção");
   }
-  // iOS simulator e web usam localhost
-  return "http://localhost:3000";
+
+  // Fallback de desenvolvimento apenas.
+  const fallbackPort = (process.env.EXPO_PUBLIC_API_PORT || "3000").trim();
+  if (Platform.OS === "android") return `http://10.0.2.2:${fallbackPort}`;
+  return `http://localhost:${fallbackPort}`;
 }
 
 export function createTRPCClient() {
@@ -33,11 +28,23 @@ export function createTRPCClient() {
       httpBatchLink({
         url: `${getBaseUrl()}/api/trpc`,
         transformer: superjson,
-        headers() {
-          return {
-            // Cookies são enviados automaticamente na web.
-            // Em native, adicionar token aqui se necessário.
-          };
+        async headers() {
+          const headers: Record<string, string> = {};
+          const activeInstitutionId = await getActiveInstitutionId();
+          if (activeInstitutionId) {
+            headers["x-tenant-id"] = String(activeInstitutionId);
+          }
+          if (Platform.OS !== "web") {
+            const token = await Auth.getSessionToken();
+            if (token) headers.Authorization = `Bearer ${token}`;
+          }
+          return headers;
+        },
+        fetch(url, options) {
+          return fetch(url, {
+            ...options,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          });
         },
       }),
     ],

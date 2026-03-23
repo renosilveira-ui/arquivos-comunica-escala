@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
@@ -23,7 +23,7 @@ export const editorRouter = router({
    * assignDirect
    * Gestor aloca profissional diretamente no turno (sem candidatura)
    */
-  assignDirect: protectedProcedure
+  assignDirect: tenantProcedure
     .input(
       z.object({
         shiftInstanceId: z.number(),
@@ -44,7 +44,18 @@ export const editorRouter = router({
 
       // 1. Buscar profissional do usuário (gestor)
       const managerResult = await db.execute<any>(
-        sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
+        sql`SELECT p.id, p.user_role
+            FROM professionals p
+            INNER JOIN professional_institutions pi ON pi.professional_id = p.id
+            WHERE p.user_id = ${userId}
+            AND pi.institution_id = ${ctx.institutionId}
+            AND pi.active = true
+            ORDER BY CASE p.user_role
+              WHEN 'GESTOR_PLUS' THEN 1
+              WHEN 'GESTOR_MEDICO' THEN 2
+              ELSE 3
+            END
+            LIMIT 1`
       );
       const managerRows = (managerResult as any).rows || (managerResult as any[]);
       if (!managerRows[0]) {
@@ -64,6 +75,7 @@ export const editorRouter = router({
         sql`SELECT institution_id, hospital_id, sector_id, start_at, end_at, status
             FROM shift_instances
             WHERE id = ${shiftInstanceId}
+            AND institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
       const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
@@ -74,11 +86,28 @@ export const editorRouter = router({
       const shift = shiftRows[0];
       const yearMonth = yearMonthFromDate(new Date(shift.start_at));
 
+      // Garantir profissional alvo existente e mapear para user_id (conflito global entre vínculos).
+      const targetProfessionalResult = await db.execute<any>(
+        sql`SELECT p.id, p.user_id
+            FROM professionals p
+            INNER JOIN professional_institutions pi ON pi.professional_id = p.id
+            WHERE p.id = ${professionalId}
+              AND pi.institution_id = ${ctx.institutionId}
+              AND pi.active = true
+            LIMIT 1`
+      );
+      const targetProfessionalRows = (targetProfessionalResult as any).rows || (targetProfessionalResult as any[]);
+      if (!targetProfessionalRows[0]) {
+        throw new Error("Profissional alvo não encontrado");
+      }
+      const targetUserId = Number(targetProfessionalRows[0].user_id);
+
       // 3. Verificar RBAC + manager_scope
       if (role === "GESTOR_MEDICO") {
         const scopeResult = await db.execute<any>(
           sql`SELECT COUNT(*) as count FROM manager_scope
               WHERE manager_professional_id = ${managerId}
+              AND institution_id = ${ctx.institutionId}
               AND hospital_id = ${shift.hospital_id}
               AND (sector_id IS NULL OR sector_id = ${shift.sector_id})
               AND active = true`
@@ -98,29 +127,16 @@ export const editorRouter = router({
         reason || undefined
       );
 
-      // 5. Validar conflito global (profissional não pode estar em 2 turnos ao mesmo tempo)
-      const overlapResult = await db.execute<any>(
-        sql`SELECT COUNT(*) as count
-            FROM shift_assignments_v2 sa
-            INNER JOIN shift_instances si ON sa.shift_instance_id = si.id
-            WHERE sa.professional_id = ${professionalId}
-            AND sa.is_active = true
-            AND sa.status = 'OCUPADO'
-            AND (
-              (si.start_at < ${shift.end_at} AND si.end_at > ${shift.start_at})
-            )`
-      );
-      const overlapRows = (overlapResult as any).rows || (overlapResult as any[]);
-      if (overlapRows[0]?.count > 0) {
-        throw new Error("Profissional já possui turno conflitante neste horário");
-      }
+      // 5. Validar conflito global por usuário (mesmo médico em múltiplos vínculos).
+      await assertNoTimeConflict(targetUserId, new Date(shift.start_at), new Date(shift.end_at));
 
       // 6. Validar limite de 20 profissionais por setor/turno
       const limitResult = await db.execute<any>(
-        sql`SELECT COUNT(DISTINCT sa.professional_id) as count
+          sql`SELECT COUNT(DISTINCT sa.professional_id) as count
             FROM shift_assignments_v2 sa
             INNER JOIN shift_instances si ON sa.shift_instance_id = si.id
             WHERE si.sector_id = ${shift.sector_id}
+            AND si.institution_id = ${ctx.institutionId}
             AND si.start_at = ${shift.start_at}
             AND sa.is_active = true
             AND sa.status = 'OCUPADO'`
@@ -132,8 +148,9 @@ export const editorRouter = router({
 
       // 7. Verificar professional_access (TI)
       const accessResult = await db.execute<any>(
-        sql`SELECT COUNT(*) as count FROM professional_access
+          sql`SELECT COUNT(*) as count FROM professional_access
             WHERE professional_id = ${professionalId}
+            AND institution_id = ${ctx.institutionId}
             AND hospital_id = ${shift.hospital_id}
             AND (sector_id IS NULL OR sector_id = ${shift.sector_id})
             AND can_access = true`
@@ -146,8 +163,8 @@ export const editorRouter = router({
       // 8. Transação: INSERT assignment + UPDATE shift_instance
       await db.execute(
         sql`INSERT INTO shift_assignments_v2 
-            (shift_instance_id, professional_id, assignment_type, status, is_active, created_at, updated_at)
-            VALUES (${shiftInstanceId}, ${professionalId}, ${assignmentType}, 'OCUPADO', true, NOW(), NOW())`
+            (shift_instance_id, institution_id, hospital_id, sector_id, professional_id, assignment_type, status, is_active, created_by, created_at, updated_at)
+            VALUES (${shiftInstanceId}, ${shift.institution_id}, ${shift.hospital_id}, ${shift.sector_id}, ${professionalId}, ${assignmentType}, 'OCUPADO', true, ${userId}, NOW(), NOW())`
       );
 
       const assignmentIdResult = await db.execute<any>(sql`SELECT LAST_INSERT_ID() as id`);
@@ -155,11 +172,15 @@ export const editorRouter = router({
       const assignmentId = assignmentIdRows[0].id;
 
       await db.execute(
-        sql`UPDATE shift_instances SET status = 'OCUPADO' WHERE id = ${shiftInstanceId}`
+        sql`UPDATE shift_instances
+            SET status = 'OCUPADO'
+            WHERE id = ${shiftInstanceId}
+              AND institution_id = ${ctx.institutionId}`
       );
 
       // 9. Audit log
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "SHIFT_ASSIGNED",
         shiftInstanceId,
         professionalId: managerId,
@@ -179,7 +200,7 @@ export const editorRouter = router({
         sectorId: shift.sector_id as number,
         toProfessionalId: professionalId,
         metadata: { assignmentType },
-      });
+      }, ctx.req);
 
       return { ok: true, assignmentId };
     }),
@@ -188,7 +209,7 @@ export const editorRouter = router({
    * markVacant
    * Marca turno como VAGO (remove assignments ativos se houver)
    */
-  markVacant: protectedProcedure
+  markVacant: tenantProcedure
     .input(
       z.object({
         shiftInstanceId: z.number(),
@@ -207,7 +228,18 @@ export const editorRouter = router({
 
       // 1. Buscar profissional do usuário (gestor)
       const managerResult = await db.execute<any>(
-        sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
+        sql`SELECT p.id, p.user_role
+            FROM professionals p
+            INNER JOIN professional_institutions pi ON pi.professional_id = p.id
+            WHERE p.user_id = ${userId}
+            AND pi.institution_id = ${ctx.institutionId}
+            AND pi.active = true
+            ORDER BY CASE p.user_role
+              WHEN 'GESTOR_PLUS' THEN 1
+              WHEN 'GESTOR_MEDICO' THEN 2
+              ELSE 3
+            END
+            LIMIT 1`
       );
       const managerRows = (managerResult as any).rows || (managerResult as any[]);
       if (!managerRows[0]) {
@@ -226,6 +258,7 @@ export const editorRouter = router({
       const shiftResult = await db.execute<any>(
         sql`SELECT institution_id, hospital_id, sector_id, start_at FROM shift_instances
             WHERE id = ${shiftInstanceId}
+            AND institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
       const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
@@ -241,6 +274,7 @@ export const editorRouter = router({
         const scopeResult = await db.execute<any>(
           sql`SELECT COUNT(*) as count FROM manager_scope
               WHERE manager_professional_id = ${managerId}
+              AND institution_id = ${ctx.institutionId}
               AND hospital_id = ${shift.hospital_id}
               AND (sector_id IS NULL OR sector_id = ${shift.sector_id})
               AND active = true`
@@ -264,16 +298,22 @@ export const editorRouter = router({
       await db.execute(
         sql`UPDATE shift_assignments_v2 
             SET is_active = false, updated_at = NOW()
-            WHERE shift_instance_id = ${shiftInstanceId} AND is_active = true`
+            WHERE shift_instance_id = ${shiftInstanceId}
+            AND institution_id = ${ctx.institutionId}
+            AND is_active = true`
       );
 
       // 6. UPDATE shift_instance para VAGO
       await db.execute(
-        sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${shiftInstanceId}`
+        sql`UPDATE shift_instances
+            SET status = 'VAGO'
+            WHERE id = ${shiftInstanceId}
+              AND institution_id = ${ctx.institutionId}`
       );
 
       // 7. Audit log
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "SHIFT_MARKED_VACANT",
         shiftInstanceId,
         professionalId: managerId,
@@ -291,7 +331,7 @@ export const editorRouter = router({
         shiftInstanceId,
         hospitalId: shift.hospital_id as number,
         sectorId: shift.sector_id as number,
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
@@ -300,7 +340,7 @@ export const editorRouter = router({
    * unassignDirect
    * Remove alocação específica (soft delete)
    */
-  unassignDirect: protectedProcedure
+  unassignDirect: tenantProcedure
     .input(
       z.object({
         assignmentId: z.number(),
@@ -319,7 +359,18 @@ export const editorRouter = router({
 
       // 1. Buscar profissional do usuário (gestor)
       const managerResult = await db.execute<any>(
-        sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
+        sql`SELECT p.id, p.user_role
+            FROM professionals p
+            INNER JOIN professional_institutions pi ON pi.professional_id = p.id
+            WHERE p.user_id = ${userId}
+            AND pi.institution_id = ${ctx.institutionId}
+            AND pi.active = true
+            ORDER BY CASE p.user_role
+              WHEN 'GESTOR_PLUS' THEN 1
+              WHEN 'GESTOR_MEDICO' THEN 2
+              ELSE 3
+            END
+            LIMIT 1`
       );
       const managerRows = (managerResult as any).rows || (managerResult as any[]);
       if (!managerRows[0]) {
@@ -341,6 +392,8 @@ export const editorRouter = router({
             FROM shift_assignments_v2 sa
             INNER JOIN shift_instances si ON sa.shift_instance_id = si.id
             WHERE sa.id = ${assignmentId}
+            AND sa.institution_id = ${ctx.institutionId}
+            AND si.institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
       const assignmentRows = (assignmentResult as any).rows || (assignmentResult as any[]);
@@ -356,6 +409,7 @@ export const editorRouter = router({
         const scopeResult = await db.execute<any>(
           sql`SELECT COUNT(*) as count FROM manager_scope
               WHERE manager_professional_id = ${managerId}
+              AND institution_id = ${ctx.institutionId}
               AND hospital_id = ${assignment.hospital_id}
               AND (sector_id IS NULL OR sector_id = ${assignment.sector_id})
               AND active = true`
@@ -379,13 +433,15 @@ export const editorRouter = router({
       await db.execute(
         sql`UPDATE shift_assignments_v2 
             SET is_active = false, updated_at = NOW()
-            WHERE id = ${assignmentId}`
+            WHERE id = ${assignmentId}
+            AND institution_id = ${ctx.institutionId}`
       );
 
       // 6. Verificar se ainda há assignments ativos no turno
       const remainingResult = await db.execute<any>(
         sql`SELECT COUNT(*) as count FROM shift_assignments_v2
             WHERE shift_instance_id = ${assignment.shift_instance_id}
+            AND institution_id = ${ctx.institutionId}
             AND is_active = true
             AND status = 'OCUPADO'`
       );
@@ -395,12 +451,16 @@ export const editorRouter = router({
       // 7. Se não houver mais assignments, marcar turno como VAGO
       if (!hasRemaining) {
         await db.execute(
-          sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${assignment.shift_instance_id}`
+          sql`UPDATE shift_instances
+              SET status = 'VAGO'
+              WHERE id = ${assignment.shift_instance_id}
+                AND institution_id = ${ctx.institutionId}`
         );
       }
 
       // 8. Audit log
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "SHIFT_UNASSIGNED",
         shiftInstanceId: assignment.shift_instance_id,
         professionalId: managerId,

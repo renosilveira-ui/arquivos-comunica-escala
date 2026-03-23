@@ -1,29 +1,46 @@
 import { getDb } from "./db";
-import { professionals, managerScope } from "../drizzle/schema";
-import { eq, and } from "drizzle-orm";
+import { managerScope, professionalInstitutions, professionals } from "../drizzle/schema";
+import { eq, and, inArray } from "drizzle-orm";
 
 /**
  * Busca o manager_scope de um gestor (GESTOR_MEDICO ou GESTOR_PLUS)
  * Retorna lista de hospitais e setores que o gestor pode gerenciar
  */
-export async function getManagerScope(userId: number) {
+export async function getManagerScope(userId: number, institutionId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Buscar profissional do usuário
-  const [professional] = await db
+  // Buscar todos os vínculos profissionais do usuário.
+  const professionalRows = await db
     .select()
     .from(professionals)
-    .where(eq(professionals.userId, userId));
+    .innerJoin(
+      professionalInstitutions,
+      and(
+        eq(professionalInstitutions.professionalId, professionals.id),
+        eq(professionalInstitutions.userId, professionals.userId),
+      ),
+    )
+    .where(
+      and(
+        eq(professionals.userId, userId),
+        eq(professionalInstitutions.institutionId, institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    );
 
-  if (!professional) {
+  if (professionalRows.length === 0) {
     throw new Error("Profissional não encontrado");
   }
 
-  const role = professional.userRole;
+  const hasGestorPlus = professionalRows.some((p) => p.professionals.userRole === "GESTOR_PLUS");
+  const managerProfessionalIds = professionalRows
+    .filter((p) => p.professionals.userRole === "GESTOR_MEDICO")
+    .map((p) => p.professionals.id);
+  const hasOnlyUserRole = !hasGestorPlus && managerProfessionalIds.length === 0;
 
   // USER não tem manager_scope
-  if (role === "USER") {
+  if (hasOnlyUserRole) {
     return {
       role: "USER" as const,
       hospitals: [],
@@ -33,7 +50,7 @@ export async function getManagerScope(userId: number) {
   }
 
   // GESTOR_PLUS pode gerenciar tudo
-  if (role === "GESTOR_PLUS") {
+  if (hasGestorPlus) {
     return {
       role: "GESTOR_PLUS" as const,
       hospitals: [],
@@ -51,7 +68,8 @@ export async function getManagerScope(userId: number) {
     .from(managerScope)
     .where(
       and(
-        eq(managerScope.managerProfessionalId, professional.id),
+        inArray(managerScope.managerProfessionalId, managerProfessionalIds),
+        eq(managerScope.institutionId, institutionId),
         eq(managerScope.active, true)
       )
     );

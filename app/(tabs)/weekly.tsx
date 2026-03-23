@@ -50,11 +50,19 @@ function fmtTime(d: Date): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** Classify a shift by its label into a slot index (0=Manhã, 1=Tarde, 2=Noite). */
-function classifyShift(label: string): number {
-  if (label.includes("Manhã") || label.includes("Manha")) return 0;
-  if (label.includes("Tarde")) return 1;
-  return 2; // Noite
+/** Classify a shift into a slot index (0=Manhã, 1=Tarde, 2=Noite). */
+function classifyShift(label: string, startAt: Date | string): number {
+  const normalized = label.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (normalized.includes("manha") || normalized.includes("morning")) return 0;
+  if (normalized.includes("tarde") || normalized.includes("afternoon")) return 1;
+  if (normalized.includes("noite") || normalized.includes("night")) return 2;
+
+  // Fallback: classify by local start hour when label is custom.
+  const start = new Date(startAt);
+  const hour = start.getHours();
+  if (hour >= 6 && hour < 13) return 0;
+  if (hour >= 13 && hour < 19) return 1;
+  return 2;
 }
 
 /** Friendly time range for a slot. */
@@ -70,6 +78,18 @@ function borderColorForStatus(status: string): string {
   return theme.colors.danger; // VAGO
 }
 
+function bgTintForStatus(status: string): string {
+  if (status === "OCUPADO") return "rgba(34,197,94,0.08)";
+  if (status === "PENDENTE") return "rgba(245,158,11,0.08)";
+  return "rgba(239,68,68,0.06)";
+}
+
+function statusLabel(status: string): string {
+  if (status === "OCUPADO") return "Ocupado";
+  if (status === "PENDENTE") return "Pendente";
+  return "Vago";
+}
+
 function badgeVariantForStatus(status: string): BadgeVariant {
   if (status === "OCUPADO") return "success";
   if (status === "PENDENTE") return "warning";
@@ -81,10 +101,10 @@ function badgeVariantForStatus(status: string): BadgeVariant {
 type ShiftWithAssignments = {
   id: number;
   label: string;
-  startAt: string;
-  endAt: string;
+  startAt: Date;
+  endAt: Date;
   status: string;
-  assignments: { professionalId: number; professionalName?: string }[];
+  assignments: { professionalId: number; professionalName?: string | null }[];
 };
 
 type GridCell = {
@@ -92,6 +112,7 @@ type GridCell = {
   slotIndex: number;
   shifts: ShiftWithAssignments[];
   professionalNames: string[];
+  uniqueProfessionalNames: string[];
   status: string; // dominant status
   timeRange: string;
 };
@@ -110,10 +131,10 @@ export default function WeeklyScreen() {
   const [replicating, setReplicating] = useState(false);
 
   /* ── queries ── */
-  const periodStart = useMemo(() => weekStart.toISOString(), [weekStart]);
-  const periodEnd = useMemo(() => addDays(weekStart, 7).toISOString(), [weekStart]);
+  const periodStart = useMemo(() => fmtDate(weekStart), [weekStart]);
+  const periodEnd = useMemo(() => fmtDate(addDays(weekStart, 7)), [weekStart]);
 
-  const { data: shiftsData, refetch } = trpc.shifts.listByPeriod.useQuery(
+  const { data: shiftsData } = trpc.shifts.listByPeriod.useQuery(
     { startDate: periodStart, endDate: periodEnd },
     { enabled: !!user?.id },
   );
@@ -129,16 +150,6 @@ export default function WeeklyScreen() {
     },
   });
 
-  const assignDirect = trpc.editor.assignDirect.useMutation({
-    onSuccess: () => {
-      setAllocModalVisible(false);
-      utils.shifts.listByPeriod.invalidate();
-    },
-    onError: (err: { message: string }) => {
-      Alert.alert("Erro ao alocar", err.message);
-    },
-  });
-
   /* ── build grid ── */
   const grid: GridCell[][] = useMemo(() => {
     // 3 rows (slots) × 7 cols (days)
@@ -148,6 +159,7 @@ export default function WeeklyScreen() {
         slotIndex: slotIdx,
         shifts: [],
         professionalNames: [],
+        uniqueProfessionalNames: [],
         status: "VAGO",
         timeRange: slotTimeRange(slotIdx),
       })),
@@ -155,11 +167,11 @@ export default function WeeklyScreen() {
 
     if (!shiftsData) return g;
 
-    for (const item of shiftsData as ShiftWithAssignments[]) {
+    for (const item of (shiftsData || []) as ShiftWithAssignments[]) {
       const start = new Date(item.startAt);
-      const dayOfWeek = start.getUTCDay(); // 0=Sun, UTC to match DB
+      const dayOfWeek = start.getDay(); // 0=Sun, local day for UI placement
       const dayIdx = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // convert to Mon=0..Sun=6
-      const slotIdx = classifyShift(item.label);
+      const slotIdx = classifyShift(item.label, item.startAt);
 
       if (dayIdx >= 0 && dayIdx < 7 && slotIdx >= 0 && slotIdx < 3) {
         const cell = g[slotIdx][dayIdx];
@@ -172,6 +184,12 @@ export default function WeeklyScreen() {
         // Dominant status priority: OCUPADO > PENDENTE > VAGO
         if (item.status === "OCUPADO") cell.status = "OCUPADO";
         else if (item.status === "PENDENTE" && cell.status !== "OCUPADO") cell.status = "PENDENTE";
+      }
+    }
+
+    for (const row of g) {
+      for (const cell of row) {
+        cell.uniqueProfessionalNames = Array.from(new Set(cell.professionalNames));
       }
     }
 
@@ -300,6 +318,37 @@ export default function WeeklyScreen() {
             </Text>
           </TouchableOpacity>
         </View>
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 }}>
+          {(["OCUPADO", "PENDENTE", "VAGO"] as const).map((status) => (
+            <View
+              key={status}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderWidth: 1,
+                borderColor: borderColorForStatus(status),
+                borderRadius: 999,
+                backgroundColor: bgTintForStatus(status),
+              }}
+            >
+              <View
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 999,
+                  backgroundColor: borderColorForStatus(status),
+                }}
+              />
+              <Text style={{ fontSize: 11, fontWeight: "700", color: theme.colors.textPrimary }}>
+                {statusLabel(status)}
+              </Text>
+            </View>
+          ))}
+        </View>
       </View>
 
       {/* Grid — fills remaining vertical space */}
@@ -365,7 +414,8 @@ export default function WeeklyScreen() {
               {/* Cells */}
               {grid[slotIdx].map((cell, dayIdx) => {
                 const isEmpty = cell.shifts.length === 0;
-                const statusColor = isEmpty ? "transparent" : borderColorForStatus(cell.status);
+                const statusColor = isEmpty ? theme.colors.cardBorder : borderColorForStatus(cell.status);
+                const statusBg = isEmpty ? theme.colors.cardBg : bgTintForStatus(cell.status);
 
                 return (
                   <TouchableOpacity
@@ -377,12 +427,10 @@ export default function WeeklyScreen() {
                       width: CELL_WIDTH,
                       flex: 1,
                       minHeight: 120,
-                      borderWidth: 1,
-                      borderColor: theme.colors.cardBorder,
-                      borderLeftWidth: 3,
-                      borderLeftColor: statusColor,
-                      borderRadius: theme.borderRadius.card,
-                      backgroundColor: theme.colors.cardBg,
+                      borderWidth: isEmpty ? 1 : 2,
+                      borderColor: statusColor,
+                      borderRadius: 10,
+                      backgroundColor: statusBg,
                       margin: 2,
                       padding: 8,
                       justifyContent: "space-between",
@@ -392,7 +440,7 @@ export default function WeeklyScreen() {
                       <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
                         <Plus size={22} color={theme.colors.textMuted} strokeWidth={1.5} />
                       </View>
-                    ) : cell.status === "VAGO" && cell.professionalNames.length === 0 ? (
+                    ) : cell.status === "VAGO" && cell.uniqueProfessionalNames.length === 0 ? (
                       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 6 }}>
                         <Plus size={28} color={theme.colors.danger} />
                         <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.danger }}>Vago</Text>
@@ -400,7 +448,7 @@ export default function WeeklyScreen() {
                     ) : (
                       <>
                         <View style={{ flex: 1, gap: 2 }}>
-                          {cell.professionalNames.slice(0, 3).map((name, i) => (
+                          {cell.uniqueProfessionalNames.slice(0, 3).map((name, i) => (
                             <Text
                               key={i}
                               numberOfLines={1}
@@ -409,9 +457,14 @@ export default function WeeklyScreen() {
                               {name}
                             </Text>
                           ))}
-                          {cell.professionalNames.length > 3 && (
+                          {cell.uniqueProfessionalNames.length === 0 && (
                             <Text style={{ fontSize: 10, color: theme.colors.textMuted }}>
-                              +{cell.professionalNames.length - 3}
+                              Sem profissional
+                            </Text>
+                          )}
+                          {cell.uniqueProfessionalNames.length > 3 && (
+                            <Text style={{ fontSize: 10, color: theme.colors.textMuted }}>
+                              +{cell.uniqueProfessionalNames.length - 3}
                             </Text>
                           )}
                         </View>
@@ -420,7 +473,7 @@ export default function WeeklyScreen() {
                             {cell.timeRange}
                           </Text>
                           <Badge variant={badgeVariantForStatus(cell.status)} style={{ paddingHorizontal: 6, paddingVertical: 2, alignSelf: "flex-start" }}>
-                            <Text style={{ fontSize: 9 }}>{cell.shifts.length} escala{cell.shifts.length !== 1 ? "s" : ""}</Text>
+                            <Text style={{ fontSize: 9 }}>{statusLabel(cell.status)} • {cell.shifts.length}</Text>
                           </Badge>
                         </View>
                       </>
@@ -453,7 +506,7 @@ export default function WeeklyScreen() {
             {/* Modal header */}
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <Text style={{ fontSize: 18, fontWeight: "700", color: theme.colors.textPrimary }}>
-                Alocar Profissional
+                Detalhes do Slot
               </Text>
               <TouchableOpacity onPress={() => setAllocModalVisible(false)}>
                 <X size={24} color={theme.colors.textSecondary} />
@@ -474,12 +527,12 @@ export default function WeeklyScreen() {
                 </Badge>
 
                 {/* Show assigned professionals */}
-                {selectedCell.professionalNames.length > 0 && (
+                {selectedCell.uniqueProfessionalNames.length > 0 && (
                   <View style={{ marginTop: 12, gap: 6 }}>
                     <Text style={{ fontSize: 13, fontWeight: "600", color: theme.colors.textPrimary }}>
                       Profissionais:
                     </Text>
-                    {selectedCell.professionalNames.map((name, i) => (
+                    {selectedCell.uniqueProfessionalNames.map((name, i) => (
                       <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                         <User size={14} color={theme.colors.textSecondary} />
                         <Text style={{ fontSize: 13, color: theme.colors.textPrimary }}>{name}</Text>
@@ -487,6 +540,32 @@ export default function WeeklyScreen() {
                     ))}
                   </View>
                 )}
+
+                <View style={{ marginTop: 14, gap: 8 }}>
+                  <Text style={{ fontSize: 13, fontWeight: "700", color: theme.colors.textPrimary }}>
+                    Plantões no slot:
+                  </Text>
+                  {selectedCell.shifts.map((shift) => (
+                    <View
+                      key={shift.id}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: borderColorForStatus(shift.status),
+                        borderRadius: 10,
+                        paddingHorizontal: 10,
+                        paddingVertical: 8,
+                        backgroundColor: bgTintForStatus(shift.status),
+                      }}
+                    >
+                      <Text style={{ fontSize: 13, fontWeight: "700", color: theme.colors.textPrimary }}>
+                        {shift.label}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: theme.colors.textSecondary, marginTop: 2 }}>
+                        {fmtTime(new Date(shift.startAt))}–{fmtTime(new Date(shift.endAt))} • {shift.status}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
               </View>
             )}
 

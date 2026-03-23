@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
@@ -35,33 +35,46 @@ async function checkCalendarAccess(
   const rosterRows = (rosterResult as any).rows || (rosterResult as any[]);
   const monthStatus = (rosterRows[0]?.status || "DRAFT") as "DRAFT" | "PUBLISHED" | "LOCKED";
 
-  // 2. Buscar profissional do usuário
+  // 2. Buscar vínculos profissionais do usuário
   const professionalResult = await db.execute<any>(
-    sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
+    sql`SELECT p.id, p.user_role
+        FROM professionals p
+        INNER JOIN professional_institutions pi ON pi.professional_id = p.id
+        WHERE p.user_id = ${userId}
+          AND pi.institution_id = ${institutionId}
+          AND pi.active = true`
   );
   const professionalRows = (professionalResult as any).rows || (professionalResult as any[]);
 
-  if (!professionalRows[0]) {
+  if (professionalRows.length === 0) {
     return { canAccess: false, monthStatus };
   }
 
-  const professionalId = professionalRows[0].id;
-  const role = professionalRows[0].user_role as string;
+  const roles = professionalRows.map((r: any) => r.user_role as string);
+  const hasGestorPlus = roles.includes("GESTOR_PLUS");
+  const managerIds = professionalRows
+    .filter((r: any) => r.user_role === "GESTOR_MEDICO")
+    .map((r: any) => Number(r.id));
+  const hasOnlyUserRole = !hasGestorPlus && managerIds.length === 0;
 
   // 3. USER: só pode acessar se mês PUBLISHED
-  if (role === "USER") {
+  if (hasOnlyUserRole) {
     return { canAccess: monthStatus === "PUBLISHED", monthStatus };
   }
 
   // 4. GESTOR_PLUS: vê tudo
-  if (role === "GESTOR_PLUS") {
+  if (hasGestorPlus) {
     return { canAccess: true, monthStatus };
   }
 
   // 5. GESTOR_MEDICO: precisa estar em manager_scope (hospital OU setor)
+  if (managerIds.length === 0) {
+    return { canAccess: false, monthStatus };
+  }
   const scopeResult = await db.execute<any>(
     sql`SELECT COUNT(*) as count FROM manager_scope
-        WHERE manager_professional_id = ${professionalId}
+        WHERE manager_professional_id IN (${sql.join(managerIds.map((id: number) => sql`${id}`), sql`, `)})
+        AND institution_id = ${institutionId}
         AND (hospital_id = ${hospitalId} OR sector_id = ${sectorId})`
   );
   const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
@@ -116,17 +129,17 @@ export const calendarRouter = router({
    * getMonthGrid
    * Retorna grid do mês com status M/T/N por dia
    */
-  getMonthGrid: protectedProcedure
+  getMonthGrid: tenantProcedure
     .input(
       z.object({
-        institutionId: z.number(),
         hospitalId: z.number(),
         sectorId: z.number(),
         yearMonth: z.string().regex(/^\d{4}-\d{2}$/), // YYYY-MM
       })
     )
     .query(async ({ ctx, input }) => {
-      const { institutionId, hospitalId, sectorId, yearMonth } = input;
+      const { hospitalId, sectorId, yearMonth } = input;
+      const institutionId = ctx.institutionId;
       const userId = ctx.user?.id;
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
@@ -157,7 +170,9 @@ export const calendarRouter = router({
       const shiftResult = await db.execute<any>(
         sql`SELECT id, label, start_at, end_at, status
             FROM shift_instances
-            WHERE hospital_id = ${hospitalId} AND sector_id = ${sectorId}
+            WHERE institution_id = ${institutionId}
+            AND hospital_id = ${hospitalId}
+            AND sector_id = ${sectorId}
             AND start_at >= ${startOfMonth} AND start_at <= ${endOfMonth}
             ORDER BY start_at ASC`
       );
@@ -202,17 +217,17 @@ export const calendarRouter = router({
    * getDay
    * Retorna 3 turnos do dia com slots e assignments
    */
-  getDay: protectedProcedure
+  getDay: tenantProcedure
     .input(
       z.object({
-        institutionId: z.number(),
         hospitalId: z.number(),
         sectorId: z.number(),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // YYYY-MM-DD
       })
     )
     .query(async ({ ctx, input }) => {
-      const { institutionId, hospitalId, sectorId, date } = input;
+      const { hospitalId, sectorId, date } = input;
+      const institutionId = ctx.institutionId;
       const userId = ctx.user?.id;
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
@@ -244,15 +259,28 @@ export const calendarRouter = router({
       const shiftResult = await db.execute<any>(
         sql`SELECT id, label, start_at, end_at, status
             FROM shift_instances
-            WHERE hospital_id = ${hospitalId} AND sector_id = ${sectorId}
+            WHERE institution_id = ${institutionId}
+            AND hospital_id = ${hospitalId}
+            AND sector_id = ${sectorId}
             AND start_at >= ${startOfDay} AND start_at <= ${endOfDay}
             ORDER BY start_at ASC`
       );
       const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
 
-      // 4. Buscar role do usuário para decidir se cria turnos automaticamente
+      // 4. Buscar maior role do usuário para decidir se cria turnos automaticamente
       const professionalResult = await db.execute<any>(
-        sql`SELECT user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
+        sql`SELECT user_role
+            FROM professionals p
+            INNER JOIN professional_institutions pi ON pi.professional_id = p.id
+            WHERE p.user_id = ${userId}
+            AND pi.institution_id = ${institutionId}
+            AND pi.active = true
+            ORDER BY CASE user_role
+              WHEN 'GESTOR_PLUS' THEN 1
+              WHEN 'GESTOR_MEDICO' THEN 2
+              ELSE 3
+            END
+            LIMIT 1`
       );
       const professionalRows = (professionalResult as any).rows || (professionalResult as any[]);
       const role = professionalRows[0]?.user_role as string;

@@ -1,22 +1,41 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, sql, inArray } from "drizzle-orm";
 import { professionals, shiftInstances, shiftAssignmentsV2, sectors, hospitals } from "../drizzle/schema";
 import { validateAssignment } from "./shift-validations";
 import { auditLog } from "./audit-log";
 import { canApproveAssignment } from "./rbac-validations";
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
+import { listProfessionalIdsByUser, resolveProfessionalForShift } from "./helpers/professional-resolution";
 import { editorRouter } from "./editor";
 import { swapRouter } from "./swap-router";
 import { calendarRouter } from "./calendar";
 import { shiftsRouter } from "./shifts-crud";
 import { professionalsRouter, hospitalsRouter, sectorsRouter, filtersRouter } from "./aux-routers";
 
+async function hasApprovalPermission(
+  db: any,
+  userId: number,
+  institutionId: number,
+  hospitalId: number,
+  sectorId: number,
+) {
+  const managerProfessionalIds = await listProfessionalIdsByUser(db, userId, institutionId);
+  if (managerProfessionalIds.length === 0) return { allowed: false, reason: "Profissional não encontrado" };
+
+  for (const managerProfessionalId of managerProfessionalIds) {
+    const permission = await canApproveAssignment(managerProfessionalId, hospitalId, sectorId);
+    if (permission.allowed) return permission;
+  }
+
+  return { allowed: false, reason: "Sem permissão" };
+}
+
 const shiftAssignmentsRouter = router({
   // Assumir vaga (USER solicita alocação PENDENTE)
-  assumeVacancy: protectedProcedure
+  assumeVacancy: tenantProcedure
     .input(z.object({
       shiftInstanceId: z.number(),
       assignmentType: z.enum(["ON_DUTY", "BACKUP", "ON_CALL"]).default("ON_DUTY"),
@@ -28,19 +47,26 @@ const shiftAssignmentsRouter = router({
       const userId = ctx.user?.id;
       if (!userId) throw new Error("Autenticação necessária");
 
-      const [professional] = await db
-        .select()
-        .from(professionals)
-        .where(eq(professionals.userId, userId));
-
-      if (!professional) throw new Error("Profissional não encontrado");
-
       const [shift] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.shiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, input.shiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!shift) throw new Error("Turno não encontrado");
+
+      const professional = await resolveProfessionalForShift(db, userId, {
+        institutionId: shift.institutionId,
+        hospitalId: shift.hospitalId,
+        sectorId: shift.sectorId,
+      });
+      if (!professional) {
+        throw new Error("Nenhum vínculo profissional ativo com acesso a este hospital/setor");
+      }
 
       if (shift.status !== "VAGO") {
         throw new Error(`Turno não está disponível (status: ${shift.status})`);
@@ -71,9 +97,15 @@ const shiftAssignmentsRouter = router({
       await db
         .update(shiftInstances)
         .set({ status: "PENDENTE" })
-        .where(eq(shiftInstances.id, input.shiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, input.shiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "VACANCY_REQUESTED",
         shiftInstanceId: input.shiftInstanceId,
         professionalId: professional.id,
@@ -84,7 +116,7 @@ const shiftAssignmentsRouter = router({
     }),
 
   // Listar alocações pendentes com dados enriquecidos
-  listPending: protectedProcedure
+  listPending: tenantProcedure
     .input(
       z.object({
         hospitalId: z.number().optional(),
@@ -93,7 +125,7 @@ const shiftAssignmentsRouter = router({
         shiftLabel: z.string().nullish(),
       }).optional(),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
@@ -125,6 +157,7 @@ const shiftAssignmentsRouter = router({
             JOIN sectors s         ON si.sector_id = s.id
             WHERE sa.is_active = true
               AND sa.status = 'PENDENTE'
+              AND si.institution_id = ${ctx.institutionId}
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
@@ -153,10 +186,9 @@ const shiftAssignmentsRouter = router({
 
 const shiftInstancesRouter = router({
   // Aprovar alocação pendente
-  approveAssignment: protectedProcedure
+  approveAssignment: tenantProcedure
     .input(z.object({
       assignmentId: z.number(),
-      professionalId: z.number(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
@@ -168,29 +200,78 @@ const shiftInstancesRouter = router({
       const [assignment] = await db
         .select()
         .from(shiftAssignmentsV2)
-        .where(eq(shiftAssignmentsV2.id, input.assignmentId));
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, input.assignmentId),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!assignment) throw new Error("Alocação não encontrada");
 
-      const permission = await canApproveAssignment(
-        input.professionalId,
+      const permission = await hasApprovalPermission(
+        db,
+        userId,
+        ctx.institutionId,
         assignment.hospitalId,
-        assignment.sectorId
+        assignment.sectorId,
       );
 
       if (!permission.allowed) {
         throw new Error(permission.reason || "Sem permissão");
       }
 
+      const [shift] = await db
+        .select()
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, assignment.shiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
+      if (!shift) throw new Error("Turno não encontrado");
+
+      const [assignedProfessional] = await db
+        .select()
+        .from(professionals)
+        .where(eq(professionals.id, assignment.professionalId))
+        .limit(1);
+      if (!assignedProfessional) throw new Error("Profissional da alocação não encontrado");
+
+      // Conflito global por usuário (mesmo médico em múltiplos vínculos institucionais).
+      await assertNoTimeConflict(
+        assignedProfessional.userId,
+        shift.startAt,
+        shift.endAt,
+        assignment.shiftInstanceId,
+      );
+
+      await db
+        .update(shiftAssignmentsV2)
+        .set({ status: "OCUPADO" })
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, input.assignmentId),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+          ),
+        );
+
       await db
         .update(shiftInstances)
         .set({ status: "OCUPADO" })
-        .where(eq(shiftInstances.id, assignment.shiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, assignment.shiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "ASSIGNMENT_APPROVED",
         shiftInstanceId: assignment.shiftInstanceId,
-        professionalId: input.professionalId,
+        professionalId: assignment.professionalId,
         metadata: { assignmentId: input.assignmentId, approvedBy: userId },
       });
 
@@ -205,16 +286,15 @@ const shiftInstancesRouter = router({
         shiftInstanceId: assignment.shiftInstanceId,
         hospitalId: assignment.hospitalId,
         sectorId: assignment.sectorId,
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
 
   // Rejeitar alocação pendente
-  rejectAssignment: protectedProcedure
+  rejectAssignment: tenantProcedure
     .input(z.object({
       assignmentId: z.number(),
-      professionalId: z.number(),
       reason: z.string().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -227,14 +307,21 @@ const shiftInstancesRouter = router({
       const [assignment] = await db
         .select()
         .from(shiftAssignmentsV2)
-        .where(eq(shiftAssignmentsV2.id, input.assignmentId));
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, input.assignmentId),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!assignment) throw new Error("Alocação não encontrada");
 
-      const permission = await canApproveAssignment(
-        input.professionalId,
+      const permission = await hasApprovalPermission(
+        db,
+        userId,
+        ctx.institutionId,
         assignment.hospitalId,
-        assignment.sectorId
+        assignment.sectorId,
       );
 
       if (!permission.allowed) {
@@ -244,17 +331,28 @@ const shiftInstancesRouter = router({
       await db
         .update(shiftAssignmentsV2)
         .set({ isActive: false })
-        .where(eq(shiftAssignmentsV2.id, input.assignmentId));
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, input.assignmentId),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+          ),
+        );
 
       await db
         .update(shiftInstances)
         .set({ status: "VAGO" })
-        .where(eq(shiftInstances.id, assignment.shiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, assignment.shiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "ASSIGNMENT_REJECTED",
         shiftInstanceId: assignment.shiftInstanceId,
-        professionalId: input.professionalId,
+        professionalId: assignment.professionalId,
         reason: input.reason ?? null,
         metadata: { assignmentId: input.assignmentId, rejectedBy: userId },
       });
@@ -270,13 +368,13 @@ const shiftInstancesRouter = router({
         shiftInstanceId: assignment.shiftInstanceId,
         hospitalId: assignment.hospitalId,
         sectorId: assignment.sectorId,
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
 
   // List vacancies with enriched data (sector name, hospital name)
-  listVacancies: protectedProcedure
+  listVacancies: tenantProcedure
     .input(
       z.object({
         hospitalId: z.number().optional(),
@@ -311,6 +409,7 @@ const shiftInstancesRouter = router({
             JOIN sectors  s ON si.sector_id  = s.id
             JOIN hospitals h ON si.hospital_id = h.id
             WHERE si.status IN ('VAGO', 'PENDENTE')
+              AND si.institution_id = ${ctx.institutionId}
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
@@ -320,19 +419,16 @@ const shiftInstancesRouter = router({
 
       const data = (rows as any)[0];
 
-      const [pro] = await db
-        .select({ id: professionals.id })
-        .from(professionals)
-        .where(eq(professionals.userId, ctx.user.id));
-
       const alreadyRequestedIds = new Set<number>();
-      if (pro) {
+      const professionalIds = await listProfessionalIdsByUser(db, ctx.user.id, ctx.institutionId);
+      if (professionalIds.length > 0) {
         const existing = await db
           .select({ shiftInstanceId: shiftAssignmentsV2.shiftInstanceId })
           .from(shiftAssignmentsV2)
           .where(
             and(
-              eq(shiftAssignmentsV2.professionalId, pro.id),
+              inArray(shiftAssignmentsV2.professionalId, professionalIds),
+              eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
               eq(shiftAssignmentsV2.isActive, true),
             ),
           );

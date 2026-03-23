@@ -7,7 +7,7 @@
  */
 import "dotenv/config";
 import { drizzle } from "drizzle-orm/mysql2";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import {
   institutions,
   hospitals,
@@ -17,6 +17,7 @@ import {
   shiftAssignmentsV2,
   users,
   professionals,
+  professionalInstitutions,
 } from "../../drizzle/schema";
 
 const TEST_PROFESSIONALS = [
@@ -60,8 +61,20 @@ async function main() {
   // ── 1. Ensure default institution ────────────────────────────────────
   await db
     .insert(institutions)
-    .values({ id: 1, name: "Instituto Padrão" })
-    .onDuplicateKeyUpdate({ set: { name: "Instituto Padrão" } });
+    .values({
+      id: 1,
+      name: "Hospital das Clínicas",
+      cnpj: "11111111000191",
+      legalName: "Hospital das Clínicas S.A.",
+      tradeName: "HC",
+    })
+    .onDuplicateKeyUpdate({
+      set: {
+        name: "Hospital das Clínicas",
+        legalName: "Hospital das Clínicas S.A.",
+        tradeName: "HC",
+      },
+    });
   console.log("✓ Institution 1 ready");
 
   // ── 2. Ensure default hospital ───────────────────────────────────────
@@ -76,6 +89,7 @@ async function main() {
     .insert(sectors)
     .values({
       id: 1,
+      institutionId: 1,
       hospitalId: 1,
       name: "Clínica Médica",
       category: "internacao",
@@ -183,13 +197,35 @@ async function main() {
     } else {
       const [result] = await db.insert(professionals).values({
         userId: user.id,
-        institutionId: 1,
         name: tp.name,
         role: tp.role,
         userRole: "USER",
       });
       proId = (result as any).insertId as number;
       console.log(`✓ Professional for ${tp.email} created (id=${proId})`);
+    }
+
+    const [existingLink] = await db
+      .select({ id: professionalInstitutions.id })
+      .from(professionalInstitutions)
+      .where(
+        and(
+          eq(professionalInstitutions.professionalId, proId),
+          eq(professionalInstitutions.institutionId, 1),
+        ),
+      )
+      .limit(1);
+
+    if (!existingLink) {
+      await db.insert(professionalInstitutions).values({
+        professionalId: proId,
+        userId: user.id,
+        institutionId: 1,
+        roleInInstitution: "USER",
+        isPrimary: true,
+        active: true,
+      });
+      console.log(`  ✓ Tenant link created for ${tp.email}`);
     }
     professionalIds.set(tp.email, proId);
   }

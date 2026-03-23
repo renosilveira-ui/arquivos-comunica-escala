@@ -25,6 +25,7 @@ export type AuditEvent =
   | "RETROACTIVE_EDIT";
 
 export interface AuditLogParams {
+  institutionId: number;
   event: AuditEvent;
   shiftInstanceId: number;
   professionalId: number | null;
@@ -42,7 +43,7 @@ export async function auditLog(params: AuditLogParams): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const { event, shiftInstanceId, professionalId, reason, metadata } = params;
+  const { institutionId, event, shiftInstanceId, professionalId, reason, metadata } = params;
 
   // Validar que RETROACTIVE_EDIT exige motivo obrigatório
   if (event === "RETROACTIVE_EDIT" && !reason) {
@@ -50,6 +51,7 @@ export async function auditLog(params: AuditLogParams): Promise<void> {
   }
 
   await db.insert(shiftAuditLog).values({
+    institutionId,
     event,
     shiftInstanceId,
     professionalId,

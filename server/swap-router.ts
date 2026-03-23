@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
 import { eq, and, sql, desc, inArray } from "drizzle-orm";
@@ -8,6 +8,7 @@ import {
   shiftInstances,
   shiftAssignmentsV2,
   professionals,
+  users,
   hospitals,
   sectors,
   monthlyRosters,
@@ -15,16 +16,10 @@ import {
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
 import { yearMonthFromDate } from "../lib/date-utils";
+import { listProfessionalIdsByUser } from "./helpers/professional-resolution";
+import { notifySwapApproved } from "./integrations/comunica-plus";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
-
-async function getProfessionalForUser(db: any, userId: number) {
-  const [row] = await db
-    .select({ id: professionals.id, name: professionals.name, userRole: professionals.userRole })
-    .from(professionals)
-    .where(eq(professionals.userId, userId));
-  return row ?? null;
-}
 
 function isManager(role: string) {
   return role === "admin" || role === "manager";
@@ -47,11 +42,136 @@ async function assertNotLocked(db: any, institutionId: number, hospitalId: numbe
   }
 }
 
+async function applyApprovedSwap(
+  db: any,
+  swap: typeof swapRequests.$inferSelect,
+  managerUserId: number | null,
+) {
+  const [fromShift] = await db
+    .select()
+    .from(shiftInstances)
+    .where(
+      and(
+        eq(shiftInstances.id, swap.fromShiftInstanceId),
+        eq(shiftInstances.institutionId, swap.institutionId),
+      ),
+    );
+  if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
+
+  // Re-verify conflict (may have changed since acceptance)
+  if (!swap.toProfessionalId || !swap.toUserId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhum profissional aceitou ainda" });
+  }
+
+  if (swap.type === "TRANSFER") {
+    await assertNoTimeConflict(swap.toUserId, fromShift.startAt, fromShift.endAt);
+  } else {
+    await assertNoTimeConflict(swap.toUserId, fromShift.startAt, fromShift.endAt, swap.toShiftInstanceId ?? undefined);
+    if (swap.toShiftInstanceId) {
+      const [toShift] = await db
+        .select()
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, swap.toShiftInstanceId),
+            eq(shiftInstances.institutionId, swap.institutionId),
+          ),
+        );
+      if (toShift) {
+        await assertNoTimeConflict(swap.fromUserId, toShift.startAt, toShift.endAt, swap.fromShiftInstanceId);
+      }
+    }
+  }
+
+  if (swap.type === "TRANSFER") {
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(
+        and(
+          eq(shiftAssignmentsV2.id, swap.fromAssignmentId),
+          eq(shiftAssignmentsV2.institutionId, swap.institutionId),
+        ),
+      );
+
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: swap.fromShiftInstanceId,
+      institutionId: fromShift.institutionId,
+      hospitalId: fromShift.hospitalId,
+      sectorId: fromShift.sectorId,
+      professionalId: swap.toProfessionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+      createdBy: managerUserId,
+    });
+  } else {
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(
+        and(
+          eq(shiftAssignmentsV2.id, swap.fromAssignmentId),
+          eq(shiftAssignmentsV2.institutionId, swap.institutionId),
+        ),
+      );
+
+    if (swap.toAssignmentId) {
+      await db
+        .update(shiftAssignmentsV2)
+        .set({ isActive: false })
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, swap.toAssignmentId),
+            eq(shiftAssignmentsV2.institutionId, swap.institutionId),
+          ),
+        );
+    }
+
+    if (swap.toShiftInstanceId) {
+      const [toShift] = await db
+        .select()
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, swap.toShiftInstanceId),
+            eq(shiftInstances.institutionId, swap.institutionId),
+          ),
+        );
+      if (toShift) {
+        await db.insert(shiftAssignmentsV2).values({
+          shiftInstanceId: swap.toShiftInstanceId,
+          institutionId: toShift.institutionId,
+          hospitalId: toShift.hospitalId,
+          sectorId: toShift.sectorId,
+          professionalId: swap.fromProfessionalId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+          createdBy: managerUserId,
+        });
+      }
+    }
+
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: swap.fromShiftInstanceId,
+      institutionId: fromShift.institutionId,
+      hospitalId: fromShift.hospitalId,
+      sectorId: fromShift.sectorId,
+      professionalId: swap.toProfessionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+      createdBy: managerUserId,
+    });
+  }
+}
+
 // ─── router ─────────────────────────────────────────────────────────────────
 
 export const swapRouter = router({
   // ── offer ─────────────────────────────────────────────────────────────────
-  offer: protectedProcedure
+  offer: tenantProcedure
     .input(
       z.object({
         type: z.enum(["SWAP", "TRANSFER"]),
@@ -67,8 +187,10 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
-      const pro = await getProfessionalForUser(db, userId);
-      if (!pro) throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
+      const userProfessionalIds = await listProfessionalIdsByUser(db, userId, ctx.institutionId);
+      if (userProfessionalIds.length === 0) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
+      }
 
       // 1. Verify fromAssignment belongs to user
       const [fromAssign] = await db
@@ -77,7 +199,8 @@ export const swapRouter = router({
         .where(
           and(
             eq(shiftAssignmentsV2.id, input.fromAssignmentId),
-            eq(shiftAssignmentsV2.professionalId, pro.id),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+            inArray(shiftAssignmentsV2.professionalId, userProfessionalIds),
             eq(shiftAssignmentsV2.isActive, true),
           ),
         );
@@ -88,11 +211,23 @@ export const swapRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Assignment não corresponde ao turno informado" });
       }
 
+      const [pro] = await db
+        .select({ id: professionals.id, name: professionals.name, userRole: professionals.userRole })
+        .from(professionals)
+        .where(eq(professionals.id, fromAssign.professionalId))
+        .limit(1);
+      if (!pro) throw new TRPCError({ code: "BAD_REQUEST", message: "Profissional de origem não encontrado" });
+
       // 2. Verify shift hasn't passed
       const [fromShift] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.fromShiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, input.fromShiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
       if (!fromShift) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
       }
@@ -111,7 +246,12 @@ export const swapRouter = router({
         const [toShift] = await db
           .select()
           .from(shiftInstances)
-          .where(eq(shiftInstances.id, input.toShiftInstanceId));
+          .where(
+            and(
+              eq(shiftInstances.id, input.toShiftInstanceId),
+              eq(shiftInstances.institutionId, ctx.institutionId),
+            ),
+          );
         if (!toShift) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Turno de troca não encontrado" });
         }
@@ -157,31 +297,43 @@ export const swapRouter = router({
         sectorId: fromShift.sectorId ?? undefined,
         institutionId: fromShift.institutionId,
         metadata: { type: input.type, reason: input.reason },
-      });
+      }, ctx.req);
 
       const [created] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, newId));
+        .where(
+          and(
+            eq(swapRequests.id, newId),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
 
       return created;
     }),
 
   // ── accept ────────────────────────────────────────────────────────────────
-  accept: protectedProcedure
+  accept: tenantProcedure
     .input(z.object({ swapRequestId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
-      const pro = await getProfessionalForUser(db, userId);
-      if (!pro) throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
+      const userProfessionalIds = await listProfessionalIdsByUser(db, userId, ctx.institutionId);
+      if (userProfessionalIds.length === 0) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
+      }
 
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "PENDING") {
@@ -195,7 +347,12 @@ export const swapRouter = router({
       const [fromShift] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, swap.fromShiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, swap.fromShiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
       if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
 
       if (swap.type === "TRANSFER") {
@@ -211,7 +368,12 @@ export const swapRouter = router({
           const [toShift] = await db
             .select()
             .from(shiftInstances)
-            .where(eq(shiftInstances.id, swap.toShiftInstanceId));
+            .where(
+              and(
+                eq(shiftInstances.id, swap.toShiftInstanceId),
+                eq(shiftInstances.institutionId, ctx.institutionId),
+              ),
+            );
           if (toShift) {
             await assertNoTimeConflict(swap.fromUserId, toShift.startAt, toShift.endAt, swap.fromShiftInstanceId);
           }
@@ -220,6 +382,7 @@ export const swapRouter = router({
 
       // For SWAP: find receptor's assignment on the to-shift
       let toAssignmentId: number | null = null;
+      let acceptedProfessionalId: number | null = null;
       if (swap.type === "SWAP" && swap.toShiftInstanceId) {
         const [toAssign] = await db
           .select()
@@ -227,7 +390,8 @@ export const swapRouter = router({
           .where(
             and(
               eq(shiftAssignmentsV2.shiftInstanceId, swap.toShiftInstanceId),
-              eq(shiftAssignmentsV2.professionalId, pro.id),
+              eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+              inArray(shiftAssignmentsV2.professionalId, userProfessionalIds),
               eq(shiftAssignmentsV2.isActive, true),
             ),
           );
@@ -238,17 +402,81 @@ export const swapRouter = router({
           });
         }
         toAssignmentId = toAssign.id;
+        acceptedProfessionalId = toAssign.professionalId;
+      } else {
+        acceptedProfessionalId = userProfessionalIds[0];
+      }
+
+      if (!acceptedProfessionalId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Vínculo profissional do receptor não identificado" });
+      }
+
+      const [acceptedPro] = await db
+        .select({ id: professionals.id, name: professionals.name })
+        .from(professionals)
+        .where(eq(professionals.id, acceptedProfessionalId))
+        .limit(1);
+      if (!acceptedPro) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Profissional receptor não encontrado" });
       }
 
       await db
         .update(swapRequests)
         .set({
-          status: "ACCEPTED",
-          toProfessionalId: pro.id,
+          status: swap.type === "SWAP" ? "APPROVED" : "ACCEPTED",
+          toProfessionalId: acceptedPro.id,
           toUserId: userId,
           toAssignmentId,
+          reviewedAt: swap.type === "SWAP" ? new Date() : null,
+          reviewedByUserId: null,
+          reviewNote: swap.type === "SWAP" ? "Autoaprovado: troca entre profissionais sem necessidade de gestor." : null,
         })
-        .where(eq(swapRequests.id, swap.id));
+        .where(
+          and(
+            eq(swapRequests.id, swap.id),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
+
+      if (swap.type === "SWAP") {
+        const [updatedSwap] = await db
+          .select()
+          .from(swapRequests)
+          .where(
+            and(
+              eq(swapRequests.id, swap.id),
+              eq(swapRequests.institutionId, ctx.institutionId),
+            ),
+          );
+        if (!updatedSwap) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada após aceite" });
+        }
+        await applyApprovedSwap(db, updatedSwap, null);
+
+        (async () => {
+          try {
+            const [fromUser] = await db
+              .select({ email: users.email })
+              .from(users)
+              .where(eq(users.id, swap.fromUserId))
+              .limit(1);
+            const [toUser] = await db
+              .select({ email: users.email })
+              .from(users)
+              .where(eq(users.id, userId))
+              .limit(1);
+            if (fromUser?.email && toUser?.email) {
+              await notifySwapApproved({
+                swapId: swap.id,
+                fromEmail: fromUser.email,
+                toEmail: toUser.email,
+              });
+            }
+          } catch (err) {
+            console.error("[Comunica+] notifySwapApproved (auto) error:", err);
+          }
+        })();
+      }
 
       recordAudit({
         action: swap.type === "SWAP" ? "SWAP_ACCEPTED" : "TRANSFER_ACCEPTED",
@@ -256,25 +484,25 @@ export const swapRouter = router({
         entityId: swap.id,
         actorUserId: userId,
         actorRole: ctx.user!.role,
-        actorName: pro.name ?? undefined,
+        actorName: acceptedPro.name ?? undefined,
         description: swap.type === "SWAP"
-          ? `Troca aceita pelo profissional #${pro.id}`
-          : `Repasse aceito pelo profissional #${pro.id}`,
+          ? `Troca aceita e autoaprovada entre profissionais (#${swap.fromProfessionalId} ↔ #${acceptedPro.id})`
+          : `Repasse aceito pelo profissional #${acceptedPro.id}`,
         fromProfessionalId: swap.fromProfessionalId,
-        toProfessionalId: pro.id,
+        toProfessionalId: acceptedPro.id,
         fromUserId: swap.fromUserId,
         toUserId: userId,
         shiftInstanceId: swap.fromShiftInstanceId,
         hospitalId: swap.hospitalId,
         sectorId: swap.sectorId ?? undefined,
         institutionId: swap.institutionId,
-      });
+      }, ctx.req);
 
-      return { ok: true };
+      return { ok: true, autoApproved: swap.type === "SWAP" };
     }),
 
   // ── reject (by peer) ─────────────────────────────────────────────────────
-  reject: protectedProcedure
+  reject: tenantProcedure
     .input(z.object({ swapRequestId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
@@ -285,7 +513,12 @@ export const swapRouter = router({
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "PENDING") {
@@ -298,7 +531,12 @@ export const swapRouter = router({
       await db
         .update(swapRequests)
         .set({ status: "REJECTED_BY_PEER" })
-        .where(eq(swapRequests.id, swap.id));
+        .where(
+          and(
+            eq(swapRequests.id, swap.id),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
 
       recordAudit({
         action: swap.type === "SWAP" ? "SWAP_REJECTED" : "TRANSFER_REJECTED",
@@ -313,13 +551,13 @@ export const swapRouter = router({
         hospitalId: swap.hospitalId,
         sectorId: swap.sectorId ?? undefined,
         institutionId: swap.institutionId,
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
 
   // ── approve (by manager) ─────────────────────────────────────────────────
-  approve: protectedProcedure
+  approve: tenantProcedure
     .input(
       z.object({
         swapRequestId: z.number(),
@@ -338,7 +576,12 @@ export const swapRouter = router({
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "ACCEPTED") {
@@ -348,98 +591,32 @@ export const swapRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhum profissional aceitou ainda" });
       }
 
-      // Re-verify conflict (may have changed since acceptance)
-      const [fromShift] = await db
-        .select()
-        .from(shiftInstances)
-        .where(eq(shiftInstances.id, swap.fromShiftInstanceId));
-      if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
+      await applyApprovedSwap(db, swap, userId);
 
-      if (swap.type === "TRANSFER") {
-        await assertNoTimeConflict(swap.toUserId, fromShift.startAt, fromShift.endAt);
-      } else {
-        // SWAP: both sides
-        await assertNoTimeConflict(swap.toUserId, fromShift.startAt, fromShift.endAt, swap.toShiftInstanceId ?? undefined);
-        if (swap.toShiftInstanceId) {
-          const [toShift] = await db
-            .select()
-            .from(shiftInstances)
-            .where(eq(shiftInstances.id, swap.toShiftInstanceId));
-          if (toShift) {
-            await assertNoTimeConflict(swap.fromUserId, toShift.startAt, toShift.endAt, swap.fromShiftInstanceId);
+      if (swap.type === "SWAP" && swap.toUserId) {
+        (async () => {
+          try {
+            const [fromUser] = await db
+              .select({ email: users.email })
+              .from(users)
+              .where(eq(users.id, swap.fromUserId))
+              .limit(1);
+            const [toUser] = await db
+              .select({ email: users.email })
+              .from(users)
+              .where(eq(users.id, swap.toUserId!))
+              .limit(1);
+            if (fromUser?.email && toUser?.email) {
+              await notifySwapApproved({
+                swapId: swap.id,
+                fromEmail: fromUser.email,
+                toEmail: toUser.email,
+              });
+            }
+          } catch (err) {
+            console.error("[Comunica+] notifySwapApproved (manager) error:", err);
           }
-        }
-      }
-
-      // ─── EFFECTUATE ─────────────────────────────────────────────
-      if (swap.type === "TRANSFER") {
-        // Deactivate old from-assignment
-        await db
-          .update(shiftAssignmentsV2)
-          .set({ isActive: false })
-          .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
-
-        // Create new assignment for the recipient on from-shift
-        await db.insert(shiftAssignmentsV2).values({
-          shiftInstanceId: swap.fromShiftInstanceId,
-          institutionId: fromShift.institutionId,
-          hospitalId: fromShift.hospitalId,
-          sectorId: fromShift.sectorId,
-          professionalId: swap.toProfessionalId,
-          assignmentType: "ON_DUTY",
-          status: "OCUPADO",
-          isActive: true,
-          createdBy: userId,
-        });
-      } else {
-        // SWAP: deactivate both old, create both new
-        // Deactivate from-assignment (offerer on from-shift)
-        await db
-          .update(shiftAssignmentsV2)
-          .set({ isActive: false })
-          .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
-
-        // Deactivate to-assignment (receptor on to-shift)
-        if (swap.toAssignmentId) {
-          await db
-            .update(shiftAssignmentsV2)
-            .set({ isActive: false })
-            .where(eq(shiftAssignmentsV2.id, swap.toAssignmentId));
-        }
-
-        // Offerer → to-shift
-        if (swap.toShiftInstanceId) {
-          const [toShift] = await db
-            .select()
-            .from(shiftInstances)
-            .where(eq(shiftInstances.id, swap.toShiftInstanceId));
-          if (toShift) {
-            await db.insert(shiftAssignmentsV2).values({
-              shiftInstanceId: swap.toShiftInstanceId,
-              institutionId: toShift.institutionId,
-              hospitalId: toShift.hospitalId,
-              sectorId: toShift.sectorId,
-              professionalId: swap.fromProfessionalId,
-              assignmentType: "ON_DUTY",
-              status: "OCUPADO",
-              isActive: true,
-              createdBy: userId,
-            });
-          }
-        }
-
-        // Receptor → from-shift
-        await db.insert(shiftAssignmentsV2).values({
-          shiftInstanceId: swap.fromShiftInstanceId,
-          institutionId: fromShift.institutionId,
-          hospitalId: fromShift.hospitalId,
-          sectorId: fromShift.sectorId,
-          professionalId: swap.toProfessionalId,
-          assignmentType: "ON_DUTY",
-          status: "OCUPADO",
-          isActive: true,
-          createdBy: userId,
-        });
+        })();
       }
 
       // Update swap request
@@ -451,7 +628,12 @@ export const swapRouter = router({
           reviewedAt: new Date(),
           reviewNote: input.note ?? null,
         })
-        .where(eq(swapRequests.id, swap.id));
+        .where(
+          and(
+            eq(swapRequests.id, swap.id),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
 
       recordAudit({
         action: swap.type === "SWAP" ? "SWAP_APPROVED_BY_MANAGER" : "TRANSFER_APPROVED_BY_MANAGER",
@@ -471,13 +653,13 @@ export const swapRouter = router({
         sectorId: swap.sectorId ?? undefined,
         institutionId: swap.institutionId,
         metadata: { note: input.note },
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
 
   // ── rejectByManager ──────────────────────────────────────────────────────
-  rejectByManager: protectedProcedure
+  rejectByManager: tenantProcedure
     .input(
       z.object({
         swapRequestId: z.number(),
@@ -496,7 +678,12 @@ export const swapRouter = router({
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "ACCEPTED" && swap.status !== "PENDING") {
@@ -511,7 +698,12 @@ export const swapRouter = router({
           reviewedAt: new Date(),
           reviewNote: input.note ?? null,
         })
-        .where(eq(swapRequests.id, swap.id));
+        .where(
+          and(
+            eq(swapRequests.id, swap.id),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
 
       recordAudit({
         action: swap.type === "SWAP" ? "SWAP_REJECTED" : "TRANSFER_REJECTED",
@@ -529,13 +721,13 @@ export const swapRouter = router({
         sectorId: swap.sectorId ?? undefined,
         institutionId: swap.institutionId,
         metadata: { note: input.note },
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
 
   // ── cancel ────────────────────────────────────────────────────────────────
-  cancel: protectedProcedure
+  cancel: tenantProcedure
     .input(z.object({ swapRequestId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
@@ -546,7 +738,12 @@ export const swapRouter = router({
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.fromUserId !== userId) {
@@ -559,7 +756,12 @@ export const swapRouter = router({
       await db
         .update(swapRequests)
         .set({ status: "CANCELLED" })
-        .where(eq(swapRequests.id, swap.id));
+        .where(
+          and(
+            eq(swapRequests.id, swap.id),
+            eq(swapRequests.institutionId, ctx.institutionId),
+          ),
+        );
 
       recordAudit({
         action: "SWAP_CANCELLED",
@@ -574,13 +776,13 @@ export const swapRouter = router({
         hospitalId: swap.hospitalId,
         sectorId: swap.sectorId ?? undefined,
         institutionId: swap.institutionId,
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
 
   // ── list ──────────────────────────────────────────────────────────────────
-  list: protectedProcedure
+  list: tenantProcedure
     .input(
       z.object({
         status: z.string().optional(),
@@ -595,8 +797,7 @@ export const swapRouter = router({
 
       const userId = ctx.user!.id;
       const userRole = ctx.user!.role;
-
-      const pro = await getProfessionalForUser(db, userId);
+      const userProfessionalIds = await listProfessionalIdsByUser(db, userId, ctx.institutionId);
 
       // Build WHERE conditions
       const conditions: any[] = [];
@@ -604,12 +805,7 @@ export const swapRouter = router({
       if (input.status) conditions.push(eq(swapRequests.status, input.status as any));
       if (input.type) conditions.push(eq(swapRequests.type, input.type));
 
-      // Non-managers see only their own swaps
-      if (!isManager(userRole) && pro) {
-        conditions.push(
-          sql`(${swapRequests.fromProfessionalId} = ${pro.id} OR ${swapRequests.toProfessionalId} = ${pro.id})`,
-        );
-      }
+      // Non-managers filtering is handled directly in SQL with userProfessionalIds.
 
       const where = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -662,10 +858,14 @@ export const swapRouter = router({
         LEFT JOIN sectors ts        ON ts.id  = tsi.sector_id
         LEFT JOIN users ru          ON ru.id  = sr.reviewed_by_user_id
         WHERE 1=1
+          AND sr.institution_id = ${ctx.institutionId}
           ${input.status ? sql`AND sr.status = ${input.status}` : sql``}
           ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
-          ${!isManager(userRole) && pro
-            ? sql`AND (sr.from_professional_id = ${pro.id} OR sr.to_professional_id = ${pro.id})`
+          ${!isManager(userRole) && userProfessionalIds.length > 0
+            ? sql`AND (
+                sr.from_professional_id IN (${sql.join(userProfessionalIds.map((id) => sql`${id}`), sql`, `)})
+                OR sr.to_professional_id IN (${sql.join(userProfessionalIds.map((id) => sql`${id}`), sql`, `)})
+              )`
             : sql``}
         ORDER BY sr.created_at DESC
         LIMIT ${input.limit}
@@ -710,7 +910,7 @@ export const swapRouter = router({
     }),
 
   // ── getById ───────────────────────────────────────────────────────────────
-  getById: protectedProcedure
+  getById: tenantProcedure
     .input(z.object({ id: z.number() }))
     .query(async ({ input, ctx }) => {
       const db = await getDb();
@@ -745,6 +945,7 @@ export const swapRouter = router({
         LEFT JOIN sectors ts2       ON ts2.id = tsi.sector_id
         LEFT JOIN users ru          ON ru.id  = sr.reviewed_by_user_id
         WHERE sr.id = ${input.id}
+          AND sr.institution_id = ${ctx.institutionId}
         LIMIT 1
       `);
 
@@ -795,7 +996,7 @@ export const swapRouter = router({
     }),
 
   // ── listAvailable ─────────────────────────────────────────────────────────
-  listAvailable: protectedProcedure
+  listAvailable: tenantProcedure
     .input(
       z.object({
         type: z.enum(["SWAP", "TRANSFER"]).optional(),
@@ -806,8 +1007,8 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
-      const pro = await getProfessionalForUser(db, userId);
-      if (!pro) return [];
+      const userProfessionalIds = await listProfessionalIdsByUser(db, userId, ctx.institutionId);
+      if (userProfessionalIds.length === 0) return [];
 
       const rows = await db.execute(sql`
         SELECT
@@ -839,6 +1040,7 @@ export const swapRouter = router({
         LEFT JOIN hospitals th      ON th.id  = tsi.hospital_id
         LEFT JOIN sectors ts        ON ts.id  = tsi.sector_id
         WHERE sr.status = 'PENDING'
+          AND sr.institution_id = ${ctx.institutionId}
           AND sr.from_user_id != ${userId}
           AND fsi.start_at > NOW()
           AND (sr.expires_at IS NULL OR sr.expires_at > NOW())
@@ -849,7 +1051,16 @@ export const swapRouter = router({
       const data = (rows as any)[0] as any[];
 
       // Filter out swaps the user has a time conflict with
-      const available = [];
+      const available: Array<{
+        id: number;
+        type: "SWAP" | "TRANSFER";
+        reason: string | null;
+        expiresAt: Date | null;
+        createdAt: Date;
+        fromProfessional: { name: string; role: string };
+        fromShift: { id: number; label: string; startAt: Date; endAt: Date; hospitalName: string; sectorName: string };
+        toShift: { id: number; label: string; startAt: Date; endAt: Date; hospitalName: string; sectorName: string } | null;
+      }> = [];
       for (const r of data) {
         const shiftStart = new Date(r.fromShiftStartAt);
         const shiftEnd = new Date(r.fromShiftEndAt);
@@ -861,6 +1072,8 @@ export const swapRouter = router({
           JOIN professionals p ON p.id = sa.professional_id
           JOIN shift_instances si ON si.id = sa.shift_instance_id
           WHERE p.user_id = ${userId}
+            AND si.institution_id = ${ctx.institutionId}
+            AND sa.institution_id = ${ctx.institutionId}
             AND sa.is_active = 1
             AND si.start_at < ${shiftEnd.toISOString().slice(0, 19).replace("T", " ")}
             AND si.end_at   > ${shiftStart.toISOString().slice(0, 19).replace("T", " ")}

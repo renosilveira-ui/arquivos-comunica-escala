@@ -9,7 +9,8 @@
 
 import { getDb } from "./db";
 import { shiftAssignmentsV2, shiftInstances, professionalAccess } from "../drizzle/schema";
-import { and, eq, lt, gt, count, ne } from "drizzle-orm";
+import { and, eq, count } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 
 export interface ValidationResult {
   valid: boolean;
@@ -55,6 +56,20 @@ function parseCountValue(value: unknown): number {
   return 0;
 }
 
+function extractRows(result: unknown): any[] {
+  if (!result) return [];
+  if (Array.isArray(result)) {
+    const first = result[0];
+    if (Array.isArray(first)) return first as any[];
+    return result as any[];
+  }
+  if (typeof result === "object" && result !== null && "rows" in (result as any)) {
+    const rows = (result as any).rows;
+    return Array.isArray(rows) ? rows : [];
+  }
+  return [];
+}
+
 async function getTargetShiftWindow(
   context: ValidationContext,
   shiftInstanceId: number,
@@ -97,29 +112,27 @@ async function validateOverlapWithContext(
     return { valid: false, error: "Shift instance not found" };
   }
 
-  // Buscar alocações ativas do profissional que sobrepõem o horário
-  // Overlap é: existing.startAt < new.endAt AND existing.endAt > new.startAt
-  const overlappingAssignments = await context.db
-    .select({
-      id: shiftAssignmentsV2.id,
-      shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
-    })
-    .from(shiftAssignmentsV2)
-    .innerJoin(shiftInstances, eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id))
-    .where(
-      and(
-        eq(shiftAssignmentsV2.professionalId, professionalId),
-        eq(shiftAssignmentsV2.isActive, true),
-        ne(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId),
-        lt(shiftInstances.startAt, targetShift.endAt),
-        gt(shiftInstances.endAt, targetShift.startAt)
-      )
-    );
+  // Conflito global por usuário (não por vínculo): se o mesmo user tiver
+  // outro vínculo/profissional ativo no mesmo horário, deve bloquear.
+  const overlapResult = await context.db.execute<any>(
+    sql`SELECT COUNT(*) as count
+        FROM shift_assignments_v2 sa
+        INNER JOIN shift_instances si ON sa.shift_instance_id = si.id
+        INNER JOIN professionals p_existing ON p_existing.id = sa.professional_id
+        INNER JOIN professionals p_target ON p_target.id = ${professionalId}
+        WHERE p_existing.user_id = p_target.user_id
+          AND sa.is_active = true
+          AND sa.shift_instance_id <> ${shiftInstanceId}
+          AND si.start_at < ${targetShift.endAt}
+          AND si.end_at > ${targetShift.startAt}`
+  );
+  const overlapRows = extractRows(overlapResult);
+  const conflictCount = parseCountValue(overlapRows[0]?.count);
 
-  if (overlappingAssignments.length > 0) {
+  if (conflictCount > 0) {
     return {
       valid: false,
-      error: "Conflito: profissional já está alocado em outro setor/hospital nesse horário.",
+      error: "Conflito: médico já está alocado em outro vínculo/hospital nesse horário.",
       errorCode: "OVERLAP",
     };
   }

@@ -1,6 +1,6 @@
-import { Text, View, ScrollView, TouchableOpacity, Animated, RefreshControl } from "react-native";
-import { useState, useMemo, useRef } from "react";
-import { Calendar, Clock, MapPin, Plus } from "lucide-react-native";
+import { Text, View, ScrollView, TouchableOpacity, RefreshControl, TextInput } from "react-native";
+import { useState, useMemo } from "react";
+import { Calendar, Clock, MapPin, Plus, Search, CalendarDays, Clock3 } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 
@@ -21,36 +21,56 @@ type ShiftWithDetails = {
   startTime: Date;
   endTime: Date;
   status: string;
+  hospitalId: number;
+  sectorId: number;
   assignmentCount: number;
   professionalNames: string[];
 };
 
+const SLOT_LABELS = ["Manhã", "Tarde", "Noite"] as const;
+
+function toDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function classifySlot(label: string, startAt: Date): number {
+  const normalized = (label || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (normalized.includes("manha") || normalized.includes("morning")) return 0;
+  if (normalized.includes("tarde") || normalized.includes("afternoon")) return 1;
+  if (normalized.includes("noite") || normalized.includes("night")) return 2;
+
+  const hour = startAt.getHours();
+  if (hour >= 6 && hour < 13) return 0;
+  if (hour >= 13 && hour < 19) return 1;
+  return 2;
+}
+
 export default function CalendarScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const utils = trpc.useUtils();
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [visibleMonth, setVisibleMonth] = useState(() => {
-    const now = new Date();
-    return { year: now.getFullYear(), month: now.getMonth() };
-  });
   const [refreshing, setRefreshing] = useState(false);
   const [selectedTurnFilter, setSelectedTurnFilter] = useState<ShiftType | "todos">("todos");
+  const [searchShiftText, setSearchShiftText] = useState("");
+
+  const selectedDateKey = useMemo(() => toDateKey(selectedDate), [selectedDate]);
 
   // Query period = entire visible month
   const periodStart = useMemo(() => {
-    const d = new Date(visibleMonth.year, visibleMonth.month, 1);
+    const d = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
     return d.toISOString();
-  }, [visibleMonth]);
+  }, [selectedDate]);
   const periodEnd = useMemo(() => {
-    const d = new Date(visibleMonth.year, visibleMonth.month + 1, 0, 23, 59, 59);
+    const d = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 1);
     return d.toISOString();
-  }, [visibleMonth]);
+  }, [selectedDate]);
 
   const { data: shiftsData, refetch } = trpc.shifts.listByPeriod.useQuery(
     { startDate: periodStart, endDate: periodEnd },
     { enabled: !!user?.id },
   );
+  const { data: hospitalsData } = trpc.hospitals.list.useQuery(undefined, { enabled: !!user?.id });
+  const { data: sectorsData } = trpc.sectors.list.useQuery(undefined, { enabled: !!user?.id });
 
   const allShifts: ShiftWithDetails[] = useMemo(() => {
     if (!shiftsData) return [];
@@ -68,11 +88,27 @@ export default function CalendarScreen() {
         startTime: start,
         endTime: new Date(item.endAt),
         status: item.status,
+        hospitalId: item.hospitalId,
+        sectorId: item.sectorId,
         assignmentCount: item.assignments.length,
-        professionalNames: [],
+        professionalNames: item.assignments
+          .map((assignment) => assignment.professionalName)
+          .filter((name): name is string => Boolean(name)),
       };
     });
   }, [shiftsData]);
+
+  const hospitalsById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const h of hospitalsData || []) map.set(h.id, h.name);
+    return map;
+  }, [hospitalsData]);
+
+  const sectorsById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const s of sectorsData || []) map.set(s.id, s.name);
+    return map;
+  }, [sectorsData]);
 
   const getBadgeVariant = (status: string) => {
     if (status === "OCUPADO") return "success";
@@ -84,12 +120,100 @@ export default function CalendarScreen() {
   const shiftsPerDay = useMemo(() => {
     const map = new Map<string, number>();
     allShifts.forEach((shift) => {
-      const d = shift.startTime;
-      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const dateKey = toDateKey(shift.startTime);
       map.set(dateKey, (map.get(dateKey) || 0) + 1);
     });
     return map;
   }, [allShifts]);
+
+  const monthGridDates = useMemo(() => {
+    const first = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
+    const day = first.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const gridStart = new Date(first);
+    gridStart.setDate(first.getDate() + mondayOffset);
+
+    return Array.from({ length: 42 }, (_, idx) => {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + idx);
+      return d;
+    });
+  }, [selectedDate]);
+
+  const radarByDate = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        slots: { hasAny: boolean; hasVacancy: boolean }[];
+        shifts: Array<{
+          id: number;
+          label: string;
+          status: string;
+          startAt: string;
+          endAt: string;
+          hospitalName: string;
+          sectorName: string;
+          slotIndex: number;
+          professionalNames: string[];
+        }>;
+      }
+    >();
+
+    for (const shift of allShifts) {
+      const key = toDateKey(shift.startTime);
+      const slotIndex = classifySlot(shift.label, shift.startTime);
+      const status = String(shift.status || "VAGO");
+      const entry = map.get(key) || {
+        slots: [
+          { hasAny: false, hasVacancy: false },
+          { hasAny: false, hasVacancy: false },
+          { hasAny: false, hasVacancy: false },
+        ],
+        shifts: [],
+      };
+
+      entry.slots[slotIndex].hasAny = true;
+      if (status === "VAGO") entry.slots[slotIndex].hasVacancy = true;
+
+      entry.shifts.push({
+        id: shift.id,
+        label: shift.label,
+        status,
+        startAt: shift.startTime.toISOString(),
+        endAt: shift.endTime.toISOString(),
+        hospitalName: hospitalsById.get(shift.hospitalId) || `Hospital #${shift.hospitalId}`,
+        sectorName: sectorsById.get(shift.sectorId) || `Setor #${shift.sectorId}`,
+        slotIndex,
+        professionalNames: shift.professionalNames,
+      });
+
+      map.set(key, entry);
+    }
+
+    return map;
+  }, [allShifts, hospitalsById, sectorsById]);
+
+  const selectedDayShifts = useMemo(() => {
+    const base = radarByDate.get(selectedDateKey)?.shifts || [];
+    const term = searchShiftText.trim().toLowerCase();
+    const filtered = term
+      ? base.filter((s) =>
+          `${s.label} ${s.hospitalName} ${s.sectorName} ${SLOT_LABELS[s.slotIndex]} ${s.status} ${s.professionalNames.join(" ")}`
+            .toLowerCase()
+            .includes(term),
+        )
+      : base;
+
+    return filtered.sort(
+      (a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
+    );
+  }, [radarByDate, selectedDateKey, searchShiftText]);
+
+  const slotFillColor = (hasAny: boolean, hasVacancy: boolean) => {
+    if (hasVacancy) return "rgba(34,197,94,0.95)";
+    if (hasAny) return "rgba(245,158,11,0.9)";
+    return "rgba(148,163,184,0.2)";
+  };
 
   // Filtrar escalas do dia selecionado
   const shiftsOnSelectedDate = useMemo(() => {
@@ -164,6 +288,171 @@ export default function CalendarScreen() {
             shiftsPerDay={shiftsPerDay}
           />
         </TintedGlassCard>
+
+        <View style={{ marginBottom: 24 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <CalendarDays size={20} color="#FFFFFF" />
+            <Text style={{ fontSize: 20, fontWeight: "700", color: "#FFFFFF" }}>Radar de Plantões</Text>
+          </View>
+
+          <TintedGlassCard style={{ marginBottom: 12 }}>
+            <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.75)", marginBottom: 10 }}>
+              Toque em um dia para ver os plantões de todos os hospitais.
+            </Text>
+
+            <View style={{ flexDirection: "row", marginBottom: 8 }}>
+              {["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map((d) => (
+                <Text key={d} style={{ flex: 1, textAlign: "center", fontSize: 11, fontWeight: "700", color: "rgba(255,255,255,0.55)" }}>
+                  {d}
+                </Text>
+              ))}
+            </View>
+
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+              {monthGridDates.map((d) => {
+                const key = toDateKey(d);
+                const selected = key === selectedDateKey;
+                const inCurrentMonth = d.getMonth() === selectedDate.getMonth();
+                const info = radarByDate.get(key);
+                const slots = info?.slots || [
+                  { hasAny: false, hasVacancy: false },
+                  { hasAny: false, hasVacancy: false },
+                  { hasAny: false, hasVacancy: false },
+                ];
+
+                return (
+                  <TouchableOpacity
+                    key={key}
+                    onPress={() => setSelectedDate(d)}
+                    activeOpacity={0.8}
+                    style={{
+                      width: "13.4%",
+                      minWidth: 42,
+                      borderRadius: 10,
+                      borderWidth: selected ? 1.5 : 1,
+                      borderColor: selected ? "#60A5FA" : "rgba(255,255,255,0.14)",
+                      backgroundColor: selected ? "rgba(37,99,235,0.2)" : "rgba(255,255,255,0.03)",
+                      paddingVertical: 6,
+                      paddingHorizontal: 4,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        textAlign: "center",
+                        fontSize: 12,
+                        fontWeight: "700",
+                        color: inCurrentMonth ? "#FFFFFF" : "rgba(255,255,255,0.35)",
+                        marginBottom: 5,
+                      }}
+                    >
+                      {d.getDate()}
+                    </Text>
+                    <View style={{ gap: 3 }}>
+                      {slots.map((slot, idx) => (
+                        <View
+                          key={`${key}-${idx}`}
+                          style={{
+                            height: 5,
+                            borderRadius: 999,
+                            backgroundColor: slotFillColor(slot.hasAny, slot.hasVacancy),
+                          }}
+                        />
+                      ))}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 }}>
+              <View style={{ width: 10, height: 10, borderRadius: 999, backgroundColor: "rgba(34,197,94,0.95)" }} />
+              <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.75)" }}>Com vaga</Text>
+              <View style={{ width: 10, height: 10, borderRadius: 999, backgroundColor: "rgba(245,158,11,0.9)" }} />
+              <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.75)" }}>Sem vaga</Text>
+            </View>
+          </TintedGlassCard>
+
+          <TintedGlassCard>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF" }}>
+                Plantões de {new Date(`${selectedDateKey}T00:00:00`).toLocaleDateString("pt-BR")}
+              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Clock3 size={14} color="rgba(255,255,255,0.7)" />
+                <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 12 }}>
+                  {selectedDayShifts.length} resultado{selectedDayShifts.length !== 1 ? "s" : ""}
+                </Text>
+              </View>
+            </View>
+
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.16)",
+                borderRadius: 10,
+                backgroundColor: "rgba(255,255,255,0.05)",
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                marginBottom: 12,
+              }}
+            >
+              <Search size={16} color="rgba(255,255,255,0.7)" />
+              <TextInput
+                value={searchShiftText}
+                onChangeText={setSearchShiftText}
+                placeholder="Pesquisar hospital, setor, turno..."
+                placeholderTextColor="rgba(255,255,255,0.45)"
+                style={{ flex: 1, color: "#FFFFFF", fontSize: 14, paddingVertical: 0 }}
+              />
+            </View>
+
+            {selectedDayShifts.length === 0 ? (
+              <Text style={{ color: "rgba(255,255,255,0.65)" }}>
+                Nenhum plantão encontrado para esse dia/filtro.
+              </Text>
+            ) : (
+              <View style={{ gap: 8 }}>
+                {selectedDayShifts.map((shift) => (
+                  <TouchableOpacity
+                    key={shift.id}
+                    onPress={() => router.push({ pathname: "/edit-shift", params: { id: shift.id } })}
+                    activeOpacity={0.8}
+                    style={{
+                      borderWidth: 1,
+                      borderColor:
+                        shift.status === "VAGO"
+                          ? "rgba(239,68,68,0.85)"
+                          : shift.status === "PENDENTE"
+                            ? "rgba(245,158,11,0.85)"
+                            : "rgba(34,197,94,0.85)",
+                      borderRadius: 12,
+                      padding: 10,
+                      backgroundColor: "rgba(15,23,42,0.55)",
+                    }}
+                  >
+                    <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}>
+                      {SLOT_LABELS[shift.slotIndex]} • {shift.label}
+                    </Text>
+                    <Text style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, marginTop: 2 }}>
+                      {shift.hospitalName} • {shift.sectorName}
+                    </Text>
+                    {shift.professionalNames.length > 0 ? (
+                      <Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 12, marginTop: 2 }}>
+                        {shift.professionalNames.join(", ")}
+                      </Text>
+                    ) : null}
+                    <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 12, marginTop: 2 }}>
+                      {new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}–{new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} • {shift.status}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </TintedGlassCard>
+        </View>
 
         {/* Filtro por Turno */}
         <View style={{ marginBottom: 24 }}>

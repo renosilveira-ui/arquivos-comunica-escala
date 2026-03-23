@@ -1,9 +1,3 @@
-// server/integrations/comunica-plus.ts
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
 interface ComunicaPlusConfig {
   baseUrl: string;
   systemEmail: string;
@@ -13,73 +7,83 @@ interface ComunicaPlusConfig {
 
 function getConfig(): ComunicaPlusConfig {
   return {
-    baseUrl: process.env.COMUNICA_PLUS_URL || "http://localhost:3001",
+    baseUrl:
+      process.env.COMUNICA_PLUS_URL ||
+      "https://comunicamais-staging.onrender.com",
     systemEmail:
       process.env.COMUNICA_PLUS_SYSTEM_EMAIL ||
       "system.escalas@hospital.com",
-    systemPassword:
-      process.env.COMUNICA_PLUS_SYSTEM_PASSWORD || "system123",
+    systemPassword: process.env.COMUNICA_PLUS_SYSTEM_PASSWORD || "",
     systemPin: process.env.COMUNICA_PLUS_SYSTEM_PIN || "9999",
   };
 }
 
-// ---------------------------------------------------------------------------
-// Session management
-// ---------------------------------------------------------------------------
-
 let sessionCookie: string | null = null;
+const userIdByEmailCache = new Map<string, string>();
 
 function extractSessionCookie(setCookieHeader: string | null): string {
-  if (!setCookieHeader) throw new Error("No set-cookie from Comunica+");
-  const m = setCookieHeader.match(/session=[^;]+/);
-  if (!m) throw new Error("No session cookie token found");
-  return m[0];
+  if (!setCookieHeader) throw new Error("Comunica+ login sem set-cookie");
+  const match = setCookieHeader.match(/session=[^;]+/);
+  if (!match) throw new Error("Cookie de sessão não encontrado em set-cookie");
+  return match[0];
 }
 
-async function ensureSession(): Promise<string> {
+function parseBatchResult<T>(data: any): T {
+  const item = data?.[0];
+  if (!item) throw new Error("Resposta batch vazia do Comunica+");
+  if (item.error) {
+    const msg =
+      item.error?.json?.message ||
+      item.error?.message ||
+      "Erro desconhecido no Comunica+";
+    throw new Error(msg);
+  }
+  return (item?.result?.data?.json ?? item?.result?.data) as T;
+}
+
+export function clearSession() {
+  sessionCookie = null;
+}
+
+export async function ensureSession(): Promise<string> {
   if (sessionCookie) return sessionCookie;
+
   const config = getConfig();
-  const res = await fetch(
-    `${config.baseUrl}/api/trpc/auth.login?batch=1`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        "0": { email: config.systemEmail, password: config.systemPassword },
-      }),
-    },
-  );
-  if (!res.ok) throw new Error(`Comunica+ auth failed: ${res.status}`);
+  const res = await fetch(`${config.baseUrl}/api/trpc/auth.login?batch=1`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      "0": {
+        email: config.systemEmail,
+        password: config.systemPassword,
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Comunica+ auth.login falhou (${res.status}): ${text}`);
+  }
+
   sessionCookie = extractSessionCookie(res.headers.get("set-cookie"));
   return sessionCookie;
 }
 
-function clearSession() {
-  sessionCookie = null;
-}
-
-// ---------------------------------------------------------------------------
-// tRPC caller helper
-// ---------------------------------------------------------------------------
-
-async function trpcCall<T = unknown>(
+async function trpcCall<T>(
   procedure: string,
   input: Record<string, unknown>,
   retried = false,
 ): Promise<T> {
   const cookie = await ensureSession();
   const config = getConfig();
-  const res = await fetch(
-    `${config.baseUrl}/api/trpc/${procedure}?batch=1`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        Cookie: cookie,
-      },
-      body: JSON.stringify({ "0": input }),
+  const res = await fetch(`${config.baseUrl}/api/trpc/${procedure}?batch=1`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Cookie: cookie,
     },
-  );
+    body: JSON.stringify({ "0": input }),
+  });
 
   if (res.status === 401 && !retried) {
     clearSession();
@@ -87,193 +91,78 @@ async function trpcCall<T = unknown>(
   }
 
   if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Comunica+ ${procedure} failed: ${res.status} ${txt}`);
+    const text = await res.text().catch(() => "");
+    throw new Error(`Comunica+ ${procedure} falhou (${res.status}): ${text}`);
   }
 
   const data = await res.json();
-  // tRPC batch response: [{"result":{"data":...}}]
-  return data?.[0]?.result?.data as T;
+  return parseBatchResult<T>(data);
 }
 
-async function trpcQuery<T = unknown>(
-  procedure: string,
-  input: Record<string, unknown>,
-  retried = false,
-): Promise<T> {
-  const cookie = await ensureSession();
-  const config = getConfig();
-  const encodedInput = encodeURIComponent(
-    JSON.stringify({ "0": input }),
-  );
-  const res = await fetch(
-    `${config.baseUrl}/api/trpc/${procedure}?batch=1&input=${encodedInput}`,
-    {
-      method: "GET",
-      headers: { Cookie: cookie },
-    },
-  );
-
-  if (res.status === 401 && !retried) {
-    clearSession();
-    return trpcQuery<T>(procedure, input, true);
-  }
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Comunica+ ${procedure} query failed: ${res.status} ${txt}`);
-  }
-
-  const data = await res.json();
-  return data?.[0]?.result?.data as T;
-}
-
-// ---------------------------------------------------------------------------
-// Resolve userId by email (Comunica+ usa UUID, Escalas usa int)
-// ---------------------------------------------------------------------------
-
-const userIdCache = new Map<string, string>();
-
-async function resolveUserIdByEmail(
+export async function resolveUserIdByEmail(
   email: string,
 ): Promise<string | null> {
-  const cached = userIdCache.get(email);
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return null;
+  const cached = userIdByEmailCache.get(normalized);
   if (cached) return cached;
 
   try {
-    const result = await trpcQuery<{ userId: string }>(
+    const response = await trpcCall<{ userId: string | null }>(
       "integrations.resolveUserIdByEmail",
-      { email },
+      { email: normalized },
     );
-    if (result?.userId) {
-      userIdCache.set(email, result.userId);
-      return result.userId;
-    }
+    const userId = response?.userId ?? null;
+    if (userId) userIdByEmailCache.set(normalized, userId);
+    return userId;
   } catch (err) {
-    console.warn(
-      `[Comunica+] Could not resolve userId for ${email}:`,
-      err,
-    );
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Sector UUID mapping (v1: via env vars)
-// ---------------------------------------------------------------------------
-
-function getSectorUUID(sectorName: string): string | null {
-  const key = `COMUNICA_PLUS_SECTOR_UUID_${sectorName.toUpperCase().replace(/\s+/g, "_")}`;
-  return process.env[key] || null;
-}
-
-// ---------------------------------------------------------------------------
-// Send notice via Comunica+
-// ---------------------------------------------------------------------------
-
-async function sendNoticeToUser(
-  targetUserId: string,
-  templateCode: string,
-  details: string,
-): Promise<boolean> {
-  try {
-    const config = getConfig();
-    await trpcCall("notices.createStructuredNotice", {
-      pin: config.systemPin,
-      templateCode,
-      targetType: "USER",
-      targetUserId,
-      details,
-    });
-    return true;
-  } catch (err) {
-    console.error("[Comunica+] sendNoticeToUser failed:", err);
-    return false;
+    console.warn(`[Comunica+] resolveUserIdByEmail falhou para ${email}:`, err);
+    return null;
   }
 }
 
-async function sendNoticeToSector(
-  targetSectorId: string,
-  templateCode: string,
-  details: string,
-): Promise<boolean> {
-  try {
-    const config = getConfig();
-    await trpcCall("notices.createStructuredNotice", {
-      pin: config.systemPin,
-      templateCode,
-      targetType: "SECTOR",
-      targetSectorId,
-      details,
-    });
-    return true;
-  } catch (err) {
-    console.error("[Comunica+] sendNoticeToSector failed:", err);
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Event envelope (for logging/audit, not sent to Comunica+)
-// ---------------------------------------------------------------------------
-
-interface IntegrationEvent {
-  schema_version: 1;
-  event_id: string;
-  event_type:
+export async function sendStructuredNotice(input: {
+  targetUserId: string;
+  templateCode:
     | "ROSTER_PUBLISHED"
     | "SHIFT_VACANCY_OPENED"
     | "SHIFT_SWAP_APPROVED";
-  occurred_at: string;
-  dedup_key: string;
-  payload: Record<string, unknown>;
+  details: string;
+}): Promise<void> {
+  const config = getConfig();
+  await trpcCall("notices.createStructuredNotice", {
+    pin: config.systemPin,
+    templateCode: input.templateCode,
+    targetType: "USER",
+    targetUserId: input.targetUserId,
+    details: input.details,
+  });
 }
-
-function createEvent(
-  type: IntegrationEvent["event_type"],
-  dedupKey: string,
-  payload: Record<string, unknown>,
-): IntegrationEvent {
-  return {
-    schema_version: 1,
-    event_id: crypto.randomUUID(),
-    event_type: type,
-    occurred_at: new Date().toISOString(),
-    dedup_key: dedupKey,
-    payload,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 export async function notifyRosterPublished(params: {
   hospitalId: number;
   yearMonth: string;
   version: number;
-  publishedByUserId: number;
   professionalEmails: string[];
 }): Promise<void> {
-  const dedupKey = `escalas:roster:${params.yearMonth}:hospital:${params.hospitalId}:v${params.version}`;
-  const event = createEvent("ROSTER_PUBLISHED", dedupKey, {
-    yearMonth: params.yearMonth,
-    version: params.version,
-    publishedBy: params.publishedByUserId,
-  });
-  console.log("[Comunica+] ROSTER_PUBLISHED:", event.dedup_key);
+  const dedup = `escalas:roster:${params.yearMonth}:hospital:${params.hospitalId}:v${params.version}`;
+  const details = `dedup=${dedup};yearMonth=${params.yearMonth};v=${params.version}`;
 
   for (const email of params.professionalEmails) {
-    const userId = await resolveUserIdByEmail(email);
-    if (!userId) {
-      console.warn(`[Comunica+] Skip notice: no userId for ${email}`);
+    const targetUserId = await resolveUserIdByEmail(email);
+    if (!targetUserId) {
+      console.warn(`[Comunica+] skip ROSTER_PUBLISHED sem userId para ${email}`);
       continue;
     }
-    await sendNoticeToUser(
-      userId,
-      "ROSTER_PUBLISHED",
-      `dedup=${dedupKey};yearMonth=${params.yearMonth};v=${params.version}`,
-    );
+    try {
+      await sendStructuredNotice({
+        targetUserId,
+        templateCode: "ROSTER_PUBLISHED",
+        details,
+      });
+    } catch (err) {
+      console.error("[Comunica+] erro ao enviar ROSTER_PUBLISHED:", err);
+    }
   }
 }
 
@@ -282,25 +171,27 @@ export async function notifyVacancyOpened(params: {
   startAt: string;
   endAt: string;
   templateName: string;
-  sectorName: string | null;
+  professionalEmails: string[];
 }): Promise<void> {
-  const dedupKey = `escalas:vacancy:${params.shiftInstanceId}`;
-  const event = createEvent("SHIFT_VACANCY_OPENED", dedupKey, {
-    shiftInstanceId: params.shiftInstanceId,
-    startAt: params.startAt,
-    endAt: params.endAt,
-    templateName: params.templateName,
-  });
-  console.log("[Comunica+] SHIFT_VACANCY_OPENED:", event.dedup_key);
+  const dedup = `escalas:vacancy:${params.shiftInstanceId}`;
+  const details = `dedup=${dedup};shift=${params.templateName};start=${params.startAt};end=${params.endAt}`;
 
-  if (params.sectorName) {
-    const sectorUUID = getSectorUUID(params.sectorName);
-    if (sectorUUID) {
-      await sendNoticeToSector(
-        sectorUUID,
-        "SHIFT_VACANCY",
-        `dedup=${dedupKey};shift=${params.templateName};start=${params.startAt}`,
+  for (const email of params.professionalEmails) {
+    const targetUserId = await resolveUserIdByEmail(email);
+    if (!targetUserId) {
+      console.warn(
+        `[Comunica+] skip SHIFT_VACANCY_OPENED sem userId para ${email}`,
       );
+      continue;
+    }
+    try {
+      await sendStructuredNotice({
+        targetUserId,
+        templateCode: "SHIFT_VACANCY_OPENED",
+        details,
+      });
+    } catch (err) {
+      console.error("[Comunica+] erro ao enviar SHIFT_VACANCY_OPENED:", err);
     }
   }
 }
@@ -310,26 +201,26 @@ export async function notifySwapApproved(params: {
   fromEmail: string;
   toEmail: string;
 }): Promise<void> {
-  const dedupKey = `escalas:swap:${params.swapId}`;
-  const event = createEvent("SHIFT_SWAP_APPROVED", dedupKey, {
-    swapId: params.swapId,
-  });
-  console.log("[Comunica+] SHIFT_SWAP_APPROVED:", event.dedup_key);
+  const dedup = `escalas:swap:${params.swapId}`;
+  const details = `dedup=${dedup};swapId=${params.swapId}`;
 
   for (const email of [params.fromEmail, params.toEmail]) {
-    const userId = await resolveUserIdByEmail(email);
-    if (!userId) continue;
-    await sendNoticeToUser(
-      userId,
-      "SHIFT_SWAP_APPROVED",
-      `dedup=${dedupKey};swap=${params.swapId}`,
-    );
+    const targetUserId = await resolveUserIdByEmail(email);
+    if (!targetUserId) {
+      console.warn(`[Comunica+] skip SHIFT_SWAP_APPROVED sem userId para ${email}`);
+      continue;
+    }
+    try {
+      await sendStructuredNotice({
+        targetUserId,
+        templateCode: "SHIFT_SWAP_APPROVED",
+        details,
+      });
+    } catch (err) {
+      console.error("[Comunica+] erro ao enviar SHIFT_SWAP_APPROVED:", err);
+    }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Presence (consumir do Comunica+)
-// ---------------------------------------------------------------------------
 
 interface OnlineProfessional {
   userId: string;
@@ -338,25 +229,22 @@ interface OnlineProfessional {
   dutyType: string;
 }
 
-let presenceCache: { data: OnlineProfessional[]; ts: number } | null =
-  null;
-const PRESENCE_TTL = 30_000; // 30 seconds
+let presenceCache: { data: OnlineProfessional[]; ts: number } | null = null;
+const PRESENCE_TTL_MS = 30_000;
 
-export async function getOnlineProfessionals(): Promise<
-  OnlineProfessional[]
-> {
-  if (presenceCache && Date.now() - presenceCache.ts < PRESENCE_TTL) {
+export async function getOnlineProfessionals(): Promise<OnlineProfessional[]> {
+  if (presenceCache && Date.now() - presenceCache.ts < PRESENCE_TTL_MS) {
     return presenceCache.data;
   }
+
   try {
-    const result = await trpcCall<OnlineProfessional[]>(
-      "auth.listDutyPresence",
-      {},
-    );
-    presenceCache = { data: result || [], ts: Date.now() };
-    return presenceCache.data;
+    const data = await trpcCall<OnlineProfessional[]>("auth.listDutyPresence", {});
+    const safe = Array.isArray(data) ? data : [];
+    presenceCache = { data: safe, ts: Date.now() };
+    return safe;
   } catch (err) {
-    console.error("[Comunica+] getOnlineProfessionals failed:", err);
+    console.error("[Comunica+] getOnlineProfessionals falhou:", err);
     return presenceCache?.data || [];
   }
 }
+

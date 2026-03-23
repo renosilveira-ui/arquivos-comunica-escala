@@ -27,9 +27,17 @@ export async function assertMonthEditable(
 
   const yearMonth = yearMonthFromDate(date);
 
-  // Buscar professional do ctx.user usando Drizzle query
+  // Buscar professional do ctx.user priorizando maior privilégio entre vínculos.
   const professionalResult = await db.execute<any>(
-    sql`SELECT id, role FROM professionals WHERE user_id = ${ctx.user.id} LIMIT 1`
+    sql`SELECT id, user_role
+        FROM professionals
+        WHERE user_id = ${ctx.user.id}
+        ORDER BY CASE user_role
+          WHEN 'GESTOR_PLUS' THEN 1
+          WHEN 'GESTOR_MEDICO' THEN 2
+          ELSE 3
+        END
+        LIMIT 1`
   );
 
   const professionalRows = (professionalResult as any).rows || (professionalResult as any[]);
@@ -39,7 +47,7 @@ export async function assertMonthEditable(
 
   const professional = professionalRows[0];
   const professionalId = professional.id;
-  const role = professional.role;
+  const role = professional.user_role as string;
 
   // Buscar monthly_roster usando Drizzle query
   const rosterResult = await db.execute<any>(
@@ -76,6 +84,7 @@ export async function assertMonthEditable(
 
     // Audit: PUBLISHED_MONTH_OVERRIDE (usando RETROACTIVE_EDIT como evento)
     await auditLog({
+      institutionId,
       event: "RETROACTIVE_EDIT",
       shiftInstanceId: 0, // placeholder (não temos shiftInstanceId específico aqui)
       professionalId: professionalId,
@@ -124,6 +133,19 @@ export async function publishMonth(
     throw new Error("Mês não encontrado ou não está em DRAFT");
   }
 
+  const [rosterRow] = await db
+    .select({ version: monthlyRosters.version })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonth),
+      ),
+    )
+    .limit(1);
+  const rosterVersion = rosterRow?.version ?? 1;
+
   // Fire-and-forget: notify Comunica+ about published roster
   (async () => {
     try {
@@ -138,13 +160,14 @@ export async function publishMonth(
             AND si.start_at < DATE_ADD(${yearMonth + '-01'}, INTERVAL 1 MONTH)`,
       );
       const rows = (emailRows as any).rows || (emailRows as any[]);
-      const emails = (rows || []).map((r: any) => r.email).filter(Boolean);
+      const emails: string[] = Array.from(
+        new Set((rows || []).map((r: any) => r.email).filter(Boolean)),
+      ) as string[];
       if (emails.length > 0) {
         await notifyRosterPublished({
           hospitalId,
           yearMonth,
-          version: 1,
-          publishedByUserId: userId,
+          version: rosterVersion,
           professionalEmails: emails,
         });
       }

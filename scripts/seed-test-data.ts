@@ -11,14 +11,16 @@ import {
   hospitals,
   sectors,
   professionals,
+  professionalInstitutions,
   professionalAccess,
   managerScope,
   shiftInstances,
   shiftAssignmentsV2,
+  shiftAuditLog,
   users,
   institutionConfig,
 } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -51,8 +53,34 @@ export async function seedTestData() {
   await db.execute("DELETE FROM professionals WHERE name LIKE 'UTI Dummy%'");
   await db.execute("DELETE FROM users WHERE openId LIKE 'uti-dummy-%'");
 
+  // Limpar assignments vinculados a shifts de teste antes de remover shift_instances
+  await db.execute(`
+    DELETE sa FROM shift_assignments_v2 sa
+    INNER JOIN shift_instances si ON si.id = sa.shift_instance_id
+    WHERE si.label LIKE '%VAGO%'
+       OR si.label LIKE '%OCUPADO%'
+       OR si.label LIKE '%PENDENTE%'
+       OR si.label LIKE '%Retroativo%'
+       OR si.label LIKE '%UTI%'
+       OR si.label LIKE '%Conflito%'
+       OR si.label LIKE 'E2E Test%'
+  `);
+  await db.execute(`
+    DELETE al FROM shift_audit_log al
+    INNER JOIN shift_instances si ON si.id = al.shift_instance_id
+    WHERE si.label LIKE '%VAGO%'
+       OR si.label LIKE '%OCUPADO%'
+       OR si.label LIKE '%PENDENTE%'
+       OR si.label LIKE '%Retroativo%'
+       OR si.label LIKE '%UTI%'
+       OR si.label LIKE '%Conflito%'
+       OR si.label LIKE 'E2E Test%'
+  `);
+  await db.delete(shiftAuditLog).where(eq(shiftAuditLog.event, "VACANCY_REQUESTED"));
+  await db.delete(shiftAuditLog).where(eq(shiftAuditLog.event, "ASSIGNMENT_APPROVED"));
+  await db.delete(shiftAuditLog).where(eq(shiftAuditLog.event, "ASSIGNMENT_REJECTED"));
   await db.execute(`DELETE FROM shift_assignments_v2 WHERE professional_id IN (SELECT id FROM professionals WHERE name IN (${nameList}))`);
-  await db.execute("DELETE FROM shift_instances WHERE label LIKE '%VAGO%' OR label LIKE '%OCUPADO%' OR label LIKE '%PENDENTE%' OR label LIKE '%Retroativo%' OR label LIKE '%UTI%' OR label LIKE '%Conflito%'");
+  await db.execute("DELETE FROM shift_instances WHERE label LIKE '%VAGO%' OR label LIKE '%OCUPADO%' OR label LIKE '%PENDENTE%' OR label LIKE '%Retroativo%' OR label LIKE '%UTI%' OR label LIKE '%Conflito%' OR label LIKE 'E2E Test%'");
   await db.execute(`DELETE FROM professional_access WHERE professional_id IN (SELECT id FROM professionals WHERE name IN (${nameList}))`);
   await db.execute(`DELETE FROM manager_scope WHERE manager_professional_id IN (SELECT id FROM professionals WHERE name IN (${nameList}))`);
   await db.execute(`DELETE FROM professionals WHERE name IN (${nameList})`);
@@ -64,8 +92,16 @@ export async function seedTestData() {
     db.select().from(institutions).limit(1),
   );
   if (!institution) {
-    await db.insert(institutions).values({ name: "Instituição Teste" });
-    institution = (await first(db.select().from(institutions).limit(1)))!;
+    await db.insert(institutions).values({
+      name: "Hospital das Clínicas",
+      cnpj: "11111111000191",
+      legalName: "Hospital das Clínicas S.A.",
+      tradeName: "HC",
+      isActive: true,
+    });
+    institution = (await first(
+      db.select().from(institutions).where(eq(institutions.cnpj, "11111111000191")).limit(1),
+    ))!;
     console.log("✅ Instituição criada:", institution.name);
   }
 
@@ -118,6 +154,7 @@ export async function seedTestData() {
   );
   if (!sector) {
     await db.insert(sectors).values({
+      institutionId: institution.id,
       hospitalId: hospital.id,
       name: "Centro Cirúrgico",
       category: "cirurgico",
@@ -134,8 +171,31 @@ export async function seedTestData() {
   }
 
   // ── 3b. Garantir setor "UTI" (fora da jurisdição da Maria) ──────────────
+  // Limpar dependências antes de recriar o setor para evitar erro de FK.
+  await db.execute(`
+    DELETE sa FROM shift_assignments_v2 sa
+    INNER JOIN shift_instances si ON si.id = sa.shift_instance_id
+    INNER JOIN sectors s ON s.id = si.sector_id
+    WHERE s.hospital_id = ${hospital.id} AND s.name = 'UTI'
+  `);
+  await db.execute(`
+    DELETE si FROM shift_instances si
+    INNER JOIN sectors s ON s.id = si.sector_id
+    WHERE s.hospital_id = ${hospital.id} AND s.name = 'UTI'
+  `);
+  await db.execute(`
+    DELETE ms FROM manager_scope ms
+    INNER JOIN sectors s ON s.id = ms.sector_id
+    WHERE s.hospital_id = ${hospital.id} AND s.name = 'UTI'
+  `);
+  await db.execute(`
+    DELETE pa FROM professional_access pa
+    INNER JOIN sectors s ON s.id = pa.sector_id
+    WHERE s.hospital_id = ${hospital.id} AND s.name = 'UTI'
+  `);
   await db.execute(`DELETE FROM sectors WHERE hospital_id = ${hospital.id} AND name = 'UTI'`);
   await db.insert(sectors).values({
+    institutionId: institution.id,
     hospitalId: hospital.id,
     name: "UTI",
     category: "internacao",
@@ -155,28 +215,39 @@ export async function seedTestData() {
   console.log(`✅ Setor: ${sector.name}`);
 
   // ── 4. Garantir 4 users ──────────────────────────────────────────────────
-  const existingUsers = await db.select().from(users).limit(4);
-
   const testOpenIds = [
     "test-joao-openid",
     "test-maria-openid",
     "test-pedro-openid",
     "test-ana-openid",
   ];
-
-  if (existingUsers.length < 4) {
-    const needed = 4 - existingUsers.length;
-    console.log(`👤 Criando ${needed} users de teste...`);
-    for (let i = existingUsers.length; i < 4; i++) {
+  for (let i = 0; i < 4; i++) {
+    const [existingUser] = await db
+      .select()
+      .from(users)
+      .where(eq(users.openId, testOpenIds[i]))
+      .limit(1);
+    if (!existingUser) {
       await db.insert(users).values({
         openId: testOpenIds[i],
         name: TEST_NAMES[i],
         email: `test${i + 1}@test.com`,
+        loginMethod: "openid",
+        role: "doctor",
       });
     }
   }
 
-  const allUsers = await db.select().from(users).limit(4);
+  const userByOpenId: Record<string, typeof users.$inferSelect> = {};
+  for (const openId of testOpenIds) {
+    const [resolved] = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+    if (!resolved) {
+      throw new Error(`Falha ao resolver usuário de teste: ${openId}`);
+    }
+    userByOpenId[openId] = resolved;
+  }
+
+  const allUsers = testOpenIds.map((openId) => userByOpenId[openId]);
   const [user1, user2, user3, user4] = allUsers;
 
   console.log(`✅ Users: ${allUsers.map((u) => u.name || u.openId).join(", ")}`);
@@ -190,28 +261,59 @@ export async function seedTestData() {
   ];
 
   for (const prof of profsToCreate) {
-    await db.insert(professionals).values({
-      ...prof,
-      institutionId: institution.id,
-    });
+    const [existingProfessional] = await db
+      .select()
+      .from(professionals)
+      .where(eq(professionals.userId, prof.userId))
+      .limit(1);
+
+    let professionalId = existingProfessional?.id;
+    if (!professionalId) {
+      const [proResult] = await db.insert(professionals).values(prof);
+      professionalId = (proResult as any).insertId as number;
+    }
+
+    const [existingLink] = await db
+      .select({ id: professionalInstitutions.id })
+      .from(professionalInstitutions)
+      .where(
+        and(
+          eq(professionalInstitutions.professionalId, professionalId),
+          eq(professionalInstitutions.institutionId, institution.id),
+        ),
+      )
+      .limit(1);
+
+    if (!existingLink) {
+      await db.insert(professionalInstitutions).values({
+        professionalId,
+        userId: prof.userId,
+        institutionId: institution.id,
+        roleInInstitution: prof.userRole,
+        isPrimary: true,
+        active: true,
+      });
+    }
   }
 
   const testProfessionals = await db
     .select()
     .from(professionals)
-    .where(eq(professionals.institutionId, institution.id));
+    .where(inArray(professionals.userId, allUsers.map((u) => u.id)));
 
   console.log(`✅ Profissionais: ${testProfessionals.map((p) => p.name).join(", ")}`);
 
   // ── 6. Conceder acesso a todos os profissionais de teste ─────────────────
   for (const prof of testProfessionals) {
     await db.insert(professionalAccess).values({
+      institutionId: institution.id,
       professionalId: prof.id,
       hospitalId: hospital.id,
       sectorId: sector.id,
     });
     // Also give access to UTI sector (for validateAssignment limit tests)
     await db.insert(professionalAccess).values({
+      institutionId: institution.id,
       professionalId: prof.id,
       hospitalId: hospital.id,
       sectorId: sectorUti.id,
@@ -222,6 +324,7 @@ export async function seedTestData() {
   const maria = testProfessionals.find((p) => p.name === TEST_NAMES[1]);
   if (maria) {
     await db.insert(managerScope).values({
+      institutionId: institution.id,
       managerProfessionalId: maria.id,
       hospitalId: hospital.id,
       sectorId: sector.id,
@@ -232,8 +335,6 @@ export async function seedTestData() {
   const now = new Date();
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
   const fiveDaysAgo = new Date(now);
   fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
 
@@ -367,21 +468,48 @@ export async function seedTestData() {
         ))!.id;
       }
 
-      await db.insert(professionals).values({
-        userId,
-        institutionId: institution.id,
-        name: `UTI Dummy ${i}`,
-        role: "Médico",
-        userRole: "USER",
-      });
-      const [dummyProf] = await db
+      const [existingDummyProf] = await db
         .select()
         .from(professionals)
-        .where(eq(professionals.name, `UTI Dummy ${i}`))
+        .where(eq(professionals.userId, userId))
         .limit(1);
 
+      let dummyProfId = existingDummyProf?.id;
+      if (!dummyProfId) {
+        const [dummyProResult] = await db.insert(professionals).values({
+          userId,
+          name: `UTI Dummy ${i}`,
+          role: "Médico",
+          userRole: "USER",
+        });
+        dummyProfId = (dummyProResult as any).insertId as number;
+      }
+
+      const [existingDummyLink] = await db
+        .select({ id: professionalInstitutions.id })
+        .from(professionalInstitutions)
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, dummyProfId),
+            eq(professionalInstitutions.institutionId, institution.id),
+          ),
+        )
+        .limit(1);
+
+      if (!existingDummyLink) {
+        await db.insert(professionalInstitutions).values({
+          professionalId: dummyProfId,
+          userId,
+          institutionId: institution.id,
+          roleInInstitution: "USER",
+          isPrimary: false,
+          active: true,
+        });
+      }
+
       await db.insert(professionalAccess).values({
-        professionalId: dummyProf.id,
+        institutionId: institution.id,
+        professionalId: dummyProfId,
         hospitalId: hospital.id,
         sectorId: sectorUti.id,
       });
@@ -391,7 +519,7 @@ export async function seedTestData() {
         institutionId: institution.id,
         hospitalId: hospital.id,
         sectorId: sectorUti.id,
-        professionalId: dummyProf.id,
+        professionalId: dummyProfId,
         status: "CONFIRMADO",
         isActive: true,
       });

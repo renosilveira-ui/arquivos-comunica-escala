@@ -11,7 +11,7 @@
 
 import { getDb } from "../server/db";
 import { shiftInstances, hospitals, sectors, institutions } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 async function seedVacancies() {
   console.log("🌱 Starting seed-vacancies...");
@@ -53,7 +53,13 @@ async function seedVacancies() {
   const [sector] = await db
     .select()
     .from(sectors)
-    .where(eq(sectors.name, "UTI Térreo"))
+    .where(
+      and(
+        eq(sectors.name, "UTI Térreo"),
+        eq(sectors.hospitalId, hospital.id),
+        eq(sectors.institutionId, institution.id),
+      ),
+    )
     .limit(1);
 
   if (!sector) {

@@ -84,6 +84,7 @@ async function testApproveManual() {
 
   // 8. Registrar audit log
   await auditLog({
+    institutionId: shiftInstance.institutionId,
     event: "ASSIGNMENT_APPROVED",
     shiftInstanceId: shiftInstance.id,
     professionalId: maria.id,

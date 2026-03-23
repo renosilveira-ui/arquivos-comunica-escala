@@ -1,5 +1,6 @@
 import { getDb } from "./db";
 import { auditTrail } from "../drizzle/schema";
+import type { Request } from "express";
 
 export interface AuditEntry {
   actorUserId: number;
@@ -29,6 +30,8 @@ export interface AuditEntry {
     | "USER_CREATED"
     | "USER_UPDATED"
     | "USER_ROLE_CHANGED"
+    | "SSO_JIT_LINK_CREATED"
+    | "PUSH_DISPATCHED"
     | "CONFLICT_DETECTED"
     | "CONFLICT_OVERRIDDEN";
   entityType:
@@ -58,11 +61,32 @@ export interface AuditEntry {
  * Grava uma entrada no audit trail de forma fire-and-forget.
  * Nunca bloqueia a operação principal em caso de falha.
  */
-export async function recordAudit(entry: AuditEntry): Promise<void> {
+function extractAuditRequestMeta(req?: Request | null): Pick<AuditEntry, "ipAddress" | "userAgent"> {
+  if (!req) return {};
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const realIp = req.headers["x-real-ip"];
+  const forwardedIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor?.split(",")[0]?.trim();
+  const ipAddress =
+    (typeof forwardedIp === "string" && forwardedIp) ||
+    (typeof realIp === "string" && realIp) ||
+    req.ip ||
+    undefined;
+  const userAgent = typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined;
+  return { ipAddress, userAgent };
+}
+
+export async function recordAudit(entry: AuditEntry, req?: Request | null): Promise<void> {
   try {
     const db = await getDb();
     if (!db) return;
-    await db.insert(auditTrail).values(entry as any);
+    const requestMeta = extractAuditRequestMeta(req);
+    await db
+      .insert(auditTrail)
+      .values({
+        ...entry,
+        ipAddress: entry.ipAddress ?? requestMeta.ipAddress,
+        userAgent: entry.userAgent ?? requestMeta.userAgent,
+      } as any);
   } catch (err) {
     // Nunca bloquear a operação por falha de audit
     console.error("[AuditTrail] Failed to record:", err);

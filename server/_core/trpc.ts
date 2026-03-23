@@ -27,6 +27,31 @@ const requireUser = t.middleware(async (opts) => {
 
 export const protectedProcedure = t.procedure.use(requireUser);
 
+const requireTenant = t.middleware(async (opts) => {
+  const { ctx, next } = opts;
+
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+
+  if (!ctx.institutionId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Usuário sem vínculo institucional ativo",
+    });
+  }
+
+  return next({
+    ctx: {
+      ...ctx,
+      user: ctx.user,
+      institutionId: ctx.institutionId,
+    },
+  });
+});
+
+export const tenantProcedure = t.procedure.use(requireTenant);
+
 export const adminProcedure = t.procedure.use(
   t.middleware(async (opts) => {
     const { ctx, next } = opts;

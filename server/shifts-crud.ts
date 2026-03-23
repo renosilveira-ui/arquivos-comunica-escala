@@ -1,18 +1,20 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { protectedProcedure, router, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, and, gte, lte, lt, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, lt, inArray, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   shiftInstances,
   shiftTemplates,
   shiftAssignmentsV2,
   professionals,
+  users,
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import { notifyVacancyOpened } from "./integrations/comunica-plus";
 import { publishMonth, lockMonth } from "./month-guards";
+import { listProfessionalIdsByUser } from "./helpers/professional-resolution";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -45,7 +47,7 @@ export const shiftsRouter = router({
   // shifts.create — admin/manager only
   // Creates a shiftInstance from a template + date.
   // ------------------------------------------------------------------
-  create: protectedProcedure
+  create: tenantProcedure
     .input(
       z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
@@ -62,7 +64,12 @@ export const shiftsRouter = router({
       const [template] = await db
         .select()
         .from(shiftTemplates)
-        .where(eq(shiftTemplates.id, input.shiftTemplateId));
+        .where(
+          and(
+            eq(shiftTemplates.id, input.shiftTemplateId),
+            eq(shiftTemplates.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!template) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Template de turno não encontrado" });
@@ -93,6 +100,7 @@ export const shiftsRouter = router({
       const insertId = (result as any).insertId as number;
 
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "SHIFT_CREATED",
         shiftInstanceId: insertId,
         professionalId: null,
@@ -110,12 +118,17 @@ export const shiftsRouter = router({
         hospitalId: template.hospitalId,
         sectorId: sectorId,
         shiftInstanceId: insertId,
-      });
+      }, ctx.req);
 
       const [created] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, insertId));
+        .where(
+          and(
+            eq(shiftInstances.id, insertId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       return created;
     }),
@@ -124,16 +137,21 @@ export const shiftsRouter = router({
   // shifts.get — any authenticated user
   // Returns the shiftInstance with template details and assignments.
   // ------------------------------------------------------------------
-  get: protectedProcedure
+  get: tenantProcedure
     .input(z.object({ id: z.number().int() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
       const [instance] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.id));
+        .where(
+          and(
+            eq(shiftInstances.id, input.id),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!instance) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
@@ -147,6 +165,7 @@ export const shiftsRouter = router({
           and(
             eq(shiftTemplates.hospitalId, instance.hospitalId),
             eq(shiftTemplates.name, instance.label),
+            eq(shiftTemplates.institutionId, ctx.institutionId),
           ),
         )
         .limit(1);
@@ -157,6 +176,7 @@ export const shiftsRouter = router({
         .where(
           and(
             eq(shiftAssignmentsV2.shiftInstanceId, input.id),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
             eq(shiftAssignmentsV2.isActive, true),
           ),
         );
@@ -168,7 +188,7 @@ export const shiftsRouter = router({
   // shifts.update — admin/manager only
   // Updates status and/or timestamps; records audit entry.
   // ------------------------------------------------------------------
-  update: protectedProcedure
+  update: tenantProcedure
     .input(
       z.object({
         id: z.number().int(),
@@ -186,7 +206,12 @@ export const shiftsRouter = router({
       const [existing] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.id));
+        .where(
+          and(
+            eq(shiftInstances.id, input.id),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!existing) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
@@ -204,9 +229,15 @@ export const shiftsRouter = router({
       await db
         .update(shiftInstances)
         .set(patch)
-        .where(eq(shiftInstances.id, input.id));
+        .where(
+          and(
+            eq(shiftInstances.id, input.id),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       await auditLog({
+        institutionId: ctx.institutionId,
         event: "SHIFT_UPDATED",
         shiftInstanceId: input.id,
         professionalId: null,
@@ -225,25 +256,53 @@ export const shiftsRouter = router({
         hospitalId: existing.hospitalId,
         sectorId: existing.sectorId,
         metadata: { changes: patch },
-      });
+      }, ctx.req);
 
       // Fire-and-forget: notify Comunica+ if shift became vacant
       if (input.status === "VAGO" && existing.status !== "VAGO") {
-        notifyVacancyOpened({
-          shiftInstanceId: input.id,
-          startAt: existing.startAt.toISOString(),
-          endAt: existing.endAt.toISOString(),
-          templateName: existing.label,
-          sectorName: null, // TODO: resolve sector name from sectorId
-        }).catch((err) =>
-          console.error("[Comunica+] notifyVacancyOpened error:", err),
-        );
+        (async () => {
+          try {
+            const emailRows = await db
+              .select({ email: users.email })
+              .from(shiftAssignmentsV2)
+              .innerJoin(
+                professionals,
+                eq(shiftAssignmentsV2.professionalId, professionals.id),
+              )
+              .innerJoin(users, eq(professionals.userId, users.id))
+              .where(
+                and(
+                  eq(shiftAssignmentsV2.isActive, true),
+                  eq(shiftAssignmentsV2.hospitalId, existing.hospitalId),
+                  eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+                ),
+              );
+            const professionalEmails = Array.from(
+              new Set(emailRows.map((r) => r.email).filter(Boolean)),
+            ) as string[];
+
+            await notifyVacancyOpened({
+              shiftInstanceId: input.id,
+              startAt: existing.startAt.toISOString(),
+              endAt: existing.endAt.toISOString(),
+              templateName: existing.label,
+              professionalEmails,
+            });
+          } catch (err) {
+            console.error("[Comunica+] notifyVacancyOpened error:", err);
+          }
+        })();
       }
 
       const [updated] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.id));
+        .where(
+          and(
+            eq(shiftInstances.id, input.id),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       return updated;
     }),
@@ -252,24 +311,33 @@ export const shiftsRouter = router({
   // shifts.listByPeriod — any authenticated user
   // Returns all shiftInstances whose startAt falls within [startDate, endDate].
   // ------------------------------------------------------------------
-  listByPeriod: protectedProcedure
+  listByPeriod: tenantProcedure
     .input(
       z.object({
         startDate: z.string(),
         endDate: z.string(),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
-      const start = new Date(input.startDate);
-      const end = new Date(input.endDate);
+      const parseBoundary = (value: string) =>
+        value.includes("T") ? new Date(value) : new Date(`${value}T00:00:00`);
+
+      const start = parseBoundary(input.startDate);
+      const end = parseBoundary(input.endDate);
 
       const instances = await db
         .select()
         .from(shiftInstances)
-        .where(and(gte(shiftInstances.startAt, start), lte(shiftInstances.startAt, end)));
+        .where(
+          and(
+            eq(shiftInstances.institutionId, ctx.institutionId),
+            gte(shiftInstances.startAt, start),
+            lt(shiftInstances.startAt, end),
+          ),
+        );
 
       if (instances.length === 0) return [];
 
@@ -290,6 +358,7 @@ export const shiftsRouter = router({
         .where(
           and(
             eq(shiftAssignmentsV2.isActive, true),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
             inArray(shiftAssignmentsV2.shiftInstanceId, instanceIds),
           ),
         );
@@ -311,13 +380,82 @@ export const shiftsRouter = router({
   // shifts.listTemplates — any authenticated user
   // Returns all active shift templates (used by create-shift form).
   // ------------------------------------------------------------------
-  listTemplates: protectedProcedure.query(async () => {
+  listTemplates: tenantProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
     return db
       .select()
       .from(shiftTemplates)
-      .where(eq(shiftTemplates.isActive, true));
+      .where(
+        and(
+          eq(shiftTemplates.isActive, true),
+          eq(shiftTemplates.institutionId, ctx.institutionId),
+        ),
+      );
+  }),
+
+  // ------------------------------------------------------------------
+  // shifts.getUpcomingShift — cross-tenant hint for post-login auto-routing
+  // Window: now-1h .. now+4h
+  // ------------------------------------------------------------------
+  getUpcomingShift: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+
+    const rows = await db.execute<any>(
+      sql`SELECT
+            si.id AS shiftInstanceId,
+            si.institution_id AS institutionId,
+            si.hospital_id AS hospitalId,
+            si.sector_id AS sectorId,
+            si.label AS label,
+            si.start_at AS startAt,
+            si.end_at AS endAt,
+            CASE
+              WHEN NOW() BETWEEN si.start_at AND si.end_at THEN 0
+              ELSE 1
+            END AS rankState,
+            ABS(TIMESTAMPDIFF(SECOND, si.start_at, NOW())) AS rankDistance
+          FROM shift_assignments_v2 sa
+          INNER JOIN professionals p
+            ON p.id = sa.professional_id
+          INNER JOIN shift_instances si
+            ON si.id = sa.shift_instance_id
+          INNER JOIN professional_institutions pi
+            ON pi.professional_id = p.id
+            AND pi.institution_id = si.institution_id
+            AND pi.active = true
+          WHERE p.user_id = ${ctx.user.id}
+            AND sa.is_active = true
+            AND sa.status IN ('OCUPADO', 'CONFIRMADO')
+            AND si.end_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            AND si.start_at <= DATE_ADD(NOW(), INTERVAL 4 HOUR)
+          ORDER BY rankState ASC, rankDistance ASC
+          LIMIT 1`,
+    );
+
+    const data = (rows as any)[0] as Array<{
+      shiftInstanceId: number;
+      institutionId: number;
+      hospitalId: number;
+      sectorId: number;
+      label: string;
+      startAt: Date | string;
+      endAt: Date | string;
+    }>;
+
+    const first = data?.[0];
+    if (!first) return null;
+
+    return {
+      shiftInstanceId: Number(first.shiftInstanceId),
+      institutionId: Number(first.institutionId),
+      hospitalId: Number(first.hospitalId),
+      sectorId: Number(first.sectorId),
+      label: first.label,
+      startAt: new Date(first.startAt),
+      endAt: new Date(first.endAt),
+    };
   }),
 
   // ------------------------------------------------------------------
@@ -325,16 +463,12 @@ export const shiftsRouter = router({
   // Returns the shift that is currently in progress for the logged-in user.
   // Resolves: user.id → professionals.id → shiftAssignmentsV2 → shiftInstances
   // ------------------------------------------------------------------
-  getActiveShift: protectedProcedure.query(async ({ ctx }) => {
+  getActiveShift: tenantProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
-    const [professional] = await db
-      .select()
-      .from(professionals)
-      .where(eq(professionals.userId, ctx.user.id));
-
-    if (!professional) return null;
+    const professionalIds = await listProfessionalIdsByUser(db, ctx.user.id, ctx.institutionId);
+    if (professionalIds.length === 0) return null;
 
     const now = new Date();
 
@@ -347,7 +481,9 @@ export const shiftsRouter = router({
       )
       .where(
         and(
-          eq(shiftAssignmentsV2.professionalId, professional.id),
+          inArray(shiftAssignmentsV2.professionalId, professionalIds),
+          eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+          eq(shiftInstances.institutionId, ctx.institutionId),
           eq(shiftAssignmentsV2.isActive, true),
           lte(shiftInstances.startAt, now),
           gte(shiftInstances.endAt, now),
@@ -361,10 +497,9 @@ export const shiftsRouter = router({
   // ------------------------------------------------------------------
   // shifts.publish — DRAFT → PUBLISHED
   // ------------------------------------------------------------------
-  publish: protectedProcedure
+  publish: tenantProcedure
     .input(
       z.object({
-        institutionId: z.number().int(),
         hospitalId: z.number().int(),
         yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
       }),
@@ -372,7 +507,7 @@ export const shiftsRouter = router({
     .mutation(async ({ ctx, input }) => {
       requireManagerOrAdmin(ctx.user.role);
       await publishMonth(
-        input.institutionId,
+        ctx.institutionId,
         input.hospitalId,
         input.yearMonth,
         ctx.user.id,
@@ -386,9 +521,9 @@ export const shiftsRouter = router({
         entityType: "MONTHLY_ROSTER",
         entityId: 0,
         description: "Escala publicada (" + input.yearMonth + ")",
-        institutionId: input.institutionId,
+        institutionId: ctx.institutionId,
         hospitalId: input.hospitalId,
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
@@ -396,10 +531,9 @@ export const shiftsRouter = router({
   // ------------------------------------------------------------------
   // shifts.lock — PUBLISHED → LOCKED
   // ------------------------------------------------------------------
-  lock: protectedProcedure
+  lock: tenantProcedure
     .input(
       z.object({
-        institutionId: z.number().int(),
         hospitalId: z.number().int(),
         yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
       }),
@@ -407,7 +541,7 @@ export const shiftsRouter = router({
     .mutation(async ({ ctx, input }) => {
       requireManagerOrAdmin(ctx.user.role);
       await lockMonth(
-        input.institutionId,
+        ctx.institutionId,
         input.hospitalId,
         input.yearMonth,
         ctx.user.id,
@@ -421,9 +555,9 @@ export const shiftsRouter = router({
         entityType: "MONTHLY_ROSTER",
         entityId: 0,
         description: "Escala trancada (" + input.yearMonth + ")",
-        institutionId: input.institutionId,
+        institutionId: ctx.institutionId,
         hospitalId: input.hospitalId,
-      });
+      }, ctx.req);
 
       return { ok: true };
     }),
@@ -432,7 +566,7 @@ export const shiftsRouter = router({
   // shifts.replicateWeek — admin/manager only
   // Copies shiftInstances (without assignments) from one week to another.
   // ------------------------------------------------------------------
-  replicateWeek: protectedProcedure
+  replicateWeek: tenantProcedure
     .input(
       z.object({
         fromStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
@@ -456,6 +590,7 @@ export const shiftsRouter = router({
         .where(
           and(
             eq(shiftInstances.hospitalId, input.hospitalId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
             gte(shiftInstances.startAt, fromStart),
             lt(shiftInstances.startAt, fromEnd),
           ),
@@ -496,7 +631,8 @@ export const shiftsRouter = router({
         entityId: 0,
         description: `Replicou ${created} turnos de ${input.fromStartDate} para ${input.toStartDate}`,
         hospitalId: input.hospitalId,
-      });
+        institutionId: ctx.institutionId,
+      }, ctx.req);
 
       return { created };
     }),
