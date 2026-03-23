@@ -1,5 +1,5 @@
 import { View, Text, type ViewProps } from "react-native";
-import { cn } from "@/lib/utils";
+import { theme } from "@/lib/theme";
 
 export type BadgeVariant = "success" | "warning" | "neutral" | "critical" | "info";
 
@@ -37,24 +37,24 @@ export interface BadgeProps extends ViewProps {
 export function Badge({ variant, label, children, className, style, ...props }: BadgeProps) {
   const variantStyles = {
     success: {
-      backgroundColor: "rgba(52,211,153,0.18)",
-      borderColor: "rgba(52,211,153,0.55)",
+      backgroundColor: "rgba(34,197,94,0.12)",
+      borderColor: "rgba(34,197,94,0.35)",
     },
     warning: {
-      backgroundColor: "rgba(251,191,36,0.18)",
-      borderColor: "rgba(251,191,36,0.55)",
+      backgroundColor: "rgba(245,158,11,0.12)",
+      borderColor: "rgba(245,158,11,0.35)",
     },
     neutral: {
-      backgroundColor: "rgba(255,255,255,0.10)",
-      borderColor: "rgba(255,255,255,0.14)",
+      backgroundColor: "rgba(15,23,42,0.06)",
+      borderColor: "rgba(15,23,42,0.14)",
     },
     critical: {
-      backgroundColor: "rgba(239,68,68,0.18)",
-      borderColor: "rgba(239,68,68,0.55)",
+      backgroundColor: "rgba(239,68,68,0.12)",
+      borderColor: "rgba(239,68,68,0.35)",
     },
     info: {
-      backgroundColor: "rgba(59,130,246,0.18)",
-      borderColor: "rgba(59,130,246,0.55)",
+      backgroundColor: "rgba(29,78,216,0.12)",
+      borderColor: "rgba(29,78,216,0.35)",
     },
   };
 
@@ -73,7 +73,7 @@ export function Badge({ variant, label, children, className, style, ...props }: 
       className={className}
       {...props}
     >
-      <Text style={{ fontSize: 12, fontWeight: "600", color: "#F2F6FF" }}>
+      <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.textPrimary }}>
         {children || label}
       </Text>
     </View>

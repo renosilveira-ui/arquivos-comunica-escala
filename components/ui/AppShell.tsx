@@ -4,6 +4,7 @@ import { TopBar } from "./TopBar";
 import { useState, useEffect, ReactNode } from "react";
 import { trpc } from "@/lib/trpc";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { theme } from "@/lib/theme";
 
 interface AppShellProps {
   children: ReactNode;
@@ -20,7 +21,7 @@ export function AppShell({ children, title }: AppShellProps) {
   // Determinar breakpoint
   // No web, sempre usar layout desktop (sidebar fixa)
   // No mobile nativo, usar drawer
-  const isMobile = Platform.OS !== "web";
+  const isMobile = Platform.OS !== "web" || width < 1024;
 
   // Buscar contadores para badges
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
@@ -66,7 +67,7 @@ export function AppShell({ children, title }: AppShellProps) {
   // Mobile: drawer overlay
   if (isMobile) {
     return (
-      <View className="flex-1 bg-[#0A1220]">
+      <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <TopBar onMenuToggle={handleMobileMenuToggle} title={title} />
         <View className="flex-1">{children}</View>
 
@@ -74,10 +75,7 @@ export function AppShell({ children, title }: AppShellProps) {
         {mobileMenuOpen && (
           <>
             {/* Backdrop */}
-            <View
-              className="absolute inset-0 bg-black/50"
-              onTouchEnd={handleMobileMenuToggle}
-            />
+            <View className="absolute inset-0 bg-black/25" onTouchEnd={handleMobileMenuToggle} />
             {/* Sidebar */}
             <View className="absolute left-0 top-0 bottom-0 w-64">
               <Sidebar
@@ -94,7 +92,7 @@ export function AppShell({ children, title }: AppShellProps) {
 
   // Desktop/Tablet: sidebar lateral fixa
   return (
-    <View className="flex-1 flex-row bg-[#0A1220]">
+    <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.background }}>
       {/* Sidebar */}
       <Sidebar collapsed={collapsed} onToggle={handleToggle} counts={sidebarCounts} />
 

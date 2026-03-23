@@ -1,99 +1,73 @@
-import { Tabs } from "expo-router";
-import { TabIcon } from "@/components/ui/TabIcon";
-import { usePermissions } from "@/hooks/use-permissions";
+import { useState } from "react";
+import { Slot } from "expo-router";
+import { View, TouchableOpacity, useWindowDimensions, Platform } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Menu } from "lucide-react-native";
+import { Sidebar } from "@/components/ui/Sidebar";
+import { theme } from "@/lib/theme";
 
 export default function TabLayout() {
-  const { can, isManager } = usePermissions();
+  const { width } = useWindowDimensions();
+  const isWideWeb = Platform.OS === "web" && width >= 1024;
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: "#60A5FA",
-        tabBarInactiveTintColor: "#6B7280",
-        tabBarStyle: {
-          backgroundColor: "#111827",
-          borderTopColor: "#1F2937",
-        },
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "Início",
-          tabBarIcon: ({ color, size }) => <TabIcon name="home" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="calendar"
-        options={{
-          title: "Agenda",
-          tabBarIcon: ({ color, size }) => <TabIcon name="calendar" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="weekly"
-        options={{
-          title: "Semanal",
-          tabBarIcon: ({ color, size }) => <TabIcon name="weekly" color={color} size={size} />,
-          href: can("view:weekly") ? undefined : null,
-        }}
-      />
-      <Tabs.Screen
-        name="dashboard"
-        options={{
-          title: "Dashboard",
-          tabBarIcon: ({ color, size }) => <TabIcon name="dashboard" color={color} size={size} />,
-          href: can("view:dashboard") ? undefined : null,
-        }}
-      />
-      <Tabs.Screen
-        name="pending"
-        options={{
-          title: "Pendentes",
-          href: isManager ? undefined : null,
-          tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="meus"
-        options={{
-          title: "Meus",
-          href: isManager ? null : undefined,
-          tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="vacancies"
-        options={{
-          title: "Vagas",
-          tabBarIcon: ({ color, size }) => <TabIcon name="work" color={color} size={size} />,
-          href: can("view:vacancies") ? undefined : null,
-        }}
-      />
-      <Tabs.Screen
-        name="reports"
-        options={{
-          title: "Relatórios",
-          tabBarIcon: ({ color, size }) => <TabIcon name="dashboard" color={color} size={size} />,
-          href: can("view:reports") ? undefined : null,
-        }}
-      />
-      <Tabs.Screen
-        name="admin"
-        options={{
-          title: "Admin",
-          tabBarIcon: ({ color, size }) => <TabIcon name="admin" color={color} size={size} />,
-          href: can("view:admin") ? undefined : null,
-        }}
-      />
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: "Perfil",
-          tabBarIcon: ({ color, size }) => <TabIcon name="profile" color={color} size={size} />,
-        }}
-      />
-    </Tabs>
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.background }} edges={["top", "left", "right"]}>
+      <View style={{ flex: 1, flexDirection: "row" }}>
+        {isWideWeb && <Sidebar />}
+
+        <View style={{ flex: 1 }}>
+          {!isWideWeb && (
+            <View
+              style={{
+                height: 56,
+                flexDirection: "row",
+                alignItems: "center",
+                borderBottomWidth: 1,
+                borderColor: theme.colors.border,
+                backgroundColor: theme.colors.card,
+                paddingHorizontal: 16,
+              }}
+            >
+              <TouchableOpacity
+                onPress={() => setDrawerOpen((prev) => !prev)}
+                activeOpacity={0.8}
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 8,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: theme.colors.primaryNavy,
+                }}
+              >
+                <Menu size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <Slot />
+        </View>
+
+        {!isWideWeb && drawerOpen && (
+          <>
+            <View
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: "rgba(2,6,23,0.25)",
+              }}
+              onTouchEnd={() => setDrawerOpen(false)}
+            />
+            <View style={{ position: "absolute", top: 0, left: 0, bottom: 0 }}>
+              <Sidebar />
+            </View>
+          </>
+        )}
+      </View>
+    </SafeAreaView>
   );
 }

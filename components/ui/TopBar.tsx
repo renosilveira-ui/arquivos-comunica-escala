@@ -1,6 +1,7 @@
 import { View, Text, TouchableOpacity } from "react-native";
 import { Menu, User } from "lucide-react-native";
 import { useRouter } from "expo-router";
+import { theme } from "@/lib/theme";
 
 interface TopBarProps {
   onMenuToggle: () => void;
@@ -11,18 +12,23 @@ export function TopBar({ onMenuToggle, title }: TopBarProps) {
   const router = useRouter();
 
   return (
-    <View className="h-16 bg-gradient-to-r from-[#0A1220] to-[#1A2332] border-b border-white/10 flex-row items-center px-4">
+    <View
+      className="h-16 border-b flex-row items-center px-4"
+      style={{ backgroundColor: theme.colors.card, borderColor: theme.colors.border }}
+    >
       {/* Hambúrguer (mobile/tablet) */}
       <TouchableOpacity
         onPress={onMenuToggle}
         className="mr-4 active:opacity-70 md:hidden"
       >
-        <Menu size={24} color="#fff" />
+        <Menu size={24} color={theme.colors.primaryNavy} />
       </TouchableOpacity>
 
       {/* Título */}
       {title && (
-        <Text className="text-white font-bold text-lg flex-1">{title}</Text>
+        <Text className="font-bold text-lg flex-1" style={{ color: theme.colors.textPrimary }}>
+          {title}
+        </Text>
       )}
 
       {/* Perfil */}
@@ -30,8 +36,8 @@ export function TopBar({ onMenuToggle, title }: TopBarProps) {
         onPress={() => router.push("/profile")}
         className="ml-auto active:opacity-70"
       >
-        <View className="bg-white/10 rounded-full p-2">
-          <User size={20} color="#FFFFFF" />
+        <View className="rounded-full p-2" style={{ backgroundColor: "rgba(11,31,58,0.08)" }}>
+          <User size={20} color={theme.colors.primaryNavy} />
         </View>
       </TouchableOpacity>
     </View>

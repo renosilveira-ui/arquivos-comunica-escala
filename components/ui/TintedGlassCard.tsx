@@ -1,6 +1,7 @@
 import { BlurView } from "expo-blur";
 import { ReactNode } from "react";
 import { Platform, TouchableOpacity, View, ViewStyle } from "react-native";
+import { theme } from "@/lib/theme";
 
 interface TintedGlassCardProps {
   children: ReactNode;
@@ -34,9 +35,9 @@ export function TintedGlassCard({ children, onPress, style, className }: TintedG
     <View
       style={[
         {
-          backgroundColor: "rgba(255,255,255,0.08)",
+          backgroundColor: theme.colors.card,
           borderWidth: 1,
-          borderColor: "rgba(255,255,255,0.12)",
+          borderColor: theme.colors.border,
           borderRadius: 24,
           padding: 20,
           overflow: "hidden",
@@ -58,7 +59,7 @@ export function TintedGlassCard({ children, onPress, style, className }: TintedG
         style={{ borderRadius: 24, overflow: "hidden" }}
       >
         {Platform.OS === "ios" ? (
-          <BlurView intensity={22} tint="dark" style={{ borderRadius: 24, overflow: "hidden" }}>
+          <BlurView intensity={18} tint="light" style={{ borderRadius: 24, overflow: "hidden" }}>
             {content}
           </BlurView>
         ) : (
@@ -70,7 +71,7 @@ export function TintedGlassCard({ children, onPress, style, className }: TintedG
 
   // Sem onPress, apenas o card
   return Platform.OS === "ios" ? (
-    <BlurView intensity={22} tint="dark" style={{ borderRadius: 24, overflow: "hidden" }}>
+    <BlurView intensity={18} tint="light" style={{ borderRadius: 24, overflow: "hidden" }}>
       {content}
     </BlurView>
   ) : (

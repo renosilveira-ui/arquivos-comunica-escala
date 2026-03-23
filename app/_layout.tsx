@@ -6,10 +6,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { ActivityIndicator, Platform, Text, TextInput, View } from "react-native";
+import { theme } from "@/lib/theme";
 
-// Force white text globally for dark theme
-(Text as any).defaultProps = { ...(Text as any).defaultProps, style: { color: "#F1F5F9" } };
-(TextInput as any).defaultProps = { ...(TextInput as any).defaultProps, style: { color: "#F1F5F9" }, placeholderTextColor: "#64748B" };
+// Force dark text globally for light theme
+(Text as any).defaultProps = { ...(Text as any).defaultProps, style: { color: theme.colors.textPrimary } };
+(TextInput as any).defaultProps = {
+  ...(TextInput as any).defaultProps,
+  style: { color: theme.colors.textPrimary },
+  placeholderTextColor: theme.colors.textSecondary,
+};
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -43,8 +48,8 @@ function AuthGuard() {
     isHydratingTenant
   ) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0a1929" }}>
-        <ActivityIndicator size="large" color="#4DA3FF" />
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.background }}>
+        <ActivityIndicator size="large" color={theme.colors.accent} />
       </View>
     );
   }
