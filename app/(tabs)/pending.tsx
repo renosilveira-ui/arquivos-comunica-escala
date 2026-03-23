@@ -1,9 +1,10 @@
-import { View, Text, TouchableOpacity, ActivityIndicator, Platform, Alert, ScrollView } from "react-native";
+import { View, Text, TouchableOpacity, ActivityIndicator, Platform, Alert, ScrollView, TextInput } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
-import { useState, useCallback, useEffect } from "react";
-import { Check, X, Clock, MapPin, User, Briefcase, ClipboardCheck, Lock, ArrowRightLeft } from "lucide-react-native";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { useRouter } from "expo-router";
+import { Check, X, Clock, MapPin, User, Briefcase, ClipboardCheck, Lock, ArrowRightLeft, Search, Plus } from "lucide-react-native";
 import * as Auth from "@/lib/_core/auth";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
@@ -56,9 +57,12 @@ const uiAlert = (title: string, message: string) => {
 };
 
 export default function PendingScreen() {
+  const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
   const { user, isLoading: authLoading } = useAuth();
   const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
+  const [mySearch, setMySearch] = useState("");
+  const [myDate, setMyDate] = useState(() => new Date().toISOString().split("T")[0]);
 
   // ── Available Swaps state ──
   const [availableSwaps, setAvailableSwaps] = useState<AvailableSwap[]>([]);
@@ -107,10 +111,11 @@ export default function PendingScreen() {
   };
   
   // Buscar profissional associado ao usuário logado
-  const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(
-    { userId: user?.id || 0 },
-    { enabled: !!user?.id }
-  );
+  const { data: professional, isLoading: professionalLoading } =
+    trpc.professionals.getByUserId.useQuery(
+      { userId: user?.id ?? 0 },
+      { enabled: !!user?.id },
+    );
 
   // Buscar hospitais e setores para os filtros
   const { data: hospitalsData } = trpc.hospitals.list.useQuery(undefined, { enabled: !!user?.id });
@@ -155,6 +160,49 @@ export default function PendingScreen() {
     { enabled: !!user?.id }
   );
 
+  const myShiftsStart = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  }, []);
+  const myShiftsEnd = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 90);
+    return d.toISOString().split("T")[0];
+  }, []);
+  const { data: myShiftsData, isLoading: loadingMyShifts } = trpc.shifts.listByPeriod.useQuery(
+    { startDate: myShiftsStart, endDate: myShiftsEnd },
+    { enabled: !!user?.id && !!professional?.id }
+  );
+
+  const myShifts = useMemo(() => {
+    if (!myShiftsData || !professional?.id) return [];
+    const q = mySearch.trim().toLowerCase();
+    const base = (myShiftsData as any[]).filter((shift) => {
+      const assigned = (shift.assignments as any[]).some(
+        (a: any) => a.professionalId === professional.id && a.isActive
+      );
+      if (!assigned) return false;
+      const day = new Date(shift.startAt).toISOString().slice(0, 10);
+      if (day !== myDate) return false;
+      if (!q) return true;
+      return `${shift.label} ${shift.status}`.toLowerCase().includes(q);
+    });
+
+    return base.sort(
+      (a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime()
+    );
+  }, [myShiftsData, professional?.id, myDate, mySearch]);
+
+  const quickDates = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(now);
+      d.setDate(now.getDate() + i);
+      return d;
+    });
+  }, []);
+
   const approveAssignment = trpc.shiftInstances.approveAssignment.useMutation({
     onSuccess: () => {
       refetch();
@@ -175,12 +223,7 @@ export default function PendingScreen() {
     },
   });
 
-  const handleApprove = (assignmentId: number, professionalName: string) => {
-    if (!professional?.id) {
-      uiAlert("Erro Interno", "ID do gestor não encontrado para aprovação.");
-      return;
-    }
-
+  const handleApprove = (assignmentId: number, professionalId: number, professionalName: string) => {
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Aprovar alocação de ${professionalName}?`);
@@ -189,7 +232,7 @@ export default function PendingScreen() {
     if (!confirmed) return;
 
     approveAssignment.mutate(
-      { assignmentId, professionalId: professional.id },
+      { assignmentId, professionalId },
       {
         onSuccess: () => {
           refetch();
@@ -202,12 +245,7 @@ export default function PendingScreen() {
     );
   };
 
-  const handleReject = (assignmentId: number, professionalName: string) => {
-    if (!professional?.id) {
-      uiAlert("Erro Interno", "ID do gestor não encontrado para rejeição.");
-      return;
-    }
-
+  const handleReject = (assignmentId: number, professionalId: number, professionalName: string) => {
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Rejeitar alocação de ${professionalName}?`);
@@ -216,7 +254,7 @@ export default function PendingScreen() {
     if (!confirmed) return;
 
     rejectAssignment.mutate(
-      { assignmentId, professionalId: professional.id, reason: "Rejeitado pelo gestor" },
+      { assignmentId, professionalId, reason: "Rejeitado pelo gestor" },
       {
         onSuccess: () => {
           refetch();
@@ -265,7 +303,7 @@ export default function PendingScreen() {
     );
   }
 
-  if (!professionalLoading && user && !professional) {
+  if (!professionalLoading && user && !professional && !isAdminOrManager) {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
@@ -277,13 +315,143 @@ export default function PendingScreen() {
     );
   }
 
-  if (isLoading || authLoading || professionalLoading) {
+  if (isLoading || authLoading || professionalLoading || loadingMyShifts) {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
           <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando pendências...</Text>
         </View>
+      </ScreenGradient>
+    );
+  }
+
+  const isManagerView =
+    isAdminOrManager ||
+    professional?.role === "GESTOR_MEDICO" ||
+    professional?.role === "GESTOR_PLUS";
+
+  if (!isManagerView) {
+    return (
+      <ScreenGradient>
+        <ScrollView className="flex-1 px-5 py-4">
+          <View className="mb-6 flex-row items-center justify-between">
+            <View>
+              <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Meus Plantões</Text>
+              <Text className="mt-1 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>
+                Gerencie troca ou repasse dos seus turnos
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => router.push("/request-swap")}
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: 999,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "#2563EB",
+              }}
+            >
+              <Plus size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+
+          <View className="mb-4">
+            <View className="mb-3 flex-row items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+              <Search size={16} color="rgba(255,255,255,0.65)" />
+              <TextInput
+                value={mySearch}
+                onChangeText={setMySearch}
+                placeholder="Pesquisar por rótulo/status"
+                placeholderTextColor="rgba(255,255,255,0.45)"
+                style={{ flex: 1, color: "#FFFFFF", fontSize: 13, paddingVertical: 0 }}
+              />
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View className="flex-row gap-2">
+                {quickDates.map((d) => {
+                  const key = d.toISOString().slice(0, 10);
+                  const selected = key === myDate;
+                  return (
+                    <TouchableOpacity
+                      key={key}
+                      onPress={() => setMyDate(key)}
+                      style={{
+                        paddingHorizontal: 12,
+                        paddingVertical: 8,
+                        borderRadius: 999,
+                        borderWidth: 1,
+                        borderColor: selected ? "#3B82F6" : "rgba(255,255,255,0.16)",
+                        backgroundColor: selected ? "rgba(59,130,246,0.2)" : "rgba(255,255,255,0.04)",
+                      }}
+                    >
+                      <Text style={{ color: "#FFF", fontSize: 12, fontWeight: "600" }}>
+                        {d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          </View>
+
+          {myShifts.length === 0 ? (
+            <View className="items-center justify-center py-16">
+              <ClipboardCheck size={60} color="rgba(255,255,255,0.2)" />
+              <Text className="mt-4 text-lg font-semibold" style={{ color: "rgba(255,255,255,0.65)" }}>
+                Nenhum plantão seu neste dia
+              </Text>
+            </View>
+          ) : (
+            <View className="gap-3 pb-8">
+              {myShifts.map((shift: any) => (
+                <View
+                  key={shift.id}
+                  className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                >
+                  <View className="mb-2 flex-row items-center justify-between">
+                    <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>
+                      {shift.label}
+                    </Text>
+                    <View className="rounded-full bg-white/10 px-3 py-1">
+                      <Text style={{ color: "#E2E8F0", fontSize: 11 }}>{shift.status}</Text>
+                    </View>
+                  </View>
+                  <Text style={{ color: "rgba(255,255,255,0.72)", fontSize: 13 }}>
+                    {formatDate(shift.startAt)} - {formatDate(shift.endAt)}
+                  </Text>
+
+                  <View className="mt-4 flex-row gap-2">
+                    <TouchableOpacity
+                      onPress={() =>
+                        router.push({
+                          pathname: "/request-swap",
+                          params: { type: "SWAP", fromShiftId: String(shift.id) },
+                        })
+                      }
+                      className="flex-1 rounded-xl bg-blue-500 py-3 items-center"
+                    >
+                      <Text style={{ color: "#FFF", fontWeight: "700" }}>Pedir Troca</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() =>
+                        router.push({
+                          pathname: "/request-swap",
+                          params: { type: "TRANSFER", fromShiftId: String(shift.id) },
+                        })
+                      }
+                      className="flex-1 rounded-xl bg-amber-500 py-3 items-center"
+                    >
+                      <Text style={{ color: "#111827", fontWeight: "700" }}>Repassar</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+        </ScrollView>
       </ScreenGradient>
     );
   }
@@ -485,7 +653,13 @@ export default function PendingScreen() {
                   // ✅ Gestor: mostrar botões de aprovação/rejeição
                   <View className="flex-row gap-3">
                     <TouchableOpacity
-                      onPress={() => handleApprove(pending.assignmentId, pending.professionalName)}
+                      onPress={() =>
+                        handleApprove(
+                          pending.assignmentId,
+                          pending.professionalId,
+                          pending.professionalName,
+                        )
+                      }
                       disabled={approveAssignment.isPending || rejectAssignment.isPending}
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-green-500 py-3 active:opacity-80"
                     >
@@ -494,7 +668,13 @@ export default function PendingScreen() {
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      onPress={() => handleReject(pending.assignmentId, pending.professionalName)}
+                      onPress={() =>
+                        handleReject(
+                          pending.assignmentId,
+                          pending.professionalId,
+                          pending.professionalName,
+                        )
+                      }
                       disabled={approveAssignment.isPending || rejectAssignment.isPending}
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-red-500 py-3 active:opacity-80"
                     >

@@ -15,6 +15,10 @@ import {
   notifyShiftCancellation 
 } from "@/lib/notifications";
 
+function toDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 /**
  * Tela de Perfil
  * Exibe informações do usuário e configurações de notificações
@@ -25,16 +29,14 @@ export default function ProfileScreen() {
 
   // ── Estatísticas do mês atual ──────────────────────────────────────────
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-    .toISOString()
-    .split("T")[0];
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-    .toISOString()
-    .split("T")[0];
+  const monthStartDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEndDateExclusive = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const monthStart = toDateKey(monthStartDate);
+  const monthEnd = toDateKey(monthEndDateExclusive);
 
   const { data: professional } = trpc.professionals.getByUserId.useQuery(
     { userId: user?.id ?? 0 },
-    { enabled: !!user?.id }
+    { enabled: !!user?.id },
   );
 
   const { data: monthShifts } = trpc.shifts.listByPeriod.useQuery(
@@ -80,6 +82,7 @@ export default function ProfileScreen() {
       noite,
     };
   }, [monthShifts, professional]);
+
 
   // TODO: Buscar configurações de notificação quando API estiver disponível
   const settings = {

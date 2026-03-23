@@ -72,6 +72,7 @@ export async function registerPushToken(
 
     // Inserir novo token
     await db.insert(pushTokens).values({
+      institutionId: 1,
       userId,
       token,
       platform,

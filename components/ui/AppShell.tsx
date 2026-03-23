@@ -31,6 +31,7 @@ export function AppShell({ children, title }: AppShellProps) {
       staleTime: 60 * 1000, // Cache de 60 segundos
     }
   );
+  const sidebarCounts = counts?.vacanciesByHospital;
 
   // Carregar estado do localStorage ao montar
   useEffect(() => {
@@ -82,7 +83,7 @@ export function AppShell({ children, title }: AppShellProps) {
               <Sidebar
                 collapsed={false}
                 onToggle={handleMobileMenuToggle}
-                counts={counts}
+                counts={sidebarCounts}
               />
             </View>
           </>
@@ -95,7 +96,7 @@ export function AppShell({ children, title }: AppShellProps) {
   return (
     <View className="flex-1 flex-row bg-[#0A1220]">
       {/* Sidebar */}
-      <Sidebar collapsed={collapsed} onToggle={handleToggle} counts={counts} />
+      <Sidebar collapsed={collapsed} onToggle={handleToggle} counts={sidebarCounts} />
 
       {/* Main content */}
       <View className="flex-1">

@@ -168,6 +168,7 @@ export async function publishMonth(
           hospitalId,
           yearMonth,
           version: rosterVersion,
+          publishedByUserId: userId,
           professionalEmails: emails,
         });
       }

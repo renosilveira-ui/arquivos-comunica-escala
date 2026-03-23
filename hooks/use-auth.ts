@@ -1,5 +1,6 @@
 import { authApi, type AuthUser } from "@/lib/_core/api";
 import * as Auth from "@/lib/_core/auth";
+import { clearActiveInstitutionId } from "@/lib/tenant-state";
 import { useCallback, useEffect, useState } from "react";
 import { Platform } from "react-native";
 
@@ -49,6 +50,7 @@ export function useAuth() {
       if (result.ok && result.user) {
         setUser(result.user);
         await Auth.setUserInfo(result.user);
+        await clearActiveInstitutionId();
       }
       return result.ok
         ? { ok: true }
@@ -61,6 +63,7 @@ export function useAuth() {
     await authApi.logout();
     await Auth.removeSessionToken();
     await Auth.clearUserInfo();
+    await clearActiveInstitutionId();
     setUser(null);
   }, []);
 

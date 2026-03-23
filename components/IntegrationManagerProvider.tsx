@@ -5,9 +5,19 @@
 
 import { useIntegrationManager } from "@/hooks/use-integration-manager";
 
-export function IntegrationManagerProvider({ children }: { children: React.ReactNode }) {
-  // Hook executa automaticamente toda a lógica de integração
+function IntegrationManagerBootstrap() {
   useIntegrationManager();
-  
-  return <>{children}</>;
+  return null;
+}
+
+export function IntegrationManagerProvider({ children }: { children: React.ReactNode }) {
+  // Integração legada desativada por padrão para não gerar chamadas
+  // para localhost:3001 quando o serviço não está ativo.
+  const integrationEnabled = process.env.EXPO_PUBLIC_HOSPITAL_ALERT_ENABLED === "true";
+  return (
+    <>
+      {integrationEnabled ? <IntegrationManagerBootstrap /> : null}
+      {children}
+    </>
+  );
 }

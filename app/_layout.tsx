@@ -1,6 +1,6 @@
 import "@/global.css";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Redirect, Stack } from "expo-router";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
+import { Redirect, Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -22,6 +22,7 @@ import type { EdgeInsets, Metrics, Rect } from "react-native-safe-area-context";
 
 import { trpc, createTRPCClient } from "@/lib/trpc";
 import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
+import { TenantStateProvider, useTenantState } from "@/lib/tenant-state";
 import { IntegrationManagerProvider } from "@/components/IntegrationManagerProvider";
 import { NotificationListener } from "@/components/NotificationListener";
 import { useAuth } from "@/hooks/use-auth";
@@ -32,8 +33,15 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 /** Handles auth-gated navigation. Must be rendered inside providers. */
 function AuthGuard() {
   const { user, isLoading } = useAuth();
+  const pathname = usePathname();
+  const {
+    isHydrating: isHydratingTenant,
+  } = useTenantState();
 
-  if (isLoading) {
+  if (
+    isLoading ||
+    isHydratingTenant
+  ) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0a1929" }}>
         <ActivityIndicator size="large" color="#4DA3FF" />
@@ -43,6 +51,10 @@ function AuthGuard() {
 
   if (!user) {
     return <Redirect href="/login" />;
+  }
+
+  if (pathname === "/select-institution") {
+    return <Redirect href="/(tabs)" />;
   }
 
   return null;
@@ -108,19 +120,22 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
-          <IntegrationManagerProvider>
+          <TenantStateProvider>
+            <IntegrationManagerProvider>
           {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
           {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
           {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="login" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+            <Stack.Screen name="select-institution" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="oauth/callback" />
           </Stack>
           <AuthGuard />
           <StatusBar style="auto" />
           <NotificationListener />
-          </IntegrationManagerProvider>
+            </IntegrationManagerProvider>
+          </TenantStateProvider>
         </QueryClientProvider>
       </trpc.Provider>
     </GestureHandlerRootView>

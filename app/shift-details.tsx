@@ -41,12 +41,23 @@ export default function ShiftDetailsScreen() {
   const shiftData: any = isDemo
     ? demoShiftData
       ? {
-          shift: demoShiftData.shift,
+          shift: {
+            ...demoShiftData.shift,
+            startAt: demoShiftData.shift.startTime,
+            endAt: demoShiftData.shift.endTime,
+          },
           sector: demoShiftData.sector,
           assignments: (demoShiftData as any).assignments || [],
         }
       : null
-    : apiShiftData;
+    : apiShiftData
+      ? {
+          shift: apiShiftData,
+          // TODO: incluir dados completos de setor (nome/categoria/cor) no backend se necessário para esta tela.
+          sector: null,
+          assignments: apiShiftData.assignments || [],
+        }
+      : null;
 
   const isLoading = isDemo ? false : apiLoading;
 
@@ -57,11 +68,13 @@ export default function ShiftDetailsScreen() {
 
   const handleConfirmPresence = () => {
     if (!user) return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    if (!isDemo) {
-      alert("✅ Presença registrada (integração em atualização)");
+    if (isDemo) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      return; // Modo demo: apenas feedback visual
     }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // TODO: endpoint de confirmação de presença não existe no router tRPC atual.
+    alert("Confirmação de presença ainda não disponível neste ambiente.");
   };
 
   const handleEdit = () => {
@@ -109,8 +122,8 @@ export default function ShiftDetailsScreen() {
   }
 
   const { shift, sector, assignments } = shiftData;
-  const startDate = new Date(shift.startTime);
-  const endDate = new Date(shift.endTime);
+  const startDate = new Date(shift.startAt ?? shift.startTime);
+  const endDate = new Date(shift.endAt ?? shift.endTime);
 
   // Verificar se usuário está alocado nesta escala
   const userAssignment = assignments?.find((a: any) => a.professionalId === user?.id || a.userId === user?.id);
@@ -202,16 +215,16 @@ export default function ShiftDetailsScreen() {
             <Text className="text-sm text-white/50 mb-3">Status</Text>
             <Badge
               variant={
-                shift.status === "confirmada"
+                (shift.status === "confirmada" || shift.status === "OCUPADO")
                   ? "success"
-                  : shift.status === "cancelada"
+                  : (shift.status === "cancelada" || shift.status === "VAGO")
                   ? "critical"
                   : "warning"
               }
             >
-              {shift.status === "confirmada"
+              {(shift.status === "confirmada" || shift.status === "OCUPADO")
                 ? "Confirmada"
-                : shift.status === "cancelada"
+                : (shift.status === "cancelada" || shift.status === "VAGO")
                 ? "Cancelada"
                 : "Pendente"}
             </Badge>
@@ -279,13 +292,9 @@ export default function ShiftDetailsScreen() {
         </View>
 
         {/* Botão de Confirmar Presença */}
-        {shift.status !== "cancelada" && user && (
+        {shift.status !== "cancelada" && shift.status !== "VAGO" && user && (
           <TouchableOpacity
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              alert("✅ Presença confirmada com sucesso!");
-            }}
+            onPress={handleConfirmPresence}
             className="rounded-2xl h-16 items-center justify-center"
             style={{
               backgroundColor: "#4ADE80",
