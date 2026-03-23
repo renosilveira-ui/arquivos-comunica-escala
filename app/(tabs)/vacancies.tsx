@@ -14,10 +14,9 @@ export default function VacanciesScreen() {
   const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
   
   // Buscar profissional associado ao usuário logado
-  const { data: professional, isLoading: professionalLoading } = trpc.professionals.getByUserId.useQuery(
-    { userId: user?.id || 0 },
-    { enabled: !!user?.id }
-  );
+  const { data: professional, isLoading: professionalLoading } = trpc.professionals.me.useQuery(undefined, {
+    enabled: !!user?.id,
+  });
 
   // Buscar hospitais e setores para os filtros
   const { data: hospitalsData } = trpc.hospitals.list.useQuery(undefined, { enabled: !!user?.id });

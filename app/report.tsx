@@ -13,6 +13,15 @@ import { formatDateBR } from "@/lib/datetime";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
+type UnifiedShift = {
+  id: number;
+  startTime: Date;
+  endTime: Date;
+  status: "confirmada" | "pendente" | "cancelada";
+  turnLabel: string;
+  sectorName: string;
+};
+
 /**
  * Tela de Relatório de Escalas
  * Mostra estatísticas e permite exportação em PDF
@@ -30,11 +39,13 @@ export default function ReportScreen() {
   }, []);
 
   // Buscar escalas do mês (API ou demo)
-  const periodStart = format(new Date(selectedYear, selectedMonth, 1), "yyyy-MM-dd");
-  const periodEnd = format(new Date(selectedYear, selectedMonth + 1, 0), "yyyy-MM-dd");
+  const startDate = new Date(selectedYear, selectedMonth, 1);
+  const endDate = new Date(selectedYear, selectedMonth + 1, 0);
+  const startDateIso = startDate.toISOString().slice(0, 10);
+  const endDateIso = endDate.toISOString().slice(0, 10);
 
   const { data: apiShifts, isLoading: apiLoading } = trpc.shifts.listByPeriod.useQuery(
-    { startDate: periodStart, endDate: periodEnd },
+    { startDate: startDateIso, endDate: endDateIso },
     { enabled: !!user?.id && !isDemo }
   );
 
@@ -49,36 +60,50 @@ export default function ReportScreen() {
       })
     : [];
 
-  const shifts = isDemo ? demoShifts : apiShifts || [];
+  const shifts: UnifiedShift[] = isDemo
+    ? demoShifts.map((item) => ({
+        id: item.shift.id,
+        startTime: new Date(item.shift.startTime),
+        endTime: new Date(item.shift.endTime),
+        status: item.shift.status,
+        turnLabel: item.shiftType === "manha" ? "Manhã" : item.shiftType === "tarde" ? "Tarde" : "Noite",
+        sectorName: item.sector?.name || "Setor não definido",
+      }))
+    : (apiShifts || []).map((item) => {
+        const start = new Date(item.startAt);
+        const hour = start.getHours();
+        const turnLabel = hour >= 7 && hour < 13 ? "Manhã" : hour >= 13 && hour < 19 ? "Tarde" : "Noite";
+        const status: UnifiedShift["status"] =
+          item.status === "OCUPADO" ? "confirmada" : item.status === "PENDENTE" ? "pendente" : "cancelada";
+        return {
+          id: item.id,
+          startTime: start,
+          endTime: new Date(item.endAt),
+          status,
+          turnLabel,
+          // TODO: acrescentar nome real do setor quando endpoint retornar join/setor no payload de report.
+          sectorName: `Setor #${item.sectorId}`,
+        };
+      });
   const isLoading = isDemo ? false : apiLoading;
 
   // Calcular estatísticas
   const totalShifts = shifts.length;
-  const confirmedShifts = shifts.filter(
-    (s: any) => s.shift?.status === "confirmada"
-  ).length;
-  const pendingShifts = shifts.filter(
-    (s: any) => s.shift?.status === "pendente"
-  ).length;
-  const canceledShifts = shifts.filter(
-    (s: any) => s.shift?.status === "cancelada"
-  ).length;
+  const confirmedShifts = shifts.filter((s) => s.status === "confirmada").length;
+  const pendingShifts = shifts.filter((s) => s.status === "pendente").length;
+  const canceledShifts = shifts.filter((s) => s.status === "cancelada").length;
 
   // Calcular total de horas
-  const totalHours = shifts.reduce((acc: number, item: any) => {
-    const shift = item.shift;
-    if (!shift) return acc;
-    const start = new Date(shift.startTime);
-    const end = new Date(shift.endTime);
+  const totalHours = shifts.reduce((acc: number, item) => {
+    const start = new Date(item.startTime);
+    const end = new Date(item.endTime);
     const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
     return acc + hours;
   }, 0);
 
   // Distribuição por turno
-  const shiftsByTurn = shifts.reduce((acc: any, item: any) => {
-    const shift = item.shift;
-    if (!shift?.shift) return acc;
-    const turn = shift.shift;
+  const shiftsByTurn = shifts.reduce<Record<string, number>>((acc, item) => {
+    const turn = item.turnLabel;
     acc[turn] = (acc[turn] || 0) + 1;
     return acc;
   }, {});
@@ -273,11 +298,7 @@ export default function ReportScreen() {
               <Text className="text-2xl font-bold text-white">Escalas do Mês</Text>
               {shifts.length > 0 ? (
                 <View className="gap-3">
-                  {shifts.slice(0, 10).map((item: any, index: number) => {
-                    const shift = item.shift;
-                    const sector = item.sector;
-                    if (!shift) return null;
-
+                  {shifts.slice(0, 10).map((shift, index: number) => {
                     const startDate = new Date(shift.startTime);
                     const endDate = new Date(shift.endTime);
 
@@ -286,12 +307,12 @@ export default function ReportScreen() {
                         <View className="flex-row justify-between items-start mb-2">
                           <View className="flex-1">
                             <Text className="text-lg font-semibold text-white">
-                              {sector?.name || "Setor não definido"}
+                              {shift.sectorName}
                             </Text>
                             <Text className="text-base text-white/70 mt-1">
                               {formatDateBR(startDate)}
                               {" • "}
-                              {shift.shift || "Turno não definido"}
+                              {shift.turnLabel || "Turno não definido"}
                             </Text>
                           </View>
                           <Badge

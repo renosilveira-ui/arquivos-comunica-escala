@@ -13,7 +13,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { Badge } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
 import * as Auth from "@/lib/_core/auth";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { ChevronLeft, Send, RefreshCw, ArrowRightLeft } from "lucide-react-native";
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,7 @@ type OfferType = "SWAP" | "TRANSFER";
 export default function RequestSwapScreen() {
   const { user } = useAuth();
   const router = useRouter();
+  const params = useLocalSearchParams<{ type?: string; fromShiftId?: string }>();
 
   const [type, setType] = useState<OfferType>("SWAP");
   const [myShifts, setMyShifts] = useState<ShiftInstance[]>([]);
@@ -99,6 +100,12 @@ export default function RequestSwapScreen() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (params.type === "SWAP" || params.type === "TRANSFER") {
+      setType(params.type);
+    }
+  }, [params.type]);
 
   // Fetch user's professional record + shifts
   useEffect(() => {
@@ -135,6 +142,17 @@ export default function RequestSwapScreen() {
           );
           setMyShifts(mine);
 
+          if (params.fromShiftId) {
+            const preselected = mine.find((s) => String(s.id) === String(params.fromShiftId));
+            if (preselected) {
+              setSelectedFrom(preselected);
+              const assignment = preselected.assignments.find(
+                (a) => a.professionalId === proData.id && a.isActive,
+              );
+              setSelectedFromAssignmentId(assignment?.id ?? null);
+            }
+          }
+
           // Other shifts = those where someone else is assigned (not me)
           const others = futureShifts.filter((s: ShiftInstance) =>
             s.assignments.some((a) => a.professionalId !== proData.id && a.isActive) &&
@@ -148,7 +166,7 @@ export default function RequestSwapScreen() {
         setLoading(false);
       }
     })();
-  }, [user?.id]);
+  }, [params.fromShiftId, user?.id]);
 
   const handleSelectFrom = (shift: ShiftInstance) => {
     setSelectedFrom(shift);
