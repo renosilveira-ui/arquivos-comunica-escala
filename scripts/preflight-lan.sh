@@ -3,6 +3,60 @@ set -euo pipefail
 
 MODE="${1:-check}"
 
+read_env_key() {
+  local file="$1"
+  local key="$2"
+  [ -f "$file" ] || return 1
+  local value=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    case "$line" in
+      "${key}"=*)
+        value="${line#*=}"
+        value="${value%\"}"
+        value="${value#\"}"
+        value="${value%\'}"
+        value="${value#\'}"
+        ;;
+    esac
+  done < "$file"
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$value"
+}
+
+get_config_value() {
+  local key="$1"
+  local value=""
+  if value="$(read_env_key ".env.local" "$key" 2>/dev/null)"; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  if value="$(read_env_key ".env" "$key" 2>/dev/null)"; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  local fallback="${!key:-}"
+  if [ -n "$fallback" ]; then
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+  return 1
+}
+
+list_contains_csv_value() {
+  local csv="$1"
+  local needle="$2"
+  IFS=',' read -r -a parts <<< "$csv"
+  for part in "${parts[@]}"; do
+    local trimmed="${part#"${part%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [ "$trimmed" = "$needle" ] && return 0
+  done
+  return 1
+}
+
 IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
 if [ -z "${IP}" ]; then
   IP="$(ipconfig getifaddr en1 2>/dev/null || true)"
@@ -19,11 +73,49 @@ echo "IP=${IP}"
 echo "API_URL=${API_URL}"
 echo "WEB_ORIGIN=${WEB_ORIGIN}"
 
-lsof -iTCP:3000 -sTCP:LISTEN -n -P >/dev/null 2>&1 && echo "PORT_3000=OK" || echo "PORT_3000=FAIL"
-lsof -iTCP:8081 -sTCP:LISTEN -n -P >/dev/null 2>&1 && echo "PORT_8081=OK" || echo "PORT_8081=FAIL"
+if lsof -iTCP:3000 -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+  PORT_3000_STATUS="OK"
+else
+  PORT_3000_STATUS="FAIL"
+fi
+echo "PORT_3000=${PORT_3000_STATUS}"
+
+if lsof -iTCP:8081 -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+  PORT_8081_STATUS="OK"
+else
+  PORT_8081_STATUS="FAIL"
+fi
+echo "PORT_8081=${PORT_8081_STATUS}"
 
 curl -i --max-time 5 "${API_URL}/api/auth/me" >/tmp/escalas_me.txt 2>&1 || true
 head -n 8 /tmp/escalas_me.txt || true
+
+CONFIG_API_URL="$(get_config_value EXPO_PUBLIC_API_URL || true)"
+CONFIG_CORS_ALLOWED_ORIGINS="$(get_config_value CORS_ALLOWED_ORIGINS || true)"
+
+if [ "${MODE}" = "check" ]; then
+  if [ -n "${CONFIG_API_URL}" ] && [ "${CONFIG_API_URL}" != "${API_URL}" ]; then
+    echo "WARNING: EXPO_PUBLIC_API_URL configurado (${CONFIG_API_URL}) difere do detectado (${API_URL})."
+    echo "WARNING: Rode ./scripts/preflight-lan.sh apply"
+    echo "WARNING: Reinicie Expo com cache limpo: pnpm expo start -c --web --port 8081"
+  fi
+
+  if [ -n "${CONFIG_CORS_ALLOWED_ORIGINS}" ] && ! list_contains_csv_value "${CONFIG_CORS_ALLOWED_ORIGINS}" "${WEB_ORIGIN}"; then
+    echo "WARNING: CORS_ALLOWED_ORIGINS não contém ${WEB_ORIGIN}."
+    echo "WARNING: Rode ./scripts/preflight-lan.sh apply"
+    echo "WARNING: Reinicie Expo com cache limpo: pnpm expo start -c --web --port 8081"
+  fi
+
+  if [ "${PORT_3000_STATUS}" = "FAIL" ]; then
+    echo "WARNING: Backend não está ouvindo na porta 3000."
+    echo "WARNING: Suba o backend: pnpm dev:server"
+  fi
+
+  if [ "${PORT_8081_STATUS}" = "FAIL" ]; then
+    echo "WARNING: Expo Web não está ouvindo na porta 8081."
+    echo "WARNING: Reinicie Expo com cache limpo: pnpm expo start -c --web --port 8081"
+  fi
+fi
 
 if [ "${MODE}" = "apply" ]; then
   python3 - <<PY
@@ -81,6 +173,15 @@ print("UPDATED_ENVS=.env,.env.local")
 print("EXPO_PUBLIC_API_URL=" + api_url)
 print("CORS_ADD_ORIGIN=" + web_origin)
 PY
+
+  FINAL_API_URL="$(get_config_value EXPO_PUBLIC_API_URL || true)"
+  FINAL_CORS_ALLOWED_ORIGINS="$(get_config_value CORS_ALLOWED_ORIGINS || true)"
+  echo "OK: EXPO_PUBLIC_API_URL final=${FINAL_API_URL:-<missing>}"
+  if [ -n "${FINAL_CORS_ALLOWED_ORIGINS}" ] && list_contains_csv_value "${FINAL_CORS_ALLOWED_ORIGINS}" "${WEB_ORIGIN}"; then
+    echo "OK: CORS_ALLOWED_ORIGINS contém ${WEB_ORIGIN}"
+  else
+    echo "OK: CORS_ALLOWED_ORIGINS não contém ${WEB_ORIGIN}"
+  fi
 fi
 
 echo "DONE"
