@@ -95,6 +95,7 @@ async function testRejectManual() {
 
   // 8. Registrar audit log
   await auditLog({
+    institutionId: vagoShift.institutionId,
     event: "ASSIGNMENT_REJECTED",
     shiftInstanceId: vagoShift.id,
     professionalId: maria.id,
