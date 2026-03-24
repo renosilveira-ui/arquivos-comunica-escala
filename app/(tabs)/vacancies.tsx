@@ -137,7 +137,7 @@ export default function VacanciesScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
-          <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando...</Text>
+          <Text className="mt-4 text-base" style={{ color: "#475569" }}>Carregando...</Text>
         </View>
       </ScreenGradient>
     );
@@ -148,8 +148,8 @@ export default function VacanciesScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Autenticação Necessária</Text>
-          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Faça login para visualizar vagas</Text>
+          <Text className="text-xl font-semibold mt-4" style={{ color: "#0F172A" }}>Autenticação Necessária</Text>
+          <Text className="text-center mt-2" style={{ color: "#475569" }}>Faça login para visualizar vagas</Text>
         </View>
       </ScreenGradient>
     );
@@ -160,8 +160,8 @@ export default function VacanciesScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Profissional Não Encontrado</Text>
-          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Seu usuário não está associado a um profissional</Text>
+          <Text className="text-xl font-semibold mt-4" style={{ color: "#0F172A" }}>Profissional Não Encontrado</Text>
+          <Text className="text-center mt-2" style={{ color: "#475569" }}>Seu usuário não está associado a um profissional</Text>
         </View>
       </ScreenGradient>
     );
@@ -172,8 +172,8 @@ export default function VacanciesScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Vagas Disponíveis</Text>
-          <Text className="mt-1 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>
+          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Vagas Disponíveis</Text>
+          <Text className="mt-1 text-base" style={{ color: "#475569" }}>
             {vacancies.length} turnos disponíveis para assumir
           </Text>
         </View>
@@ -194,7 +194,7 @@ export default function VacanciesScreen() {
         {vacanciesLoading && (
           <View className="flex-1 items-center justify-center py-20">
             <ActivityIndicator size="large" color="#4DA3FF" />
-            <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando vagas...</Text>
+            <Text className="mt-4 text-base" style={{ color: "#475569" }}>Carregando vagas...</Text>
           </View>
         )}
 
@@ -206,13 +206,14 @@ export default function VacanciesScreen() {
               return (
                 <View
                   key={vacancy.id}
-                  className="rounded-2xl bg-white/5 border border-white/10 p-4"
+                  className="rounded-2xl border p-4"
+                  style={{ backgroundColor: "#FFFFFF", borderColor: "#E2E8F0" }}
                 >
                   {/* Cabeçalho do card */}
                   <View className="flex-row items-center justify-between mb-3">
                     <View className="flex-row items-center gap-2">
                       <Briefcase size={20} color="#4DA3FF" />
-                      <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
+                      <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
                         {vacancy.shift}
                       </Text>
                     </View>
@@ -226,28 +227,28 @@ export default function VacanciesScreen() {
                   {/* Informações do turno */}
                   <View className="gap-2 mb-4">
                     <View className="flex-row items-center gap-2">
-                      <Calendar size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{formatDate(vacancy.date)}</Text>
+                      <Calendar size={16} color="#475569" />
+                      <Text className="text-sm" style={{ color: "#475569" }}>{formatDate(vacancy.date)}</Text>
                     </View>
                     <View className="flex-row items-center gap-2">
-                      <Clock size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
+                      <Clock size={16} color="#475569" />
+                      <Text className="text-sm" style={{ color: "#475569" }}>
                         {vacancy.startTime} - {vacancy.endTime}
                       </Text>
                     </View>
                     <View className="flex-row items-center gap-2">
-                      <MapPin size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{vacancy.sector}</Text>
+                      <MapPin size={16} color="#475569" />
+                      <Text className="text-sm" style={{ color: "#475569" }}>{vacancy.sector}</Text>
                     </View>
                     <View className="flex-row items-center gap-2">
-                      <Building2 size={16} color="rgba(255,255,255,0.6)" />
-                      <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{vacancy.hospital}</Text>
+                      <Building2 size={16} color="#475569" />
+                      <Text className="text-sm" style={{ color: "#475569" }}>{vacancy.hospital}</Text>
                     </View>
                   </View>
 
                   {/* Botão de ação */}
                   {isAdminOrManager ? null : isAssumed ? (
-                    <View className="flex-row items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 py-3 px-4">
+                    <View className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4" style={{ backgroundColor: "#FFF7ED", borderColor: "#FED7AA" }}>
                       <CheckCircle size={18} color="rgba(251, 191, 36, 0.8)" />
                       <Text className="text-sm font-medium" style={{ color: '#FBBF24' }}>
                         Aguardando aprovação do gestor
@@ -271,11 +272,11 @@ export default function VacanciesScreen() {
           </View>
         ) : !vacanciesLoading ? (
           <View className="flex-1 items-center justify-center py-20">
-            <Briefcase size={64} color="rgba(255,255,255,0.2)" />
-            <Text className="mt-4 text-lg font-semibold" style={{ color: "rgba(255,255,255,0.6)" }}>
+            <Briefcase size={64} color="#CBD5E1" />
+            <Text className="mt-4 text-lg font-semibold" style={{ color: "#475569" }}>
               Nenhuma vaga disponível
             </Text>
-            <Text className="mt-1 text-sm" style={{ color: "rgba(255,255,255,0.4)" }}>
+            <Text className="mt-1 text-sm" style={{ color: "#64748B" }}>
               Todas as vagas foram preenchidas
             </Text>
           </View>
