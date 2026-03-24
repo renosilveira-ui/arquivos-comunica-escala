@@ -256,19 +256,19 @@ export default function RequestSwapScreen() {
             onPress={() => router.back()}
             style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 }}
           >
-            <ChevronLeft size={24} color="#F1F5F9" />
-            <Text style={{ color: "#F1F5F9", fontSize: 16 }}>Voltar</Text>
+            <ChevronLeft size={24} color="#0F172A" />
+            <Text style={{ color: "#0F172A", fontSize: 16 }}>Voltar</Text>
           </TouchableOpacity>
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <ArrowRightLeft size={28} color="#3B82F6" />
-            <Text style={{ color: "#F1F5F9", fontSize: 28, fontWeight: "700" }}>Oferecer Troca ou Repasse</Text>
+            <Text style={{ color: "#0F172A", fontSize: 28, fontWeight: "700" }}>Oferecer Troca ou Repasse</Text>
           </View>
         </View>
 
         {/* S1 — Tipo de operação */}
         <View>
-          <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Tipo de operação</Text>
+          <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Tipo de operação</Text>
           <View style={{ flexDirection: "row", gap: 12 }}>
             {(["SWAP", "TRANSFER"] as OfferType[]).map((t) => (
               <TouchableOpacity
@@ -279,15 +279,15 @@ export default function RequestSwapScreen() {
                   paddingVertical: 16,
                   borderRadius: 12,
                   alignItems: "center",
-                  backgroundColor: type === t ? "#3B82F6" : "#1E293B",
+                  backgroundColor: type === t ? "rgba(59,130,246,0.15)" : "#FFFFFF",
                   borderWidth: 1,
-                  borderColor: type === t ? "#3B82F6" : "rgba(148,163,184,0.15)",
+                  borderColor: type === t ? "#3B82F6" : "#E2E8F0",
                 }}
               >
-                <Text style={{ color: "#F1F5F9", fontSize: 16, fontWeight: "600" }}>
+                <Text style={{ color: type === t ? "#1D4ED8" : "#0F172A", fontSize: 16, fontWeight: "600" }}>
                   {t === "SWAP" ? "TROCA" : "REPASSE"}
                 </Text>
-                <Text style={{ color: type === t ? "#E2E8F0" : "#64748B", fontSize: 12, marginTop: 4 }}>
+                <Text style={{ color: type === t ? "#1D4ED8" : "#64748B", fontSize: 12, marginTop: 4 }}>
                   {t === "SWAP" ? "Meu turno ↔ outro turno" : "Entrego meu turno"}
                 </Text>
               </TouchableOpacity>
@@ -297,7 +297,7 @@ export default function RequestSwapScreen() {
 
         {/* S2 — Meu plantão */}
         <View>
-          <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
+          <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
             Meu plantão {selectedFrom ? "✓" : "(selecione)"}
           </Text>
           {myShifts.length === 0 ? (
@@ -312,12 +312,12 @@ export default function RequestSwapScreen() {
                     width: 200,
                     padding: 14,
                     borderRadius: 12,
-                    backgroundColor: selectedFrom?.id === s.id ? "rgba(59,130,246,0.2)" : "#141B2D",
+                    backgroundColor: selectedFrom?.id === s.id ? "rgba(59,130,246,0.15)" : "#FFFFFF",
                     borderWidth: 1.5,
-                    borderColor: selectedFrom?.id === s.id ? "#3B82F6" : "rgba(148,163,184,0.15)",
+                    borderColor: selectedFrom?.id === s.id ? "#3B82F6" : "#E2E8F0",
                   }}
                 >
-                  <Text style={{ color: "#F1F5F9", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
+                  <Text style={{ color: "#0F172A", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
                   <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>{formatShiftDate(s.startAt)}</Text>
                   <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 2 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
                 </TouchableOpacity>
@@ -329,7 +329,7 @@ export default function RequestSwapScreen() {
         {/* S3 — Plantão desejado (só SWAP) */}
         {type === "SWAP" && (
           <View>
-            <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
+            <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
               Plantão desejado {selectedTo ? "✓" : "(selecione)"}
             </Text>
             {otherShifts.length === 0 ? (
@@ -343,13 +343,13 @@ export default function RequestSwapScreen() {
                     style={{
                       padding: 14,
                       borderRadius: 12,
-                      backgroundColor: selectedTo?.id === s.id ? "rgba(59,130,246,0.2)" : "#141B2D",
+                      backgroundColor: selectedTo?.id === s.id ? "rgba(59,130,246,0.15)" : "#FFFFFF",
                       borderWidth: 1.5,
-                      borderColor: selectedTo?.id === s.id ? "#3B82F6" : "rgba(148,163,184,0.15)",
+                      borderColor: selectedTo?.id === s.id ? "#3B82F6" : "#E2E8F0",
                     }}
                   >
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: "#F1F5F9", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
+                      <Text style={{ color: "#0F172A", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
                       <Text style={{ color: "#94A3B8", fontSize: 12 }}>{formatShiftDate(s.startAt)}</Text>
                     </View>
                     <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
@@ -362,12 +362,12 @@ export default function RequestSwapScreen() {
 
         {/* S4 — Motivo */}
         <View>
-          <Text style={{ color: "#F1F5F9", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Motivo (opcional)</Text>
+          <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Motivo (opcional)</Text>
           <View style={{
-            backgroundColor: "#141B2D",
+            backgroundColor: "#FFFFFF",
             borderRadius: 12,
             borderWidth: 1,
-            borderColor: "rgba(148,163,184,0.15)",
+            borderColor: "#E2E8F0",
             padding: 14,
           }}>
             <TextInput
@@ -377,7 +377,7 @@ export default function RequestSwapScreen() {
               onChangeText={setReason}
               multiline
               numberOfLines={3}
-              style={{ color: "#F1F5F9", fontSize: 15, minHeight: 80, textAlignVertical: "top" }}
+              style={{ color: "#0F172A", fontSize: 15, minHeight: 80, textAlignVertical: "top" }}
             />
           </View>
         </View>
