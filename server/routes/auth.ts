@@ -6,6 +6,7 @@ import {
   users,
   professionals,
   institutions,
+  professionalInstitutions,
   type User,
 } from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
@@ -106,6 +107,27 @@ async function ensureProfessionalLink(user: User): Promise<void> {
       .where(eq(professionals.userId, user.id))
       .limit(1);
     if (!createdInParallel) throw new Error("Falha ao garantir vínculo profissional");
+    professionalId = createdInParallel.id;
+  }
+
+  if (professionalId) {
+    await db
+      .insert(professionalInstitutions)
+      .values({
+        professionalId,
+        userId: user.id,
+        institutionId: DEFAULT_INSTITUTION.id,
+        roleInInstitution: mapRoleToProRole(user.role as UserRole),
+        isPrimary: true,
+        active: true,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          active: true,
+          roleInInstitution: mapRoleToProRole(user.role as UserRole),
+          isPrimary: true,
+        },
+      });
   }
 }
 

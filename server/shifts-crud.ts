@@ -67,6 +67,9 @@ export const shiftsRouter = router({
       if (!template) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Template de turno não encontrado" });
       }
+      if (template.institutionId !== ctx.institutionId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Template fora do tenant ativo" });
+      }
 
       const sectorId = input.sectorId ?? template.sectorId;
       if (!sectorId) {
@@ -126,14 +129,19 @@ export const shiftsRouter = router({
   // ------------------------------------------------------------------
   get: protectedProcedure
     .input(z.object({ id: z.number().int() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
       const [instance] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.id));
+        .where(
+          and(
+            eq(shiftInstances.id, input.id),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!instance) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
@@ -145,6 +153,7 @@ export const shiftsRouter = router({
         .from(shiftTemplates)
         .where(
           and(
+            eq(shiftTemplates.institutionId, ctx.institutionId),
             eq(shiftTemplates.hospitalId, instance.hospitalId),
             eq(shiftTemplates.name, instance.label),
           ),
@@ -156,6 +165,7 @@ export const shiftsRouter = router({
         .from(shiftAssignmentsV2)
         .where(
           and(
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
             eq(shiftAssignmentsV2.shiftInstanceId, input.id),
             eq(shiftAssignmentsV2.isActive, true),
           ),
@@ -186,7 +196,12 @@ export const shiftsRouter = router({
       const [existing] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.id));
+        .where(
+          and(
+            eq(shiftInstances.id, input.id),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       if (!existing) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
@@ -243,7 +258,12 @@ export const shiftsRouter = router({
       const [updated] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.id));
+        .where(
+          and(
+            eq(shiftInstances.id, input.id),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        );
 
       return updated;
     }),
@@ -259,7 +279,7 @@ export const shiftsRouter = router({
         endDate: z.string(),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
@@ -269,7 +289,13 @@ export const shiftsRouter = router({
       const instances = await db
         .select()
         .from(shiftInstances)
-        .where(and(gte(shiftInstances.startAt, start), lte(shiftInstances.startAt, end)));
+        .where(
+          and(
+            eq(shiftInstances.institutionId, ctx.institutionId),
+            gte(shiftInstances.startAt, start),
+            lte(shiftInstances.startAt, end),
+          ),
+        );
 
       if (instances.length === 0) return [];
 
@@ -290,6 +316,7 @@ export const shiftsRouter = router({
         .where(
           and(
             eq(shiftAssignmentsV2.isActive, true),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
             inArray(shiftAssignmentsV2.shiftInstanceId, instanceIds),
           ),
         );
@@ -311,13 +338,18 @@ export const shiftsRouter = router({
   // shifts.listTemplates — any authenticated user
   // Returns all active shift templates (used by create-shift form).
   // ------------------------------------------------------------------
-  listTemplates: protectedProcedure.query(async () => {
+  listTemplates: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
     return db
       .select()
       .from(shiftTemplates)
-      .where(eq(shiftTemplates.isActive, true));
+      .where(
+        and(
+          eq(shiftTemplates.institutionId, ctx.institutionId),
+          eq(shiftTemplates.isActive, true),
+        ),
+      );
   }),
 
   // ------------------------------------------------------------------
@@ -349,6 +381,7 @@ export const shiftsRouter = router({
         and(
           eq(shiftAssignmentsV2.professionalId, professional.id),
           eq(shiftAssignmentsV2.isActive, true),
+          eq(shiftInstances.institutionId, ctx.institutionId),
           lte(shiftInstances.startAt, now),
           gte(shiftInstances.endAt, now),
         ),
@@ -371,6 +404,9 @@ export const shiftsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       requireManagerOrAdmin(ctx.user.role);
+      if (input.institutionId !== ctx.institutionId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+      }
       await publishMonth(
         input.institutionId,
         input.hospitalId,
@@ -406,6 +442,9 @@ export const shiftsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       requireManagerOrAdmin(ctx.user.role);
+      if (input.institutionId !== ctx.institutionId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+      }
       await lockMonth(
         input.institutionId,
         input.hospitalId,
@@ -455,6 +494,7 @@ export const shiftsRouter = router({
         .from(shiftInstances)
         .where(
           and(
+            eq(shiftInstances.institutionId, ctx.institutionId),
             eq(shiftInstances.hospitalId, input.hospitalId),
             gte(shiftInstances.startAt, fromStart),
             lt(shiftInstances.startAt, fromEnd),
