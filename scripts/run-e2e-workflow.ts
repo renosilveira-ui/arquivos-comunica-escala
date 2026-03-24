@@ -112,11 +112,12 @@ async function findAvailableBaseDate(
 }
 
 async function createCaller(userId: number, institutionId: number) {
-  void institutionId;
   return appRouter.createCaller({
     user: { id: userId } as any,
     req: { headers: {}, ip: "127.0.0.1" } as any,
     res: {} as any,
+    institutionId,
+    allowedInstitutionIds: [institutionId],
   });
 }
 

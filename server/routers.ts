@@ -41,6 +41,9 @@ const shiftAssignmentsRouter = router({
         .where(eq(shiftInstances.id, input.shiftInstanceId));
 
       if (!shift) throw new Error("Turno não encontrado");
+      if (shift.institutionId !== ctx.institutionId) {
+        throw new Error("Turno fora do tenant ativo");
+      }
 
       if (shift.status !== "VAGO") {
         throw new Error(`Turno não está disponível (status: ${shift.status})`);
@@ -93,7 +96,7 @@ const shiftAssignmentsRouter = router({
         shiftLabel: z.string().nullish(),
       }).optional(),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
@@ -124,6 +127,7 @@ const shiftAssignmentsRouter = router({
             JOIN shift_instances si ON sa.shift_instance_id = si.id
             JOIN sectors s         ON si.sector_id = s.id
             WHERE sa.is_active = true
+              AND sa.institution_id = ${ctx.institutionId}
               AND sa.status = 'PENDENTE'
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
@@ -170,6 +174,9 @@ const shiftInstancesRouter = router({
         .where(eq(shiftAssignmentsV2.id, input.assignmentId));
 
       if (!assignment) throw new Error("Alocação não encontrada");
+      if (assignment.institutionId !== ctx.institutionId) {
+        throw new Error("Alocação fora do tenant ativo");
+      }
 
       const [managerProfessional] = await db
         .select({ id: professionals.id })
@@ -242,6 +249,9 @@ const shiftInstancesRouter = router({
         .where(eq(shiftAssignmentsV2.id, input.assignmentId));
 
       if (!assignment) throw new Error("Alocação não encontrada");
+      if (assignment.institutionId !== ctx.institutionId) {
+        throw new Error("Alocação fora do tenant ativo");
+      }
 
       const [managerProfessional] = await db
         .select({ id: professionals.id })
@@ -332,6 +342,7 @@ const shiftInstancesRouter = router({
             JOIN sectors  s ON si.sector_id  = s.id
             JOIN hospitals h ON si.hospital_id = h.id
             WHERE si.status IN ('VAGO', 'PENDENTE')
+              AND si.institution_id = ${ctx.institutionId}
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
@@ -353,6 +364,7 @@ const shiftInstancesRouter = router({
           .from(shiftAssignmentsV2)
           .where(
             and(
+              eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
               eq(shiftAssignmentsV2.professionalId, pro.id),
               eq(shiftAssignmentsV2.isActive, true),
             ),

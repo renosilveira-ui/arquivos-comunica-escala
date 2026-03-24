@@ -4,6 +4,7 @@ import { getDb } from "./db";
 import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 
 /**
  * Calendar Router
@@ -62,6 +63,7 @@ async function checkCalendarAccess(
   const scopeResult = await db.execute<any>(
     sql`SELECT COUNT(*) as count FROM manager_scope
         WHERE manager_professional_id = ${professionalId}
+        AND institution_id = ${institutionId}
         AND (hospital_id = ${hospitalId} OR sector_id = ${sectorId})`
   );
   const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
@@ -127,6 +129,9 @@ export const calendarRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { institutionId, hospitalId, sectorId, yearMonth } = input;
+      if (institutionId !== ctx.institutionId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+      }
       const userId = ctx.user?.id;
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
@@ -157,7 +162,8 @@ export const calendarRouter = router({
       const shiftResult = await db.execute<any>(
         sql`SELECT id, label, start_at, end_at, status
             FROM shift_instances
-            WHERE hospital_id = ${hospitalId} AND sector_id = ${sectorId}
+            WHERE institution_id = ${institutionId}
+            AND hospital_id = ${hospitalId} AND sector_id = ${sectorId}
             AND start_at >= ${startOfMonth} AND start_at <= ${endOfMonth}
             ORDER BY start_at ASC`
       );
@@ -213,6 +219,9 @@ export const calendarRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { institutionId, hospitalId, sectorId, date } = input;
+      if (institutionId !== ctx.institutionId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+      }
       const userId = ctx.user?.id;
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
@@ -244,7 +253,8 @@ export const calendarRouter = router({
       const shiftResult = await db.execute<any>(
         sql`SELECT id, label, start_at, end_at, status
             FROM shift_instances
-            WHERE hospital_id = ${hospitalId} AND sector_id = ${sectorId}
+            WHERE institution_id = ${institutionId}
+            AND hospital_id = ${hospitalId} AND sector_id = ${sectorId}
             AND start_at >= ${startOfDay} AND start_at <= ${endOfDay}
             ORDER BY start_at ASC`
       );

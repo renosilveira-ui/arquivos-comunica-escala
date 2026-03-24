@@ -6,6 +6,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import {
   professionals,
   hospitals,
@@ -20,9 +21,16 @@ import {
 export const professionalsRouter = router({
   getByUserId: protectedProcedure
     .input(z.object({ userId: z.number().int() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+
+      const isSelf = input.userId === ctx.user.id;
+      const canReadOthers = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!isSelf && !canReadOthers) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissão para consultar outro usuário" });
+      }
+
       const [pro] = await db
         .select()
         .from(professionals)
@@ -57,6 +65,7 @@ export const professionalsRouter = router({
         .from(managerScopeTable)
         .where(
           and(
+            eq(managerScopeTable.institutionId, ctx.institutionId),
             eq(managerScopeTable.managerProfessionalId, pro.id),
             eq(managerScopeTable.active, true),
           ),
@@ -82,20 +91,26 @@ export const professionalsRouter = router({
 // ─── hospitals ────────────────────────────────────────────────────────────────
 
 export const hospitalsRouter = router({
-  list: protectedProcedure.query(async () => {
+  list: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
-    return db.select({ id: hospitals.id, name: hospitals.name, institutionId: hospitals.institutionId }).from(hospitals);
+    return db
+      .select({ id: hospitals.id, name: hospitals.name, institutionId: hospitals.institutionId })
+      .from(hospitals)
+      .where(eq(hospitals.institutionId, ctx.institutionId));
   }),
 });
 
 // ─── sectors ─────────────────────────────────────────────────────────────────
 
 export const sectorsRouter = router({
-  list: protectedProcedure.query(async () => {
+  list: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
-    return db.select({ id: sectors.id, name: sectors.name, hospitalId: sectors.hospitalId, category: sectors.category }).from(sectors);
+    return db
+      .select({ id: sectors.id, name: sectors.name, hospitalId: sectors.hospitalId, category: sectors.category })
+      .from(sectors)
+      .where(eq(sectors.institutionId, ctx.institutionId));
   }),
 });
 
@@ -108,7 +123,7 @@ export const filtersRouter = router({
    */
   summaryCounts: protectedProcedure
     .input(z.object({ date: z.string() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
@@ -120,6 +135,7 @@ export const filtersRouter = router({
         .from(shiftInstances)
         .where(
           and(
+            eq(shiftInstances.institutionId, ctx.institutionId),
             gte(shiftInstances.startAt, startOfDay),
             lte(shiftInstances.startAt, endOfDay),
           ),
