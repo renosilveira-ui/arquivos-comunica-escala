@@ -156,7 +156,6 @@ const shiftInstancesRouter = router({
   approveAssignment: protectedProcedure
     .input(z.object({
       assignmentId: z.number(),
-      professionalId: z.number(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
@@ -172,8 +171,17 @@ const shiftInstancesRouter = router({
 
       if (!assignment) throw new Error("Alocação não encontrada");
 
+      const [managerProfessional] = await db
+        .select({ id: professionals.id })
+        .from(professionals)
+        .where(eq(professionals.userId, userId));
+
+      if (!managerProfessional) {
+        throw new Error("Profissional do aprovador não encontrado");
+      }
+
       const permission = await canApproveAssignment(
-        input.professionalId,
+        managerProfessional.id,
         assignment.hospitalId,
         assignment.sectorId
       );
@@ -183,6 +191,11 @@ const shiftInstancesRouter = router({
       }
 
       await db
+        .update(shiftAssignmentsV2)
+        .set({ status: "OCUPADO", isActive: true })
+        .where(eq(shiftAssignmentsV2.id, input.assignmentId));
+
+      await db
         .update(shiftInstances)
         .set({ status: "OCUPADO" })
         .where(eq(shiftInstances.id, assignment.shiftInstanceId));
@@ -190,7 +203,7 @@ const shiftInstancesRouter = router({
       await auditLog({
         event: "ASSIGNMENT_APPROVED",
         shiftInstanceId: assignment.shiftInstanceId,
-        professionalId: input.professionalId,
+        professionalId: managerProfessional.id,
         metadata: { assignmentId: input.assignmentId, approvedBy: userId },
       });
 
@@ -214,7 +227,6 @@ const shiftInstancesRouter = router({
   rejectAssignment: protectedProcedure
     .input(z.object({
       assignmentId: z.number(),
-      professionalId: z.number(),
       reason: z.string().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -231,8 +243,17 @@ const shiftInstancesRouter = router({
 
       if (!assignment) throw new Error("Alocação não encontrada");
 
+      const [managerProfessional] = await db
+        .select({ id: professionals.id })
+        .from(professionals)
+        .where(eq(professionals.userId, userId));
+
+      if (!managerProfessional) {
+        throw new Error("Profissional do aprovador não encontrado");
+      }
+
       const permission = await canApproveAssignment(
-        input.professionalId,
+        managerProfessional.id,
         assignment.hospitalId,
         assignment.sectorId
       );
@@ -243,7 +264,7 @@ const shiftInstancesRouter = router({
 
       await db
         .update(shiftAssignmentsV2)
-        .set({ isActive: false })
+        .set({ isActive: false, status: "REJEITADO" })
         .where(eq(shiftAssignmentsV2.id, input.assignmentId));
 
       await db
@@ -254,7 +275,7 @@ const shiftInstancesRouter = router({
       await auditLog({
         event: "ASSIGNMENT_REJECTED",
         shiftInstanceId: assignment.shiftInstanceId,
-        professionalId: input.professionalId,
+        professionalId: managerProfessional.id,
         reason: input.reason ?? null,
         metadata: { assignmentId: input.assignmentId, rejectedBy: userId },
       });
