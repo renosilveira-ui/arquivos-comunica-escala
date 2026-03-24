@@ -39,7 +39,7 @@ export default function VacanciesScreen() {
   });
 
   // Determinar se usuário pode ver "Todos os hospitais"
-  const allowAllHospitals = professional?.role === "GESTOR_PLUS" || isAdminOrManager;
+  const allowAllHospitals = professional?.userRole === "GESTOR_PLUS" || isAdminOrManager;
 
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(

@@ -136,7 +136,7 @@ export default function PendingScreen() {
   });
 
   // Determinar se usuário pode ver "Todos os hospitais"
-  const allowAllHospitals = professional?.role === "GESTOR_PLUS" || isAdminOrManager;
+  const allowAllHospitals = professional?.userRole === "GESTOR_PLUS" || isAdminOrManager;
   
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
@@ -328,8 +328,8 @@ export default function PendingScreen() {
 
   const isManagerView =
     isAdminOrManager ||
-    professional?.role === "GESTOR_MEDICO" ||
-    professional?.role === "GESTOR_PLUS";
+    professional?.userRole === "GESTOR_MEDICO" ||
+    professional?.userRole === "GESTOR_PLUS";
 
   if (!isManagerView) {
     return (
@@ -641,7 +641,7 @@ export default function PendingScreen() {
                 </View>
 
                 {/* Botões de ação ou mensagem de permissão */}
-                {professional?.role === "USER" ? (
+                {professional?.userRole === "USER" ? (
                   // 🔒 Usuário comum: mostrar mensagem de permissão
                   <View className="flex-row items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 py-3 px-4">
                     <Lock size={18} color="rgba(255,255,255,0.4)" />

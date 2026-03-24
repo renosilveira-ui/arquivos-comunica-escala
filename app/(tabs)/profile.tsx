@@ -53,8 +53,8 @@ export default function ProfileScreen() {
     if (!monthShifts) return empty;
 
     const isManager =
-      professional?.role === "GESTOR_MEDICO" ||
-      professional?.role === "GESTOR_PLUS";
+      professional?.userRole === "GESTOR_MEDICO" ||
+      professional?.userRole === "GESTOR_PLUS";
 
     const relevant = (monthShifts as any[]).filter((shift) => {
       if (isManager) return true;
