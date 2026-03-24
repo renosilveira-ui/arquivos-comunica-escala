@@ -147,7 +147,7 @@ export default function ReportScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg text-white/70">Faça login para continuar</Text>
+          <Text className="text-lg" style={{ color: "#475569" }}>Faça login para continuar</Text>
         </View>
       </ScreenGradient>
     );
@@ -163,12 +163,12 @@ export default function ReportScreen() {
             className="w-10 h-10 items-center justify-center"
             style={{ marginLeft: -8 }}
           >
-            <ChevronLeft size={28} color="#FFFFFF" />
+            <ChevronLeft size={28} color="#0F172A" />
           </TouchableOpacity>
           <View className="flex-1 items-center">
             <View className="flex-row items-center gap-2">
-              <FileText size={24} color="#FFFFFF" />
-              <Text className="text-2xl font-bold text-white">Relatório de Escalas</Text>
+              <FileText size={24} color="#0F172A" />
+              <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Relatório de Escalas</Text>
             </View>
           </View>
           <View className="w-10" />
@@ -181,10 +181,10 @@ export default function ReportScreen() {
               onPress={handlePreviousMonth}
               className="w-10 h-10 items-center justify-center"
             >
-              <Text className="text-2xl text-white">←</Text>
+              <Text className="text-2xl" style={{ color: "#0F172A" }}>←</Text>
             </TouchableOpacity>
             <View className="flex-1 items-center">
-              <Text className="text-xl font-bold text-white">
+              <Text className="text-xl font-bold" style={{ color: "#0F172A" }}>
                 {format(new Date(selectedYear, selectedMonth), "MMMM 'de' yyyy", { locale: ptBR })}
               </Text>
             </View>
@@ -192,7 +192,7 @@ export default function ReportScreen() {
               onPress={handleNextMonth}
               className="w-10 h-10 items-center justify-center"
             >
-              <Text className="text-2xl text-white">→</Text>
+              <Text className="text-2xl" style={{ color: "#0F172A" }}>→</Text>
             </TouchableOpacity>
           </View>
         </TintedGlassCard>
@@ -200,24 +200,24 @@ export default function ReportScreen() {
         {isLoading ? (
           <View className="items-center py-12">
             <ActivityIndicator size="large" color="#4DA3FF" />
-            <Text className="text-base text-white/70 mt-4">Carregando dados...</Text>
+            <Text className="text-base mt-4" style={{ color: "#475569" }}>Carregando dados...</Text>
           </View>
         ) : (
           <>
             {/* Estatísticas Gerais */}
             <View className="gap-4">
-              <Text className="text-2xl font-bold text-white">Resumo do Mês</Text>
+              <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Resumo do Mês</Text>
               <View className="flex-row gap-4">
                 <View className="flex-1">
                   <TintedGlassCard>
-                    <Text className="text-sm text-white/70">Total de Escalas</Text>
-                    <Text className="text-4xl font-bold text-white mt-2">{totalShifts}</Text>
+                    <Text className="text-sm" style={{ color: "#475569" }}>Total de Escalas</Text>
+                    <Text className="text-4xl font-bold mt-2" style={{ color: "#0F172A" }}>{totalShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
                   <TintedGlassCard>
-                    <Text className="text-sm text-white/70">Total de Horas</Text>
-                    <Text className="text-4xl font-bold text-white mt-2">
+                    <Text className="text-sm" style={{ color: "#475569" }}>Total de Horas</Text>
+                    <Text className="text-4xl font-bold mt-2" style={{ color: "#0F172A" }}>
                       {Math.round(totalHours)}h
                     </Text>
                   </TintedGlassCard>
@@ -229,19 +229,19 @@ export default function ReportScreen() {
                 <View className="flex-1">
                   <TintedGlassCard>
                     <Badge variant="success">Confirmadas</Badge>
-                    <Text className="text-3xl font-bold text-white mt-2">{confirmedShifts}</Text>
+                    <Text className="text-3xl font-bold mt-2" style={{ color: "#0F172A" }}>{confirmedShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
                   <TintedGlassCard>
                     <Badge variant="warning">Pendentes</Badge>
-                    <Text className="text-3xl font-bold text-white mt-2">{pendingShifts}</Text>
+                    <Text className="text-3xl font-bold mt-2" style={{ color: "#0F172A" }}>{pendingShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
                   <TintedGlassCard>
                     <Badge variant="critical">Canceladas</Badge>
-                    <Text className="text-3xl font-bold text-white mt-2">{canceledShifts}</Text>
+                    <Text className="text-3xl font-bold mt-2" style={{ color: "#0F172A" }}>{canceledShifts}</Text>
                   </TintedGlassCard>
                 </View>
               </View>
@@ -249,24 +249,24 @@ export default function ReportScreen() {
 
             {/* Distribuição por Turno */}
             <View className="gap-4">
-              <Text className="text-2xl font-bold text-white">Distribuição por Turno</Text>
+              <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Distribuição por Turno</Text>
               <TintedGlassCard>
                 <View className="gap-3">
                   <View className="flex-row justify-between items-center py-2">
-                    <Text className="text-lg text-white">Manhã (7h-13h)</Text>
-                    <Text className="text-2xl font-bold text-white">
+                    <Text className="text-lg" style={{ color: "#0F172A" }}>Manhã (7h-13h)</Text>
+                    <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>
                       {shiftsByTurn["Manhã"] || 0}
                     </Text>
                   </View>
-                  <View className="flex-row justify-between items-center py-2 border-t border-white/10">
-                    <Text className="text-lg text-white">Tarde (13h-19h)</Text>
-                    <Text className="text-2xl font-bold text-white">
+                  <View className="flex-row justify-between items-center py-2 border-t border-slate-200">
+                    <Text className="text-lg" style={{ color: "#0F172A" }}>Tarde (13h-19h)</Text>
+                    <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>
                       {shiftsByTurn["Tarde"] || 0}
                     </Text>
                   </View>
-                  <View className="flex-row justify-between items-center py-2 border-t border-white/10">
-                    <Text className="text-lg text-white">Noite (19h-7h)</Text>
-                    <Text className="text-2xl font-bold text-white">
+                  <View className="flex-row justify-between items-center py-2 border-t border-slate-200">
+                    <Text className="text-lg" style={{ color: "#0F172A" }}>Noite (19h-7h)</Text>
+                    <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>
                       {shiftsByTurn["Noite"] || 0}
                     </Text>
                   </View>
@@ -295,7 +295,7 @@ export default function ReportScreen() {
 
             {/* Lista de Escalas do Mês */}
             <View className="gap-4">
-              <Text className="text-2xl font-bold text-white">Escalas do Mês</Text>
+              <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Escalas do Mês</Text>
               {shifts.length > 0 ? (
                 <View className="gap-3">
                   {shifts.slice(0, 10).map((shift, index: number) => {
@@ -306,10 +306,10 @@ export default function ReportScreen() {
                       <TintedGlassCard key={index}>
                         <View className="flex-row justify-between items-start mb-2">
                           <View className="flex-1">
-                            <Text className="text-lg font-semibold text-white">
+                            <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
                               {shift.sectorName}
                             </Text>
-                            <Text className="text-base text-white/70 mt-1">
+                            <Text className="text-base mt-1" style={{ color: "#475569" }}>
                               {formatDateBR(startDate)}
                               {" • "}
                               {shift.turnLabel || "Turno não definido"}
@@ -331,7 +331,7 @@ export default function ReportScreen() {
                               : "Pendente"}
                           </Badge>
                         </View>
-                        <Text className="text-sm text-white/50">
+                        <Text className="text-sm" style={{ color: "#64748B" }}>
                           {startDate.toLocaleTimeString("pt-BR", {
                             hour: "2-digit",
                             minute: "2-digit",
@@ -346,15 +346,15 @@ export default function ReportScreen() {
                     );
                   })}
                   {shifts.length > 10 && (
-                    <Text className="text-base text-white/50 text-center mt-2">
+                    <Text className="text-base text-center mt-2" style={{ color: "#64748B" }}>
                       + {shifts.length - 10} escalas
                     </Text>
                   )}
                 </View>
               ) : (
                 <TintedGlassCard className="items-center py-8">
-                  <Calendar size={48} color="rgba(255,255,255,0.3)" />
-                  <Text className="text-base text-white/50 mt-3">
+                  <Calendar size={48} color="#94A3B8" />
+                  <Text className="text-base mt-3" style={{ color: "#64748B" }}>
                     Nenhuma escala neste mês
                   </Text>
                 </TintedGlassCard>

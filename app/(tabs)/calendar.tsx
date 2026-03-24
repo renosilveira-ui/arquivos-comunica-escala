@@ -269,12 +269,12 @@ export default function CalendarScreen() {
         <View style={{ marginBottom: 24 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <Calendar size={28} color="#4DA3FF" />
-            <Text style={{ fontSize: 28, fontWeight: "700", color: "#FFFFFF" }}>
+            <Text style={{ fontSize: 28, fontWeight: "700", color: "#0F172A" }}>
               Calendário
             </Text>
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 }}>
-            <Text style={{ fontSize: 16, color: "rgba(255,255,255,0.7)" }}>
+            <Text style={{ fontSize: 16, color: "#475569" }}>
               Selecione um dia para ver os turnos
             </Text>
           </View>
@@ -291,18 +291,18 @@ export default function CalendarScreen() {
 
         <View style={{ marginBottom: 24 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
-            <CalendarDays size={20} color="#FFFFFF" />
-            <Text style={{ fontSize: 20, fontWeight: "700", color: "#FFFFFF" }}>Radar de Plantões</Text>
+            <CalendarDays size={20} color="#0F172A" />
+            <Text style={{ fontSize: 20, fontWeight: "700", color: "#0F172A" }}>Radar de Plantões</Text>
           </View>
 
           <TintedGlassCard style={{ marginBottom: 12 }}>
-            <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.75)", marginBottom: 10 }}>
+            <Text style={{ fontSize: 14, color: "#475569", marginBottom: 10 }}>
               Toque em um dia para ver os plantões de todos os hospitais.
             </Text>
 
             <View style={{ flexDirection: "row", marginBottom: 8 }}>
               {["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map((d) => (
-                <Text key={d} style={{ flex: 1, textAlign: "center", fontSize: 11, fontWeight: "700", color: "rgba(255,255,255,0.55)" }}>
+                <Text key={d} style={{ flex: 1, textAlign: "center", fontSize: 11, fontWeight: "700", color: "#64748B" }}>
                   {d}
                 </Text>
               ))}
@@ -330,8 +330,8 @@ export default function CalendarScreen() {
                       minWidth: 42,
                       borderRadius: 10,
                       borderWidth: selected ? 1.5 : 1,
-                      borderColor: selected ? "#60A5FA" : "rgba(255,255,255,0.14)",
-                      backgroundColor: selected ? "rgba(37,99,235,0.2)" : "rgba(255,255,255,0.03)",
+                      borderColor: selected ? "#60A5FA" : "#E2E8F0",
+                      backgroundColor: selected ? "rgba(37,99,235,0.15)" : "#FFFFFF",
                       paddingVertical: 6,
                       paddingHorizontal: 4,
                     }}
@@ -341,7 +341,7 @@ export default function CalendarScreen() {
                         textAlign: "center",
                         fontSize: 12,
                         fontWeight: "700",
-                        color: inCurrentMonth ? "#FFFFFF" : "rgba(255,255,255,0.35)",
+                        color: inCurrentMonth ? "#0F172A" : "#94A3B8",
                         marginBottom: 5,
                       }}
                     >
@@ -366,20 +366,20 @@ export default function CalendarScreen() {
 
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 }}>
               <View style={{ width: 10, height: 10, borderRadius: 999, backgroundColor: "rgba(34,197,94,0.95)" }} />
-              <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.75)" }}>Com vaga</Text>
+              <Text style={{ fontSize: 11, color: "#475569" }}>Com vaga</Text>
               <View style={{ width: 10, height: 10, borderRadius: 999, backgroundColor: "rgba(245,158,11,0.9)" }} />
-              <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.75)" }}>Sem vaga</Text>
+              <Text style={{ fontSize: 11, color: "#475569" }}>Sem vaga</Text>
             </View>
           </TintedGlassCard>
 
           <TintedGlassCard>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF" }}>
+              <Text style={{ fontSize: 18, fontWeight: "600", color: "#0F172A" }}>
                 Plantões de {new Date(`${selectedDateKey}T00:00:00`).toLocaleDateString("pt-BR")}
               </Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <Clock3 size={14} color="rgba(255,255,255,0.7)" />
-                <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 12 }}>
+                <Clock3 size={14} color="#475569" />
+                <Text style={{ color: "#475569", fontSize: 12 }}>
                   {selectedDayShifts.length} resultado{selectedDayShifts.length !== 1 ? "s" : ""}
                 </Text>
               </View>
@@ -391,26 +391,26 @@ export default function CalendarScreen() {
                 alignItems: "center",
                 gap: 8,
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.16)",
+                borderColor: "#E2E8F0",
                 borderRadius: 10,
-                backgroundColor: "rgba(255,255,255,0.05)",
+                backgroundColor: "#FFFFFF",
                 paddingHorizontal: 10,
                 paddingVertical: 8,
                 marginBottom: 12,
               }}
             >
-              <Search size={16} color="rgba(255,255,255,0.7)" />
+              <Search size={16} color="#475569" />
               <TextInput
                 value={searchShiftText}
                 onChangeText={setSearchShiftText}
                 placeholder="Pesquisar hospital, setor, turno..."
-                placeholderTextColor="rgba(255,255,255,0.45)"
-                style={{ flex: 1, color: "#FFFFFF", fontSize: 14, paddingVertical: 0 }}
+                placeholderTextColor="#94A3B8"
+                style={{ flex: 1, color: "#0F172A", fontSize: 14, paddingVertical: 0 }}
               />
             </View>
 
             {selectedDayShifts.length === 0 ? (
-              <Text style={{ color: "rgba(255,255,255,0.65)" }}>
+              <Text style={{ color: "#64748B" }}>
                 Nenhum plantão encontrado para esse dia/filtro.
               </Text>
             ) : (
@@ -430,21 +430,21 @@ export default function CalendarScreen() {
                             : "rgba(34,197,94,0.85)",
                       borderRadius: 12,
                       padding: 10,
-                      backgroundColor: "rgba(15,23,42,0.55)",
+                      backgroundColor: "#FFFFFF",
                     }}
                   >
-                    <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}>
+                    <Text style={{ color: "#0F172A", fontSize: 14, fontWeight: "700" }}>
                       {SLOT_LABELS[shift.slotIndex]} • {shift.label}
                     </Text>
-                    <Text style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, marginTop: 2 }}>
+                    <Text style={{ color: "#475569", fontSize: 12, marginTop: 2 }}>
                       {shift.hospitalName} • {shift.sectorName}
                     </Text>
                     {shift.professionalNames.length > 0 ? (
-                      <Text style={{ color: "rgba(255,255,255,0.8)", fontSize: 12, marginTop: 2 }}>
+                      <Text style={{ color: "#334155", fontSize: 12, marginTop: 2 }}>
                         {shift.professionalNames.join(", ")}
                       </Text>
                     ) : null}
-                    <Text style={{ color: "rgba(255,255,255,0.65)", fontSize: 12, marginTop: 2 }}>
+                    <Text style={{ color: "#64748B", fontSize: 12, marginTop: 2 }}>
                       {new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}–{new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} • {shift.status}
                     </Text>
                   </TouchableOpacity>
@@ -456,7 +456,7 @@ export default function CalendarScreen() {
 
         {/* Filtro por Turno */}
         <View style={{ marginBottom: 24 }}>
-          <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF", marginBottom: 12 }}>
+          <Text style={{ fontSize: 16, fontWeight: "600", color: "#0F172A", marginBottom: 12 }}>
             Filtrar por turno
           </Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -475,12 +475,12 @@ export default function CalendarScreen() {
                     backgroundColor:
                       selectedTurnFilter === turn
                         ? "rgba(77,163,255,0.3)"
-                        : "rgba(255,255,255,0.05)",
+                        : "#FFFFFF",
                     borderWidth: 2,
                     borderColor:
                       selectedTurnFilter === turn
                         ? "#4DA3FF"
-                        : "rgba(255,255,255,0.1)",
+                        : "#E2E8F0",
                   }}
                   activeOpacity={0.7}
                 >
@@ -488,7 +488,7 @@ export default function CalendarScreen() {
                     style={{
                       fontSize: 14,
                       fontWeight: "600",
-                      color: selectedTurnFilter === turn ? "#4DA3FF" : "#FFFFFF",
+                      color: selectedTurnFilter === turn ? "#4DA3FF" : "#0F172A",
                     }}
                   >
                     {turn === "todos" ? "Todos" : turn === "manha" ? "Manhã" : turn === "tarde" ? "Tarde" : "Noite"}
@@ -501,10 +501,10 @@ export default function CalendarScreen() {
 
         {/* Detalhes do Dia Selecionado */}
         <View style={{ marginBottom: 16 }}>
-          <Text style={{ fontSize: 20, fontWeight: "600", color: "#FFFFFF", marginBottom: 4 }}>
+          <Text style={{ fontSize: 20, fontWeight: "600", color: "#0F172A", marginBottom: 4 }}>
             {format(selectedDate, "EEEE, d 'de' MMMM", { locale: ptBR })}
           </Text>
-          <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+          <Text style={{ fontSize: 14, color: "#475569" }}>
             {shiftsOnSelectedDate.length} {shiftsOnSelectedDate.length === 1 ? "escala" : "escalas"} neste dia
           </Text>
         </View>
@@ -512,7 +512,7 @@ export default function CalendarScreen() {
         {/* Turnos do Dia */}
         {shiftsOnSelectedDate.length === 0 ? (
           <TintedGlassCard>
-            <Text style={{ fontSize: 16, color: "rgba(255,255,255,0.5)", textAlign: "center" }}>
+            <Text style={{ fontSize: 16, color: "#64748B", textAlign: "center" }}>
               Nenhuma escala neste dia
             </Text>
           </TintedGlassCard>
@@ -523,10 +523,10 @@ export default function CalendarScreen() {
               <View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
                   <Clock size={20} color="#FFA500" />
-                  <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF" }}>
+                  <Text style={{ fontSize: 18, fontWeight: "600", color: "#0F172A" }}>
                     Manhã
                   </Text>
-                  <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                  <Text style={{ fontSize: 14, color: "#475569" }}>
                     {SHIFT_TIMES.manha.hours}
                   </Text>
                 </View>
@@ -536,7 +536,7 @@ export default function CalendarScreen() {
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <MapPin size={18} color="#4DA3FF" />
-                          <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
+                          <Text style={{ fontSize: 16, fontWeight: "600", color: "#0F172A" }}>
                             {shift.label}
                           </Text>
                         </View>
@@ -545,7 +545,7 @@ export default function CalendarScreen() {
                         </Badge>
                       </View>
                       {shift.assignmentCount > 0 && (
-                        <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+                        <Text style={{ fontSize: 13, color: "#475569", marginTop: 4 }}>
                           {shift.assignmentCount} profissional{shift.assignmentCount !== 1 ? "is" : ""} alocado{shift.assignmentCount !== 1 ? "s" : ""}
                         </Text>
                       )}
@@ -560,10 +560,10 @@ export default function CalendarScreen() {
               <View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
                   <Clock size={20} color="#FFD700" />
-                  <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF" }}>
+                  <Text style={{ fontSize: 18, fontWeight: "600", color: "#0F172A" }}>
                     Tarde
                   </Text>
-                  <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                  <Text style={{ fontSize: 14, color: "#475569" }}>
                     {SHIFT_TIMES.tarde.hours}
                   </Text>
                 </View>
@@ -573,7 +573,7 @@ export default function CalendarScreen() {
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <MapPin size={18} color="#4DA3FF" />
-                          <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
+                          <Text style={{ fontSize: 16, fontWeight: "600", color: "#0F172A" }}>
                             {shift.label}
                           </Text>
                         </View>
@@ -582,7 +582,7 @@ export default function CalendarScreen() {
                         </Badge>
                       </View>
                       {shift.assignmentCount > 0 && (
-                        <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+                        <Text style={{ fontSize: 13, color: "#475569", marginTop: 4 }}>
                           {shift.assignmentCount} profissional{shift.assignmentCount !== 1 ? "is" : ""} alocado{shift.assignmentCount !== 1 ? "s" : ""}
                         </Text>
                       )}
@@ -597,10 +597,10 @@ export default function CalendarScreen() {
               <View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
                   <Clock size={20} color="#9370DB" />
-                  <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF" }}>
+                  <Text style={{ fontSize: 18, fontWeight: "600", color: "#0F172A" }}>
                     Noite
                   </Text>
-                  <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                  <Text style={{ fontSize: 14, color: "#475569" }}>
                     {SHIFT_TIMES.noite.hours}
                   </Text>
                 </View>
@@ -610,7 +610,7 @@ export default function CalendarScreen() {
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <MapPin size={18} color="#4DA3FF" />
-                          <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
+                          <Text style={{ fontSize: 16, fontWeight: "600", color: "#0F172A" }}>
                             {shift.label}
                           </Text>
                         </View>
@@ -619,7 +619,7 @@ export default function CalendarScreen() {
                         </Badge>
                       </View>
                       {shift.assignmentCount > 0 && (
-                        <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+                        <Text style={{ fontSize: 13, color: "#475569", marginTop: 4 }}>
                           {shift.assignmentCount} profissional{shift.assignmentCount !== 1 ? "is" : ""} alocado{shift.assignmentCount !== 1 ? "s" : ""}
                         </Text>
                       )}
