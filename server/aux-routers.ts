@@ -11,6 +11,8 @@ import {
   professionals,
   hospitals,
   sectors,
+  institutions,
+  professionalInstitutions,
   managerScope as managerScopeTable,
   shiftInstances,
   shiftAssignmentsV2,
@@ -37,6 +39,37 @@ export const professionalsRouter = router({
         .where(eq(professionals.userId, input.userId));
       return pro ?? null;
     }),
+
+  listMyInstitutions: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+
+    const rows = await db
+      .select({
+        institutionId: institutions.id,
+        institutionName: institutions.name,
+        roleInInstitution: professionalInstitutions.roleInInstitution,
+        isPrimary: professionalInstitutions.isPrimary,
+        active: professionalInstitutions.active,
+      })
+      .from(professionalInstitutions)
+      .innerJoin(institutions, eq(institutions.id, professionalInstitutions.institutionId))
+      .where(
+        and(
+          eq(professionalInstitutions.userId, ctx.user.id),
+          eq(professionalInstitutions.active, true),
+        ),
+      );
+
+    return rows
+      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
+      .map((r) => ({
+        id: r.institutionId,
+        name: r.institutionName,
+        roleInInstitution: r.roleInInstitution,
+        isPrimary: r.isPrimary,
+      }));
+  }),
 
   /**
    * Returns the management scope for the logged-in professional.

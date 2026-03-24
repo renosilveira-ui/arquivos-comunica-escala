@@ -35,12 +35,24 @@ function AuthGuard() {
   const { user, isLoading } = useAuth();
   const pathname = usePathname();
   const {
+    activeInstitutionId,
     isHydrating: isHydratingTenant,
+    setActiveInstitutionId,
   } = useTenantState();
+  const { data: institutions, isLoading: institutionsLoading } =
+    trpc.professionals.listMyInstitutions.useQuery(undefined, { enabled: !!user });
+
+  useEffect(() => {
+    if (!user || institutionsLoading || !institutions || activeInstitutionId) return;
+    if (institutions.length === 1) {
+      void setActiveInstitutionId(institutions[0].id);
+    }
+  }, [activeInstitutionId, institutions, institutionsLoading, setActiveInstitutionId, user]);
 
   if (
     isLoading ||
-    isHydratingTenant
+    isHydratingTenant ||
+    (!!user && institutionsLoading)
   ) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0a1929" }}>
@@ -53,7 +65,16 @@ function AuthGuard() {
     return <Redirect href="/login" />;
   }
 
-  if (pathname === "/select-institution") {
+  const hasInstitutions = (institutions?.length ?? 0) > 0;
+  if (!hasInstitutions) {
+    return <Redirect href="/login" />;
+  }
+
+  if (!activeInstitutionId && pathname !== "/select-institution") {
+    return <Redirect href={"/select-institution" as any} />;
+  }
+
+  if (activeInstitutionId && pathname === "/select-institution") {
     return <Redirect href="/(tabs)" />;
   }
 

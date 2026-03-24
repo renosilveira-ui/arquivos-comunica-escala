@@ -8,6 +8,8 @@ import { trpc } from "@/lib/trpc";
 import { useState, useEffect, useMemo } from "react";
 import { User, Bell, Link2, LogOut, Briefcase } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+import { useRouter } from "expo-router";
+import { useTenantState } from "@/lib/tenant-state";
 import { 
   requestNotificationPermissions, 
   notifyNewShift, 
@@ -25,6 +27,8 @@ function toDateKey(date: Date): string {
  */
 export default function ProfileScreen() {
   const { user, logout } = useAuth();
+  const router = useRouter();
+  const { clearInstitutionSelection } = useTenantState();
   const utils = trpc.useUtils();
 
   // ── Estatísticas do mês atual ──────────────────────────────────────────
@@ -135,6 +139,13 @@ export default function ProfileScreen() {
   const handleLogout = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     logout();
+  };
+
+  const handleSwitchInstitution = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await clearInstitutionSelection();
+    await utils.invalidate();
+    router.replace("/select-institution" as any);
   };
 
   if (!user) {
@@ -300,6 +311,24 @@ export default function ProfileScreen() {
               </View>
               <Badge variant="success">Conectado</Badge>
             </View>
+          </TintedGlassCard>
+        </View>
+
+        {/* Tenant / Instituição ativa */}
+        <View className="gap-4">
+          <View className="flex-row items-center gap-2">
+            <Briefcase size={20} color="#0F172A" />
+            <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Instituição</Text>
+          </View>
+          <TintedGlassCard>
+            <TouchableOpacity
+              onPress={handleSwitchInstitution}
+              className="rounded-xl p-4 items-center flex-row justify-between"
+              style={{ backgroundColor: "rgba(29,78,216,0.08)", borderWidth: 1, borderColor: "rgba(29,78,216,0.2)" }}
+              activeOpacity={0.75}
+            >
+              <Text className="text-base font-semibold" style={{ color: "#0F172A" }}>Trocar instituição ativa</Text>
+            </TouchableOpacity>
           </TintedGlassCard>
         </View>
 
