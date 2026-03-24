@@ -7,6 +7,7 @@ interface TintedGlassCardProps {
   onPress?: () => void;
   style?: ViewStyle;
   className?: string;
+  variant?: "dark" | "light";
 }
 
 /**
@@ -29,18 +30,25 @@ interface TintedGlassCardProps {
  * </TintedGlassCard>
  * ```
  */
-export function TintedGlassCard({ children, onPress, style, className }: TintedGlassCardProps) {
+export function TintedGlassCard({ children, onPress, style, className, variant = "dark" }: TintedGlassCardProps) {
+  const isLight = variant === "light";
+  const baseCardStyle: ViewStyle = isLight
+    ? {
+        backgroundColor: "rgba(255,255,255,0.92)",
+        borderWidth: 1,
+        borderColor: "#DBEAFE",
+      }
+    : {
+        backgroundColor: "rgba(255,255,255,0.08)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.12)",
+      };
+
   const content = (
     <View
       style={[
-        {
-          backgroundColor: "rgba(255,255,255,0.08)",
-          borderWidth: 1,
-          borderColor: "rgba(255,255,255,0.12)",
-          borderRadius: 24,
-          padding: 20,
-          overflow: "hidden",
-        },
+        baseCardStyle,
+        { borderRadius: 24, padding: 20, overflow: "hidden" },
         style,
       ]}
       className={className}
@@ -58,7 +66,7 @@ export function TintedGlassCard({ children, onPress, style, className }: TintedG
         style={{ borderRadius: 24, overflow: "hidden" }}
       >
         {Platform.OS === "ios" ? (
-          <BlurView intensity={22} tint="dark" style={{ borderRadius: 24, overflow: "hidden" }}>
+          <BlurView intensity={22} tint={isLight ? "light" : "dark"} style={{ borderRadius: 24, overflow: "hidden" }}>
             {content}
           </BlurView>
         ) : (
@@ -70,7 +78,7 @@ export function TintedGlassCard({ children, onPress, style, className }: TintedG
 
   // Sem onPress, apenas o card
   return Platform.OS === "ios" ? (
-    <BlurView intensity={22} tint="dark" style={{ borderRadius: 24, overflow: "hidden" }}>
+    <BlurView intensity={22} tint={isLight ? "light" : "dark"} style={{ borderRadius: 24, overflow: "hidden" }}>
       {content}
     </BlurView>
   ) : (

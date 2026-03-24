@@ -1,19 +1,101 @@
 import { Tabs } from "expo-router";
+import { BottomTabBar, type BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { TabIcon } from "@/components/ui/TabIcon";
 import { usePermissions } from "@/hooks/use-permissions";
+import { Platform, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { theme } from "@/lib/theme";
+
+function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+  return (
+    <View
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: 220,
+        backgroundColor: "#0B1F3A",
+        borderRightWidth: 1,
+        borderRightColor: "rgba(255,255,255,0.08)",
+        paddingTop: 24,
+        paddingHorizontal: 12,
+      }}
+    >
+      <Text style={{ color: "#E2E8F0", fontSize: 18, fontWeight: "800", marginBottom: 16, paddingHorizontal: 10 }}>
+        Escalas
+      </Text>
+      <View style={{ gap: 6 }}>
+        {state.routes.map((route, index) => {
+          const { options } = descriptors[route.key];
+          if ((options as any).href === null) return null;
+          const focused = state.index === index;
+          const label =
+            typeof options.tabBarLabel === "string"
+              ? options.tabBarLabel
+              : typeof options.title === "string"
+                ? options.title
+                : route.name;
+          const color = focused ? "#FFFFFF" : "#BFDBFE";
+
+          const onPress = () => {
+            const event = navigation.emit({
+              type: "tabPress",
+              target: route.key,
+              canPreventDefault: true,
+            });
+            if (!focused && !event.defaultPrevented) {
+              navigation.navigate(route.name, route.params);
+            }
+          };
+
+          return (
+            <Pressable
+              key={route.key}
+              onPress={onPress}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                borderRadius: 10,
+                paddingVertical: 10,
+                paddingHorizontal: 10,
+                backgroundColor: focused ? theme.colors.accent : "transparent",
+              }}
+            >
+              {options.tabBarIcon?.({ focused, color, size: 18 }) ?? null}
+              <Text style={{ color, fontSize: 14, fontWeight: focused ? "700" : "500" }}>{label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
 
 export default function TabLayout() {
   const { can, isManager } = usePermissions();
+  const { width } = useWindowDimensions();
+  const isDesktopWeb = Platform.OS === "web" && width >= 1024;
 
   return (
     <Tabs
+      tabBar={(props) => (isDesktopWeb ? <WebSidebarTabBar {...props} /> : <BottomTabBar {...props} />)}
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: "#60A5FA",
-        tabBarInactiveTintColor: "#6B7280",
+        tabBarActiveTintColor: theme.colors.accent,
+        tabBarInactiveTintColor: theme.colors.textMuted,
+        sceneStyle: isDesktopWeb
+          ? {
+              backgroundColor: theme.colors.background,
+              paddingLeft: 220,
+            }
+          : {
+              backgroundColor: theme.colors.background,
+            },
         tabBarStyle: {
-          backgroundColor: "#111827",
-          borderTopColor: "#1F2937",
+          display: isDesktopWeb ? "none" : "flex",
+          backgroundColor: theme.colors.surface,
+          borderTopColor: theme.colors.border,
         },
       }}
     >
@@ -52,14 +134,6 @@ export default function TabLayout() {
         options={{
           title: "Pendentes",
           href: isManager ? undefined : null,
-          tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="meus"
-        options={{
-          title: "Meus",
-          href: isManager ? null : undefined,
           tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
         }}
       />

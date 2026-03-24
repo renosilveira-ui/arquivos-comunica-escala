@@ -124,21 +124,21 @@ export function ShiftFilters({
   const isTomorrow = date.toDateString() === tomorrow.toDateString();
 
   return (
-    <View className="bg-white/10 rounded-xl p-4 space-y-3">
+    <View className="rounded-xl bg-slate-50 p-4">
       {/* Linha 1: Hospital + Setor */}
-      <View className="flex-row gap-3">
+      <View className="flex-row gap-4 mb-4">
         {/* Hospital Dropdown */}
         <View className="flex-1">
-          <Text className="text-white/60 text-sm font-medium mb-2">Hospital</Text>
+          <Text className="text-slate-700 text-sm font-semibold mb-2">Hospital</Text>
           <View className="flex-row flex-wrap gap-2">
             {allowAllHospitals && (
               <TouchableOpacity
                 onPress={() => handleHospitalChange(null)}
-                className={`px-4 py-2 rounded-lg ${
-                  hospitalId === null ? "bg-primary" : "bg-white/10"
+                className={`px-4 py-2 rounded-lg border ${
+                  hospitalId === null ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"
                 }`}
               >
-                <Text className={`font-semibold ${hospitalId === null ? "text-white" : "text-white/70"}`}>
+                <Text className={`font-semibold ${hospitalId === null ? "text-white" : "text-slate-700"}`}>
                   Todos
                 </Text>
               </TouchableOpacity>
@@ -149,11 +149,11 @@ export function ShiftFilters({
                 <TouchableOpacity
                   key={h.id}
                   onPress={() => handleHospitalChange(h.id)}
-                  className={`px-4 py-2 rounded-lg ${
-                    hospitalId === h.id ? "bg-primary" : "bg-white/10"
+                  className={`px-4 py-2 rounded-lg border ${
+                    hospitalId === h.id ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"
                   }`}
                 >
-                  <Text className={`font-semibold ${hospitalId === h.id ? "text-white" : "text-white/70"}`}>
+                  <Text className={`font-semibold ${hospitalId === h.id ? "text-white" : "text-slate-700"}`}>
                     {h.name} {count > 0 && `(${count})`}
                   </Text>
                 </TouchableOpacity>
@@ -164,18 +164,18 @@ export function ShiftFilters({
 
         {/* Setor Dropdown (dependente) */}
         <View className="flex-1">
-          <Text className="text-white/60 text-sm font-medium mb-2">Setor</Text>
+          <Text className="text-slate-700 text-sm font-semibold mb-2">Setor</Text>
           {hospitalId === null && !allowAllHospitals ? (
-            <Text className="text-white/40 text-sm italic">Selecione hospital</Text>
+            <Text className="text-slate-400 text-sm italic">Selecione hospital</Text>
           ) : (
             <View className="flex-row flex-wrap gap-2">
               <TouchableOpacity
                 onPress={() => handleSectorChange(null)}
-                className={`px-4 py-2 rounded-lg ${
-                  sectorId === null ? "bg-primary" : "bg-white/10"
+                className={`px-4 py-2 rounded-lg border ${
+                  sectorId === null ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"
                 }`}
               >
-                <Text className={`font-semibold ${sectorId === null ? "text-white" : "text-white/70"}`}>
+                <Text className={`font-semibold ${sectorId === null ? "text-white" : "text-slate-700"}`}>
                   Todos
                 </Text>
               </TouchableOpacity>
@@ -185,11 +185,11 @@ export function ShiftFilters({
                   <TouchableOpacity
                     key={s.id}
                     onPress={() => handleSectorChange(s.id)}
-                    className={`px-4 py-2 rounded-lg ${
-                      sectorId === s.id ? "bg-primary" : "bg-white/10"
+                    className={`px-4 py-2 rounded-lg border ${
+                      sectorId === s.id ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"
                     }`}
                   >
-                    <Text className={`font-semibold ${sectorId === s.id ? "text-white" : "text-white/70"}`}>
+                    <Text className={`font-semibold ${sectorId === s.id ? "text-white" : "text-slate-700"}`}>
                       {s.name} {count > 0 && `(${count})`}
                     </Text>
                   </TouchableOpacity>
@@ -204,31 +204,31 @@ export function ShiftFilters({
       <View className="flex-row gap-3">
         {/* Data */}
         <View className="flex-1">
-          <Text className="text-white/60 text-sm font-medium mb-2">Data</Text>
+          <Text className="text-slate-700 text-sm font-semibold mb-2">Data</Text>
           <View className="flex-row gap-2">
             <TouchableOpacity
               onPress={() => {
                 setDate(today);
                 if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               }}
-              className={`px-4 py-2 rounded-lg ${isToday ? "bg-primary" : "bg-white/10"}`}
+              className={`px-4 py-2 rounded-lg border ${isToday ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"}`}
             >
-              <Text className={`font-semibold ${isToday ? "text-white" : "text-white/70"}`}>Hoje</Text>
+              <Text className={`font-semibold ${isToday ? "text-white" : "text-slate-700"}`}>Hoje</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => {
                 setDate(tomorrow);
                 if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               }}
-              className={`px-4 py-2 rounded-lg ${isTomorrow ? "bg-primary" : "bg-white/10"}`}
+              className={`px-4 py-2 rounded-lg border ${isTomorrow ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"}`}
             >
-              <Text className={`font-semibold ${isTomorrow ? "text-white" : "text-white/70"}`}>Amanhã</Text>
+              <Text className={`font-semibold ${isTomorrow ? "text-white" : "text-slate-700"}`}>Amanhã</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => setShowDatePicker(true)}
-              className="px-4 py-2 rounded-lg bg-white/10"
+              className="px-4 py-2 rounded-lg border bg-white border-slate-300"
             >
-              <Text className="font-semibold text-white/70">
+              <Text className="font-semibold text-slate-700">
                 {!isToday && !isTomorrow ? date.toLocaleDateString("pt-BR") : "Escolher"}
               </Text>
             </TouchableOpacity>
@@ -245,37 +245,37 @@ export function ShiftFilters({
 
         {/* Turno */}
         <View className="flex-1">
-          <Text className="text-white/60 text-sm font-medium mb-2">Turno</Text>
+          <Text className="text-slate-700 text-sm font-semibold mb-2">Turno</Text>
           <View className="flex-row gap-2">
             <TouchableOpacity
               onPress={() => handleShiftLabelChange(null)}
-              className={`px-4 py-2 rounded-lg ${shiftLabel === null ? "bg-primary" : "bg-white/10"}`}
+              className={`px-4 py-2 rounded-lg border ${shiftLabel === null ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"}`}
             >
-              <Text className={`font-semibold ${shiftLabel === null ? "text-white" : "text-white/70"}`}>
+              <Text className={`font-semibold ${shiftLabel === null ? "text-white" : "text-slate-700"}`}>
                 Todos
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => handleShiftLabelChange("MANHA")}
-              className={`px-4 py-2 rounded-lg ${shiftLabel === "MANHA" ? "bg-primary" : "bg-white/10"}`}
+              className={`px-4 py-2 rounded-lg border ${shiftLabel === "MANHA" ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"}`}
             >
-              <Text className={`font-semibold ${shiftLabel === "MANHA" ? "text-white" : "text-white/70"}`}>
+              <Text className={`font-semibold ${shiftLabel === "MANHA" ? "text-white" : "text-slate-700"}`}>
                 Manhã
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => handleShiftLabelChange("TARDE")}
-              className={`px-4 py-2 rounded-lg ${shiftLabel === "TARDE" ? "bg-primary" : "bg-white/10"}`}
+              className={`px-4 py-2 rounded-lg border ${shiftLabel === "TARDE" ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"}`}
             >
-              <Text className={`font-semibold ${shiftLabel === "TARDE" ? "text-white" : "text-white/70"}`}>
+              <Text className={`font-semibold ${shiftLabel === "TARDE" ? "text-white" : "text-slate-700"}`}>
                 Tarde
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => handleShiftLabelChange("NOITE")}
-              className={`px-4 py-2 rounded-lg ${shiftLabel === "NOITE" ? "bg-primary" : "bg-white/10"}`}
+              className={`px-4 py-2 rounded-lg border ${shiftLabel === "NOITE" ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"}`}
             >
-              <Text className={`font-semibold ${shiftLabel === "NOITE" ? "text-white" : "text-white/70"}`}>
+              <Text className={`font-semibold ${shiftLabel === "NOITE" ? "text-white" : "text-slate-700"}`}>
                 Noite
               </Text>
             </TouchableOpacity>
