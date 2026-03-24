@@ -337,8 +337,8 @@ export default function PendingScreen() {
         <ScrollView className="flex-1 px-5 py-4">
           <View className="mb-6 flex-row items-center justify-between">
             <View>
-              <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Meus Plantões</Text>
-              <Text className="mt-1 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>
+              <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Meus Plantões</Text>
+              <Text className="mt-1 text-base" style={{ color: "#475569" }}>
                 Gerencie troca ou repasse dos seus turnos
               </Text>
             </View>
@@ -358,14 +358,14 @@ export default function PendingScreen() {
           </View>
 
           <View className="mb-4">
-            <View className="mb-3 flex-row items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-              <Search size={16} color="rgba(255,255,255,0.65)" />
+            <View className="mb-3 flex-row items-center gap-2 rounded-xl border px-3 py-2" style={{ borderColor: "#E2E8F0", backgroundColor: "#FFFFFF" }}>
+              <Search size={16} color="#475569" />
               <TextInput
                 value={mySearch}
                 onChangeText={setMySearch}
                 placeholder="Pesquisar por rótulo/status"
-                placeholderTextColor="rgba(255,255,255,0.45)"
-                style={{ flex: 1, color: "#FFFFFF", fontSize: 13, paddingVertical: 0 }}
+                placeholderTextColor="#64748B"
+                style={{ flex: 1, color: "#0F172A", fontSize: 13, paddingVertical: 0 }}
               />
             </View>
 
@@ -383,11 +383,11 @@ export default function PendingScreen() {
                         paddingVertical: 8,
                         borderRadius: 999,
                         borderWidth: 1,
-                        borderColor: selected ? "#3B82F6" : "rgba(255,255,255,0.16)",
-                        backgroundColor: selected ? "rgba(59,130,246,0.2)" : "rgba(255,255,255,0.04)",
+                        borderColor: selected ? "#3B82F6" : "#E2E8F0",
+                        backgroundColor: selected ? "rgba(59,130,246,0.2)" : "#FFFFFF",
                       }}
                     >
-                      <Text style={{ color: "#FFF", fontSize: 12, fontWeight: "600" }}>
+                      <Text style={{ color: selected ? "#1D4ED8" : "#334155", fontSize: 12, fontWeight: "600" }}>
                         {d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
                       </Text>
                     </TouchableOpacity>
@@ -399,8 +399,8 @@ export default function PendingScreen() {
 
           {myShifts.length === 0 ? (
             <View className="items-center justify-center py-16">
-              <ClipboardCheck size={60} color="rgba(255,255,255,0.2)" />
-              <Text className="mt-4 text-lg font-semibold" style={{ color: "rgba(255,255,255,0.65)" }}>
+              <ClipboardCheck size={60} color="#CBD5E1" />
+              <Text className="mt-4 text-lg font-semibold" style={{ color: "#475569" }}>
                 Nenhum plantão seu neste dia
               </Text>
             </View>
@@ -409,17 +409,18 @@ export default function PendingScreen() {
               {myShifts.map((shift: any) => (
                 <View
                   key={shift.id}
-                  className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                  className="rounded-2xl border p-4"
+                  style={{ borderColor: "#E2E8F0", backgroundColor: "#FFFFFF" }}
                 >
                   <View className="mb-2 flex-row items-center justify-between">
-                    <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>
+                    <Text className="text-base font-semibold" style={{ color: "#0F172A" }}>
                       {shift.label}
                     </Text>
-                    <View className="rounded-full bg-white/10 px-3 py-1">
-                      <Text style={{ color: "#E2E8F0", fontSize: 11 }}>{shift.status}</Text>
+                    <View className="rounded-full px-3 py-1" style={{ backgroundColor: "#F1F5F9" }}>
+                      <Text style={{ color: "#334155", fontSize: 11 }}>{shift.status}</Text>
                     </View>
                   </View>
-                  <Text style={{ color: "rgba(255,255,255,0.72)", fontSize: 13 }}>
+                  <Text style={{ color: "#475569", fontSize: 13 }}>
                     {formatDate(shift.startAt)} - {formatDate(shift.endAt)}
                   </Text>
 
@@ -461,8 +462,8 @@ export default function PendingScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: "#FFFFFF" }}>Pendências</Text>
-          <Text className="mt-1 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>
+          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Pendências</Text>
+          <Text className="mt-1 text-base" style={{ color: "#475569" }}>
             {pendingAssignments?.length || 0} alocações aguardando aprovação
           </Text>
         </View>
@@ -472,7 +473,7 @@ export default function PendingScreen() {
           <View style={{ marginBottom: 24 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 }}>
               <ArrowRightLeft size={22} color="#3B82F6" />
-              <Text style={{ color: "#F1F5F9", fontSize: 20, fontWeight: "700" }}>Trocas Disponíveis</Text>
+              <Text style={{ color: "#0F172A", fontSize: 20, fontWeight: "700" }}>Trocas Disponíveis</Text>
               <View style={{ backgroundColor: "#3B82F6", borderRadius: 10, minWidth: 22, height: 22, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 }}>
                 <Text style={{ color: "#FFF", fontSize: 12, fontWeight: "700" }}>{availableSwaps.length}</Text>
               </View>
@@ -481,10 +482,10 @@ export default function PendingScreen() {
               <View
                 key={sw.id}
                 style={{
-                  backgroundColor: "#141B2D",
+                  backgroundColor: "#FFFFFF",
                   borderRadius: 12,
                   borderWidth: 1,
-                  borderColor: "rgba(148,163,184,0.15)",
+                  borderColor: "#E2E8F0",
                   padding: 14,
                   marginBottom: 10,
                 }}
@@ -499,14 +500,14 @@ export default function PendingScreen() {
                     borderWidth: 1,
                     borderColor: sw.type === "SWAP" ? "rgba(59,130,246,0.55)" : "rgba(245,158,11,0.55)",
                   }}>
-                    <Text style={{ color: "#F2F6FF", fontSize: 11, fontWeight: "600" }}>
+                    <Text style={{ color: "#0F172A", fontSize: 11, fontWeight: "600" }}>
                       {sw.type === "SWAP" ? "TROCA" : "REPASSE"}
                     </Text>
                   </View>
                 </View>
 
                 {/* From info */}
-                <Text style={{ color: "#F1F5F9", fontSize: 14, fontWeight: "600" }}>
+                <Text style={{ color: "#0F172A", fontSize: 14, fontWeight: "600" }}>
                   {sw.fromProfessional.name}
                   <Text style={{ color: "#94A3B8", fontWeight: "400" }}>{" "}• {sw.fromProfessional.role}</Text>
                 </Text>
@@ -521,7 +522,7 @@ export default function PendingScreen() {
                 {sw.toShift && (
                   <View style={{ marginTop: 6, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: "#F59E0B" }}>
                     <Text style={{ color: "#94A3B8", fontSize: 12 }}>Quer em troca:</Text>
-                    <Text style={{ color: "#F1F5F9", fontSize: 13 }}>
+                    <Text style={{ color: "#0F172A", fontSize: 13 }}>
                       {sw.toShift.label} — {fmtSwapDate(sw.toShift.startAt)} • {fmtSwapTime(sw.toShift.startAt, sw.toShift.endAt)}
                     </Text>
                   </View>
@@ -599,13 +600,14 @@ export default function PendingScreen() {
             {pendingAssignments.map((pending) => (
               <View
                 key={pending.assignmentId}
-                className="rounded-2xl bg-white/5 border border-white/10 p-4"
+                className="rounded-2xl border p-4"
+                style={{ backgroundColor: "#FFFFFF", borderColor: "#E2E8F0" }}
               >
                 {/* Cabeçalho do card */}
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center gap-2">
                     <User size={20} color="#4DA3FF" />
-                    <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>
+                    <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
                       {pending.professionalName}
                     </Text>
                   </View>
@@ -619,18 +621,18 @@ export default function PendingScreen() {
                 {/* Informações do turno */}
                 <View className="gap-2 mb-4">
                   <View className="flex-row items-center gap-2">
-                    <MapPin size={16} color="rgba(255,255,255,0.6)" />
-                    <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>{pending.sectorName}</Text>
+                    <MapPin size={16} color="#475569" />
+                    <Text className="text-sm" style={{ color: "#475569" }}>{pending.sectorName}</Text>
                   </View>
                   <View className="flex-row items-center gap-2">
-                    <Clock size={16} color="rgba(255,255,255,0.6)" />
-                    <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
+                    <Clock size={16} color="#475569" />
+                    <Text className="text-sm" style={{ color: "#475569" }}>
                       {formatDate(pending.shiftStartAt)} - {formatDate(pending.shiftEndAt)}
                     </Text>
                   </View>
                   <View className="flex-row items-center gap-2">
-                    <Briefcase size={16} color="rgba(255,255,255,0.6)" />
-                    <Text className="text-sm" style={{ color: "rgba(255,255,255,0.6)" }}>
+                    <Briefcase size={16} color="#475569" />
+                    <Text className="text-sm" style={{ color: "#475569" }}>
                       {pending.assignmentType === "ON_DUTY"
                         ? "Plantão"
                         : pending.assignmentType === "BACKUP"
@@ -643,9 +645,9 @@ export default function PendingScreen() {
                 {/* Botões de ação ou mensagem de permissão */}
                 {professional?.userRole === "USER" ? (
                   // 🔒 Usuário comum: mostrar mensagem de permissão
-                  <View className="flex-row items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 py-3 px-4">
-                    <Lock size={18} color="rgba(255,255,255,0.4)" />
-                    <Text className="text-sm font-medium" style={{ color: "rgba(255,255,255,0.6)" }}>
+                  <View className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4" style={{ backgroundColor: "#F8FAFC", borderColor: "#E2E8F0" }}>
+                    <Lock size={18} color="#64748B" />
+                    <Text className="text-sm font-medium" style={{ color: "#475569" }}>
                       Somente gestores podem aprovar pendências
                     </Text>
                   </View>
@@ -686,11 +688,11 @@ export default function PendingScreen() {
           </View>
         ) : (
           <View className="flex-1 items-center justify-center py-20">
-            <ClipboardCheck size={64} color="rgba(255,255,255,0.2)" />
-            <Text className="mt-4 text-lg font-semibold" style={{ color: "rgba(255,255,255,0.6)" }}>
+            <ClipboardCheck size={64} color="#CBD5E1" />
+            <Text className="mt-4 text-lg font-semibold" style={{ color: "#475569" }}>
               Nenhuma pendência no momento
             </Text>
-            <Text className="mt-1 text-sm" style={{ color: "rgba(255,255,255,0.4)" }}>
+            <Text className="mt-1 text-sm" style={{ color: "#64748B" }}>
               Todas as alocações foram processadas
             </Text>
           </View>
