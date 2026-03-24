@@ -223,7 +223,7 @@ export default function PendingScreen() {
     },
   });
 
-  const handleApprove = (assignmentId: number, professionalId: number, professionalName: string) => {
+  const handleApprove = (assignmentId: number, professionalName: string) => {
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Aprovar alocação de ${professionalName}?`);
@@ -232,7 +232,7 @@ export default function PendingScreen() {
     if (!confirmed) return;
 
     approveAssignment.mutate(
-      { assignmentId, professionalId },
+      { assignmentId },
       {
         onSuccess: () => {
           refetch();
@@ -245,7 +245,7 @@ export default function PendingScreen() {
     );
   };
 
-  const handleReject = (assignmentId: number, professionalId: number, professionalName: string) => {
+  const handleReject = (assignmentId: number, professionalName: string) => {
     let confirmed = true;
     if (Platform.OS === "web") {
       confirmed = window.confirm(`Rejeitar alocação de ${professionalName}?`);
@@ -254,7 +254,7 @@ export default function PendingScreen() {
     if (!confirmed) return;
 
     rejectAssignment.mutate(
-      { assignmentId, professionalId, reason: "Rejeitado pelo gestor" },
+      { assignmentId, reason: "Rejeitado pelo gestor" },
       {
         onSuccess: () => {
           refetch();
@@ -656,7 +656,6 @@ export default function PendingScreen() {
                       onPress={() =>
                         handleApprove(
                           pending.assignmentId,
-                          pending.professionalId,
                           pending.professionalName,
                         )
                       }
@@ -671,7 +670,6 @@ export default function PendingScreen() {
                       onPress={() =>
                         handleReject(
                           pending.assignmentId,
-                          pending.professionalId,
                           pending.professionalName,
                         )
                       }
