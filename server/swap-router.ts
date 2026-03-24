@@ -67,6 +67,7 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
       const pro = await getProfessionalForUser(db, userId);
       if (!pro) throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
 
@@ -77,6 +78,7 @@ export const swapRouter = router({
         .where(
           and(
             eq(shiftAssignmentsV2.id, input.fromAssignmentId),
+            eq(shiftAssignmentsV2.institutionId, institutionId),
             eq(shiftAssignmentsV2.professionalId, pro.id),
             eq(shiftAssignmentsV2.isActive, true),
           ),
@@ -92,7 +94,12 @@ export const swapRouter = router({
       const [fromShift] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, input.fromShiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, input.fromShiftInstanceId),
+            eq(shiftInstances.institutionId, institutionId),
+          ),
+        );
       if (!fromShift) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
       }
@@ -111,7 +118,12 @@ export const swapRouter = router({
         const [toShift] = await db
           .select()
           .from(shiftInstances)
-          .where(eq(shiftInstances.id, input.toShiftInstanceId));
+          .where(
+            and(
+              eq(shiftInstances.id, input.toShiftInstanceId),
+              eq(shiftInstances.institutionId, institutionId),
+            ),
+          );
         if (!toShift) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Turno de troca não encontrado" });
         }
@@ -175,13 +187,19 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
       const pro = await getProfessionalForUser(db, userId);
       if (!pro) throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
 
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "PENDING") {
@@ -195,7 +213,12 @@ export const swapRouter = router({
       const [fromShift] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, swap.fromShiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, swap.fromShiftInstanceId),
+            eq(shiftInstances.institutionId, institutionId),
+          ),
+        );
       if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
 
       if (swap.type === "TRANSFER") {
@@ -227,6 +250,7 @@ export const swapRouter = router({
           .where(
             and(
               eq(shiftAssignmentsV2.shiftInstanceId, swap.toShiftInstanceId),
+              eq(shiftAssignmentsV2.institutionId, institutionId),
               eq(shiftAssignmentsV2.professionalId, pro.id),
               eq(shiftAssignmentsV2.isActive, true),
             ),
@@ -281,11 +305,17 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
 
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "PENDING") {
@@ -331,6 +361,7 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
       if (!isManager(ctx.user!.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Apenas gestores podem aprovar" });
       }
@@ -338,7 +369,12 @@ export const swapRouter = router({
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "ACCEPTED") {
@@ -352,7 +388,12 @@ export const swapRouter = router({
       const [fromShift] = await db
         .select()
         .from(shiftInstances)
-        .where(eq(shiftInstances.id, swap.fromShiftInstanceId));
+        .where(
+          and(
+            eq(shiftInstances.id, swap.fromShiftInstanceId),
+            eq(shiftInstances.institutionId, institutionId),
+          ),
+        );
       if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
 
       if (swap.type === "TRANSFER") {
@@ -364,7 +405,12 @@ export const swapRouter = router({
           const [toShift] = await db
             .select()
             .from(shiftInstances)
-            .where(eq(shiftInstances.id, swap.toShiftInstanceId));
+            .where(
+              and(
+                eq(shiftInstances.id, swap.toShiftInstanceId),
+                eq(shiftInstances.institutionId, institutionId),
+              ),
+            );
           if (toShift) {
             await assertNoTimeConflict(swap.fromUserId, toShift.startAt, toShift.endAt, swap.fromShiftInstanceId);
           }
@@ -412,7 +458,12 @@ export const swapRouter = router({
           const [toShift] = await db
             .select()
             .from(shiftInstances)
-            .where(eq(shiftInstances.id, swap.toShiftInstanceId));
+            .where(
+              and(
+                eq(shiftInstances.id, swap.toShiftInstanceId),
+                eq(shiftInstances.institutionId, institutionId),
+              ),
+            );
           if (toShift) {
             await db.insert(shiftAssignmentsV2).values({
               shiftInstanceId: swap.toShiftInstanceId,
@@ -489,6 +540,7 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
       if (!isManager(ctx.user!.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Apenas gestores podem rejeitar" });
       }
@@ -496,7 +548,12 @@ export const swapRouter = router({
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.status !== "ACCEPTED" && swap.status !== "PENDING") {
@@ -542,11 +599,17 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
 
       const [swap] = await db
         .select()
         .from(swapRequests)
-        .where(eq(swapRequests.id, input.swapRequestId));
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, institutionId),
+          ),
+        );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
 
       if (swap.fromUserId !== userId) {
@@ -595,6 +658,7 @@ export const swapRouter = router({
 
       const userId = ctx.user!.id;
       const userRole = ctx.user!.role;
+      const institutionId = ctx.institutionId;
 
       const pro = await getProfessionalForUser(db, userId);
 
@@ -662,6 +726,7 @@ export const swapRouter = router({
         LEFT JOIN sectors ts        ON ts.id  = tsi.sector_id
         LEFT JOIN users ru          ON ru.id  = sr.reviewed_by_user_id
         WHERE 1=1
+          AND sr.institution_id = ${institutionId}
           ${input.status ? sql`AND sr.status = ${input.status}` : sql``}
           ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
           ${!isManager(userRole) && pro
@@ -715,6 +780,7 @@ export const swapRouter = router({
     .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      const institutionId = ctx.institutionId;
 
       const rows = await db.execute(sql`
         SELECT
@@ -745,6 +811,7 @@ export const swapRouter = router({
         LEFT JOIN sectors ts2       ON ts2.id = tsi.sector_id
         LEFT JOIN users ru          ON ru.id  = sr.reviewed_by_user_id
         WHERE sr.id = ${input.id}
+          AND sr.institution_id = ${institutionId}
         LIMIT 1
       `);
 
@@ -806,6 +873,7 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
       const pro = await getProfessionalForUser(db, userId);
       if (!pro) return [];
 
@@ -839,6 +907,7 @@ export const swapRouter = router({
         LEFT JOIN hospitals th      ON th.id  = tsi.hospital_id
         LEFT JOIN sectors ts        ON ts.id  = tsi.sector_id
         WHERE sr.status = 'PENDING'
+          AND sr.institution_id = ${institutionId}
           AND sr.from_user_id != ${userId}
           AND fsi.start_at > NOW()
           AND (sr.expires_at IS NULL OR sr.expires_at > NOW())
