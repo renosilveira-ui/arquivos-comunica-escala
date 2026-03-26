@@ -239,18 +239,14 @@ describe("authorize() — AuthZ v1 enforcement", () => {
 
 describe("authorize() — legacy fallback (AUTHZ_V1_ENFORCE=0)", () => {
   it("ALLOW: every action is allowed when flag is off", async () => {
-    // Temporarily override flag
-    const original = process.env.AUTHZ_V1_ENFORCE;
-    process.env.AUTHZ_V1_ENFORCE = "0";
+    // Use the ENV module's authzV1Enforce property directly — it's a plain
+    // boolean field (not a getter), so we can temporarily override it for
+    // this test without mutating process.env across module boundaries.
+    const envModule = await import("../server/_core/env");
+    const original = envModule.ENV.authzV1Enforce;
+    envModule.ENV.authzV1Enforce = false;
 
     try {
-      const { ENV } = await import("../server/_core/env");
-      // Re-read the flag at runtime via the module (already loaded, but the
-      // function reads process.env directly so we patch ENV.authzV1Enforce)
-      const envModule = await import("../server/_core/env");
-      // Patch for this sub-test
-      (envModule.ENV as any).authzV1Enforce = false;
-
       const { authorize } = await import("../server/authz/enforce");
       const result = await authorize(
         makeActor({ bundle: "OPERATOR" }),
@@ -261,9 +257,8 @@ describe("authorize() — legacy fallback (AUTHZ_V1_ENFORCE=0)", () => {
       expect(result.decision).toBe("ALLOW");
       expect(result.reason).toContain("LEGACY_BYPASS");
     } finally {
-      process.env.AUTHZ_V1_ENFORCE = original;
-      const envModule = await import("../server/_core/env");
-      (envModule.ENV as any).authzV1Enforce = original === "1";
+      // Always restore the original value
+      envModule.ENV.authzV1Enforce = original;
     }
   });
 });
