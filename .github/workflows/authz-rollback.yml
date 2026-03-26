@@ -1,10 +1,19 @@
 name: AuthZ v1 Rollback
 
+# ⚠️  PROPOSTA DE AUTOMAÇÃO — NÃO OPERACIONAL AINDA
+#
+# Este workflow é uma PROPOSTA do agente A14 (Release/CI/Rollback).
+# Não deve ser executado até que todas as pré-condições abaixo estejam satisfeitas:
+#   - A6 (enforcement layer) congelado e aprovado pelo H-1
+#   - A12 (audit trail) congelado e aprovado pelo H-1
+#   - Secrets RENDER_API_KEY e RENDER_SERVICE_ID configurados em staging e production
+#   - Staging validado com AUTHZ_V1_ENFORCE=1 por período de canary completo
+#   - Go/No-Go checklist (docs/auth/authz-go-no-go-checklist-v1.md) 100% ✅
+#
+# Para o procedimento manual de rollback, ver: docs/auth/authz-rollback-runbook-v1.md
+#
 # Automated rollback: sets AUTHZ_V1_ENFORCE=0 and verifies the service
 # returns to authzMode=legacy, WITHOUT a new code deployment.
-#
-# Use this any time post-cutover signals indicate a problem.
-# See docs/authz-v1/ROLLBACK_RUNBOOK.md for full context.
 
 on:
   workflow_dispatch:
@@ -102,4 +111,4 @@ jobs:
           echo "2. Fix and re-run Go/No-Go checklist" >> $GITHUB_STEP_SUMMARY
           echo "3. Re-run \`authz-rollout.yml\` with \`cutover=true\` when ready" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "See \`docs/authz-v1/ROLLBACK_RUNBOOK.md\` for full procedure." >> $GITHUB_STEP_SUMMARY
+          echo "See \`docs/auth/authz-rollback-runbook-v1.md\` for full procedure." >> $GITHUB_STEP_SUMMARY

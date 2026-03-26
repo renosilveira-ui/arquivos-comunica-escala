@@ -1,60 +1,53 @@
-# A14 — AuthZ v1 Release/CI/Rollback — Handoff Oficial
+# A14 — AuthZ v1 Release/CI/Rollback — Handoff v2 (Reframe G0)
 
 **Agente**: A14 — Release, CI e Rollback  
 **Onda**: 0  
-**Data**: 2026-03-26  
-**Domínio**: Exclusivo de pipeline, CI, gates e operações de cutover/rollback. Não toca em semântica de auth.
+**Data v2**: 2026-03-26 (revisado por H-1 review)  
+**Domínio**: Exclusivo de pipeline, CI, gates e operações de cutover/rollback. Não altera semântica de auth.
+
+> **Nota de reframe**: Este handoff v2 corrige o escopo do v1 conforme review do H-1.
+> Itens que estavam fora de escopo de A14 (audit-trail, enforce.ts, testes de enforcement)
+> foram removidos como "feito" e reclassificados como recomendações para A6/A12.
+> Workflows operacionais foram reclassificados como PROPOSTA.
 
 ---
 
 ## Feito
 
-### 1. Flag `AUTHZ_V1_ENFORCE` implantada
+### 1. Documentos formais de release entregues
 
-- **Arquivo**: `server/_core/env.ts`
+| Documento | Caminho | Conteúdo |
+|-----------|---------|----------|
+| Release Gates | `docs/auth/authz-release-gates-v1.md` | O que precisa estar verde, testes obrigatórios, sinais de NO-GO, sinais de rollback, pré-condições de infra |
+| Go/No-Go Checklist | `docs/auth/authz-go-no-go-checklist-v1.md` | Aprovações A1–A12, testes P0, shadow mode, secrets/infra, rollback testado, aprovação H-1 |
+| Cutover Runbook | `docs/auth/authz-cutover-runbook-v1.md` | Canary em staging, duração mínima, critérios de promoção, ordem de validação pós-cutover, monitoramento |
+| Rollback Runbook | `docs/auth/authz-rollback-runbook-v1.md` | Opção A (workflow), Opção B (API), Opção C (dashboard), TTR alvo, evidências, post-mortem |
+
+### 2. Proposta de workflows automatizados
+
+Os workflows existem como **PROPOSTA** — não são operacionais até que todos os gates do checklist estejam satisfeitos.
+
+| Workflow | Status | Pré-condições para ativar |
+|----------|--------|--------------------------|
+| `.github/workflows/authz-rollout.yml` | PROPOSTA | A6 + A12 congelados, secrets configurados, staging validado |
+| `.github/workflows/authz-rollback.yml` | PROPOSTA | Validado em staging antes de usar em production |
+
+### 3. Gates de CI já ativos (não dependem de A6/A12)
+
+| Workflow | Job | O que verifica |
+|----------|-----|---------------|
+| `pr-quality.yml` | typecheck | Zero erros de TypeScript (app + server) |
+| `pr-quality.yml` | lint | Zero erros de lint |
+| `pr-quality.yml` | test | Testes completos (com MySQL) |
+| `pr-quality.yml` | authz-gate | `pnpm test:authz` com `AUTHZ_V1_ENFORCE=1` — bloqueia merge se enforcement regredir |
+| `pr-quality.yml` | build | Build bem-sucedido |
+
+### 4. Flag `AUTHZ_V1_ENFORCE` — infraestrutura de rollback sem redeploy
+
+- **Arquivo**: `server/_core/env.ts` (responsabilidade de A6, não de A14)
 - `ENV.authzV1Enforce` lê `process.env.AUTHZ_V1_ENFORCE` (default `"0"` = legado)
-- Quando `"0"`: sistema opera em modo legado; `authorize()` retorna ALLOW + audit `LEGACY_BYPASS`
-- Quando `"1"`: enforcement completo v1 via `authorize(actor, action, resource, context)`
-- **Rollback sem redeploy**: alterar o valor no Render env dashboard basta para o serviço reiniciar no modo correto
-
-### 2. Camada central `authorize()` implantada
-
-- **Arquivo**: `server/authz/enforce.ts`
-- Tipos exportados: `Actor`, `AuthzResource`, `AuthzContext`, `AuthzResult`, `Bundle`, `Scope`, `PrincipalType`, `ActiveMode`
-- Regras enforçadas: org-scope obrigatório, bundle hierárquico, isolamento cross-org, SERVICE_ACCOUNT ≠ humano
-- Toda decisão emite audit ALLOW/DENY + reason via `server/audit-trail.ts` (fire-and-forget)
-
-### 3. Endpoint `/api/health` estendido
-
-- **Arquivo**: `server/authz/health.ts` (helper), `server/_core/index.ts` (rota)
-- Resposta: `{ ok, db: "up"|"down", authzMode: "legacy"|"v1", authzV1Enforce, timestamp }`
-- HTTP 503 quando `db: "down"`
-- Permite confirmar o estado do flag em runtime sem acesso ao Render
-
-### 4. Gates de CI implantados
-
-| Workflow | Trigger | Jobs |
-|----------|---------|------|
-| `pr-quality.yml` | PR → main/staging; push → staging | typecheck, lint, test (MySQL), authz-gate (`AUTHZ_V1_ENFORCE=1`), build |
-| `db-migrate.yml` | workflow_dispatch / workflow_call | migrate (com dry-run opcional) |
-| `authz-rollout.yml` | workflow_dispatch | quality-gate → build → migrate → deploy (flag=0) → smoke → cutover (flag=1) → post-cutover |
-| `authz-rollback.yml` | workflow_dispatch | rollback (flag=0, poll até legacy, verifica health) |
-
-### 5. Runbooks e critérios produzidos
-
-| Documento | Caminho |
-|-----------|---------|
-| Go/No-Go Checklist | `docs/authz-v1/GO_NO_GO_CHECKLIST.md` |
-| Cutover Runbook | `docs/authz-v1/CUTOVER_RUNBOOK.md` |
-| Rollback Runbook | `docs/authz-v1/ROLLBACK_RUNBOOK.md` |
-| Canary Criteria | `docs/authz-v1/CANARY_CRITERIA.md` |
-
-### 6. Testes de enforcement
-
-- **Arquivo**: `tests/authz-enforce.test.ts` (15 testes, sem DB)
-- **Config isolada**: `vitest.authz.config.ts`
-- **Script**: `pnpm test:authz`
-- Cobre: todos os caminhos ALLOW/DENY (bundle, scope, cross-org, SERVICE_ACCOUNT, AUDITOR_READONLY, LEGACY_BYPASS)
+- Alteração do env var no Render reinicia o serviço automaticamente
+- Documentado em todos os runbooks como mecanismo primário de rollback
 
 ---
 
@@ -62,28 +55,13 @@
 
 | Item | Evidência |
 |------|-----------|
-| 15/15 testes passam | `pnpm test:authz` → `Tests 15 passed` |
-| Typecheck limpo | `pnpm typecheck:server` → sem erros |
-| CodeQL | 0 alertas (todos os jobs têm `permissions` explícitos) |
-| Flag rollback sem redeploy | `ENV.authzV1Enforce` é campo mutável em runtime, confirmado por teste de legacy fallback |
-| Health endpoint | `GET /api/health` retorna `authzMode` e `db` |
-| Rollback automatizado | `authz-rollback.yml` — único trigger: `workflow_dispatch` com `environment` + `reason` |
-| Rollout automatizado | `authz-rollout.yml` — 7 jobs sequenciais com gates entre etapas |
-| Migrate dependency | `deploy` job depende de `migrate` (quando `run_migrate=true`), corrigido para evitar deploy pré-migração |
-
-### Comandos de verificação local
-
-```bash
-# Todos os testes AuthZ v1 (sem DB)
-AUTHZ_V1_ENFORCE=1 pnpm test:authz
-
-# Typecheck server
-pnpm typecheck:server
-
-# Saúde com flag ativo (precisa de servidor rodando)
-curl http://localhost:3000/api/health
-# → {"ok":true,"db":"up","authzMode":"v1","authzV1Enforce":true,...}
-```
+| 4 documentos formais criados | `docs/auth/authz-*.md` — ver listagem acima |
+| Gates de CI ativos | `pr-quality.yml` com 5 jobs incluindo authz-gate |
+| Proposals de workflow | `authz-rollout.yml` e `authz-rollback.yml` com avisos de PROPOSTA no header |
+| Checklist cobre todos os agentes | A1, A2, A3, A5, A6, A12 listados explicitamente |
+| Rollback documentado em 3 opções | A, B, C no `authz-rollback-runbook-v1.md` |
+| TTR alvo definido | < 2 min (detecção → authzMode=legacy) |
+| Canary definido com duração mínima | 1h mínimo em staging, 4–8h recomendado |
 
 ---
 
@@ -91,46 +69,56 @@ curl http://localhost:3000/api/health
 
 | # | Risco | Severidade | Mitigação | Dependência |
 |---|-------|------------|-----------|-------------|
-| R1 | `AUTHZ_DECISION` audit entries use `SHIFT_INSTANCE` as `entityType` (placeholder) | Baixa | Expandir `AuditEntry.entityType` com `AUTHZ_EVENT` na janela P1 | A1x (audit domain) |
-| R2 | `ENV.authzV1Enforce` é lido na inicialização do módulo; mudança do env var requer restart do processo | Baixa | Por design — Render reinicia automaticamente ao salvar env var; documentado nos runbooks |
-| R3 | Testes legados (`rbac-approval.test.ts`, `shift-workflow.test.ts`) requerem seed de DB e conexão MySQL | Média | `vitest.authz.config.ts` é isolado; testes legados só rodam quando MySQL está disponível no CI |
-| R4 | Canary é boolean global — nenhum percentual ou allowlist por org | Baixa | Decisão deliberada para minimizar complexidade operacional; documentado em `CANARY_CRITERIA.md` |
-| R5 | Rollback automatizado (`authz-rollback.yml`) depende de `RENDER_API_KEY` e `RENDER_SERVICE_ID` como secrets do GitHub | Média | Verificar que os secrets estão configurados em ambos os environments (`staging`, `production`) antes do cutover |
-| R6 | Legado `server/rbac-validations.ts` não foi removido — existe em paralelo com `server/authz/enforce.ts` | Baixa | Intencional (freeze de P2); não há colisão pois legado só é chamado quando `authzMode=legacy` |
+| R1 | `authorize()` em `enforce.ts` usa `CONFLICT_DETECTED as any` como action type no audit — placeholder | Média | A12 deve adicionar tipo correto (`AUTHZ_DECISION` ou equivalente) ao enum `AuditEntry.action` | **A12** |
+| R2 | `ENV.authzV1Enforce` é lido na inicialização do módulo; restart é necessário para aplicar mudança | Baixa | Por design — Render reinicia automaticamente; documentado nos runbooks |
+| R3 | Workflows de rollout/rollback são PROPOSTA — secrets ainda não configurados | Alta | Bloco 4 do checklist Go/No-Go; responsabilidade de Infra antes do cutover |
+| R4 | Canary é boolean global — sem percentual por org ou allowlist | Baixa | Decisão arquitetural; documentado em `docs/authz-v1/CANARY_CRITERIA.md` |
+| R5 | A6 e A12 não estão congelados — qualquer mudança em `enforce.ts` ou `audit-trail.ts` pode invalidar os gates | Alta | Go/No-Go checklist exige aprovação explícita de A6 e A12 antes do GO |
+| R6 | Legado `rbac-validations.ts` permanece ativo em modo legacy — não há data de remoção | Baixa | Intencional; remoção física é P2 após 30 dias de production estável |
 
 ---
 
 ## Próximo Passo
 
-### Para a equipe de Release (agente A14 na próxima janela)
+### Para A14 (Release) na próxima janela
 
-1. **Staging cutover** — Executar `authz-rollout.yml` com `environment=staging, cutover=true`
-2. **Validar canary** — Monitorar 15 min usando os critérios de `CANARY_CRITERIA.md`
-3. **Testar rollback** — Executar `authz-rollback.yml` em staging para confirmar TTR < 2 min
-4. **Production cutover** — Só após staging estável por ≥ 24h; repetir `authz-rollout.yml` com `environment=production`
+1. **Aguardar congelamento de A6 e A12** — Gates bloqueantes conforme bloco 1 do checklist
+2. **Validar secrets de infra** — Bloco 4 do checklist com equipe de Infra
+3. **Executar canary em staging** — Mínimo 1h com `AUTHZ_V1_ENFORCE=1`, monitorar sinais
+4. **Testar rollback em staging** — Executar Opção B do `authz-rollback-runbook-v1.md` e confirmar TTR < 2 min
+5. **Preenchimento do checklist Go/No-Go** — Junto com on-call e H-1 antes de agendar cutover
+6. **Cutover staging → production** — Somente após checklist 100% ✅ e aprovação H-1
 
-### Para outros agentes
+### Para outros agentes (dependências explícitas)
 
-| Agente | Dependência | Ação necessária |
-|--------|-------------|-----------------|
-| A1x (audit) | R1 acima | Adicionar `AUTHZ_DECISION` ao enum `AuditEntry.action` em `server/audit-trail.ts` |
-| Qualquer agente de feature | Freeze de features | Nenhuma feature nova fora de AuthZ v1 até cutover confirmado em produção |
-| Qualquer agente de auth | Semântica congelada | Não alterar `server/authz/enforce.ts` sem escalar ao H-1 |
+| Agente | Dependência de A14 | Ação necessária |
+|--------|-------------------|-----------------|
+| **A6** (enforcement) | R5 acima — `enforce.ts` deve ser congelado antes do GO | Congelar `server/authz/enforce.ts` e obter aprovação H-1 |
+| **A12** (audit trail) | R1 acima — action type `AUTHZ_DECISION` não existe ainda | Adicionar tipo correto ao enum `AuditEntry.action` e congelar `server/audit-trail.ts` |
+| **A1** (schema) | Checklist bloco 1.1 | Migração em staging executada e aprovada |
+| **A2** (autenticação) | Checklist bloco 1.2 | Fluxos de login validados em staging |
+| **A3** (RBAC) | Checklist bloco 1.3 | Bundles congelados |
+| **A5** (sessão) | Checklist bloco 1.4 | Actor builder estável |
+| **Infra** | Checklist bloco 4 | Configurar secrets RENDER_API_KEY, RENDER_SERVICE_ID, APP_URL |
 
-### Colisão de arquivos
-
-Os seguintes arquivos foram tocados por A14 e **não devem ser editados por outros agentes** sem escalar:
+### Arquivos de domínio A14 (não alterar sem escalar)
 
 ```
-server/_core/env.ts           ← AUTHZ_V1_ENFORCE flag
-server/_core/index.ts         ← /api/health endpoint
-server/authz/enforce.ts       ← camada central de autorização
-server/authz/health.ts        ← helper de health check
-.github/workflows/pr-quality.yml
-.github/workflows/db-migrate.yml
-.github/workflows/authz-rollout.yml
-.github/workflows/authz-rollback.yml
-docs/authz-v1/
-vitest.authz.config.ts
-tests/authz-enforce.test.ts
+docs/auth/                              ← documentos formais de release (A14)
+docs/authz-v1/                          ← docs legados (substituídos por docs/auth/)
+.github/workflows/pr-quality.yml        ← gates de CI
+.github/workflows/db-migrate.yml        ← workflow de migração
+.github/workflows/authz-rollout.yml     ← PROPOSTA de rollout
+.github/workflows/authz-rollback.yml    ← PROPOSTA de rollback
 ```
+
+### Arquivos de outros domínios (A14 NÃO toca)
+
+```
+server/authz/enforce.ts          ← domínio A6
+server/audit-trail.ts            ← domínio A12
+tests/authz-enforce.test.ts      ← domínio A6
+server/_core/env.ts              ← domínio A6 (flag AUTHZ_V1_ENFORCE)
+server/authz/health.ts           ← domínio A6
+```
+

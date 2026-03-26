@@ -1,10 +1,22 @@
 name: AuthZ v1 Rollout
 
-# Mirrors the audit-rollout.yml pattern.
-# Stages: quality-gate → build → migrate (if needed) → deploy (flag=0) → smoke → cutover (flag=1) → verify
+# WARNING: PROPOSTA DE INTEGRACAO - NAO OPERACIONAL AINDA
 #
-# Rollback: set AUTHZ_V1_ENFORCE=0 in the Render env dashboard — NO redeploy needed.
-# See docs/authz-v1/ROLLBACK_RUNBOOK.md for full steps.
+# Este workflow e uma PROPOSTA do agente A14 (Release/CI/Rollback).
+# Nao deve ser executado ate que todas as pre-condicoes abaixo estejam satisfeitas:
+#   - A6 (enforcement layer) congelado e aprovado pelo H-1
+#   - A12 (audit trail) congelado e aprovado pelo H-1
+#   - Secrets RENDER_API_KEY e RENDER_SERVICE_ID configurados
+#   - Staging validado e canary aprovado
+#   - Go/No-Go checklist (docs/auth/authz-go-no-go-checklist-v1.md) 100% OK
+#
+# Para o runbook de cutover completo, ver: docs/auth/authz-cutover-runbook-v1.md
+#
+# Mirrors the audit-rollout.yml pattern.
+# Stages: quality-gate -> build -> migrate (if needed) -> deploy (flag=0) -> smoke -> cutover (flag=1) -> verify
+#
+# Rollback: set AUTHZ_V1_ENFORCE=0 in the Render env dashboard -- NO redeploy needed.
+# See docs/auth/authz-rollback-runbook-v1.md for full steps.
 
 on:
   workflow_dispatch:

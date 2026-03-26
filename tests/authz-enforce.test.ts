@@ -239,10 +239,9 @@ describe("authorize() — AuthZ v1 enforcement", () => {
 
 describe("authorize() — legacy fallback (AUTHZ_V1_ENFORCE=0)", () => {
   it("ALLOW: every action is allowed when flag is off", async () => {
-    // Temporarily override ENV.authzV1Enforce — safe because:
-    // 1. vitest.authz.config.ts sets fileParallelism: false (sequential execution)
-    // 2. The try/finally below always restores the original value
-    // 3. No other test in this file sets authzV1Enforce=true independently
+    // Use the ENV module's authzV1Enforce property directly — it's a plain
+    // boolean field (not a getter), so we can temporarily override it for
+    // this test without mutating process.env across module boundaries.
     const envModule = await import("../server/_core/env");
     const original = envModule.ENV.authzV1Enforce;
     envModule.ENV.authzV1Enforce = false;
