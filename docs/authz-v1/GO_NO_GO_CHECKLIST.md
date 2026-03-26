@@ -10,7 +10,7 @@ Use this checklist before every deployment that touches the `AUTHZ_V1_ENFORCE` f
 - [ ] `pnpm typecheck` passes with zero errors
 - [ ] `pnpm lint` passes with zero errors
 - [ ] `pnpm test` passes (all suites green)
-- [ ] `pnpm vitest run tests/authz-enforce.test.ts` passes with `AUTHZ_V1_ENFORCE=1`
+- [ ] `pnpm test:authz` passes with `AUTHZ_V1_ENFORCE=1` (runs `tests/authz-enforce.test.ts`, no DB required)
 - [ ] `pnpm build` succeeds
 
 ### AuthZ v1 Logic
@@ -68,5 +68,5 @@ Use this checklist before every deployment that touches the `AUTHZ_V1_ENFORCE` f
 | Risk | Severity | Mitigation |
 |------|----------|------------|
 | Legacy RBAC tests require DB seed | Medium | Ensure `seed-test-data.ts` runs in CI before RBAC tests |
-| `authorize()` audit uses `CONFLICT_DETECTED` action type as placeholder | Low | Extend `AuditEntry.action` enum with `AUTHZ_DECISION` in next window |
+| `AUTHZ_DECISION` audit entries use `SHIFT_INSTANCE` as `entityType` (placeholder) | Low | Extend `AuditEntry.entityType` enum with `AUTHZ_EVENT` in next window |
 | Rollback is flag-only — no DB schema rollback needed for this window | Low | Physical legacy removal deferred to P2 |

@@ -260,7 +260,7 @@ async function emitAudit(
       await recordAudit({
         actorUserId: actor.userId,
         actorRole: actor.bundle,
-        action: "CONFLICT_DETECTED" as any, // reuse closest available type; authz trail expands later
+        action: "AUTHZ_DECISION",
         entityType: "SHIFT_INSTANCE" as any,
         entityId: typeof resource.id === "number" ? resource.id : 0,
         description: `[AUTHZ_V1] decision=${decision} action=${action} reason=${reason}`,

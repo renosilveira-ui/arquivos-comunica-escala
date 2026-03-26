@@ -111,8 +111,15 @@ jobs:
   # ── 4. Deploy with flag OFF (safe deploy) ────────────────────────────────────
   deploy:
     name: Deploy (${{ inputs.environment }}, flag=0)
-    needs: [build]
-    if: always() && needs.build.result == 'success'
+    # Listing 'migrate' in needs ensures deploy waits for migrations when
+    # run_migrate=true. When run_migrate=false, the migrate job is skipped
+    # (result='skipped') and the condition below still passes. This pattern
+    # prevents deploying new code before its required schema changes are applied.
+    needs: [build, migrate]
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read

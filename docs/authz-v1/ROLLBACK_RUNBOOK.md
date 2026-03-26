@@ -1,6 +1,21 @@
 # AuthZ v1 — Rollback Runbook
 
-## TL;DR — Instant Rollback (no redeploy)
+## TL;DR — Instant Rollback
+
+### Option A — Automated (preferred)
+
+Trigger the `authz-rollback.yml` GitHub Actions workflow:
+
+```
+Actions → AuthZ v1 Rollback
+  environment: staging | production
+  reason: <short description of why you are rolling back>
+```
+
+The workflow sets `AUTHZ_V1_ENFORCE=0`, polls until `authzMode=legacy`, and
+verifies health. No code change, no new deployment required.
+
+### Option B — Manual via Render API
 
 ```bash
 # Via Render API
@@ -117,3 +132,7 @@ Before attempting cutover again:
 3. Re-test on staging with `AUTHZ_V1_ENFORCE=1`
 4. Get H-1 approval
 5. Re-run `authz-rollout.yml` with `cutover=true`
+
+> **Tip**: The automated `authz-rollback.yml` workflow records reason, pre-rollback
+> mode, and post-rollback state in its GitHub Actions summary — use that as the
+> starting point for the post-mortem.

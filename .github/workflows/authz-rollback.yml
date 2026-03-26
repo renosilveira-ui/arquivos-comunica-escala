@@ -1,0 +1,105 @@
+name: AuthZ v1 Rollback
+
+# Automated rollback: sets AUTHZ_V1_ENFORCE=0 and verifies the service
+# returns to authzMode=legacy, WITHOUT a new code deployment.
+#
+# Use this any time post-cutover signals indicate a problem.
+# See docs/authz-v1/ROLLBACK_RUNBOOK.md for full context.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment to roll back
+        required: true
+        type: choice
+        options: [staging, production]
+      reason:
+        description: Short reason for rollback (recorded in summary)
+        required: true
+        type: string
+        default: "manual rollback"
+
+concurrency:
+  group: authz-rollout-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Rollback AuthZ v1 (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    permissions: {}
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Confirm current authzMode before rollback
+        id: pre-check
+        run: |
+          RESPONSE=$(curl -sf "${{ vars.APP_URL }}/api/health" 2>/dev/null || echo '{}')
+          CURRENT_MODE=$(echo "$RESPONSE" | jq -r '.authzMode' 2>/dev/null || echo "unknown")
+          echo "Pre-rollback authzMode: $CURRENT_MODE"
+          echo "current_mode=$CURRENT_MODE" >> $GITHUB_OUTPUT
+
+      - name: Set AUTHZ_V1_ENFORCE=0 via Render API
+        run: |
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/env-vars" \
+            -d '[{"key":"AUTHZ_V1_ENFORCE","value":"0"}]'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+
+      - name: Wait for service to restart in legacy mode
+        run: |
+          echo "Waiting for service to restart with AUTHZ_V1_ENFORCE=0..."
+          for i in $(seq 1 8); do
+            sleep 15
+            MODE=$(curl -sf "${{ vars.APP_URL }}/api/health" 2>/dev/null | jq -r '.authzMode' 2>/dev/null || echo "unknown")
+            if [ "$MODE" = "legacy" ]; then
+              echo "authzMode=legacy confirmed after $((i * 15))s"
+              exit 0
+            fi
+            echo "Attempt $i/8: authzMode=$MODE (waiting)..."
+          done
+          echo "Timed out waiting for legacy mode — check Render dashboard manually"
+          exit 1
+
+      - name: Verify rollback health
+        run: |
+          RESPONSE=$(curl -sf "${{ vars.APP_URL }}/api/health")
+          OK=$(echo "$RESPONSE" | jq -r '.ok')
+          DB=$(echo "$RESPONSE" | jq -r '.db')
+          MODE=$(echo "$RESPONSE" | jq -r '.authzMode')
+
+          echo "ok=$OK db=$DB authzMode=$MODE"
+
+          if [ "$OK" != "true" ]; then
+            echo "FAILED: health ok=$OK — DB or service still unhealthy after rollback"
+            exit 1
+          fi
+          if [ "$MODE" != "legacy" ]; then
+            echo "FAILED: authzMode=$MODE — expected legacy"
+            exit 1
+          fi
+          echo "Rollback verified: authzMode=legacy, db=$DB, ok=$OK"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### AuthZ v1 Rollback — ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Reason**: ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pre-rollback authzMode**: ${{ steps.pre-check.outputs.current_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **AUTHZ_V1_ENFORCE**: 0" >> $GITHUB_STEP_SUMMARY
+          echo "- **authzMode after rollback**: legacy" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next steps**:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Investigate root cause" >> $GITHUB_STEP_SUMMARY
+          echo "2. Fix and re-run Go/No-Go checklist" >> $GITHUB_STEP_SUMMARY
+          echo "3. Re-run \`authz-rollout.yml\` with \`cutover=true\` when ready" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See \`docs/authz-v1/ROLLBACK_RUNBOOK.md\` for full procedure." >> $GITHUB_STEP_SUMMARY

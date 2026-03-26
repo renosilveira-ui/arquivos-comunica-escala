@@ -30,7 +30,8 @@ export interface AuditEntry {
     | "USER_UPDATED"
     | "USER_ROLE_CHANGED"
     | "CONFLICT_DETECTED"
-    | "CONFLICT_OVERRIDDEN";
+    | "CONFLICT_OVERRIDDEN"
+    | "AUTHZ_DECISION";
   entityType:
     | "SHIFT_INSTANCE"
     | "SHIFT_ASSIGNMENT"
