@@ -1,0 +1,55 @@
+name: DB Migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [staging, production]
+      dry_run:
+        description: Dry-run only (no apply)
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      dry_run:
+        required: false
+        type: string
+        default: "false"
+
+jobs:
+  migrate:
+    name: Run DB Migration (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate migration SQL
+        run: pnpm drizzle-kit generate
+
+      - name: Apply migrations
+        if: inputs.dry_run != 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm drizzle-kit migrate
+
+      - name: Dry-run report
+        if: inputs.dry_run == 'true'
+        run: echo "[dry-run] Migration SQL generated but NOT applied."

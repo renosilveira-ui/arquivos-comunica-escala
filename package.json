@@ -17,6 +17,7 @@
     "lint": "expo lint",
     "format": "prettier --write .",
     "test": "vitest run",
+    "test:authz": "vitest run --config vitest.authz.config.ts",
     "test:e2e": "cross-env NODE_ENV=test vitest run tests/shift-workflow.test.ts",
     "e2e:workflow": "tsx scripts/run-e2e-workflow.ts",
     "gate": "pnpm test:e2e && pnpm e2e:workflow",

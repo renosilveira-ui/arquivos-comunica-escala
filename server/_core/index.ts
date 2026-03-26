@@ -9,6 +9,7 @@ import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { getHealthStatus } from "../authz/health";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -84,8 +85,9 @@ async function startServer() {
   app.use("/api/auth", authRouter);
   app.use("/api/admin", adminRouter);
 
-  app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, timestamp: Date.now() });
+  app.get("/api/health", async (_req, res) => {
+    const status = await getHealthStatus();
+    res.status(status.ok ? 200 : 503).json(status);
   });
 
   app.use(

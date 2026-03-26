@@ -1,0 +1,235 @@
+name: AuthZ v1 Rollout
+
+# Mirrors the audit-rollout.yml pattern.
+# Stages: quality-gate → build → migrate (if needed) → deploy (flag=0) → smoke → cutover (flag=1) → verify
+#
+# Rollback: set AUTHZ_V1_ENFORCE=0 in the Render env dashboard — NO redeploy needed.
+# See docs/authz-v1/ROLLBACK_RUNBOOK.md for full steps.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [staging, production]
+      cutover:
+        description: Enable AuthZ v1 enforcement (AUTHZ_V1_ENFORCE=1)
+        required: true
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+      run_migrate:
+        description: Run DB migrations before deploy
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: authz-rollout-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. Quality gate ──────────────────────────────────────────────────────────
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: escalas_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/escalas_test
+      NODE_ENV: test
+      AUTHZ_V1_ENFORCE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: AuthZ v1 enforcement tests
+        run: pnpm vitest run --config vitest.authz.config.ts
+
+  # ── 2. Build ─────────────────────────────────────────────────────────────────
+  build:
+    name: Build Server
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-dist
+          path: dist/
+          retention-days: 3
+
+  # ── 3. DB Migrate (optional) ─────────────────────────────────────────────────
+  migrate:
+    name: DB Migrate
+    needs: build
+    if: inputs.run_migrate == 'true'
+    uses: ./.github/workflows/db-migrate.yml
+    with:
+      environment: ${{ inputs.environment }}
+      dry_run: "false"
+    secrets: inherit
+
+  # ── 4. Deploy with flag OFF (safe deploy) ────────────────────────────────────
+  deploy:
+    name: Deploy (${{ inputs.environment }}, flag=0)
+    needs: [build]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger Render deploy (AUTHZ_V1_ENFORCE=0)
+        # Deploy with the flag OFF first so the new code ships without v1 enforcement.
+        # Cutover step (below) flips the flag to 1 after smoke tests pass.
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": false}'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+
+      - name: Wait for deploy to complete
+        run: |
+          echo "Waiting 60s for Render deploy to roll out..."
+          sleep 60
+
+  # ── 5. Smoke tests post-deploy ───────────────────────────────────────────────
+  smoke:
+    name: Smoke Tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Health check
+        run: |
+          STATUS=$(curl -sf "${{ vars.APP_URL }}/api/health" | jq -r '.ok')
+          if [ "$STATUS" != "true" ]; then
+            echo "Health check FAILED"
+            exit 1
+          fi
+          echo "Health check passed"
+
+      - name: Confirm authzMode=legacy (flag off)
+        run: |
+          MODE=$(curl -sf "${{ vars.APP_URL }}/api/health" | jq -r '.authzMode')
+          if [ "$MODE" != "legacy" ]; then
+            echo "Expected authzMode=legacy but got $MODE — aborting"
+            exit 1
+          fi
+          echo "authzMode=legacy confirmed (safe deploy baseline)"
+
+      - name: P0 smoke — login endpoint reachable
+        run: |
+          HTTP=$(curl -o /dev/null -sw "%{http_code}" "${{ vars.APP_URL }}/api/auth/login" -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"email":"__smoke__@test.invalid","password":"__smoke__"}')
+          # Expecting 400/401/422 (not 500) — endpoint is reachable
+          if [ "$HTTP" = "500" ] || [ "$HTTP" = "502" ] || [ "$HTTP" = "503" ]; then
+            echo "P0 login smoke FAILED: HTTP $HTTP"
+            exit 1
+          fi
+          echo "P0 login smoke passed: HTTP $HTTP"
+
+  # ── 6. Cutover (flip flag to 1) ───────────────────────────────────────────────
+  cutover:
+    name: Cutover (flag=1)
+    needs: smoke
+    if: inputs.cutover == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Set AUTHZ_V1_ENFORCE=1 via Render API
+        run: |
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/env-vars" \
+            -d '[{"key":"AUTHZ_V1_ENFORCE","value":"1"}]'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+
+      - name: Wait for restart
+        run: sleep 45
+
+      - name: Verify authzMode=v1
+        run: |
+          MODE=$(curl -sf "${{ vars.APP_URL }}/api/health" | jq -r '.authzMode')
+          if [ "$MODE" != "v1" ]; then
+            echo "Cutover FAILED: expected authzMode=v1 but got $MODE"
+            exit 1
+          fi
+          echo "Cutover confirmed: authzMode=v1 is active"
+
+  # ── 7. Post-cutover verification ─────────────────────────────────────────────
+  post-cutover-smoke:
+    name: Post-Cutover Smoke
+    needs: cutover
+    if: inputs.cutover == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Health check (v1 mode)
+        run: |
+          STATUS=$(curl -sf "${{ vars.APP_URL }}/api/health" | jq -r '.ok')
+          if [ "$STATUS" != "true" ]; then
+            echo "Post-cutover health check FAILED — initiate rollback"
+            exit 1
+          fi
+          echo "Post-cutover health check passed"
+
+      - name: Confirm DB up
+        run: |
+          DB=$(curl -sf "${{ vars.APP_URL }}/api/health" | jq -r '.db')
+          if [ "$DB" != "up" ]; then
+            echo "DB check FAILED: $DB — initiate rollback"
+            exit 1
+          fi
+          echo "DB status: $DB"
+
+      - name: Summary
+        run: |
+          echo "### AuthZ v1 Rollout Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- AUTHZ_V1_ENFORCE: 1" >> $GITHUB_STEP_SUMMARY
+          echo "- authzMode: v1" >> $GITHUB_STEP_SUMMARY
+          echo "- Health: OK" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To rollback: set AUTHZ_V1_ENFORCE=0 in Render env (no redeploy needed)." >> $GITHUB_STEP_SUMMARY
+          echo "See docs/authz-v1/ROLLBACK_RUNBOOK.md" >> $GITHUB_STEP_SUMMARY
