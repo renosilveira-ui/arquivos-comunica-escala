@@ -1,14 +1,19 @@
-# A14 — AuthZ v1 Release/CI/Rollback — Handoff v2 (Reframe G0)
+# A14 — AuthZ v1 Release/CI/Rollback — Handoff v2.1 (APROVADO FINAL — Onda 0 Encerrada)
 
 **Agente**: A14 — Release, CI e Rollback  
 **Onda**: 0  
 **Data v2**: 2026-03-26 (revisado por H-1 review)  
+**Data v2.1**: 2026-03-26 (APROVADO FINAL — encerramento da trilha A14 na Onda 0)  
 **Domínio**: Exclusivo de pipeline, CI, gates e operações de cutover/rollback. Não altera semântica de auth.
 
 > **Nota de reframe**: Este handoff v2 corrige o escopo do v1 conforme review do H-1.
 > Itens que estavam fora de escopo de A14 (audit-trail, enforce.ts, testes de enforcement)
 > foram removidos como "feito" e reclassificados como recomendações para A6/A12.
 > Workflows operacionais foram reclassificados como PROPOSTA.
+>
+> **Nota de encerramento (v2.1)**: A14 recebeu APROVADO FINAL do H-1. A trilha está congelada
+> para a Onda 0. A6 e A12 foram aprovados finais no G0 — R5 encerrado. Nenhum ajuste adicional
+> é necessário nesta rodada.
 
 ---
 
@@ -74,7 +79,7 @@ Os workflows existem como **PROPOSTA** — não são operacionais até que todos
 | R2 | `ENV.authzV1Enforce` é lido na inicialização do módulo; restart é necessário para aplicar mudança | Baixa | Por design — Render reinicia automaticamente; documentado nos runbooks |
 | R3 | Workflows de rollout/rollback são PROPOSTA — secrets ainda não configurados | Alta | Bloco 4 do checklist Go/No-Go; responsabilidade de Infra antes do cutover |
 | R4 | Canary é boolean global — sem percentual por org ou allowlist | Baixa | Decisão arquitetural; documentado em `docs/authz-v1/CANARY_CRITERIA.md` |
-| R5 | A6 e A12 não estão congelados — qualquer mudança em `enforce.ts` ou `audit-trail.ts` pode invalidar os gates | Alta | Go/No-Go checklist exige aprovação explícita de A6 e A12 antes do GO |
+| R5 | ~~A6 e A12 não estão congelados — qualquer mudança em `enforce.ts` ou `audit-trail.ts` pode invalidar os gates~~ | ~~Alta~~ | **ENCERRADO** — A6 e A12 aprovados finais no G0 | — |
 | R6 | Legado `rbac-validations.ts` permanece ativo em modo legacy — não há data de remoção | Baixa | Intencional; remoção física é P2 após 30 dias de production estável |
 
 ---
@@ -83,24 +88,23 @@ Os workflows existem como **PROPOSTA** — não são operacionais até que todos
 
 ### Para A14 (Release) na próxima janela
 
-1. **Aguardar congelamento de A6 e A12** — Gates bloqueantes conforme bloco 1 do checklist
-2. **Validar secrets de infra** — Bloco 4 do checklist com equipe de Infra
-3. **Executar canary em staging** — Mínimo 1h com `AUTHZ_V1_ENFORCE=1`, monitorar sinais
-4. **Testar rollback em staging** — Executar Opção B do `authz-rollback-runbook-v1.md` e confirmar TTR < 2 min
-5. **Preenchimento do checklist Go/No-Go** — Junto com on-call e H-1 antes de agendar cutover
-6. **Cutover staging → production** — Somente após checklist 100% ✅ e aprovação H-1
+1. **Validar secrets de infra** — Bloco 4 do checklist com equipe de Infra (não é ação de G0; executar após autorização H-1)
+2. **Executar canary em staging** — Mínimo 1h com `AUTHZ_V1_ENFORCE=1`, monitorar sinais
+3. **Testar rollback em staging** — Executar Opção B do `authz-rollback-runbook-v1.md` e confirmar TTR < 2 min
+4. **Preenchimento do checklist Go/No-Go** — Junto com on-call e H-1 antes de agendar cutover
+5. **Cutover staging → production** — Somente após checklist 100% ✅ e aprovação H-1
 
 ### Para outros agentes (dependências explícitas)
 
-| Agente | Dependência de A14 | Ação necessária |
-|--------|-------------------|-----------------|
-| **A6** (enforcement) | R5 acima — `enforce.ts` deve ser congelado antes do GO | Congelar `server/authz/enforce.ts` (incluindo resolver placeholder R1a); obter aprovação H-1 |
-| **A12** (audit trail) | R1b acima — evento/enum de auditoria AuthZ não definido ainda | Definir contrato de evento de auditoria em `server/audit-trail.ts` quando aplicável; **não modificar** `server/authz/enforce.ts` (domínio A6) |
+| Agente | Status no G0 | Observação |
+|--------|-------------|------------|
+| **A6** (enforcement) | ✅ APROVADO FINAL | `server/authz/enforce.ts` congelado; placeholder R1a a endereçar na próxima onda se aplicável |
+| **A12** (audit trail) | ✅ APROVADO FINAL | `server/audit-trail.ts` congelado; evento/enum de auditoria AuthZ (R1b) a endereçar na próxima onda se aplicável |
 | **A1** (schema) | Checklist bloco 1.1 | Migração em staging executada e aprovada |
 | **A2** (autenticação) | Checklist bloco 1.2 | Fluxos de login validados em staging |
 | **A3** (RBAC) | Checklist bloco 1.3 | Bundles congelados |
 | **A5** (sessão) | Checklist bloco 1.4 | Actor builder estável |
-| **Infra** | Checklist bloco 4 — **NÃO É AÇÃO DE G0**: somente executar após A6 e A12 aprovados finais e autorização explícita do H-1 | Configurar secrets `RENDER_API_KEY`, `RENDER_SERVICE_ID` e variable `APP_URL` nos environments `staging` e `production` |
+| **Infra** | Checklist bloco 4 — **NÃO É AÇÃO DE G0**: somente executar após autorização explícita do H-1 | Configurar secrets `RENDER_API_KEY`, `RENDER_SERVICE_ID` e variable `APP_URL` nos environments `staging` e `production` |
 
 ### Arquivos de domínio A14 (não alterar sem escalar)
 
