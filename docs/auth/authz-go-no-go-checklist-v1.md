@@ -95,6 +95,8 @@ LIMIT 50;
 | 6.2 | On-call disponível por 30 minutos pós-cutover | ☐ | On-call |
 | 6.3 | Aprovação explícita do H-1 para execução do cutover | ☐ | H-1 |
 | 6.4 | Horário de cutover definido (janela de baixo tráfego) | ☐ | A14 |
+| 6.5 | A14 (release gates, runbooks, checklist) aprovado final pelo H-1 | ☐ | H-1 | Link do review |
+| 6.6 | Workflows operacionais (`authz-rollout.yml`, `authz-rollback.yml`) confirmados como PROPOSTA — execução somente com autorização formal do H-1 após todos os gates satisfeitos | ☐ | H-1 | Declaração explícita |
 
 ---
 

@@ -58,7 +58,7 @@ Os workflows existem como **PROPOSTA** — não são operacionais até que todos
 | 4 documentos formais criados | `docs/auth/authz-*.md` — ver listagem acima |
 | Gates de CI ativos | `pr-quality.yml` com 5 jobs incluindo authz-gate |
 | Proposals de workflow | `authz-rollout.yml` e `authz-rollback.yml` com avisos de PROPOSTA no header |
-| Checklist cobre todos os agentes | A1, A2, A3, A5, A6, A12 listados explicitamente |
+| Checklist cobre todos os agentes | A1, A2, A3, A5, A6, A12, A14 listados explicitamente |
 | Rollback documentado em 3 opções | A, B, C no `authz-rollback-runbook-v1.md` |
 | TTR alvo definido | < 2 min (detecção → authzMode=legacy) |
 | Canary definido com duração mínima | 1h mínimo em staging, 4–8h recomendado |
@@ -69,7 +69,8 @@ Os workflows existem como **PROPOSTA** — não são operacionais até que todos
 
 | # | Risco | Severidade | Mitigação | Dependência |
 |---|-------|------------|-----------|-------------|
-| R1 | `authorize()` em `enforce.ts` usa `CONFLICT_DETECTED as any` como action type no audit — placeholder | Média | A12 deve adicionar tipo correto (`AUTHZ_DECISION` ou equivalente) ao enum `AuditEntry.action` | **A12** |
+| R1a | `authorize()` em `enforce.ts` usa `CONFLICT_DETECTED as any` como action type no audit — placeholder não resolvido | Média | **A6** deve resolver o placeholder em `server/authz/enforce.ts` ao congelar a engine de enforcement | **A6** |
+| R1b | `server/audit-trail.ts` ainda não tem evento/enum específico para decisões AuthZ | Média | **A12** deve definir o contrato de evento de auditoria (enum, payload) em `server/audit-trail.ts` quando aplicável; não confundir com o placeholder em `enforce.ts` | **A12** |
 | R2 | `ENV.authzV1Enforce` é lido na inicialização do módulo; restart é necessário para aplicar mudança | Baixa | Por design — Render reinicia automaticamente; documentado nos runbooks |
 | R3 | Workflows de rollout/rollback são PROPOSTA — secrets ainda não configurados | Alta | Bloco 4 do checklist Go/No-Go; responsabilidade de Infra antes do cutover |
 | R4 | Canary é boolean global — sem percentual por org ou allowlist | Baixa | Decisão arquitetural; documentado em `docs/authz-v1/CANARY_CRITERIA.md` |
@@ -93,13 +94,13 @@ Os workflows existem como **PROPOSTA** — não são operacionais até que todos
 
 | Agente | Dependência de A14 | Ação necessária |
 |--------|-------------------|-----------------|
-| **A6** (enforcement) | R5 acima — `enforce.ts` deve ser congelado antes do GO | Congelar `server/authz/enforce.ts` e obter aprovação H-1 |
-| **A12** (audit trail) | R1 acima — action type `AUTHZ_DECISION` não existe ainda | Adicionar tipo correto ao enum `AuditEntry.action` e congelar `server/audit-trail.ts` |
+| **A6** (enforcement) | R5 acima — `enforce.ts` deve ser congelado antes do GO | Congelar `server/authz/enforce.ts` (incluindo resolver placeholder R1a); obter aprovação H-1 |
+| **A12** (audit trail) | R1b acima — evento/enum de auditoria AuthZ não definido ainda | Definir contrato de evento de auditoria em `server/audit-trail.ts` quando aplicável; **não modificar** `server/authz/enforce.ts` (domínio A6) |
 | **A1** (schema) | Checklist bloco 1.1 | Migração em staging executada e aprovada |
 | **A2** (autenticação) | Checklist bloco 1.2 | Fluxos de login validados em staging |
 | **A3** (RBAC) | Checklist bloco 1.3 | Bundles congelados |
 | **A5** (sessão) | Checklist bloco 1.4 | Actor builder estável |
-| **Infra** | Checklist bloco 4 | Configurar secrets RENDER_API_KEY, RENDER_SERVICE_ID, APP_URL |
+| **Infra** | Checklist bloco 4 — **NÃO É AÇÃO DE G0**: somente executar após A6 e A12 aprovados finais e autorização explícita do H-1 | Configurar secrets `RENDER_API_KEY`, `RENDER_SERVICE_ID` e variable `APP_URL` nos environments `staging` e `production` |
 
 ### Arquivos de domínio A14 (não alterar sem escalar)
 
