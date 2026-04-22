@@ -5,9 +5,13 @@ import { eq, and, gte, lte, sql } from "drizzle-orm";
 import { professionals, shiftInstances, shiftAssignmentsV2, sectors, hospitals } from "../drizzle/schema";
 import { validateAssignment } from "./shift-validations";
 import { auditLog } from "./audit-log";
-import { canApproveAssignment } from "./rbac-validations";
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
+import {
+  assertCanManageInstitutionSchedule,
+  assertManagerScopeAccess,
+  getTenantActorFromContext,
+} from "./_core/policy";
 import { editorRouter } from "./editor";
 import { swapRouter } from "./swap-router";
 import { calendarRouter } from "./calendar";
@@ -178,23 +182,13 @@ const shiftInstancesRouter = router({
         throw new Error("Alocação fora do tenant ativo");
       }
 
-      const [managerProfessional] = await db
-        .select({ id: professionals.id })
-        .from(professionals)
-        .where(eq(professionals.userId, userId));
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      await assertManagerScopeAccess(actor, assignment.hospitalId, assignment.sectorId);
 
-      if (!managerProfessional) {
+      const managerProfessionalId = actor.professionalId;
+      if (!managerProfessionalId) {
         throw new Error("Profissional do aprovador não encontrado");
-      }
-
-      const permission = await canApproveAssignment(
-        managerProfessional.id,
-        assignment.hospitalId,
-        assignment.sectorId
-      );
-
-      if (!permission.allowed) {
-        throw new Error(permission.reason || "Sem permissão");
       }
 
       await db
@@ -210,7 +204,7 @@ const shiftInstancesRouter = router({
       await auditLog({
         event: "ASSIGNMENT_APPROVED",
         shiftInstanceId: assignment.shiftInstanceId,
-        professionalId: managerProfessional.id,
+        professionalId: managerProfessionalId,
         metadata: { assignmentId: input.assignmentId, approvedBy: userId },
       });
 
@@ -253,23 +247,13 @@ const shiftInstancesRouter = router({
         throw new Error("Alocação fora do tenant ativo");
       }
 
-      const [managerProfessional] = await db
-        .select({ id: professionals.id })
-        .from(professionals)
-        .where(eq(professionals.userId, userId));
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      await assertManagerScopeAccess(actor, assignment.hospitalId, assignment.sectorId);
 
-      if (!managerProfessional) {
+      const managerProfessionalId = actor.professionalId;
+      if (!managerProfessionalId) {
         throw new Error("Profissional do aprovador não encontrado");
-      }
-
-      const permission = await canApproveAssignment(
-        managerProfessional.id,
-        assignment.hospitalId,
-        assignment.sectorId
-      );
-
-      if (!permission.allowed) {
-        throw new Error(permission.reason || "Sem permissão");
       }
 
       await db
@@ -285,7 +269,7 @@ const shiftInstancesRouter = router({
       await auditLog({
         event: "ASSIGNMENT_REJECTED",
         shiftInstanceId: assignment.shiftInstanceId,
-        professionalId: managerProfessional.id,
+        professionalId: managerProfessionalId,
         reason: input.reason ?? null,
         metadata: { assignmentId: input.assignmentId, rejectedBy: userId },
       });
