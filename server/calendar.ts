@@ -5,6 +5,12 @@ import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import {
+  actorCapabilities,
+  assertManagerScopeAccess,
+  getTenantActorFromContext,
+  type TenantActor,
+} from "./_core/policy";
 
 /**
  * Calendar Router
@@ -16,12 +22,16 @@ import { TRPCError } from "@trpc/server";
 
 // Helper: verifica RBAC para acesso ao calendário
 async function checkCalendarAccess(
-  userId: number,
+  actor: TenantActor,
   institutionId: number,
   hospitalId: number,
   sectorId: number,
   yearMonth: string
-): Promise<{ canAccess: boolean; monthStatus: "DRAFT" | "PUBLISHED" | "LOCKED" }> {
+): Promise<{
+  canAccess: boolean;
+  canAutoCreateShifts: boolean;
+  monthStatus: "DRAFT" | "PUBLISHED" | "LOCKED";
+}> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -36,39 +46,27 @@ async function checkCalendarAccess(
   const rosterRows = (rosterResult as any).rows || (rosterResult as any[]);
   const monthStatus = (rosterRows[0]?.status || "DRAFT") as "DRAFT" | "PUBLISHED" | "LOCKED";
 
-  // 2. Buscar profissional do usuário
-  const professionalResult = await db.execute<any>(
-    sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
-  );
-  const professionalRows = (professionalResult as any).rows || (professionalResult as any[]);
+  const capabilities = actorCapabilities(actor);
 
-  if (!professionalRows[0]) {
-    return { canAccess: false, monthStatus };
+  // USER institucional só pode acessar calendário publicado
+  if (!capabilities.canCreateShift) {
+    return {
+      canAccess: monthStatus === "PUBLISHED",
+      canAutoCreateShifts: false,
+      monthStatus,
+    };
   }
 
-  const professionalId = professionalRows[0].id;
-  const role = professionalRows[0].user_role as string;
-
-  // 3. USER: só pode acessar se mês PUBLISHED
-  if (role === "USER") {
-    return { canAccess: monthStatus === "PUBLISHED", monthStatus };
+  if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") {
+    return { canAccess: true, canAutoCreateShifts: true, monthStatus };
   }
 
-  // 4. GESTOR_PLUS: vê tudo
-  if (role === "GESTOR_PLUS") {
-    return { canAccess: true, monthStatus };
+  try {
+    await assertManagerScopeAccess(actor, hospitalId, sectorId);
+    return { canAccess: true, canAutoCreateShifts: true, monthStatus };
+  } catch {
+    return { canAccess: false, canAutoCreateShifts: false, monthStatus };
   }
-
-  // 5. GESTOR_MEDICO: precisa estar em manager_scope (hospital OU setor)
-  const scopeResult = await db.execute<any>(
-    sql`SELECT COUNT(*) as count FROM manager_scope
-        WHERE manager_professional_id = ${professionalId}
-        AND institution_id = ${institutionId}
-        AND (hospital_id = ${hospitalId} OR sector_id = ${sectorId})`
-  );
-  const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
-  const hasScope = scopeRows[0]?.count > 0;
-  return { canAccess: hasScope, monthStatus };
 }
 
 // Helper: agrupa shifts por dia e label
@@ -132,17 +130,14 @@ export const calendarRouter = router({
       if (institutionId !== ctx.institutionId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
       }
-      const userId = ctx.user?.id;
-      if (!userId) {
-        throw new ForbiddenError("Autenticação necessária");
-      }
+      const actor = await getTenantActorFromContext(ctx);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
       // 1. Verificar RBAC
       const { canAccess, monthStatus } = await checkCalendarAccess(
-        userId,
+        actor,
         institutionId,
         hospitalId,
         sectorId,
@@ -222,10 +217,7 @@ export const calendarRouter = router({
       if (institutionId !== ctx.institutionId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
       }
-      const userId = ctx.user?.id;
-      if (!userId) {
-        throw new ForbiddenError("Autenticação necessária");
-      }
+      const actor = await getTenantActorFromContext(ctx);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");
@@ -234,8 +226,8 @@ export const calendarRouter = router({
       const yearMonth = yearMonthFromDate(new Date(date));
 
       // 2. Verificar RBAC
-      const { canAccess, monthStatus } = await checkCalendarAccess(
-        userId,
+      const { canAccess, canAutoCreateShifts, monthStatus } = await checkCalendarAccess(
+        actor,
         institutionId,
         hospitalId,
         sectorId,
@@ -260,14 +252,7 @@ export const calendarRouter = router({
       );
       const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
 
-      // 4. Buscar role do usuário para decidir se cria turnos automaticamente
-      const professionalResult = await db.execute<any>(
-        sql`SELECT user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
-      );
-      const professionalRows = (professionalResult as any).rows || (professionalResult as any[]);
-      const role = professionalRows[0]?.user_role as string;
-
-      // 5. Para cada shift, buscar assignments
+      // 4. Para cada shift, buscar assignments
       const shifts = await Promise.all(
         shiftRows.map(async (shift: { id: number; label: string; start_at: Date; end_at: Date; status: string }) => {
           const assignmentResult = await db.execute<any>(
@@ -315,8 +300,8 @@ export const calendarRouter = router({
         })
       );
 
-      // 6. Se gestor e não existir turno, criar automaticamente como VAGO
-      if (role !== "USER" && shifts.length === 0) {
+      // 5. Se gestor contextual e não existir turno, criar automaticamente como VAGO
+      if (canAutoCreateShifts && shifts.length === 0) {
         // Criar 3 turnos padrão (Manhã, Tarde, Noite)
         const defaultShifts = [
           { label: "Manhã", startHour: 7, endHour: 13 },
