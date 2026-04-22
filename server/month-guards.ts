@@ -2,7 +2,7 @@ import { getDb } from "./db";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { auditLog } from "./audit-log";
 import { sql, eq, and } from "drizzle-orm";
-import { monthlyRosters } from "../drizzle/schema";
+import { monthlyRosters, professionalInstitutions, users } from "../drizzle/schema";
 import { notifyRosterPublished } from "./integrations/comunica-plus";
 
 /**
@@ -27,27 +27,34 @@ export async function assertMonthEditable(
 
   const yearMonth = yearMonthFromDate(date);
 
-  // Buscar professional do ctx.user priorizando maior privilégio entre vínculos.
-  const professionalResult = await db.execute<any>(
-    sql`SELECT id, user_role
-        FROM professionals
-        WHERE user_id = ${ctx.user.id}
-        ORDER BY CASE user_role
-          WHEN 'GESTOR_PLUS' THEN 1
-          WHEN 'GESTOR_MEDICO' THEN 2
-          ELSE 3
-        END
-        LIMIT 1`
-  );
+  const [user] = await db
+    .select({ role: users.role })
+    .from(users)
+    .where(eq(users.id, ctx.user.id))
+    .limit(1);
+  const isGlobalAdmin = user?.role === "admin";
 
-  const professionalRows = (professionalResult as any).rows || (professionalResult as any[]);
-  if (!professionalRows || professionalRows.length === 0) {
-    throw new Error("Professional not found");
+  const [membership] = await db
+    .select({
+      professionalId: professionalInstitutions.professionalId,
+      roleInInstitution: professionalInstitutions.roleInInstitution,
+    })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.userId, ctx.user.id),
+        eq(professionalInstitutions.institutionId, institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .limit(1);
+
+  if (!membership && !isGlobalAdmin) {
+    throw new Error("Professional membership not found for tenant");
   }
 
-  const professional = professionalRows[0];
-  const professionalId = professional.id;
-  const role = professional.user_role as string;
+  const professionalId = membership?.professionalId ?? null;
+  const role = isGlobalAdmin ? "GESTOR_PLUS" : (membership?.roleInInstitution as string);
 
   // Buscar monthly_roster usando Drizzle query
   const rosterResult = await db.execute<any>(

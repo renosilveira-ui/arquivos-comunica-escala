@@ -13,6 +13,11 @@ import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import { notifyVacancyOpened } from "./integrations/comunica-plus";
 import { publishMonth, lockMonth } from "./month-guards";
+import {
+  assertCanManageInstitutionSchedule,
+  assertManagerScopeAccess,
+  getTenantActorFromContext,
+} from "./_core/policy";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -31,15 +36,6 @@ function buildShiftTimestamps(
   return [startAt, endAt];
 }
 
-function requireManagerOrAdmin(role: string) {
-  if (role !== "admin" && role !== "manager") {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Apenas admin ou manager podem realizar esta operação",
-    });
-  }
-}
-
 export const shiftsRouter = router({
   // ------------------------------------------------------------------
   // shifts.create — admin/manager only
@@ -54,7 +50,8 @@ export const shiftsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      requireManagerOrAdmin(ctx.user.role);
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");
@@ -70,6 +67,7 @@ export const shiftsRouter = router({
       if (template.institutionId !== ctx.institutionId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Template fora do tenant ativo" });
       }
+      await assertManagerScopeAccess(actor, template.hospitalId, template.sectorId ?? input.sectorId);
 
       const sectorId = input.sectorId ?? template.sectorId;
       if (!sectorId) {
@@ -188,7 +186,8 @@ export const shiftsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      requireManagerOrAdmin(ctx.user.role);
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");
@@ -206,6 +205,7 @@ export const shiftsRouter = router({
       if (!existing) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
       }
+      await assertManagerScopeAccess(actor, existing.hospitalId, existing.sectorId);
 
       const patch: Partial<typeof shiftInstances.$inferInsert> = {};
       if (input.status !== undefined) patch.status = input.status;
@@ -403,10 +403,12 @@ export const shiftsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireManagerOrAdmin(ctx.user.role);
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
       if (input.institutionId !== ctx.institutionId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
       }
+      await assertManagerScopeAccess(actor, input.hospitalId);
       await publishMonth(
         input.institutionId,
         input.hospitalId,
@@ -441,10 +443,12 @@ export const shiftsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireManagerOrAdmin(ctx.user.role);
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
       if (input.institutionId !== ctx.institutionId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
       }
+      await assertManagerScopeAccess(actor, input.hospitalId);
       await lockMonth(
         input.institutionId,
         input.hospitalId,
@@ -480,7 +484,9 @@ export const shiftsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireManagerOrAdmin(ctx.user.role);
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      await assertManagerScopeAccess(actor, input.hospitalId);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");

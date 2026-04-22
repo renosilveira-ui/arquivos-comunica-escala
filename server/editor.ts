@@ -2,12 +2,16 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { ForbiddenError } from "../shared/_core/errors";
-import { yearMonthFromDate } from "../lib/date-utils";
 import { assertMonthEditable } from "./month-guards";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { sql } from "drizzle-orm";
+import {
+  assertCanManageInstitutionSchedule,
+  assertManagerScopeAccess,
+  getTenantActorFromContext,
+} from "./_core/policy";
 
 /**
  * Editor Router
@@ -38,32 +42,20 @@ export const editorRouter = router({
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
       }
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-
-      // 1. Buscar profissional do usuário (gestor)
-      const managerResult = await db.execute<any>(
-        sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
-      );
-      const managerRows = (managerResult as any).rows || (managerResult as any[]);
-      if (!managerRows[0]) {
-        throw new ForbiddenError("Profissional não encontrado");
-      }
-
-      const managerId = managerRows[0].id;
-      const role = managerRows[0].user_role as string;
-
-      // USER não pode alocar diretamente
-      if (role === "USER") {
-        throw new ForbiddenError("Apenas gestores podem alocar profissionais diretamente");
-      }
+      const managerId = actor.professionalId;
+      if (!managerId) throw new ForbiddenError("Profissional não encontrado");
 
       // 2. Buscar shift_instance
       const shiftResult = await db.execute<any>(
         sql`SELECT institution_id, hospital_id, sector_id, start_at, end_at, status
             FROM shift_instances
             WHERE id = ${shiftInstanceId}
+            AND institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
       const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
@@ -72,22 +64,7 @@ export const editorRouter = router({
       }
 
       const shift = shiftRows[0];
-      const yearMonth = yearMonthFromDate(new Date(shift.start_at));
-
-      // 3. Verificar RBAC + manager_scope
-      if (role === "GESTOR_MEDICO") {
-        const scopeResult = await db.execute<any>(
-          sql`SELECT COUNT(*) as count FROM manager_scope
-              WHERE manager_professional_id = ${managerId}
-              AND hospital_id = ${shift.hospital_id}
-              AND (sector_id IS NULL OR sector_id = ${shift.sector_id})
-              AND active = true`
-        );
-        const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
-        if (scopeRows[0]?.count === 0) {
-          throw new ForbiddenError("Você não tem permissão para alocar neste hospital/setor");
-        }
-      }
+      await assertManagerScopeAccess(actor, shift.hospital_id, shift.sector_id);
 
       // 4. Verificar assertMonthEditable
       await assertMonthEditable(
@@ -134,6 +111,7 @@ export const editorRouter = router({
       const accessResult = await db.execute<any>(
         sql`SELECT COUNT(*) as count FROM professional_access
             WHERE professional_id = ${professionalId}
+            AND institution_id = ${ctx.institutionId}
             AND hospital_id = ${shift.hospital_id}
             AND (sector_id IS NULL OR sector_id = ${shift.sector_id})
             AND can_access = true`
@@ -146,8 +124,8 @@ export const editorRouter = router({
       // 8. Transação: INSERT assignment + UPDATE shift_instance
       await db.execute(
         sql`INSERT INTO shift_assignments_v2 
-            (shift_instance_id, professional_id, assignment_type, status, is_active, created_at, updated_at)
-            VALUES (${shiftInstanceId}, ${professionalId}, ${assignmentType}, 'OCUPADO', true, NOW(), NOW())`
+            (shift_instance_id, institution_id, hospital_id, sector_id, professional_id, assignment_type, status, is_active, created_by, created_at, updated_at)
+            VALUES (${shiftInstanceId}, ${ctx.institutionId}, ${shift.hospital_id}, ${shift.sector_id}, ${professionalId}, ${assignmentType}, 'OCUPADO', true, ${userId}, NOW(), NOW())`
       );
 
       const assignmentIdResult = await db.execute<any>(sql`SELECT LAST_INSERT_ID() as id`);
@@ -155,7 +133,7 @@ export const editorRouter = router({
       const assignmentId = assignmentIdRows[0].id;
 
       await db.execute(
-        sql`UPDATE shift_instances SET status = 'OCUPADO' WHERE id = ${shiftInstanceId}`
+        sql`UPDATE shift_instances SET status = 'OCUPADO' WHERE id = ${shiftInstanceId} AND institution_id = ${ctx.institutionId}`
       );
 
       // 9. Audit log
@@ -172,7 +150,7 @@ export const editorRouter = router({
         entityType: "SHIFT_ASSIGNMENT",
         entityId: assignmentId,
         actorUserId: userId,
-        actorRole: role,
+        actorRole: actor.roleInInstitution,
         description: `Alocação direta do profissional #${professionalId} no turno #${shiftInstanceId}`,
         shiftInstanceId,
         hospitalId: shift.hospital_id as number,
@@ -201,31 +179,19 @@ export const editorRouter = router({
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
       }
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-
-      // 1. Buscar profissional do usuário (gestor)
-      const managerResult = await db.execute<any>(
-        sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
-      );
-      const managerRows = (managerResult as any).rows || (managerResult as any[]);
-      if (!managerRows[0]) {
-        throw new ForbiddenError("Profissional não encontrado");
-      }
-
-      const managerId = managerRows[0].id;
-      const role = managerRows[0].user_role as string;
-
-      // USER não pode marcar vago
-      if (role === "USER") {
-        throw new ForbiddenError("Apenas gestores podem marcar turnos como vago");
-      }
+      const managerId = actor.professionalId;
+      if (!managerId) throw new ForbiddenError("Profissional não encontrado");
 
       // 2. Buscar shift_instance
       const shiftResult = await db.execute<any>(
         sql`SELECT institution_id, hospital_id, sector_id, start_at FROM shift_instances
             WHERE id = ${shiftInstanceId}
+            AND institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
       const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
@@ -234,22 +200,7 @@ export const editorRouter = router({
       }
 
       const shift = shiftRows[0];
-      const yearMonth = yearMonthFromDate(new Date(shift.start_at));
-
-      // 3. Verificar RBAC + manager_scope
-      if (role === "GESTOR_MEDICO") {
-        const scopeResult = await db.execute<any>(
-          sql`SELECT COUNT(*) as count FROM manager_scope
-              WHERE manager_professional_id = ${managerId}
-              AND hospital_id = ${shift.hospital_id}
-              AND (sector_id IS NULL OR sector_id = ${shift.sector_id})
-              AND active = true`
-        );
-        const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
-        if (scopeRows[0]?.count === 0) {
-          throw new ForbiddenError("Você não tem permissão para editar este hospital/setor");
-        }
-      }
+      await assertManagerScopeAccess(actor, shift.hospital_id, shift.sector_id);
 
       // 4. Verificar assertMonthEditable
       await assertMonthEditable(
@@ -264,12 +215,14 @@ export const editorRouter = router({
       await db.execute(
         sql`UPDATE shift_assignments_v2 
             SET is_active = false, updated_at = NOW()
-            WHERE shift_instance_id = ${shiftInstanceId} AND is_active = true`
+            WHERE shift_instance_id = ${shiftInstanceId}
+            AND institution_id = ${ctx.institutionId}
+            AND is_active = true`
       );
 
       // 6. UPDATE shift_instance para VAGO
       await db.execute(
-        sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${shiftInstanceId}`
+        sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${shiftInstanceId} AND institution_id = ${ctx.institutionId}`
       );
 
       // 7. Audit log
@@ -283,7 +236,7 @@ export const editorRouter = router({
 
       await recordAudit({
         actorUserId: userId,
-        actorRole: role,
+        actorRole: actor.roleInInstitution,
         action: "ASSIGNMENT_REMOVED",
         entityType: "SHIFT_INSTANCE",
         entityId: shiftInstanceId,
@@ -313,26 +266,13 @@ export const editorRouter = router({
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
       }
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
 
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-
-      // 1. Buscar profissional do usuário (gestor)
-      const managerResult = await db.execute<any>(
-        sql`SELECT id, user_role FROM professionals WHERE user_id = ${userId} LIMIT 1`
-      );
-      const managerRows = (managerResult as any).rows || (managerResult as any[]);
-      if (!managerRows[0]) {
-        throw new ForbiddenError("Profissional não encontrado");
-      }
-
-      const managerId = managerRows[0].id;
-      const role = managerRows[0].user_role as string;
-
-      // USER não pode remover alocação
-      if (role === "USER") {
-        throw new ForbiddenError("Apenas gestores podem remover alocações");
-      }
+      const managerId = actor.professionalId;
+      if (!managerId) throw new ForbiddenError("Profissional não encontrado");
 
       // 2. Buscar assignment + shift_instance
       const assignmentResult = await db.execute<any>(
@@ -341,6 +281,7 @@ export const editorRouter = router({
             FROM shift_assignments_v2 sa
             INNER JOIN shift_instances si ON sa.shift_instance_id = si.id
             WHERE sa.id = ${assignmentId}
+            AND sa.institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
       const assignmentRows = (assignmentResult as any).rows || (assignmentResult as any[]);
@@ -349,22 +290,7 @@ export const editorRouter = router({
       }
 
       const assignment = assignmentRows[0];
-      const yearMonth = yearMonthFromDate(new Date(assignment.start_at));
-
-      // 3. Verificar RBAC + manager_scope
-      if (role === "GESTOR_MEDICO") {
-        const scopeResult = await db.execute<any>(
-          sql`SELECT COUNT(*) as count FROM manager_scope
-              WHERE manager_professional_id = ${managerId}
-              AND hospital_id = ${assignment.hospital_id}
-              AND (sector_id IS NULL OR sector_id = ${assignment.sector_id})
-              AND active = true`
-        );
-        const scopeRows = (scopeResult as any).rows || (scopeResult as any[]);
-        if (scopeRows[0]?.count === 0) {
-          throw new ForbiddenError("Você não tem permissão para remover alocações neste hospital/setor");
-        }
-      }
+      await assertManagerScopeAccess(actor, assignment.hospital_id, assignment.sector_id);
 
       // 4. Verificar assertMonthEditable
       await assertMonthEditable(
@@ -379,13 +305,15 @@ export const editorRouter = router({
       await db.execute(
         sql`UPDATE shift_assignments_v2 
             SET is_active = false, updated_at = NOW()
-            WHERE id = ${assignmentId}`
+            WHERE id = ${assignmentId}
+            AND institution_id = ${ctx.institutionId}`
       );
 
       // 6. Verificar se ainda há assignments ativos no turno
       const remainingResult = await db.execute<any>(
         sql`SELECT COUNT(*) as count FROM shift_assignments_v2
             WHERE shift_instance_id = ${assignment.shift_instance_id}
+            AND institution_id = ${ctx.institutionId}
             AND is_active = true
             AND status = 'OCUPADO'`
       );
@@ -395,7 +323,7 @@ export const editorRouter = router({
       // 7. Se não houver mais assignments, marcar turno como VAGO
       if (!hasRemaining) {
         await db.execute(
-          sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${assignment.shift_instance_id}`
+          sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${assignment.shift_instance_id} AND institution_id = ${ctx.institutionId}`
         );
       }
 
