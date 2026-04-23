@@ -1,5 +1,5 @@
-import { professionals, managerScope, institutionConfig, shiftInstances } from "../drizzle/schema";
-import { eq, and, isNull } from "drizzle-orm";
+import { professionals, managerScope, institutionConfig, shiftInstances, professionalInstitutions } from "../drizzle/schema";
+import { eq, and } from "drizzle-orm";
 import { getDb } from "./db";
 
 /**
@@ -47,6 +47,26 @@ async function resolveShift(shiftInstanceId: number) {
   return row ?? null;
 }
 
+async function getInstitutionRoleForProfessional(
+  professionalId: number,
+  institutionId: number,
+): Promise<UserRole | null> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [membership] = await db
+    .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.professionalId, professionalId),
+        eq(professionalInstitutions.institutionId, institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .limit(1);
+  return (membership?.roleInInstitution as UserRole | undefined) ?? null;
+}
+
 /**
  * Buscar role do profissional
  */
@@ -72,13 +92,20 @@ export async function getProfessionalRole(professionalId: number): Promise<UserR
 export async function checkJurisdiction(
   professionalId: number,
   hospitalId: number,
-  sectorId: number
+  sectorId: number,
+  institutionId?: number,
 ): Promise<JurisdictionCheck> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Buscar role do profissional
-  const role = await getProfessionalRole(professionalId);
+  // Buscar role contextual do profissional no tenant ativo
+  let role: UserRole | null = null;
+  if (institutionId) {
+    role = await getInstitutionRoleForProfessional(professionalId, institutionId);
+  }
+  if (!role) {
+    role = await getProfessionalRole(professionalId);
+  }
   if (!role) {
     return { hasAccess: false, reason: "Profissional não encontrado" };
   }
@@ -98,11 +125,18 @@ export async function checkJurisdiction(
     .select()
     .from(managerScope)
     .where(
-      and(
-        eq(managerScope.managerProfessionalId, professionalId),
-        eq(managerScope.hospitalId, hospitalId),
-        eq(managerScope.active, true)
-      )
+      institutionId
+        ? and(
+            eq(managerScope.institutionId, institutionId),
+            eq(managerScope.managerProfessionalId, professionalId),
+            eq(managerScope.hospitalId, hospitalId),
+            eq(managerScope.active, true),
+          )
+        : and(
+            eq(managerScope.managerProfessionalId, professionalId),
+            eq(managerScope.hospitalId, hospitalId),
+            eq(managerScope.active, true),
+          ),
     );
 
   if (scopes.length === 0) {
@@ -137,7 +171,7 @@ export async function checkEditWindow(
   institutionId: number,
   shiftDate: Date
 ): Promise<EditWindowCheck> {
-  const role = await getProfessionalRole(professionalId);
+  const role = await getInstitutionRoleForProfessional(professionalId, institutionId);
 
   const isRetroactive = shiftDate < new Date();
 
@@ -199,10 +233,22 @@ export async function canApproveAssignment(
     if (!shift) return { allowed: false, reason: "Turno não encontrado" };
     hospitalId = shift.hospitalId;
     resolvedSectorId = shift.sectorId;
-  }
+    const role = await getInstitutionRoleForProfessional(managerId, shift.institutionId);
+    if (!role) return { allowed: false, reason: "Profissional sem vínculo ativo na instituição" };
+    if (role === "USER") return { allowed: false, reason: "Apenas gestores podem aprovar" };
+    if (role === "GESTOR_PLUS") return { allowed: true };
 
+    const jurisdiction = await checkJurisdiction(
+      managerId,
+      hospitalId,
+      resolvedSectorId,
+      shift.institutionId,
+    );
+    if (!jurisdiction.hasAccess) return { allowed: false, reason: jurisdiction.reason };
+    return { allowed: true };
+  }
   const role = await getProfessionalRole(managerId);
-  if (!role) return { allowed: false, reason: "Profissional não encontrado" };
+  if (!role) return { allowed: false, reason: "Profissional sem vínculo ativo na instituição" };
   if (role === "USER") return { allowed: false, reason: "Apenas gestores podem aprovar" };
   if (role === "GESTOR_PLUS") return { allowed: true };
 
@@ -228,13 +274,18 @@ export async function canEditShift(
   const shift = await resolveShift(shiftInstanceId);
   if (!shift) return { allowed: false, reason: "Turno não encontrado" };
 
-  const role = await getProfessionalRole(professionalId);
+  const role = await getInstitutionRoleForProfessional(professionalId, shift.institutionId);
   if (!role) return { allowed: false, reason: "Profissional não encontrado" };
   if (role === "USER") return { allowed: false, reason: "Usuários comuns não podem editar turnos" };
   if (role === "GESTOR_PLUS") return { allowed: true };
 
   // GESTOR_MEDICO: jurisdiction + edit window
-  const jurisdiction = await checkJurisdiction(professionalId, shift.hospitalId, shift.sectorId);
+  const jurisdiction = await checkJurisdiction(
+    professionalId,
+    shift.hospitalId,
+    shift.sectorId,
+    shift.institutionId,
+  );
   if (!jurisdiction.hasAccess) {
     return { allowed: false, reason: jurisdiction.reason };
   }
@@ -255,6 +306,6 @@ export async function canAssumeVacancy(
   professionalId: number,
 ): Promise<PermissionCheck> {
   const role = await getProfessionalRole(professionalId);
-  if (!role) return { allowed: false, reason: "Profissional não encontrado" };
+  if (!role) return { allowed: false, reason: "Profissional não encontrado ou sem vínculo ativo" };
   return { allowed: true };
 }

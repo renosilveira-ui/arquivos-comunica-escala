@@ -15,6 +15,11 @@ import {
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
 import { yearMonthFromDate } from "../lib/date-utils";
+import {
+  assertCanManageInstitutionSchedule,
+  assertManagerScopeAccess,
+  getTenantActorFromContext,
+} from "./_core/policy";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -26,8 +31,12 @@ async function getProfessionalForUser(db: any, userId: number) {
   return row ?? null;
 }
 
-function isManager(role: string) {
-  return role === "admin" || role === "manager";
+async function getProfessionalById(db: any, professionalId: number) {
+  const [row] = await db
+    .select({ id: professionals.id, name: professionals.name, userRole: professionals.userRole })
+    .from(professionals)
+    .where(eq(professionals.id, professionalId));
+  return row ?? null;
 }
 
 async function assertNotLocked(db: any, institutionId: number, hospitalId: number, date: Date) {
@@ -68,7 +77,8 @@ export const swapRouter = router({
 
       const userId = ctx.user!.id;
       const institutionId = ctx.institutionId;
-      const pro = await getProfessionalForUser(db, userId);
+      const actor = await getTenantActorFromContext(ctx);
+      const pro = actor.professionalId ? await getProfessionalById(db, actor.professionalId) : null;
       if (!pro) throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
 
       // 1. Verify fromAssignment belongs to user
@@ -188,7 +198,8 @@ export const swapRouter = router({
 
       const userId = ctx.user!.id;
       const institutionId = ctx.institutionId;
-      const pro = await getProfessionalForUser(db, userId);
+      const actor = await getTenantActorFromContext(ctx);
+      const pro = actor.professionalId ? await getProfessionalById(db, actor.professionalId) : null;
       if (!pro) throw new TRPCError({ code: "FORBIDDEN", message: "Profissional não encontrado" });
 
       const [swap] = await db
@@ -362,9 +373,8 @@ export const swapRouter = router({
 
       const userId = ctx.user!.id;
       const institutionId = ctx.institutionId;
-      if (!isManager(ctx.user!.role)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Apenas gestores podem aprovar" });
-      }
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
 
       const [swap] = await db
         .select()
@@ -376,6 +386,7 @@ export const swapRouter = router({
           ),
         );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+      await assertManagerScopeAccess(actor, swap.hospitalId, swap.sectorId ?? undefined);
 
       if (swap.status !== "ACCEPTED") {
         throw new TRPCError({ code: "BAD_REQUEST", message: `Status atual é ${swap.status}, esperava ACCEPTED` });
@@ -541,9 +552,8 @@ export const swapRouter = router({
 
       const userId = ctx.user!.id;
       const institutionId = ctx.institutionId;
-      if (!isManager(ctx.user!.role)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Apenas gestores podem rejeitar" });
-      }
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
 
       const [swap] = await db
         .select()
@@ -555,6 +565,7 @@ export const swapRouter = router({
           ),
         );
       if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+      await assertManagerScopeAccess(actor, swap.hospitalId, swap.sectorId ?? undefined);
 
       if (swap.status !== "ACCEPTED" && swap.status !== "PENDING") {
         throw new TRPCError({ code: "BAD_REQUEST", message: `Não é possível rejeitar com status ${swap.status}` });
@@ -657,8 +668,12 @@ export const swapRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
 
       const userId = ctx.user!.id;
-      const userRole = ctx.user!.role;
       const institutionId = ctx.institutionId;
+      const actor = await getTenantActorFromContext(ctx);
+      const isInstitutionManager =
+        actor.isGlobalAdmin ||
+        actor.roleInInstitution === "GESTOR_MEDICO" ||
+        actor.roleInInstitution === "GESTOR_PLUS";
 
       const pro = await getProfessionalForUser(db, userId);
 
@@ -669,7 +684,7 @@ export const swapRouter = router({
       if (input.type) conditions.push(eq(swapRequests.type, input.type));
 
       // Non-managers see only their own swaps
-      if (!isManager(userRole) && pro) {
+      if (!isInstitutionManager && pro) {
         conditions.push(
           sql`(${swapRequests.fromProfessionalId} = ${pro.id} OR ${swapRequests.toProfessionalId} = ${pro.id})`,
         );
@@ -729,7 +744,7 @@ export const swapRouter = router({
           AND sr.institution_id = ${institutionId}
           ${input.status ? sql`AND sr.status = ${input.status}` : sql``}
           ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
-          ${!isManager(userRole) && pro
+          ${!isInstitutionManager && pro
             ? sql`AND (sr.from_professional_id = ${pro.id} OR sr.to_professional_id = ${pro.id})`
             : sql``}
         ORDER BY sr.created_at DESC

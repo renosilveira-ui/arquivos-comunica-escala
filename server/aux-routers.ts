@@ -17,6 +17,7 @@ import {
   shiftInstances,
   shiftAssignmentsV2,
 } from "../drizzle/schema";
+import { actorCapabilities, getTenantActorFromContext } from "./_core/policy";
 
 // ─── professionals ────────────────────────────────────────────────────────────
 
@@ -28,7 +29,9 @@ export const professionalsRouter = router({
       if (!db) throw new Error("Database not available");
 
       const isSelf = input.userId === ctx.user.id;
-      const canReadOthers = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const actor = await getTenantActorFromContext(ctx);
+      const capabilities = actorCapabilities(actor);
+      const canReadOthers = capabilities.canCreateShift || capabilities.canApproveAssignments;
       if (!isSelf && !canReadOthers) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissão para consultar outro usuário" });
       }
@@ -69,6 +72,16 @@ export const professionalsRouter = router({
         roleInInstitution: r.roleInInstitution,
         isPrimary: r.isPrimary,
       }));
+  }),
+
+  getMyCapabilities: protectedProcedure.query(async ({ ctx }) => {
+    const actor = await getTenantActorFromContext(ctx);
+    return {
+      institutionId: actor.institutionId,
+      roleInInstitution: actor.roleInInstitution,
+      isGlobalAdmin: actor.isGlobalAdmin,
+      ...actorCapabilities(actor),
+    };
   }),
 
   /**
