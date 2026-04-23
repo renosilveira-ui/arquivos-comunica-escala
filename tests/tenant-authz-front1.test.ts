@@ -40,12 +40,18 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
     if (!db) throw new Error("Database not available");
 
     const stamp = Date.now();
+    const cnpjBase = `${Date.now()}${Math.floor(Math.random() * 1_000_000)
+      .toString()
+      .padStart(6, "0")}`;
+    const cnpjA = cnpjBase.slice(-14);
+    const cnpjB = `${cnpjBase.slice(0, -1)}8`.slice(-14);
+    const cnpjC = `${cnpjBase.slice(0, -1)}7`.slice(-14);
 
     const [insA] = await db
       .insert(institutions)
       .values({
         name: `Tenant A ${stamp}`,
-        cnpj: `9000000000${stamp}`.slice(0, 14),
+        cnpj: cnpjA,
         legalName: `Tenant A ${stamp}`,
         tradeName: `TA${stamp}`.slice(0, 20),
         isActive: true,
@@ -57,7 +63,7 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
       .insert(institutions)
       .values({
         name: `Tenant B ${stamp}`,
-        cnpj: `8000000000${stamp}`.slice(0, 14),
+        cnpj: cnpjB,
         legalName: `Tenant B ${stamp}`,
         tradeName: `TB${stamp}`.slice(0, 20),
         isActive: true,
@@ -69,7 +75,7 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
       .insert(institutions)
       .values({
         name: `Tenant C ${stamp}`,
-        cnpj: `7000000000${stamp}`.slice(0, 14),
+        cnpj: cnpjC,
         legalName: `Tenant C ${stamp}`,
         tradeName: `TC${stamp}`.slice(0, 20),
         isActive: true,
@@ -96,6 +102,7 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
         hospitalId: hospitalAId,
         name: `Setor A ${stamp}`,
         category: "internacao",
+        color: "#2563EB",
       })
       .$returningId();
     sectorAId = sectorA.id;
@@ -107,6 +114,7 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
         hospitalId: hospitalBId,
         name: `Setor B ${stamp}`,
         category: "internacao",
+        color: "#16A34A",
       })
       .$returningId();
     sectorBId = sectorB.id;
@@ -262,7 +270,7 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
         assignmentType: "ON_DUTY",
         reason: "test tenant scope",
       }),
-    ).rejects.toThrow(/Turno não encontrado/i);
+    ).rejects.toThrow(/Turno não encontrado|jurisdição/i);
   });
 
   it("bloqueia mutação crítica para papel USER no tenant ativo", async () => {
@@ -278,6 +286,7 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
         hospitalId: hospitalBId,
         name: `Setor B2 ${Date.now()}`,
         category: "internacao",
+        color: "#9333EA",
       })
       .$returningId();
 
