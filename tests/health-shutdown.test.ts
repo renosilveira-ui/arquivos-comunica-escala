@@ -4,6 +4,8 @@ import request from "supertest";
 import { pingDb } from "../server/db";
 import { installShutdownHandlers } from "../server/_core/shutdown";
 
+import type { DbProbeResult } from "../server/db";
+
 describe("Frente 2.3 - pingDb", () => {
   it("returns ok:true with latency when the test database is reachable", async () => {
     const result = await pingDb();
@@ -16,26 +18,22 @@ describe("Frente 2.3 - pingDb", () => {
   });
 
   it("respects the timeout argument when the probe hangs", async () => {
-    // Race a near-zero timeout against any real query — the timeout must win
-    // even on a fast local DB. This is a regression guard for the
-    // Promise.race wiring; if pingDb forgets to race the timeout, the test
-    // hangs the suite.
     const result = await pingDb(1);
     if (result.ok) {
-      // Local DB was that fast — the test cannot deterministically force
-      // timeout when SELECT 1 takes <1ms. Accept this outcome but assert
-      // that latencyMs is reported.
+      // Local DB was that fast — accept this and assert latency is reported.
       expect(result.latencyMs).toBeGreaterThanOrEqual(0);
     } else {
-      expect(result.error).toMatch(/timeout/i);
+      expect(result.status).toBe("timeout");
+      expect(result.detail).toMatch(/timeout/i);
     }
   });
 });
 
-describe("Frente 2.3 - /api/health endpoint", () => {
-  function buildHealthApp(pingImpl: () => Promise<
-    { ok: true; latencyMs: number } | { ok: false; error: string }
-  >) {
+describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
+  function buildHealthApp(
+    pingImpl: () => Promise<DbProbeResult>,
+    log: { warn: (...args: unknown[]) => void } = { warn: () => {} },
+  ) {
     const app = express();
     app.get("/api/health", async (_req, res) => {
       const db = await pingImpl();
@@ -47,9 +45,13 @@ describe("Frente 2.3 - /api/health endpoint", () => {
         });
         return;
       }
+      log.warn(
+        { status: db.status, detail: db.detail },
+        "health probe failed",
+      );
       res.status(503).json({
         ok: false,
-        db: { ok: false, error: db.error },
+        db: { ok: false, status: db.status },
         timestamp: Date.now(),
       });
     });
@@ -65,28 +67,95 @@ describe("Frente 2.3 - /api/health endpoint", () => {
     expect(typeof res.body.timestamp).toBe("number");
   });
 
-  it("returns 503 with db.error when the probe fails", async () => {
+  it("returns 503 with sanitized status and NO raw detail on timeout", async () => {
     const app = buildHealthApp(async () => ({
       ok: false,
-      error: "db ping timeout after 2000ms",
+      status: "timeout",
+      detail: "db ping timeout after 2000ms",
     }));
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(503);
-    expect(res.body.ok).toBe(false);
-    expect(res.body.db).toEqual({
-      ok: false,
-      error: "db ping timeout after 2000ms",
-    });
+    expect(res.body.db).toEqual({ ok: false, status: "timeout" });
+    expect(res.body.db.detail).toBeUndefined();
+    expect(res.body.db.error).toBeUndefined();
   });
 
-  it("returns 503 when the database is not initialized", async () => {
+  it("returns 503 with status=auth_failed and does NOT leak the username/host on auth failure", async () => {
+    // Realistic mysql2 message: "Access denied for user 'app'@'10.0.0.5' (using password: YES)"
     const app = buildHealthApp(async () => ({
       ok: false,
-      error: "database not initialized",
+      status: "auth_failed",
+      detail: "Access denied for user 'app'@'10.0.0.5' (using password: YES)",
     }));
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(503);
-    expect(res.body.db.error).toBe("database not initialized");
+    expect(res.body.db.status).toBe("auth_failed");
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain("Access denied");
+    expect(body).not.toContain("10.0.0.5");
+    expect(body).not.toContain("'app'");
+    expect(body).not.toContain("password");
+  });
+
+  it("returns 503 with status=unreachable and does NOT leak the host/IP on connection failure", async () => {
+    const app = buildHealthApp(async () => ({
+      ok: false,
+      status: "unreachable",
+      detail: "connect ECONNREFUSED 10.0.0.5:3306",
+    }));
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(503);
+    expect(res.body.db.status).toBe("unreachable");
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain("ECONNREFUSED");
+    expect(body).not.toContain("10.0.0.5");
+    expect(body).not.toContain("3306");
+  });
+
+  it("returns 503 with status=unknown_database and does NOT leak the database name", async () => {
+    const app = buildHealthApp(async () => ({
+      ok: false,
+      status: "unknown_database",
+      detail: "ER_BAD_DB_ERROR: Unknown database 'escalas_prod'",
+    }));
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(503);
+    expect(res.body.db.status).toBe("unknown_database");
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain("escalas_prod");
+    expect(body).not.toContain("ER_BAD_DB_ERROR");
+  });
+
+  it("returns 503 with status=uninitialized when the database is not initialized", async () => {
+    const app = buildHealthApp(async () => ({
+      ok: false,
+      status: "uninitialized",
+      detail: "database not initialized",
+    }));
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(503);
+    expect(res.body.db).toEqual({ ok: false, status: "uninitialized" });
+  });
+
+  it("logs the full detail server-side via logger.warn (operator visibility)", async () => {
+    const log = { warn: vi.fn() };
+    const app = buildHealthApp(
+      async () => ({
+        ok: false,
+        status: "auth_failed",
+        detail: "Access denied for user 'app'@'10.0.0.5' (using password: YES)",
+      }),
+      log,
+    );
+    await request(app).get("/api/health");
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "auth_failed",
+        detail: expect.stringContaining("Access denied"),
+      }),
+      "health probe failed",
+    );
   });
 });
 

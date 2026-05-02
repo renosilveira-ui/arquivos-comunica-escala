@@ -75,13 +75,25 @@ async function startServer() {
   // monitors) are never throttled. Probes the database with a short timeout
   // and returns 503 if the DB is unreachable, so the orchestrator can route
   // around a half-broken instance instead of declaring it healthy.
+  //
+  // Security: the response body MUST NOT contain raw driver error messages.
+  // mysql2 errors embed internal hostnames, IPs, usernames and database
+  // names; exposing them on an unauthenticated endpoint is CWE-209
+  // information disclosure. Only a fixed-vocabulary `status` label is
+  // returned; the full driver detail is logged server-side.
   app.get("/api/health", async (_req, res) => {
     const db = await pingDb();
     if (db.ok) {
       res.json({ ok: true, db: { ok: true, latencyMs: db.latencyMs }, timestamp: Date.now() });
       return;
     }
-    res.status(503).json({ ok: false, db: { ok: false, error: db.error }, timestamp: Date.now() });
+    logger.warn(
+      { status: db.status, detail: db.detail },
+      "health probe failed",
+    );
+    res
+      .status(503)
+      .json({ ok: false, db: { ok: false, status: db.status }, timestamp: Date.now() });
   });
 
   app.use(createGlobalRateLimit());
