@@ -10,6 +10,7 @@ import { adminRouter } from "../routes/admin";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { assertProductionSecrets } from "./env-validation";
+import { logger } from "./logger";
 import {
   PAYLOAD_LIMIT,
   createAuthRateLimit,
@@ -17,6 +18,8 @@ import {
   createGlobalRateLimit,
   createHelmetMiddleware,
 } from "./security";
+import { installShutdownHandlers } from "./shutdown";
+import { pingDb } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -69,9 +72,16 @@ async function startServer() {
   app.use(createCorsMiddleware({ allowedOrigins }));
 
   // Health check is registered BEFORE rate limiting so probes (Render, uptime
-  // monitors) are never throttled.
-  app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, timestamp: Date.now() });
+  // monitors) are never throttled. Probes the database with a short timeout
+  // and returns 503 if the DB is unreachable, so the orchestrator can route
+  // around a half-broken instance instead of declaring it healthy.
+  app.get("/api/health", async (_req, res) => {
+    const db = await pingDb();
+    if (db.ok) {
+      res.json({ ok: true, db: { ok: true, latencyMs: db.latencyMs }, timestamp: Date.now() });
+      return;
+    }
+    res.status(503).json({ ok: false, db: { ok: false, error: db.error }, timestamp: Date.now() });
   });
 
   app.use(createGlobalRateLimit());
@@ -100,8 +110,16 @@ async function startServer() {
   }
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`[api] server listening on 0.0.0.0:${port}`);
+    logger.info({ port, env: process.env.NODE_ENV ?? "unset" }, "api server listening");
   });
+
+  installShutdownHandlers({ server, logger });
 }
 
-startServer().catch(console.error);
+startServer().catch((err) => {
+  logger.fatal(
+    { err: err instanceof Error ? err.message : String(err) },
+    "server failed to start",
+  );
+  process.exit(1);
+});
