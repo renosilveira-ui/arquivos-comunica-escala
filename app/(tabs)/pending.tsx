@@ -529,7 +529,7 @@ export default function PendingScreen() {
                 )}
 
                 {sw.reason && (
-                  <Text style={{ color: "#94A3B8", fontSize: 12, fontStyle: "italic", marginTop: 4 }}>"{sw.reason}"</Text>
+                  <Text style={{ color: "#94A3B8", fontSize: 12, fontStyle: "italic", marginTop: 4 }}>{`"${sw.reason}"`}</Text>
                 )}
 
                 {/* Action buttons */}
