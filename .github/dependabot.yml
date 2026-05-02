@@ -1,0 +1,60 @@
+version: 2
+
+# Dependabot configuration. Two ecosystems are tracked:
+#   - npm: production and dev dependencies of this project
+#   - github-actions: pinned action versions in .github/workflows/*
+#
+# Security advisories are filed daily by GitHub regardless of this schedule;
+# the weekly cadence below covers non-security version bumps so the noise is
+# bounded. Group rules collapse minor/patch updates so we get one PR per
+# group per week instead of dozens of individual bumps.
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      security-patches:
+        applies-to: security-updates
+        update-types:
+          - "patch"
+          - "minor"
+      runtime-minor-patch:
+        applies-to: version-updates
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-minor-patch:
+        applies-to: version-updates
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
