@@ -12,6 +12,10 @@ import {
 import { sdk } from "../_core/sdk";
 import { COOKIE_NAME } from "../../shared/const.js";
 import { recordAudit } from "../audit-trail";
+import {
+  resolveClearCookieOptions,
+  resolveSetCookieOptions,
+} from "../_core/cookie-policy";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 
@@ -35,14 +39,6 @@ function mapRoleToLabel(role: UserRole): string {
 export const authRouter = Router();
 
 const BCRYPT_ROUNDS = 12;
-
-const COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
-  maxAge: 365 * 24 * 60 * 60 * 1000, // 1 year ms
-  path: "/",
-};
 
 const DEFAULT_INSTITUTION = {
   id: 1,
@@ -166,7 +162,7 @@ authRouter.post("/login", async (req: Request, res: Response): Promise<void> => 
   }
 
   const token = await sdk.createSessionToken(String(user.id), { name: user.name ?? "" });
-  res.cookie(COOKIE_NAME, token, COOKIE_OPTIONS);
+  res.cookie(COOKIE_NAME, token, resolveSetCookieOptions(req));
   res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
@@ -177,7 +173,9 @@ authRouter.post("/sso-exchange", handleSsoExchange);
 
 // POST /api/auth/logout
 authRouter.post("/logout", (_req: Request, res: Response): void => {
-  res.clearCookie(COOKIE_NAME, { path: "/" });
+  // clearCookie must mirror the path AND domain used at Set-Cookie time, or
+  // the browser does not invalidate the original cookie.
+  res.clearCookie(COOKIE_NAME, resolveClearCookieOptions());
   res.json({ ok: true });
 });
 
