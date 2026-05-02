@@ -11,15 +11,28 @@ interface ComunicaPlusConfig {
   systemPin: string;
 }
 
+function readDevOrTestFallback(key: string, devFallback: string): string {
+  const value = (process.env[key] ?? "").trim();
+  if (value) return value;
+  const env = process.env.NODE_ENV;
+  if (env === "development" || env === "test") return devFallback;
+  throw new Error(
+    `[comunica-plus] ${key} is required when NODE_ENV=${env ?? "unset"}`,
+  );
+}
+
 function getConfig(): ComunicaPlusConfig {
   return {
-    baseUrl: process.env.COMUNICA_PLUS_URL || "http://localhost:3001",
-    systemEmail:
-      process.env.COMUNICA_PLUS_SYSTEM_EMAIL ||
+    baseUrl: readDevOrTestFallback("COMUNICA_PLUS_URL", "http://localhost:3001"),
+    systemEmail: readDevOrTestFallback(
+      "COMUNICA_PLUS_SYSTEM_EMAIL",
       "system.escalas@hospital.com",
-    systemPassword:
-      process.env.COMUNICA_PLUS_SYSTEM_PASSWORD || "system123",
-    systemPin: process.env.COMUNICA_PLUS_SYSTEM_PIN || "9999",
+    ),
+    systemPassword: readDevOrTestFallback(
+      "COMUNICA_PLUS_SYSTEM_PASSWORD",
+      "system123",
+    ),
+    systemPin: readDevOrTestFallback("COMUNICA_PLUS_SYSTEM_PIN", "9999"),
   };
 }
 

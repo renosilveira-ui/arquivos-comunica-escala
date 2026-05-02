@@ -9,6 +9,7 @@ import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { assertProductionSecrets } from "./env-validation";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -21,6 +22,8 @@ function isPortAvailable(port: number): Promise<boolean> {
 }
 
 async function startServer() {
+  assertProductionSecrets();
+
   const app = express();
   const server = createServer(app);
   const defaultDevOrigins = new Set([

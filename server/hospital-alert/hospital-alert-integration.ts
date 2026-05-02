@@ -5,8 +5,18 @@ import axios from "axios";
  * Gerencia autenticação automática baseada em escalas ativas
  */
 
-// URL base do HospitalAlert (configurável via env)
-const HOSPITAL_ALERT_BASE_URL = process.env.HOSPITAL_ALERT_URL || "http://localhost:3001";
+// URL base do HospitalAlert (configurável via env). Em produção/staging,
+// HOSPITAL_ALERT_URL é obrigatório — só permitimos fallback localhost em
+// development/test para preservar o fluxo de desenvolvimento local.
+const HOSPITAL_ALERT_BASE_URL = (() => {
+  const value = (process.env.HOSPITAL_ALERT_URL ?? "").trim();
+  if (value) return value;
+  const env = process.env.NODE_ENV;
+  if (env === "development" || env === "test") return "http://localhost:3001";
+  throw new Error(
+    `[hospital-alert] HOSPITAL_ALERT_URL is required when NODE_ENV=${env ?? "unset"}`,
+  );
+})();
 
 export interface HospitalAlertLoginPayload {
   userId: number;
