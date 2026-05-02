@@ -17,38 +17,93 @@ export async function getDb() {
   return _db;
 }
 
+/** Opaque labels safe to expose to unauthenticated callers. */
+export type DbProbeStatus =
+  | "uninitialized"
+  | "unreachable"
+  | "auth_failed"
+  | "unknown_database"
+  | "timeout"
+  | "unknown";
+
+export type DbProbeResult =
+  | { ok: true; latencyMs: number }
+  | {
+      ok: false;
+      /** Sanitized status label safe for public response bodies. */
+      status: DbProbeStatus;
+      /** Full driver error message — internal use only (logs, server-side). */
+      detail: string;
+    };
+
+const TIMEOUT_MARKER = "__db_ping_timeout__";
+
+/**
+ * Maps an arbitrary driver error into one of a small fixed set of opaque
+ * labels. Callers that respond to unauthenticated traffic (e.g. /api/health)
+ * MUST expose only the `status` label and never the raw `detail` — driver
+ * messages routinely embed internal hostnames, IPs, usernames and DB names
+ * (CWE-209).
+ */
+function classifyDbError(err: unknown): DbProbeStatus {
+  if (err instanceof Error && err.message === TIMEOUT_MARKER) return "timeout";
+
+  const code =
+    err && typeof err === "object" && "code" in err
+      ? String((err as { code: unknown }).code)
+      : "";
+
+  switch (code) {
+    case "ECONNREFUSED":
+    case "ENOTFOUND":
+    case "ETIMEDOUT":
+    case "EAI_AGAIN":
+    case "ECONNRESET":
+    case "EHOSTUNREACH":
+    case "ENETUNREACH":
+      return "unreachable";
+    case "ER_ACCESS_DENIED_ERROR":
+    case "ER_DBACCESS_DENIED_ERROR":
+      return "auth_failed";
+    case "ER_BAD_DB_ERROR":
+      return "unknown_database";
+    default:
+      return "unknown";
+  }
+}
+
 /**
  * Probes the database with a `SELECT 1` and a hard timeout. Used by the
  * /api/health endpoint and by orchestration layers (Render readiness probes).
  *
  * Returns `{ ok: true, latencyMs }` on success.
- * Returns `{ ok: false, error }` on connection failure or timeout — never
- * throws, so the caller can map the result to an HTTP status without
- * defensive try/catch.
+ * Returns `{ ok: false, status, detail }` on failure — never throws.
+ *
+ * `status` is a fixed-vocabulary label safe for public exposure; `detail` is
+ * the raw driver message intended for server-side logs only and MUST NOT be
+ * propagated to unauthenticated responses.
  */
-export async function pingDb(
-  timeoutMs = 2000,
-): Promise<{ ok: true; latencyMs: number } | { ok: false; error: string }> {
+export async function pingDb(timeoutMs = 2000): Promise<DbProbeResult> {
   const db = await getDb();
-  if (!db) return { ok: false, error: "database not initialized" };
+  if (!db) {
+    return { ok: false, status: "uninitialized", detail: "database not initialized" };
+  }
 
   const started = Date.now();
   const probe = db.execute(sql`SELECT 1`);
   const timeout = new Promise<never>((_, reject) =>
-    setTimeout(
-      () => reject(new Error(`db ping timeout after ${timeoutMs}ms`)),
-      timeoutMs,
-    ),
+    setTimeout(() => reject(new Error(TIMEOUT_MARKER)), timeoutMs),
   );
 
   try {
     await Promise.race([probe, timeout]);
     return { ok: true, latencyMs: Date.now() - started };
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    const status = classifyDbError(err);
+    const rawDetail = err instanceof Error ? err.message : String(err);
+    const detail =
+      status === "timeout" ? `db ping timeout after ${timeoutMs}ms` : rawDetail;
+    return { ok: false, status, detail };
   }
 }
 
