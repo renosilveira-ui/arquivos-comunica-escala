@@ -338,7 +338,7 @@ export default function ApproveSwapsScreen() {
                 {/* Reason */}
                 {item.reason && (
                   <Text style={{ color: "#94A3B8", fontSize: 13, fontStyle: "italic", marginTop: 8 }}>
-                    "{item.reason}"
+                    {`"${item.reason}"`}
                   </Text>
                 )}
 
