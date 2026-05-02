@@ -10,6 +10,13 @@ import { adminRouter } from "../routes/admin";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { assertProductionSecrets } from "./env-validation";
+import {
+  PAYLOAD_LIMIT,
+  createAuthRateLimit,
+  createCorsMiddleware,
+  createGlobalRateLimit,
+  createHelmetMiddleware,
+} from "./security";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -26,6 +33,12 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
+
+  // Render (and most PaaS) terminate TLS at a proxy and forward via
+  // X-Forwarded-For. Without trust proxy, express-rate-limit sees only the
+  // proxy IP and the limiter is effectively disabled.
+  app.set("trust proxy", 1);
+
   const defaultDevOrigins = new Set([
     "http://localhost:8081",
     "http://localhost:3000",
@@ -51,45 +64,24 @@ async function startServer() {
         ? []
         : Array.from(defaultDevOrigins),
   );
-  const allowedHeaders = [
-    "Origin",
-    "X-Requested-With",
-    "Content-Type",
-    "Accept",
-    "Authorization",
-    "x-tenant-id",
-    "x-test-user-id",
-  ].join(", ");
 
-  // CORS from env (production) with localhost fallback only in non-production.
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin && allowedOrigins.has(origin)) {
-      res.header("Access-Control-Allow-Origin", origin);
-      res.header("Vary", "Origin");
-    }
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header("Access-Control-Allow-Headers", allowedHeaders);
-    res.header("Access-Control-Allow-Credentials", "true");
+  app.use(createHelmetMiddleware());
+  app.use(createCorsMiddleware({ allowedOrigins }));
 
-    // Handle preflight requests
-    if (req.method === "OPTIONS") {
-      res.sendStatus(200);
-      return;
-    }
-    next();
-  });
-
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-  registerOAuthRoutes(app);
-  app.use("/api/auth", authRouter);
-  app.use("/api/admin", adminRouter);
-
+  // Health check is registered BEFORE rate limiting so probes (Render, uptime
+  // monitors) are never throttled.
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, timestamp: Date.now() });
   });
+
+  app.use(createGlobalRateLimit());
+
+  app.use(express.json({ limit: PAYLOAD_LIMIT }));
+  app.use(express.urlencoded({ limit: PAYLOAD_LIMIT, extended: true }));
+
+  registerOAuthRoutes(app);
+  app.use("/api/auth", createAuthRateLimit(), authRouter);
+  app.use("/api/admin", adminRouter);
 
   app.use(
     "/api/trpc",
