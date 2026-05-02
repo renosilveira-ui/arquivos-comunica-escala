@@ -194,7 +194,7 @@ export default function ApproveSwapsScreen() {
       <ScreenGradient scrollable={false}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <Shield size={64} color="#64748B" />
-          <Text style={{ color: "#F1F5F9", fontSize: 20, fontWeight: "600", marginTop: 16 }}>Acesso Restrito</Text>
+          <Text style={{ color: "#0F172A", fontSize: 20, fontWeight: "600", marginTop: 16 }}>Acesso Restrito</Text>
           <Text style={{ color: "#94A3B8", fontSize: 14, marginTop: 8 }}>Apenas gestores podem gerenciar trocas.</Text>
         </View>
       </ScreenGradient>
@@ -210,13 +210,13 @@ export default function ApproveSwapsScreen() {
             onPress={() => router.back()}
             style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 }}
           >
-            <ChevronLeft size={24} color="#F1F5F9" />
-            <Text style={{ color: "#F1F5F9", fontSize: 16 }}>Voltar</Text>
+            <ChevronLeft size={24} color="#0F172A" />
+            <Text style={{ color: "#0F172A", fontSize: 16 }}>Voltar</Text>
           </TouchableOpacity>
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <Shield size={28} color="#3B82F6" />
-            <Text style={{ color: "#F1F5F9", fontSize: 28, fontWeight: "700" }}>Gerenciar Trocas</Text>
+            <Text style={{ color: "#0F172A", fontSize: 28, fontWeight: "700" }}>Gerenciar Trocas</Text>
           </View>
         </View>
 
@@ -231,15 +231,15 @@ export default function ApproveSwapsScreen() {
                 paddingVertical: 12,
                 borderRadius: 12,
                 alignItems: "center",
-                backgroundColor: tab === t ? "#3B82F6" : "#1E293B",
+                backgroundColor: tab === t ? "rgba(59,130,246,0.15)" : "#FFFFFF",
                 borderWidth: 1,
-                borderColor: tab === t ? "#3B82F6" : "rgba(148,163,184,0.15)",
+                borderColor: tab === t ? "#3B82F6" : "#E2E8F0",
                 flexDirection: "row",
                 justifyContent: "center",
                 gap: 8,
               }}
             >
-              <Text style={{ color: "#F1F5F9", fontSize: 15, fontWeight: "600" }}>
+              <Text style={{ color: tab === t ? "#1D4ED8" : "#0F172A", fontSize: 15, fontWeight: "600" }}>
                 {t === "ACCEPTED" ? "Pendentes" : "Todos"}
               </Text>
               {t === "ACCEPTED" && acceptedCount > 0 && (
@@ -277,10 +277,10 @@ export default function ApproveSwapsScreen() {
               <View
                 key={item.id}
                 style={{
-                  backgroundColor: "#141B2D",
+                  backgroundColor: "#FFFFFF",
                   borderRadius: 12,
                   borderWidth: 1,
-                  borderColor: "rgba(148,163,184,0.15)",
+                  borderColor: "#E2E8F0",
                   padding: 16,
                 }}
               >
@@ -295,7 +295,7 @@ export default function ApproveSwapsScreen() {
                 </View>
 
                 {/* From professional */}
-                <Text style={{ color: "#F1F5F9", fontSize: 15, fontWeight: "600" }}>
+                <Text style={{ color: "#0F172A", fontSize: 15, fontWeight: "600" }}>
                   {item.fromProfessional.name}
                   <Text style={{ color: "#94A3B8", fontWeight: "400" }}> • {item.fromProfessional.role}</Text>
                 </Text>
@@ -303,7 +303,7 @@ export default function ApproveSwapsScreen() {
                 {/* From shift */}
                 <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: "#3B82F6" }}>
                   <Text style={{ color: "#94A3B8", fontSize: 13 }}>Plantão oferecido</Text>
-                  <Text style={{ color: "#F1F5F9", fontSize: 14 }}>
+                  <Text style={{ color: "#0F172A", fontSize: 14 }}>
                     {item.fromShift.label} — {formatDate(item.fromShift.startAt)}
                   </Text>
                   <Text style={{ color: "#94A3B8", fontSize: 12 }}>
@@ -315,7 +315,7 @@ export default function ApproveSwapsScreen() {
                 {item.toProfessional && (
                   <View style={{ marginTop: 10 }}>
                     <Text style={{ color: "#94A3B8", fontSize: 13 }}>Aceito por</Text>
-                    <Text style={{ color: "#F1F5F9", fontSize: 14, fontWeight: "600" }}>
+                    <Text style={{ color: "#0F172A", fontSize: 14, fontWeight: "600" }}>
                       {item.toProfessional.name}
                       <Text style={{ color: "#94A3B8", fontWeight: "400" }}> • {item.toProfessional.role}</Text>
                     </Text>
@@ -326,7 +326,7 @@ export default function ApproveSwapsScreen() {
                 {item.toShift && (
                   <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: "#F59E0B" }}>
                     <Text style={{ color: "#94A3B8", fontSize: 13 }}>Plantão em troca</Text>
-                    <Text style={{ color: "#F1F5F9", fontSize: 14 }}>
+                    <Text style={{ color: "#0F172A", fontSize: 14 }}>
                       {item.toShift.label} — {formatDate(item.toShift.startAt)}
                     </Text>
                     <Text style={{ color: "#94A3B8", fontSize: 12 }}>
@@ -409,15 +409,15 @@ export default function ApproveSwapsScreen() {
         >
           <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 24 }}>
             <View style={{
-              backgroundColor: "#141B2D",
+              backgroundColor: "#FFFFFF",
               borderRadius: 16,
               padding: 24,
               width: "100%",
               maxWidth: 400,
               borderWidth: 1,
-              borderColor: "rgba(148,163,184,0.15)",
+              borderColor: "#E2E8F0",
             }}>
-              <Text style={{ color: "#F1F5F9", fontSize: 20, fontWeight: "700", marginBottom: 16 }}>
+              <Text style={{ color: "#0F172A", fontSize: 20, fontWeight: "700", marginBottom: 16 }}>
                 {modalAction === "approve" ? "Aprovar Troca" : "Rejeitar Troca"}
               </Text>
 
@@ -435,15 +435,15 @@ export default function ApproveSwapsScreen() {
                 multiline
                 numberOfLines={3}
                 style={{
-                  color: "#F1F5F9",
+                  color: "#0F172A",
                   fontSize: 15,
-                  backgroundColor: "#0B1120",
+                  backgroundColor: "#F8FAFC",
                   borderRadius: 10,
                   padding: 12,
                   minHeight: 80,
                   textAlignVertical: "top",
                   borderWidth: 1,
-                  borderColor: "rgba(148,163,184,0.15)",
+                  borderColor: "#E2E8F0",
                   marginBottom: 20,
                 }}
               />
@@ -456,9 +456,9 @@ export default function ApproveSwapsScreen() {
                     paddingVertical: 12,
                     borderRadius: 10,
                     alignItems: "center",
-                    backgroundColor: "#1E293B",
+                    backgroundColor: "#F8FAFC",
                     borderWidth: 1,
-                    borderColor: "rgba(148,163,184,0.15)",
+                    borderColor: "#E2E8F0",
                   }}
                 >
                   <Text style={{ color: "#94A3B8", fontSize: 15, fontWeight: "600" }}>Cancelar</Text>

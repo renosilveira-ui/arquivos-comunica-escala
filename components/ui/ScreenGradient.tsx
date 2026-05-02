@@ -2,11 +2,13 @@ import { LinearGradient } from "expo-linear-gradient";
 import { ReactNode } from "react";
 import { ScrollView, View, ViewProps, RefreshControlProps } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { theme } from "@/lib/theme";
 
 interface ScreenGradientProps extends ViewProps {
   children: ReactNode;
   scrollable?: boolean;
   refreshControl?: React.ReactElement<RefreshControlProps>;
+  variant?: "dark" | "light";
 }
 
 /**
@@ -30,12 +32,18 @@ export function ScreenGradient({
   children,
   scrollable = false,
   refreshControl,
+  variant = "light",
   className,
   ...props
 }: ScreenGradientProps) {
+  const colors =
+    variant === "light"
+      ? ([theme.colors.background, "#EDF4FF"] as const)
+      : (["#1e3a5f", "#0a1929"] as const);
+
   return (
     <LinearGradient
-      colors={["#1e3a5f", "#0a1929"]}
+      colors={colors}
       start={{ x: 0.5, y: 0 }}
       end={{ x: 0.5, y: 1 }}
       style={{ flex: 1 }}

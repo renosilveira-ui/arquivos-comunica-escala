@@ -4,14 +4,23 @@
  */
 export const theme = {
   colors: {
-    screenBg: "#0B1120",
-    cardBg: "#141B2D",
-    cardBorder: "rgba(148, 163, 184, 0.15)",
-    inputBg: "#0F172A",
-    textPrimary: "#F1F5F9",
-    textSecondary: "#94A3B8",
+    // Flat light system (primary source of truth)
+    background: "#F8FBFF",
+    surface: "#FFFFFF",
+    surfaceAlt: "#F1F5F9",
+    border: "#DBEAFE",
+    textPrimary: "#0F172A",
+    textSecondary: "#475569",
     textMuted: "#64748B",
-    primary: "#3B82F6",
+    primary: "#2563EB",
+    accent: "#2563EB",
+
+    // Legacy aliases kept for compatibility while migrating screens
+    screenBg: "#F8FBFF",
+    cardBg: "#FFFFFF",
+    cardBorder: "#DBEAFE",
+    inputBg: "#FFFFFF",
+
     success: "#22C55E",
     warning: "#F59E0B",
     danger: "#EF4444",
@@ -20,9 +29,10 @@ export const theme = {
     statusOcupado: "#22C55E",
   },
   spacing: {
-    screenPadding: 16,
+    screenPadding: 24,
     cardPadding: 16,
-    gap: 12,
+    gap: 16,
+    contentMaxWidth: 1200,
   },
   borderRadius: {
     card: 12,

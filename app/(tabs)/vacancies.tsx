@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
 import { AppButton } from "@/components/ui/AppButton";
 import { confirmAction } from "@/lib/ui/confirm";
+import { ScreenContainer } from "@/components/ui/ScreenContainer";
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -134,7 +135,7 @@ export default function VacanciesScreen() {
 
   if (authLoading || professionalLoading) {
     return (
-      <ScreenGradient>
+      <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#4DA3FF" />
           <Text className="mt-4 text-base" style={{ color: "#475569" }}>Carregando...</Text>
@@ -145,7 +146,7 @@ export default function VacanciesScreen() {
 
   if (!user) {
     return (
-      <ScreenGradient>
+      <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color="#94A3B8" />
           <Text className="text-xl font-semibold mt-4" style={{ color: "#0F172A" }}>Autenticação Necessária</Text>
@@ -157,7 +158,7 @@ export default function VacanciesScreen() {
 
   if (!professional) {
     return (
-      <ScreenGradient>
+      <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color="#94A3B8" />
           <Text className="text-xl font-semibold mt-4" style={{ color: "#0F172A" }}>Profissional Não Encontrado</Text>
@@ -168,8 +169,9 @@ export default function VacanciesScreen() {
   }
 
   return (
-    <ScreenGradient>
+    <ScreenGradient variant="light">
       <ScrollView className="flex-1 px-5 py-4">
+        <ScreenContainer>
         {/* Header */}
         <View className="mb-6">
           <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Vagas Disponíveis</Text>
@@ -179,7 +181,7 @@ export default function VacanciesScreen() {
         </View>
 
         {/* Filtros */}
-        <View className="mb-6">
+        <View className="mb-6 rounded-2xl border bg-white p-4" style={{ borderColor: "#DBEAFE" }}>
           <ShiftFilters
             hospitals={hospitals}
             sectors={sectors}
@@ -281,6 +283,7 @@ export default function VacanciesScreen() {
             </Text>
           </View>
         ) : null}
+        </ScreenContainer>
       </ScrollView>
     </ScreenGradient>
   );
