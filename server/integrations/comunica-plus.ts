@@ -40,6 +40,7 @@ function getConfig(): ComunicaPlusConfig {
 // Session management
 // ---------------------------------------------------------------------------
 
+// SCALING: process-local. Diverges across replicas — see docs/operations/scaling.md.
 let sessionCookie: string | null = null;
 
 function extractSessionCookie(setCookieHeader: string | null): string {
@@ -145,6 +146,7 @@ async function trpcQuery<T = unknown>(
 // Resolve userId by email (Comunica+ usa UUID, Escalas usa int)
 // ---------------------------------------------------------------------------
 
+// SCALING: process-local. Hit rate divides by replica count — see docs/operations/scaling.md.
 const userIdCache = new Map<string, string>();
 
 async function resolveUserIdByEmail(
@@ -351,6 +353,8 @@ interface OnlineProfessional {
   dutyType: string;
 }
 
+// SCALING: process-local. Replicas serve presence at different ages — visible
+// inconsistency for clinical users. See docs/operations/scaling.md.
 let presenceCache: { data: OnlineProfessional[]; ts: number } | null =
   null;
 const PRESENCE_TTL = 30_000; // 30 seconds
