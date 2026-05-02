@@ -48,7 +48,7 @@ jobs:
         # Version is read from package.json's "packageManager" field
         # (pnpm@9.12.0). Specifying it here as well is rejected by the
         # action to prevent version drift.
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
