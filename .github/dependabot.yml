@@ -58,3 +58,11 @@ updates:
     commit-message:
       prefix: "chore(actions)"
       include: "scope"
+    # Ignore major-version bumps for CI-critical actions. The Dependabot
+    # compatibility score for actions/checkout v4 → v6 was 40% across the
+    # ecosystem (PR #30); v4 remains supported. We still receive minor and
+    # patch updates automatically — only majors require an explicit,
+    # deliberate frente.
+    ignore:
+      - dependency-name: "actions/checkout"
+        update-types: ["version-update:semver-major"]
