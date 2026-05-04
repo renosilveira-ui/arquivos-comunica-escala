@@ -1,14 +1,31 @@
 import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2";
 import { eq, sql } from "drizzle-orm";
 import { users, type User } from "../drizzle/schema";
+import { resolveSslConfig } from "./_core/db-ssl";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
+//
+// When DATABASE_SSL is set we build an explicit mysql2 pool so we can pass
+// the ssl object (required by managed providers like DigitalOcean, RDS,
+// PlanetScale, Aiven). When SSL is unset (local dev, tests) we keep the
+// existing `drizzle(url)` shortcut — preserves the behavior the test suite
+// has been validated against.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const ssl = resolveSslConfig(process.env);
+      if (ssl) {
+        const pool = mysql.createPool({
+          uri: process.env.DATABASE_URL,
+          ssl,
+        });
+        _db = drizzle(pool);
+      } else {
+        _db = drizzle(process.env.DATABASE_URL);
+      }
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
