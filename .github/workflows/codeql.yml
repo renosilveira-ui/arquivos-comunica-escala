@@ -1,0 +1,54 @@
+name: CodeQL
+
+# CodeQL static analysis (SAST). Runs on every push to main, every pull
+# request, and weekly on Monday at 06:00 UTC. Uses the security-extended
+# query suite — broader vulnerability coverage than the default, fits the
+# project's security-first posture (escalas hospitalares + future Comunica+
+# integration). Findings appear in the GitHub Security tab.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Monday 06:00 UTC (= 03:00 America/Sao_Paulo). Same cadence as
+    # Dependabot weekly so security signals land in the same window.
+    - cron: "0 6 * * 1"
+
+# Cancel in-flight runs for the same PR/branch when a new commit lands.
+# Main branch runs always complete (so they can satisfy the
+# "ran on default branch" status that branch protection requires).
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: codeql
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # security-extended adds queries beyond the default code-scanning
+          # suite (e.g. additional injection patterns, prototype pollution,
+          # weak crypto). Higher signal at the cost of more findings to
+          # triage. Acceptable trade-off for a clinical operations system.
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"
