@@ -20,8 +20,16 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemColorScheme = useColorScheme();
   const [theme, setTheme] = useState<Theme>("system");
 
+  // Explicit narrowing: useColorScheme() returns ColorSchemeName which newer
+  // @types/react-native widens beyond "light" | "dark" | null | undefined.
+  // Comparing against "dark" produces a literal "light" | "dark" assignable
+  // to resolvedTheme regardless of which version of the types is in use.
   const resolvedTheme: "light" | "dark" =
-    theme === "system" ? (systemColorScheme ?? "light") : theme;
+    theme === "system"
+      ? systemColorScheme === "dark"
+        ? "dark"
+        : "light"
+      : theme;
 
   return (
     <ThemeContext.Provider value={{ theme, resolvedTheme, setTheme }}>
