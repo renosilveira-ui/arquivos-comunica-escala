@@ -13,13 +13,29 @@ let _db: ReturnType<typeof drizzle> | null = null;
 // PlanetScale, Aiven). When SSL is unset (local dev, tests) we keep the
 // existing `drizzle(url)` shortcut — preserves the behavior the test suite
 // has been validated against.
+//
+// IMPORTANT: when SSL is required we parse the URL into individual config
+// fields rather than passing it as `uri:` alongside `ssl:`. mysql2 has
+// ambiguous precedence between `uri:` and other options — observed in
+// production against DigitalOcean Managed MySQL: the ssl object was
+// silently ignored when mixed with `uri:`, the TLS handshake failed, and
+// every query returned a generic "Failed query: SELECT 1\nparams:" wrap
+// (with no underlying mysql2 error code) so classifyDbError fell into
+// the "unknown" bucket and the operator could not see the real cause.
+// Parsing the URL into components mirrors the pattern already in
+// drizzle.config.ts (which works in production via `drizzle-kit push`).
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
       const ssl = resolveSslConfig(process.env);
       if (ssl) {
+        const u = new URL(process.env.DATABASE_URL);
         const pool = mysql.createPool({
-          uri: process.env.DATABASE_URL,
+          host: u.hostname,
+          port: u.port ? Number(u.port) : 3306,
+          user: decodeURIComponent(u.username),
+          password: decodeURIComponent(u.password),
+          database: u.pathname.replace(/^\//, ""),
           ssl,
         });
         _db = drizzle(pool);
@@ -55,6 +71,35 @@ export type DbProbeResult =
 
 const TIMEOUT_MARKER = "__db_ping_timeout__";
 
+function readErrorCode(err: unknown): string {
+  if (!err || typeof err !== "object") return "";
+  if ("code" in err && (err as { code: unknown }).code) {
+    return String((err as { code: unknown }).code);
+  }
+  // Drizzle wraps the underlying mysql2 error in `cause`; reach in so a
+  // wrapped ECONNREFUSED / ER_ACCESS_DENIED_ERROR / etc. is still classified
+  // correctly instead of falling into the "unknown" bucket.
+  if ("cause" in err && (err as { cause: unknown }).cause) {
+    return readErrorCode((err as { cause: unknown }).cause);
+  }
+  return "";
+}
+
+function readErrorDetail(err: unknown): string {
+  const top = err instanceof Error ? err.message : String(err);
+  if (
+    err &&
+    typeof err === "object" &&
+    "cause" in err &&
+    (err as { cause: unknown }).cause
+  ) {
+    const cause = (err as { cause: unknown }).cause;
+    const causeMsg = cause instanceof Error ? cause.message : String(cause);
+    if (causeMsg && causeMsg !== top) return `${top} | cause: ${causeMsg}`;
+  }
+  return top;
+}
+
 /**
  * Maps an arbitrary driver error into one of a small fixed set of opaque
  * labels. Callers that respond to unauthenticated traffic (e.g. /api/health)
@@ -65,10 +110,7 @@ const TIMEOUT_MARKER = "__db_ping_timeout__";
 function classifyDbError(err: unknown): DbProbeStatus {
   if (err instanceof Error && err.message === TIMEOUT_MARKER) return "timeout";
 
-  const code =
-    err && typeof err === "object" && "code" in err
-      ? String((err as { code: unknown }).code)
-      : "";
+  const code = readErrorCode(err);
 
   switch (code) {
     case "ECONNREFUSED":
@@ -117,9 +159,10 @@ export async function pingDb(timeoutMs = 2000): Promise<DbProbeResult> {
     return { ok: true, latencyMs: Date.now() - started };
   } catch (err) {
     const status = classifyDbError(err);
-    const rawDetail = err instanceof Error ? err.message : String(err);
     const detail =
-      status === "timeout" ? `db ping timeout after ${timeoutMs}ms` : rawDetail;
+      status === "timeout"
+        ? `db ping timeout after ${timeoutMs}ms`
+        : readErrorDetail(err);
     return { ok: false, status, detail };
   }
 }
