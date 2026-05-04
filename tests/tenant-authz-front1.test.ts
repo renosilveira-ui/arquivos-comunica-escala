@@ -40,12 +40,18 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
     if (!db) throw new Error("Database not available");
 
     const stamp = Date.now();
-    const cnpjBase = `${Date.now()}${Math.floor(Math.random() * 1_000_000)
-      .toString()
-      .padStart(6, "0")}`;
-    const cnpjA = cnpjBase.slice(-14);
-    const cnpjB = `${cnpjBase.slice(0, -1)}8`.slice(-14);
-    const cnpjC = `${cnpjBase.slice(0, -1)}7`.slice(-14);
+    // Each CNPJ is generated independently with its own 8-digit random
+    // suffix. The previous shared-base approach (cnpjBase + last-digit
+    // swap) collided ~20% of runs because cnpjA could already end in
+    // "7" or "8", making it equal to cnpjC or cnpjB respectively.
+    const makeCnpj = () => {
+      const ts = Date.now().toString();
+      const rnd = Math.floor(Math.random() * 1e8).toString().padStart(8, "0");
+      return `${ts}${rnd}`.slice(-14);
+    };
+    const cnpjA = makeCnpj();
+    const cnpjB = makeCnpj();
+    const cnpjC = makeCnpj();
 
     const [insA] = await db
       .insert(institutions)
