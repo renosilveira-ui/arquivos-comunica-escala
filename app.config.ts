@@ -2,40 +2,24 @@
 import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
-// Bundle ID format: space.manus.<project_name_dots>.<timestamp>
-// e.g., "my-app" created at 2024-01-15 10:30:45 -> "space.manus.my.app.t20240115103045"
-// Bundle ID can only contain letters, numbers, and dots
-// Android requires each dot-separated segment to start with a letter
-const rawBundleId = "space.manus.hospital_shifts_app.t20260212074348";
-const bundleId =
-  rawBundleId
-    .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
-    .replace(/[^a-zA-Z0-9.]/g, "") // Remove invalid chars
-    .replace(/\.+/g, ".") // Collapse consecutive dots
-    .replace(/^\.+|\.+$/g, "") // Trim leading/trailing dots
-    .toLowerCase()
-    .split(".")
-    .map((segment) => {
-      // Android requires each segment to start with a letter
-      // Prefix with 'x' if segment starts with a digit
-      return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
-    })
-    .join(".") || "space.manus.app";
-// Extract timestamp from bundle ID and prefix with "manus" for deep link scheme
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
-
+// App identity for the staging build. Bundle ID and scheme are
+// provisional ("app.escalas.staging") — they MUST be changed to a
+// production-owned domain (e.g. "br.com.unimedfortaleza.escalas")
+// before publishing to the App Store / Play Store. See
+// docs/operations/mobile-deploy.md for the migration checklist.
+//
+// Constraints honored by the current values:
+//   - Bundle ID: only letters, numbers and dots; each dot-separated
+//     segment starts with a letter (Android requirement).
+//   - Slug: lowercase, hyphenated, used by EAS for project lookup.
+//   - Scheme: deep-link prefix; must be unique per app variant on a
+//     device (so staging and prod cannot share the same scheme).
 const env = {
-  // App branding - update these values directly (do not use env vars)
-  appName: "Comunica+ Escalas",
-  appSlug: "{{project_name}}",
-  // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
-  // Leave empty to use the default icon from assets/images/icon.png
-  logoUrl: "https://private-us-east-1.manuscdn.com/sessionFile/3jZfLHHP91HhQs3nhmKTsj/sandbox/Hq4BPj1GEoQtYhwmdACo3x-img-1_1771365747000_na1fn_Y29tdW5pY2EtZXNjYWxhcy1pY29u.png",
-  scheme: schemeFromBundleId,
-  iosBundleId: bundleId,
-  androidPackage: bundleId,
+  appName: "Escalas Hospitalares",
+  appSlug: "escalas-hospitalares",
+  scheme: "escalas",
+  iosBundleId: "app.escalas.staging",
+  androidPackage: "app.escalas.staging",
 };
 
 const config: ExpoConfig = {
