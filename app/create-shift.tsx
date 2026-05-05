@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, ScrollView, Platform, Modal, Pressable, Keyboard } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
+import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
@@ -191,7 +192,7 @@ export default function CreateShiftScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg" style={{ color: 'rgba(255,255,255,0.7)' }}>Faça login para continuar</Text>
+          <Text className="text-lg" style={{ color: theme.colors.textMuted }}>Faça login para continuar</Text>
         </View>
       </ScreenGradient>
     );
@@ -207,19 +208,19 @@ export default function CreateShiftScreen() {
             activeOpacity={0.7}
             className="w-10 h-10 items-center justify-center"
           >
-            <ChevronLeft size={28} color="#FFFFFF" />
+            <ChevronLeft size={28} color={theme.colors.textPrimary} />
           </TouchableOpacity>
           <View className="flex-1">
-            <Text className="text-3xl font-bold" style={{ color: '#FFFFFF' }}>Nova Escala</Text>
-            <Text className="text-base mt-1" style={{ color: 'rgba(255,255,255,0.5)' }}>Alocar profissionais no turno</Text>
+            <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Nova Escala</Text>
+            <Text className="text-base mt-1" style={{ color: theme.colors.textMuted }}>Alocar profissionais no turno</Text>
           </View>
         </View>
 
         {/* Seleção de Setor */}
         <TintedGlassCard className="gap-4">
           <View className="flex-row items-center gap-3">
-            <Calendar size={24} color="#FFFFFF" />
-            <Text className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>Setor *</Text>
+            <Calendar size={24} color={theme.colors.textPrimary} />
+            <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Setor *</Text>
           </View>
 
           {loadingSectors ? (
@@ -236,18 +237,24 @@ export default function CreateShiftScreen() {
                   style={{
                     backgroundColor:
                       selectedSectorId === sector.id
-                        ? "#4DA3FF"
-                        : "rgba(255,255,255,0.05)",
+                        ? theme.colors.primary
+                        : theme.colors.surfaceAlt,
                     borderWidth: 1,
                     borderColor:
                       selectedSectorId === sector.id
-                        ? "#4DA3FF"
-                        : "rgba(255,255,255,0.12)",
+                        ? theme.colors.primary
+                        : theme.colors.border,
                   }}
                   activeOpacity={0.7}
                 >
                   <Text
-                    className="text-base font-semibold" style={{ color: '#FFFFFF' }}
+                    className="text-base font-semibold"
+                    style={{
+                      color:
+                        selectedSectorId === sector.id
+                          ? "#FFFFFF"
+                          : theme.colors.textPrimary,
+                    }}
                   >
                     {sector.name}
                   </Text>
@@ -261,9 +268,9 @@ export default function CreateShiftScreen() {
         <TintedGlassCard className="gap-4">
           <View className="flex-row items-center gap-3">
             <TouchableOpacity onPress={handleCalendarPress} activeOpacity={0.7}>
-              <Calendar size={24} color="#FFFFFF" />
+              <Calendar size={24} color={theme.colors.textPrimary} />
             </TouchableOpacity>
-            <Text className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>Data *</Text>
+            <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Data *</Text>
           </View>
 
           <TouchableOpacity
@@ -271,12 +278,12 @@ export default function CreateShiftScreen() {
             activeOpacity={0.7}
             className="rounded-2xl px-4 h-12 justify-center"
             style={{
-              backgroundColor: "rgba(255,255,255,0.05)",
+              backgroundColor: theme.colors.surfaceAlt,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.12)",
+              borderColor: theme.colors.border,
             }}
           >
-            <Text className="text-base" style={{ color: '#FFFFFF' }}>
+            <Text className="text-base" style={{ color: theme.colors.textPrimary }}>
               {formatDateBR(selectedDate || today)}
             </Text>
           </TouchableOpacity>
@@ -298,8 +305,8 @@ export default function CreateShiftScreen() {
         {/* Seleção de Turno */}
         <TintedGlassCard className="gap-4">
           <View className="flex-row items-center gap-3">
-            <Clock size={24} color="#FFFFFF" />
-            <Text className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>Turno *</Text>
+            <Clock size={24} color={theme.colors.textPrimary} />
+            <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Turno *</Text>
           </View>
 
           <View className="gap-3">
@@ -311,20 +318,36 @@ export default function CreateShiftScreen() {
                 style={{
                   backgroundColor:
                     selectedShift === shift
-                      ? "#4DA3FF"
-                      : "rgba(255,255,255,0.05)",
+                      ? theme.colors.primary
+                      : theme.colors.surfaceAlt,
                   borderWidth: 1,
                   borderColor:
                     selectedShift === shift
-                      ? "#4DA3FF"
-                      : "rgba(255,255,255,0.12)",
+                      ? theme.colors.primary
+                      : theme.colors.border,
                 }}
                 activeOpacity={0.7}
               >
-                <Text className="text-base font-semibold" style={{ color: '#FFFFFF' }}>
+                <Text
+                  className="text-base font-semibold"
+                  style={{
+                    color:
+                      selectedShift === shift
+                        ? "#FFFFFF"
+                        : theme.colors.textPrimary,
+                  }}
+                >
                   {shift}
                 </Text>
-                <Text className="text-sm mt-1" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                <Text
+                  className="text-sm mt-1"
+                  style={{
+                    color:
+                      selectedShift === shift
+                        ? "rgba(255,255,255,0.85)"
+                        : theme.colors.textMuted,
+                  }}
+                >
                   {SHIFT_TIMES[shift].start} - {SHIFT_TIMES[shift].end}
                 </Text>
               </TouchableOpacity>
@@ -336,8 +359,8 @@ export default function CreateShiftScreen() {
         <TintedGlassCard className="gap-4">
           <View className="flex-row items-center justify-between">
             <View className="flex-row items-center gap-3 flex-1">
-              <Repeat size={24} color="#FFFFFF" />
-              <Text className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>Repetir Escala</Text>
+              <Repeat size={24} color={theme.colors.textPrimary} />
+              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Repetir Escala</Text>
             </View>
             <Switch
               value={enableRepeat}
@@ -345,7 +368,7 @@ export default function CreateShiftScreen() {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 setEnableRepeat(value);
               }}
-              trackColor={{ false: "rgba(255,255,255,0.2)", true: "#4DA3FF" }}
+              trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
               thumbColor="#FFFFFF"
             />
           </View>
@@ -353,34 +376,34 @@ export default function CreateShiftScreen() {
           {enableRepeat && (
             <View className="gap-4">
               <View>
-                <Text className="text-sm mb-2" style={{ color: 'rgba(255,255,255,0.5)' }}>Repetir a cada (semanas)</Text>
+                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Repetir a cada (semanas)</Text>
                 <TextInput
                   value={repeatWeeks}
                   onChangeText={setRepeatWeeks}
                   placeholder="1"
                   keyboardType="number-pad"
-                  placeholderTextColor="rgba(255,255,255,0.3)"
+                  placeholderTextColor={theme.colors.textMuted}
                   className="rounded-2xl px-4 h-12 text-base"
                   style={{
-                    backgroundColor: "rgba(255,255,255,0.05)",
+                    backgroundColor: theme.colors.surfaceAlt,
                     borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.12)",
+                    borderColor: theme.colors.border,
                   }}
                 />
               </View>
 
               <View>
-                <Text className="text-sm mb-2" style={{ color: 'rgba(255,255,255,0.5)' }}>Data limite</Text>
+                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Data limite</Text>
                 <TextInput
                   value={repeatEndDate}
                   onChangeText={setRepeatEndDate}
                   placeholder="YYYY-MM-DD"
-                  placeholderTextColor="rgba(255,255,255,0.3)"
+                  placeholderTextColor={theme.colors.textMuted}
                   className="rounded-2xl px-4 h-12 text-base"
                   style={{
-                    backgroundColor: "rgba(255,255,255,0.05)",
+                    backgroundColor: theme.colors.surfaceAlt,
                     borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.12)",
+                    borderColor: theme.colors.border,
                   }}
                 />
               </View>
@@ -390,22 +413,22 @@ export default function CreateShiftScreen() {
 
         {/* Observações */}
         <TintedGlassCard className="gap-4">
-          <Text className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>Observações</Text>
+          <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Observações</Text>
           <TextInput
             value={notes}
             onChangeText={setNotes}
             placeholder="Informações adicionais..."
-            placeholderTextColor="rgba(255,255,255,0.3)"
+            placeholderTextColor={theme.colors.textMuted}
             multiline
             numberOfLines={4}
             textAlignVertical="top"
             className="rounded-2xl px-4 py-3 text-base"
             style={{
-              backgroundColor: "rgba(255,255,255,0.05)",
+              backgroundColor: theme.colors.surfaceAlt,
               borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.12)",
+              borderColor: theme.colors.border,
               minHeight: 100,
-              color: "#FFFFFF",
+              color: theme.colors.textPrimary,
             }}
           />
         </TintedGlassCard>
@@ -420,7 +443,7 @@ export default function CreateShiftScreen() {
           {createShift.isPending ? (
             <ActivityIndicator size="small" color="#FFFFFF" />
           ) : (
-            <Text className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>Criar Escala</Text>
+            <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Criar Escala</Text>
           )}
         </TouchableOpacity>
       </View>
