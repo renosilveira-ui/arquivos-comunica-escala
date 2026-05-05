@@ -43,6 +43,17 @@ services:
       # deploys. No human ever sees or types this secret.
       - key: COOKIE_SECRET
         generateValue: true
+      # Cross-site cookie required because onrender.com is on the Public
+      # Suffix List — the browser treats escalas-staging-web.onrender.com
+      # and escalas-staging.onrender.com as completely different sites.
+      # `lax` (the cookie-policy default) blocks the session cookie on
+      # cross-site XHR, breaking every fetch the frontend makes after
+      # login. With `secure: true` (forced in production by Frente 2.4)
+      # the `none` value is safe and required.
+      # On a custom shared parent domain (e.g. escalas.example.com.br +
+      # api.escalas.example.com.br) we can drop this back to `lax`.
+      - key: COOKIE_SAMESITE
+        value: none
 
       # ---- CORS ----
       # Comma-separated origins allowed to call the API with credentials.
