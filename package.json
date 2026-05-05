@@ -22,6 +22,7 @@
     "e2e:workflow": "tsx scripts/run-e2e-workflow.ts",
     "gate": "pnpm test:e2e && pnpm e2e:workflow",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
+    "seed:staging": "tsx scripts/seed-staging.ts",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "qr": "node scripts/generate_qr.mjs"
