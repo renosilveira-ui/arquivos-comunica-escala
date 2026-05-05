@@ -23,6 +23,7 @@
     "gate": "pnpm test:e2e && pnpm e2e:workflow",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "seed:staging": "tsx scripts/seed-staging.ts",
+    "import:professionals": "tsx scripts/bulk-import-professionals.ts",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "qr": "node scripts/generate_qr.mjs"
