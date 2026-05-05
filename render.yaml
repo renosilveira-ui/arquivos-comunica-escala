@@ -83,3 +83,28 @@ services:
       # ---- Feature flags ----
       - key: SHIFT_RADAR_ENABLED
         value: "false"
+
+  # ---------------------------------------------------------------------------
+  # Frontend (Expo Web) — Static Site
+  # ---------------------------------------------------------------------------
+  # Built once per deploy by `pnpm build:web` (runs `expo export -p web`).
+  # The bundle bakes EXPO_PUBLIC_API_URL at build time — Static Sites have no
+  # runtime env, so this URL must be known at build. Currently hardcoded to
+  # the staging API; for a separate prod deployment, fork render.yaml or use
+  # a per-env value.
+  #
+  # After this service is created by the Blueprint, Render assigns a URL
+  # (typically https://escalas-staging-web.onrender.com). Take that URL and
+  # add it to the API service's CORS_ALLOWED_ORIGINS env var (still
+  # `sync: false` above). The API then redeploys with CORS open to the web.
+  - type: web
+    runtime: static
+    name: escalas-staging-web
+    branch: main
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:web
+    staticPublishPath: ./web-build
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: EXPO_PUBLIC_API_URL
+        value: https://escalas-staging.onrender.com
