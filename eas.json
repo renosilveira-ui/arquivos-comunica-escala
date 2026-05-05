@@ -1,0 +1,59 @@
+{
+  "$comment": "EAS Build profiles for Escalas Hospitalares. See docs/operations/mobile-deploy.md.",
+  "cli": {
+    "version": ">= 14.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "$comment_development": "Used for `eas build --profile development` — produces a development client build that connects to the local Metro server. Devs install it once, then run `pnpm start` to point it at any branch.",
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      },
+      "channel": "development"
+    },
+
+    "$comment_preview": "Internal-distribution builds for testers. iOS goes to TestFlight (up to 100 internal testers, no Apple review). Android produces an APK signed with EAS-managed keystore — install via direct download.",
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview",
+      "ios": {
+        "simulator": false
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://escalas-staging.onrender.com"
+      }
+    },
+
+    "$comment_production": "Store-bound builds. iOS produces a release build for App Store Connect. Android produces an AAB for Play Store. Bundle ID still provisional — must be replaced with a production-owned domain before submitting to either store.",
+    "production": {
+      "distribution": "store",
+      "channel": "production",
+      "ios": {
+        "simulator": false
+      },
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://escalas-staging.onrender.com"
+      }
+    }
+  },
+  "submit": {
+    "$comment_production": "EAS Submit pipeline — uploads built artifacts to App Store Connect and Play Store. Requires Apple App Store Connect API key and Google Play Service Account JSON configured separately. See docs/operations/mobile-deploy.md.",
+    "production": {
+      "ios": {
+        "ascAppId": "PENDING_REPLACE_WITH_REAL_APP_ID"
+      },
+      "android": {
+        "track": "internal"
+      }
+    }
+  }
+}
