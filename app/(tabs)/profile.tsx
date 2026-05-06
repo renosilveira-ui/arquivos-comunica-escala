@@ -375,34 +375,58 @@ export default function ProfileScreen() {
           </TintedGlassCard>
         </View>
 
-        {/* Minhas ofertas (cessões e trocas) */}
+        {/* Cessões e trocas — minhas ofertas + minhas candidaturas */}
         <View className="gap-4">
           <View className="flex-row items-center gap-2">
             <ArrowRightLeft size={20} color="#0F172A" />
-            <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Minhas ofertas</Text>
+            <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Cessões e trocas</Text>
           </View>
           <TintedGlassCard variant="light">
-            <TouchableOpacity
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push("/my-offers");
-              }}
-              className="rounded-xl p-4 flex-row items-center justify-between"
-              style={{ backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E2E8F0" }}
-              activeOpacity={0.75}
-              accessibilityRole="button"
-              accessibilityLabel="Ver minhas ofertas de cessão e troca"
-            >
-              <View className="flex-1 pr-4">
-                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Cessões e trocas
-                </Text>
-                <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                  Acompanhe as ofertas que você criou e aprove candidaturas
-                </Text>
-              </View>
-              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
-            </TouchableOpacity>
+            <View className="gap-3">
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  router.push("/my-offers");
+                }}
+                className="rounded-xl p-4 flex-row items-center justify-between"
+                style={{ backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E2E8F0" }}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Ver minhas ofertas de cessão e troca"
+              >
+                <View className="flex-1 pr-4">
+                  <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                    Minhas ofertas
+                  </Text>
+                  <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
+                    Plantões que você ofereceu — aprove candidaturas aqui
+                  </Text>
+                </View>
+                <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  router.push("/my-applications");
+                }}
+                className="rounded-xl p-4 flex-row items-center justify-between"
+                style={{ backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E2E8F0" }}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Ver suas candidaturas a cessões e trocas"
+              >
+                <View className="flex-1 pr-4">
+                  <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                    Suas candidaturas
+                  </Text>
+                  <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
+                    Plantões a que você se candidatou — aguardando aprovação do dono
+                  </Text>
+                </View>
+                <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
+              </TouchableOpacity>
+            </View>
           </TintedGlassCard>
         </View>
 
