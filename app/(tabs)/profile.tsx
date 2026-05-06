@@ -2,8 +2,9 @@ import { Text, View, TouchableOpacity, Switch } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth, type User as AuthUser } from "@/hooks/use-auth";
 import * as Haptics from "expo-haptics";
+import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
 import { useState, useEffect, useMemo } from "react";
 import { User, Bell, Link2, LogOut, Briefcase } from "lucide-react-native";
@@ -11,15 +12,36 @@ import { theme } from "@/lib/theme";
 import { useRouter } from "expo-router";
 import { useTenantState } from "@/lib/tenant-state";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
-import { 
-  requestNotificationPermissions, 
-  notifyNewShift, 
-  notifyShiftChange, 
-  notifyShiftCancellation 
+import { confirmAction } from "@/lib/ui/confirm";
+import {
+  requestNotificationPermissions,
+  notifyNewShift,
+  notifyShiftChange,
+  notifyShiftCancellation
 } from "@/lib/notifications";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Mapeia o role do usuário para um label legível em PT-BR.
+ */
+function roleLabel(role: AuthUser["role"] | null | undefined): string {
+  switch (role) {
+    case "admin":
+      return "Administrador";
+    case "manager":
+      return "Gestor";
+    case "doctor":
+      return "Médico";
+    case "nurse":
+      return "Enfermagem";
+    case "tech":
+      return "Técnico";
+    default:
+      return "";
+  }
 }
 
 /**
@@ -137,9 +159,17 @@ export default function ProfileScreen() {
     setEnableHospitalAlert(value);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    const confirmed = await confirmAction(
+      "Sair da conta?\n\nVocê precisará fazer login novamente para acessar o app."
+    );
+    if (!confirmed) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    logout();
+    try {
+      await logout();
+    } catch (err) {
+      console.warn("[Profile] logout failed", err);
+    }
   };
 
   const handleSwitchInstitution = async () => {
@@ -179,14 +209,19 @@ export default function ProfileScreen() {
           <View className="items-center py-4">
             <View
               className="w-24 h-24 rounded-full items-center justify-center mb-4"
-              style={{ backgroundColor: "rgba(59,130,246,0.2)" }}
+              style={{ backgroundColor: theme.colors.primary }}
             >
-              <Text className="text-4xl font-bold" style={{ color: "#1E3A8A" }}>
-                {user.name?.charAt(0).toUpperCase() || "U"}
+              <Text className="text-4xl font-bold" style={{ color: "#FFFFFF" }}>
+                {(user.name?.charAt(0) || user.email?.charAt(0) || "U").toUpperCase()}
               </Text>
             </View>
-            <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>{user.name || "Usuário"}</Text>
-            <Text className="text-base mt-2" style={{ color: "#475569" }}>{user.email}</Text>
+            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>{user.name || "Usuário"}</Text>
+            {user.email ? (
+              <Text className="text-base mt-2" style={{ color: theme.colors.textSecondary }}>{user.email}</Text>
+            ) : null}
+            {roleLabel(user.role) ? (
+              <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>{roleLabel(user.role)}</Text>
+            ) : null}
           </View>
         </TintedGlassCard>
 
@@ -401,13 +436,25 @@ export default function ProfileScreen() {
         {/* Botão de Logout */}
         <TouchableOpacity
           onPress={handleLogout}
+          accessibilityRole="button"
+          accessibilityLabel="Sair da conta"
           className="rounded-2xl p-5 items-center flex-row justify-center gap-3"
-          style={{ backgroundColor: "#FEF2F2", borderWidth: 1, borderColor: "#FCA5A5" }}
+          style={{ backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.danger }}
           activeOpacity={0.7}
         >
-          <LogOut size={20} color="#991B1B" />
-          <Text className="text-lg font-semibold" style={{ color: "#991B1B" }}>Sair</Text>
+          <LogOut size={20} color={theme.colors.danger} />
+          <Text className="text-lg font-semibold" style={{ color: theme.colors.danger }}>Sair</Text>
         </TouchableOpacity>
+
+        {/* Versão do app */}
+        {Constants.expoConfig?.version ? (
+          <Text
+            className="text-center text-xs"
+            style={{ color: theme.colors.textMuted }}
+          >
+            v{Constants.expoConfig.version}
+          </Text>
+        ) : null}
 
         {/* Espaçamento inferior */}
         <View className="h-8" />
