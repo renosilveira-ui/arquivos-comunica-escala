@@ -238,7 +238,8 @@ interface IntegrationEvent {
   event_type:
     | "ROSTER_PUBLISHED"
     | "SHIFT_VACANCY_OPENED"
-    | "SHIFT_SWAP_APPROVED";
+    | "SHIFT_SWAP_APPROVED"
+    | "SHIFT_SWAP_ACCEPTED";
   occurred_at: string;
   dedup_key: string;
   payload: Record<string, unknown>;
@@ -340,6 +341,33 @@ export async function notifySwapApproved(params: {
       `dedup=${dedupKey};swap=${params.swapId}`,
     );
   }
+}
+
+/**
+ * Disparado quando alguém se candidata a uma cessão/troca em aberto
+ * (status PENDING → ACCEPTED). Notifica o **ofertante** (A) — ele
+ * precisa abrir "Minhas ofertas" e aprovar a candidatura.
+ *
+ * Dedup key inclui `:accepted` para diferenciar do evento de
+ * aprovação final (`escalas:swap:<id>` em notifySwapApproved).
+ */
+export async function notifySwapAccepted(params: {
+  swapId: number;
+  ownerEmail: string;
+}): Promise<void> {
+  const dedupKey = `escalas:swap:${params.swapId}:accepted`;
+  const event = createEvent("SHIFT_SWAP_ACCEPTED", dedupKey, {
+    swapId: params.swapId,
+  });
+  console.log("[Comunica+] SHIFT_SWAP_ACCEPTED:", event.dedup_key);
+
+  const userId = await resolveUserIdByEmail(params.ownerEmail);
+  if (!userId) return;
+  await sendNoticeToUser(
+    userId,
+    "SHIFT_SWAP_ACCEPTED",
+    `dedup=${dedupKey};swap=${params.swapId}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
