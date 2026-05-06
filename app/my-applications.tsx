@@ -132,7 +132,7 @@ export default function MyApplicationsScreen() {
               Você ainda não se candidatou a nenhuma cessão
             </Text>
             <Text className="mt-2 text-sm text-center px-6" style={{ color: theme.colors.textMuted }}>
-              Veja as ofertas em "Solicitações" e candidate-se ao plantão que quiser assumir.
+              Veja as ofertas em &ldquo;Solicitações&rdquo; e candidate-se ao plantão que quiser assumir.
             </Text>
           </View>
         ) : (
