@@ -308,7 +308,10 @@ const shiftInstancesRouter = router({
       return { ok: true };
     }),
 
-  // List vacancies with enriched data (sector name, hospital name)
+  // List vacancies with enriched data (sector + hospital + modality).
+  // PR #61 added modality / coverageType / paymentModel / productivityCapBrl
+  // on shift_instances; this endpoint surfaces them for the Plantões em
+  // aberto screen (and any radar filtering by modality).
   listVacancies: protectedProcedure
     .input(
       z.object({
@@ -316,6 +319,8 @@ const shiftInstancesRouter = router({
         sectorId:   z.number().optional(),
         date:       z.string().optional(),
         shiftLabel: z.string().nullish(),
+        modality:   z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
+        coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
       }).optional(),
     )
     .query(async ({ ctx, input }) => {
@@ -336,6 +341,10 @@ const shiftInstancesRouter = router({
               si.end_at      AS endAt,
               si.label,
               si.status,
+              si.modality            AS modality,
+              si.coverage_type       AS coverageType,
+              si.payment_model       AS paymentModel,
+              si.productivity_cap_brl AS productivityCapBrl,
               s.name         AS sectorName,
               h.name         AS hospitalName,
               si.hospital_id AS hospitalId,
@@ -348,6 +357,8 @@ const shiftInstancesRouter = router({
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
+              ${input?.modality   ? sql`AND si.modality    = ${input.modality}`   : sql``}
+              ${input?.coverageType ? sql`AND si.coverage_type = ${input.coverageType}` : sql``}
               ${startOfDay && endOfDay ? sql`AND si.start_at BETWEEN ${startOfDay} AND ${endOfDay}` : sql``}
             ORDER BY si.start_at ASC`
       );
@@ -383,6 +394,16 @@ const shiftInstancesRouter = router({
         sectorName:      r.sectorName      as string,
         hospitalName:    r.hospitalName    as string,
         canAssume:       r.status === "VAGO" && !alreadyRequestedIds.has(r.shiftInstanceId as number),
+        // Modalidade (PR #61). Tipos vêm como string do mysql2; expõe
+        // direto pra o cliente formatar com os labels PT-BR.
+        modality:           r.modality           as "PLANTAO" | "SOBREAVISO",
+        coverageType:       (r.coverageType ?? null) as "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
+        paymentModel:       r.paymentModel       as
+          | "FIXO"
+          | "FIXO_PRODUTIVIDADE_TETO"
+          | "FIXO_PRODUTIVIDADE_SEM_TETO"
+          | "PRODUTIVIDADE_PURA",
+        productivityCapBrl: (r.productivityCapBrl ?? null) as string | null,
       }));
     }),
 });
