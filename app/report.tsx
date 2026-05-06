@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
-import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
+import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
+import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, FileText, Download, Calendar, Clock, Users } from "lucide-react-native";
+import { ChevronLeft, FileText, Download, Calendar } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 import { format } from "date-fns";
@@ -147,7 +148,7 @@ export default function ReportScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg text-white/70">Faça login para continuar</Text>
+          <Text className="text-lg" style={{ color: theme.colors.textMuted }}>Faça login para continuar</Text>
         </View>
       </ScreenGradient>
     );
@@ -163,12 +164,12 @@ export default function ReportScreen() {
             className="w-10 h-10 items-center justify-center"
             style={{ marginLeft: -8 }}
           >
-            <ChevronLeft size={28} color="#FFFFFF" />
+            <ChevronLeft size={28} color={theme.colors.textPrimary} />
           </TouchableOpacity>
           <View className="flex-1 items-center">
             <View className="flex-row items-center gap-2">
-              <FileText size={24} color="#FFFFFF" />
-              <Text className="text-2xl font-bold text-white">Relatório de Escalas</Text>
+              <FileText size={24} color={theme.colors.textPrimary} />
+              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Relatório de Escalas</Text>
             </View>
           </View>
           <View className="w-10" />
@@ -181,10 +182,10 @@ export default function ReportScreen() {
               onPress={handlePreviousMonth}
               className="w-10 h-10 items-center justify-center"
             >
-              <Text className="text-2xl text-white">←</Text>
+              <Text className="text-2xl" style={{ color: theme.colors.textPrimary }}>←</Text>
             </TouchableOpacity>
             <View className="flex-1 items-center">
-              <Text className="text-xl font-bold text-white">
+              <Text className="text-xl font-bold" style={{ color: theme.colors.textPrimary }}>
                 {format(new Date(selectedYear, selectedMonth), "MMMM 'de' yyyy", { locale: ptBR })}
               </Text>
             </View>
@@ -192,32 +193,32 @@ export default function ReportScreen() {
               onPress={handleNextMonth}
               className="w-10 h-10 items-center justify-center"
             >
-              <Text className="text-2xl text-white">→</Text>
+              <Text className="text-2xl" style={{ color: theme.colors.textPrimary }}>→</Text>
             </TouchableOpacity>
           </View>
         </TintedGlassCard>
 
         {isLoading ? (
           <View className="items-center py-12">
-            <ActivityIndicator size="large" color="#4DA3FF" />
-            <Text className="text-base text-white/70 mt-4">Carregando dados...</Text>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+            <Text className="text-base mt-4" style={{ color: theme.colors.textMuted }}>Carregando dados...</Text>
           </View>
         ) : (
           <>
             {/* Estatísticas Gerais */}
             <View className="gap-4">
-              <Text className="text-2xl font-bold text-white">Resumo do Mês</Text>
+              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Resumo do Mês</Text>
               <View className="flex-row gap-4">
                 <View className="flex-1">
                   <TintedGlassCard>
-                    <Text className="text-sm text-white/70">Total de Escalas</Text>
-                    <Text className="text-4xl font-bold text-white mt-2">{totalShifts}</Text>
+                    <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Total de Escalas</Text>
+                    <Text className="text-4xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{totalShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
                   <TintedGlassCard>
-                    <Text className="text-sm text-white/70">Total de Horas</Text>
-                    <Text className="text-4xl font-bold text-white mt-2">
+                    <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Total de Horas</Text>
+                    <Text className="text-4xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>
                       {Math.round(totalHours)}h
                     </Text>
                   </TintedGlassCard>
@@ -229,19 +230,19 @@ export default function ReportScreen() {
                 <View className="flex-1">
                   <TintedGlassCard>
                     <Badge variant="success">Confirmadas</Badge>
-                    <Text className="text-3xl font-bold text-white mt-2">{confirmedShifts}</Text>
+                    <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{confirmedShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
                   <TintedGlassCard>
                     <Badge variant="warning">Pendentes</Badge>
-                    <Text className="text-3xl font-bold text-white mt-2">{pendingShifts}</Text>
+                    <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{pendingShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
                   <TintedGlassCard>
                     <Badge variant="critical">Canceladas</Badge>
-                    <Text className="text-3xl font-bold text-white mt-2">{canceledShifts}</Text>
+                    <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{canceledShifts}</Text>
                   </TintedGlassCard>
                 </View>
               </View>
@@ -249,24 +250,24 @@ export default function ReportScreen() {
 
             {/* Distribuição por Turno */}
             <View className="gap-4">
-              <Text className="text-2xl font-bold text-white">Distribuição por Turno</Text>
+              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Distribuição por Turno</Text>
               <TintedGlassCard>
                 <View className="gap-3">
                   <View className="flex-row justify-between items-center py-2">
-                    <Text className="text-lg text-white">Manhã (7h-13h)</Text>
-                    <Text className="text-2xl font-bold text-white">
+                    <Text className="text-lg" style={{ color: theme.colors.textPrimary }}>Manhã (7h-13h)</Text>
+                    <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>
                       {shiftsByTurn["Manhã"] || 0}
                     </Text>
                   </View>
-                  <View className="flex-row justify-between items-center py-2 border-t border-white/10">
-                    <Text className="text-lg text-white">Tarde (13h-19h)</Text>
-                    <Text className="text-2xl font-bold text-white">
+                  <View className="flex-row justify-between items-center py-2 border-t" style={{ borderColor: theme.colors.border }}>
+                    <Text className="text-lg" style={{ color: theme.colors.textPrimary }}>Tarde (13h-19h)</Text>
+                    <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>
                       {shiftsByTurn["Tarde"] || 0}
                     </Text>
                   </View>
-                  <View className="flex-row justify-between items-center py-2 border-t border-white/10">
-                    <Text className="text-lg text-white">Noite (19h-7h)</Text>
-                    <Text className="text-2xl font-bold text-white">
+                  <View className="flex-row justify-between items-center py-2 border-t" style={{ borderColor: theme.colors.border }}>
+                    <Text className="text-lg" style={{ color: theme.colors.textPrimary }}>Noite (19h-7h)</Text>
+                    <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>
                       {shiftsByTurn["Noite"] || 0}
                     </Text>
                   </View>
@@ -279,7 +280,7 @@ export default function ReportScreen() {
               onPress={handleExportPDF}
               activeOpacity={0.7}
               style={{
-                backgroundColor: "#3B82F6",
+                backgroundColor: theme.colors.primary,
                 borderRadius: 16,
                 paddingVertical: 16,
                 paddingHorizontal: 24,
@@ -290,12 +291,12 @@ export default function ReportScreen() {
               }}
             >
               <Download size={24} color="#FFFFFF" />
-              <Text className="text-lg font-bold text-white">Exportar Relatório (PDF)</Text>
+              <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>Exportar Relatório (PDF)</Text>
             </TouchableOpacity>
 
             {/* Lista de Escalas do Mês */}
             <View className="gap-4">
-              <Text className="text-2xl font-bold text-white">Escalas do Mês</Text>
+              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Escalas do Mês</Text>
               {shifts.length > 0 ? (
                 <View className="gap-3">
                   {shifts.slice(0, 10).map((shift, index: number) => {
@@ -306,10 +307,10 @@ export default function ReportScreen() {
                       <TintedGlassCard key={index}>
                         <View className="flex-row justify-between items-start mb-2">
                           <View className="flex-1">
-                            <Text className="text-lg font-semibold text-white">
+                            <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                               {shift.sectorName}
                             </Text>
-                            <Text className="text-base text-white/70 mt-1">
+                            <Text className="text-base mt-1" style={{ color: theme.colors.textSecondary }}>
                               {formatDateBR(startDate)}
                               {" • "}
                               {shift.turnLabel || "Turno não definido"}
@@ -331,7 +332,7 @@ export default function ReportScreen() {
                               : "Pendente"}
                           </Badge>
                         </View>
-                        <Text className="text-sm text-white/50">
+                        <Text className="text-sm" style={{ color: theme.colors.textMuted }}>
                           {startDate.toLocaleTimeString("pt-BR", {
                             hour: "2-digit",
                             minute: "2-digit",
@@ -346,15 +347,15 @@ export default function ReportScreen() {
                     );
                   })}
                   {shifts.length > 10 && (
-                    <Text className="text-base text-white/50 text-center mt-2">
+                    <Text className="text-base text-center mt-2" style={{ color: theme.colors.textMuted }}>
                       + {shifts.length - 10} escalas
                     </Text>
                   )}
                 </View>
               ) : (
                 <TintedGlassCard className="items-center py-8">
-                  <Calendar size={48} color="rgba(255,255,255,0.3)" />
-                  <Text className="text-base text-white/50 mt-3">
+                  <Calendar size={48} color={theme.colors.textMuted} />
+                  <Text className="text-base mt-3" style={{ color: theme.colors.textMuted }}>
                     Nenhuma escala neste mês
                   </Text>
                 </TintedGlassCard>
