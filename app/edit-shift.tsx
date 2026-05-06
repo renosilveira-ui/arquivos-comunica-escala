@@ -25,6 +25,34 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
 import { normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
 
+// Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
+type Modality = "PLANTAO" | "SOBREAVISO";
+type CoverageType = "URGENCIA_EMERGENCIA" | "ELETIVAS";
+type PaymentModel =
+  | "FIXO"
+  | "FIXO_PRODUTIVIDADE_TETO"
+  | "FIXO_PRODUTIVIDADE_SEM_TETO"
+  | "PRODUTIVIDADE_PURA";
+
+const MODALITY_OPTIONS: { value: Modality; label: string }[] = [
+  { value: "PLANTAO", label: "Plantão" },
+  { value: "SOBREAVISO", label: "Sobreaviso" },
+];
+
+const COVERAGE_OPTIONS: { value: CoverageType; label: string }[] = [
+  { value: "URGENCIA_EMERGENCIA", label: "Urgência / Emergência" },
+  { value: "ELETIVAS", label: "Eletivas" },
+];
+
+const PAYMENT_MODEL_OPTIONS: { value: PaymentModel; label: string }[] = [
+  { value: "FIXO", label: "Fixo" },
+  { value: "FIXO_PRODUTIVIDADE_TETO", label: "Fixo + produtividade (com teto)" },
+  { value: "FIXO_PRODUTIVIDADE_SEM_TETO", label: "Fixo + produtividade (sem teto)" },
+  { value: "PRODUTIVIDADE_PURA", label: "Produtividade pura" },
+];
+
+const PRODUCTIVITY_CAP_REGEX = /^\d+(\.\d{1,2})?$/;
+
 /**
  * Tela de Edição de Escala
  * Permite alterar dados de uma escala existente
@@ -49,6 +77,12 @@ export default function EditShiftScreen() {
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
   const [notes, setNotes] = useState("");
+
+  // Modalidade (PR #61): defaults pareiam com os defaults do DB.
+  const [modality, setModality] = useState<Modality>("PLANTAO");
+  const [coverageType, setCoverageType] = useState<CoverageType | undefined>(undefined);
+  const [paymentModel, setPaymentModel] = useState<PaymentModel>("FIXO");
+  const [productivityCapBrl, setProductivityCapBrl] = useState("");
 
   // Estados do DateTimePicker
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
@@ -93,6 +127,18 @@ export default function EditShiftScreen() {
       setStartTime(formatTimeBR(start));
       setEndDate(toISODateString(end));
       setEndTime(formatTimeBR(end));
+
+      // Hidratar modalidade vinda do backend (PR #61).
+      const data = shiftData as typeof shiftData & {
+        modality?: Modality | null;
+        coverageType?: CoverageType | null;
+        paymentModel?: PaymentModel | null;
+        productivityCapBrl?: string | null;
+      };
+      if (data.modality) setModality(data.modality);
+      setCoverageType(data.coverageType ?? undefined);
+      if (data.paymentModel) setPaymentModel(data.paymentModel);
+      setProductivityCapBrl(data.productivityCapBrl ?? "");
     }
   }, [shiftData]);
 
@@ -209,11 +255,35 @@ export default function EditShiftScreen() {
       return;
     }
 
+    // Validações de modalidade (light-touch — server enforça as regras duras).
+    if (modality === "PLANTAO" && !coverageType) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Atenção", "Selecione a cobertura do plantão.");
+      return;
+    }
+    if (paymentModel === "FIXO_PRODUTIVIDADE_TETO" && !productivityCapBrl) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Atenção", "Informe o teto de produtividade ou troque o modelo.");
+      return;
+    }
+    if (productivityCapBrl && !PRODUCTIVITY_CAP_REGEX.test(productivityCapBrl)) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Atenção", "Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).");
+      return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     updateShift.mutate({
       id: shiftId,
       startAt: startDateTime.toISOString(),
       endAt: endDateTime.toISOString(),
+      modality,
+      coverageType: modality === "PLANTAO" ? coverageType : null,
+      paymentModel,
+      productivityCapBrl:
+        paymentModel === "FIXO_PRODUTIVIDADE_TETO" && productivityCapBrl
+          ? productivityCapBrl
+          : null,
     });
   };
 
@@ -449,6 +519,162 @@ export default function EditShiftScreen() {
                 )}
               </View>
             </View>
+          </TintedGlassCard>
+
+          {/* Modalidade */}
+          <TintedGlassCard>
+            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
+              Modalidade
+            </Text>
+
+            {/* Modalidade — PLANTAO / SOBREAVISO */}
+            <View style={{ gap: 8, marginBottom: 16 }}>
+              <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Modalidade *</Text>
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                {MODALITY_OPTIONS.map((option) => {
+                  const isSelected = modality === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setModality(option.value);
+                        if (option.value === "SOBREAVISO") {
+                          setCoverageType(undefined);
+                        }
+                      }}
+                      style={{
+                        flex: 1,
+                        paddingHorizontal: 20,
+                        paddingVertical: 12,
+                        borderRadius: 16,
+                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
+                        borderWidth: 1,
+                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 16,
+                          fontWeight: "600",
+                          textAlign: "center",
+                          color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                        }}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Cobertura — apenas para PLANTAO */}
+            {modality === "PLANTAO" && (
+              <View style={{ gap: 8, marginBottom: 16 }}>
+                <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Cobertura</Text>
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  {COVERAGE_OPTIONS.map((option) => {
+                    const isSelected = coverageType === option.value;
+                    return (
+                      <TouchableOpacity
+                        key={option.value}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          setCoverageType(option.value);
+                        }}
+                        style={{
+                          flex: 1,
+                          paddingHorizontal: 20,
+                          paddingVertical: 12,
+                          borderRadius: 16,
+                          backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
+                          borderWidth: 1,
+                          borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Text
+                          style={{
+                            fontSize: 16,
+                            fontWeight: "600",
+                            textAlign: "center",
+                            color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                          }}
+                        >
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
+            {/* Modelo de pagamento — lista vertical */}
+            <View style={{ gap: 8, marginBottom: 16 }}>
+              <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Modelo de pagamento *</Text>
+              <View style={{ gap: 12 }}>
+                {PAYMENT_MODEL_OPTIONS.map((option) => {
+                  const isSelected = paymentModel === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setPaymentModel(option.value);
+                        if (option.value !== "FIXO_PRODUTIVIDADE_TETO") {
+                          setProductivityCapBrl("");
+                        }
+                      }}
+                      style={{
+                        paddingHorizontal: 20,
+                        paddingVertical: 16,
+                        borderRadius: 16,
+                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
+                        borderWidth: 1,
+                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 16,
+                          fontWeight: "600",
+                          color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                        }}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Teto da produtividade — apenas para FIXO_PRODUTIVIDADE_TETO */}
+            {paymentModel === "FIXO_PRODUTIVIDADE_TETO" && (
+              <View style={{ gap: 8 }}>
+                <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Teto da produtividade (BRL)</Text>
+                <TextInput
+                  value={productivityCapBrl}
+                  onChangeText={setProductivityCapBrl}
+                  placeholder="Ex: 1500.00"
+                  placeholderTextColor={theme.colors.textMuted}
+                  keyboardType="decimal-pad"
+                  style={{
+                    backgroundColor: theme.colors.surfaceAlt,
+                    borderRadius: 12,
+                    padding: 12,
+                    fontSize: 16,
+                    color: theme.colors.textPrimary,
+                    borderWidth: 1,
+                    borderColor: theme.colors.border,
+                  }}
+                />
+              </View>
+            )}
           </TintedGlassCard>
 
           {/* Observações */}
