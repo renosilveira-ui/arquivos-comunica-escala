@@ -7,7 +7,7 @@ import * as Haptics from "expo-haptics";
 import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
 import { useState, useEffect, useMemo } from "react";
-import { User, Bell, Link2, LogOut, Briefcase } from "lucide-react-native";
+import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useRouter } from "expo-router";
 import { useTenantState } from "@/lib/tenant-state";
@@ -371,6 +371,37 @@ export default function ProfileScreen() {
             >
               <Text className="text-base font-semibold" style={{ color: "#0F172A" }}>Trocar instituição ativa</Text>
               <Text style={{ color: "#1D4ED8", fontWeight: "700" }}>Alterar</Text>
+            </TouchableOpacity>
+          </TintedGlassCard>
+        </View>
+
+        {/* Minhas ofertas (cessões e trocas) */}
+        <View className="gap-4">
+          <View className="flex-row items-center gap-2">
+            <ArrowRightLeft size={20} color="#0F172A" />
+            <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Minhas ofertas</Text>
+          </View>
+          <TintedGlassCard variant="light">
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/my-offers");
+              }}
+              className="rounded-xl p-4 flex-row items-center justify-between"
+              style={{ backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E2E8F0" }}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel="Ver minhas ofertas de cessão e troca"
+            >
+              <View className="flex-1 pr-4">
+                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Cessões e trocas
+                </Text>
+                <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
+                  Acompanhe as ofertas que você criou e aprove candidaturas
+                </Text>
+              </View>
+              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
             </TouchableOpacity>
           </TintedGlassCard>
         </View>
