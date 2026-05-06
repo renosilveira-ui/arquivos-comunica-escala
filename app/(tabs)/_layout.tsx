@@ -102,8 +102,10 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Início",
-          tabBarIcon: ({ color, size }) => <TabIcon name="home" color={color} size={size} />,
+          // Redireciona para /calendar (ver app/(tabs)/index.tsx).
+          // Mantém a entry para o Expo Router resolver `/` mas esconde
+          // a aba do tabBar — o usuário não vê "Início" na barra.
+          href: null,
         }}
       />
       <Tabs.Screen
@@ -132,7 +134,10 @@ export default function TabLayout() {
       <Tabs.Screen
         name="pending"
         options={{
-          title: "Pendentes",
+          // Renomeada de "Pendentes" — cobre solicitações de troca e
+          // cessão (não pendências de plantão). Decisão em
+          // docs/product/escala-ux.md §3.
+          title: "Solicitações",
           href: isManager ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
         }}
@@ -140,7 +145,9 @@ export default function TabLayout() {
       <Tabs.Screen
         name="vacancies"
         options={{
-          title: "Vagas",
+          // Renomeada de "Vagas" — cobre plantões criados sem
+          // profissional alocado. Decisão em docs/product/escala-ux.md §3.
+          title: "Plantões em aberto",
           tabBarIcon: ({ color, size }) => <TabIcon name="work" color={color} size={size} />,
           href: can("view:vacancies") ? undefined : null,
         }}
