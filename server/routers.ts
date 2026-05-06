@@ -90,7 +90,10 @@ const shiftAssignmentsRouter = router({
       return { ok: true, assignmentId: result.insertId, status: "PENDENTE" as const };
     }),
 
-  // Listar alocações pendentes com dados enriquecidos
+  // Listar alocações pendentes com dados enriquecidos.
+  // Modalidade do shift subjacente (PR #61) também flui pra cá pra
+  // que o gestor consiga filtrar/visualizar por tipo na tela de
+  // Solicitações sem fazer outra query.
   listPending: protectedProcedure
     .input(
       z.object({
@@ -98,6 +101,8 @@ const shiftAssignmentsRouter = router({
         sectorId: z.number().optional(),
         date: z.string().optional(),
         shiftLabel: z.string().nullish(),
+        modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
+        coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
       }).optional(),
     )
     .query(async ({ input, ctx }) => {
@@ -125,7 +130,11 @@ const shiftAssignmentsRouter = router({
               si.label         AS shiftLabel,
               si.start_at      AS shiftStartAt,
               si.end_at        AS shiftEndAt,
-              si.hospital_id   AS hospitalId
+              si.hospital_id   AS hospitalId,
+              si.modality            AS modality,
+              si.coverage_type       AS coverageType,
+              si.payment_model       AS paymentModel,
+              si.productivity_cap_brl AS productivityCapBrl
             FROM shift_assignments_v2 sa
             JOIN professionals p   ON sa.professional_id = p.id
             JOIN shift_instances si ON sa.shift_instance_id = si.id
@@ -136,6 +145,8 @@ const shiftAssignmentsRouter = router({
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
+              ${input?.modality   ? sql`AND si.modality    = ${input.modality}`   : sql``}
+              ${input?.coverageType ? sql`AND si.coverage_type = ${input.coverageType}` : sql``}
               ${startOfDay && endOfDay ? sql`AND si.start_at BETWEEN ${startOfDay} AND ${endOfDay}` : sql``}
             ORDER BY si.start_at ASC`
       );
@@ -155,6 +166,17 @@ const shiftAssignmentsRouter = router({
         assignmentType:   r.assignmentType   as string,
         status:           r.status           as string,
         hospitalId:       r.hospitalId       as number,
+        // Modalidade do shift subjacente (PR #61). Mesmas colunas que
+        // shiftInstances.listVacancies expõe, pra a UI de Solicitações
+        // poder filtrar e renderizar consistentemente.
+        modality:           r.modality           as "PLANTAO" | "SOBREAVISO",
+        coverageType:       (r.coverageType ?? null) as "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
+        paymentModel:       r.paymentModel       as
+          | "FIXO"
+          | "FIXO_PRODUTIVIDADE_TETO"
+          | "FIXO_PRODUTIVIDADE_SEM_TETO"
+          | "PRODUTIVIDADE_PURA",
+        productivityCapBrl: (r.productivityCapBrl ?? null) as string | null,
       }));
     }),
 });
