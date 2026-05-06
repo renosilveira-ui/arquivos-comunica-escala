@@ -8,6 +8,7 @@ import { Check, X, Clock, MapPin, User, Briefcase, ClipboardCheck, Lock, ArrowRi
 import * as Auth from "@/lib/_core/auth";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
+import { theme } from "@/lib/theme";
 
 // ---------------------------------------------------------------------------
 // Helpers for Available Swaps section
@@ -689,11 +690,11 @@ export default function PendingScreen() {
         ) : (
           <View className="flex-1 items-center justify-center py-20">
             <ClipboardCheck size={64} color="#CBD5E1" />
-            <Text className="mt-4 text-lg font-semibold" style={{ color: "#475569" }}>
-              Nenhuma pendência no momento
+            <Text className="mt-4 text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+              Nenhuma solicitação no momento
             </Text>
-            <Text className="mt-1 text-sm" style={{ color: "#64748B" }}>
-              Todas as alocações foram processadas
+            <Text className="mt-2 text-sm text-center px-6" style={{ color: theme.colors.textMuted }}>
+              As solicitações de plantão aparecem aqui quando profissionais pedem para assumir vagas.
             </Text>
           </View>
         )}
