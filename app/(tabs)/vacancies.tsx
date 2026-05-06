@@ -9,6 +9,7 @@ import { useFilterDefaults } from "@/hooks/use-filter-defaults";
 import { AppButton } from "@/components/ui/AppButton";
 import { confirmAction } from "@/lib/ui/confirm";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
+import { theme } from "@/lib/theme";
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -275,11 +276,11 @@ export default function VacanciesScreen() {
         ) : !vacanciesLoading ? (
           <View className="flex-1 items-center justify-center py-20">
             <Briefcase size={64} color="#CBD5E1" />
-            <Text className="mt-4 text-lg font-semibold" style={{ color: "#475569" }}>
-              Nenhuma vaga disponível
+            <Text className="mt-4 text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+              Nenhum plantão em aberto
             </Text>
-            <Text className="mt-1 text-sm" style={{ color: "#64748B" }}>
-              Todas as vagas foram preenchidas
+            <Text className="mt-2 text-sm text-center px-6" style={{ color: theme.colors.textMuted }}>
+              Todos os plantões deste período já estão atribuídos. Tente outro hospital, setor ou data nos filtros acima.
             </Text>
           </View>
         ) : null}

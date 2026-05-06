@@ -2,10 +2,33 @@ import { Tabs } from "expo-router";
 import { BottomTabBar, type BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { TabIcon } from "@/components/ui/TabIcon";
 import { usePermissions } from "@/hooks/use-permissions";
-import { Platform, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { Platform, Pressable, Text, View, useWindowDimensions, type ViewStyle } from "react-native";
+import Constants from "expo-constants";
 import { theme } from "@/lib/theme";
+import { useAuth } from "@/hooks/use-auth";
+
+function roleLabel(role: string | null | undefined): string {
+  switch (role) {
+    case "admin":
+      return "Administrador";
+    case "manager":
+      return "Gestor";
+    case "doctor":
+      return "Médico";
+    case "nurse":
+      return "Enfermagem";
+    case "tech":
+      return "Técnico";
+    default:
+      return "";
+  }
+}
 
 function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+  const { user } = useAuth();
+  const appVersion = Constants.expoConfig?.version;
+  const userInitial = (user?.name?.trim()?.charAt(0) || user?.email?.trim()?.charAt(0) || "?").toUpperCase();
+
   return (
     <View
       style={{
@@ -24,7 +47,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
       <Text style={{ color: "#E2E8F0", fontSize: 18, fontWeight: "800", marginBottom: 16, paddingHorizontal: 10 }}>
         Escalas
       </Text>
-      <View style={{ gap: 6 }}>
+      <View style={{ gap: 6, flex: 1 }}>
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
           if ((options as any).href === null) return null;
@@ -52,22 +75,108 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
             <Pressable
               key={route.key}
               onPress={onPress}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 10,
-                borderRadius: 10,
-                paddingVertical: 10,
-                paddingHorizontal: 10,
-                backgroundColor: focused ? theme.colors.accent : "transparent",
+              style={(pressableState) => {
+                const hovered = (pressableState as { hovered?: boolean }).hovered === true;
+                const itemStyle: ViewStyle = {
+                  position: "relative",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 10,
+                  borderRadius: 10,
+                  paddingVertical: 10,
+                  paddingHorizontal: 10,
+                  backgroundColor: focused
+                    ? theme.colors.accent
+                    : hovered
+                      ? "rgba(255,255,255,0.06)"
+                      : "transparent",
+                };
+                if (Platform.OS === "web") {
+                  // RN-Web supports `cursor`; RN core types don't include it.
+                  (itemStyle as Record<string, unknown>).cursor = "pointer";
+                }
+                return itemStyle;
               }}
             >
+              {focused ? (
+                <View
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 3,
+                    backgroundColor: "#FFFFFF",
+                    borderTopRightRadius: 3,
+                    borderBottomRightRadius: 3,
+                  }}
+                />
+              ) : null}
               {options.tabBarIcon?.({ focused, color, size: 18 }) ?? null}
               <Text style={{ color, fontSize: 14, fontWeight: focused ? "700" : "500" }}>{label}</Text>
             </Pressable>
           );
         })}
       </View>
+
+      {user ? (
+        <View
+          style={{
+            flexShrink: 0,
+            paddingTop: 12,
+            paddingBottom: 4,
+            paddingHorizontal: 4,
+            borderTopWidth: 1,
+            borderTopColor: "rgba(255,255,255,0.08)",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <View
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 16,
+              backgroundColor: "rgba(255,255,255,0.12)",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}>{userInitial}</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text
+              numberOfLines={1}
+              style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}
+            >
+              {user.name ?? user.email ?? "Usuário"}
+            </Text>
+            {roleLabel(user.role) ? (
+              <Text
+                numberOfLines={1}
+                style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginTop: 2 }}
+              >
+                {roleLabel(user.role)}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
+      {appVersion ? (
+        <Text
+          style={{
+            color: "rgba(255,255,255,0.4)",
+            fontSize: 12,
+            paddingHorizontal: 4,
+            paddingTop: 8,
+            paddingBottom: 12,
+          }}
+        >
+          v{appVersion}
+        </Text>
+      ) : null}
     </View>
   );
 }
