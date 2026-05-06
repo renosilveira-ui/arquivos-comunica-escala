@@ -472,13 +472,21 @@ export const auditTrail = mysqlTable(
       "SWAP_ACCEPTED",
       "SWAP_REJECTED",
       "SWAP_APPROVED_BY_MANAGER",
+      "SWAP_APPROVED_BY_OWNER",
       "SWAP_CANCELLED",
-      // Transfers (repasse)
+      // Transfers (repasse) — alias legado de cessão
       "TRANSFER_OFFERED",
       "TRANSFER_ACCEPTED",
       "TRANSFER_REJECTED",
       "TRANSFER_APPROVED_BY_MANAGER",
+      "TRANSFER_APPROVED_BY_OWNER",
       "TRANSFER_CANCELLED",
+      // Cessão (PR #59 — owner approves cessão sem gestor)
+      "CESSAO_OFFERED",
+      "CESSAO_ACCEPTED",
+      "CESSAO_REJECTED",
+      "CESSAO_APPROVED_BY_OWNER",
+      "CESSAO_CANCELLED",
       // Roster
       "ROSTER_PUBLISHED",
       "ROSTER_LOCKED",
