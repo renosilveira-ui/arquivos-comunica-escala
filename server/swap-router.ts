@@ -872,11 +872,19 @@ export const swapRouter = router({
     }),
 
   // ── list ──────────────────────────────────────────────────────────────────
+  // role:
+  //   "OFFERER"  — apenas as solicitações onde sou o ofertante (A).
+  //                Útil para a tela "Minhas ofertas" do USER consumir
+  //                approveByOwner sobre candidaturas em ACCEPTED.
+  //   "RECEIVER" — onde sou o aceitante (B). Útil para acompanhar o
+  //                que ofereci aceitar e tá no fluxo.
+  //   "ANY"      — comportamento legado: qualquer envolvimento (default).
   list: protectedProcedure
     .input(
       z.object({
         status: z.string().optional(),
         type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
+        role: z.enum(["OFFERER", "RECEIVER", "ANY"]).default("ANY"),
         limit: z.number().min(1).max(200).default(50),
         offset: z.number().min(0).default(0),
       }),
@@ -901,7 +909,9 @@ export const swapRouter = router({
       if (input.status) conditions.push(eq(swapRequests.status, input.status as any));
       if (input.type) conditions.push(eq(swapRequests.type, input.type));
 
-      // Non-managers see only their own swaps
+      // Non-managers see only their own swaps. Mesmo gestores podem
+      // pedir filtro OFFERER/RECEIVER explícito (ex.: gestor ver os
+      // próprios pedidos pessoais separados dos do tenant).
       if (!isInstitutionManager && pro) {
         conditions.push(
           sql`(${swapRequests.fromProfessionalId} = ${pro.id} OR ${swapRequests.toProfessionalId} = ${pro.id})`,
@@ -926,6 +936,8 @@ export const swapRouter = router({
           sr.reviewed_at        AS reviewedAt,
           sr.from_professional_id AS fromProfessionalId,
           sr.to_professional_id   AS toProfessionalId,
+          sr.from_user_id         AS fromUserId,
+          sr.to_user_id           AS toUserId,
           sr.from_shift_instance_id AS fromShiftInstanceId,
           sr.to_shift_instance_id   AS toShiftInstanceId,
           -- from professional
@@ -962,6 +974,8 @@ export const swapRouter = router({
           AND sr.institution_id = ${institutionId}
           ${input.status ? sql`AND sr.status = ${input.status}` : sql``}
           ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
+          ${input.role === "OFFERER" ? sql`AND sr.from_user_id = ${userId}` : sql``}
+          ${input.role === "RECEIVER" ? sql`AND sr.to_user_id = ${userId}` : sql``}
           ${!isInstitutionManager && pro
             ? sql`AND (sr.from_professional_id = ${pro.id} OR sr.to_professional_id = ${pro.id})`
             : sql``}
@@ -1004,6 +1018,11 @@ export const swapRouter = router({
             }
           : null,
         reviewerName: r.reviewerName ?? null,
+        // True quando o usuário logado é o ofertante e a candidatura
+        // está aguardando aprovação dele (approveByOwner). A tela
+        // "Minhas ofertas" usa esse flag pra filtrar/destacar o que
+        // exige ação imediata sem precisar comparar fromUserId no client.
+        awaitingMyApproval: r.status === "ACCEPTED" && r.fromUserId === userId,
       }));
     }),
 
