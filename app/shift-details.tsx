@@ -131,6 +131,54 @@ export default function ShiftDetailsScreen() {
   const userAssignment = assignments?.find((a: any) => a.professionalId === user?.id || a.userId === user?.id);
   const isUserAssigned = !!userAssignment;
 
+  // Campos de modalidade (PR #61): backend retorna direto no shift_instance.
+  // Cast defensivo enquanto o tipo do retorno do tRPC ainda não infere todas as colunas.
+  const shiftWithModality = shift as typeof shift & {
+    modality?: "PLANTAO" | "SOBREAVISO" | null;
+    coverageType?: "URGENCIA_EMERGENCIA" | "ELETIVAS" | null;
+    paymentModel?:
+      | "FIXO"
+      | "FIXO_PRODUTIVIDADE_TETO"
+      | "FIXO_PRODUTIVIDADE_SEM_TETO"
+      | "PRODUTIVIDADE_PURA"
+      | null;
+    productivityCapBrl?: string | null;
+  };
+  const modality = shiftWithModality.modality ?? null;
+  const coverageType = shiftWithModality.coverageType ?? null;
+  const paymentModel = shiftWithModality.paymentModel ?? null;
+  const productivityCapBrl = shiftWithModality.productivityCapBrl ?? null;
+
+  const modalityLabel =
+    modality === "PLANTAO" ? "Plantão" : modality === "SOBREAVISO" ? "Sobreaviso" : null;
+  const coverageLabel =
+    coverageType === "URGENCIA_EMERGENCIA"
+      ? "Urgência / Emergência"
+      : coverageType === "ELETIVAS"
+        ? "Eletivas"
+        : null;
+  const paymentModelLabel =
+    paymentModel === "FIXO"
+      ? "Fixo"
+      : paymentModel === "FIXO_PRODUTIVIDADE_TETO"
+        ? "Fixo + produtividade (com teto)"
+        : paymentModel === "FIXO_PRODUTIVIDADE_SEM_TETO"
+          ? "Fixo + produtividade (sem teto)"
+          : paymentModel === "PRODUTIVIDADE_PURA"
+            ? "Produtividade pura"
+            : null;
+  const showCapacityCap =
+    paymentModel === "FIXO_PRODUTIVIDADE_TETO" &&
+    productivityCapBrl !== null &&
+    productivityCapBrl !== "" &&
+    Number.isFinite(Number(productivityCapBrl));
+  const formattedCap = showCapacityCap
+    ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(
+        Number(productivityCapBrl),
+      )
+    : null;
+  const hasModalityInfo = !!(modalityLabel || paymentModelLabel);
+
   return (
     <ScreenGradient scrollable>
       <View className="gap-6">
@@ -231,6 +279,54 @@ export default function ShiftDetailsScreen() {
                 : "Pendente"}
             </Badge>
           </View>
+
+          {/* Modalidade (PR #61/#63 — leitura) */}
+          {hasModalityInfo && (
+            <View className="pt-4 border-t gap-3" style={{ borderColor: theme.colors.border }}>
+              <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Modalidade</Text>
+
+              {modalityLabel && (
+                <View className="flex-row flex-wrap items-center gap-2">
+                  <View
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderRadius: 9999,
+                      backgroundColor: "rgba(37,99,235,0.10)",
+                      borderWidth: 1,
+                      borderColor: "rgba(37,99,235,0.35)",
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.primary }}>
+                      {modalityLabel}
+                    </Text>
+                  </View>
+                  {modality === "PLANTAO" && coverageLabel && (
+                    <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>
+                      {coverageLabel}
+                    </Text>
+                  )}
+                </View>
+              )}
+
+              {paymentModelLabel && (
+                <View>
+                  <Text className="text-sm mb-1" style={{ color: theme.colors.textMuted }}>
+                    Modelo de pagamento
+                  </Text>
+                  <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                    {paymentModelLabel}
+                  </Text>
+                </View>
+              )}
+
+              {formattedCap && (
+                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Teto: {formattedCap}
+                </Text>
+              )}
+            </View>
+          )}
 
           {/* Observações */}
           {shift.notes && (
