@@ -11,10 +11,12 @@ import {
   hospitals,
   sectors,
   monthlyRosters,
+  users,
 } from "../drizzle/schema";
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
 import { yearMonthFromDate } from "../lib/date-utils";
+import { notifySwapAccepted, notifySwapApproved } from "./integrations/comunica-plus";
 import {
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
@@ -37,6 +39,19 @@ async function getProfessionalById(db: any, professionalId: number) {
     .from(professionals)
     .where(eq(professionals.id, professionalId));
   return row ?? null;
+}
+
+/**
+ * Resolve o e-mail de um user pelo id. Usado para enviar notificações
+ * via Comunica+ (notifySwapAccepted / notifySwapApproved). Retorna
+ * null se o user não existe — o caller faz fire-and-forget e ignora.
+ */
+async function getUserEmailById(db: any, userId: number): Promise<string | null> {
+  const [row] = await db
+    .select({ email: users.email })
+    .from(users)
+    .where(eq(users.id, userId));
+  return row?.email ?? null;
 }
 
 type SwapType = typeof swapRequests.$inferSelect["type"];
@@ -563,6 +578,16 @@ export const swapRouter = router({
         institutionId: swap.institutionId,
       });
 
+      // Push (fire-and-forget) ao dono — ele precisa abrir Minhas
+      // ofertas e aprovar a candidatura. Falha de notificação não
+      // bloqueia o aceite; apenas registra.
+      const ownerEmail = await getUserEmailById(db, swap.fromUserId);
+      if (ownerEmail) {
+        notifySwapAccepted({ swapId: swap.id, ownerEmail }).catch((err) =>
+          console.error("[Comunica+] notifySwapAccepted error:", err),
+        );
+      }
+
       return { ok: true };
     }),
 
@@ -690,6 +715,17 @@ export const swapRouter = router({
         metadata: { note: input.note, approvalPath: "OWNER" },
       });
 
+      // Push (fire-and-forget) ao ofertante e ao receptor — cessão/
+      // troca efetivada. Resolvido por e-mail; falha de notificação
+      // é só registrada, não bloqueia.
+      const fromEmail = await getUserEmailById(db, swap.fromUserId);
+      const toEmail = swap.toUserId ? await getUserEmailById(db, swap.toUserId) : null;
+      if (fromEmail && toEmail) {
+        notifySwapApproved({ swapId: swap.id, fromEmail, toEmail }).catch((err) =>
+          console.error("[Comunica+] notifySwapApproved error:", err),
+        );
+      }
+
       return { ok: true };
     }),
 
@@ -750,6 +786,17 @@ export const swapRouter = router({
         institutionId: swap.institutionId,
         metadata: { note: input.note, approvalPath: "MANAGER_LEGACY" },
       });
+
+      // Mesma notificação que approveByOwner: cessão/troca efetivada,
+      // ping ofertante + receptor. Mantida porque o fluxo legado
+      // ainda existe para clientes que não migraram.
+      const fromEmailMgr = await getUserEmailById(db, swap.fromUserId);
+      const toEmailMgr = swap.toUserId ? await getUserEmailById(db, swap.toUserId) : null;
+      if (fromEmailMgr && toEmailMgr) {
+        notifySwapApproved({ swapId: swap.id, fromEmail: fromEmailMgr, toEmail: toEmailMgr }).catch(
+          (err) => console.error("[Comunica+] notifySwapApproved error:", err),
+        );
+      }
 
       return { ok: true };
     }),
