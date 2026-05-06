@@ -519,8 +519,11 @@ export const auditTrail = mysqlTable(
 export const swapRequests = mysqlTable("swap_requests", {
   id: int("id").primaryKey().autoincrement(),
 
-  // Tipo da operação
-  type: mysqlEnum("type", ["SWAP", "TRANSFER"]).notNull(),
+  // Tipo da operação. CESSAO é o nome canônico para o handoff
+  // unidirecional do plantão (A → B sem contrapartida); TRANSFER é o
+  // valor legado, mantido enquanto o frontend antigo migra. SWAP é a
+  // troca bidirecional A↔B. Cf. docs/product/escala-ux.md §6.
+  type: mysqlEnum("type", ["SWAP", "TRANSFER", "CESSAO"]).notNull(),
 
   // Status do fluxo
   status: mysqlEnum("status", [
