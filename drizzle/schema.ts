@@ -1,4 +1,4 @@
-import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index } from "drizzle-orm/mysql-core";
+import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index, decimal } from "drizzle-orm/mysql-core";
 import { relations } from "drizzle-orm";
 
 /**
@@ -238,12 +238,37 @@ export const shiftInstances = mysqlTable(
     startAt: timestamp("start_at").notNull(),
     endAt: timestamp("end_at").notNull(),
     status: varchar("status", { length: 20 }).notNull().default("VAGO"),
+
+    // Modalidade estruturada (docs/product/escala-ux.md §5).
+    // Antes destes campos, `label` era texto livre ("Plantão", "Sobreaviso")
+    // e não suportava filtragem nem cálculo financeiro. A estrutura aqui
+    // separa: o que é (PLANTAO vs SOBREAVISO), o que cobre quando é
+    // plantão (urgência vs eletivas), e como é remunerado.
+    modality: mysqlEnum("modality", ["PLANTAO", "SOBREAVISO"]).notNull().default("PLANTAO"),
+    // coverage_type só faz sentido para PLANTAO; null em SOBREAVISO.
+    coverageType: mysqlEnum("coverage_type", ["URGENCIA_EMERGENCIA", "ELETIVAS"]),
+    paymentModel: mysqlEnum("payment_model", [
+      "FIXO",
+      "FIXO_PRODUTIVIDADE_TETO",
+      "FIXO_PRODUTIVIDADE_SEM_TETO",
+      "PRODUTIVIDADE_PURA",
+    ])
+      .notNull()
+      .default("FIXO"),
+    // Teto da produtividade em BRL; só usado quando paymentModel inclui
+    // teto. decimal(12,2) suporta valores até 9.999.999.999,99 — mais
+    // do que suficiente para um plantão.
+    productivityCapBrl: decimal("productivity_cap_brl", { precision: 12, scale: 2 }),
+
     createdBy: int("created_by").references(() => users.id),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
     idxShiftInstanceInstitutionId: index("idx_shift_instances_institution_id").on(table.institutionId, table.id),
+    // Permite filtragem por modalidade no Radar (e.g. mostrar só
+    // plantões PLANTAO/URGENCIA_EMERGENCIA num determinado dia).
+    idxShiftInstanceModality: index("idx_shift_instances_modality").on(table.institutionId, table.modality),
   }),
 );
 
