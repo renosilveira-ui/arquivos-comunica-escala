@@ -346,7 +346,13 @@ export async function seedTestData() {
 
   const pedro = testProfessionals.find((p) => p.name === TEST_NAMES[2]);
 
-  // Shift VAGO (amanhã 7h-13h)
+  // Modalidade per docs/product/escala-ux.md §5 (caso piloto Unimed
+  // Fortaleza). Os defaults (PLANTAO + FIXO) ficariam OK, mas
+  // declaramos explicitamente para que os testes que filtram por
+  // modality/coverage/payment encontrem os 4 modelos representados
+  // no seed.
+
+  // Shift VAGO (amanhã 7h-13h) — CC anestesia urgência
   await db.insert(shiftInstances).values({
     institutionId: institution.id,
     hospitalId: hospital.id,
@@ -355,9 +361,12 @@ export async function seedTestData() {
     startAt: makeTime(tomorrow, 7),
     endAt: makeTime(tomorrow, 13),
     status: "VAGO",
+    modality: "PLANTAO",
+    coverageType: "URGENCIA_EMERGENCIA",
+    paymentModel: "FIXO_PRODUTIVIDADE_SEM_TETO",
   });
 
-  // Shift OCUPADO (hoje 13h-19h)
+  // Shift OCUPADO (hoje 13h-19h) — eletivas, fixo puro
   await db.insert(shiftInstances).values({
     institutionId: institution.id,
     hospitalId: hospital.id,
@@ -366,9 +375,13 @@ export async function seedTestData() {
     startAt: makeTime(now, 13),
     endAt: makeTime(now, 19),
     status: "OCUPADO",
+    modality: "PLANTAO",
+    coverageType: "ELETIVAS",
+    paymentModel: "FIXO",
   });
 
-  // Shift PENDENTE (amanhã 19h-7h do dia seguinte)
+  // Shift PENDENTE (amanhã 19h-7h do dia seguinte) — sobreaviso
+  // anestesia, produtividade pura. Cobertura permanece null (spec §5).
   const dayAfterTomorrow = new Date(tomorrow);
   dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
   await db.insert(shiftInstances).values({
@@ -379,9 +392,12 @@ export async function seedTestData() {
     startAt: makeTime(tomorrow, 19),
     endAt: makeTime(dayAfterTomorrow, 7),
     status: "PENDENTE",
+    modality: "SOBREAVISO",
+    paymentModel: "PRODUTIVIDADE_PURA",
   });
 
-  // Shift RETROATIVO (5 dias atrás 7h-13h)
+  // Shift RETROATIVO — fixo + produtividade com teto, BRL 2500.
+  // Único shift do seed que exercita productivityCapBrl != null.
   await db.insert(shiftInstances).values({
     institutionId: institution.id,
     hospitalId: hospital.id,
@@ -390,6 +406,10 @@ export async function seedTestData() {
     startAt: makeTime(fiveDaysAgo, 7),
     endAt: makeTime(fiveDaysAgo, 13),
     status: "VAGO",
+    modality: "PLANTAO",
+    coverageType: "URGENCIA_EMERGENCIA",
+    paymentModel: "FIXO_PRODUTIVIDADE_TETO",
+    productivityCapBrl: "2500.00",
   });
 
   // Shift UTI (20 profissionais) — em setor UTI, fora da jurisdição da Maria
@@ -401,6 +421,9 @@ export async function seedTestData() {
     startAt: makeTime(tomorrow, 7),
     endAt: makeTime(tomorrow, 19),
     status: "OCUPADO",
+    modality: "PLANTAO",
+    coverageType: "URGENCIA_EMERGENCIA",
+    paymentModel: "FIXO",
   });
 
   console.log("✅ Turnos de teste criados!");
