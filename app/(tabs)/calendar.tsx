@@ -10,6 +10,9 @@ import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 
+type Modality = "PLANTAO" | "SOBREAVISO";
+type CoverageType = "URGENCIA_EMERGENCIA" | "ELETIVAS";
+
 type ShiftWithDetails = {
   id: number;
   label: string;
@@ -19,12 +22,27 @@ type ShiftWithDetails = {
   hospitalId: number;
   sectorId: number;
   professionalNames: string[];
+  modality: Modality | null;
+  coverageType: CoverageType | null;
 };
 
 const SLOT_LABELS = ["Manhã", "Tarde", "Noite"] as const;
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Mapeia modality/coverage para o label tinted que aparece em cada
+ * card. Mesma convenção dos PRs #69/#70 (Plantões em aberto e
+ * Solicitações). Retorna null para rows legacy sem modality.
+ */
+function modalityBadge(modality: Modality | null, coverage: CoverageType | null): string | null {
+  if (modality === "SOBREAVISO") return "Sobreaviso";
+  if (modality !== "PLANTAO") return null;
+  if (coverage === "URGENCIA_EMERGENCIA") return "Plantão · Urgência";
+  if (coverage === "ELETIVAS") return "Plantão · Eletivas";
+  return "Plantão";
 }
 
 function classifySlot(label: string, startAt: Date): number {
@@ -62,18 +80,30 @@ export default function CalendarScreen() {
 
   const allShifts: ShiftWithDetails[] = useMemo(() => {
     if (!shiftsData) return [];
-    return shiftsData.map((item) => ({
-      id: item.id,
-      label: item.label,
-      startTime: new Date(item.startAt),
-      endTime: new Date(item.endAt),
-      status: item.status,
-      hospitalId: item.hospitalId,
-      sectorId: item.sectorId,
-      professionalNames: item.assignments
-        .map((assignment) => assignment.professionalName)
-        .filter((name): name is string => Boolean(name)),
-    }));
+    return shiftsData.map((item) => {
+      // Cast defensivo: shifts.listByPeriod usa Drizzle .select() na
+      // tabela inteira, então as colunas adicionadas em PR #61 fluem,
+      // mas o tipo do tRPC nem sempre infere em clients que não
+      // regeneraram. Mesmo padrão de PRs #65/#67/#69/#70.
+      const i = item as typeof item & {
+        modality?: Modality | null;
+        coverageType?: CoverageType | null;
+      };
+      return {
+        id: i.id,
+        label: i.label,
+        startTime: new Date(i.startAt),
+        endTime: new Date(i.endAt),
+        status: i.status,
+        hospitalId: i.hospitalId,
+        sectorId: i.sectorId,
+        professionalNames: i.assignments
+          .map((assignment) => assignment.professionalName)
+          .filter((name): name is string => Boolean(name)),
+        modality: i.modality ?? null,
+        coverageType: i.coverageType ?? null,
+      };
+    });
   }, [shiftsData]);
 
   const hospitalsById = useMemo(() => {
@@ -116,6 +146,8 @@ export default function CalendarScreen() {
           sectorName: string;
           slotIndex: number;
           professionalNames: string[];
+          modality: Modality | null;
+          coverageType: CoverageType | null;
         }>;
       }
     >();
@@ -144,6 +176,8 @@ export default function CalendarScreen() {
         sectorName: sectorsById.get(shift.sectorId) || `Setor #${shift.sectorId}`,
         slotIndex,
         professionalNames: shift.professionalNames,
+        modality: shift.modality,
+        coverageType: shift.coverageType,
       });
       map.set(key, entry);
     }
@@ -299,39 +333,61 @@ export default function CalendarScreen() {
               <Text style={{ color: theme.colors.textSecondary }}>Nenhum plantão encontrado para esse dia/filtro.</Text>
             ) : (
               <View style={{ gap: 8 }}>
-                {selectedDayShifts.map((shift) => (
-                  <TouchableOpacity
-                    key={shift.id}
-                    onPress={() => router.push({ pathname: "/edit-shift", params: { id: shift.id } })}
-                    activeOpacity={0.8}
-                    style={{
-                      borderWidth: 1,
-                      borderColor:
-                        shift.status === "VAGO"
-                          ? "rgba(239,68,68,0.7)"
-                          : shift.status === "PENDENTE"
-                            ? "rgba(245,158,11,0.75)"
-                            : "rgba(34,197,94,0.75)",
-                      borderRadius: 12,
-                      padding: 10,
-                      backgroundColor: "#FFFFFF",
-                    }}
-                  >
-                    <Text style={{ color: theme.colors.textPrimary, fontSize: 14, fontWeight: "700" }}>
-                      {SLOT_LABELS[shift.slotIndex]} • {shift.label}
-                    </Text>
-                    <Text style={{ color: theme.colors.textSecondary, fontSize: 12, marginTop: 2 }}>
-                      {shift.hospitalName} • {shift.sectorName}
-                    </Text>
-                    {shift.professionalNames.length > 0 ? (
-                      <Text style={{ color: "#334155", fontSize: 12, marginTop: 2 }}>{shift.professionalNames.join(", ")}</Text>
-                    ) : null}
-                    <Text style={{ color: theme.colors.textMuted, fontSize: 12, marginTop: 2 }}>
-                      {new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}–
-                      {new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} • {shift.status}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                {selectedDayShifts.map((shift) => {
+                  const badge = modalityBadge(shift.modality, shift.coverageType);
+                  return (
+                    <TouchableOpacity
+                      key={shift.id}
+                      onPress={() => router.push({ pathname: "/edit-shift", params: { id: shift.id } })}
+                      activeOpacity={0.8}
+                      style={{
+                        borderWidth: 1,
+                        borderColor:
+                          shift.status === "VAGO"
+                            ? "rgba(239,68,68,0.7)"
+                            : shift.status === "PENDENTE"
+                              ? "rgba(245,158,11,0.75)"
+                              : "rgba(34,197,94,0.75)",
+                        borderRadius: 12,
+                        padding: 10,
+                        backgroundColor: "#FFFFFF",
+                      }}
+                    >
+                      <Text style={{ color: theme.colors.textPrimary, fontSize: 14, fontWeight: "700" }}>
+                        {SLOT_LABELS[shift.slotIndex]} • {shift.label}
+                      </Text>
+                      {/* Badge de modalidade (PR #61 — exibido em
+                          shift-details, vacancies e pending; agora
+                          também na agenda diária). */}
+                      {badge ? (
+                        <View
+                          style={{
+                            alignSelf: "flex-start",
+                            marginTop: 4,
+                            paddingHorizontal: 8,
+                            paddingVertical: 2,
+                            borderRadius: 999,
+                            backgroundColor: "rgba(37,99,235,0.10)",
+                          }}
+                        >
+                          <Text style={{ color: theme.colors.primary, fontSize: 11, fontWeight: "600" }}>
+                            {badge}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <Text style={{ color: theme.colors.textSecondary, fontSize: 12, marginTop: 2 }}>
+                        {shift.hospitalName} • {shift.sectorName}
+                      </Text>
+                      {shift.professionalNames.length > 0 ? (
+                        <Text style={{ color: "#334155", fontSize: 12, marginTop: 2 }}>{shift.professionalNames.join(", ")}</Text>
+                      ) : null}
+                      <Text style={{ color: theme.colors.textMuted, fontSize: 12, marginTop: 2 }}>
+                        {new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}–
+                        {new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} • {shift.status}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
           </TintedGlassCard>
