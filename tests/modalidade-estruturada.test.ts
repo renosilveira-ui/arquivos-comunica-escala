@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { getDb } from "../server/db";
 import {
   hospitals,
@@ -7,6 +7,7 @@ import {
   professionals,
   professionalInstitutions,
   sectors,
+  shiftAuditLog,
   shiftInstances,
   shiftTemplates,
 } from "../drizzle/schema";
@@ -144,14 +145,24 @@ describe("Modalidade estruturada (shift_instances)", () => {
 
   async function cleanupShifts(): Promise<void> {
     if (!db) return;
-    await db
-      .delete(shiftInstances)
+    // Coleta os IDs dos fixtures deste suite primeiro porque
+    // shift_instances tem FKs apontando pra ele de shift_audit_log
+    // (escrito por shifts.create/update), shift_assignments_v2,
+    // swap_requests etc. Apagamos as referências antes pra não
+    // disparar ER_ROW_IS_REFERENCED_2.
+    const ids = await db
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
       .where(
         and(
           eq(shiftInstances.institutionId, institutionId),
           like(shiftInstances.label, `${FIXTURE_PREFIX}template`),
         ),
       );
+    if (ids.length === 0) return;
+    const idList = ids.map((r) => r.id);
+    await db.delete(shiftAuditLog).where(inArray(shiftAuditLog.shiftInstanceId, idList));
+    await db.delete(shiftInstances).where(inArray(shiftInstances.id, idList));
   }
 
   function dateOffset(days: number): string {
