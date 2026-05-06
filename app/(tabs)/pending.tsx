@@ -136,6 +136,10 @@ export default function PendingScreen() {
     shiftLabel: null,
   });
 
+  // Filtro por modalidade (PR #68 — listPending aceita modality como input).
+  // undefined = "Todos" (sem filtro).
+  const [modalityFilter, setModalityFilter] = useState<"PLANTAO" | "SOBREAVISO" | undefined>(undefined);
+
   // Determinar se usuário pode ver "Todos os hospitais"
   const allowAllHospitals = professional?.userRole === "GESTOR_PLUS" || isAdminOrManager;
   
@@ -157,6 +161,7 @@ export default function PendingScreen() {
       sectorId: filters.sectorId ?? undefined,
       date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
       shiftLabel: filters.shiftLabel ?? undefined,
+      modality: modalityFilter,
     },
     { enabled: !!user?.id }
   );
@@ -584,7 +589,7 @@ export default function PendingScreen() {
         )}
 
         {/* Filtros */}
-        <View className="mb-6">
+        <View className="mb-4">
           <ShiftFilters
             hospitals={hospitals}
             sectors={sectors}
@@ -595,10 +600,62 @@ export default function PendingScreen() {
           />
         </View>
 
+        {/* Filtro por modalidade — passa direto pro listPending (PR #68) */}
+        <View className="mb-6">
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+            {([
+              { value: undefined, label: "Todos" },
+              { value: "PLANTAO" as const, label: "Plantão" },
+              { value: "SOBREAVISO" as const, label: "Sobreaviso" },
+            ] as const).map((opt) => {
+              const selected = modalityFilter === opt.value;
+              return (
+                <TouchableOpacity
+                  key={String(opt.value ?? "TODOS")}
+                  onPress={() => setModalityFilter(opt.value)}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Filtrar por ${opt.label}`}
+                  className="rounded-full px-4 py-2"
+                  style={{
+                    backgroundColor: selected ? "#2563EB" : "#F1F5F9",
+                    borderWidth: 1,
+                    borderColor: selected ? "#2563EB" : "#DBEAFE",
+                  }}
+                >
+                  <Text
+                    className="text-sm font-semibold"
+                    style={{ color: selected ? "#FFFFFF" : "#0F172A" }}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+
         {/* Lista de pendências */}
         {pendingAssignments && pendingAssignments.length > 0 ? (
           <View className="gap-4 pb-6">
-            {pendingAssignments.map((pending) => (
+            {pendingAssignments.map((pending) => {
+              // Cast defensivo enquanto o tipo do tRPC nem sempre infere os
+              // 4 campos que listPending começou a expor em PR #68.
+              const p = pending as typeof pending & {
+                modality?: "PLANTAO" | "SOBREAVISO" | null;
+                coverageType?: "URGENCIA_EMERGENCIA" | "ELETIVAS" | null;
+              };
+              const modalityBadge =
+                p.modality === "SOBREAVISO"
+                  ? "Sobreaviso"
+                  : p.modality === "PLANTAO"
+                    ? p.coverageType === "URGENCIA_EMERGENCIA"
+                      ? "Plantão · Urgência"
+                      : p.coverageType === "ELETIVAS"
+                        ? "Plantão · Eletivas"
+                        : "Plantão"
+                    : null;
+              return (
               <View
                 key={pending.assignmentId}
                 className="rounded-2xl border p-4"
@@ -618,6 +675,18 @@ export default function PendingScreen() {
                     </Text>
                   </View>
                 </View>
+
+                {/* Badge de modalidade (PR #68 — listPending agora expõe) */}
+                {modalityBadge ? (
+                  <View
+                    className="self-start rounded-full px-2.5 py-1 mb-3"
+                    style={{ backgroundColor: "rgba(37,99,235,0.10)" }}
+                  >
+                    <Text className="text-xs font-semibold" style={{ color: "#2563EB" }}>
+                      {modalityBadge}
+                    </Text>
+                  </View>
+                ) : null}
 
                 {/* Informações do turno */}
                 <View className="gap-2 mb-4">
@@ -685,7 +754,8 @@ export default function PendingScreen() {
                   </View>
                 )}
               </View>
-            ))}
+              );
+            })}
           </View>
         ) : (
           <View className="flex-1 items-center justify-center py-20">
