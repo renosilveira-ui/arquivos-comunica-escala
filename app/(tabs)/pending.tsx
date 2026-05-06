@@ -462,7 +462,7 @@ export default function PendingScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Pendências</Text>
+          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Solicitações</Text>
           <Text className="mt-1 text-base" style={{ color: "#475569" }}>
             {pendingAssignments?.length || 0} alocações aguardando aprovação
           </Text>
