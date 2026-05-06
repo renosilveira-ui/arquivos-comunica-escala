@@ -3,6 +3,7 @@ import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
+import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -86,7 +87,7 @@ export default function ShiftDetailsScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg text-white/70">Faça login para continuar</Text>
+          <Text className="text-lg" style={{ color: theme.colors.textMuted }}>Faça login para continuar</Text>
         </View>
       </ScreenGradient>
     );
@@ -96,8 +97,8 @@ export default function ShiftDetailsScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center gap-4">
-          <ActivityIndicator size="large" color="#4DA3FF" />
-          <Text className="text-base text-white/70">Carregando detalhes...</Text>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text className="text-base" style={{ color: theme.colors.textMuted }}>Carregando detalhes...</Text>
         </View>
       </ScreenGradient>
     );
@@ -107,14 +108,15 @@ export default function ShiftDetailsScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center gap-6">
-          <AlertCircle size={64} color="rgba(255,255,255,0.5)" />
-          <Text className="text-lg text-white/70">Escala não encontrada</Text>
+          <AlertCircle size={64} color={theme.colors.textMuted} />
+          <Text className="text-lg" style={{ color: theme.colors.textMuted }}>Escala não encontrada</Text>
           <TouchableOpacity
             onPress={handleBack}
-            className="bg-[#4DA3FF] rounded-2xl px-8 h-14 justify-center"
+            className="rounded-2xl px-8 h-14 justify-center"
+            style={{ backgroundColor: theme.colors.primary }}
             activeOpacity={0.7}
           >
-            <Text className="text-lg font-semibold text-white">Voltar</Text>
+            <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Voltar</Text>
           </TouchableOpacity>
         </View>
       </ScreenGradient>
@@ -139,10 +141,10 @@ export default function ShiftDetailsScreen() {
             activeOpacity={0.7}
             className="w-10 h-10 items-center justify-center"
           >
-            <ChevronLeft size={28} color="#FFFFFF" />
+            <ChevronLeft size={28} color={theme.colors.textPrimary} />
           </TouchableOpacity>
           <View className="flex-1">
-            <Text className="text-3xl font-bold text-white">Detalhes da Escala</Text>
+            <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Detalhes da Escala</Text>
           </View>
         </View>
 
@@ -152,34 +154,34 @@ export default function ShiftDetailsScreen() {
           <View className="flex-row items-center gap-4">
             <View
               className="w-12 h-12 rounded-2xl items-center justify-center"
-              style={{ backgroundColor: sector?.color || "#4DA3FF" }}
+              style={{ backgroundColor: sector?.color || theme.colors.primary }}
             >
               <Calendar size={24} color="#FFFFFF" />
             </View>
             <View className="flex-1">
-              <Text className="text-sm text-white/50 mb-1">Setor</Text>
-              <Text className="text-2xl font-bold text-white">
+              <Text className="text-sm mb-1" style={{ color: theme.colors.textMuted }}>Setor</Text>
+              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>
                 {sector?.name || "Não definido"}
               </Text>
-              <Text className="text-sm text-white/50 capitalize mt-1">{sector?.category}</Text>
+              <Text className="text-sm capitalize mt-1" style={{ color: theme.colors.textMuted }}>{sector?.category}</Text>
             </View>
           </View>
 
           {/* Data e Horário */}
           <View className="gap-4">
             <View>
-              <Text className="text-sm text-white/50 mb-2">Data</Text>
-              <Text className="text-lg font-semibold text-white">
+              <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Data</Text>
+              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                 {formatDateBR(startDate)}
               </Text>
             </View>
 
             <View className="flex-row gap-4">
               <View className="flex-1">
-                <Text className="text-sm text-white/50 mb-2">Início</Text>
+                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Início</Text>
                 <View className="flex-row items-center gap-2">
-                  <Clock size={18} color="rgba(255,255,255,0.7)" />
-                  <Text className="text-lg font-semibold text-white">
+                  <Clock size={18} color={theme.colors.textMuted} />
+                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                     {startDate.toLocaleTimeString("pt-BR", {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -188,10 +190,10 @@ export default function ShiftDetailsScreen() {
                 </View>
               </View>
               <View className="flex-1">
-                <Text className="text-sm text-white/50 mb-2">Término</Text>
+                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Término</Text>
                 <View className="flex-row items-center gap-2">
-                  <Clock size={18} color="rgba(255,255,255,0.7)" />
-                  <Text className="text-lg font-semibold text-white">
+                  <Clock size={18} color={theme.colors.textMuted} />
+                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                     {endDate.toLocaleTimeString("pt-BR", {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -203,16 +205,16 @@ export default function ShiftDetailsScreen() {
 
             {/* Duração */}
             <View>
-              <Text className="text-sm text-white/50 mb-2">Duração</Text>
-              <Text className="text-lg font-semibold text-white">
+              <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Duração</Text>
+              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                 {Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60))} horas
               </Text>
             </View>
           </View>
 
           {/* Status */}
-          <View className="pt-4 border-t border-white/10">
-            <Text className="text-sm text-white/50 mb-3">Status</Text>
+          <View className="pt-4 border-t" style={{ borderColor: theme.colors.border }}>
+            <Text className="text-sm mb-3" style={{ color: theme.colors.textMuted }}>Status</Text>
             <Badge
               variant={
                 (shift.status === "confirmada" || shift.status === "OCUPADO")
@@ -232,9 +234,9 @@ export default function ShiftDetailsScreen() {
 
           {/* Observações */}
           {shift.notes && (
-            <View className="pt-4 border-t border-white/10">
-              <Text className="text-sm text-white/50 mb-2">Observações</Text>
-              <Text className="text-base text-white/70">{shift.notes}</Text>
+            <View className="pt-4 border-t" style={{ borderColor: theme.colors.border }}>
+              <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Observações</Text>
+              <Text className="text-base" style={{ color: theme.colors.textSecondary }}>{shift.notes}</Text>
             </View>
           )}
         </TintedGlassCard>
@@ -242,8 +244,8 @@ export default function ShiftDetailsScreen() {
         {/* Lista de Profissionais Alocados */}
         <View>
           <View className="flex-row items-center gap-3 mb-4">
-            <Users size={24} color="#FFFFFF" />
-            <Text className="text-2xl font-bold text-white">
+            <Users size={24} color={theme.colors.textPrimary} />
+            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>
               Profissionais ({assignments?.length || 0})
             </Text>
           </View>
@@ -255,17 +257,17 @@ export default function ShiftDetailsScreen() {
                   <View className="flex-row items-center justify-between">
                     <View className="flex-1">
                       <View className="flex-row items-center gap-2 mb-1">
-                        <Text className="text-lg font-semibold text-white">
+                        <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                           {assignment.professionalName || `Profissional #${assignment.userId || assignment.professionalId}`}
                         </Text>
                         {assignment.isSubstitute && (
                           <Badge variant="neutral">
-                            <Text className="text-xs font-semibold" style={{ color: "#60A5FA" }}>Substituto</Text>
+                            <Text className="text-xs font-semibold" style={{ color: theme.colors.primary }}>Substituto</Text>
                           </Badge>
                         )}
                       </View>
                       {assignment.confirmedAt && (
-                        <Text className="text-sm text-white/50 mt-1">
+                        <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
                           Confirmado em{" "}
                           {formatDateBR(assignment.confirmedAt)}
                         </Text>
@@ -273,7 +275,7 @@ export default function ShiftDetailsScreen() {
                     </View>
                     {assignment.confirmed || assignment.confirmedAt ? (
                       <View className="flex-row items-center gap-2">
-                        <CheckCircle2 size={20} color="#4ADE80" />
+                        <CheckCircle2 size={20} color={theme.colors.success} />
                         <Badge variant="success">Confirmado</Badge>
                       </View>
                     ) : (
@@ -285,8 +287,8 @@ export default function ShiftDetailsScreen() {
             </View>
           ) : (
             <TintedGlassCard className="items-center py-8">
-              <Users size={48} color="rgba(255,255,255,0.3)" />
-              <Text className="text-base text-white/50 mt-3">Nenhum profissional alocado</Text>
+              <Users size={48} color={theme.colors.textMuted} />
+              <Text className="text-base mt-3" style={{ color: theme.colors.textMuted }}>Nenhum profissional alocado</Text>
             </TintedGlassCard>
           )}
         </View>
@@ -297,13 +299,13 @@ export default function ShiftDetailsScreen() {
             onPress={handleConfirmPresence}
             className="rounded-2xl h-16 items-center justify-center"
             style={{
-              backgroundColor: "#4ADE80",
+              backgroundColor: theme.colors.success,
             }}
             activeOpacity={0.8}
           >
             <View className="flex-row items-center gap-3">
               <CheckCircle2 size={24} color="#FFFFFF" />
-              <Text className="text-xl font-bold text-white">Confirmar Presença</Text>
+              <Text className="text-xl font-bold" style={{ color: "#FFFFFF" }}>Confirmar Presença</Text>
             </View>
           </TouchableOpacity>
         )}
@@ -316,13 +318,13 @@ export default function ShiftDetailsScreen() {
               onPress={handleEdit}
               className="rounded-2xl h-14 items-center justify-center"
               style={{
-                backgroundColor: "rgba(255,255,255,0.05)",
+                backgroundColor: theme.colors.surfaceAlt,
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
+                borderColor: theme.colors.border,
               }}
               activeOpacity={0.7}
             >
-              <Text className="text-lg font-semibold text-white">Editar Escala</Text>
+              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Editar Escala</Text>
             </TouchableOpacity>
 
             {/* Botão de Solicitar Troca */}
@@ -333,23 +335,24 @@ export default function ShiftDetailsScreen() {
               }}
               className="rounded-2xl h-14 items-center justify-center"
               style={{
-                backgroundColor: "rgba(77,163,255,0.15)",
+                backgroundColor: "rgba(37,99,235,0.08)",
                 borderWidth: 1,
-                borderColor: "#4DA3FF",
+                borderColor: theme.colors.primary,
               }}
               activeOpacity={0.7}
             >
-              <Text className="text-lg font-semibold" style={{ color: "#4DA3FF" }}>Solicitar Troca de Plantão</Text>
+              <Text className="text-lg font-semibold" style={{ color: theme.colors.primary }}>Solicitar Troca de Plantão</Text>
             </TouchableOpacity>
 
             {/* Botão de Confirmação de Presença */}
             {isUserAssigned && !userAssignment?.confirmedAt && !userAssignment?.confirmed && (
               <TouchableOpacity
                 onPress={handleConfirmPresence}
-                className="bg-[#4DA3FF] rounded-2xl h-14 items-center justify-center"
+                className="rounded-2xl h-14 items-center justify-center"
+                style={{ backgroundColor: theme.colors.primary }}
                 activeOpacity={0.7}
               >
-                <Text className="text-lg font-semibold text-white">Confirmar Presença</Text>
+                <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Confirmar Presença</Text>
               </TouchableOpacity>
             )}
           </View>

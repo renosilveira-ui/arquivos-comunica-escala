@@ -14,6 +14,7 @@ import {
 
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
+import { theme } from "@/lib/theme";
 import { DEMO_SERVICES, setSelectedService } from "@/lib/demo-mode";
 import * as Haptics from "expo-haptics";
 
@@ -56,10 +57,10 @@ export default function ServiceSelectionScreen() {
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 60, paddingBottom: 100 }}>
         {/* Header */}
         <View style={{ marginBottom: 32, alignItems: "center" }}>
-          <Text style={{ fontSize: 32, fontWeight: "700", color: "#FFFFFF", textAlign: "center", marginBottom: 12 }}>
+          <Text style={{ fontSize: 32, fontWeight: "700", color: theme.colors.textPrimary, textAlign: "center", marginBottom: 12 }}>
             Selecione seu Serviço
           </Text>
-          <Text style={{ fontSize: 16, color: "rgba(255,255,255,0.7)", textAlign: "center", lineHeight: 24 }}>
+          <Text style={{ fontSize: 16, color: theme.colors.textMuted, textAlign: "center", lineHeight: 24 }}>
             Você verá apenas as escalas do serviço selecionado
           </Text>
         </View>
@@ -80,8 +81,8 @@ export default function ServiceSelectionScreen() {
                 <TintedGlassCard
                   style={{
                     borderWidth: isSelected ? 2 : 1,
-                    borderColor: isSelected ? "#4DA3FF" : "rgba(255,255,255,0.12)",
-                    backgroundColor: isSelected ? "rgba(77,163,255,0.15)" : "rgba(255,255,255,0.08)",
+                    borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                    backgroundColor: isSelected ? "rgba(37,99,235,0.08)" : theme.colors.surfaceAlt,
                   }}
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
@@ -90,20 +91,20 @@ export default function ServiceSelectionScreen() {
                         width: 56,
                         height: 56,
                         borderRadius: 28,
-                        backgroundColor: isSelected ? "#4DA3FF" : "rgba(77,163,255,0.2)",
+                        backgroundColor: isSelected ? theme.colors.primary : "rgba(37,99,235,0.12)",
                         alignItems: "center",
                         justifyContent: "center",
                       }}
                     >
-                      <Icon size={28} color="#FFFFFF" />
+                      <Icon size={28} color={isSelected ? "#FFFFFF" : theme.colors.primary} />
                     </View>
-                    
+
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 20, fontWeight: "600", color: "#FFFFFF", marginBottom: 4 }}>
+                      <Text style={{ fontSize: 20, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 4 }}>
                         {service.name}
                       </Text>
                       {isGestao && (
-                        <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                        <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
                           Visibilidade de todos os setores
                         </Text>
                       )}
@@ -115,7 +116,7 @@ export default function ServiceSelectionScreen() {
                           width: 24,
                           height: 24,
                           borderRadius: 12,
-                          backgroundColor: "#4DA3FF",
+                          backgroundColor: theme.colors.primary,
                           alignItems: "center",
                           justifyContent: "center",
                         }}
@@ -132,7 +133,7 @@ export default function ServiceSelectionScreen() {
 
         {/* Nota */}
         <View style={{ marginTop: 32, paddingHorizontal: 16 }}>
-          <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.5)", textAlign: "center", lineHeight: 20 }}>
+          <Text style={{ fontSize: 14, color: theme.colors.textMuted, textAlign: "center", lineHeight: 20 }}>
             Você poderá trocar de serviço a qualquer momento nas configurações do perfil
           </Text>
         </View>
