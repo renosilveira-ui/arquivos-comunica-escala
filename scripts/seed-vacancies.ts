@@ -73,24 +73,50 @@ async function seedVacancies() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const shifts = [
+  // Modalidade reflete o caso piloto Unimed (docs/product/escala-ux.md §5):
+  //   - Manhã: plantão de cobertura urgência/emergência, fixo + prod sem teto
+  //   - Tarde: plantão eletivo, fixo
+  //   - Noite: sobreaviso, produtividade pura
+  // Dá ao demo de staging uma amostra dos 3 modelos de pagamento
+  // mais comuns sem inflar o seed.
+  const shifts: Array<{
+    label: string;
+    startHour: number;
+    endHour: number;
+    description: string;
+    modality: "PLANTAO" | "SOBREAVISO";
+    coverageType?: "URGENCIA_EMERGENCIA" | "ELETIVAS";
+    paymentModel:
+      | "FIXO"
+      | "FIXO_PRODUTIVIDADE_TETO"
+      | "FIXO_PRODUTIVIDADE_SEM_TETO"
+      | "PRODUTIVIDADE_PURA";
+  }> = [
     {
       label: "Manhã",
       startHour: 7,
       endHour: 13,
       description: "Turno manhã (7h-13h)",
+      modality: "PLANTAO",
+      coverageType: "URGENCIA_EMERGENCIA",
+      paymentModel: "FIXO_PRODUTIVIDADE_SEM_TETO",
     },
     {
       label: "Tarde",
       startHour: 13,
       endHour: 19,
       description: "Turno tarde (13h-19h)",
+      modality: "PLANTAO",
+      coverageType: "ELETIVAS",
+      paymentModel: "FIXO",
     },
     {
       label: "Noite",
       startHour: 19,
       endHour: 7, // Next day
       description: "Turno noite (19h-7h)",
+      modality: "SOBREAVISO",
+      paymentModel: "PRODUTIVIDADE_PURA",
     },
   ];
 
@@ -134,6 +160,9 @@ async function seedVacancies() {
         status: "VAGO",
         startAt,
         endAt,
+        modality: shift.modality,
+        coverageType: shift.coverageType ?? null,
+        paymentModel: shift.paymentModel,
         createdBy: 30001, // Dra. Maria Santos (GESTOR_MEDICO)
         createdAt: new Date(),
         updatedAt: new Date(),
