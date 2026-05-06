@@ -39,6 +39,69 @@ async function getProfessionalById(db: any, professionalId: number) {
   return row ?? null;
 }
 
+type SwapType = typeof swapRequests.$inferSelect["type"];
+
+/**
+ * One-way handoff types (A → B without B giving anything back).
+ * CESSAO is the spec-canonical name; TRANSFER is the legacy alias.
+ * SWAP is the bidirectional case (A↔B).
+ */
+function isOneWay(type: SwapType): boolean {
+  return type === "TRANSFER" || type === "CESSAO";
+}
+
+/**
+ * Audit action / entityType / label dispatcher per swap type. Centralizes
+ * the SWAP / TRANSFER / CESSAO audit naming so a CESSAO request emits a
+ * consistent CESSAO_* timeline (was emitting TRANSFER_* before).
+ */
+type AuditPhase = "OFFERED" | "ACCEPTED" | "REJECTED" | "APPROVED_BY_OWNER" | "APPROVED_BY_MANAGER" | "CANCELLED";
+function auditNames(type: SwapType, phase: AuditPhase): {
+  action:
+    | "SWAP_REQUESTED" | "SWAP_ACCEPTED" | "SWAP_REJECTED" | "SWAP_APPROVED_BY_OWNER" | "SWAP_APPROVED_BY_MANAGER" | "SWAP_CANCELLED"
+    | "TRANSFER_OFFERED" | "TRANSFER_ACCEPTED" | "TRANSFER_REJECTED" | "TRANSFER_APPROVED_BY_OWNER" | "TRANSFER_APPROVED_BY_MANAGER" | "TRANSFER_CANCELLED"
+    | "CESSAO_OFFERED" | "CESSAO_ACCEPTED" | "CESSAO_REJECTED" | "CESSAO_APPROVED_BY_OWNER" | "CESSAO_CANCELLED";
+  entityType: "SWAP_REQUEST" | "TRANSFER_REQUEST";
+  label: "Troca" | "Repasse" | "Cessão";
+} {
+  if (type === "SWAP") {
+    const m = {
+      OFFERED: "SWAP_REQUESTED",
+      ACCEPTED: "SWAP_ACCEPTED",
+      REJECTED: "SWAP_REJECTED",
+      APPROVED_BY_OWNER: "SWAP_APPROVED_BY_OWNER",
+      APPROVED_BY_MANAGER: "SWAP_APPROVED_BY_MANAGER",
+      CANCELLED: "SWAP_CANCELLED",
+    } as const;
+    return { action: m[phase], entityType: "SWAP_REQUEST", label: "Troca" };
+  }
+  if (type === "CESSAO") {
+    // CESSAO has no manager-approval path per docs/product/escala-ux.md §6.
+    // The legacy `approve` (manager) gate exists for backward-compat with
+    // older TRANSFER offers; if a CESSAO somehow hits it we emit the
+    // closest-fit OWNER action to keep audit semantics consistent.
+    const m = {
+      OFFERED: "CESSAO_OFFERED",
+      ACCEPTED: "CESSAO_ACCEPTED",
+      REJECTED: "CESSAO_REJECTED",
+      APPROVED_BY_OWNER: "CESSAO_APPROVED_BY_OWNER",
+      APPROVED_BY_MANAGER: "CESSAO_APPROVED_BY_OWNER",
+      CANCELLED: "CESSAO_CANCELLED",
+    } as const;
+    return { action: m[phase], entityType: "TRANSFER_REQUEST", label: "Cessão" };
+  }
+  // TRANSFER (legacy)
+  const m = {
+    OFFERED: "TRANSFER_OFFERED",
+    ACCEPTED: "TRANSFER_ACCEPTED",
+    REJECTED: "TRANSFER_REJECTED",
+    APPROVED_BY_OWNER: "TRANSFER_APPROVED_BY_OWNER",
+    APPROVED_BY_MANAGER: "TRANSFER_APPROVED_BY_MANAGER",
+    CANCELLED: "TRANSFER_CANCELLED",
+  } as const;
+  return { action: m[phase], entityType: "TRANSFER_REQUEST", label: "Repasse" };
+}
+
 async function assertNotLocked(db: any, institutionId: number, hospitalId: number, date: Date) {
   const ym = yearMonthFromDate(date);
   const [roster] = await db
@@ -56,14 +119,207 @@ async function assertNotLocked(db: any, institutionId: number, hospitalId: numbe
   }
 }
 
+/**
+ * Efetua um swap/cessão/transfer já em estado ACCEPTED. Roda
+ * revalidação H1/H2 (anti-overlap), reatribui as assignments e marca a
+ * solicitação como APPROVED.
+ *
+ * Compartilhado entre o fluxo gestor (`approve`, legado) e o fluxo
+ * dono-do-plantão (`approveByOwner`, canônico per
+ * docs/product/escala-ux.md §6). Os dois call sites diferem apenas no
+ * gate de autorização (manager-scope vs ownership) e no audit log.
+ *
+ * Pré-condições: swap.status === "ACCEPTED" e
+ * swap.toProfessionalId/toUserId já preenchidos. O caller deve
+ * validar antes.
+ */
+async function effectuateApprovedSwap(
+  db: any,
+  swap: typeof swapRequests.$inferSelect,
+  reviewedByUserId: number,
+  note: string | undefined,
+): Promise<void> {
+  const institutionId = swap.institutionId;
+  if (!swap.toProfessionalId || !swap.toUserId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Solicitação sem profissional aceitante" });
+  }
+
+  // Expiry guard: aceitar pode acontecer pouco antes do TTL e a aprovação
+  // chegar depois. `offer` define `expiresAt` (default 48h); aqui é o
+  // ponto certo de bloquear efetivações de ofertas que já viraram
+  // pumpkin entre o aceite e a aprovação.
+  if (swap.expiresAt && swap.expiresAt.getTime() < Date.now()) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Solicitação expirada — peça uma nova oferta",
+    });
+  }
+
+  const [fromShift] = await db
+    .select()
+    .from(shiftInstances)
+    .where(
+      and(
+        eq(shiftInstances.id, swap.fromShiftInstanceId),
+        eq(shiftInstances.institutionId, institutionId),
+      ),
+    );
+  if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
+
+  // Lock guard: o roster pode ter sido publicado/trancado entre a
+  // criação da oferta e a aprovação. Bloqueia mutação pós-lock para
+  // ambos os lados (from-shift e, em SWAP, to-shift).
+  await assertNotLocked(db, fromShift.institutionId, fromShift.hospitalId, fromShift.startAt);
+  if (!isOneWay(swap.type) && swap.toShiftInstanceId) {
+    const [toShiftForLock] = await db
+      .select({
+        institutionId: shiftInstances.institutionId,
+        hospitalId: shiftInstances.hospitalId,
+        startAt: shiftInstances.startAt,
+      })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, swap.toShiftInstanceId));
+    if (toShiftForLock) {
+      await assertNotLocked(
+        db,
+        toShiftForLock.institutionId,
+        toShiftForLock.hospitalId,
+        toShiftForLock.startAt,
+      );
+    }
+  }
+
+  // H3: cessão/troca não pode resultar em violação de H1/H2.
+  // Revalida no momento da efetivação porque o estado pode ter mudado
+  // desde o aceite (peer pode ter assumido outro plantão).
+  if (isOneWay(swap.type)) {
+    await assertNoTimeConflict(swap.toUserId, fromShift.startAt, fromShift.endAt);
+  } else {
+    await assertNoTimeConflict(
+      swap.toUserId,
+      fromShift.startAt,
+      fromShift.endAt,
+      swap.toShiftInstanceId ?? undefined,
+    );
+    if (swap.toShiftInstanceId) {
+      const [toShift] = await db
+        .select()
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, swap.toShiftInstanceId),
+            eq(shiftInstances.institutionId, institutionId),
+          ),
+        );
+      if (toShift) {
+        await assertNoTimeConflict(
+          swap.fromUserId,
+          toShift.startAt,
+          toShift.endAt,
+          swap.fromShiftInstanceId,
+        );
+      }
+    }
+  }
+
+  // ─── EFFECTUATE ─────────────────────────────────────────────
+  if (isOneWay(swap.type)) {
+    // Deactivate old from-assignment
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
+
+    // Create new assignment for the recipient on from-shift
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: swap.fromShiftInstanceId,
+      institutionId: fromShift.institutionId,
+      hospitalId: fromShift.hospitalId,
+      sectorId: fromShift.sectorId,
+      professionalId: swap.toProfessionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+      createdBy: reviewedByUserId,
+    });
+  } else {
+    // SWAP: deactivate both old, create both new
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
+
+    if (swap.toAssignmentId) {
+      await db
+        .update(shiftAssignmentsV2)
+        .set({ isActive: false })
+        .where(eq(shiftAssignmentsV2.id, swap.toAssignmentId));
+    }
+
+    // Offerer → to-shift
+    if (swap.toShiftInstanceId) {
+      const [toShift] = await db
+        .select()
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, swap.toShiftInstanceId),
+            eq(shiftInstances.institutionId, institutionId),
+          ),
+        );
+      if (toShift) {
+        await db.insert(shiftAssignmentsV2).values({
+          shiftInstanceId: swap.toShiftInstanceId,
+          institutionId: toShift.institutionId,
+          hospitalId: toShift.hospitalId,
+          sectorId: toShift.sectorId,
+          professionalId: swap.fromProfessionalId,
+          assignmentType: "ON_DUTY",
+          status: "OCUPADO",
+          isActive: true,
+          createdBy: reviewedByUserId,
+        });
+      }
+    }
+
+    // Receptor → from-shift
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: swap.fromShiftInstanceId,
+      institutionId: fromShift.institutionId,
+      hospitalId: fromShift.hospitalId,
+      sectorId: fromShift.sectorId,
+      professionalId: swap.toProfessionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+      createdBy: reviewedByUserId,
+    });
+  }
+
+  // Marca solicitação como APPROVED
+  await db
+    .update(swapRequests)
+    .set({
+      status: "APPROVED",
+      reviewedByUserId,
+      reviewedAt: new Date(),
+      reviewNote: note ?? null,
+    })
+    .where(eq(swapRequests.id, swap.id));
+}
+
 // ─── router ─────────────────────────────────────────────────────────────────
 
 export const swapRouter = router({
   // ── offer ─────────────────────────────────────────────────────────────────
+  // CESSAO and TRANSFER are functionally equivalent (one-way handoff
+  // A → B). CESSAO is the canonical name per product spec
+  // (docs/product/escala-ux.md §6); TRANSFER stays accepted while older
+  // mobile clients migrate.
   offer: protectedProcedure
     .input(
       z.object({
-        type: z.enum(["SWAP", "TRANSFER"]),
+        type: z.enum(["SWAP", "TRANSFER", "CESSAO"]),
         fromShiftInstanceId: z.number(),
         fromAssignmentId: z.number(),
         toShiftInstanceId: z.number().optional(),
@@ -162,16 +418,19 @@ export const swapRouter = router({
 
       const newId = (result as any).insertId as number;
 
+      const offerAudit = auditNames(input.type, "OFFERED");
+      const offerDescription =
+        input.type === "SWAP"
+          ? `Troca oferecida: turno #${input.fromShiftInstanceId} ↔ turno #${input.toShiftInstanceId}`
+          : `${offerAudit.label} oferecida: turno #${input.fromShiftInstanceId}`;
       recordAudit({
-        action: input.type === "SWAP" ? "SWAP_REQUESTED" : "TRANSFER_OFFERED",
-        entityType: input.type === "SWAP" ? "SWAP_REQUEST" : "TRANSFER_REQUEST",
+        action: offerAudit.action,
+        entityType: offerAudit.entityType,
         entityId: newId,
         actorUserId: userId,
         actorRole: ctx.user!.role,
         actorName: pro.name ?? undefined,
-        description: input.type === "SWAP"
-          ? `Troca oferecida: turno #${input.fromShiftInstanceId} ↔ turno #${input.toShiftInstanceId}`
-          : `Repasse oferecido: turno #${input.fromShiftInstanceId}`,
+        description: offerDescription,
         fromProfessionalId: pro.id,
         fromUserId: userId,
         shiftInstanceId: input.fromShiftInstanceId,
@@ -232,7 +491,7 @@ export const swapRouter = router({
         );
       if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
 
-      if (swap.type === "TRANSFER") {
+      if (isOneWay(swap.type)) {
         // Receptor wants to take the from-shift: check conflict
         await assertNoTimeConflict(userId, fromShift.startAt, fromShift.endAt);
       } else {
@@ -285,16 +544,15 @@ export const swapRouter = router({
         })
         .where(eq(swapRequests.id, swap.id));
 
+      const acceptAudit = auditNames(swap.type, "ACCEPTED");
       recordAudit({
-        action: swap.type === "SWAP" ? "SWAP_ACCEPTED" : "TRANSFER_ACCEPTED",
-        entityType: swap.type === "SWAP" ? "SWAP_REQUEST" : "TRANSFER_REQUEST",
+        action: acceptAudit.action,
+        entityType: acceptAudit.entityType,
         entityId: swap.id,
         actorUserId: userId,
         actorRole: ctx.user!.role,
         actorName: pro.name ?? undefined,
-        description: swap.type === "SWAP"
-          ? `Troca aceita pelo profissional #${pro.id}`
-          : `Repasse aceito pelo profissional #${pro.id}`,
+        description: `${acceptAudit.label} aceita pelo profissional #${pro.id}`,
         fromProfessionalId: swap.fromProfessionalId,
         toProfessionalId: pro.id,
         fromUserId: swap.fromUserId,
@@ -341,9 +599,10 @@ export const swapRouter = router({
         .set({ status: "REJECTED_BY_PEER" })
         .where(eq(swapRequests.id, swap.id));
 
+      const rejectAudit = auditNames(swap.type, "REJECTED");
       recordAudit({
-        action: swap.type === "SWAP" ? "SWAP_REJECTED" : "TRANSFER_REJECTED",
-        entityType: swap.type === "SWAP" ? "SWAP_REQUEST" : "TRANSFER_REQUEST",
+        action: rejectAudit.action,
+        entityType: rejectAudit.entityType,
         entityId: swap.id,
         actorUserId: userId,
         actorRole: ctx.user!.role,
@@ -359,7 +618,86 @@ export const swapRouter = router({
       return { ok: true };
     }),
 
+  // ── approveByOwner ───────────────────────────────────────────────────────
+  // Fluxo canônico per docs/product/escala-ux.md §6: a aprovação de
+  // cessão/troca é responsabilidade do dono do plantão original (A),
+  // não do gestor. Gestor só vê o histórico (transparência).
+  //
+  // Pré-condições:
+  //   - swap.status === "ACCEPTED" (alguém já se candidatou)
+  //   - swap.fromUserId === ctx.user.id (caller é o dono que ofertou)
+  //
+  // O efeito é idêntico ao `approve` (gestor): revalida H1/H2 e
+  // reatribui as assignments. A diferença é só o gate de autorização e
+  // o evento de audit.
+  approveByOwner: protectedProcedure
+    .input(
+      z.object({
+        swapRequestId: z.number(),
+        note: z.string().max(500).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+
+      const userId = ctx.user!.id;
+      const institutionId = ctx.institutionId;
+
+      const [swap] = await db
+        .select()
+        .from(swapRequests)
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, institutionId),
+          ),
+        );
+      if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+
+      if (swap.fromUserId !== userId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Apenas o dono do plantão original pode aprovar a candidatura",
+        });
+      }
+
+      if (swap.status !== "ACCEPTED") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Status atual é ${swap.status}, esperava ACCEPTED`,
+        });
+      }
+
+      await effectuateApprovedSwap(db, swap, userId, input.note);
+
+      const ownerAudit = auditNames(swap.type, "APPROVED_BY_OWNER");
+      recordAudit({
+        action: ownerAudit.action,
+        entityType: ownerAudit.entityType,
+        entityId: swap.id,
+        actorUserId: userId,
+        actorRole: ctx.user!.role,
+        description: `${ownerAudit.label} #${swap.id} aprovada pelo dono do plantão`,
+        fromProfessionalId: swap.fromProfessionalId,
+        toProfessionalId: swap.toProfessionalId ?? undefined,
+        fromUserId: swap.fromUserId,
+        toUserId: swap.toUserId ?? undefined,
+        shiftInstanceId: swap.fromShiftInstanceId,
+        hospitalId: swap.hospitalId,
+        sectorId: swap.sectorId ?? undefined,
+        institutionId: swap.institutionId,
+        metadata: { note: input.note, approvalPath: "OWNER" },
+      });
+
+      return { ok: true };
+    }),
+
   // ── approve (by manager) ─────────────────────────────────────────────────
+  // @deprecated — substituída por `approveByOwner` per
+  // docs/product/escala-ux.md §6. Mantida temporariamente para
+  // backward-compat com clientes que ainda chamam o endpoint antigo;
+  // será removida quando o frontend de troca/cessão estiver migrado.
   approve: protectedProcedure
     .input(
       z.object({
@@ -391,148 +729,26 @@ export const swapRouter = router({
       if (swap.status !== "ACCEPTED") {
         throw new TRPCError({ code: "BAD_REQUEST", message: `Status atual é ${swap.status}, esperava ACCEPTED` });
       }
-      if (!swap.toProfessionalId || !swap.toUserId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhum profissional aceitou ainda" });
-      }
 
-      // Re-verify conflict (may have changed since acceptance)
-      const [fromShift] = await db
-        .select()
-        .from(shiftInstances)
-        .where(
-          and(
-            eq(shiftInstances.id, swap.fromShiftInstanceId),
-            eq(shiftInstances.institutionId, institutionId),
-          ),
-        );
-      if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
+      await effectuateApprovedSwap(db, swap, userId, input.note);
 
-      if (swap.type === "TRANSFER") {
-        await assertNoTimeConflict(swap.toUserId, fromShift.startAt, fromShift.endAt);
-      } else {
-        // SWAP: both sides
-        await assertNoTimeConflict(swap.toUserId, fromShift.startAt, fromShift.endAt, swap.toShiftInstanceId ?? undefined);
-        if (swap.toShiftInstanceId) {
-          const [toShift] = await db
-            .select()
-            .from(shiftInstances)
-            .where(
-              and(
-                eq(shiftInstances.id, swap.toShiftInstanceId),
-                eq(shiftInstances.institutionId, institutionId),
-              ),
-            );
-          if (toShift) {
-            await assertNoTimeConflict(swap.fromUserId, toShift.startAt, toShift.endAt, swap.fromShiftInstanceId);
-          }
-        }
-      }
-
-      // ─── EFFECTUATE ─────────────────────────────────────────────
-      if (swap.type === "TRANSFER") {
-        // Deactivate old from-assignment
-        await db
-          .update(shiftAssignmentsV2)
-          .set({ isActive: false })
-          .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
-
-        // Create new assignment for the recipient on from-shift
-        await db.insert(shiftAssignmentsV2).values({
-          shiftInstanceId: swap.fromShiftInstanceId,
-          institutionId: fromShift.institutionId,
-          hospitalId: fromShift.hospitalId,
-          sectorId: fromShift.sectorId,
-          professionalId: swap.toProfessionalId,
-          assignmentType: "ON_DUTY",
-          status: "OCUPADO",
-          isActive: true,
-          createdBy: userId,
-        });
-      } else {
-        // SWAP: deactivate both old, create both new
-        // Deactivate from-assignment (offerer on from-shift)
-        await db
-          .update(shiftAssignmentsV2)
-          .set({ isActive: false })
-          .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
-
-        // Deactivate to-assignment (receptor on to-shift)
-        if (swap.toAssignmentId) {
-          await db
-            .update(shiftAssignmentsV2)
-            .set({ isActive: false })
-            .where(eq(shiftAssignmentsV2.id, swap.toAssignmentId));
-        }
-
-        // Offerer → to-shift
-        if (swap.toShiftInstanceId) {
-          const [toShift] = await db
-            .select()
-            .from(shiftInstances)
-            .where(
-              and(
-                eq(shiftInstances.id, swap.toShiftInstanceId),
-                eq(shiftInstances.institutionId, institutionId),
-              ),
-            );
-          if (toShift) {
-            await db.insert(shiftAssignmentsV2).values({
-              shiftInstanceId: swap.toShiftInstanceId,
-              institutionId: toShift.institutionId,
-              hospitalId: toShift.hospitalId,
-              sectorId: toShift.sectorId,
-              professionalId: swap.fromProfessionalId,
-              assignmentType: "ON_DUTY",
-              status: "OCUPADO",
-              isActive: true,
-              createdBy: userId,
-            });
-          }
-        }
-
-        // Receptor → from-shift
-        await db.insert(shiftAssignmentsV2).values({
-          shiftInstanceId: swap.fromShiftInstanceId,
-          institutionId: fromShift.institutionId,
-          hospitalId: fromShift.hospitalId,
-          sectorId: fromShift.sectorId,
-          professionalId: swap.toProfessionalId,
-          assignmentType: "ON_DUTY",
-          status: "OCUPADO",
-          isActive: true,
-          createdBy: userId,
-        });
-      }
-
-      // Update swap request
-      await db
-        .update(swapRequests)
-        .set({
-          status: "APPROVED",
-          reviewedByUserId: userId,
-          reviewedAt: new Date(),
-          reviewNote: input.note ?? null,
-        })
-        .where(eq(swapRequests.id, swap.id));
-
+      const mgrAudit = auditNames(swap.type, "APPROVED_BY_MANAGER");
       recordAudit({
-        action: swap.type === "SWAP" ? "SWAP_APPROVED_BY_MANAGER" : "TRANSFER_APPROVED_BY_MANAGER",
-        entityType: swap.type === "SWAP" ? "SWAP_REQUEST" : "TRANSFER_REQUEST",
+        action: mgrAudit.action,
+        entityType: mgrAudit.entityType,
         entityId: swap.id,
         actorUserId: userId,
         actorRole: ctx.user!.role,
-        description: swap.type === "SWAP"
-          ? `Troca #${swap.id} aprovada por gestor`
-          : `Repasse #${swap.id} aprovado por gestor`,
+        description: `${mgrAudit.label} #${swap.id} aprovada por gestor`,
         fromProfessionalId: swap.fromProfessionalId,
-        toProfessionalId: swap.toProfessionalId,
+        toProfessionalId: swap.toProfessionalId ?? undefined,
         fromUserId: swap.fromUserId,
-        toUserId: swap.toUserId,
+        toUserId: swap.toUserId ?? undefined,
         shiftInstanceId: swap.fromShiftInstanceId,
         hospitalId: swap.hospitalId,
         sectorId: swap.sectorId ?? undefined,
         institutionId: swap.institutionId,
-        metadata: { note: input.note },
+        metadata: { note: input.note, approvalPath: "MANAGER_LEGACY" },
       });
 
       return { ok: true };
@@ -581,9 +797,10 @@ export const swapRouter = router({
         })
         .where(eq(swapRequests.id, swap.id));
 
+      const mgrRejectAudit = auditNames(swap.type, "REJECTED");
       recordAudit({
-        action: swap.type === "SWAP" ? "SWAP_REJECTED" : "TRANSFER_REJECTED",
-        entityType: swap.type === "SWAP" ? "SWAP_REQUEST" : "TRANSFER_REQUEST",
+        action: mgrRejectAudit.action,
+        entityType: mgrRejectAudit.entityType,
         entityId: swap.id,
         actorUserId: userId,
         actorRole: ctx.user!.role,
@@ -635,9 +852,10 @@ export const swapRouter = router({
         .set({ status: "CANCELLED" })
         .where(eq(swapRequests.id, swap.id));
 
+      const cancelAudit = auditNames(swap.type, "CANCELLED");
       recordAudit({
-        action: "SWAP_CANCELLED",
-        entityType: swap.type === "SWAP" ? "SWAP_REQUEST" : "TRANSFER_REQUEST",
+        action: cancelAudit.action,
+        entityType: cancelAudit.entityType,
         entityId: swap.id,
         actorUserId: userId,
         actorRole: ctx.user!.role,
@@ -658,7 +876,7 @@ export const swapRouter = router({
     .input(
       z.object({
         status: z.string().optional(),
-        type: z.enum(["SWAP", "TRANSFER"]).optional(),
+        type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
         limit: z.number().min(1).max(200).default(50),
         offset: z.number().min(0).default(0),
       }),
@@ -880,7 +1098,7 @@ export const swapRouter = router({
   listAvailable: protectedProcedure
     .input(
       z.object({
-        type: z.enum(["SWAP", "TRANSFER"]).optional(),
+        type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
