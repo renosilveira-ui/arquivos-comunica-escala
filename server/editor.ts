@@ -5,7 +5,7 @@ import { ForbiddenError } from "../shared/_core/errors";
 import { assertMonthEditable } from "./month-guards";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
-import { assertNoTimeConflict } from "./shift-validations-v2";
+import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
 import { sql } from "drizzle-orm";
 import {
   assertCanManageInstitutionSchedule,
@@ -75,22 +75,17 @@ export const editorRouter = router({
         reason || undefined
       );
 
-      // 5. Validar conflito global (profissional não pode estar em 2 turnos ao mesmo tempo)
-      const overlapResult = await db.execute<any>(
-        sql`SELECT COUNT(*) as count
-            FROM shift_assignments_v2 sa
-            INNER JOIN shift_instances si ON sa.shift_instance_id = si.id
-            WHERE sa.professional_id = ${professionalId}
-            AND sa.is_active = true
-            AND sa.status = 'OCUPADO'
-            AND (
-              (si.start_at < ${shift.end_at} AND si.end_at > ${shift.start_at})
-            )`
+      // 5. Frente H1/H2: anti-overlap (escala-ux §8).
+      // A versão antiga filtrava por `status = 'OCUPADO'`, deixando passar
+      // PENDENTE e ignorando sobreaviso (ON_CALL) — exatamente o gap que a
+      // frente H1/H2 fecha. `assertNoTimeConflictForProfessional` considera
+      // qualquer assignment ativo independente de status/tipo.
+      await assertNoTimeConflictForProfessional(
+        professionalId,
+        new Date(shift.start_at),
+        new Date(shift.end_at),
+        shiftInstanceId,
       );
-      const overlapRows = (overlapResult as any).rows || (overlapResult as any[]);
-      if (overlapRows[0]?.count > 0) {
-        throw new Error("Profissional já possui turno conflitante neste horário");
-      }
 
       // 6. Validar limite de 20 profissionais por setor/turno
       const limitResult = await db.execute<any>(

@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { getDb } from "./db";
 
 export interface ConflictResult {
@@ -14,16 +14,22 @@ export interface ConflictResult {
 }
 
 /**
- * Verifica se um userId tem conflito de horário com um intervalo.
- * Busca TODOS os shifts ativos do userId (em qualquer institution/hospital)
- * que se sobreponham com [startAt, endAt].
+ * Frente H1/H2: anti-overlap (escala-ux §8).
  *
- * Sobreposição: A.start < B.end AND A.end > B.start
+ * The query intentionally filters only on `is_active = 1` — no filter on
+ * `assignment_type` or `status`. This means:
+ *   - PENDENTE assignments block (a request awaiting manager approval still
+ *     reserves the professional's time)
+ *   - ON_DUTY, BACKUP and ON_CALL (sobreaviso) all count as occupation. A
+ *     professional on sobreaviso cannot be scheduled for a plantão in the
+ *     same window, and vice-versa.
  *
- * excludeShiftInstanceId: opcional, exclui um shift específico (útil pra edição)
+ * Overlap predicate: existing.start < target.end AND existing.end > target.start.
+ *
+ * Internal helper — public API is the two `check*`/`assert*` pairs below.
  */
-export async function checkTimeConflict(
-  userId: number,
+async function runConflictQuery(
+  selector: SQL,
   startAt: Date,
   endAt: Date,
   excludeShiftInstanceId?: number,
@@ -45,7 +51,7 @@ export async function checkTimeConflict(
     FROM shift_assignments_v2 sa
     JOIN professionals p  ON p.id  = sa.professional_id
     JOIN shift_instances si ON si.id = sa.shift_instance_id
-    WHERE p.user_id    = ${userId}
+    WHERE ${selector}
       AND sa.is_active = 1
       AND si.start_at  < ${endIso}
       AND si.end_at    > ${startIso}
@@ -69,9 +75,59 @@ export async function checkTimeConflict(
   };
 }
 
+function buildConflictMessage(c: ConflictResult["conflicts"][0]): string {
+  const startStr = c.startAt.toLocaleString("pt-BR");
+  const endStr = c.endAt.toLocaleString("pt-BR");
+  return (
+    `Conflito de horário: profissional já alocado em "${c.label}" ` +
+    `(${startStr} – ${endStr}) no hospital ${c.hospitalId}`
+  );
+}
+
+/**
+ * Verifica se um userId tem conflito de horário com um intervalo.
+ * Resolve userId → professional via JOIN. Use a variante
+ * `*ForProfessional` quando o caller já tem o `professional_id` em mãos.
+ *
+ * excludeShiftInstanceId: exclui um shift específico (útil para
+ * confirmação de edição ou aceite de troca).
+ */
+export async function checkTimeConflict(
+  userId: number,
+  startAt: Date,
+  endAt: Date,
+  excludeShiftInstanceId?: number,
+): Promise<ConflictResult> {
+  return runConflictQuery(
+    sql`p.user_id = ${userId}`,
+    startAt,
+    endAt,
+    excludeShiftInstanceId,
+  );
+}
+
+/**
+ * Variante por professional_id. Use em fluxos de gestor (assignDirect,
+ * approveAssignment) onde o input já carrega o ID do profissional alvo,
+ * evitando um JOIN/lookup extra para descobrir o user_id.
+ */
+export async function checkTimeConflictForProfessional(
+  professionalId: number,
+  startAt: Date,
+  endAt: Date,
+  excludeShiftInstanceId?: number,
+): Promise<ConflictResult> {
+  return runConflictQuery(
+    sql`sa.professional_id = ${professionalId}`,
+    startAt,
+    endAt,
+    excludeShiftInstanceId,
+  );
+}
+
 /**
  * Verifica conflito e lança erro se existir.
- * Usar antes de qualquer assignment creation.
+ * Usar antes de qualquer assignment creation/approval.
  */
 export async function assertNoTimeConflict(
   userId: number,
@@ -81,12 +137,27 @@ export async function assertNoTimeConflict(
 ): Promise<void> {
   const result = await checkTimeConflict(userId, startAt, endAt, excludeShiftInstanceId);
   if (result.hasConflict) {
-    const c = result.conflicts[0];
-    const startStr = c.startAt.toLocaleString("pt-BR");
-    const endStr = c.endAt.toLocaleString("pt-BR");
-    throw new Error(
-      `Conflito de horário: profissional já alocado em "${c.label}" ` +
-        `(${startStr} – ${endStr}) no hospital ${c.hospitalId}`,
-    );
+    throw new Error(buildConflictMessage(result.conflicts[0]));
+  }
+}
+
+/**
+ * Variante por professional_id. Mesma semântica de
+ * `assertNoTimeConflict`, mas resolve por `sa.professional_id`.
+ */
+export async function assertNoTimeConflictForProfessional(
+  professionalId: number,
+  startAt: Date,
+  endAt: Date,
+  excludeShiftInstanceId?: number,
+): Promise<void> {
+  const result = await checkTimeConflictForProfessional(
+    professionalId,
+    startAt,
+    endAt,
+    excludeShiftInstanceId,
+  );
+  if (result.hasConflict) {
+    throw new Error(buildConflictMessage(result.conflicts[0]));
   }
 }

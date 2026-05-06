@@ -5,7 +5,7 @@ import { eq, and, gte, lte, sql } from "drizzle-orm";
 import { professionals, shiftInstances, shiftAssignmentsV2, sectors, hospitals } from "../drizzle/schema";
 import { validateAssignment } from "./shift-validations";
 import { auditLog } from "./audit-log";
-import { assertNoTimeConflict } from "./shift-validations-v2";
+import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
 import {
   assertCanManageInstitutionSchedule,
@@ -190,6 +190,24 @@ const shiftInstancesRouter = router({
       if (!managerProfessionalId) {
         throw new Error("Profissional do aprovador não encontrado");
       }
+
+      // Frente H1/H2: re-verifica overlap no momento da aprovação.
+      // Entre o pedido (PENDENTE) e a aprovação, o profissional pode ter
+      // assumido outra alocação que sobreponha esta janela. A janela alvo
+      // é a do shift_instance referenciado no assignment.
+      const [targetShift] = await db
+        .select({ startAt: shiftInstances.startAt, endAt: shiftInstances.endAt })
+        .from(shiftInstances)
+        .where(eq(shiftInstances.id, assignment.shiftInstanceId));
+      if (!targetShift) {
+        throw new Error("Turno do assignment não encontrado");
+      }
+      await assertNoTimeConflictForProfessional(
+        assignment.professionalId,
+        targetShift.startAt,
+        targetShift.endAt,
+        assignment.shiftInstanceId,
+      );
 
       await db
         .update(shiftAssignmentsV2)
