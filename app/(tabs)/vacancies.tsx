@@ -84,7 +84,7 @@ export default function VacanciesScreen() {
       // Refetch vagas para atualizar lista
       refetchVacancies();
       if (Platform.OS === "web") {
-        window.alert("Vaga assumida com sucesso!\n\nStatus: PENDENTE (aguardando aprovação do gestor)");
+        window.alert("Plantão assumido com sucesso!\n\nStatus: PENDENTE (aguardando aprovação do gestor)");
       }
     },
     onError: (error) => {
@@ -174,9 +174,9 @@ export default function VacanciesScreen() {
         <ScreenContainer>
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Vagas Disponíveis</Text>
+          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Plantões em aberto</Text>
           <Text className="mt-1 text-base" style={{ color: "#475569" }}>
-            {vacancies.length} turnos disponíveis para assumir
+            {vacancies.length} plantões aguardando profissional
           </Text>
         </View>
 
@@ -258,7 +258,7 @@ export default function VacanciesScreen() {
                     </View>
                   ) : (
                     <AppButton
-                      title="Assumir Vaga"
+                      title="Assumir Plantão"
                       variant="primary"
                       onPress={() =>
                         handleAssumeVacancy(
