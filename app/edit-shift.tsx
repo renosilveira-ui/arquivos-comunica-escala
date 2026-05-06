@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
+import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
@@ -48,13 +49,13 @@ export default function EditShiftScreen() {
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
   const [notes, setNotes] = useState("");
-  
+
   // Estados do DateTimePicker
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndDatePicker, setShowEndDatePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
-  
+
   // Estados temporários para preview (iOS)
   const [tempStartDate, setTempStartDate] = useState<Date | null>(null);
   const [tempEndDate, setTempEndDate] = useState<Date | null>(null);
@@ -102,7 +103,7 @@ export default function EditShiftScreen() {
       setTempStartDate(null);
       return;
     }
-    
+
     if (Platform.OS === "android" && date) {
       const normalized = normalizeToNoon(date);
       setStartDate(toLocalISODateString(normalized));
@@ -112,7 +113,7 @@ export default function EditShiftScreen() {
       setTempStartDate(date);
     }
   };
-  
+
   const handleConfirmStartDate = () => {
     if (tempStartDate) {
       const normalized = normalizeToNoon(tempStartDate);
@@ -122,27 +123,27 @@ export default function EditShiftScreen() {
     setTempStartDate(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
-  
+
   const handleCancelStartDate = () => {
     setShowStartDatePicker(false);
     setTempStartDate(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
-  
+
   const handleStartTimeChange = (event: any, date?: Date) => {
     setShowStartTimePicker(Platform.OS === "ios");
     if (date) {
       setStartTime(formatTimeBR(date));
     }
   };
-  
+
   const handleEndDateChange = (event: any, date?: Date) => {
     if (Platform.OS === "android" && event.type === "dismissed") {
       setShowEndDatePicker(false);
       setTempEndDate(null);
       return;
     }
-    
+
     if (Platform.OS === "android" && date) {
       const normalized = normalizeToNoon(date);
       setEndDate(toLocalISODateString(normalized));
@@ -152,7 +153,7 @@ export default function EditShiftScreen() {
       setTempEndDate(date);
     }
   };
-  
+
   const handleConfirmEndDate = () => {
     if (tempEndDate) {
       const normalized = normalizeToNoon(tempEndDate);
@@ -162,13 +163,13 @@ export default function EditShiftScreen() {
     setTempEndDate(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
-  
+
   const handleCancelEndDate = () => {
     setShowEndDatePicker(false);
     setTempEndDate(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
-  
+
   const handleEndTimeChange = (event: any, date?: Date) => {
     setShowEndTimePicker(Platform.OS === "ios");
     if (date) {
@@ -220,7 +221,7 @@ export default function EditShiftScreen() {
     return (
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
-          <Text style={{ fontSize: 18, color: "rgba(255,255,255,0.7)" }}>
+          <Text style={{ fontSize: 18, color: theme.colors.textMuted }}>
             Faça login para continuar
           </Text>
         </View>
@@ -233,7 +234,7 @@ export default function EditShiftScreen() {
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
           <ActivityIndicator size="large" color="#4DA3FF" />
-          <Text style={{ fontSize: 16, color: "rgba(255,255,255,0.7)", marginTop: 16 }}>
+          <Text style={{ fontSize: 16, color: theme.colors.textMuted, marginTop: 16 }}>
             Carregando...
           </Text>
         </View>
@@ -248,67 +249,64 @@ export default function EditShiftScreen() {
           {/* Header */}
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <TouchableOpacity onPress={handleBack} activeOpacity={0.7}>
-              <ChevronLeft size={28} color="#4DA3FF" />
+              <ChevronLeft size={28} color={theme.colors.textPrimary} />
             </TouchableOpacity>
-            <Text style={{ fontSize: 28, fontWeight: "700", color: "#FFFFFF", flex: 1 }}>
+            <Text style={{ fontSize: 28, fontWeight: "700", color: theme.colors.textPrimary, flex: 1 }}>
               Editar Escala
             </Text>
           </View>
 
           {/* Seleção de Setor */}
           <TintedGlassCard>
-            <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF", marginBottom: 16 }}>
+            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Setor *
             </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               <View style={{ flexDirection: "row", gap: 12 }}>
-                {availableSectors.map((sector) => (
-                  <TouchableOpacity
-                    key={sector.id}
-                    onPress={() => handleSelectSector(sector.id)}
-                    style={{
-                      paddingHorizontal: 20,
-                      paddingVertical: 12,
-                      borderRadius: 16,
-                      backgroundColor:
-                        selectedSectorId === sector.id
-                          ? "rgba(77,163,255,0.3)"
-                          : "rgba(255,255,255,0.05)",
-                      borderWidth: 2,
-                      borderColor:
-                        selectedSectorId === sector.id
-                          ? "#4DA3FF"
-                          : "rgba(255,255,255,0.1)",
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Text
+                {availableSectors.map((sector) => {
+                  const isSelected = selectedSectorId === sector.id;
+                  return (
+                    <TouchableOpacity
+                      key={sector.id}
+                      onPress={() => handleSelectSector(sector.id)}
                       style={{
-                        fontSize: 16,
-                        fontWeight: "600",
-                        color: selectedSectorId === sector.id ? "#4DA3FF" : "#FFFFFF",
+                        paddingHorizontal: 20,
+                        paddingVertical: 12,
+                        borderRadius: 16,
+                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
+                        borderWidth: 2,
+                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
                       }}
+                      activeOpacity={0.7}
                     >
-                      {sector.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                      <Text
+                        style={{
+                          fontSize: 16,
+                          fontWeight: "600",
+                          color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                        }}
+                      >
+                        {sector.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             </ScrollView>
           </TintedGlassCard>
 
           {/* Data e Hora de Início */}
           <TintedGlassCard>
-            <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF", marginBottom: 16 }}>
+            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Início *
             </Text>
             <View style={{ flexDirection: "row", gap: 12 }}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? new Date(startDate) : new Date()); setShowStartDatePicker(true); }} activeOpacity={0.7}>
-                    <Calendar size={18} color="rgba(255,255,255,0.6)" />
+                    <Calendar size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
-                  <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                  <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
                     Data
                   </Text>
                 </View>
@@ -316,14 +314,14 @@ export default function EditShiftScreen() {
                   onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? new Date(startDate) : new Date()); setShowStartDatePicker(true); }}
                   activeOpacity={0.7}
                   style={{
-                    backgroundColor: "rgba(255,255,255,0.05)",
+                    backgroundColor: theme.colors.surfaceAlt,
                     borderRadius: 12,
                     padding: 12,
                     borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.1)",
+                    borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: "#FFFFFF" }}>
+                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
                     {formatDateBR(startDate) || "DD/MM/AAAA"}
                   </Text>
                 </TouchableOpacity>
@@ -340,9 +338,9 @@ export default function EditShiftScreen() {
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <TouchableOpacity onPress={() => setShowStartTimePicker(true)} activeOpacity={0.7}>
-                    <Clock size={18} color="rgba(255,255,255,0.6)" />
+                    <Clock size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
-                  <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                  <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
                     Hora
                   </Text>
                 </View>
@@ -350,14 +348,14 @@ export default function EditShiftScreen() {
                   onPress={() => setShowStartTimePicker(true)}
                   activeOpacity={0.7}
                   style={{
-                    backgroundColor: "rgba(255,255,255,0.05)",
+                    backgroundColor: theme.colors.surfaceAlt,
                     borderRadius: 12,
                     padding: 12,
                     borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.1)",
+                    borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: "#FFFFFF" }}>
+                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
                     {startTime || "HH:MM"}
                   </Text>
                 </TouchableOpacity>
@@ -377,16 +375,16 @@ export default function EditShiftScreen() {
 
           {/* Data e Hora de Término */}
           <TintedGlassCard>
-            <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF", marginBottom: 16 }}>
+            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Término *
             </Text>
             <View style={{ flexDirection: "row", gap: 12 }}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? new Date(endDate) : new Date()); setShowEndDatePicker(true); }} activeOpacity={0.7}>
-                    <Calendar size={18} color="rgba(255,255,255,0.6)" />
+                    <Calendar size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
-                  <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                  <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
                     Data
                   </Text>
                 </View>
@@ -394,14 +392,14 @@ export default function EditShiftScreen() {
                   onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? new Date(endDate) : new Date()); setShowEndDatePicker(true); }}
                   activeOpacity={0.7}
                   style={{
-                    backgroundColor: "rgba(255,255,255,0.05)",
+                    backgroundColor: theme.colors.surfaceAlt,
                     borderRadius: 12,
                     padding: 12,
                     borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.1)",
+                    borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: "#FFFFFF" }}>
+                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
                     {formatDateBR(endDate) || "DD/MM/AAAA"}
                   </Text>
                 </TouchableOpacity>
@@ -418,9 +416,9 @@ export default function EditShiftScreen() {
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <TouchableOpacity onPress={() => setShowEndTimePicker(true)} activeOpacity={0.7}>
-                    <Clock size={18} color="rgba(255,255,255,0.6)" />
+                    <Clock size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
-                  <Text style={{ fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+                  <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
                     Hora
                   </Text>
                 </View>
@@ -428,14 +426,14 @@ export default function EditShiftScreen() {
                   onPress={() => setShowEndTimePicker(true)}
                   activeOpacity={0.7}
                   style={{
-                    backgroundColor: "rgba(255,255,255,0.05)",
+                    backgroundColor: theme.colors.surfaceAlt,
                     borderRadius: 12,
                     padding: 12,
                     borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.1)",
+                    borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: "#FFFFFF" }}>
+                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
                     {endTime || "HH:MM"}
                   </Text>
                 </TouchableOpacity>
@@ -455,25 +453,25 @@ export default function EditShiftScreen() {
 
           {/* Observações */}
           <TintedGlassCard>
-            <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF", marginBottom: 16 }}>
+            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Observações
             </Text>
             <TextInput
               value={notes}
               onChangeText={setNotes}
               placeholder="Adicione observações sobre a escala..."
-              placeholderTextColor="rgba(255,255,255,0.4)"
+              placeholderTextColor={theme.colors.textMuted}
               multiline
               numberOfLines={4}
               textAlignVertical="top"
               style={{
-                backgroundColor: "rgba(255,255,255,0.05)",
+                backgroundColor: theme.colors.surfaceAlt,
                 borderRadius: 12,
                 padding: 12,
                 fontSize: 16,
-                color: "#FFFFFF",
+                color: theme.colors.textPrimary,
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.1)",
+                borderColor: theme.colors.border,
                 minHeight: 100,
               }}
             />
@@ -485,16 +483,16 @@ export default function EditShiftScreen() {
               onPress={handleBack}
               style={{
                 flex: 1,
-                backgroundColor: "rgba(255,255,255,0.1)",
+                backgroundColor: theme.colors.surfaceAlt,
                 borderRadius: 16,
                 padding: 16,
                 alignItems: "center",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.2)",
+                borderColor: theme.colors.border,
               }}
               activeOpacity={0.7}
             >
-              <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
+              <Text style={{ fontSize: 16, fontWeight: "600", color: theme.colors.textPrimary }}>
                 Cancelar
               </Text>
             </TouchableOpacity>
@@ -520,7 +518,7 @@ export default function EditShiftScreen() {
           </View>
         </View>
       </ScrollView>
-      
+
       {/* Modal de Seleção de Data Início (iOS) */}
       <Modal
         visible={showStartDatePicker && Platform.OS === "ios"}
@@ -552,7 +550,7 @@ export default function EditShiftScreen() {
             <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, marginBottom: 20, textAlign: "center" }}>
               Data selecionada: {tempStartDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempStartDate))) : formatDateBR(startDate || toLocalISODateString(new Date()))}
             </Text>
-            
+
             <DateTimePicker
               value={tempStartDate || (startDate ? new Date(startDate) : new Date())}
               mode="date"
@@ -561,7 +559,7 @@ export default function EditShiftScreen() {
               locale="pt-BR"
               textColor="#FFFFFF"
             />
-            
+
             <View style={{ flexDirection: "row", gap: 12, marginTop: 24 }}>
               <TouchableOpacity
                 onPress={handleCancelStartDate}
@@ -576,7 +574,7 @@ export default function EditShiftScreen() {
               >
                 <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity
                 onPress={handleConfirmStartDate}
                 style={{
@@ -594,7 +592,7 @@ export default function EditShiftScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-      
+
       {/* Modal de Seleção de Data Término (iOS) */}
       <Modal
         visible={showEndDatePicker && Platform.OS === "ios"}
@@ -626,7 +624,7 @@ export default function EditShiftScreen() {
             <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, marginBottom: 20, textAlign: "center" }}>
               Data selecionada: {tempEndDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempEndDate))) : formatDateBR(endDate || toLocalISODateString(new Date()))}
             </Text>
-            
+
             <DateTimePicker
               value={tempEndDate || (endDate ? new Date(endDate) : new Date())}
               mode="date"
@@ -635,7 +633,7 @@ export default function EditShiftScreen() {
               locale="pt-BR"
               textColor="#FFFFFF"
             />
-            
+
             <View style={{ flexDirection: "row", gap: 12, marginTop: 24 }}>
               <TouchableOpacity
                 onPress={handleCancelEndDate}
@@ -650,7 +648,7 @@ export default function EditShiftScreen() {
               >
                 <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity
                 onPress={handleConfirmEndDate}
                 style={{
