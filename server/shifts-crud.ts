@@ -36,6 +36,46 @@ function buildShiftTimestamps(
   return [startAt, endAt];
 }
 
+// Modalidade estruturada (docs/product/escala-ux.md §5).
+// Schema reutilizado por shifts.create e shifts.update. Todos os
+// campos são opcionais nos endpoints (defaults vivem no DB), mas se
+// o caller mandar coverageType para um SOBREAVISO bloqueamos com 400
+// porque é semanticamente inconsistente — sobreaviso não tem cobertura.
+const modalityFields = z.object({
+  modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
+  coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).nullable().optional(),
+  paymentModel: z
+    .enum(["FIXO", "FIXO_PRODUTIVIDADE_TETO", "FIXO_PRODUTIVIDADE_SEM_TETO", "PRODUTIVIDADE_PURA"])
+    .optional(),
+  // BRL como string ("1500.00") para evitar perda de precisão de Number
+  // em valores monetários grandes. Drizzle armazena decimal como string
+  // no inferType, então segue o mesmo formato no transporte.
+  productivityCapBrl: z
+    .string()
+    .regex(/^\d+(\.\d{1,2})?$/, "productivityCapBrl deve ser BRL no formato \"1500.00\"")
+    .nullable()
+    .optional(),
+});
+
+type ModalityInput = z.infer<typeof modalityFields>;
+
+/**
+ * Valida combinações inválidas de modalidade + cobertura. SOBREAVISO
+ * não admite coverageType (regra de §5: cobertura só faz sentido em
+ * PLANTAO). productivityCapBrl só faz sentido com paymentModel que
+ * tem teto, mas não bloqueamos — o caller pode preencher por
+ * antecipação e mudar o modelo depois.
+ */
+function assertModalityCoherent(input: ModalityInput, existingModality?: "PLANTAO" | "SOBREAVISO"): void {
+  const effectiveModality = input.modality ?? existingModality ?? "PLANTAO";
+  if (effectiveModality === "SOBREAVISO" && input.coverageType != null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "SOBREAVISO não admite coverageType (apenas PLANTAO usa cobertura)",
+    });
+  }
+}
+
 export const shiftsRouter = router({
   // ------------------------------------------------------------------
   // shifts.create — admin/manager only
@@ -43,11 +83,13 @@ export const shiftsRouter = router({
   // ------------------------------------------------------------------
   create: protectedProcedure
     .input(
-      z.object({
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
-        shiftTemplateId: z.number().int(),
-        sectorId: z.number().int().optional(),
-      }),
+      z
+        .object({
+          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
+          shiftTemplateId: z.number().int(),
+          sectorId: z.number().int().optional(),
+        })
+        .merge(modalityFields),
     )
     .mutation(async ({ input, ctx }) => {
       const actor = await getTenantActorFromContext(ctx);
@@ -74,6 +116,8 @@ export const shiftsRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "sectorId obrigatório (template não possui setor padrão)" });
       }
 
+      assertModalityCoherent(input);
+
       const [startAt, endAt] = buildShiftTimestamps(
         input.date,
         template.startTime,
@@ -89,6 +133,13 @@ export const shiftsRouter = router({
         endAt,
         status: "VAGO",
         createdBy: ctx.user.id,
+        // Defaults aplicados pelo DB se não passados: modality=PLANTAO,
+        // paymentModel=FIXO. coverageType e productivityCapBrl ficam
+        // null por padrão.
+        ...(input.modality !== undefined ? { modality: input.modality } : {}),
+        ...(input.coverageType !== undefined ? { coverageType: input.coverageType } : {}),
+        ...(input.paymentModel !== undefined ? { paymentModel: input.paymentModel } : {}),
+        ...(input.productivityCapBrl !== undefined ? { productivityCapBrl: input.productivityCapBrl } : {}),
       });
 
       const insertId = (result as any).insertId as number;
@@ -178,12 +229,14 @@ export const shiftsRouter = router({
   // ------------------------------------------------------------------
   update: protectedProcedure
     .input(
-      z.object({
-        id: z.number().int(),
-        status: z.enum(["VAGO", "PENDENTE", "OCUPADO"]).optional(),
-        startAt: z.string().optional(),
-        endAt: z.string().optional(),
-      }),
+      z
+        .object({
+          id: z.number().int(),
+          status: z.enum(["VAGO", "PENDENTE", "OCUPADO"]).optional(),
+          startAt: z.string().optional(),
+          endAt: z.string().optional(),
+        })
+        .merge(modalityFields),
     )
     .mutation(async ({ input, ctx }) => {
       const actor = await getTenantActorFromContext(ctx);
@@ -207,10 +260,25 @@ export const shiftsRouter = router({
       }
       await assertManagerScopeAccess(actor, existing.hospitalId, existing.sectorId);
 
+      assertModalityCoherent(input, existing.modality);
+
       const patch: Partial<typeof shiftInstances.$inferInsert> = {};
       if (input.status !== undefined) patch.status = input.status;
       if (input.startAt !== undefined) patch.startAt = new Date(input.startAt);
       if (input.endAt !== undefined) patch.endAt = new Date(input.endAt);
+      if (input.modality !== undefined) patch.modality = input.modality;
+      if (input.coverageType !== undefined) patch.coverageType = input.coverageType;
+      if (input.paymentModel !== undefined) patch.paymentModel = input.paymentModel;
+      if (input.productivityCapBrl !== undefined) patch.productivityCapBrl = input.productivityCapBrl;
+
+      // Mantém o invariante "SOBREAVISO ⇒ coverageType IS NULL". Se a
+      // transição é PLANTAO → SOBREAVISO sem coverageType explícito no
+      // patch, o valor antigo seria preservado (URGENCIA_EMERGENCIA ou
+      // ELETIVAS) e a row ficaria inconsistente. Auto-null defensivo.
+      const effectiveModality = patch.modality ?? existing.modality;
+      if (effectiveModality === "SOBREAVISO" && input.coverageType === undefined && existing.coverageType !== null) {
+        patch.coverageType = null;
+      }
 
       if (Object.keys(patch).length === 0) {
         return existing;
