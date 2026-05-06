@@ -14,6 +14,7 @@ import {
 } from "./_core/policy";
 import { editorRouter } from "./editor";
 import { swapRouter } from "./swap-router";
+import { auditRouter } from "./audit-router";
 import { calendarRouter } from "./calendar";
 import { shiftsRouter } from "./shifts-crud";
 import { professionalsRouter, hospitalsRouter, sectorsRouter, filtersRouter } from "./aux-routers";
@@ -441,6 +442,7 @@ export const appRouter = router({
   sectors:          sectorsRouter,
   filters:          filtersRouter,
   swaps:            swapRouter,
+  audit:            auditRouter,
 });
 
 export type AppRouter = typeof appRouter;
