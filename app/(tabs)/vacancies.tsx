@@ -1,4 +1,4 @@
-import { View, Text, ActivityIndicator, Platform, ScrollView } from "react-native";
+import { View, Text, ActivityIndicator, Platform, ScrollView, TouchableOpacity } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
@@ -40,6 +40,9 @@ export default function VacanciesScreen() {
     shiftLabel: null,
   });
 
+  // Filtro adicional por modalidade (PR #66 — listVacancies aceita modality)
+  const [modalityFilter, setModalityFilter] = useState<"PLANTAO" | "SOBREAVISO" | undefined>(undefined);
+
   // Determinar se usuário pode ver "Todos os hospitais"
   const allowAllHospitals = professional?.userRole === "GESTOR_PLUS" || isAdminOrManager;
 
@@ -55,27 +58,60 @@ export default function VacanciesScreen() {
   );
 
   // Buscar vagas disponíveis do backend com filtros
+  // `modality` é aceito por listVacancies a partir de PR #66.
   const { data: vacanciesData, isLoading: vacanciesLoading, refetch: refetchVacancies } = trpc.shiftInstances.listVacancies.useQuery(
     {
       hospitalId: filters.hospitalId ?? undefined,
       sectorId: filters.sectorId ?? undefined,
       date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
       shiftLabel: filters.shiftLabel ?? undefined,
+      modality: modalityFilter,
     },
     { enabled: !!user?.id }
   );
 
-  const vacancies = (vacanciesData || []).map((v) => ({
-    id: v.shiftInstanceId,
-    date: new Date(v.startAt),
-    startTime: new Date(v.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-    endTime: new Date(v.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-    shift: v.label,
-    sector: v.sectorName,
-    hospital: v.hospitalName,
-    status: v.status as "VAGO" | "PENDENTE",
-    canAssume: v.canAssume,
-  }));
+  const vacancies = (vacanciesData || []).map((v) => {
+    // PR #66 expõe modality / coverageType / paymentModel / productivityCapBrl,
+    // mas o tipo do tRPC pode ainda não estar inferindo no worktree do agente.
+    // Cast defensivo (mesma estratégia usada em PR #65/#67).
+    const item = v as typeof v & {
+      modality?: "PLANTAO" | "SOBREAVISO" | null;
+      coverageType?: "URGENCIA_EMERGENCIA" | "ELETIVAS" | null;
+      paymentModel?: string | null;
+      productivityCapBrl?: string | null;
+    };
+    return {
+      id: v.shiftInstanceId,
+      date: new Date(v.startAt),
+      startTime: new Date(v.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      endTime: new Date(v.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      shift: v.label,
+      sector: v.sectorName,
+      hospital: v.hospitalName,
+      status: v.status as "VAGO" | "PENDENTE",
+      canAssume: v.canAssume,
+      modality: item.modality ?? null,
+      coverageType: item.coverageType ?? null,
+      paymentModel: item.paymentModel ?? null,
+      productivityCapBrl: item.productivityCapBrl ?? null,
+    };
+  });
+
+  // Mapeia (modality, coverageType) → label PT-BR para o badge no card.
+  // Retorna null para vagas legadas (modality null/undefined) — pulamos o badge.
+  const formatModalityBadge = (
+    modality: "PLANTAO" | "SOBREAVISO" | null,
+    coverageType: "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
+  ): string | null => {
+    if (!modality) return null;
+    if (modality === "SOBREAVISO") return "Sobreaviso";
+    if (modality === "PLANTAO") {
+      if (coverageType === "URGENCIA_EMERGENCIA") return "Plantão · Urgência";
+      if (coverageType === "ELETIVAS") return "Plantão · Eletivas";
+      return "Plantão";
+    }
+    return null;
+  };
 
   const [assumedVacancies, setAssumedVacancies] = useState<Set<number>>(new Set());
 
@@ -193,6 +229,50 @@ export default function VacanciesScreen() {
           />
         </View>
 
+        {/* Filtro por modalidade (chips) — PR #66 */}
+        <View className="mb-6">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+          >
+            {([
+              { label: "Todos", value: undefined },
+              { label: "Plantão", value: "PLANTAO" as const },
+              { label: "Sobreaviso", value: "SOBREAVISO" as const },
+            ]).map((opt) => {
+              const selected = modalityFilter === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.label}
+                  onPress={() => setModalityFilter(opt.value)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`Filtrar por ${opt.label}`}
+                  style={{
+                    paddingHorizontal: 14,
+                    paddingVertical: 8,
+                    borderRadius: 999,
+                    backgroundColor: selected ? theme.colors.primary : theme.colors.surfaceAlt,
+                    borderWidth: 1,
+                    borderColor: selected ? theme.colors.primary : theme.colors.border,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: selected ? "#FFFFFF" : theme.colors.textPrimary,
+                      fontSize: 14,
+                      fontWeight: "600",
+                    }}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+
         {/* Loading state para vagas */}
         {vacanciesLoading && (
           <View className="flex-1 items-center justify-center py-20">
@@ -206,6 +286,7 @@ export default function VacanciesScreen() {
           <View className="gap-4 pb-6">
             {vacancies.map((vacancy) => {
               const isAssumed = assumedVacancies.has(vacancy.id);
+              const modalityLabel = formatModalityBadge(vacancy.modality, vacancy.coverageType);
               return (
                 <View
                   key={vacancy.id}
@@ -214,7 +295,7 @@ export default function VacanciesScreen() {
                 >
                   {/* Cabeçalho do card */}
                   <View className="flex-row items-center justify-between mb-3">
-                    <View className="flex-row items-center gap-2">
+                    <View className="flex-row items-center gap-2 flex-shrink">
                       <Briefcase size={20} color="#4DA3FF" />
                       <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
                         {vacancy.shift}
@@ -226,6 +307,30 @@ export default function VacanciesScreen() {
                       </Text>
                     </View>
                   </View>
+
+                  {/* Badge de modalidade (PR #66). Oculto em rows legadas sem modality. */}
+                  {modalityLabel && (
+                    <View className="mb-3 flex-row">
+                      <View
+                        style={{
+                          paddingHorizontal: 10,
+                          paddingVertical: 4,
+                          borderRadius: 999,
+                          backgroundColor: "rgba(37,99,235,0.10)",
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color: theme.colors.primary,
+                            fontSize: 11,
+                            fontWeight: "600",
+                          }}
+                        >
+                          {modalityLabel}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
 
                   {/* Informações do turno */}
                   <View className="gap-2 mb-4">
