@@ -175,7 +175,7 @@ export default function VacanciesScreen() {
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text className="mt-4 text-base" style={{ color: "#475569" }}>Carregando...</Text>
+          <Text className="mt-4 text-base" style={{ color: theme.colors.textSecondary }}>Carregando...</Text>
         </View>
       </ScreenGradient>
     );
@@ -185,9 +185,9 @@ export default function VacanciesScreen() {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
-          <Briefcase size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold mt-4" style={{ color: "#0F172A" }}>Autenticação Necessária</Text>
-          <Text className="text-center mt-2" style={{ color: "#475569" }}>Faça login para visualizar vagas</Text>
+          <Briefcase size={64} color={theme.colors.textDisabled} />
+          <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Autenticação Necessária</Text>
+          <Text className="text-center mt-2" style={{ color: theme.colors.textSecondary }}>Faça login para visualizar vagas</Text>
         </View>
       </ScreenGradient>
     );
@@ -197,9 +197,9 @@ export default function VacanciesScreen() {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
-          <Briefcase size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold mt-4" style={{ color: "#0F172A" }}>Profissional Não Encontrado</Text>
-          <Text className="text-center mt-2" style={{ color: "#475569" }}>Seu usuário não está associado a um profissional</Text>
+          <Briefcase size={64} color={theme.colors.textDisabled} />
+          <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Profissional Não Encontrado</Text>
+          <Text className="text-center mt-2" style={{ color: theme.colors.textSecondary }}>Seu usuário não está associado a um profissional</Text>
         </View>
       </ScreenGradient>
     );
@@ -211,14 +211,14 @@ export default function VacanciesScreen() {
         <ScreenContainer>
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Plantões em aberto</Text>
-          <Text className="mt-1 text-base" style={{ color: "#475569" }}>
+          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Plantões em aberto</Text>
+          <Text className="mt-1 text-base" style={{ color: theme.colors.textSecondary }}>
             {vacancies.length} plantões aguardando profissional
           </Text>
         </View>
 
         {/* Filtros */}
-        <View className="mb-6 rounded-2xl border bg-white p-4" style={{ borderColor: "#DBEAFE" }}>
+        <View className="mb-6 rounded-2xl border bg-white p-4" style={{ borderColor: theme.colors.border }}>
           <ShiftFilters
             hospitals={hospitals}
             sectors={sectors}
@@ -260,7 +260,7 @@ export default function VacanciesScreen() {
                 >
                   <Text
                     style={{
-                      color: selected ? "#FFFFFF" : theme.colors.textPrimary,
+                      color: selected ? theme.colors.surface : theme.colors.textPrimary,
                       fontSize: 14,
                       fontWeight: "600",
                     }}
@@ -277,7 +277,7 @@ export default function VacanciesScreen() {
         {vacanciesLoading && (
           <View className="flex-1 items-center justify-center py-20">
             <ActivityIndicator size="large" color={theme.colors.primary} />
-            <Text className="mt-4 text-base" style={{ color: "#475569" }}>Carregando vagas...</Text>
+            <Text className="mt-4 text-base" style={{ color: theme.colors.textSecondary }}>Carregando vagas...</Text>
           </View>
         )}
 
@@ -291,18 +291,30 @@ export default function VacanciesScreen() {
                 <View
                   key={vacancy.id}
                   className="rounded-2xl border p-4"
-                  style={{ backgroundColor: "#FFFFFF", borderColor: "#E2E8F0" }}
+                  style={{ backgroundColor: theme.colors.surface, borderColor: theme.colors.border }}
                 >
                   {/* Cabeçalho do card */}
                   <View className="flex-row items-center justify-between mb-3">
                     <View className="flex-row items-center gap-2 flex-shrink">
                       <Briefcase size={20} color={theme.colors.primary} />
-                      <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
+                      <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                         {vacancy.shift}
                       </Text>
                     </View>
-                    <View className={`rounded-full px-3 py-1 ${isAssumed ? "bg-amber-500/20" : "bg-green-500/20"}`}>
-                      <Text className="text-xs font-semibold" style={{ color: isAssumed ? '#FBBF24' : '#4ADE80' }}>
+                    {/* Status badge segue spec §6.5 + T3 do audit:
+                        VAGO = neutral (não vermelho/verde); PENDENTE = warning. */}
+                    <View
+                      className="rounded-full px-3 py-1"
+                      style={{
+                        backgroundColor: isAssumed ? theme.colors.warningSoft : theme.colors.surfaceAlt,
+                      }}
+                    >
+                      <Text
+                        className="text-xs font-semibold"
+                        style={{
+                          color: isAssumed ? theme.palette.warning[700] : theme.colors.textSecondary,
+                        }}
+                      >
                         {isAssumed ? "PENDENTE" : "VAGO"}
                       </Text>
                     </View>
@@ -316,7 +328,7 @@ export default function VacanciesScreen() {
                           paddingHorizontal: 10,
                           paddingVertical: 4,
                           borderRadius: 999,
-                          backgroundColor: "rgba(37,99,235,0.10)",
+                          backgroundColor: theme.colors.primarySoft,
                         }}
                       >
                         <Text
@@ -335,30 +347,36 @@ export default function VacanciesScreen() {
                   {/* Informações do turno */}
                   <View className="gap-2 mb-4">
                     <View className="flex-row items-center gap-2">
-                      <Calendar size={16} color="#475569" />
-                      <Text className="text-sm" style={{ color: "#475569" }}>{formatDate(vacancy.date)}</Text>
+                      <Calendar size={16} color={theme.colors.textSecondary} />
+                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>{formatDate(vacancy.date)}</Text>
                     </View>
                     <View className="flex-row items-center gap-2">
-                      <Clock size={16} color="#475569" />
-                      <Text className="text-sm" style={{ color: "#475569" }}>
+                      <Clock size={16} color={theme.colors.textSecondary} />
+                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>
                         {vacancy.startTime} - {vacancy.endTime}
                       </Text>
                     </View>
                     <View className="flex-row items-center gap-2">
-                      <MapPin size={16} color="#475569" />
-                      <Text className="text-sm" style={{ color: "#475569" }}>{vacancy.sector}</Text>
+                      <MapPin size={16} color={theme.colors.textSecondary} />
+                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>{vacancy.sector}</Text>
                     </View>
                     <View className="flex-row items-center gap-2">
-                      <Building2 size={16} color="#475569" />
-                      <Text className="text-sm" style={{ color: "#475569" }}>{vacancy.hospital}</Text>
+                      <Building2 size={16} color={theme.colors.textSecondary} />
+                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>{vacancy.hospital}</Text>
                     </View>
                   </View>
 
                   {/* Botão de ação */}
                   {isAdminOrManager ? null : isAssumed ? (
-                    <View className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4" style={{ backgroundColor: "#FFF7ED", borderColor: "#FED7AA" }}>
-                      <CheckCircle size={18} color="rgba(251, 191, 36, 0.8)" />
-                      <Text className="text-sm font-medium" style={{ color: '#FBBF24' }}>
+                    <View
+                      className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4"
+                      style={{
+                        backgroundColor: theme.colors.warningSoft,
+                        borderColor: theme.colors.warning,
+                      }}
+                    >
+                      <CheckCircle size={18} color={theme.palette.warning[700]} />
+                      <Text className="text-sm font-medium" style={{ color: theme.palette.warning[700] }}>
                         Aguardando aprovação do gestor
                       </Text>
                     </View>
@@ -381,7 +399,7 @@ export default function VacanciesScreen() {
           </View>
         ) : !vacanciesLoading ? (
           <View className="flex-1 items-center justify-center py-20">
-            <Briefcase size={64} color="#CBD5E1" />
+            <Briefcase size={64} color={theme.colors.borderStrong} />
             <Text className="mt-4 text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
               Nenhum plantão em aberto
             </Text>
