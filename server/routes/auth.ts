@@ -172,10 +172,13 @@ authRouter.post("/ssoExchange", handleSsoExchange);
 authRouter.post("/sso-exchange", handleSsoExchange);
 
 // POST /api/auth/logout
-authRouter.post("/logout", (_req: Request, res: Response): void => {
-  // clearCookie must mirror the path AND domain used at Set-Cookie time, or
-  // the browser does not invalidate the original cookie.
-  res.clearCookie(COOKIE_NAME, resolveClearCookieOptions());
+authRouter.post("/logout", (req: Request, res: Response): void => {
+  // clearCookie must mirror **all attributes** (path, domain, sameSite,
+  // secure) used at Set-Cookie time. Previously this passed only
+  // path+domain — Chrome/Safari/Firefox silently ignored the
+  // Max-Age=0 on cookies with sameSite=none/secure (the staging
+  // config since PR #48), keeping the user logged in.
+  res.clearCookie(COOKIE_NAME, resolveClearCookieOptions({ req }));
   res.json({ ok: true });
 });
 

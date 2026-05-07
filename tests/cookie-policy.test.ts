@@ -147,8 +147,24 @@ describe("Frente 2.4 - resolveSetCookieOptions (per-request)", () => {
 });
 
 describe("Frente 2.4 - resolveClearCookieOptions (logout)", () => {
-  it("returns minimal attributes (path) by default", () => {
-    expect(resolveClearCookieOptions({ env: {} })).toEqual({ path: "/" });
+  // Bug histórico (corrigido): a versão anterior retornava só
+  // { path, domain } e omitia sameSite/secure. Browsers (Chrome,
+  // Safari, Firefox) só invalidam cookies quando o Set-Cookie ...;
+  // Max-Age=0 do clearCookie tem **todos** os atributos batendo com
+  // o original. Em staging com COOKIE_SAMESITE=none + secure
+  // (PR #48), o logout falhava silenciosamente porque o Max-Age=0
+  // chegava com sameSite=lax (default Express) e o browser ignorava.
+  //
+  // Comportamento atual: mirror EXATO de resolveSetCookieOptions
+  // exceto maxAge (que clearCookie sobrescreve com 0).
+
+  it("default: path=/, sameSite=lax, httpOnly=true, secure=false (não-prod, sem req)", () => {
+    expect(resolveClearCookieOptions({ env: {} })).toEqual({
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
+      path: "/",
+    });
   });
 
   it("MUST mirror COOKIE_DOMAIN so the browser actually invalidates the original cookie", () => {
@@ -156,15 +172,30 @@ describe("Frente 2.4 - resolveClearCookieOptions (logout)", () => {
       env: { COOKIE_DOMAIN: ".escalas.example.com" },
     });
     expect(opts).toEqual({
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
       path: "/",
       domain: ".escalas.example.com",
     });
   });
 
-  it("does not include sameSite/maxAge/secure (clearCookie sends Max-Age=0; httpOnly-secure pair is irrelevant for invalidation)", () => {
+  it("MUST mirror COOKIE_SAMESITE — sem isso o browser ignora clearCookie em sameSite=none", () => {
+    const opts = resolveClearCookieOptions({
+      env: { COOKIE_SAMESITE: "none" },
+    });
+    expect(opts.sameSite).toBe("none");
+  });
+
+  it("forces secure=true em production mesmo sem req (early middleware)", () => {
+    const opts = resolveClearCookieOptions({
+      env: { NODE_ENV: "production" },
+    });
+    expect(opts.secure).toBe(true);
+  });
+
+  it("não inclui maxAge — clearCookie do Express força Max-Age=0", () => {
     const opts = resolveClearCookieOptions({ env: {} });
-    expect(opts.sameSite).toBeUndefined();
     expect(opts.maxAge).toBeUndefined();
-    expect(opts.secure).toBeUndefined();
   });
 });
