@@ -5,7 +5,7 @@ import request from "supertest";
 import express, { type Express } from "express";
 import { authRouter } from "../server/routes/auth";
 import { getDb } from "../server/db";
-import { users } from "../drizzle/schema";
+import { users, professionals } from "../drizzle/schema";
 
 /**
  * Endpoint /api/auth/change-password.
@@ -28,6 +28,24 @@ describe("auth.changePassword endpoint", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
   let testUserId: number;
 
+  /**
+   * O fluxo de login auto-cria um `professional` para o usuário (ver
+   * server/routes/auth.ts). Como `professionals.user_id` referencia
+   * `users.id` sem ON DELETE CASCADE, a limpeza precisa apagar o
+   * professional ANTES do user. `professional_institutions` cascateia
+   * a partir de professional, então não precisa de delete explícito.
+   */
+  async function cleanupTestUser() {
+    const existing = await db!
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, TEST_EMAIL));
+    for (const row of existing) {
+      await db!.delete(professionals).where(eq(professionals.userId, row.id));
+    }
+    await db!.delete(users).where(eq(users.email, TEST_EMAIL));
+  }
+
   beforeAll(async () => {
     db = await getDb();
     if (!db) throw new Error("Database not available");
@@ -36,8 +54,7 @@ describe("auth.changePassword endpoint", () => {
     app.use(express.json());
     app.use("/api/auth", authRouter);
 
-    // Cleanup + cria user de teste com senha conhecida.
-    await db.delete(users).where(eq(users.email, TEST_EMAIL));
+    await cleanupTestUser();
     const hash = await bcrypt.hash(ORIGINAL_PASSWORD, 12);
     const [res] = await db.insert(users).values({
       email: TEST_EMAIL,
@@ -51,7 +68,7 @@ describe("auth.changePassword endpoint", () => {
 
   afterAll(async () => {
     if (!db) return;
-    await db.delete(users).where(eq(users.email, TEST_EMAIL));
+    await cleanupTestUser();
   });
 
   async function loginAndGetCookie(password: string): Promise<string | null> {
