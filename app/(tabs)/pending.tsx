@@ -290,7 +290,7 @@ export default function PendingScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color="#4DA3FF" />
+          <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando autenticação...</Text>
         </View>
       </ScreenGradient>
@@ -325,7 +325,7 @@ export default function PendingScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color="#4DA3FF" />
+          <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando pendências...</Text>
         </View>
       </ScreenGradient>
@@ -664,7 +664,7 @@ export default function PendingScreen() {
                 {/* Cabeçalho do card */}
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center gap-2">
-                    <User size={20} color="#4DA3FF" />
+                    <User size={20} color={theme.colors.primary} />
                     <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
                       {pending.professionalName}
                     </Text>

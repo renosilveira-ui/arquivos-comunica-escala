@@ -1,5 +1,6 @@
 import { Text, TouchableOpacity, View } from "react-native";
 import { useState } from "react";
+import { theme } from "@/lib/theme";
 
 interface MonthCalendarProps {
   selectedDate: Date;
@@ -12,7 +13,7 @@ interface MonthCalendarProps {
  * 
  * Layout iOS-like:
  * - Grid 7x6 (semana x dias)
- * - Dia selecionado: fundo azul (#4DA3FF)
+ * - Dia selecionado: fundo azul (theme.colors.primary)
  * - Dias com escalas: indicador visual (ponto)
  * - Dias fora do mês: opacidade reduzida
  */
@@ -88,7 +89,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
       {/* Header: Mês/Ano e navegação */}
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <TouchableOpacity onPress={goToPreviousMonth} style={{ padding: 8 }}>
-          <Text style={{ fontSize: 20, color: "#4DA3FF" }}>‹</Text>
+          <Text style={{ fontSize: 20, color: theme.colors.primary }}>‹</Text>
         </TouchableOpacity>
         
         <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF" }}>
@@ -96,7 +97,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
         </Text>
         
         <TouchableOpacity onPress={goToNextMonth} style={{ padding: 8 }}>
-          <Text style={{ fontSize: 20, color: "#4DA3FF" }}>›</Text>
+          <Text style={{ fontSize: 20, color: theme.colors.primary }}>›</Text>
         </TouchableOpacity>
       </View>
 
@@ -139,9 +140,9 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
                   borderRadius: 20,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: isSelected ? "#4DA3FF" : isTodayDate ? "rgba(77,163,255,0.2)" : "transparent",
+                  backgroundColor: isSelected ? theme.colors.primary : isTodayDate ? "rgba(37,99,235,0.15)" : "transparent",
                   borderWidth: isTodayDate && !isSelected ? 1 : 0,
-                  borderColor: "#4DA3FF",
+                  borderColor: theme.colors.primary,
                 }}
               >
                 <Text
@@ -167,7 +168,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
                       width: 4,
                       height: 4,
                       borderRadius: 2,
-                      backgroundColor: isSelected ? "#FFFFFF" : "#4DA3FF",
+                      backgroundColor: isSelected ? "#FFFFFF" : theme.colors.primary,
                     }}
                   />
                 )}
