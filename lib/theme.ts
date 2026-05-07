@@ -204,6 +204,17 @@ export const theme = {
     statusVago: palette.danger[500], // legacy — Phase 4 migra para neutral + ícone
     statusPendente: palette.warning[500],
     statusOcupado: palette.success[500],
+
+    // Glass surfaces — overlay tints usados em TintedGlassCard.
+    // Não fazem parte da spec canônica de Card (§6.4) porque dependem
+    // de blur + transparência que existem só em iOS via BlurView. Em
+    // Android caímos para o fallback opaco (mesma cor sem blur).
+    glass: {
+      lightBg: "rgba(255, 255, 255, 0.92)",
+      lightBorder: palette.primary[100],
+      darkBg: "rgba(255, 255, 255, 0.08)",
+      darkBorder: "rgba(255, 255, 255, 0.12)",
+    },
   },
 
   // ─── Spacing legado ───
