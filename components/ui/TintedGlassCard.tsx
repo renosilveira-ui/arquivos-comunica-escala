@@ -1,7 +1,26 @@
 import { BlurView } from "expo-blur";
 import { ReactNode } from "react";
 import { Platform, TouchableOpacity, View, ViewStyle } from "react-native";
+import { theme } from "@/lib/theme";
 
+/**
+ * TintedGlassCard — superfície com efeito de vidro fosco (tinted glass).
+ *
+ * Variantes:
+ *   - `dark`  → tinta branca translúcida sobre gradiente escuro (sidebar,
+ *               hospital-dashboard).
+ *   - `light` → tinta branca translúcida sobre gradiente claro (uso geral
+ *               em telas com `ScreenGradient`).
+ *
+ * Tokens consumidos:
+ *   - cores       → `theme.colors.glass.*`
+ *   - radius      → `theme.radius["2xl"]` (24)
+ *   - padding     → `theme.space[5]` (20)
+ *
+ * Não está na spec canônica de Card (§6.4) — esta variante depende de
+ * BlurView + transparência (iOS). Em Android cai pro fallback opaco
+ * sem blur, mantendo a mesma paleta translúcida.
+ */
 interface TintedGlassCardProps {
   children: ReactNode;
   onPress?: () => void;
@@ -10,45 +29,35 @@ interface TintedGlassCardProps {
   variant?: "dark" | "light";
 }
 
-/**
- * TintedGlassCard - Card com efeito de vidro fosco (tinted glass)
- * 
- * Especificações:
- * - BlurView intensity 22 (discreto)
- * - Overlay: rgba(255,255,255,0.08)
- * - Border: rgba(255,255,255,0.12)
- * - Radius: 24px (rounded-3xl)
- * - Padding: p-5
- * 
- * Fallback (sem blur):
- * - backgroundColor: rgba(255,255,255,0.06)
- * 
- * Uso:
- * ```tsx
- * <TintedGlassCard>
- *   <Text className="text-white">Content</Text>
- * </TintedGlassCard>
- * ```
- */
-export function TintedGlassCard({ children, onPress, style, className, variant = "dark" }: TintedGlassCardProps) {
+const BLUR_INTENSITY = 22;
+const CARD_RADIUS = theme.radius["2xl"];
+const CARD_PADDING = theme.space[5];
+
+export function TintedGlassCard({
+  children,
+  onPress,
+  style,
+  className,
+  variant = "dark",
+}: TintedGlassCardProps) {
   const isLight = variant === "light";
   const baseCardStyle: ViewStyle = isLight
     ? {
-        backgroundColor: "rgba(255,255,255,0.92)",
+        backgroundColor: theme.colors.glass.lightBg,
         borderWidth: 1,
-        borderColor: "#DBEAFE",
+        borderColor: theme.colors.glass.lightBorder,
       }
     : {
-        backgroundColor: "rgba(255,255,255,0.08)",
+        backgroundColor: theme.colors.glass.darkBg,
         borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.12)",
+        borderColor: theme.colors.glass.darkBorder,
       };
 
   const content = (
     <View
       style={[
         baseCardStyle,
-        { borderRadius: 24, padding: 20, overflow: "hidden" },
+        { borderRadius: CARD_RADIUS, padding: CARD_PADDING, overflow: "hidden" },
         style,
       ]}
       className={className}
@@ -57,16 +66,17 @@ export function TintedGlassCard({ children, onPress, style, className, variant =
     </View>
   );
 
-  // Se tiver onPress, envolver em TouchableOpacity
+  const wrapperStyle: ViewStyle = { borderRadius: CARD_RADIUS, overflow: "hidden" };
+
   if (onPress) {
     return (
-      <TouchableOpacity
-        onPress={onPress}
-        activeOpacity={0.7}
-        style={{ borderRadius: 24, overflow: "hidden" }}
-      >
+      <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={wrapperStyle}>
         {Platform.OS === "ios" ? (
-          <BlurView intensity={22} tint={isLight ? "light" : "dark"} style={{ borderRadius: 24, overflow: "hidden" }}>
+          <BlurView
+            intensity={BLUR_INTENSITY}
+            tint={isLight ? "light" : "dark"}
+            style={wrapperStyle}
+          >
             {content}
           </BlurView>
         ) : (
@@ -76,9 +86,12 @@ export function TintedGlassCard({ children, onPress, style, className, variant =
     );
   }
 
-  // Sem onPress, apenas o card
   return Platform.OS === "ios" ? (
-    <BlurView intensity={22} tint={isLight ? "light" : "dark"} style={{ borderRadius: 24, overflow: "hidden" }}>
+    <BlurView
+      intensity={BLUR_INTENSITY}
+      tint={isLight ? "light" : "dark"}
+      style={wrapperStyle}
+    >
       {content}
     </BlurView>
   ) : (

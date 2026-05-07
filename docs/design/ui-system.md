@@ -405,6 +405,22 @@ Estados:
   interativos — clickable cards).
 - `selected` → border primary.600, bg primary.50.
 
+#### 6.4.1 Glass surface (variante)
+
+Card translúcido com BlurView (iOS) usado em superfícies stack-on
+gradient — sidebar e hospital-dashboard. Em Android cai para fallback
+opaco com a mesma paleta (sem blur).
+
+| Variant | Background | Border | Token |
+|---|---|---|---|
+| `light` | rgba(255, 255, 255, 0.92) | primary.100 | `theme.colors.glass.lightBg` / `glass.lightBorder` |
+| `dark`  | rgba(255, 255, 255, 0.08) | rgba(255, 255, 255, 0.12) | `theme.colors.glass.darkBg` / `glass.darkBorder` |
+
+Outras propriedades:
+- radius `2xl` (24)
+- padding `space.5` (20)
+- BlurView `intensity={22}` em iOS
+
 ### 6.5 Tag / Badge
 
 Pill chip para metadata curta (status, modalidade, role).
