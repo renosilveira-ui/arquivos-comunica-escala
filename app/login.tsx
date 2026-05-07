@@ -7,9 +7,9 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { Activity } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
@@ -78,18 +78,12 @@ export default function LoginScreen() {
 
             {/* Logo / título */}
             <View style={{ alignItems: "center", marginBottom: 40 }}>
-              <Activity size={56} color={theme.colors.primary} strokeWidth={1.5} />
-              <Text
-                style={{
-                  fontSize: 28,
-                  fontWeight: "800",
-                  color: theme.colors.textPrimary,
-                  marginTop: 16,
-                  letterSpacing: -0.5,
-                }}
-              >
-                Comunica+ Escalas
-              </Text>
+              <Image
+                source={require("@/assets/images/logo.png")}
+                style={{ width: 240, height: 100, marginBottom: 8 }}
+                resizeMode="contain"
+                accessibilityLabel="Escala+"
+              />
               <Text
                 style={{
                   fontSize: 15,
