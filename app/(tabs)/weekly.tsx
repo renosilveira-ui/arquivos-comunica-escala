@@ -273,7 +273,7 @@ export default function WeeklyScreen() {
       {/* Header */}
       <View style={{ paddingHorizontal: 4, marginBottom: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <Grid3X3 size={24} color="#4DA3FF" />
+          <Grid3X3 size={24} color={theme.colors.primary} />
           <Text style={{ fontSize: 22, fontWeight: "700", color: theme.colors.textPrimary }}>
             Escala Semanal
           </Text>

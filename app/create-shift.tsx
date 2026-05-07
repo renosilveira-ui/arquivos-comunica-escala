@@ -283,7 +283,7 @@ export default function CreateShiftScreen() {
 
           {loadingSectors ? (
             <View className="items-center py-6">
-              <ActivityIndicator size="small" color="#4DA3FF" />
+              <ActivityIndicator size="small" color={theme.colors.primary} />
             </View>
           ) : (
             <View className="flex-row flex-wrap gap-3">
@@ -630,7 +630,7 @@ export default function CreateShiftScreen() {
         <TouchableOpacity
           onPress={handleCreateShift}
           disabled={createShift.isPending}
-          className="bg-[#4DA3FF] rounded-2xl h-14 items-center justify-center"
+          className="rounded-2xl h-14 items-center justify-center" style={{ backgroundColor: theme.colors.primary }}
           activeOpacity={0.7}
         >
           {createShift.isPending ? (
@@ -702,7 +702,7 @@ export default function CreateShiftScreen() {
                 onPress={handleConfirmDate}
                 style={{
                   flex: 1,
-                  backgroundColor: "#4DA3FF",
+                  backgroundColor: theme.colors.primary,
                   borderRadius: 12,
                   padding: 16,
                   alignItems: "center",

@@ -1,4 +1,5 @@
 import "@/global.css";
+import { theme } from "@/lib/theme";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { Redirect, Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -52,7 +53,7 @@ function AuthGuard() {
   ) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0a1929" }}>
-        <ActivityIndicator size="large" color="#4DA3FF" />
+        <ActivityIndicator size="large" color={theme.colors.primary} />
       </View>
     );
   }
