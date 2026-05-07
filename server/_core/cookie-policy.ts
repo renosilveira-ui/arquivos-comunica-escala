@@ -83,15 +83,37 @@ export function resolveSetCookieOptions(
 
 /**
  * Options for `res.clearCookie(name, options)`. Browsers only invalidate a
- * cookie when path AND domain match the original Set-Cookie. Without the
- * domain attribute on logout, a session cookie set with COOKIE_DOMAIN
- * remains valid in the browser after the response says "logged out".
+ * cookie when **all attributes** (path, domain, sameSite, secure) match the
+ * original Set-Cookie. The previous version returned only path+domain,
+ * which silently failed on cookies set with `sameSite=none, secure=true`
+ * (the staging config since PR #48): Chrome/Safari/Firefox ignored the
+ * Set-Cookie ...; Max-Age=0 because the new attributes didn't match the
+ * original — and the user kept logged in despite the server saying "ok".
+ *
+ * Mirror everything from `resolveSetCookieOptions` except `maxAge`/
+ * `httpOnly` (handled by Express's clearCookie internally).
  */
+export interface ClearCookieOptions extends CookiePolicyOptions {
+  /** Request context para determinar `secure` (HTTPS atual). Se ausente,
+   *  cai pra `NODE_ENV === "production"`. */
+  req?: Request;
+}
+
 export function resolveClearCookieOptions(
-  options: CookiePolicyOptions = {},
+  options: ClearCookieOptions = {},
 ): CookieOptions {
+  const env = options.env ?? process.env;
   const policy = resolveCookiePolicy(options);
+  // When called from a request context, mirror exactly. Otherwise (no req,
+  // e.g. early middleware error handler) fall back to env-only secure
+  // determination — production always treated as secure.
+  const secure = options.req
+    ? isSecureRequest(options.req) || env.NODE_ENV === "production"
+    : env.NODE_ENV === "production";
   return {
+    httpOnly: true,
+    secure,
+    sameSite: policy.sameSite,
     path: "/",
     ...(policy.domain ? { domain: policy.domain } : {}),
   };
