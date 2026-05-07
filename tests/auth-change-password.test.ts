@@ -3,7 +3,6 @@ import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import express, { type Express } from "express";
-import cookieParser from "cookie-parser";
 import { authRouter } from "../server/routes/auth";
 import { getDb } from "../server/db";
 import { users } from "../drizzle/schema";
@@ -35,7 +34,6 @@ describe("auth.changePassword endpoint", () => {
 
     app = express();
     app.use(express.json());
-    app.use(cookieParser());
     app.use("/api/auth", authRouter);
 
     // Cleanup + cria user de teste com senha conhecida.
