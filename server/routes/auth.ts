@@ -171,6 +171,88 @@ authRouter.post("/ssoExchange", handleSsoExchange);
 // POST /api/auth/sso-exchange (kebab-case canonical)
 authRouter.post("/sso-exchange", handleSsoExchange);
 
+// POST /api/auth/change-password
+//
+// Permite que um usuário autenticado troque a própria senha.
+// Requer:
+//   - sessão válida (cookie session)
+//   - currentPassword para evitar token-stealing → password change
+//   - newPassword com regras mínimas (≥8 chars, distinto da atual)
+//
+// Não invalida a sessão atual — usuário continua logado com novo
+// hash. Outras sessões em outros dispositivos continuam válidas
+// (limitação conhecida; requer rotação de session token + revoke
+// dos antigos, que é frente separada).
+authRouter.post("/change-password", async (req: Request, res: Response): Promise<void> => {
+  let authUser;
+  try {
+    authUser = await sdk.authenticateRequest(req);
+  } catch {
+    res.status(401).json({ error: "Não autenticado" });
+    return;
+  }
+
+  const { currentPassword, newPassword } = req.body as {
+    currentPassword?: unknown;
+    newPassword?: unknown;
+  };
+
+  if (
+    typeof currentPassword !== "string" ||
+    typeof newPassword !== "string" ||
+    !currentPassword ||
+    !newPassword
+  ) {
+    res.status(400).json({ error: "currentPassword e newPassword são obrigatórios" });
+    return;
+  }
+
+  if (newPassword.length < 8) {
+    res.status(400).json({ error: "Nova senha precisa ter ao menos 8 caracteres" });
+    return;
+  }
+
+  if (newPassword === currentPassword) {
+    res.status(400).json({ error: "Nova senha precisa ser diferente da atual" });
+    return;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    res.status(500).json({ error: "Database not available" });
+    return;
+  }
+
+  const [user] = await db.select().from(users).where(eq(users.id, Number(authUser.id)));
+  if (!user || !user.passwordHash) {
+    res.status(401).json({ error: "Conta sem senha definida" });
+    return;
+  }
+
+  const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!valid) {
+    res.status(401).json({ error: "Senha atual incorreta" });
+    return;
+  }
+
+  const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+  await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
+
+  // Audit trail — útil pra detectar abuso (alguém trocou senha alheia).
+  await recordAudit({
+    actorUserId: user.id,
+    actorRole: user.role ?? "doctor",
+    actorName: user.name ?? undefined,
+    action: "USER_UPDATED",
+    entityType: "USER",
+    entityId: user.id,
+    description: "Senha alterada pelo próprio usuário",
+    institutionId: 1,
+  });
+
+  res.json({ ok: true });
+});
+
 // POST /api/auth/logout
 authRouter.post("/logout", (req: Request, res: Response): void => {
   // clearCookie must mirror **all attributes** (path, domain, sameSite,

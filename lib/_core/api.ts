@@ -95,4 +95,26 @@ export const authApi = {
     const res = await apiFetch<MeResponse>("/api/auth/me");
     return res.ok ? (res.data?.user ?? null) : null;
   },
+
+  /**
+   * Change own password. Requires current password (anti-CSRF /
+   * anti-stolen-token mitigation) + new password.
+   */
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const res = await apiFetch<{ ok?: boolean; error?: string }>(
+      "/api/auth/change-password",
+      {
+        method: "POST",
+        body: JSON.stringify({ currentPassword, newPassword }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    if (res.ok && res.data?.ok) return { ok: true };
+    const errMsg =
+      (res.data as any)?.error ?? res.error ?? "Erro ao alterar senha";
+    return { ok: false, error: errMsg };
+  },
 };
