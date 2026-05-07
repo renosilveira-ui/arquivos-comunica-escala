@@ -198,9 +198,17 @@ export default function CalendarScreen() {
   }, [radarByDate, selectedDateKey, searchShiftText]);
 
   const slotFillColor = (hasAny: boolean, hasVacancy: boolean) => {
-    if (hasVacancy) return "rgba(34,197,94,0.95)";
-    if (hasAny) return "rgba(245,158,11,0.9)";
-    return "rgba(148,163,184,0.2)";
+    if (hasVacancy) return theme.colors.success;
+    if (hasAny) return theme.colors.warning;
+    return theme.colors.border;
+  };
+
+  // T3 do audit: VAGO deixa de ser danger e vira neutro. Cores semânticas
+  // continuam para PENDENTE (warning) e OCUPADO (success).
+  const borderColorForStatus = (status: string) => {
+    if (status === "VAGO") return theme.colors.border;
+    if (status === "PENDENTE") return theme.colors.warning;
+    return theme.colors.success;
   };
 
   const onRefresh = async () => {
@@ -264,8 +272,8 @@ export default function CalendarScreen() {
                       minWidth: 42,
                       borderRadius: 10,
                       borderWidth: selected ? 1.5 : 1,
-                      borderColor: selected ? "#60A5FA" : "#E2E8F0",
-                      backgroundColor: selected ? "rgba(37,99,235,0.12)" : "#FFFFFF",
+                      borderColor: selected ? theme.colors.primary : theme.colors.border,
+                      backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface,
                       paddingVertical: 6,
                       paddingHorizontal: 4,
                     }}
@@ -275,7 +283,7 @@ export default function CalendarScreen() {
                         textAlign: "center",
                         fontSize: 12,
                         fontWeight: "700",
-                        color: inCurrentMonth ? theme.colors.textPrimary : "#94A3B8",
+                        color: inCurrentMonth ? theme.colors.textPrimary : theme.colors.textDisabled,
                         marginBottom: 5,
                       }}
                     >
@@ -311,9 +319,9 @@ export default function CalendarScreen() {
                 alignItems: "center",
                 gap: 8,
                 borderWidth: 1,
-                borderColor: "#E2E8F0",
+                borderColor: theme.colors.border,
                 borderRadius: 10,
-                backgroundColor: "#FFFFFF",
+                backgroundColor: theme.colors.surface,
                 paddingHorizontal: 10,
                 paddingVertical: 8,
                 marginBottom: 12,
@@ -324,7 +332,7 @@ export default function CalendarScreen() {
                 value={searchShiftText}
                 onChangeText={setSearchShiftText}
                 placeholder="Pesquisar hospital, setor, turno..."
-                placeholderTextColor="#94A3B8"
+                placeholderTextColor={theme.colors.textDisabled}
                 style={{ flex: 1, color: theme.colors.textPrimary, fontSize: 14, paddingVertical: 0 }}
               />
             </View>
@@ -342,15 +350,10 @@ export default function CalendarScreen() {
                       activeOpacity={0.8}
                       style={{
                         borderWidth: 1,
-                        borderColor:
-                          shift.status === "VAGO"
-                            ? "rgba(239,68,68,0.7)"
-                            : shift.status === "PENDENTE"
-                              ? "rgba(245,158,11,0.75)"
-                              : "rgba(34,197,94,0.75)",
+                        borderColor: borderColorForStatus(shift.status),
                         borderRadius: 12,
                         padding: 10,
-                        backgroundColor: "#FFFFFF",
+                        backgroundColor: theme.colors.surface,
                       }}
                     >
                       <Text style={{ color: theme.colors.textPrimary, fontSize: 14, fontWeight: "700" }}>
@@ -367,7 +370,7 @@ export default function CalendarScreen() {
                             paddingHorizontal: 8,
                             paddingVertical: 2,
                             borderRadius: 999,
-                            backgroundColor: "rgba(37,99,235,0.10)",
+                            backgroundColor: theme.colors.primarySoft,
                           }}
                         >
                           <Text style={{ color: theme.colors.primary, fontSize: 11, fontWeight: "600" }}>
@@ -379,7 +382,7 @@ export default function CalendarScreen() {
                         {shift.hospitalName} • {shift.sectorName}
                       </Text>
                       {shift.professionalNames.length > 0 ? (
-                        <Text style={{ color: "#334155", fontSize: 12, marginTop: 2 }}>{shift.professionalNames.join(", ")}</Text>
+                        <Text style={{ color: theme.colors.textSecondary, fontSize: 12, marginTop: 2 }}>{shift.professionalNames.join(", ")}</Text>
                       ) : null}
                       <Text style={{ color: theme.colors.textMuted, fontSize: 12, marginTop: 2 }}>
                         {new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}–
@@ -415,15 +418,11 @@ export default function CalendarScreen() {
           backgroundColor: theme.colors.primary,
           alignItems: "center",
           justifyContent: "center",
-          shadowColor: "#000",
-          shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.2,
-          shadowRadius: 8,
-          elevation: 8,
+          ...theme.shadow.lg,
         }}
         activeOpacity={0.8}
       >
-        <Plus size={28} color="#FFFFFF" strokeWidth={3} />
+        <Plus size={28} color={theme.colors.surface} strokeWidth={3} />
       </TouchableOpacity>
     </ScreenGradient>
   );
