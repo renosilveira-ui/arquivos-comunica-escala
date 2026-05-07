@@ -366,6 +366,7 @@ export default function VacanciesScreen() {
                     <AppButton
                       title="Assumir Plantão"
                       variant="primary"
+                      size="lg"
                       onPress={() =>
                         handleAssumeVacancy(
                           vacancy.id,
