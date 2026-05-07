@@ -44,9 +44,26 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
         paddingHorizontal: 12,
       }}
     >
-      <Text style={{ color: "#E2E8F0", fontSize: 18, fontWeight: "800", marginBottom: 16, paddingHorizontal: 10 }}>
-        Escalas
-      </Text>
+      {/* Brand. Logo PNG tem fundo claro — em sidebar dark fica
+          contraste forte se usada direto. Usamos wordmark "Escala+"
+          no dark; logo gráfica fica reservada pra login/splash sobre
+          gradiente claro. */}
+      <View
+        style={{
+          marginBottom: 20,
+          paddingHorizontal: 10,
+          flexDirection: "row",
+          alignItems: "baseline",
+          gap: 2,
+        }}
+      >
+        <Text style={{ color: "#FFFFFF", fontSize: 22, fontWeight: "800", letterSpacing: -0.5 }}>
+          Escala
+        </Text>
+        <Text style={{ color: theme.colors.primary, fontSize: 24, fontWeight: "800" }}>
+          +
+        </Text>
+      </View>
       <View style={{ gap: 6, flex: 1 }}>
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
