@@ -7,7 +7,7 @@ import * as Haptics from "expo-haptics";
 import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
 import { useState, useEffect, useMemo } from "react";
-import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft } from "lucide-react-native";
+import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useRouter } from "expo-router";
 import { useTenantState } from "@/lib/tenant-state";
@@ -427,6 +427,37 @@ export default function ProfileScreen() {
                 <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
               </TouchableOpacity>
             </View>
+          </TintedGlassCard>
+        </View>
+
+        {/* Auditoria de movimentações (PR #77 backend, esta tela frontend) */}
+        <View className="gap-4">
+          <View className="flex-row items-center gap-2">
+            <History size={20} color="#0F172A" />
+            <Text className="text-2xl font-bold" style={{ color: "#0F172A" }}>Auditoria</Text>
+          </View>
+          <TintedGlassCard variant="light">
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/audit-log");
+              }}
+              className="rounded-xl p-4 flex-row items-center justify-between"
+              style={{ backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E2E8F0" }}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel="Ver auditoria de movimentações de plantão"
+            >
+              <View className="flex-1 pr-4">
+                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Movimentações de plantão
+                </Text>
+                <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
+                  Quem alterou, quem foi alterado e quando — últimos 30 dias
+                </Text>
+              </View>
+              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
+            </TouchableOpacity>
           </TintedGlassCard>
         </View>
 
