@@ -174,7 +174,7 @@ export default function VacanciesScreen() {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color="#4DA3FF" />
+          <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text className="mt-4 text-base" style={{ color: "#475569" }}>Carregando...</Text>
         </View>
       </ScreenGradient>
@@ -276,7 +276,7 @@ export default function VacanciesScreen() {
         {/* Loading state para vagas */}
         {vacanciesLoading && (
           <View className="flex-1 items-center justify-center py-20">
-            <ActivityIndicator size="large" color="#4DA3FF" />
+            <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text className="mt-4 text-base" style={{ color: "#475569" }}>Carregando vagas...</Text>
           </View>
         )}
@@ -296,7 +296,7 @@ export default function VacanciesScreen() {
                   {/* Cabeçalho do card */}
                   <View className="flex-row items-center justify-between mb-3">
                     <View className="flex-row items-center gap-2 flex-shrink">
-                      <Briefcase size={20} color="#4DA3FF" />
+                      <Briefcase size={20} color={theme.colors.primary} />
                       <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
                         {vacancy.shift}
                       </Text>

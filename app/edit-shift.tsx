@@ -303,7 +303,7 @@ export default function EditShiftScreen() {
     return (
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
-          <ActivityIndicator size="large" color="#4DA3FF" />
+          <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text style={{ fontSize: 16, color: theme.colors.textMuted, marginTop: 16 }}>
             Carregando...
           </Text>
@@ -726,7 +726,7 @@ export default function EditShiftScreen() {
               onPress={handleSave}
               style={{
                 flex: 1,
-                backgroundColor: "#4DA3FF",
+                backgroundColor: theme.colors.primary,
                 borderRadius: 16,
                 padding: 16,
                 alignItems: "center",
@@ -805,7 +805,7 @@ export default function EditShiftScreen() {
                 onPress={handleConfirmStartDate}
                 style={{
                   flex: 1,
-                  backgroundColor: "#4DA3FF",
+                  backgroundColor: theme.colors.primary,
                   borderRadius: 12,
                   padding: 16,
                   alignItems: "center",
@@ -879,7 +879,7 @@ export default function EditShiftScreen() {
                 onPress={handleConfirmEndDate}
                 style={{
                   flex: 1,
-                  backgroundColor: "#4DA3FF",
+                  backgroundColor: theme.colors.primary,
                   borderRadius: 12,
                   padding: 16,
                   alignItems: "center",
