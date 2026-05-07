@@ -220,6 +220,9 @@ export const theme = {
     // claro do app — mais frio/azulado que neutral.900. Spec §6.14.
     sidebarBg: "#0B1F3A",
 
+    // Modal/sheet scrim — neutral.900 com 50% (spec §5 modais).
+    overlay: "rgba(15, 23, 42, 0.5)",
+
     // Família "onDark": cores aplicadas sobre superfícies escuras
     // (sidebar, hospital-dashboard). White-on-dark com diferentes
     // graus de presença, mais translúcidos para divisores/hovers.

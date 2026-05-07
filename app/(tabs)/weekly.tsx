@@ -72,16 +72,18 @@ function slotTimeRange(slotIdx: number): string {
   return "19:00–07:00";
 }
 
+// T3 do audit: VAGO deixa de ser danger e vira neutro. Cores semânticas
+// continuam para PENDENTE (warning) e OCUPADO (success).
 function borderColorForStatus(status: string): string {
   if (status === "OCUPADO") return theme.colors.success;
   if (status === "PENDENTE") return theme.colors.warning;
-  return theme.colors.danger; // VAGO
+  return theme.colors.border;
 }
 
 function bgTintForStatus(status: string): string {
-  if (status === "OCUPADO") return "rgba(34,197,94,0.08)";
-  if (status === "PENDENTE") return "rgba(245,158,11,0.08)";
-  return "rgba(239,68,68,0.06)";
+  if (status === "OCUPADO") return theme.colors.successSoft;
+  if (status === "PENDENTE") return theme.colors.warningSoft;
+  return theme.colors.surfaceAlt;
 }
 
 function statusLabel(status: string): string {
@@ -303,9 +305,9 @@ export default function WeeklyScreen() {
               paddingVertical: 6,
               paddingHorizontal: 10,
               borderRadius: 8,
-              backgroundColor: "rgba(59,130,246,0.15)",
+              backgroundColor: theme.colors.primarySoft,
               borderWidth: 1,
-              borderColor: "rgba(59,130,246,0.3)",
+              borderColor: theme.palette.primary[200],
             }}
           >
             {replicating ? (
@@ -493,7 +495,7 @@ export default function WeeklyScreen() {
         animationType="slide"
         onRequestClose={() => setAllocModalVisible(false)}
       >
-        <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" }}>
+        <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: theme.colors.overlay }}>
           <View
             style={{
               backgroundColor: theme.colors.cardBg,
