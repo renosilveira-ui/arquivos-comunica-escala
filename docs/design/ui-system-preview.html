@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escalas — UI System Preview (Phase 2)</title>
+<style>
+/* ─── Tokens (espelham lib/theme.ts) ─────────────────────────────── */
+:root {
+  /* Neutrals */
+  --neutral-0: #FFFFFF;
+  --neutral-50: #F8FAFC;
+  --neutral-100: #F1F5F9;
+  --neutral-200: #E2E8F0;
+  --neutral-300: #CBD5E1;
+  --neutral-400: #94A3B8;
+  --neutral-500: #64748B;
+  --neutral-600: #475569;
+  --neutral-700: #334155;
+  --neutral-800: #1E293B;
+  --neutral-900: #0F172A;
+
+  /* Brand */
+  --primary-50: #EFF6FF;
+  --primary-100: #DBEAFE;
+  --primary-200: #BFDBFE;
+  --primary-500: #3B82F6;
+  --primary-600: #2563EB;
+  --primary-700: #1D4ED8;
+  --primary-900: #1E3A8A;
+
+  /* Semantics */
+  --success-50: #F0FDF4;
+  --success-100: #DCFCE7;
+  --success-500: #22C55E;
+  --success-700: #15803D;
+  --warning-50: #FFFBEB;
+  --warning-100: #FEF3C7;
+  --warning-500: #F59E0B;
+  --warning-700: #B45309;
+  --danger-50: #FEF2F2;
+  --danger-100: #FEE2E2;
+  --danger-500: #EF4444;
+  --danger-600: #DC2626;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.12);
+
+  /* Type */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--neutral-50);
+  color: var(--neutral-900);
+  line-height: 1.5;
+  padding: var(--space-8);
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* ─── Type scale ─────────────────────────────────────────────────── */
+.text-display { font-size: 32px; line-height: 40px; letter-spacing: -0.5px; font-weight: 700; }
+.text-title-lg { font-size: 24px; line-height: 32px; letter-spacing: -0.25px; font-weight: 600; }
+.text-title { font-size: 18px; line-height: 26px; font-weight: 600; }
+.text-body-lg { font-size: 16px; line-height: 24px; }
+.text-body { font-size: 14px; line-height: 20px; }
+.text-caption { font-size: 12px; line-height: 16px; letter-spacing: 0.1px; color: var(--neutral-500); }
+.text-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+}
+
+/* ─── Layout ─────────────────────────────────────────────────────── */
+section {
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-bottom: var(--space-6);
+  box-shadow: var(--shadow-sm);
+}
+
+h1.page-title {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin-bottom: var(--space-2);
+}
+.page-subtitle {
+  color: var(--neutral-600);
+  margin-bottom: var(--space-8);
+}
+
+h2.section-title {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.25px;
+  margin-bottom: var(--space-4);
+}
+
+h3.subsection-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: var(--space-6) 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--neutral-200);
+}
+
+p.note {
+  color: var(--neutral-600);
+  font-size: 14px;
+  margin-bottom: var(--space-4);
+}
+
+/* ─── Color swatches ─────────────────────────────────────────────── */
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.swatch {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--neutral-200);
+  font-size: 11px;
+}
+.swatch-color { height: 60px; }
+.swatch-label {
+  padding: var(--space-2);
+  background: var(--neutral-0);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.swatch-name { font-weight: 600; color: var(--neutral-900); }
+.swatch-hex { font-family: var(--font-mono); color: var(--neutral-500); }
+
+/* ─── Type samples ───────────────────────────────────────────────── */
+.type-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--neutral-100);
+}
+.type-row:last-child { border-bottom: none; }
+.type-meta {
+  width: 220px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--neutral-500);
+}
+.type-sample { color: var(--neutral-900); }
+
+/* ─── Spacing scale visual ───────────────────────────────────────── */
+.spacing-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+.spacing-bar {
+  background: var(--primary-500);
+  height: 16px;
+  border-radius: var(--radius-sm);
+}
+.spacing-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--neutral-500);
+  min-width: 100px;
+}
+
+/* ─── Radius samples ─────────────────────────────────────────────── */
+.radius-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: var(--space-3);
+}
+.radius-sample {
+  background: var(--primary-100);
+  border: 1px solid var(--primary-500);
+  height: 60px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary-700);
+}
+
+/* ─── Shadow samples ─────────────────────────────────────────────── */
+.shadow-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-6);
+  margin-top: var(--space-4);
+}
+.shadow-sample {
+  background: var(--neutral-0);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  text-align: center;
+}
+.shadow-sample.sm { box-shadow: var(--shadow-sm); }
+.shadow-sample.md { box-shadow: var(--shadow-md); }
+.shadow-sample.lg { box-shadow: var(--shadow-lg); }
+
+/* ─── Buttons ────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 0 var(--space-4);
+  height: 40px;
+  transition: background 0.15s, border 0.15s;
+}
+.btn-primary { background: var(--primary-600); color: var(--neutral-0); }
+.btn-primary:hover { background: var(--primary-500); }
+.btn-secondary { background: var(--neutral-0); color: var(--neutral-900); border-color: var(--neutral-200); }
+.btn-secondary:hover { background: var(--neutral-50); border-color: var(--neutral-300); }
+.btn-danger { background: var(--danger-500); color: var(--neutral-0); }
+.btn-danger:hover { background: var(--danger-600); }
+.btn-ghost { background: transparent; color: var(--neutral-900); }
+.btn-ghost:hover { background: var(--neutral-100); }
+.btn-link { background: transparent; color: var(--primary-600); border: none; padding: 0; }
+.btn-link:hover { text-decoration: underline; }
+.btn-disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-sm { height: 32px; padding: 0 var(--space-3); font-size: 13px; }
+.btn-lg { height: 48px; padding: 0 var(--space-5); font-size: 16px; }
+
+.btn-row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; margin-top: var(--space-3); }
+
+/* ─── Inputs ─────────────────────────────────────────────────────── */
+.input {
+  display: block;
+  width: 100%;
+  height: 40px;
+  padding: 0 var(--space-3);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--neutral-900);
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-md);
+  transition: border 0.15s, box-shadow 0.15s;
+}
+.input::placeholder { color: var(--neutral-500); }
+.input:focus { outline: none; border-color: var(--primary-600); box-shadow: 0 0 0 2px var(--primary-100); }
+.input.error { border-color: var(--danger-500); }
+.input-helper { font-size: 12px; color: var(--neutral-500); margin-top: var(--space-1); }
+.input-helper.error { color: var(--danger-600); }
+
+.input-group { margin-bottom: var(--space-4); }
+.input-group label { display: block; font-size: 12px; font-weight: 500; color: var(--neutral-700); margin-bottom: var(--space-1); }
+
+/* ─── Tags / Badges ──────────────────────────────────────────────── */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+}
+.tag-neutral { background: var(--neutral-100); color: var(--neutral-900); }
+.tag-primary { background: var(--primary-100); color: var(--primary-600); }
+.tag-success { background: var(--success-100); color: var(--success-700); }
+.tag-warning { background: var(--warning-100); color: var(--warning-700); }
+.tag-danger { background: var(--danger-100); color: var(--danger-600); }
+
+.tag-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+/* ─── Cards ──────────────────────────────────────────────────────── */
+.card {
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-sm);
+  transition: border 0.15s, box-shadow 0.15s;
+}
+.card:hover { border-color: var(--neutral-300); box-shadow: var(--shadow-md); }
+.card.selected { border-color: var(--primary-600); background: var(--primary-50); }
+
+/* ─── Empty state ───────────────────────────────────────────────── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-10) var(--space-5);
+}
+.empty-state svg {
+  width: 64px;
+  height: 64px;
+  color: var(--neutral-400);
+  margin-bottom: var(--space-4);
+}
+.empty-state h4 { font-size: 18px; font-weight: 600; color: var(--neutral-900); margin-bottom: var(--space-2); }
+.empty-state p { font-size: 14px; color: var(--neutral-500); max-width: 360px; margin-bottom: var(--space-4); }
+
+/* ─── Mockup screen ──────────────────────────────────────────────── */
+.mockup {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 0;
+  background: var(--neutral-50);
+  border: 1px solid var(--neutral-300);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-top: var(--space-4);
+  min-height: 600px;
+}
+.mockup-sidebar {
+  background: var(--neutral-900);
+  padding: var(--space-6) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mockup-sidebar-brand {
+  color: var(--neutral-0);
+  font-weight: 700;
+  font-size: 18px;
+  margin-bottom: var(--space-4);
+  padding: 0 var(--space-3);
+}
+.mockup-nav-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--neutral-400);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+.mockup-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  color: #BFDBFE;
+  cursor: pointer;
+  position: relative;
+}
+.mockup-nav-item:hover { background: rgba(255,255,255,0.06); }
+.mockup-nav-item.active {
+  background: var(--primary-600);
+  color: var(--neutral-0);
+  font-weight: 600;
+}
+.mockup-nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--neutral-0);
+}
+
+.mockup-content {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.mockup-shift-card {
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mockup-shift-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mockup-shift-title { font-size: 15px; font-weight: 600; color: var(--neutral-900); }
+.mockup-shift-meta { font-size: 12px; color: var(--neutral-500); }
+
+.mockup-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<h1 class="page-title">Escalas — UI System Preview</h1>
+<p class="page-subtitle">Phase 2 do protocolo <code>/ui-design</code>. Preview visual dos tokens. Abre em qualquer browser; nada do app está rodando aqui — é uma renderização estática.</p>
+
+<!-- ─── Paleta ─── -->
+<section>
+  <h2 class="section-title">1. Paleta</h2>
+  <p class="note">Neutros dominantes (10 níveis), 1 brand primary (7 níveis), 4 semânticas (5 níveis cada). Zero cor decorativa.</p>
+
+  <h3 class="subsection-title">Neutros</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-0); border:1px solid var(--neutral-200)"></div><div class="swatch-label"><span class="swatch-name">neutral.0</span><span class="swatch-hex">#FFFFFF</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-50)"></div><div class="swatch-label"><span class="swatch-name">neutral.50</span><span class="swatch-hex">#F8FAFC</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-100)"></div><div class="swatch-label"><span class="swatch-name">neutral.100</span><span class="swatch-hex">#F1F5F9</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-200)"></div><div class="swatch-label"><span class="swatch-name">neutral.200</span><span class="swatch-hex">#E2E8F0</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-300)"></div><div class="swatch-label"><span class="swatch-name">neutral.300</span><span class="swatch-hex">#CBD5E1</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-400)"></div><div class="swatch-label"><span class="swatch-name">neutral.400</span><span class="swatch-hex">#94A3B8</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-500)"></div><div class="swatch-label"><span class="swatch-name">neutral.500</span><span class="swatch-hex">#64748B</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-600)"></div><div class="swatch-label"><span class="swatch-name">neutral.600</span><span class="swatch-hex">#475569</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-700)"></div><div class="swatch-label"><span class="swatch-name">neutral.700</span><span class="swatch-hex">#334155</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-800)"></div><div class="swatch-label"><span class="swatch-name">neutral.800</span><span class="swatch-hex">#1E293B</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--neutral-900)"></div><div class="swatch-label"><span class="swatch-name">neutral.900</span><span class="swatch-hex">#0F172A</span></div></div>
+  </div>
+
+  <h3 class="subsection-title">Brand primary</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:var(--primary-50)"></div><div class="swatch-label"><span class="swatch-name">primary.50</span><span class="swatch-hex">#EFF6FF</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--primary-100)"></div><div class="swatch-label"><span class="swatch-name">primary.100</span><span class="swatch-hex">#DBEAFE</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--primary-200)"></div><div class="swatch-label"><span class="swatch-name">primary.200</span><span class="swatch-hex">#BFDBFE</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--primary-500)"></div><div class="swatch-label"><span class="swatch-name">primary.500</span><span class="swatch-hex">#3B82F6</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--primary-600)"></div><div class="swatch-label"><span class="swatch-name">primary.600 ⭐</span><span class="swatch-hex">#2563EB</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--primary-700)"></div><div class="swatch-label"><span class="swatch-name">primary.700</span><span class="swatch-hex">#1D4ED8</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--primary-900)"></div><div class="swatch-label"><span class="swatch-name">primary.900</span><span class="swatch-hex">#1E3A8A</span></div></div>
+  </div>
+
+  <h3 class="subsection-title">Semânticas</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:var(--success-500)"></div><div class="swatch-label"><span class="swatch-name">success.500</span><span class="swatch-hex">#22C55E</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--success-100)"></div><div class="swatch-label"><span class="swatch-name">success.100</span><span class="swatch-hex">#DCFCE7</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--warning-500)"></div><div class="swatch-label"><span class="swatch-name">warning.500</span><span class="swatch-hex">#F59E0B</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--warning-100)"></div><div class="swatch-label"><span class="swatch-name">warning.100</span><span class="swatch-hex">#FEF3C7</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--danger-500)"></div><div class="swatch-label"><span class="swatch-name">danger.500</span><span class="swatch-hex">#EF4444</span></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:var(--danger-100)"></div><div class="swatch-label"><span class="swatch-name">danger.100</span><span class="swatch-hex">#FEE2E2</span></div></div>
+  </div>
+</section>
+
+<!-- ─── Tipografia ─── -->
+<section>
+  <h2 class="section-title">2. Tipografia</h2>
+  <p class="note">6 níveis (Stripe pattern). System font stack.</p>
+
+  <div class="type-row">
+    <span class="type-meta">display · 32/40 · 700</span>
+    <span class="type-sample text-display">Plantões em aberto</span>
+  </div>
+  <div class="type-row">
+    <span class="type-meta">titleLg · 24/32 · 600</span>
+    <span class="type-sample text-title-lg">Solicitações pendentes</span>
+  </div>
+  <div class="type-row">
+    <span class="type-meta">title · 18/26 · 600</span>
+    <span class="type-sample text-title">Centro Cirúrgico</span>
+  </div>
+  <div class="type-row">
+    <span class="type-meta">bodyLg · 16/24 · 400</span>
+    <span class="type-sample text-body-lg">Plantão de urgência e emergência das 7h às 13h.</span>
+  </div>
+  <div class="type-row">
+    <span class="type-meta">body · 14/20 · 400</span>
+    <span class="type-sample text-body">Default em UI densa. Cards, listas, formulários.</span>
+  </div>
+  <div class="type-row">
+    <span class="type-meta">caption · 12/16 · 400</span>
+    <span class="type-sample text-caption">há 5 minutos · Maria Santos</span>
+  </div>
+  <div class="type-row">
+    <span class="type-meta">section label</span>
+    <span class="type-sample text-section-label">PLANTÕES DE TERÇA, 14 DE MAIO</span>
+  </div>
+</section>
+
+<!-- ─── Spacing ─── -->
+<section>
+  <h2 class="section-title">3. Spacing</h2>
+  <p class="note">Base 4 px. Density via composição de tokens, não via tipografia.</p>
+
+  <div class="spacing-row"><span class="spacing-meta">space.1 · 4 px</span><div class="spacing-bar" style="width:4px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.2 · 8 px</span><div class="spacing-bar" style="width:8px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.3 · 12 px</span><div class="spacing-bar" style="width:12px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.4 · 16 px</span><div class="spacing-bar" style="width:16px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.5 · 20 px</span><div class="spacing-bar" style="width:20px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.6 · 24 px ⭐ tela</span><div class="spacing-bar" style="width:24px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.8 · 32 px</span><div class="spacing-bar" style="width:32px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.10 · 40 px</span><div class="spacing-bar" style="width:40px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.14 · 56 px</span><div class="spacing-bar" style="width:56px"></div></div>
+  <div class="spacing-row"><span class="spacing-meta">space.20 · 80 px</span><div class="spacing-bar" style="width:80px"></div></div>
+</section>
+
+<!-- ─── Radius + Shadows ─── -->
+<section>
+  <h2 class="section-title">4 + 5. Radius e Shadows</h2>
+
+  <h3 class="subsection-title">Border radius</h3>
+  <div class="radius-grid">
+    <div class="radius-sample" style="border-radius:0">none · 0</div>
+    <div class="radius-sample" style="border-radius:4px">sm · 4</div>
+    <div class="radius-sample" style="border-radius:8px">md · 8</div>
+    <div class="radius-sample" style="border-radius:12px">lg · 12 ⭐</div>
+    <div class="radius-sample" style="border-radius:16px">xl · 16</div>
+    <div class="radius-sample" style="border-radius:24px">2xl · 24</div>
+    <div class="radius-sample" style="border-radius:999px">full · ∞</div>
+  </div>
+
+  <h3 class="subsection-title">Shadows</h3>
+  <div class="shadow-grid">
+    <div class="shadow-sample sm">sm · card default</div>
+    <div class="shadow-sample md">md · card hover, popover</div>
+    <div class="shadow-sample lg">lg · modal, drawer</div>
+  </div>
+</section>
+
+<!-- ─── Buttons ─── -->
+<section>
+  <h2 class="section-title">6.1 Buttons</h2>
+  <p class="note">5 variants × 3 sizes. Único primário por tela (heurística #8 Nielsen).</p>
+
+  <h3 class="subsection-title">Variants (size md)</h3>
+  <div class="btn-row">
+    <button class="btn btn-primary">Aprovar candidatura</button>
+    <button class="btn btn-secondary">Cancelar</button>
+    <button class="btn btn-danger">Excluir plantão</button>
+    <button class="btn btn-ghost">Mais opções</button>
+    <button class="btn btn-link">Ver detalhes</button>
+    <button class="btn btn-primary btn-disabled">Desabilitado</button>
+  </div>
+
+  <h3 class="subsection-title">Sizes</h3>
+  <div class="btn-row">
+    <button class="btn btn-primary btn-sm">small (32 px)</button>
+    <button class="btn btn-primary">medium (40 px) ⭐</button>
+    <button class="btn btn-primary btn-lg">large (48 px)</button>
+  </div>
+</section>
+
+<!-- ─── Inputs ─── -->
+<section>
+  <h2 class="section-title">6.2 Inputs</h2>
+
+  <div style="max-width:420px">
+    <div class="input-group">
+      <label>E-mail</label>
+      <input class="input" placeholder="seu@email.com">
+      <p class="input-helper">Use o e-mail cadastrado no hospital.</p>
+    </div>
+
+    <div class="input-group">
+      <label>Senha (focused)</label>
+      <input class="input" placeholder="••••••••" autofocus>
+    </div>
+
+    <div class="input-group">
+      <label>Teto produtividade</label>
+      <input class="input error" value="1500,00">
+      <p class="input-helper error">Use ponto (1500.00), não vírgula.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Tags ─── -->
+<section>
+  <h2 class="section-title">6.5 Tags / Badges</h2>
+  <p class="note">Pill chips. 5 variants semânticas.</p>
+  <div class="tag-row">
+    <span class="tag tag-neutral">Neutro</span>
+    <span class="tag tag-primary">Cessão</span>
+    <span class="tag tag-success">Confirmada</span>
+    <span class="tag tag-warning">Aguardando aprovação</span>
+    <span class="tag tag-danger">Recusada</span>
+  </div>
+</section>
+
+<!-- ─── Cards ─── -->
+<section>
+  <h2 class="section-title">6.4 Cards</h2>
+  <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:var(--space-4); margin-top:var(--space-4)">
+    <div class="card">
+      <h4 class="text-title" style="margin-bottom:var(--space-2)">Default</h4>
+      <p class="text-body" style="color:var(--neutral-600)">border + shadow.sm. Container padrão.</p>
+    </div>
+    <div class="card" style="border-color:var(--neutral-300); box-shadow:var(--shadow-md)">
+      <h4 class="text-title" style="margin-bottom:var(--space-2)">Hover</h4>
+      <p class="text-body" style="color:var(--neutral-600)">border-strong + shadow.md. Indica clickable.</p>
+    </div>
+    <div class="card selected">
+      <h4 class="text-title" style="margin-bottom:var(--space-2)">Selected</h4>
+      <p class="text-body" style="color:var(--neutral-600)">border primary + bg primary.50.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Empty State ─── -->
+<section>
+  <h2 class="section-title">6.9 EmptyState</h2>
+  <div class="empty-state">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+    <h4>Nenhuma solicitação no momento</h4>
+    <p>As solicitações aparecem aqui quando profissionais pedem para assumir vagas.</p>
+  </div>
+</section>
+
+<!-- ─── MOCKUP TELA: Plantões em aberto ─── -->
+<section>
+  <h2 class="section-title">Mockup: Plantões em aberto (desktop)</h2>
+  <p class="note">Aplicação dos tokens em uma tela típica. Sidebar dark + content light. Cards com badge de modalidade. Chips de filtro. Pill de status.</p>
+
+  <div class="mockup">
+    <!-- Sidebar -->
+    <aside class="mockup-sidebar">
+      <div class="mockup-sidebar-brand">⚕ Escalas</div>
+
+      <span class="mockup-nav-section-label">Operação</span>
+      <div class="mockup-nav-item">📅 Agenda</div>
+      <div class="mockup-nav-item">📊 Semanal</div>
+      <div class="mockup-nav-item active">💼 Plantões em aberto</div>
+      <div class="mockup-nav-item">⚠ Solicitações</div>
+
+      <span class="mockup-nav-section-label">Sistema</span>
+      <div class="mockup-nav-item">📈 Relatórios</div>
+      <div class="mockup-nav-item">⚙ Admin</div>
+      <div class="mockup-nav-item">👤 Perfil</div>
+
+      <div style="margin-top:auto; padding:var(--space-3); border-top:1px solid rgba(255,255,255,0.08)">
+        <div style="display:flex; align-items:center; gap:var(--space-2)">
+          <div style="width:32px; height:32px; border-radius:var(--radius-full); background:rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:center; color:white; font-weight:700">M</div>
+          <div style="flex:1; min-width:0">
+            <div style="color:white; font-size:13px; font-weight:600">Dra. Maria Santos</div>
+            <div style="color:rgba(255,255,255,0.6); font-size:11px">Gestor</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Content -->
+    <main class="mockup-content">
+      <!-- Header -->
+      <div>
+        <h1 class="text-title-lg" style="margin-bottom:var(--space-1)">Plantões em aberto</h1>
+        <p class="text-body" style="color:var(--neutral-600)">5 turnos disponíveis · Centro Cirúrgico · Hospital Teste</p>
+      </div>
+
+      <!-- Filtros: chips de modalidade -->
+      <div class="tag-row">
+        <span class="tag tag-primary" style="height:32px; padding:0 var(--space-3); font-size:13px">Todos</span>
+        <span class="tag tag-neutral" style="height:32px; padding:0 var(--space-3); font-size:13px">Plantão</span>
+        <span class="tag tag-neutral" style="height:32px; padding:0 var(--space-3); font-size:13px">Sobreaviso</span>
+      </div>
+
+      <!-- Lista de cards -->
+      <div style="display:flex; flex-direction:column; gap:var(--space-3)">
+        <!-- Card 1 -->
+        <div class="mockup-shift-card">
+          <div class="mockup-shift-card-header">
+            <div class="mockup-shift-title">Plantão Manhã · 7h–13h</div>
+            <span class="tag tag-success" style="height:20px; padding:0 var(--space-2); font-size:11px">VAGO</span>
+          </div>
+          <span class="tag tag-primary" style="align-self:flex-start; height:20px; padding:0 var(--space-2); font-size:11px">Plantão · Urgência</span>
+          <div class="mockup-shift-meta">Centro Cirúrgico · Hospital Teste · Terça, 14 mai</div>
+          <div style="display:flex; gap:var(--space-2); margin-top:var(--space-2)">
+            <button class="btn btn-primary btn-sm">Assumir plantão</button>
+          </div>
+        </div>
+
+        <!-- Card 2 -->
+        <div class="mockup-shift-card">
+          <div class="mockup-shift-card-header">
+            <div class="mockup-shift-title">Plantão Tarde · 13h–19h</div>
+            <span class="tag tag-warning" style="height:20px; padding:0 var(--space-2); font-size:11px">PENDENTE</span>
+          </div>
+          <span class="tag tag-primary" style="align-self:flex-start; height:20px; padding:0 var(--space-2); font-size:11px">Plantão · Eletivas</span>
+          <div class="mockup-shift-meta">Centro Cirúrgico · Hospital Teste · Terça, 14 mai · Pedro Costa aguardando aprovação</div>
+        </div>
+
+        <!-- Card 3 -->
+        <div class="mockup-shift-card">
+          <div class="mockup-shift-card-header">
+            <div class="mockup-shift-title">Sobreaviso · 19h–7h</div>
+            <span class="tag tag-success" style="height:20px; padding:0 var(--space-2); font-size:11px">VAGO</span>
+          </div>
+          <span class="tag tag-primary" style="align-self:flex-start; height:20px; padding:0 var(--space-2); font-size:11px">Sobreaviso</span>
+          <div class="mockup-shift-meta">Centro Cirúrgico · Hospital Teste · Terça, 14 mai · Produtividade pura</div>
+          <div style="display:flex; gap:var(--space-2); margin-top:var(--space-2)">
+            <button class="btn btn-primary btn-sm">Assumir plantão</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<p style="text-align:center; color:var(--neutral-500); font-size:12px; margin-top:var(--space-8)">
+  Renderização estática dos tokens da Phase 2 (PR #79). Para fonte de verdade ver
+  <code>docs/design/ui-system.md</code> e <code>lib/theme.ts</code>.
+</p>
+
+</body>
+</html>
