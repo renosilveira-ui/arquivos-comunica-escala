@@ -215,6 +215,23 @@ export const theme = {
       darkBg: "rgba(255, 255, 255, 0.08)",
       darkBorder: "rgba(255, 255, 255, 0.12)",
     },
+
+    // Sidebar (desktop). Cor escolhida pra contraste forte com o canvas
+    // claro do app — mais frio/azulado que neutral.900. Spec §6.14.
+    sidebarBg: "#0B1F3A",
+
+    // Família "onDark": cores aplicadas sobre superfícies escuras
+    // (sidebar, hospital-dashboard). White-on-dark com diferentes
+    // graus de presença, mais translúcidos para divisores/hovers.
+    onDark: {
+      text: "#FFFFFF",
+      textMuted: "rgba(255, 255, 255, 0.6)",
+      textDisabled: "rgba(255, 255, 255, 0.4)",
+      textInactive: palette.primary[200], // ítem inativo da sidebar
+      surface: "rgba(255, 255, 255, 0.12)", // fill translúcido (avatar)
+      divider: "rgba(255, 255, 255, 0.08)",
+      hover: "rgba(255, 255, 255, 0.06)",
+    },
   },
 
   // ─── Spacing legado ───

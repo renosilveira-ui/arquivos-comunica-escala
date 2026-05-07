@@ -37,11 +37,11 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
         top: 0,
         bottom: 0,
         width: 220,
-        backgroundColor: "#0B1F3A",
+        backgroundColor: theme.colors.sidebarBg,
         borderRightWidth: 1,
-        borderRightColor: "rgba(255,255,255,0.08)",
-        paddingTop: 24,
-        paddingHorizontal: 12,
+        borderRightColor: theme.colors.onDark.divider,
+        paddingTop: theme.space[6],
+        paddingHorizontal: theme.space[3],
       }}
     >
       {/* Brand. Logo PNG tem fundo claro — em sidebar dark fica
@@ -50,14 +50,14 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
           gradiente claro. */}
       <View
         style={{
-          marginBottom: 20,
-          paddingHorizontal: 10,
+          marginBottom: theme.space[5],
+          paddingHorizontal: theme.space[2] + 2,
           flexDirection: "row",
           alignItems: "baseline",
           gap: 2,
         }}
       >
-        <Text style={{ color: "#FFFFFF", fontSize: 22, fontWeight: "800", letterSpacing: -0.5 }}>
+        <Text style={{ color: theme.colors.onDark.text, fontSize: 22, fontWeight: "800", letterSpacing: -0.5 }}>
           Escala
         </Text>
         <Text style={{ color: theme.colors.primary, fontSize: 24, fontWeight: "800" }}>
@@ -75,7 +75,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
               : typeof options.title === "string"
                 ? options.title
                 : route.name;
-          const color = focused ? "#FFFFFF" : "#BFDBFE";
+          const color = focused ? theme.colors.onDark.text : theme.colors.onDark.textInactive;
 
           const onPress = () => {
             const event = navigation.emit({
@@ -103,9 +103,9 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
                   paddingVertical: 10,
                   paddingHorizontal: 10,
                   backgroundColor: focused
-                    ? theme.colors.accent
+                    ? theme.colors.primary
                     : hovered
-                      ? "rgba(255,255,255,0.06)"
+                      ? theme.colors.onDark.hover
                       : "transparent",
                 };
                 if (Platform.OS === "web") {
@@ -123,7 +123,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
                     top: 0,
                     bottom: 0,
                     width: 3,
-                    backgroundColor: "#FFFFFF",
+                    backgroundColor: theme.colors.onDark.text,
                     borderTopRightRadius: 3,
                     borderBottomRightRadius: 3,
                   }}
@@ -140,14 +140,14 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
         <View
           style={{
             flexShrink: 0,
-            paddingTop: 12,
-            paddingBottom: 4,
-            paddingHorizontal: 4,
+            paddingTop: theme.space[3],
+            paddingBottom: theme.space[1],
+            paddingHorizontal: theme.space[1],
             borderTopWidth: 1,
-            borderTopColor: "rgba(255,255,255,0.08)",
+            borderTopColor: theme.colors.onDark.divider,
             flexDirection: "row",
             alignItems: "center",
-            gap: 10,
+            gap: theme.space[2] + 2,
           }}
         >
           <View
@@ -155,24 +155,24 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
               width: 32,
               height: 32,
               borderRadius: 16,
-              backgroundColor: "rgba(255,255,255,0.12)",
+              backgroundColor: theme.colors.onDark.surface,
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}>{userInitial}</Text>
+            <Text style={{ color: theme.colors.onDark.text, fontSize: 14, fontWeight: "700" }}>{userInitial}</Text>
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text
               numberOfLines={1}
-              style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}
+              style={{ color: theme.colors.onDark.text, fontSize: 13, fontWeight: "600" }}
             >
               {user.name ?? user.email ?? "Usuário"}
             </Text>
             {roleLabel(user.role) ? (
               <Text
                 numberOfLines={1}
-                style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginTop: 2 }}
+                style={{ color: theme.colors.onDark.textMuted, fontSize: 11, marginTop: 2 }}
               >
                 {roleLabel(user.role)}
               </Text>
@@ -184,11 +184,11 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
       {appVersion ? (
         <Text
           style={{
-            color: "rgba(255,255,255,0.4)",
+            color: theme.colors.onDark.textDisabled,
             fontSize: 12,
-            paddingHorizontal: 4,
-            paddingTop: 8,
-            paddingBottom: 12,
+            paddingHorizontal: theme.space[1],
+            paddingTop: theme.space[2],
+            paddingBottom: theme.space[3],
           }}
         >
           v{appVersion}
@@ -208,7 +208,7 @@ export default function TabLayout() {
       tabBar={(props) => (isDesktopWeb ? <WebSidebarTabBar {...props} /> : <BottomTabBar {...props} />)}
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: theme.colors.accent,
+        tabBarActiveTintColor: theme.colors.primary,
         tabBarInactiveTintColor: theme.colors.textMuted,
         sceneStyle: isDesktopWeb
           ? {
