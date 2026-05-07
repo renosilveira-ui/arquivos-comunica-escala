@@ -86,12 +86,15 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        image: "./assets/images/splash-icon.png",
-        imageWidth: 200,
+        // Logo oficial Escala+ — PNG horizontal (~16:9) com fundo
+        // branco/light que se mistura ao backgroundColor do splash.
+        // resizeMode "contain" preserva aspect ratio.
+        image: "./assets/images/logo.png",
+        imageWidth: 320,
         resizeMode: "contain",
         backgroundColor: "#ffffff",
         dark: {
-          backgroundColor: "#000000",
+          backgroundColor: "#0B1F3A",
         },
       },
     ],
