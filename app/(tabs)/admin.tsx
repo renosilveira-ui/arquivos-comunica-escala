@@ -165,7 +165,7 @@ function CreateUserModal({
           style={{
             width: "90%",
             maxWidth: 420,
-            backgroundColor: theme.colors.cardBg,
+            backgroundColor: theme.colors.surface,
             borderRadius: 16,
             padding: 24,
           }}
@@ -209,7 +209,7 @@ function CreateUserModal({
             placeholder="Nome completo"
             placeholderTextColor={theme.colors.textMuted}
             style={{
-              backgroundColor: theme.colors.inputBg,
+              backgroundColor: theme.colors.surface,
               color: theme.colors.textPrimary,
               borderRadius: theme.borderRadius.input,
               padding: 12,
@@ -236,7 +236,7 @@ function CreateUserModal({
             keyboardType="email-address"
             autoCapitalize="none"
             style={{
-              backgroundColor: theme.colors.inputBg,
+              backgroundColor: theme.colors.surface,
               color: theme.colors.textPrimary,
               borderRadius: theme.borderRadius.input,
               padding: 12,
@@ -262,7 +262,7 @@ function CreateUserModal({
             placeholderTextColor={theme.colors.textMuted}
             secureTextEntry
             style={{
-              backgroundColor: theme.colors.inputBg,
+              backgroundColor: theme.colors.surface,
               color: theme.colors.textPrimary,
               borderRadius: theme.borderRadius.input,
               padding: 12,
@@ -295,7 +295,7 @@ function CreateUserModal({
                 onPress={() => setRole(r)}
                 style={{
                   backgroundColor:
-                    role === r ? theme.colors.primary : theme.colors.inputBg,
+                    role === r ? theme.colors.primary : theme.colors.surface,
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 8,
@@ -437,7 +437,7 @@ function EditUserModal({
           style={{
             width: "90%",
             maxWidth: 420,
-            backgroundColor: theme.colors.cardBg,
+            backgroundColor: theme.colors.surface,
             borderRadius: 16,
             padding: 24,
           }}
@@ -481,7 +481,7 @@ function EditUserModal({
             placeholder="Nome completo"
             placeholderTextColor={theme.colors.textMuted}
             style={{
-              backgroundColor: theme.colors.inputBg,
+              backgroundColor: theme.colors.surface,
               color: theme.colors.textPrimary,
               borderRadius: theme.borderRadius.input,
               padding: 12,
@@ -508,7 +508,7 @@ function EditUserModal({
             keyboardType="email-address"
             autoCapitalize="none"
             style={{
-              backgroundColor: theme.colors.inputBg,
+              backgroundColor: theme.colors.surface,
               color: theme.colors.textPrimary,
               borderRadius: theme.borderRadius.input,
               padding: 12,
@@ -541,7 +541,7 @@ function EditUserModal({
                 onPress={() => setRole(r)}
                 style={{
                   backgroundColor:
-                    role === r ? theme.colors.primary : theme.colors.inputBg,
+                    role === r ? theme.colors.primary : theme.colors.surface,
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 8,
@@ -741,7 +741,7 @@ export default function AdminScreen() {
         {/* Search */}
         <View
           style={{
-            backgroundColor: theme.colors.inputBg,
+            backgroundColor: theme.colors.surface,
             borderRadius: theme.borderRadius.input,
             flexDirection: "row",
             alignItems: "center",

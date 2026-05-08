@@ -9,8 +9,6 @@
  *     radius, shadows). Fonte de verdade.
  *   - `theme.colors.*` (papel semântico). O app referencia estes — os
  *     hex acima são fonte de verdade.
- *   - Aliases legados em `theme.colors.*` mantidos pra retrocompat
- *     durante migração (Phase 3/4 elimina gradualmente).
  *
  * Regra dura (skill /ui-design): se um valor literal de cor/spacing/
  * tipografia aparece em `app/`, é violação.
@@ -189,19 +187,9 @@ export const theme = {
     info: palette.info[500],
     infoSoft: palette.primary[100], // mesmo do primarySoft no piloto
 
-    // ─── Aliases legados ───
-    // Mantidos durante a migração (Phase 3/4). NÃO usar em código novo
-    // — preferir tokens semânticos acima. Phase 4-final remove em PR
-    // de cleanup quando todas as telas tiverem migrado.
-    accent: palette.primary[600], // duplicava primary; manter alias por enquanto
-    screenBg: palette.neutral[50], // = background
-    cardBg: palette.neutral[0], // = surface
-    cardBorder: palette.neutral[200], // = border
-    inputBg: palette.neutral[0], // = surface
-
-    // Status legados — alguns mudaram de cor (statusVago não é mais
-    // danger; é neutro). Phase 4 audita os usos. Por enquanto:
-    statusVago: palette.danger[500], // legacy — Phase 4 migra para neutral + ícone
+    // Status semânticos para badges/dots de plantão (Pendente / Ocupado).
+    // VAGO foi removido aqui — T3 do audit prescreve neutro; consumidores
+    // usam theme.colors.textMuted ou theme.colors.border conforme contexto.
     statusPendente: palette.warning[500],
     statusOcupado: palette.success[500],
 
