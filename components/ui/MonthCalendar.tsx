@@ -92,7 +92,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
           <Text style={{ fontSize: 20, color: theme.colors.primary }}>‹</Text>
         </TouchableOpacity>
         
-        <Text style={{ fontSize: 18, fontWeight: "600", color: "#FFFFFF" }}>
+        <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.onDark.text }}>
           {currentMonth.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
         </Text>
         
@@ -105,7 +105,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
       <View style={{ flexDirection: "row", marginBottom: 8 }}>
         {weekDays.map((day) => (
           <View key={day} style={{ flex: 1, alignItems: "center" }}>
-            <Text style={{ fontSize: 12, fontWeight: "600", color: "rgba(255,255,255,0.5)" }}>
+            <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.onDark.textDisabled }}>
               {day}
             </Text>
           </View>
@@ -140,7 +140,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
                   borderRadius: 20,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: isSelected ? theme.colors.primary : isTodayDate ? "rgba(37,99,235,0.15)" : "transparent",
+                  backgroundColor: isSelected ? theme.colors.primary : isTodayDate ? theme.colors.onDark.primarySoft : "transparent",
                   borderWidth: isTodayDate && !isSelected ? 1 : 0,
                   borderColor: theme.colors.primary,
                 }}
@@ -150,10 +150,10 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
                     fontSize: 16,
                     fontWeight: isSelected || isTodayDate ? "600" : "400",
                     color: isSelected
-                      ? "#FFFFFF"
+                      ? theme.colors.onDark.text
                       : item.isCurrentMonth
-                      ? "#FFFFFF"
-                      : "rgba(255,255,255,0.3)",
+                      ? theme.colors.onDark.text
+                      : theme.colors.onDark.textDisabled,
                   }}
                 >
                   {item.date.getDate()}
@@ -168,7 +168,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
                       width: 4,
                       height: 4,
                       borderRadius: 2,
-                      backgroundColor: isSelected ? "#FFFFFF" : theme.colors.primary,
+                      backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.primary,
                     }}
                   />
                 )}

@@ -310,7 +310,7 @@ export default function CreateShiftScreen() {
                     style={{
                       color:
                         selectedSectorId === sector.id
-                          ? "#FFFFFF"
+                          ? theme.colors.surface
                           : theme.colors.textPrimary,
                     }}
                   >
@@ -391,7 +391,7 @@ export default function CreateShiftScreen() {
                   style={{
                     color:
                       selectedShift === shift
-                        ? "#FFFFFF"
+                        ? theme.colors.surface
                         : theme.colors.textPrimary,
                   }}
                 >
@@ -402,7 +402,7 @@ export default function CreateShiftScreen() {
                   style={{
                     color:
                       selectedShift === shift
-                        ? "rgba(255,255,255,0.85)"
+                        ? theme.colors.onDark.text
                         : theme.colors.textMuted,
                   }}
                 >
@@ -427,7 +427,7 @@ export default function CreateShiftScreen() {
                 setEnableRepeat(value);
               }}
               trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-              thumbColor="#FFFFFF"
+              thumbColor={theme.colors.surface}
             />
           </View>
 
@@ -500,7 +500,7 @@ export default function CreateShiftScreen() {
                   >
                     <Text
                       className="text-base font-semibold text-center"
-                      style={{ color: isSelected ? "#FFFFFF" : theme.colors.textPrimary }}
+                      style={{ color: isSelected ? theme.colors.surface : theme.colors.textPrimary }}
                     >
                       {option.label}
                     </Text>
@@ -534,7 +534,7 @@ export default function CreateShiftScreen() {
                     >
                       <Text
                         className="text-base font-semibold text-center"
-                        style={{ color: isSelected ? "#FFFFFF" : theme.colors.textPrimary }}
+                        style={{ color: isSelected ? theme.colors.surface : theme.colors.textPrimary }}
                       >
                         {option.label}
                       </Text>
@@ -572,7 +572,7 @@ export default function CreateShiftScreen() {
                   >
                     <Text
                       className="text-base font-semibold"
-                      style={{ color: isSelected ? "#FFFFFF" : theme.colors.textPrimary }}
+                      style={{ color: isSelected ? theme.colors.surface : theme.colors.textPrimary }}
                     >
                       {option.label}
                     </Text>
@@ -634,9 +634,9 @@ export default function CreateShiftScreen() {
           activeOpacity={0.7}
         >
           {createShift.isPending ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
+            <ActivityIndicator size="small" color={theme.colors.surface} />
           ) : (
-            <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Criar Escala</Text>
+            <Text className="text-lg font-semibold" style={{ color: theme.colors.surface }}>Criar Escala</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -651,14 +651,14 @@ export default function CreateShiftScreen() {
         <Pressable
           style={{
             flex: 1,
-            backgroundColor: "rgba(0,0,0,0.7)",
+            backgroundColor: theme.colors.overlay,
             justifyContent: "flex-end",
           }}
           onPress={handleCancelDate}
         >
           <Pressable
             style={{
-              backgroundColor: "rgba(20,25,30,0.98)",
+              backgroundColor: theme.palette.neutral[900],
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
               padding: 24,
@@ -666,10 +666,10 @@ export default function CreateShiftScreen() {
             }}
             onPress={(e) => e.stopPropagation()}
           >
-            <Text style={{ color: "#FFFFFF", fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
+            <Text style={{ color: theme.colors.surface, fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
               Selecionar data
             </Text>
-            <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, marginBottom: 20, textAlign: "center" }}>
+            <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14, marginBottom: 20, textAlign: "center" }}>
               Data selecionada: {tempDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempDate))) : formatDateBR(selectedDate || today)}
             </Text>
             
@@ -680,7 +680,7 @@ export default function CreateShiftScreen() {
               onChange={handleDateChange}
               locale="pt-BR"
               minimumDate={new Date()}
-              textColor="#FFFFFF"
+              textColor={theme.colors.surface}
             />
             
             <View style={{ flexDirection: "row", gap: 12, marginTop: 24 }}>
@@ -688,14 +688,14 @@ export default function CreateShiftScreen() {
                 onPress={handleCancelDate}
                 style={{
                   flex: 1,
-                  backgroundColor: "rgba(255,255,255,0.1)",
+                  backgroundColor: theme.colors.onDark.surface,
                   borderRadius: 12,
                   padding: 16,
                   alignItems: "center",
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
+                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
@@ -709,7 +709,7 @@ export default function CreateShiftScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
+                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
