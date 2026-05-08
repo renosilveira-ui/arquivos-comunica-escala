@@ -291,7 +291,7 @@ export default function PendingScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando autenticação...</Text>
+          <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>Carregando autenticação...</Text>
         </View>
       </ScreenGradient>
     );
@@ -301,9 +301,9 @@ export default function PendingScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
-          <ClipboardCheck size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Autenticação Necessária</Text>
-          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Faça login para visualizar pendências</Text>
+          <ClipboardCheck size={64} color={theme.colors.textDisabled} />
+          <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Autenticação Necessária</Text>
+          <Text className="text-center mt-2" style={{ color: theme.colors.textMuted }}>Faça login para visualizar pendências</Text>
         </View>
       </ScreenGradient>
     );
@@ -313,9 +313,9 @@ export default function PendingScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
-          <ClipboardCheck size={64} color="#94A3B8" />
-          <Text className="text-xl font-semibold mt-4" style={{ color: "#FFFFFF" }}>Profissional Não Encontrado</Text>
-          <Text className="text-center mt-2" style={{ color: "rgba(255,255,255,0.6)" }}>Seu usuário não está associado a um profissional</Text>
+          <ClipboardCheck size={64} color={theme.colors.textDisabled} />
+          <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Profissional Não Encontrado</Text>
+          <Text className="text-center mt-2" style={{ color: theme.colors.textMuted }}>Seu usuário não está associado a um profissional</Text>
         </View>
       </ScreenGradient>
     );
@@ -326,7 +326,7 @@ export default function PendingScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text className="mt-4 text-base" style={{ color: "rgba(255,255,255,0.6)" }}>Carregando pendências...</Text>
+          <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>Carregando pendências...</Text>
         </View>
       </ScreenGradient>
     );
@@ -343,8 +343,8 @@ export default function PendingScreen() {
         <ScrollView className="flex-1 px-5 py-4">
           <View className="mb-6 flex-row items-center justify-between">
             <View>
-              <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Meus Plantões</Text>
-              <Text className="mt-1 text-base" style={{ color: "#475569" }}>
+              <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Meus Plantões</Text>
+              <Text className="mt-1 text-base" style={{ color: theme.colors.textSecondary }}>
                 Gerencie troca ou repasse dos seus turnos
               </Text>
             </View>
@@ -356,22 +356,22 @@ export default function PendingScreen() {
                 borderRadius: 999,
                 alignItems: "center",
                 justifyContent: "center",
-                backgroundColor: "#2563EB",
+                backgroundColor: theme.colors.primary,
               }}
             >
-              <Plus size={20} color="#FFFFFF" />
+              <Plus size={20} color={theme.colors.surface} />
             </TouchableOpacity>
           </View>
 
           <View className="mb-4">
-            <View className="mb-3 flex-row items-center gap-2 rounded-xl border px-3 py-2" style={{ borderColor: "#E2E8F0", backgroundColor: "#FFFFFF" }}>
-              <Search size={16} color="#475569" />
+            <View className="mb-3 flex-row items-center gap-2 rounded-xl border px-3 py-2" style={{ borderColor: theme.colors.border, backgroundColor: theme.colors.surface }}>
+              <Search size={16} color={theme.colors.textSecondary} />
               <TextInput
                 value={mySearch}
                 onChangeText={setMySearch}
                 placeholder="Pesquisar por rótulo/status"
-                placeholderTextColor="#64748B"
-                style={{ flex: 1, color: "#0F172A", fontSize: 13, paddingVertical: 0 }}
+                placeholderTextColor={theme.colors.textMuted}
+                style={{ flex: 1, color: theme.colors.textPrimary, fontSize: 13, paddingVertical: 0 }}
               />
             </View>
 
@@ -389,11 +389,11 @@ export default function PendingScreen() {
                         paddingVertical: 8,
                         borderRadius: 999,
                         borderWidth: 1,
-                        borderColor: selected ? "#3B82F6" : "#E2E8F0",
-                        backgroundColor: selected ? "rgba(59,130,246,0.2)" : "#FFFFFF",
+                        borderColor: selected ? theme.colors.primary : theme.colors.border,
+                        backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface,
                       }}
                     >
-                      <Text style={{ color: selected ? "#1D4ED8" : "#334155", fontSize: 12, fontWeight: "600" }}>
+                      <Text style={{ color: selected ? theme.palette.primary[700] : theme.palette.neutral[700], fontSize: 12, fontWeight: "600" }}>
                         {d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
                       </Text>
                     </TouchableOpacity>
@@ -405,8 +405,8 @@ export default function PendingScreen() {
 
           {myShifts.length === 0 ? (
             <View className="items-center justify-center py-16">
-              <ClipboardCheck size={60} color="#CBD5E1" />
-              <Text className="mt-4 text-lg font-semibold" style={{ color: "#475569" }}>
+              <ClipboardCheck size={60} color={theme.colors.borderStrong} />
+              <Text className="mt-4 text-lg font-semibold" style={{ color: theme.colors.textSecondary }}>
                 Nenhum plantão seu neste dia
               </Text>
             </View>
@@ -416,17 +416,17 @@ export default function PendingScreen() {
                 <View
                   key={shift.id}
                   className="rounded-2xl border p-4"
-                  style={{ borderColor: "#E2E8F0", backgroundColor: "#FFFFFF" }}
+                  style={{ borderColor: theme.colors.border, backgroundColor: theme.colors.surface }}
                 >
                   <View className="mb-2 flex-row items-center justify-between">
-                    <Text className="text-base font-semibold" style={{ color: "#0F172A" }}>
+                    <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
                       {shift.label}
                     </Text>
-                    <View className="rounded-full px-3 py-1" style={{ backgroundColor: "#F1F5F9" }}>
-                      <Text style={{ color: "#334155", fontSize: 11 }}>{shift.status}</Text>
+                    <View className="rounded-full px-3 py-1" style={{ backgroundColor: theme.colors.surfaceAlt }}>
+                      <Text style={{ color: theme.palette.neutral[700], fontSize: 11 }}>{shift.status}</Text>
                     </View>
                   </View>
-                  <Text style={{ color: "#475569", fontSize: 13 }}>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 13 }}>
                     {formatDate(shift.startAt)} - {formatDate(shift.endAt)}
                   </Text>
 
@@ -440,7 +440,7 @@ export default function PendingScreen() {
                       }
                       className="flex-1 rounded-xl bg-blue-500 py-3 items-center"
                     >
-                      <Text style={{ color: "#FFF", fontWeight: "700" }}>Pedir Troca</Text>
+                      <Text style={{ color: theme.colors.surface, fontWeight: "700" }}>Pedir Troca</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={() =>
@@ -451,7 +451,7 @@ export default function PendingScreen() {
                       }
                       className="flex-1 rounded-xl bg-amber-500 py-3 items-center"
                     >
-                      <Text style={{ color: "#111827", fontWeight: "700" }}>Repassar</Text>
+                      <Text style={{ color: theme.colors.textPrimary, fontWeight: "700" }}>Repassar</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -468,8 +468,8 @@ export default function PendingScreen() {
       <ScrollView className="flex-1 px-5 py-4">
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Solicitações</Text>
-          <Text className="mt-1 text-base" style={{ color: "#475569" }}>
+          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Solicitações</Text>
+          <Text className="mt-1 text-base" style={{ color: theme.colors.textSecondary }}>
             {pendingAssignments?.length || 0} alocações aguardando aprovação
           </Text>
         </View>
@@ -478,20 +478,20 @@ export default function PendingScreen() {
         {availableSwaps.length > 0 && (
           <View style={{ marginBottom: 24 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 }}>
-              <ArrowRightLeft size={22} color="#3B82F6" />
-              <Text style={{ color: "#0F172A", fontSize: 20, fontWeight: "700" }}>Trocas Disponíveis</Text>
-              <View style={{ backgroundColor: "#3B82F6", borderRadius: 10, minWidth: 22, height: 22, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 }}>
-                <Text style={{ color: "#FFF", fontSize: 12, fontWeight: "700" }}>{availableSwaps.length}</Text>
+              <ArrowRightLeft size={22} color={theme.colors.primary} />
+              <Text style={{ color: theme.colors.textPrimary, fontSize: 20, fontWeight: "700" }}>Trocas Disponíveis</Text>
+              <View style={{ backgroundColor: theme.colors.primary, borderRadius: 10, minWidth: 22, height: 22, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 }}>
+                <Text style={{ color: theme.colors.surface, fontSize: 12, fontWeight: "700" }}>{availableSwaps.length}</Text>
               </View>
             </View>
             {availableSwaps.map((sw) => (
               <View
                 key={sw.id}
                 style={{
-                  backgroundColor: "#FFFFFF",
+                  backgroundColor: theme.colors.surface,
                   borderRadius: 12,
                   borderWidth: 1,
-                  borderColor: "#E2E8F0",
+                  borderColor: theme.colors.border,
                   padding: 14,
                   marginBottom: 10,
                 }}
@@ -502,40 +502,40 @@ export default function PendingScreen() {
                     paddingHorizontal: 10,
                     paddingVertical: 4,
                     borderRadius: 999,
-                    backgroundColor: sw.type === "SWAP" ? "rgba(59,130,246,0.18)" : "rgba(245,158,11,0.18)",
+                    backgroundColor: sw.type === "SWAP" ? theme.colors.primarySoft : theme.colors.warningSoft,
                     borderWidth: 1,
-                    borderColor: sw.type === "SWAP" ? "rgba(59,130,246,0.55)" : "rgba(245,158,11,0.55)",
+                    borderColor: sw.type === "SWAP" ? theme.palette.primary[200] : theme.colors.warning,
                   }}>
-                    <Text style={{ color: "#0F172A", fontSize: 11, fontWeight: "600" }}>
+                    <Text style={{ color: theme.colors.textPrimary, fontSize: 11, fontWeight: "600" }}>
                       {sw.type === "SWAP" ? "TROCA" : "REPASSE"}
                     </Text>
                   </View>
                 </View>
 
                 {/* From info */}
-                <Text style={{ color: "#0F172A", fontSize: 14, fontWeight: "600" }}>
+                <Text style={{ color: theme.colors.textPrimary, fontSize: 14, fontWeight: "600" }}>
                   {sw.fromProfessional.name}
-                  <Text style={{ color: "#94A3B8", fontWeight: "400" }}>{" "}• {sw.fromProfessional.role}</Text>
+                  <Text style={{ color: theme.colors.textDisabled, fontWeight: "400" }}>{" "}• {sw.fromProfessional.role}</Text>
                 </Text>
-                <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>
+                <Text style={{ color: theme.colors.textDisabled, fontSize: 13, marginTop: 4 }}>
                   {sw.fromShift.label} — {fmtSwapDate(sw.fromShift.startAt)} • {fmtSwapTime(sw.fromShift.startAt, sw.fromShift.endAt)}
                 </Text>
-                <Text style={{ color: "#64748B", fontSize: 12 }}>
+                <Text style={{ color: theme.colors.textMuted, fontSize: 12 }}>
                   {sw.fromShift.hospitalName} / {sw.fromShift.sectorName}
                 </Text>
 
                 {/* To shift if SWAP */}
                 {sw.toShift && (
-                  <View style={{ marginTop: 6, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: "#F59E0B" }}>
-                    <Text style={{ color: "#94A3B8", fontSize: 12 }}>Quer em troca:</Text>
-                    <Text style={{ color: "#0F172A", fontSize: 13 }}>
+                  <View style={{ marginTop: 6, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: theme.colors.warning }}>
+                    <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>Quer em troca:</Text>
+                    <Text style={{ color: theme.colors.textPrimary, fontSize: 13 }}>
                       {sw.toShift.label} — {fmtSwapDate(sw.toShift.startAt)} • {fmtSwapTime(sw.toShift.startAt, sw.toShift.endAt)}
                     </Text>
                   </View>
                 )}
 
                 {sw.reason && (
-                  <Text style={{ color: "#94A3B8", fontSize: 12, fontStyle: "italic", marginTop: 4 }}>{`"${sw.reason}"`}</Text>
+                  <Text style={{ color: theme.colors.textDisabled, fontSize: 12, fontStyle: "italic", marginTop: 4 }}>{`"${sw.reason}"`}</Text>
                 )}
 
                 {/* Action buttons */}
@@ -551,16 +551,16 @@ export default function PendingScreen() {
                       gap: 6,
                       paddingVertical: 10,
                       borderRadius: 10,
-                      backgroundColor: "#22C55E",
+                      backgroundColor: theme.colors.success,
                       opacity: swapActionId === sw.id ? 0.6 : 1,
                     }}
                   >
                     {swapActionId === sw.id ? (
-                      <ActivityIndicator color="#FFF" size="small" />
+                      <ActivityIndicator color={theme.colors.surface} size="small" />
                     ) : (
                       <>
-                        <Check size={16} color="#FFF" />
-                        <Text style={{ color: "#FFF", fontSize: 14, fontWeight: "600" }}>Aceitar</Text>
+                        <Check size={16} color={theme.colors.surface} />
+                        <Text style={{ color: theme.colors.surface, fontSize: 14, fontWeight: "600" }}>Aceitar</Text>
                       </>
                     )}
                   </TouchableOpacity>
@@ -575,12 +575,12 @@ export default function PendingScreen() {
                       gap: 6,
                       paddingVertical: 10,
                       borderRadius: 10,
-                      backgroundColor: "#EF4444",
+                      backgroundColor: theme.colors.danger,
                       opacity: swapActionId === sw.id ? 0.6 : 1,
                     }}
                   >
-                    <X size={16} color="#FFF" />
-                    <Text style={{ color: "#FFF", fontSize: 14, fontWeight: "600" }}>Recusar</Text>
+                    <X size={16} color={theme.colors.surface} />
+                    <Text style={{ color: theme.colors.surface, fontSize: 14, fontWeight: "600" }}>Recusar</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -618,14 +618,14 @@ export default function PendingScreen() {
                   accessibilityLabel={`Filtrar por ${opt.label}`}
                   className="rounded-full px-4 py-2"
                   style={{
-                    backgroundColor: selected ? "#2563EB" : "#F1F5F9",
+                    backgroundColor: selected ? theme.colors.primary : theme.colors.surfaceAlt,
                     borderWidth: 1,
-                    borderColor: selected ? "#2563EB" : "#DBEAFE",
+                    borderColor: selected ? theme.colors.primary : theme.colors.border,
                   }}
                 >
                   <Text
                     className="text-sm font-semibold"
-                    style={{ color: selected ? "#FFFFFF" : "#0F172A" }}
+                    style={{ color: selected ? theme.colors.surface : theme.colors.textPrimary }}
                   >
                     {opt.label}
                   </Text>
@@ -659,18 +659,27 @@ export default function PendingScreen() {
               <View
                 key={pending.assignmentId}
                 className="rounded-2xl border p-4"
-                style={{ backgroundColor: "#FFFFFF", borderColor: "#E2E8F0" }}
+                style={{ backgroundColor: theme.colors.surface, borderColor: theme.colors.border }}
               >
                 {/* Cabeçalho do card */}
                 <View className="flex-row items-center justify-between mb-3">
                   <View className="flex-row items-center gap-2">
                     <User size={20} color={theme.colors.primary} />
-                    <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>
+                    <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
                       {pending.professionalName}
                     </Text>
                   </View>
-                  <View className="rounded-full bg-amber-500/20 px-3 py-1">
-                    <Text className="text-xs font-semibold" style={{ color: '#FBBF24' }}>
+                  {/* Role badge — spec §6.5 prescreve neutral para metadata
+                      tipo papel/função. Substitui o legado amber/20 + texto
+                      amarelo claro que lia mal sobre fundo claro. */}
+                  <View
+                    className="rounded-full px-3 py-1"
+                    style={{ backgroundColor: theme.colors.surfaceAlt }}
+                  >
+                    <Text
+                      className="text-xs font-semibold"
+                      style={{ color: theme.colors.textSecondary }}
+                    >
                       {pending.professionalRole}
                     </Text>
                   </View>
@@ -680,9 +689,9 @@ export default function PendingScreen() {
                 {modalityBadge ? (
                   <View
                     className="self-start rounded-full px-2.5 py-1 mb-3"
-                    style={{ backgroundColor: "rgba(37,99,235,0.10)" }}
+                    style={{ backgroundColor: theme.colors.primarySoft }}
                   >
-                    <Text className="text-xs font-semibold" style={{ color: "#2563EB" }}>
+                    <Text className="text-xs font-semibold" style={{ color: theme.colors.primary }}>
                       {modalityBadge}
                     </Text>
                   </View>
@@ -691,18 +700,18 @@ export default function PendingScreen() {
                 {/* Informações do turno */}
                 <View className="gap-2 mb-4">
                   <View className="flex-row items-center gap-2">
-                    <MapPin size={16} color="#475569" />
-                    <Text className="text-sm" style={{ color: "#475569" }}>{pending.sectorName}</Text>
+                    <MapPin size={16} color={theme.colors.textSecondary} />
+                    <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>{pending.sectorName}</Text>
                   </View>
                   <View className="flex-row items-center gap-2">
-                    <Clock size={16} color="#475569" />
-                    <Text className="text-sm" style={{ color: "#475569" }}>
+                    <Clock size={16} color={theme.colors.textSecondary} />
+                    <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>
                       {formatDate(pending.shiftStartAt)} - {formatDate(pending.shiftEndAt)}
                     </Text>
                   </View>
                   <View className="flex-row items-center gap-2">
-                    <Briefcase size={16} color="#475569" />
-                    <Text className="text-sm" style={{ color: "#475569" }}>
+                    <Briefcase size={16} color={theme.colors.textSecondary} />
+                    <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>
                       {pending.assignmentType === "ON_DUTY"
                         ? "Plantão"
                         : pending.assignmentType === "BACKUP"
@@ -715,9 +724,9 @@ export default function PendingScreen() {
                 {/* Botões de ação ou mensagem de permissão */}
                 {professional?.userRole === "USER" ? (
                   // 🔒 Usuário comum: mostrar mensagem de permissão
-                  <View className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4" style={{ backgroundColor: "#F8FAFC", borderColor: "#E2E8F0" }}>
-                    <Lock size={18} color="#64748B" />
-                    <Text className="text-sm font-medium" style={{ color: "#475569" }}>
+                  <View className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4" style={{ backgroundColor: theme.colors.background, borderColor: theme.colors.border }}>
+                    <Lock size={18} color={theme.colors.textMuted} />
+                    <Text className="text-sm font-medium" style={{ color: theme.colors.textSecondary }}>
                       Somente gestores podem aprovar pendências
                     </Text>
                   </View>
@@ -735,7 +744,7 @@ export default function PendingScreen() {
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-green-500 py-3 active:opacity-80"
                     >
                       <Check size={20} color="white" />
-                      <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>Aprovar</Text>
+                      <Text className="text-base font-semibold" style={{ color: theme.colors.surface }}>Aprovar</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
@@ -749,7 +758,7 @@ export default function PendingScreen() {
                       className="flex-1 flex-row items-center justify-center gap-2 rounded-xl bg-red-500 py-3 active:opacity-80"
                     >
                       <X size={20} color="white" />
-                      <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>Rejeitar</Text>
+                      <Text className="text-base font-semibold" style={{ color: theme.colors.surface }}>Rejeitar</Text>
                     </TouchableOpacity>
                   </View>
                 )}
@@ -759,7 +768,7 @@ export default function PendingScreen() {
           </View>
         ) : (
           <View className="flex-1 items-center justify-center py-20">
-            <ClipboardCheck size={64} color="#CBD5E1" />
+            <ClipboardCheck size={64} color={theme.colors.borderStrong} />
             <Text className="mt-4 text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
               Nenhuma solicitação no momento
             </Text>
