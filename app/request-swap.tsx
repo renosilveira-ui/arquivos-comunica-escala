@@ -15,6 +15,7 @@ import { useAuth } from "@/hooks/use-auth";
 import * as Auth from "@/lib/_core/auth";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { ChevronLeft, Send, RefreshCw, ArrowRightLeft } from "lucide-react-native";
+import { theme } from "@/lib/theme";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -240,8 +241,8 @@ export default function RequestSwapScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-          <ActivityIndicator size="large" color="#3B82F6" />
-          <Text style={{ color: "#94A3B8", marginTop: 12, fontSize: 16 }}>Carregando turnos...</Text>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text style={{ color: theme.colors.textDisabled, marginTop: 12, fontSize: 16 }}>Carregando turnos...</Text>
         </View>
       </ScreenGradient>
     );
@@ -256,19 +257,19 @@ export default function RequestSwapScreen() {
             onPress={() => router.back()}
             style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 }}
           >
-            <ChevronLeft size={24} color="#0F172A" />
-            <Text style={{ color: "#0F172A", fontSize: 16 }}>Voltar</Text>
+            <ChevronLeft size={24} color={theme.colors.textPrimary} />
+            <Text style={{ color: theme.colors.textPrimary, fontSize: 16 }}>Voltar</Text>
           </TouchableOpacity>
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-            <ArrowRightLeft size={28} color="#3B82F6" />
-            <Text style={{ color: "#0F172A", fontSize: 28, fontWeight: "700" }}>Oferecer Troca ou Repasse</Text>
+            <ArrowRightLeft size={28} color={theme.colors.primary} />
+            <Text style={{ color: theme.colors.textPrimary, fontSize: 28, fontWeight: "700" }}>Oferecer Troca ou Repasse</Text>
           </View>
         </View>
 
         {/* S1 — Tipo de operação */}
         <View>
-          <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Tipo de operação</Text>
+          <Text style={{ color: theme.colors.textPrimary, fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Tipo de operação</Text>
           <View style={{ flexDirection: "row", gap: 12 }}>
             {(["SWAP", "TRANSFER"] as OfferType[]).map((t) => (
               <TouchableOpacity
@@ -279,15 +280,15 @@ export default function RequestSwapScreen() {
                   paddingVertical: 16,
                   borderRadius: 12,
                   alignItems: "center",
-                  backgroundColor: type === t ? "rgba(59,130,246,0.15)" : "#FFFFFF",
+                  backgroundColor: type === t ? theme.colors.primarySoft : theme.colors.surface,
                   borderWidth: 1,
-                  borderColor: type === t ? "#3B82F6" : "#E2E8F0",
+                  borderColor: type === t ? theme.colors.primary : theme.colors.border,
                 }}
               >
-                <Text style={{ color: type === t ? "#1D4ED8" : "#0F172A", fontSize: 16, fontWeight: "600" }}>
+                <Text style={{ color: type === t ? theme.palette.primary[700] : theme.colors.textPrimary, fontSize: 16, fontWeight: "600" }}>
                   {t === "SWAP" ? "TROCA" : "REPASSE"}
                 </Text>
-                <Text style={{ color: type === t ? "#1D4ED8" : "#64748B", fontSize: 12, marginTop: 4 }}>
+                <Text style={{ color: type === t ? theme.palette.primary[700] : theme.colors.textMuted, fontSize: 12, marginTop: 4 }}>
                   {t === "SWAP" ? "Meu turno ↔ outro turno" : "Entrego meu turno"}
                 </Text>
               </TouchableOpacity>
@@ -297,11 +298,11 @@ export default function RequestSwapScreen() {
 
         {/* S2 — Meu plantão */}
         <View>
-          <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
+          <Text style={{ color: theme.colors.textPrimary, fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
             Meu plantão {selectedFrom ? "✓" : "(selecione)"}
           </Text>
           {myShifts.length === 0 ? (
-            <Text style={{ color: "#64748B", fontSize: 14 }}>Nenhum turno futuro encontrado.</Text>
+            <Text style={{ color: theme.colors.textMuted, fontSize: 14 }}>Nenhum turno futuro encontrado.</Text>
           ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
               {myShifts.map((s) => (
@@ -312,14 +313,14 @@ export default function RequestSwapScreen() {
                     width: 200,
                     padding: 14,
                     borderRadius: 12,
-                    backgroundColor: selectedFrom?.id === s.id ? "rgba(59,130,246,0.15)" : "#FFFFFF",
+                    backgroundColor: selectedFrom?.id === s.id ? theme.colors.primarySoft : theme.colors.surface,
                     borderWidth: 1.5,
-                    borderColor: selectedFrom?.id === s.id ? "#3B82F6" : "#E2E8F0",
+                    borderColor: selectedFrom?.id === s.id ? theme.colors.primary : theme.colors.border,
                   }}
                 >
-                  <Text style={{ color: "#0F172A", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
-                  <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>{formatShiftDate(s.startAt)}</Text>
-                  <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 2 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
+                  <Text style={{ color: theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
+                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13, marginTop: 4 }}>{formatShiftDate(s.startAt)}</Text>
+                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13, marginTop: 2 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -329,11 +330,11 @@ export default function RequestSwapScreen() {
         {/* S3 — Plantão desejado (só SWAP) */}
         {type === "SWAP" && (
           <View>
-            <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
+            <Text style={{ color: theme.colors.textPrimary, fontSize: 18, fontWeight: "600", marginBottom: 12 }}>
               Plantão desejado {selectedTo ? "✓" : "(selecione)"}
             </Text>
             {otherShifts.length === 0 ? (
-              <Text style={{ color: "#64748B", fontSize: 14 }}>Nenhum turno de outro profissional encontrado.</Text>
+              <Text style={{ color: theme.colors.textMuted, fontSize: 14 }}>Nenhum turno de outro profissional encontrado.</Text>
             ) : (
               <View style={{ gap: 10 }}>
                 {otherShifts.map((s) => (
@@ -343,16 +344,16 @@ export default function RequestSwapScreen() {
                     style={{
                       padding: 14,
                       borderRadius: 12,
-                      backgroundColor: selectedTo?.id === s.id ? "rgba(59,130,246,0.15)" : "#FFFFFF",
+                      backgroundColor: selectedTo?.id === s.id ? theme.colors.primarySoft : theme.colors.surface,
                       borderWidth: 1.5,
-                      borderColor: selectedTo?.id === s.id ? "#3B82F6" : "#E2E8F0",
+                      borderColor: selectedTo?.id === s.id ? theme.colors.primary : theme.colors.border,
                     }}
                   >
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: "#0F172A", fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
-                      <Text style={{ color: "#94A3B8", fontSize: 12 }}>{formatShiftDate(s.startAt)}</Text>
+                      <Text style={{ color: theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
+                      <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>{formatShiftDate(s.startAt)}</Text>
                     </View>
-                    <Text style={{ color: "#94A3B8", fontSize: 13, marginTop: 4 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
+                    <Text style={{ color: theme.colors.textDisabled, fontSize: 13, marginTop: 4 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -362,30 +363,30 @@ export default function RequestSwapScreen() {
 
         {/* S4 — Motivo */}
         <View>
-          <Text style={{ color: "#0F172A", fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Motivo (opcional)</Text>
+          <Text style={{ color: theme.colors.textPrimary, fontSize: 18, fontWeight: "600", marginBottom: 12 }}>Motivo (opcional)</Text>
           <View style={{
-            backgroundColor: "#FFFFFF",
+            backgroundColor: theme.colors.surface,
             borderRadius: 12,
             borderWidth: 1,
-            borderColor: "#E2E8F0",
+            borderColor: theme.colors.border,
             padding: 14,
           }}>
             <TextInput
               placeholder="Motivo da troca/repasse..."
-              placeholderTextColor="#64748B"
+              placeholderTextColor={theme.colors.textMuted}
               value={reason}
               onChangeText={setReason}
               multiline
               numberOfLines={3}
-              style={{ color: "#0F172A", fontSize: 15, minHeight: 80, textAlignVertical: "top" }}
+              style={{ color: theme.colors.textPrimary, fontSize: 15, minHeight: 80, textAlignVertical: "top" }}
             />
           </View>
         </View>
 
         {/* Error */}
         {error && (
-          <View style={{ backgroundColor: "rgba(239,68,68,0.15)", borderRadius: 12, padding: 14, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" }}>
-            <Text style={{ color: "#EF4444", fontSize: 14 }}>{error}</Text>
+          <View style={{ backgroundColor: theme.colors.dangerSoft, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: theme.colors.danger }}>
+            <Text style={{ color: theme.colors.danger, fontSize: 14 }}>{error}</Text>
           </View>
         )}
 
@@ -394,7 +395,7 @@ export default function RequestSwapScreen() {
           onPress={handleSubmit}
           disabled={submitting}
           style={{
-            backgroundColor: submitting ? "#1E3A5F" : "#3B82F6",
+            backgroundColor: submitting ? theme.palette.primary[900] : theme.colors.primary,
             borderRadius: 12,
             height: 56,
             alignItems: "center",
@@ -406,11 +407,11 @@ export default function RequestSwapScreen() {
           activeOpacity={0.8}
         >
           {submitting ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <ActivityIndicator color={theme.colors.surface} />
           ) : (
             <>
-              <Send size={20} color="#FFFFFF" />
-              <Text style={{ color: "#FFFFFF", fontSize: 18, fontWeight: "700" }}>Enviar Oferta</Text>
+              <Send size={20} color={theme.colors.surface} />
+              <Text style={{ color: theme.colors.surface, fontSize: 18, fontWeight: "700" }}>Enviar Oferta</Text>
             </>
           )}
         </TouchableOpacity>

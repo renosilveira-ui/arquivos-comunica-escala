@@ -17,6 +17,7 @@ import * as Auth from "@/lib/_core/auth";
 import { useRouter } from "expo-router";
 import { ChevronLeft, Shield, Check, X } from "lucide-react-native";
 import { useFocusEffect } from "expo-router";
+import { theme } from "@/lib/theme";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -193,9 +194,9 @@ export default function ApproveSwapsScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-          <Shield size={64} color="#64748B" />
-          <Text style={{ color: "#0F172A", fontSize: 20, fontWeight: "600", marginTop: 16 }}>Acesso Restrito</Text>
-          <Text style={{ color: "#94A3B8", fontSize: 14, marginTop: 8 }}>Apenas gestores podem gerenciar trocas.</Text>
+          <Shield size={64} color={theme.colors.textMuted} />
+          <Text style={{ color: theme.colors.textPrimary, fontSize: 20, fontWeight: "600", marginTop: 16 }}>Acesso Restrito</Text>
+          <Text style={{ color: theme.colors.textDisabled, fontSize: 14, marginTop: 8 }}>Apenas gestores podem gerenciar trocas.</Text>
         </View>
       </ScreenGradient>
     );
@@ -210,13 +211,13 @@ export default function ApproveSwapsScreen() {
             onPress={() => router.back()}
             style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 }}
           >
-            <ChevronLeft size={24} color="#0F172A" />
-            <Text style={{ color: "#0F172A", fontSize: 16 }}>Voltar</Text>
+            <ChevronLeft size={24} color={theme.colors.textPrimary} />
+            <Text style={{ color: theme.colors.textPrimary, fontSize: 16 }}>Voltar</Text>
           </TouchableOpacity>
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-            <Shield size={28} color="#3B82F6" />
-            <Text style={{ color: "#0F172A", fontSize: 28, fontWeight: "700" }}>Gerenciar Trocas</Text>
+            <Shield size={28} color={theme.colors.primary} />
+            <Text style={{ color: theme.colors.textPrimary, fontSize: 28, fontWeight: "700" }}>Gerenciar Trocas</Text>
           </View>
         </View>
 
@@ -231,20 +232,20 @@ export default function ApproveSwapsScreen() {
                 paddingVertical: 12,
                 borderRadius: 12,
                 alignItems: "center",
-                backgroundColor: tab === t ? "rgba(59,130,246,0.15)" : "#FFFFFF",
+                backgroundColor: tab === t ? theme.colors.primarySoft : theme.colors.surface,
                 borderWidth: 1,
-                borderColor: tab === t ? "#3B82F6" : "#E2E8F0",
+                borderColor: tab === t ? theme.colors.primary : theme.colors.border,
                 flexDirection: "row",
                 justifyContent: "center",
                 gap: 8,
               }}
             >
-              <Text style={{ color: tab === t ? "#1D4ED8" : "#0F172A", fontSize: 15, fontWeight: "600" }}>
+              <Text style={{ color: tab === t ? theme.palette.primary[700] : theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>
                 {t === "ACCEPTED" ? "Pendentes" : "Todos"}
               </Text>
               {t === "ACCEPTED" && acceptedCount > 0 && (
                 <View style={{
-                  backgroundColor: "#EF4444",
+                  backgroundColor: theme.colors.danger,
                   borderRadius: 10,
                   minWidth: 20,
                   height: 20,
@@ -252,7 +253,7 @@ export default function ApproveSwapsScreen() {
                   justifyContent: "center",
                   paddingHorizontal: 6,
                 }}>
-                  <Text style={{ color: "#FFFFFF", fontSize: 11, fontWeight: "700" }}>{acceptedCount}</Text>
+                  <Text style={{ color: theme.colors.surface, fontSize: 11, fontWeight: "700" }}>{acceptedCount}</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -262,12 +263,12 @@ export default function ApproveSwapsScreen() {
         {/* List */}
         {loading ? (
           <View style={{ paddingVertical: 60, alignItems: "center" }}>
-            <ActivityIndicator size="large" color="#3B82F6" />
+            <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
         ) : items.length === 0 ? (
           <View style={{ paddingVertical: 60, alignItems: "center" }}>
-            <Shield size={48} color="rgba(148,163,184,0.3)" />
-            <Text style={{ color: "#64748B", fontSize: 16, marginTop: 12 }}>
+            <Shield size={48} color={theme.colors.borderStrong} />
+            <Text style={{ color: theme.colors.textMuted, fontSize: 16, marginTop: 12 }}>
               {tab === "ACCEPTED" ? "Nenhuma troca aguardando aprovação" : "Nenhuma troca encontrada"}
             </Text>
           </View>
@@ -277,10 +278,10 @@ export default function ApproveSwapsScreen() {
               <View
                 key={item.id}
                 style={{
-                  backgroundColor: "#FFFFFF",
+                  backgroundColor: theme.colors.surface,
                   borderRadius: 12,
                   borderWidth: 1,
-                  borderColor: "#E2E8F0",
+                  borderColor: theme.colors.border,
                   padding: 16,
                 }}
               >
@@ -295,18 +296,18 @@ export default function ApproveSwapsScreen() {
                 </View>
 
                 {/* From professional */}
-                <Text style={{ color: "#0F172A", fontSize: 15, fontWeight: "600" }}>
+                <Text style={{ color: theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>
                   {item.fromProfessional.name}
-                  <Text style={{ color: "#94A3B8", fontWeight: "400" }}> • {item.fromProfessional.role}</Text>
+                  <Text style={{ color: theme.colors.textDisabled, fontWeight: "400" }}> • {item.fromProfessional.role}</Text>
                 </Text>
 
                 {/* From shift */}
-                <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: "#3B82F6" }}>
-                  <Text style={{ color: "#94A3B8", fontSize: 13 }}>Plantão oferecido</Text>
-                  <Text style={{ color: "#0F172A", fontSize: 14 }}>
+                <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.primary }}>
+                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13 }}>Plantão oferecido</Text>
+                  <Text style={{ color: theme.colors.textPrimary, fontSize: 14 }}>
                     {item.fromShift.label} — {formatDate(item.fromShift.startAt)}
                   </Text>
-                  <Text style={{ color: "#94A3B8", fontSize: 12 }}>
+                  <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>
                     {formatShiftTime(item.fromShift.startAt, item.fromShift.endAt)} • {item.fromShift.hospitalName} / {item.fromShift.sectorName}
                   </Text>
                 </View>
@@ -314,22 +315,22 @@ export default function ApproveSwapsScreen() {
                 {/* Accepted by */}
                 {item.toProfessional && (
                   <View style={{ marginTop: 10 }}>
-                    <Text style={{ color: "#94A3B8", fontSize: 13 }}>Aceito por</Text>
-                    <Text style={{ color: "#0F172A", fontSize: 14, fontWeight: "600" }}>
+                    <Text style={{ color: theme.colors.textDisabled, fontSize: 13 }}>Aceito por</Text>
+                    <Text style={{ color: theme.colors.textPrimary, fontSize: 14, fontWeight: "600" }}>
                       {item.toProfessional.name}
-                      <Text style={{ color: "#94A3B8", fontWeight: "400" }}> • {item.toProfessional.role}</Text>
+                      <Text style={{ color: theme.colors.textDisabled, fontWeight: "400" }}> • {item.toProfessional.role}</Text>
                     </Text>
                   </View>
                 )}
 
                 {/* To shift (SWAP) */}
                 {item.toShift && (
-                  <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: "#F59E0B" }}>
-                    <Text style={{ color: "#94A3B8", fontSize: 13 }}>Plantão em troca</Text>
-                    <Text style={{ color: "#0F172A", fontSize: 14 }}>
+                  <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.warning }}>
+                    <Text style={{ color: theme.colors.textDisabled, fontSize: 13 }}>Plantão em troca</Text>
+                    <Text style={{ color: theme.colors.textPrimary, fontSize: 14 }}>
                       {item.toShift.label} — {formatDate(item.toShift.startAt)}
                     </Text>
-                    <Text style={{ color: "#94A3B8", fontSize: 12 }}>
+                    <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>
                       {formatShiftTime(item.toShift.startAt, item.toShift.endAt)} • {item.toShift.hospitalName} / {item.toShift.sectorName}
                     </Text>
                   </View>
@@ -337,13 +338,13 @@ export default function ApproveSwapsScreen() {
 
                 {/* Reason */}
                 {item.reason && (
-                  <Text style={{ color: "#94A3B8", fontSize: 13, fontStyle: "italic", marginTop: 8 }}>
+                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13, fontStyle: "italic", marginTop: 8 }}>
                     {`"${item.reason}"`}
                   </Text>
                 )}
 
                 {/* Date */}
-                <Text style={{ color: "#64748B", fontSize: 11, marginTop: 8 }}>
+                <Text style={{ color: theme.colors.textMuted, fontSize: 11, marginTop: 8 }}>
                   Solicitado em {formatDate(item.createdAt)}
                 </Text>
 
@@ -361,16 +362,16 @@ export default function ApproveSwapsScreen() {
                         gap: 6,
                         paddingVertical: 12,
                         borderRadius: 10,
-                        backgroundColor: "#22C55E",
+                        backgroundColor: theme.colors.success,
                         opacity: actionLoading === item.id ? 0.6 : 1,
                       }}
                     >
                       {actionLoading === item.id ? (
-                        <ActivityIndicator color="#FFFFFF" size="small" />
+                        <ActivityIndicator color={theme.colors.surface} size="small" />
                       ) : (
                         <>
-                          <Check size={18} color="#FFFFFF" />
-                          <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "600" }}>Aprovar</Text>
+                          <Check size={18} color={theme.colors.surface} />
+                          <Text style={{ color: theme.colors.surface, fontSize: 15, fontWeight: "600" }}>Aprovar</Text>
                         </>
                       )}
                     </TouchableOpacity>
@@ -386,12 +387,12 @@ export default function ApproveSwapsScreen() {
                         gap: 6,
                         paddingVertical: 12,
                         borderRadius: 10,
-                        backgroundColor: "#EF4444",
+                        backgroundColor: theme.colors.danger,
                         opacity: actionLoading === item.id ? 0.6 : 1,
                       }}
                     >
-                      <X size={18} color="#FFFFFF" />
-                      <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "600" }}>Rejeitar</Text>
+                      <X size={18} color={theme.colors.surface} />
+                      <Text style={{ color: theme.colors.surface, fontSize: 15, fontWeight: "600" }}>Rejeitar</Text>
                     </TouchableOpacity>
                   </View>
                 )}
@@ -407,21 +408,21 @@ export default function ApproveSwapsScreen() {
           animationType="fade"
           onRequestClose={() => setModalVisible(false)}
         >
-          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+          <View style={{ flex: 1, backgroundColor: theme.colors.overlay, justifyContent: "center", alignItems: "center", padding: 24 }}>
             <View style={{
-              backgroundColor: "#FFFFFF",
+              backgroundColor: theme.colors.surface,
               borderRadius: 16,
               padding: 24,
               width: "100%",
               maxWidth: 400,
               borderWidth: 1,
-              borderColor: "#E2E8F0",
+              borderColor: theme.colors.border,
             }}>
-              <Text style={{ color: "#0F172A", fontSize: 20, fontWeight: "700", marginBottom: 16 }}>
+              <Text style={{ color: theme.colors.textPrimary, fontSize: 20, fontWeight: "700", marginBottom: 16 }}>
                 {modalAction === "approve" ? "Aprovar Troca" : "Rejeitar Troca"}
               </Text>
 
-              <Text style={{ color: "#94A3B8", fontSize: 14, marginBottom: 12 }}>
+              <Text style={{ color: theme.colors.textDisabled, fontSize: 14, marginBottom: 12 }}>
                 {modalAction === "approve"
                   ? "Nota opcional para registro:"
                   : "Informe o motivo da rejeição (obrigatório):"}
@@ -429,21 +430,21 @@ export default function ApproveSwapsScreen() {
 
               <TextInput
                 placeholder={modalAction === "approve" ? "Nota (opcional)..." : "Motivo da rejeição..."}
-                placeholderTextColor="#64748B"
+                placeholderTextColor={theme.colors.textMuted}
                 value={modalNote}
                 onChangeText={setModalNote}
                 multiline
                 numberOfLines={3}
                 style={{
-                  color: "#0F172A",
+                  color: theme.colors.textPrimary,
                   fontSize: 15,
-                  backgroundColor: "#F8FAFC",
+                  backgroundColor: theme.colors.background,
                   borderRadius: 10,
                   padding: 12,
                   minHeight: 80,
                   textAlignVertical: "top",
                   borderWidth: 1,
-                  borderColor: "#E2E8F0",
+                  borderColor: theme.colors.border,
                   marginBottom: 20,
                 }}
               />
@@ -456,12 +457,12 @@ export default function ApproveSwapsScreen() {
                     paddingVertical: 12,
                     borderRadius: 10,
                     alignItems: "center",
-                    backgroundColor: "#F8FAFC",
+                    backgroundColor: theme.colors.background,
                     borderWidth: 1,
-                    borderColor: "#E2E8F0",
+                    borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ color: "#94A3B8", fontSize: 15, fontWeight: "600" }}>Cancelar</Text>
+                  <Text style={{ color: theme.colors.textDisabled, fontSize: 15, fontWeight: "600" }}>Cancelar</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -471,10 +472,10 @@ export default function ApproveSwapsScreen() {
                     paddingVertical: 12,
                     borderRadius: 10,
                     alignItems: "center",
-                    backgroundColor: modalAction === "approve" ? "#22C55E" : "#EF4444",
+                    backgroundColor: modalAction === "approve" ? theme.colors.success : theme.colors.danger,
                   }}
                 >
-                  <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "600" }}>
+                  <Text style={{ color: theme.colors.surface, fontSize: 15, fontWeight: "600" }}>
                     {modalAction === "approve" ? "Confirmar" : "Rejeitar"}
                   </Text>
                 </TouchableOpacity>
