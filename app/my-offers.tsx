@@ -263,7 +263,7 @@ function OfferCard({
     <View
       className="rounded-2xl border p-4 gap-3"
       style={{
-        backgroundColor: highlighted ? "rgba(37,99,235,0.08)" : "#FFFFFF",
+        backgroundColor: highlighted ? theme.colors.primarySoft : theme.colors.surface,
         borderColor: highlighted ? theme.colors.primary : theme.colors.border,
       }}
     >
@@ -271,7 +271,7 @@ function OfferCard({
       <View className="flex-row items-center justify-between">
         <View
           className="rounded-full px-3 py-1"
-          style={{ backgroundColor: "rgba(37,99,235,0.12)" }}
+          style={{ backgroundColor: theme.colors.primarySoft }}
         >
           <Text className="text-xs font-semibold" style={{ color: theme.colors.primary }}>
             {TYPE_LABEL[type] ?? type}
@@ -351,9 +351,9 @@ function OfferCard({
           style={{ backgroundColor: theme.colors.primary, opacity: isApproving ? 0.6 : 1 }}
         >
           {isApproving ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <ActivityIndicator color={theme.colors.surface} />
           ) : (
-            <Text className="text-base font-semibold" style={{ color: "#FFFFFF" }}>
+            <Text className="text-base font-semibold" style={{ color: theme.colors.surface }}>
               Aprovar candidatura
             </Text>
           )}

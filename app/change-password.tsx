@@ -299,11 +299,11 @@ export default function ChangePasswordScreen() {
               }}
             >
               {submitting ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color={theme.colors.surface} />
               ) : (
                 <>
-                  <KeyRound size={18} color="#FFFFFF" />
-                  <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>
+                  <KeyRound size={18} color={theme.colors.surface} />
+                  <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>
                     Alterar senha
                   </Text>
                 </>

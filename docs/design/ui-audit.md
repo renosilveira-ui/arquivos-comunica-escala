@@ -434,6 +434,37 @@ qualquer arquivo restante usando alias legado quebra.
 
 ---
 
+## Status Phase 4 — CONCLUÍDA
+
+**Inventário completo (PRs mergeadas):**
+
+| PR | Escopo |
+|---|---|
+| #81 | T1 — replace `#4DA3FF` → `primary` |
+| #83 | Phase 4.2 — Badge |
+| #86 | Phase 4.3 — TintedGlassCard (C2) |
+| #87 | Phase 4.4 — AppButton (C4) |
+| #88 | Phase 4.5 — Sidebar (S5) |
+| #89 | Phase 4.6 — Calendar + Weekly (S1 + S11) |
+| #90 | Phase 4.7 — Vacancies (S2) |
+| #91 | Phase 4.8 — Pending (S3, a maior dívida — 77 violações) |
+| #92 | Phase 4.9 — Profile (S4) |
+| #93 | Phase 4.10 — Reports + Admin (S12) |
+| #94 | Phase 4.11 — Cleanup batch (C5: GlassCard, TopBar, ScreenGradient, Buttons) |
+| #95 | Phase 4-final — Legacy alias cleanup em `theme.ts` |
+| #97 | Phase 4.12 — MonthCalendar + create/edit-shift (C3 + S7) |
+| #98 | Phase 4.13 — Swap flows (S14: request-swap + approve-swaps) |
+| #99 | Phase 4.14 — Login + onboarding (S6 + S13) |
+| #100 | Phase 4.15 — Final screens (S8 + S9 + remanescentes) |
+
+**Validação final:** `grep -rnE 'rgba\(|#[0-9A-Fa-f]{3,8}' app/ components/` → **0 literais**.
+
+Todo design system unificado. Para mudar identidade visual hoje basta
+editar `lib/theme.ts` — todas as ~30 telas e ~15 componentes propagam
+automaticamente.
+
+---
+
 ## Decisões abertas (continuação de Phase 2)
 
 Coisas que aparecem aqui mas Phase 2 deixou em aberto — vão para

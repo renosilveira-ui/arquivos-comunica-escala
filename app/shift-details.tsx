@@ -116,7 +116,7 @@ export default function ShiftDetailsScreen() {
             style={{ backgroundColor: theme.colors.primary }}
             activeOpacity={0.7}
           >
-            <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Voltar</Text>
+            <Text className="text-lg font-semibold" style={{ color: theme.colors.surface }}>Voltar</Text>
           </TouchableOpacity>
         </View>
       </ScreenGradient>
@@ -204,7 +204,7 @@ export default function ShiftDetailsScreen() {
               className="w-12 h-12 rounded-2xl items-center justify-center"
               style={{ backgroundColor: sector?.color || theme.colors.primary }}
             >
-              <Calendar size={24} color="#FFFFFF" />
+              <Calendar size={24} color={theme.colors.surface} />
             </View>
             <View className="flex-1">
               <Text className="text-sm mb-1" style={{ color: theme.colors.textMuted }}>Setor</Text>
@@ -292,9 +292,9 @@ export default function ShiftDetailsScreen() {
                       paddingHorizontal: 12,
                       paddingVertical: 6,
                       borderRadius: 9999,
-                      backgroundColor: "rgba(37,99,235,0.10)",
+                      backgroundColor: theme.colors.primarySoft,
                       borderWidth: 1,
-                      borderColor: "rgba(37,99,235,0.35)",
+                      borderColor: theme.palette.primary[200],
                     }}
                   >
                     <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.primary }}>
@@ -400,8 +400,8 @@ export default function ShiftDetailsScreen() {
             activeOpacity={0.8}
           >
             <View className="flex-row items-center gap-3">
-              <CheckCircle2 size={24} color="#FFFFFF" />
-              <Text className="text-xl font-bold" style={{ color: "#FFFFFF" }}>Confirmar Presença</Text>
+              <CheckCircle2 size={24} color={theme.colors.surface} />
+              <Text className="text-xl font-bold" style={{ color: theme.colors.surface }}>Confirmar Presença</Text>
             </View>
           </TouchableOpacity>
         )}
@@ -431,7 +431,7 @@ export default function ShiftDetailsScreen() {
               }}
               className="rounded-2xl h-14 items-center justify-center"
               style={{
-                backgroundColor: "rgba(37,99,235,0.08)",
+                backgroundColor: theme.colors.primarySoft,
                 borderWidth: 1,
                 borderColor: theme.colors.primary,
               }}
@@ -448,7 +448,7 @@ export default function ShiftDetailsScreen() {
                 style={{ backgroundColor: theme.colors.primary }}
                 activeOpacity={0.7}
               >
-                <Text className="text-lg font-semibold" style={{ color: "#FFFFFF" }}>Confirmar Presença</Text>
+                <Text className="text-lg font-semibold" style={{ color: theme.colors.surface }}>Confirmar Presença</Text>
               </TouchableOpacity>
             )}
           </View>
