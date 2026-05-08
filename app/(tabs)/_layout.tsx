@@ -228,25 +228,34 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          // Redireciona para /calendar (ver app/(tabs)/index.tsx).
+          // Redireciona para /agenda (ver app/(tabs)/index.tsx).
           // Mantém a entry para o Expo Router resolver `/` mas esconde
           // a aba do tabBar — o usuário não vê "Início" na barra.
           href: null,
         }}
       />
       <Tabs.Screen
-        name="calendar"
+        name="agenda"
         options={{
+          // Tela unificada (substitui Calendar + Weekly).
           title: "Agenda",
           tabBarIcon: ({ color, size }) => <TabIcon name="calendar" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
+        name="calendar"
+        options={{
+          // Rota legada — agora apenas redireciona para /agenda. Não
+          // aparece no tabBar.
+          href: null,
+        }}
+      />
+      <Tabs.Screen
         name="weekly"
         options={{
-          title: "Semanal",
-          tabBarIcon: ({ color, size }) => <TabIcon name="weekly" color={color} size={size} />,
-          href: can("view:weekly") ? undefined : null,
+          // Rota legada — agora apenas redireciona para /agenda. Não
+          // aparece no tabBar.
+          href: null,
         }}
       />
       <Tabs.Screen
