@@ -8,6 +8,8 @@ import {
   shiftTemplates,
   shiftAssignmentsV2,
   professionals,
+  hospitals,
+  sectors,
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
@@ -400,6 +402,254 @@ export const shiftsRouter = router({
         ...instance,
         assignments: assignmentsByShift.get(instance.id) ?? [],
       }));
+    }),
+
+  // ------------------------------------------------------------------
+  // shifts.listAgenda — any authenticated user (tenant-scoped)
+  //
+  // Endpoint dedicado para a tela "Agenda" unificada (substitui Calendar
+  // + Weekly do menu). Retorna shifts agrupados server-side por
+  // (semana → dia → grupo hospital+setor) — pronto pra renderizar sem
+  // pós-processamento no cliente.
+  //
+  // - scope = "geral": todos os shifts do tenant no período
+  // - scope = "minha": filtra onde o profissional do user logado está
+  //   ativo em alguma assignment
+  //
+  // Hospital e setor vêm via JOIN; ordering: hospitalName ASC, sectorName
+  // ASC, startAt ASC.
+  // ------------------------------------------------------------------
+  listAgenda: protectedProcedure
+    .input(
+      z.object({
+        startDate: z.string(), // YYYY-MM-DD (Monday das semanas)
+        weeks: z.number().int().min(1).max(12).default(4),
+        scope: z.enum(["geral", "minha"]).default("geral"),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      const start = new Date(`${input.startDate}T00:00:00`);
+      const end = new Date(start);
+      end.setDate(end.getDate() + input.weeks * 7);
+
+      // Resolve professional do user logado uma vez (usado em scope=minha
+      // e também útil pra eventual marcação "é um shift meu" no client).
+      let myProfessionalId: number | null = null;
+      const [me] = await db
+        .select({ id: professionals.id })
+        .from(professionals)
+        .where(eq(professionals.userId, ctx.user.id));
+      if (me) myProfessionalId = me.id;
+
+      // 1. Shifts do tenant + hospital/sector via JOIN.
+      const rows = await db
+        .select({
+          id: shiftInstances.id,
+          hospitalId: shiftInstances.hospitalId,
+          sectorId: shiftInstances.sectorId,
+          label: shiftInstances.label,
+          startAt: shiftInstances.startAt,
+          endAt: shiftInstances.endAt,
+          status: shiftInstances.status,
+          modality: shiftInstances.modality,
+          coverageType: shiftInstances.coverageType,
+          hospitalName: hospitals.name,
+          sectorName: sectors.name,
+        })
+        .from(shiftInstances)
+        .leftJoin(hospitals, eq(shiftInstances.hospitalId, hospitals.id))
+        .leftJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
+        .where(
+          and(
+            eq(shiftInstances.institutionId, ctx.institutionId),
+            gte(shiftInstances.startAt, start),
+            lt(shiftInstances.startAt, end),
+          ),
+        );
+
+      if (rows.length === 0) {
+        return { weeks: [] as AgendaWeek[], scope: input.scope };
+      }
+
+      // 2. Assignments ativos pra cada shift (com nome do profissional).
+      const ids = rows.map((r) => r.id);
+      const assignments = await db
+        .select({
+          shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
+          professionalId: shiftAssignmentsV2.professionalId,
+          professionalName: professionals.name,
+        })
+        .from(shiftAssignmentsV2)
+        .leftJoin(
+          professionals,
+          eq(shiftAssignmentsV2.professionalId, professionals.id),
+        )
+        .where(
+          and(
+            eq(shiftAssignmentsV2.isActive, true),
+            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+            inArray(shiftAssignmentsV2.shiftInstanceId, ids),
+          ),
+        );
+
+      const assignByShift = new Map<
+        number,
+        { professionalId: number; professionalName: string | null }[]
+      >();
+      for (const a of assignments) {
+        const list = assignByShift.get(a.shiftInstanceId) ?? [];
+        list.push({
+          professionalId: a.professionalId,
+          professionalName: a.professionalName,
+        });
+        assignByShift.set(a.shiftInstanceId, list);
+      }
+
+      // 3. Filtra por escopo se "minha".
+      const scoped = rows.filter((r) => {
+        if (input.scope === "geral") return true;
+        if (myProfessionalId == null) return false;
+        const my = assignByShift.get(r.id) ?? [];
+        return my.some((a) => a.professionalId === myProfessionalId);
+      });
+
+      // 4. Agrupa por week → day → hospital+sector.
+      type AgendaShift = {
+        id: number;
+        label: string;
+        startAt: Date;
+        endAt: Date;
+        status: string;
+        modality: string;
+        coverageType: string | null;
+        professionalNames: string[];
+        isMine: boolean;
+      };
+      type AgendaGroup = {
+        hospitalId: number;
+        hospitalName: string;
+        sectorId: number;
+        sectorName: string;
+        shifts: AgendaShift[];
+      };
+      type AgendaDay = {
+        date: string; // YYYY-MM-DD
+        dow: number; // 0=Sun..6=Sat
+        groups: AgendaGroup[];
+      };
+      type AgendaWeek = {
+        weekStart: string; // YYYY-MM-DD (segunda da semana)
+        days: AgendaDay[];
+      };
+
+      // Helper: começo da semana (Mon) de uma data, como string YYYY-MM-DD.
+      const dateToKey = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const startOfWeekMon = (d: Date) => {
+        const c = new Date(d);
+        c.setHours(0, 0, 0, 0);
+        const dow = c.getDay();
+        const diff = dow === 0 ? -6 : 1 - dow;
+        c.setDate(c.getDate() + diff);
+        return c;
+      };
+
+      // Bucket: Map<weekKey, Map<dayKey, Map<groupKey, AgendaGroup>>>
+      const weekMap = new Map<string, Map<string, Map<string, AgendaGroup>>>();
+
+      for (const r of scoped) {
+        const startDt = new Date(r.startAt);
+        const wkStart = startOfWeekMon(startDt);
+        const wkKey = dateToKey(wkStart);
+        const dayKey = dateToKey(startDt);
+        const groupKey = `${r.hospitalId}-${r.sectorId}`;
+
+        let dayMap = weekMap.get(wkKey);
+        if (!dayMap) {
+          dayMap = new Map();
+          weekMap.set(wkKey, dayMap);
+        }
+        let groupMap = dayMap.get(dayKey);
+        if (!groupMap) {
+          groupMap = new Map();
+          dayMap.set(dayKey, groupMap);
+        }
+        let group = groupMap.get(groupKey);
+        if (!group) {
+          group = {
+            hospitalId: r.hospitalId,
+            hospitalName: r.hospitalName ?? "—",
+            sectorId: r.sectorId,
+            sectorName: r.sectorName ?? "—",
+            shifts: [],
+          };
+          groupMap.set(groupKey, group);
+        }
+        const myList = assignByShift.get(r.id) ?? [];
+        const isMine =
+          myProfessionalId != null &&
+          myList.some((a) => a.professionalId === myProfessionalId);
+        group.shifts.push({
+          id: r.id,
+          label: r.label,
+          startAt: r.startAt,
+          endAt: r.endAt,
+          status: r.status,
+          modality: r.modality,
+          coverageType: r.coverageType,
+          professionalNames: myList
+            .map((a) => a.professionalName ?? "—")
+            .filter((n) => n.trim().length > 0),
+          isMine,
+        });
+      }
+
+      // 5. Constrói weeks completas (incluindo dias vazios) na ordem de input.
+      const weeksOut: AgendaWeek[] = [];
+      const cursor = new Date(start);
+      const baseMon = startOfWeekMon(cursor);
+      for (let w = 0; w < input.weeks; w++) {
+        const wkStart = new Date(baseMon);
+        wkStart.setDate(baseMon.getDate() + w * 7);
+        const wkKey = dateToKey(wkStart);
+        const dayMap = weekMap.get(wkKey);
+        const days: AgendaDay[] = [];
+        for (let d = 0; d < 7; d++) {
+          const dayDate = new Date(wkStart);
+          dayDate.setDate(wkStart.getDate() + d);
+          const dayKey = dateToKey(dayDate);
+          const groupMap = dayMap?.get(dayKey);
+          const groups: AgendaGroup[] = groupMap
+            ? Array.from(groupMap.values())
+                .sort((a, b) => {
+                  const h = a.hospitalName.localeCompare(b.hospitalName, "pt-BR");
+                  if (h !== 0) return h;
+                  return a.sectorName.localeCompare(b.sectorName, "pt-BR");
+                })
+                .map((g) => ({
+                  ...g,
+                  shifts: g.shifts.slice().sort((a, b) => {
+                    const t =
+                      new Date(a.startAt).getTime() -
+                      new Date(b.startAt).getTime();
+                    if (t !== 0) return t;
+                    return a.label.localeCompare(b.label, "pt-BR");
+                  }),
+                }))
+            : [];
+          days.push({ date: dayKey, dow: dayDate.getDay(), groups });
+        }
+        weeksOut.push({ weekStart: wkKey, days });
+      }
+
+      return {
+        weeks: weeksOut,
+        scope: input.scope,
+        myProfessionalId,
+      };
     }),
 
   // ------------------------------------------------------------------
