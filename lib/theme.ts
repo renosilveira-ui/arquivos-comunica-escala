@@ -224,8 +224,9 @@ export const theme = {
     overlay: "rgba(15, 23, 42, 0.5)",
 
     // Família "onDark": cores aplicadas sobre superfícies escuras
-    // (sidebar, hospital-dashboard). White-on-dark com diferentes
-    // graus de presença, mais translúcidos para divisores/hovers.
+    // (sidebar, hospital-dashboard, admin). White-on-dark com
+    // diferentes graus de presença, mais translúcidos para divisores
+    // e hovers; primarySoft é o azul translúcido para chips em dark.
     onDark: {
       text: "#FFFFFF",
       textMuted: "rgba(255, 255, 255, 0.6)",
@@ -234,6 +235,7 @@ export const theme = {
       surface: "rgba(255, 255, 255, 0.12)", // fill translúcido (avatar)
       divider: "rgba(255, 255, 255, 0.08)",
       hover: "rgba(255, 255, 255, 0.06)",
+      primarySoft: "rgba(59, 130, 246, 0.15)", // chip primary em dark
     },
   },
 
