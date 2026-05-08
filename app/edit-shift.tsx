@@ -353,7 +353,7 @@ export default function EditShiftScreen() {
                         style={{
                           fontSize: 16,
                           fontWeight: "600",
-                          color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                          color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
                         }}
                       >
                         {sector.name}
@@ -559,7 +559,7 @@ export default function EditShiftScreen() {
                           fontSize: 16,
                           fontWeight: "600",
                           textAlign: "center",
-                          color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                          color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
                         }}
                       >
                         {option.label}
@@ -600,7 +600,7 @@ export default function EditShiftScreen() {
                             fontSize: 16,
                             fontWeight: "600",
                             textAlign: "center",
-                            color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                            color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
                           }}
                         >
                           {option.label}
@@ -642,7 +642,7 @@ export default function EditShiftScreen() {
                         style={{
                           fontSize: 16,
                           fontWeight: "600",
-                          color: isSelected ? "#FFFFFF" : theme.colors.textPrimary,
+                          color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
                         }}
                       >
                         {option.label}
@@ -736,8 +736,8 @@ export default function EditShiftScreen() {
               }}
               activeOpacity={0.7}
             >
-              <Save size={20} color="#FFFFFF" />
-              <Text style={{ fontSize: 16, fontWeight: "600", color: "#FFFFFF" }}>
+              <Save size={20} color={theme.colors.surface} />
+              <Text style={{ fontSize: 16, fontWeight: "600", color: theme.colors.surface }}>
                 Salvar
               </Text>
             </TouchableOpacity>
@@ -755,14 +755,14 @@ export default function EditShiftScreen() {
         <Pressable
           style={{
             flex: 1,
-            backgroundColor: "rgba(0,0,0,0.7)",
+            backgroundColor: theme.colors.overlay,
             justifyContent: "flex-end",
           }}
           onPress={handleCancelStartDate}
         >
           <Pressable
             style={{
-              backgroundColor: "rgba(20,25,30,0.98)",
+              backgroundColor: theme.palette.neutral[900],
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
               padding: 24,
@@ -770,10 +770,10 @@ export default function EditShiftScreen() {
             }}
             onPress={(e) => e.stopPropagation()}
           >
-            <Text style={{ color: "#FFFFFF", fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
+            <Text style={{ color: theme.colors.surface, fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
               Selecionar data de início
             </Text>
-            <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, marginBottom: 20, textAlign: "center" }}>
+            <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14, marginBottom: 20, textAlign: "center" }}>
               Data selecionada: {tempStartDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempStartDate))) : formatDateBR(startDate || toLocalISODateString(new Date()))}
             </Text>
 
@@ -783,7 +783,7 @@ export default function EditShiftScreen() {
               display="spinner"
               onChange={handleStartDateChange}
               locale="pt-BR"
-              textColor="#FFFFFF"
+              textColor={theme.colors.surface}
             />
 
             <View style={{ flexDirection: "row", gap: 12, marginTop: 24 }}>
@@ -791,14 +791,14 @@ export default function EditShiftScreen() {
                 onPress={handleCancelStartDate}
                 style={{
                   flex: 1,
-                  backgroundColor: "rgba(255,255,255,0.1)",
+                  backgroundColor: theme.colors.onDark.surface,
                   borderRadius: 12,
                   padding: 16,
                   alignItems: "center",
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
+                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -812,7 +812,7 @@ export default function EditShiftScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
+                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -829,14 +829,14 @@ export default function EditShiftScreen() {
         <Pressable
           style={{
             flex: 1,
-            backgroundColor: "rgba(0,0,0,0.7)",
+            backgroundColor: theme.colors.overlay,
             justifyContent: "flex-end",
           }}
           onPress={handleCancelEndDate}
         >
           <Pressable
             style={{
-              backgroundColor: "rgba(20,25,30,0.98)",
+              backgroundColor: theme.palette.neutral[900],
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
               padding: 24,
@@ -844,10 +844,10 @@ export default function EditShiftScreen() {
             }}
             onPress={(e) => e.stopPropagation()}
           >
-            <Text style={{ color: "#FFFFFF", fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
+            <Text style={{ color: theme.colors.surface, fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
               Selecionar data de término
             </Text>
-            <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, marginBottom: 20, textAlign: "center" }}>
+            <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14, marginBottom: 20, textAlign: "center" }}>
               Data selecionada: {tempEndDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempEndDate))) : formatDateBR(endDate || toLocalISODateString(new Date()))}
             </Text>
 
@@ -857,7 +857,7 @@ export default function EditShiftScreen() {
               display="spinner"
               onChange={handleEndDateChange}
               locale="pt-BR"
-              textColor="#FFFFFF"
+              textColor={theme.colors.surface}
             />
 
             <View style={{ flexDirection: "row", gap: 12, marginTop: 24 }}>
@@ -865,14 +865,14 @@ export default function EditShiftScreen() {
                 onPress={handleCancelEndDate}
                 style={{
                   flex: 1,
-                  backgroundColor: "rgba(255,255,255,0.1)",
+                  backgroundColor: theme.colors.onDark.surface,
                   borderRadius: 12,
                   padding: 16,
                   alignItems: "center",
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
+                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -886,7 +886,7 @@ export default function EditShiftScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
+                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
