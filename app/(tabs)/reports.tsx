@@ -3,6 +3,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { useAuth } from "@/hooks/use-auth";
 import { FileText, BarChart3, Calendar, Users } from "lucide-react-native";
+import { theme } from "@/lib/theme";
 
 /**
  * Tela de Relatórios
@@ -20,7 +21,7 @@ export default function ReportsScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color="#fff" />
+          <ActivityIndicator size="large" color={theme.colors.surface} />
         </View>
       </ScreenGradient>
     );
@@ -30,7 +31,7 @@ export default function ReportsScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center px-5">
-          <Text className="text-lg text-center" style={{ color: "#0F172A" }}>
+          <Text className="text-lg text-center" style={{ color: theme.colors.textPrimary }}>
             Faça login para acessar os relatórios
           </Text>
         </View>
@@ -43,8 +44,8 @@ export default function ReportsScreen() {
       <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 24 }}>
         {/* Header */}
         <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: "#0F172A" }}>Relatórios</Text>
-          <Text className="text-base mt-1" style={{ color: "#475569" }}>
+          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Relatórios</Text>
+          <Text className="text-base mt-1" style={{ color: theme.colors.textSecondary }}>
             Análises e estatísticas de escalas
           </Text>
         </View>
@@ -55,14 +56,14 @@ export default function ReportsScreen() {
           <TintedGlassCard className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-blue-500/20 items-center justify-center mr-3">
-                <FileText size={24} color="#3B82F6" />
+                <FileText size={24} color={theme.colors.primary} />
               </View>
               <View className="flex-1">
-                <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>Relatório de Escalas</Text>
-                <Text className="text-sm" style={{ color: "#64748B" }}>Por período e setor</Text>
+                <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Relatório de Escalas</Text>
+                <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Por período e setor</Text>
               </View>
             </View>
-            <Text className="text-base leading-relaxed" style={{ color: "#475569" }}>
+            <Text className="text-base leading-relaxed" style={{ color: theme.colors.textSecondary }}>
               Visualize e exporte relatórios detalhados de escalas por período, incluindo alocações, 
               pendências e estatísticas de cobertura.
             </Text>
@@ -72,14 +73,14 @@ export default function ReportsScreen() {
           <TintedGlassCard className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-green-500/20 items-center justify-center mr-3">
-                <BarChart3 size={24} color="#10B981" />
+                <BarChart3 size={24} color={theme.colors.success} />
               </View>
               <View className="flex-1">
-                <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>Estatísticas de Alocação</Text>
-                <Text className="text-sm" style={{ color: "#64748B" }}>Análise por setor e profissional</Text>
+                <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Estatísticas de Alocação</Text>
+                <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Análise por setor e profissional</Text>
               </View>
             </View>
-            <Text className="text-base leading-relaxed" style={{ color: "#475569" }}>
+            <Text className="text-base leading-relaxed" style={{ color: theme.colors.textSecondary }}>
               Analise a distribuição de turnos por setor, profissional e tipo de alocação 
               (Plantão, Retaguarda, Sobreaviso).
             </Text>
@@ -89,14 +90,14 @@ export default function ReportsScreen() {
           <TintedGlassCard className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-yellow-500/20 items-center justify-center mr-3">
-                <Calendar size={24} color="#F59E0B" />
+                <Calendar size={24} color={theme.colors.warning} />
               </View>
               <View className="flex-1">
-                <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>Análise de Cobertura</Text>
-                <Text className="text-sm" style={{ color: "#64748B" }}>Gaps e vagas por período</Text>
+                <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Análise de Cobertura</Text>
+                <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Gaps e vagas por período</Text>
               </View>
             </View>
-            <Text className="text-base leading-relaxed" style={{ color: "#475569" }}>
+            <Text className="text-base leading-relaxed" style={{ color: theme.colors.textSecondary }}>
               Identifique gaps de cobertura, vagas não preenchidas e períodos com baixa alocação 
               para planejamento estratégico.
             </Text>
@@ -106,14 +107,18 @@ export default function ReportsScreen() {
           <TintedGlassCard className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-purple-500/20 items-center justify-center mr-3">
-                <Users size={24} color="#A855F7" />
+                {/* Users (profissionais) — sem token roxo na paleta;
+                    consolidando em palette.primary[700] (azul mais
+                    profundo) pra tela placeholder. Se design adicionar
+                    token de "category accent" futuramente, atualizar. */}
+                <Users size={24} color={theme.palette.primary[700]} />
               </View>
               <View className="flex-1">
-                <Text className="text-lg font-semibold" style={{ color: "#0F172A" }}>Relatório de Profissionais</Text>
-                <Text className="text-sm" style={{ color: "#64748B" }}>Horas e turnos por profissional</Text>
+                <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Relatório de Profissionais</Text>
+                <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Horas e turnos por profissional</Text>
               </View>
             </View>
-            <Text className="text-base leading-relaxed" style={{ color: "#475569" }}>
+            <Text className="text-base leading-relaxed" style={{ color: theme.colors.textSecondary }}>
               Visualize total de horas trabalhadas, distribuição de turnos e histórico de alocações 
               por profissional.
             </Text>
@@ -121,8 +126,8 @@ export default function ReportsScreen() {
 
           {/* Nota de Desenvolvimento */}
           <TintedGlassCard className="p-5 border border-slate-200">
-            <Text className="text-sm text-center leading-relaxed" style={{ color: "#64748B" }}>
-              <Text className="font-semibold" style={{ color: "#475569" }}>Em desenvolvimento:</Text> Esta tela será expandida com 
+            <Text className="text-sm text-center leading-relaxed" style={{ color: theme.colors.textMuted }}>
+              <Text className="font-semibold" style={{ color: theme.colors.textSecondary }}>Em desenvolvimento:</Text> Esta tela será expandida com 
               funcionalidades completas de relatórios, filtros avançados e exportação em múltiplos formatos.
             </Text>
           </TintedGlassCard>
