@@ -1,5 +1,6 @@
 import { TouchableOpacity, Text, type TouchableOpacityProps, ActivityIndicator } from "react-native";
 import { cn } from "@/lib/utils";
+import { theme } from "@/lib/theme";
 
 export interface SecondaryButtonProps extends TouchableOpacityProps {
   /**
@@ -39,7 +40,7 @@ export function SecondaryButton({
       {...props}
     >
       {loading ? (
-        <ActivityIndicator color="#A7B3C2" />
+        <ActivityIndicator color={theme.colors.onDark.textMuted} />
       ) : (
         <Text className="text-white text-lg font-semibold">{label}</Text>
       )}
