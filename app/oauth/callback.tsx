@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { View, Text, ActivityIndicator } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
+import { theme } from "@/lib/theme";
 
 /**
  * OAuth callback route — handles redirect from Manus OAuth flow.
@@ -21,7 +22,7 @@ export default function OAuthCallback() {
   return (
     <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
       <ActivityIndicator size="large" />
-      <Text style={{ marginTop: 16, color: "#6B7280" }}>Autenticando...</Text>
+      <Text style={{ marginTop: 16, color: theme.colors.textMuted }}>Autenticando...</Text>
     </View>
   );
 }

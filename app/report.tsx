@@ -290,8 +290,8 @@ export default function ReportScreen() {
                 gap: 12,
               }}
             >
-              <Download size={24} color="#FFFFFF" />
-              <Text className="text-lg font-bold" style={{ color: "#FFFFFF" }}>Exportar Relatório (PDF)</Text>
+              <Download size={24} color={theme.colors.surface} />
+              <Text className="text-lg font-bold" style={{ color: theme.colors.surface }}>Exportar Relatório (PDF)</Text>
             </TouchableOpacity>
 
             {/* Lista de Escalas do Mês */}

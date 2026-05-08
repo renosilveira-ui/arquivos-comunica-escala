@@ -3,6 +3,7 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { useState, useEffect, ReactNode } from "react";
 import { trpc } from "@/lib/trpc";
+import { theme } from "@/lib/theme";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 interface AppShellProps {
@@ -66,7 +67,7 @@ export function AppShell({ children, title }: AppShellProps) {
   // Mobile: drawer overlay
   if (isMobile) {
     return (
-      <View className="flex-1 bg-[#0A1220]">
+      <View className="flex-1" style={{ backgroundColor: theme.colors.sidebarBg }}>
         <TopBar onMenuToggle={handleMobileMenuToggle} title={title} />
         <View className="flex-1">{children}</View>
 
@@ -94,7 +95,7 @@ export function AppShell({ children, title }: AppShellProps) {
 
   // Desktop/Tablet: sidebar lateral fixa
   return (
-    <View className="flex-1 flex-row bg-[#0A1220]">
+    <View className="flex-1 flex-row" style={{ backgroundColor: theme.colors.sidebarBg }}>
       {/* Sidebar */}
       <Sidebar collapsed={collapsed} onToggle={handleToggle} counts={sidebarCounts} />
 

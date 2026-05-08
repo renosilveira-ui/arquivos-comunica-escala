@@ -182,7 +182,7 @@ export default function AuditLogScreen() {
             borderWidth: 1,
             borderColor: theme.colors.border,
             borderRadius: 10,
-            backgroundColor: "#FFFFFF",
+            backgroundColor: theme.colors.surface,
             paddingHorizontal: 10,
             paddingVertical: 8,
             marginBottom: 12,
@@ -225,7 +225,7 @@ export default function AuditLogScreen() {
               >
                 <Text
                   style={{
-                    color: selected ? "#FFFFFF" : theme.colors.textPrimary,
+                    color: selected ? theme.colors.surface : theme.colors.textPrimary,
                     fontSize: 13,
                     fontWeight: "600",
                   }}
@@ -291,7 +291,7 @@ function AuditCard({ row }: { row: any }) {
         borderColor: theme.colors.border,
         borderRadius: 12,
         padding: 12,
-        backgroundColor: "#FFFFFF",
+        backgroundColor: theme.colors.surface,
         gap: 4,
       }}
     >
@@ -299,7 +299,7 @@ function AuditCard({ row }: { row: any }) {
       <View className="flex-row items-center justify-between">
         <View
           style={{
-            backgroundColor: "rgba(37,99,235,0.10)",
+            backgroundColor: theme.colors.primarySoft,
             paddingHorizontal: 8,
             paddingVertical: 2,
             borderRadius: 999,

@@ -52,7 +52,7 @@ function AuthGuard() {
     (!!user && institutionsLoading)
   ) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0a1929" }}>
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.palette.neutral[900] }}>
         <ActivityIndicator size="large" color={theme.colors.primary} />
       </View>
     );
