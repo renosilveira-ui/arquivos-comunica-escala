@@ -416,8 +416,8 @@ export default function WeeklyScreen() {
               {/* Cells */}
               {grid[slotIdx].map((cell, dayIdx) => {
                 const isEmpty = cell.shifts.length === 0;
-                const statusColor = isEmpty ? theme.colors.cardBorder : borderColorForStatus(cell.status);
-                const statusBg = isEmpty ? theme.colors.cardBg : bgTintForStatus(cell.status);
+                const statusColor = isEmpty ? theme.colors.border : borderColorForStatus(cell.status);
+                const statusBg = isEmpty ? theme.colors.surface : bgTintForStatus(cell.status);
 
                 return (
                   <TouchableOpacity
@@ -498,7 +498,7 @@ export default function WeeklyScreen() {
         <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: theme.colors.overlay }}>
           <View
             style={{
-              backgroundColor: theme.colors.cardBg,
+              backgroundColor: theme.colors.surface,
               borderTopLeftRadius: 20,
               borderTopRightRadius: 20,
               padding: 20,
@@ -580,7 +580,7 @@ export default function WeeklyScreen() {
                   value={searchText}
                   onChangeText={setSearchText}
                   style={{
-                    backgroundColor: theme.colors.inputBg,
+                    backgroundColor: theme.colors.surface,
                     borderRadius: theme.borderRadius.input,
                     paddingHorizontal: 14,
                     paddingVertical: 10,

@@ -7,7 +7,7 @@ import { theme } from "@/lib/theme";
 import { formatDateBR } from "@/lib/datetime";
 
 const statusColor: Record<string, string> = {
-  VAGO: theme.colors.statusVago,
+  VAGO: theme.colors.textMuted,
   PENDENTE: theme.colors.statusPendente,
   OCUPADO: theme.colors.statusOcupado,
 };
@@ -34,7 +34,7 @@ export default function DashboardScreen() {
 
   if (authLoading) {
     return (
-      <View style={{ flex: 1, backgroundColor: theme.colors.screenBg, justifyContent: "center", alignItems: "center" }}>
+      <View style={{ flex: 1, backgroundColor: theme.colors.background, justifyContent: "center", alignItems: "center" }}>
         <ActivityIndicator size="large" color={theme.colors.primary} />
       </View>
     );
@@ -42,13 +42,13 @@ export default function DashboardScreen() {
 
   const metricCards = [
     { label: "Total", value: stats.total, color: theme.colors.primary, icon: Calendar },
-    { label: "Vagos", value: stats.vago, color: theme.colors.statusVago, icon: AlertCircle },
+    { label: "Vagos", value: stats.vago, color: theme.colors.textMuted, icon: AlertCircle },
     { label: "Pendentes", value: stats.pendente, color: theme.colors.statusPendente, icon: Clock },
     { label: "Ocupados", value: stats.ocupado, color: theme.colors.statusOcupado, icon: CheckCircle },
   ];
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.screenBg }}>
+    <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: theme.spacing.screenPadding, paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
         {/* Header */}
         <Text style={{ fontSize: 24, fontWeight: "700", color: theme.colors.textPrimary, marginBottom: 4 }}>
@@ -71,10 +71,10 @@ export default function DashboardScreen() {
                   style={{
                     flex: 1,
                     minWidth: "45%",
-                    backgroundColor: theme.colors.cardBg,
+                    backgroundColor: theme.colors.surface,
                     borderRadius: theme.borderRadius.card,
                     borderWidth: 1,
-                    borderColor: theme.colors.cardBorder,
+                    borderColor: theme.colors.border,
                     padding: theme.spacing.cardPadding,
                   }}
                 >
@@ -104,10 +104,10 @@ export default function DashboardScreen() {
               <View
                 key={shift.id}
                 style={{
-                  backgroundColor: theme.colors.cardBg,
+                  backgroundColor: theme.colors.surface,
                   borderRadius: theme.borderRadius.card,
                   borderWidth: 1,
-                  borderColor: theme.colors.cardBorder,
+                  borderColor: theme.colors.border,
                   padding: theme.spacing.cardPadding,
                 }}
               >
@@ -137,10 +137,10 @@ export default function DashboardScreen() {
           </View>
         ) : (
           <View style={{
-            backgroundColor: theme.colors.cardBg,
+            backgroundColor: theme.colors.surface,
             borderRadius: theme.borderRadius.card,
             borderWidth: 1,
-            borderColor: theme.colors.cardBorder,
+            borderColor: theme.colors.border,
             padding: 24,
             alignItems: "center",
           }}>
