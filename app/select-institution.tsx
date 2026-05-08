@@ -5,6 +5,7 @@ import { Building2, Check } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { trpc } from "@/lib/trpc";
 import { useTenantState } from "@/lib/tenant-state";
+import { theme } from "@/lib/theme";
 
 export default function SelectInstitutionScreen() {
   const router = useRouter();
@@ -34,16 +35,16 @@ export default function SelectInstitutionScreen() {
     <ScreenGradient>
       <View className="flex-1 px-5 py-6">
         <View className="mb-8">
-          <Text style={{ fontSize: 30, fontWeight: "800", color: "#0F172A" }}>Selecionar Instituição</Text>
-          <Text style={{ fontSize: 15, color: "#475569", marginTop: 6 }}>
+          <Text style={{ fontSize: 30, fontWeight: "800", color: theme.palette.neutral[900] }}>Selecionar Instituição</Text>
+          <Text style={{ fontSize: 15, color: theme.colors.textSecondary, marginTop: 6 }}>
             Escolha a instituição ativa para carregar dados e permissões.
           </Text>
         </View>
 
         {isLoading ? (
           <View className="flex-1 items-center justify-center">
-            <ActivityIndicator size="large" color="#2563EB" />
-            <Text style={{ color: "#475569", marginTop: 12 }}>Carregando instituições...</Text>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+            <Text style={{ color: theme.colors.textSecondary, marginTop: 12 }}>Carregando instituições...</Text>
           </View>
         ) : (
           <View className="gap-3">
@@ -58,9 +59,9 @@ export default function SelectInstitutionScreen() {
                   disabled={Boolean(isSubmitting)}
                   style={{
                     borderWidth: 1.5,
-                    borderColor: selected ? "#1D4ED8" : "#E2E8F0",
+                    borderColor: selected ? theme.palette.primary[700] : theme.colors.border,
                     borderRadius: 14,
-                    backgroundColor: selected ? "rgba(29,78,216,0.10)" : "#FFFFFF",
+                    backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface,
                     paddingHorizontal: 14,
                     paddingVertical: 14,
                     opacity: isSubmitting && !submitting ? 0.65 : 1,
@@ -68,12 +69,12 @@ export default function SelectInstitutionScreen() {
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1 }}>
-                      <Building2 size={20} color={selected ? "#1D4ED8" : "#334155"} />
+                      <Building2 size={20} color={selected ? theme.palette.primary[700] : theme.palette.neutral[700]} />
                       <View style={{ flex: 1 }}>
-                        <Text style={{ color: "#0F172A", fontSize: 17, fontWeight: "700" }}>
+                        <Text style={{ color: theme.palette.neutral[900], fontSize: 17, fontWeight: "700" }}>
                           {institution.name}
                         </Text>
-                        <Text style={{ color: "#64748B", fontSize: 12, marginTop: 2 }}>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 12, marginTop: 2 }}>
                           {institution.roleInInstitution}
                           {institution.isPrimary ? " • principal" : ""}
                         </Text>
@@ -81,9 +82,9 @@ export default function SelectInstitutionScreen() {
                     </View>
 
                     {submitting ? (
-                      <ActivityIndicator size="small" color="#1D4ED8" />
+                      <ActivityIndicator size="small" color={theme.palette.primary[700]} />
                     ) : selected ? (
-                      <Check size={18} color="#1D4ED8" />
+                      <Check size={18} color={theme.palette.primary[700]} />
                     ) : null}
                   </View>
                 </TouchableOpacity>
@@ -92,8 +93,8 @@ export default function SelectInstitutionScreen() {
 
             {(orderedInstitutions?.length ?? 0) === 0 && (
               <View className="rounded-xl border border-slate-200 bg-white p-4">
-                <Text style={{ color: "#334155", fontWeight: "600" }}>Nenhuma instituição ativa</Text>
-                <Text style={{ color: "#64748B", marginTop: 4 }}>
+                <Text style={{ color: theme.palette.neutral[700], fontWeight: "600" }}>Nenhuma instituição ativa</Text>
+                <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
                   Solicite ao administrador o vínculo da sua conta a uma instituição.
                 </Text>
               </View>
