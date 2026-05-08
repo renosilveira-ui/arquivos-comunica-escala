@@ -82,7 +82,7 @@ export default function ServiceSelectionScreen() {
                   style={{
                     borderWidth: isSelected ? 2 : 1,
                     borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                    backgroundColor: isSelected ? "rgba(37,99,235,0.08)" : theme.colors.surfaceAlt,
+                    backgroundColor: isSelected ? theme.colors.primarySoft : theme.colors.surfaceAlt,
                   }}
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
@@ -91,12 +91,12 @@ export default function ServiceSelectionScreen() {
                         width: 56,
                         height: 56,
                         borderRadius: 28,
-                        backgroundColor: isSelected ? theme.colors.primary : "rgba(37,99,235,0.12)",
+                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.primarySoft,
                         alignItems: "center",
                         justifyContent: "center",
                       }}
                     >
-                      <Icon size={28} color={isSelected ? "#FFFFFF" : theme.colors.primary} />
+                      <Icon size={28} color={isSelected ? theme.colors.surface : theme.colors.primary} />
                     </View>
 
                     <View style={{ flex: 1 }}>
@@ -121,7 +121,7 @@ export default function ServiceSelectionScreen() {
                           justifyContent: "center",
                         }}
                       >
-                        <Text style={{ fontSize: 16, color: "#FFFFFF", fontWeight: "700" }}>✓</Text>
+                        <Text style={{ fontSize: 16, color: theme.colors.surface, fontWeight: "700" }}>✓</Text>
                       </View>
                     )}
                   </View>

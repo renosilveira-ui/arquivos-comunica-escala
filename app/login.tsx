@@ -17,26 +17,26 @@ import { useAuth } from "@/hooks/use-auth";
 const LABEL_STYLE = {
   fontSize: 11,
   fontWeight: "600" as const,
-  color: "#94A3B8",
+  color: theme.colors.textDisabled,
   letterSpacing: 1.5,
   textTransform: "uppercase" as const,
   marginBottom: 6,
 };
 
 const INPUT_STYLE = {
-  backgroundColor: "#0F172A",
+  backgroundColor: theme.palette.neutral[900],
   borderRadius: 10,
   borderWidth: 1.5,
-  borderColor: "rgba(148, 163, 184, 0.35)",
+  borderColor: theme.palette.neutral[400],
   paddingHorizontal: 16,
   paddingVertical: 14,
   fontSize: 16,
-  color: "#F8FAFC",
+  color: theme.palette.neutral[50],
 };
 
 const INPUT_FOCUSED_STYLE = {
   ...INPUT_STYLE,
-  borderColor: "#3B82F6",
+  borderColor: theme.colors.primary,
 };
 
 export default function LoginScreen() {
@@ -98,10 +98,10 @@ export default function LoginScreen() {
             {/* Card do formulário */}
             <View
               style={{
-                backgroundColor: "rgba(15, 23, 42, 0.85)",
+                backgroundColor: theme.palette.neutral[900],
                 borderRadius: 20,
                 borderWidth: 1,
-                borderColor: "rgba(148, 163, 184, 0.20)",
+                borderColor: theme.palette.neutral[400],
                 padding: 28,
                 gap: 16,
               }}
@@ -118,7 +118,7 @@ export default function LoginScreen() {
                   returnKeyType="next"
                   onFocus={() => setFocusedField("email")}
                   onBlur={() => setFocusedField(null)}
-                  placeholderTextColor="#475569"
+                  placeholderTextColor={theme.colors.textSecondary}
                   placeholder="seu@email.com"
                   style={focusedField === "email" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
@@ -136,7 +136,7 @@ export default function LoginScreen() {
                   onFocus={() => setFocusedField("password")}
                   onBlur={() => setFocusedField(null)}
                   onSubmitEditing={handleLogin}
-                  placeholderTextColor="#475569"
+                  placeholderTextColor={theme.colors.textSecondary}
                   placeholder="••••••••"
                   style={focusedField === "password" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
@@ -146,14 +146,14 @@ export default function LoginScreen() {
               {errorMsg && (
                 <View
                   style={{
-                    backgroundColor: "rgba(239,68,68,0.15)",
+                    backgroundColor: theme.colors.dangerSoft,
                     borderRadius: 10,
                     borderWidth: 1,
-                    borderColor: "rgba(239,68,68,0.35)",
+                    borderColor: theme.colors.danger,
                     padding: 12,
                   }}
                 >
-                  <Text style={{ color: "#FCA5A5", fontSize: 14, textAlign: "center" }}>
+                  <Text style={{ color: theme.palette.danger[100], fontSize: 14, textAlign: "center" }}>
                     {errorMsg}
                   </Text>
                 </View>
@@ -166,7 +166,7 @@ export default function LoginScreen() {
                 disabled={submitting}
                 style={{
                   marginTop: 8,
-                  backgroundColor: submitting ? "#2563EB" : "#3B82F6",
+                  backgroundColor: submitting ? theme.colors.primary : theme.colors.primary,
                   height: 52,
                   borderRadius: 12,
                   justifyContent: "center",
@@ -176,9 +176,9 @@ export default function LoginScreen() {
                 }}
               >
                 {submitting ? (
-                  <ActivityIndicator color="#FFFFFF" />
+                  <ActivityIndicator color={theme.colors.surface} />
                 ) : (
-                  <Text style={{ color: "#FFFFFF", fontSize: 17, fontWeight: "700", letterSpacing: 0.5 }}>
+                  <Text style={{ color: theme.colors.surface, fontSize: 17, fontWeight: "700", letterSpacing: 0.5 }}>
                     Entrar
                   </Text>
                 )}
@@ -193,7 +193,7 @@ export default function LoginScreen() {
                 <Text
                   style={{
                     fontSize: 13,
-                    color: "#64748B",
+                    color: theme.colors.textMuted,
                     textDecorationLine: "underline",
                   }}
                 >
