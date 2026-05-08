@@ -1,6 +1,7 @@
 import { View, TouchableOpacity, type ViewStyle, Platform } from "react-native";
 import { BlurView } from "expo-blur";
 import { cn } from "@/lib/utils";
+import { theme } from "@/lib/theme";
 
 export interface GlassCardProps {
   /**
@@ -27,7 +28,8 @@ export interface GlassCardProps {
  * ✅ CORRIGIDO: Removido padding duplicado (p-5 + p-4)
  * Agora tem apenas 1 padding (p-5) e 1 borda
  * 
- * Blur intensity 22, overlay escuro rgba(20,28,38,0.72), border rgba(255,255,255,0.1)
+ * Blur intensity 22, overlay theme.colors.glass.darkOpaqueBg, border
+ * theme.colors.glass.darkBorder.
  */
 export function GlassCard({ children, className, style, onPress }: GlassCardProps) {
   const content = (
@@ -43,9 +45,9 @@ export function GlassCard({ children, className, style, onPress }: GlassCardProp
           <View 
             className="rounded-3xl p-5" 
             style={{ 
-              backgroundColor: 'rgba(20,28,38,0.72)',
+              backgroundColor: theme.colors.glass.darkOpaqueBg,
               borderWidth: 1,
-              borderColor: 'rgba(255,255,255,0.1)',
+              borderColor: theme.colors.glass.darkBorder,
             }}
           >
             {children}

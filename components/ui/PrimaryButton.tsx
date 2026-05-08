@@ -1,5 +1,6 @@
 import { TouchableOpacity, Text, type TouchableOpacityProps, ActivityIndicator } from "react-native";
 import { cn } from "@/lib/utils";
+import { theme } from "@/lib/theme";
 
 export interface PrimaryButtonProps extends TouchableOpacityProps {
   /**
@@ -44,7 +45,7 @@ export function PrimaryButton({
       {...props}
     >
       {loading ? (
-        <ActivityIndicator color="#FFFFFF" />
+        <ActivityIndicator color={theme.colors.surface} />
       ) : (
         <>
           {icon}

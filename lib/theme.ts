@@ -214,6 +214,10 @@ export const theme = {
       lightBorder: palette.primary[100],
       darkBg: "rgba(255, 255, 255, 0.08)",
       darkBorder: "rgba(255, 255, 255, 0.12)",
+      // Variante "dark opaque": superfície escura translúcida com
+      // alpha alto — usada por GlassCard.tsx (não confundir com o
+      // tinted-glass branco do TintedGlassCard).
+      darkOpaqueBg: "rgba(20, 28, 38, 0.72)",
     },
 
     // Sidebar (desktop). Cor escolhida pra contraste forte com o canvas
@@ -222,6 +226,15 @@ export const theme = {
 
     // Modal/sheet scrim — neutral.900 com 50% (spec §5 modais).
     overlay: "rgba(15, 23, 42, 0.5)",
+
+    // ScreenGradient — pares de cores para o gradiente do canvas. O
+    // claro segue paleta primary; o escuro segue sidebarBg + neutral.900.
+    gradient: {
+      lightStart: palette.neutral[50],
+      lightEnd: palette.primary[50],
+      darkStart: "#1E3A5F", // azul-noite mais claro que sidebarBg
+      darkEnd: palette.neutral[900],
+    },
 
     // Família "onDark": cores aplicadas sobre superfícies escuras
     // (sidebar, hospital-dashboard, admin). White-on-dark com

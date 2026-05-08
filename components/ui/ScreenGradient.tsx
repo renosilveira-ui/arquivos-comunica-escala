@@ -16,7 +16,7 @@ interface ScreenGradientProps extends ViewProps {
  * 
  * Camadas:
  * 1. ImageBackground (relógios e calendários via CDN)
- * 2. Overlay gradiente escuro (#0F2238 → #0B1220) com 85% opacidade
+ * 2. Overlay gradiente escuro (theme.colors.gradient.darkStart → darkEnd)
  * 3. Conteúdo
  * 
  * Uso:
@@ -38,8 +38,8 @@ export function ScreenGradient({
 }: ScreenGradientProps) {
   const colors =
     variant === "light"
-      ? ([theme.colors.background, "#EDF4FF"] as const)
-      : (["#1e3a5f", "#0a1929"] as const);
+      ? ([theme.colors.gradient.lightStart, theme.colors.gradient.lightEnd] as const)
+      : ([theme.colors.gradient.darkStart, theme.colors.gradient.darkEnd] as const);
 
   return (
     <LinearGradient

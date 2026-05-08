@@ -1,28 +1,47 @@
 import { View, Text, TouchableOpacity } from "react-native";
 import { Menu, User } from "lucide-react-native";
 import { useRouter } from "expo-router";
+import { theme } from "@/lib/theme";
 
 interface TopBarProps {
   onMenuToggle: () => void;
   title?: string;
 }
 
+/**
+ * TopBar — header dark mobile/tablet com hambúrguer e atalho pro perfil.
+ * Cor de fundo segue `theme.colors.sidebarBg` (mesma identidade da
+ * sidebar desktop). O gradiente original azul-noite foi substituído
+ * por sólido — diferença visual mínima e consistência cross-component.
+ */
 export function TopBar({ onMenuToggle, title }: TopBarProps) {
   const router = useRouter();
 
   return (
-    <View className="h-16 bg-gradient-to-r from-[#0A1220] to-[#1A2332] border-b border-white/10 flex-row items-center px-4">
+    <View
+      className="h-16 flex-row items-center px-4"
+      style={{
+        backgroundColor: theme.colors.sidebarBg,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.onDark.divider,
+      }}
+    >
       {/* Hambúrguer (mobile/tablet) */}
       <TouchableOpacity
         onPress={onMenuToggle}
         className="mr-4 active:opacity-70 md:hidden"
       >
-        <Menu size={24} color="#fff" />
+        <Menu size={24} color={theme.colors.onDark.text} />
       </TouchableOpacity>
 
       {/* Título */}
       {title && (
-        <Text className="text-white font-bold text-lg flex-1">{title}</Text>
+        <Text
+          className="font-bold text-lg flex-1"
+          style={{ color: theme.colors.onDark.text }}
+        >
+          {title}
+        </Text>
       )}
 
       {/* Perfil */}
@@ -30,8 +49,11 @@ export function TopBar({ onMenuToggle, title }: TopBarProps) {
         onPress={() => router.push("/profile")}
         className="ml-auto active:opacity-70"
       >
-        <View className="bg-white/10 rounded-full p-2">
-          <User size={20} color="#FFFFFF" />
+        <View
+          className="rounded-full p-2"
+          style={{ backgroundColor: theme.colors.onDark.surface }}
+        >
+          <User size={20} color={theme.colors.onDark.text} />
         </View>
       </TouchableOpacity>
     </View>
