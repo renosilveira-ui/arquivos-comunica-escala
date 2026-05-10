@@ -28,6 +28,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
   const { user } = useAuth();
   const appVersion = Constants.expoConfig?.version;
   const userInitial = (user?.name?.trim()?.charAt(0) || user?.email?.trim()?.charAt(0) || "?").toUpperCase();
+  const hiddenRoutes = new Set(["index", "calendar", "weekly"]);
 
   return (
     <View
@@ -67,7 +68,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
       <View style={{ gap: 6, flex: 1 }}>
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
-          if ((options as any).href === null) return null;
+          if ((options as any).href === null || hiddenRoutes.has(route.name)) return null;
           const focused = state.index === index;
           const label =
             typeof options.tabBarLabel === "string"
