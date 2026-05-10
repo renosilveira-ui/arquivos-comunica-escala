@@ -470,30 +470,29 @@ export const shiftsRouter = router({
           ),
         );
 
-      if (rows.length === 0) {
-        return { weeks: [] as AgendaWeek[], scope: input.scope };
-      }
-
       // 2. Assignments ativos pra cada shift (com nome do profissional).
       const ids = rows.map((r) => r.id);
-      const assignments = await db
-        .select({
-          shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
-          professionalId: shiftAssignmentsV2.professionalId,
-          professionalName: professionals.name,
-        })
-        .from(shiftAssignmentsV2)
-        .leftJoin(
-          professionals,
-          eq(shiftAssignmentsV2.professionalId, professionals.id),
-        )
-        .where(
-          and(
-            eq(shiftAssignmentsV2.isActive, true),
-            eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
-            inArray(shiftAssignmentsV2.shiftInstanceId, ids),
-          ),
-        );
+      const assignments =
+        ids.length > 0
+          ? await db
+              .select({
+                shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
+                professionalId: shiftAssignmentsV2.professionalId,
+                professionalName: professionals.name,
+              })
+              .from(shiftAssignmentsV2)
+              .leftJoin(
+                professionals,
+                eq(shiftAssignmentsV2.professionalId, professionals.id),
+              )
+              .where(
+                and(
+                  eq(shiftAssignmentsV2.isActive, true),
+                  eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
+                  inArray(shiftAssignmentsV2.shiftInstanceId, ids),
+                ),
+              )
+          : [];
 
       const assignByShift = new Map<
         number,
