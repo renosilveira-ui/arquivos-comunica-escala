@@ -12,6 +12,7 @@ import { useState, useMemo } from "react";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
+import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { useAuth } from "@/hooks/use-auth";
@@ -41,6 +42,7 @@ import { theme } from "@/lib/theme";
  */
 
 type AgendaScope = "geral" | "minha";
+type AgendaViewMode = "calendario" | "panorama";
 
 const DAY_LABELS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"] as const;
 const MOBILE_BREAKPOINT = 1024;
@@ -75,7 +77,20 @@ function formatMonthRange(weekStart: string, weekCount: number): string {
   const start = new Date(`${weekStart}T00:00:00`);
   const end = new Date(start);
   end.setDate(end.getDate() + weekCount * 7 - 1);
-  const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  const months = [
+    "Jan",
+    "Fev",
+    "Mar",
+    "Abr",
+    "Mai",
+    "Jun",
+    "Jul",
+    "Ago",
+    "Set",
+    "Out",
+    "Nov",
+    "Dez",
+  ];
   const sm = months[start.getMonth()];
   const em = months[end.getMonth()];
   if (sm === em && start.getFullYear() === end.getFullYear()) {
@@ -84,7 +99,10 @@ function formatMonthRange(weekStart: string, weekCount: number): string {
   return `${sm}/${start.getFullYear()} – ${em}/${end.getFullYear()}`;
 }
 
-function buildEmptyAgendaWeeks(weekStart: string, weekCount: number): AgendaWeek[] {
+function buildEmptyAgendaWeeks(
+  weekStart: string,
+  weekCount: number,
+): AgendaWeek[] {
   const baseMon = startOfWeekMon(new Date(`${weekStart}T00:00:00`));
 
   return Array.from({ length: weekCount }, (_, weekIndex) => {
@@ -126,6 +144,7 @@ export default function AgendaScreen() {
   const isDesktop = Platform.OS === "web" && width >= MOBILE_BREAKPOINT;
 
   const [scope, setScope] = useState<AgendaScope>("geral");
+  const [viewMode, setViewMode] = useState<AgendaViewMode>("calendario");
   const [refreshing, setRefreshing] = useState(false);
   const [anchorWeekStart, setAnchorWeekStart] = useState(() =>
     toDateKey(startOfWeekMon(new Date())),
@@ -193,12 +212,26 @@ export default function AgendaScreen() {
             >
               Agenda
             </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: theme.space[2],
+              }}
+            >
               <TouchableOpacity onPress={goPrev} style={navBtnStyle}>
                 <ChevronLeft size={20} color={theme.colors.textPrimary} />
               </TouchableOpacity>
               <TouchableOpacity onPress={goToday} style={navTextBtnStyle}>
-                <Text style={{ color: theme.colors.primary, fontWeight: "600", fontSize: 13 }}>Hoje</Text>
+                <Text
+                  style={{
+                    color: theme.colors.primary,
+                    fontWeight: "600",
+                    fontSize: 13,
+                  }}
+                >
+                  Hoje
+                </Text>
               </TouchableOpacity>
               <Text
                 style={{
@@ -217,44 +250,82 @@ export default function AgendaScreen() {
             </View>
           </View>
 
-          {/* Segmented Geral/Minha */}
           <View
             style={{
               flexDirection: "row",
-              gap: 4,
-              padding: 4,
-              backgroundColor: theme.colors.surfaceAlt,
-              borderRadius: theme.radius.lg,
-              alignSelf: "flex-start",
+              gap: theme.space[3],
+              flexWrap: "wrap",
             }}
           >
-            <ScopePill
-              label="Geral"
-              active={scope === "geral"}
-              onPress={() => setScope("geral")}
-            />
-            <ScopePill
-              label="Minha"
-              active={scope === "minha"}
-              onPress={() => setScope("minha")}
-            />
+            <SegmentedGroup>
+              <ScopePill
+                label="Geral"
+                active={scope === "geral"}
+                onPress={() => setScope("geral")}
+              />
+              <ScopePill
+                label="Minha"
+                active={scope === "minha"}
+                onPress={() => setScope("minha")}
+              />
+            </SegmentedGroup>
+            <SegmentedGroup>
+              <ScopePill
+                label="Calendário"
+                active={viewMode === "calendario"}
+                onPress={() => setViewMode("calendario")}
+              />
+              <ScopePill
+                label="Panorama"
+                active={viewMode === "panorama"}
+                onPress={() => setViewMode("panorama")}
+              />
+            </SegmentedGroup>
           </View>
         </View>
 
         {/* Conteúdo */}
         {isLoading && !data ? (
-          <View style={{ alignItems: "center", paddingVertical: theme.space[10] }}>
+          <View
+            style={{ alignItems: "center", paddingVertical: theme.space[10] }}
+          >
             <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
+        ) : viewMode === "panorama" ? (
+          <PanoramicAgenda
+            weeks={weeksForRender}
+            todayKey={todayKey}
+            isDesktop={isDesktop}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={theme.colors.primary}
+              />
+            }
+            onShiftPress={(id) =>
+              router.push({
+                pathname: "/shift-details",
+                params: { id: String(id) },
+              })
+            }
+          />
         ) : isDesktop ? (
           <DesktopGrid
             weeks={weeksForRender}
             todayKey={todayKey}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={theme.colors.primary}
+              />
             }
             onShiftPress={(id) =>
-              router.push({ pathname: "/shift-details", params: { id: String(id) } })
+              router.push({
+                pathname: "/shift-details",
+                params: { id: String(id) },
+              })
             }
           />
         ) : (
@@ -262,10 +333,17 @@ export default function AgendaScreen() {
             weeks={weeksForRender}
             todayKey={todayKey}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={theme.colors.primary}
+              />
             }
             onShiftPress={(id) =>
-              router.push({ pathname: "/shift-details", params: { id: String(id) } })
+              router.push({
+                pathname: "/shift-details",
+                params: { id: String(id) },
+              })
             }
           />
         )}
@@ -300,7 +378,32 @@ export default function AgendaScreen() {
 }
 
 // ─── Segmented control ───────────────────────────────────────────────
-function ScopePill({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function SegmentedGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        gap: 4,
+        padding: 4,
+        backgroundColor: theme.colors.surfaceAlt,
+        borderRadius: theme.radius.lg,
+        alignSelf: "flex-start",
+      }}
+    >
+      {children}
+    </View>
+  );
+}
+
+function ScopePill({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -365,7 +468,9 @@ function DesktopGrid({
 }: {
   weeks: AgendaWeek[];
   todayKey: string;
-  refreshControl: React.ReactElement<import("react-native").RefreshControlProps>;
+  refreshControl: React.ReactElement<
+    import("react-native").RefreshControlProps
+  >;
   onShiftPress: (id: number) => void;
 }) {
   return (
@@ -388,7 +493,9 @@ function DesktopGrid({
                     flex: 1,
                     paddingVertical: theme.space[2],
                     paddingHorizontal: theme.space[2],
-                    backgroundColor: isToday ? theme.colors.primarySoft : theme.colors.surfaceAlt,
+                    backgroundColor: isToday
+                      ? theme.colors.primarySoft
+                      : theme.colors.surfaceAlt,
                     borderTopWidth: isToday ? 2 : 0,
                     borderTopColor: theme.colors.primary,
                     borderRightWidth: 1,
@@ -399,7 +506,9 @@ function DesktopGrid({
                     style={{
                       fontSize: 12,
                       fontWeight: "700",
-                      color: isToday ? theme.colors.primary : theme.colors.textSecondary,
+                      color: isToday
+                        ? theme.colors.primary
+                        : theme.colors.textSecondary,
                       letterSpacing: 0.5,
                     }}
                   >
@@ -433,7 +542,13 @@ function DesktopGrid({
               >
                 {day.groups.length === 0 ? (
                   <View style={{ paddingVertical: theme.space[3] }}>
-                    <Text style={{ fontSize: 11, color: theme.colors.textDisabled, textAlign: "center" }}>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: theme.colors.textDisabled,
+                        textAlign: "center",
+                      }}
+                    >
                       —
                     </Text>
                   </View>
@@ -490,9 +605,10 @@ function DesktopGroupBlock({
 
       {/* Lista de shifts */}
       {group.shifts.map((shift) => {
-        const names = shift.professionalNames.length > 0
-          ? shift.professionalNames.join(", ")
-          : "VAGO";
+        const names =
+          shift.professionalNames.length > 0
+            ? shift.professionalNames.join(", ")
+            : "VAGO";
         return (
           <TouchableOpacity
             key={shift.id}
@@ -504,7 +620,9 @@ function DesktopGroupBlock({
               paddingLeft: theme.space[2],
               paddingVertical: theme.space[1],
               marginBottom: 4,
-              backgroundColor: shift.isMine ? theme.colors.primarySoft : "transparent",
+              backgroundColor: shift.isMine
+                ? theme.colors.primarySoft
+                : "transparent",
               borderRadius: theme.radius.sm,
             }}
           >
@@ -518,7 +636,13 @@ function DesktopGroupBlock({
             >
               {names}
             </Text>
-            <Text style={{ fontSize: 10, color: theme.colors.textMuted, marginTop: 1 }}>
+            <Text
+              style={{
+                fontSize: 10,
+                color: theme.colors.textMuted,
+                marginTop: 1,
+              }}
+            >
               {formatTimeRange(shift.startAt, shift.endAt)}
             </Text>
           </TouchableOpacity>
@@ -537,15 +661,14 @@ function MobileDayList({
 }: {
   weeks: AgendaWeek[];
   todayKey: string;
-  refreshControl: React.ReactElement<import("react-native").RefreshControlProps>;
+  refreshControl: React.ReactElement<
+    import("react-native").RefreshControlProps
+  >;
   onShiftPress: (id: number) => void;
 }) {
   // Linealiza dias com pelo menos 1 grupo, em ordem cronológica
   const flatDays = useMemo(
-    () =>
-      weeks.flatMap((w) =>
-        w.days.filter((d) => d.groups.length > 0),
-      ),
+    () => weeks.flatMap((w) => w.days.filter((d) => d.groups.length > 0)),
     [weeks],
   );
 
@@ -557,7 +680,9 @@ function MobileDayList({
       showsVerticalScrollIndicator={false}
     >
       {flatDays.length === 0 ? (
-        <View style={{ paddingVertical: theme.space[10], alignItems: "center" }}>
+        <View
+          style={{ paddingVertical: theme.space[10], alignItems: "center" }}
+        >
           <Text style={{ color: theme.colors.textMuted }}>
             Nenhum plantão neste período.
           </Text>
@@ -572,7 +697,9 @@ function MobileDayList({
                 style={{
                   paddingVertical: theme.space[2],
                   paddingHorizontal: theme.space[3],
-                  backgroundColor: isToday ? theme.colors.primarySoft : theme.colors.surfaceAlt,
+                  backgroundColor: isToday
+                    ? theme.colors.primarySoft
+                    : theme.colors.surfaceAlt,
                   borderRadius: theme.radius.md,
                   borderLeftWidth: isToday ? 3 : 0,
                   borderLeftColor: theme.colors.primary,
@@ -583,7 +710,9 @@ function MobileDayList({
                   style={{
                     fontSize: 14,
                     fontWeight: "700",
-                    color: isToday ? theme.colors.primary : theme.colors.textPrimary,
+                    color: isToday
+                      ? theme.colors.primary
+                      : theme.colors.textPrimary,
                     letterSpacing: 0.3,
                   }}
                 >
@@ -628,7 +757,9 @@ function MobileDayList({
                         paddingLeft: theme.space[3],
                         paddingVertical: theme.space[2],
                         marginBottom: 4,
-                        backgroundColor: shift.isMine ? theme.colors.primarySoft : "transparent",
+                        backgroundColor: shift.isMine
+                          ? theme.colors.primarySoft
+                          : "transparent",
                         borderRadius: theme.radius.sm,
                       }}
                     >
@@ -643,8 +774,15 @@ function MobileDayList({
                           ? shift.professionalNames.join(", ")
                           : "VAGO"}
                       </Text>
-                      <Text style={{ fontSize: 12, color: theme.colors.textMuted, marginTop: 2 }}>
-                        {formatTimeRange(shift.startAt, shift.endAt)} • {shift.label}
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color: theme.colors.textMuted,
+                          marginTop: 2,
+                        }}
+                      >
+                        {formatTimeRange(shift.startAt, shift.endAt)} •{" "}
+                        {shift.label}
                       </Text>
                     </TouchableOpacity>
                   ))}
