@@ -42,7 +42,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 };
 
 export function usePermissions() {
-  const { user } = useAuth();
+  const { user, isLoading } = useAuth();
   const role = user?.role as Role | undefined;
   const { data: capabilities } = trpc.professionals.getMyCapabilities.useQuery(undefined, {
     enabled: !!user,
@@ -73,5 +73,5 @@ export function usePermissions() {
     ? capabilities.canCreateShift || capabilities.canApproveAssignments
     : role === "admin" || role === "manager";
 
-  return { can, role, isAdmin, isManager };
+  return { can, role, isAdmin, isManager, isLoading };
 }

@@ -55,16 +55,18 @@ const PRODUCTIVITY_CAP_REGEX = /^\d+(\.\d{1,2})?$/;
  * Formulário avançado com 3 profissionais por turno e repetição automática
  */
 export default function CreateShiftScreen() {
-  const { user } = useAuth();
-  const { can } = usePermissions();
+  const { user, isLoading: authLoading } = useAuth();
+  const { can, isLoading: permissionsLoading } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const utils = trpc.useUtils();
 
   // Guard: somente admin/manager podem criar escalas
   useEffect(() => {
+    if (authLoading || permissionsLoading) return;
+    if (!user) return;
     if (!can("create:shift")) router.back();
-  }, []);
+  }, [authLoading, can, permissionsLoading, router, user]);
 
   // Estados do formulário
   const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>(undefined);
@@ -245,6 +247,16 @@ export default function CreateShiftScreen() {
     setTempDate(selectedDate ? new Date(selectedDate) : new Date()); // Inicializar tempDate
     setShowDatePicker(true);
   };
+
+  if (authLoading || permissionsLoading) {
+    return (
+      <ScreenGradient scrollable={false}>
+        <View className="flex-1 justify-center items-center">
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        </View>
+      </ScreenGradient>
+    );
+  }
 
   if (!user) {
     return (
