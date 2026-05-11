@@ -54,8 +54,11 @@ export default function ShiftDetailsScreen() {
     : apiShiftData
       ? {
           shift: apiShiftData,
-          // TODO: incluir dados completos de setor (nome/categoria/cor) no backend se necessário para esta tela.
-          sector: null,
+          sector: {
+            name: apiShiftData.sectorName,
+            category: apiShiftData.sectorCategory,
+            color: apiShiftData.sectorColor,
+          },
           assignments: apiShiftData.assignments || [],
         }
       : null;
@@ -178,6 +181,22 @@ export default function ShiftDetailsScreen() {
       )
     : null;
   const hasModalityInfo = !!(modalityLabel || paymentModelLabel);
+  const statusVariant =
+    (shift.status === "confirmada" || shift.status === "OCUPADO")
+      ? "success"
+      : shift.status === "cancelada"
+        ? "critical"
+        : shift.status === "VAGO"
+          ? "neutral"
+          : "warning";
+  const statusLabel =
+    (shift.status === "confirmada" || shift.status === "OCUPADO")
+      ? "Confirmada"
+      : shift.status === "cancelada"
+        ? "Cancelada"
+        : shift.status === "VAGO"
+          ? "Vago"
+          : "Pendente";
 
   return (
     <ScreenGradient scrollable>
@@ -263,21 +282,7 @@ export default function ShiftDetailsScreen() {
           {/* Status */}
           <View className="pt-4 border-t" style={{ borderColor: theme.colors.border }}>
             <Text className="text-sm mb-3" style={{ color: theme.colors.textMuted }}>Status</Text>
-            <Badge
-              variant={
-                (shift.status === "confirmada" || shift.status === "OCUPADO")
-                  ? "success"
-                  : (shift.status === "cancelada" || shift.status === "VAGO")
-                  ? "critical"
-                  : "warning"
-              }
-            >
-              {(shift.status === "confirmada" || shift.status === "OCUPADO")
-                ? "Confirmada"
-                : (shift.status === "cancelada" || shift.status === "VAGO")
-                ? "Cancelada"
-                : "Pendente"}
-            </Badge>
+            <Badge variant={statusVariant}>{statusLabel}</Badge>
           </View>
 
           {/* Modalidade (PR #61/#63 — leitura) */}
