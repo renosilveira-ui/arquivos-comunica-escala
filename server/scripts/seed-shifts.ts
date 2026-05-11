@@ -42,9 +42,12 @@ function nextNDays(n: number): string[] {
   return days;
 }
 
+// Horários de escala são operacionais locais (Fortaleza/Brasil), não UTC do servidor.
+const SCHEDULE_TIME_ZONE_OFFSET = "-03:00";
+
 function buildTimestamps(date: string, startTime: string, endTime: string): [Date, Date] {
-  const startAt = new Date(`${date}T${startTime}`);
-  const endAt = new Date(`${date}T${endTime}`);
+  const startAt = new Date(`${date}T${startTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
+  const endAt = new Date(`${date}T${endTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
   if (endAt <= startAt) endAt.setDate(endAt.getDate() + 1);
   return [startAt, endAt];
 }
