@@ -192,99 +192,106 @@ export default function ProfileScreen() {
   return (
     <ScreenGradient scrollable variant="light">
       <ScreenContainer>
-      <View className="gap-7">
+      <View style={{ gap: theme.space[6] }}>
         {/* Header */}
         <View style={{ gap: 6 }}>
-          <View className="flex-row items-center gap-3">
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
             <User size={28} color={theme.colors.textPrimary} />
-            <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Perfil</Text>
+            <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Perfil</Text>
           </View>
-          <Text style={{ color: theme.colors.textSecondary, fontSize: 15 }}>
+          <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
             Dados da conta, notificações e preferências.
           </Text>
         </View>
 
         {/* Informações do Usuário */}
         <TintedGlassCard variant="light">
-          <View className="items-center py-4">
+          <View style={{ alignItems: "center", paddingVertical: theme.space[4] }}>
             <View
-              className="w-24 h-24 rounded-full items-center justify-center mb-4"
-              style={{ backgroundColor: theme.colors.primary }}
+              style={{
+                width: 96,
+                height: 96,
+                borderRadius: 48,
+                alignItems: "center",
+                justifyContent: "center",
+                marginBottom: theme.space[4],
+                backgroundColor: theme.colors.primary,
+              }}
             >
-              <Text className="text-4xl font-bold" style={{ color: theme.colors.surface }}>
+              <Text style={{ fontSize: 34, lineHeight: 40, fontWeight: theme.weight.bold, color: theme.colors.surface }}>
                 {(user.name?.charAt(0) || user.email?.charAt(0) || "U").toUpperCase()}
               </Text>
             </View>
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>{user.name || "Usuário"}</Text>
+            <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{user.name || "Usuário"}</Text>
             {user.email ? (
-              <Text className="text-base mt-2" style={{ color: theme.colors.textSecondary }}>{user.email}</Text>
+              <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary, marginTop: theme.space[2] }}>{user.email}</Text>
             ) : null}
             {roleLabel(user.role) ? (
-              <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>{roleLabel(user.role)}</Text>
+              <Text style={{ ...theme.text.body, color: theme.colors.textMuted, marginTop: theme.space[1] }}>{roleLabel(user.role)}</Text>
             ) : null}
           </View>
         </TintedGlassCard>
 
 
         {/* Estatísticas do Mês */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
+        <View style={{ gap: theme.space[4] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
             <Briefcase size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Estatísticas do Mês</Text>
+            <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Estatísticas do Mês</Text>
           </View>
-          <View className="flex-row gap-4">
+          <View style={{ flexDirection: "row", gap: theme.space[4] }}>
             {/* Total de Horas */}
-            <View className="flex-1">
+            <View style={{ flex: 1 }}>
               <TintedGlassCard variant="light">
-                <View className="items-center py-4">
-                  <Text className="text-4xl font-bold" style={{ color: theme.colors.textPrimary }}>{monthStats.totalHours}</Text>
-                  <Text className="text-base mt-2" style={{ color: theme.colors.textSecondary }}>Horas Trabalhadas</Text>
+                <View style={{ alignItems: "center", paddingVertical: theme.space[4] }}>
+                  <Text style={{ ...theme.text.display, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.totalHours}</Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[2] }}>Horas Trabalhadas</Text>
                 </View>
               </TintedGlassCard>
             </View>
             {/* Total de Plantões */}
-            <View className="flex-1">
+            <View style={{ flex: 1 }}>
               <TintedGlassCard variant="light">
-                <View className="items-center py-4">
-                  <Text className="text-4xl font-bold" style={{ color: theme.colors.textPrimary }}>{monthStats.totalShifts}</Text>
-                  <Text className="text-base mt-2" style={{ color: theme.colors.textSecondary }}>Plantões</Text>
+                <View style={{ alignItems: "center", paddingVertical: theme.space[4] }}>
+                  <Text style={{ ...theme.text.display, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.totalShifts}</Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[2] }}>Plantões</Text>
                 </View>
               </TintedGlassCard>
             </View>
           </View>
           {/* Distribuição de Turnos */}
           <TintedGlassCard variant="light">
-            <Text className="text-lg font-semibold mb-4" style={{ color: theme.colors.textPrimary }}>Distribuição de Turnos</Text>
-            <View className="gap-3">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-base" style={{ color: theme.colors.textSecondary }}>Manhã (7h-13h)</Text>
-                <Text className="text-lg font-bold" style={{ color: theme.colors.textPrimary }}>{monthStats.manha} plantão{monthStats.manha !== 1 ? "ões" : ""}</Text>
+            <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary, marginBottom: theme.space[4] }}>Distribuição de Turnos</Text>
+            <View style={{ gap: theme.space[3] }}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary }}>Manhã (7h-13h)</Text>
+                <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.manha} plantão{monthStats.manha !== 1 ? "ões" : ""}</Text>
               </View>
-              <View className="flex-row items-center justify-between">
-                <Text className="text-base" style={{ color: theme.colors.textSecondary }}>Tarde (13h-19h)</Text>
-                <Text className="text-lg font-bold" style={{ color: theme.colors.textPrimary }}>{monthStats.tarde} plantão{monthStats.tarde !== 1 ? "ões" : ""}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary }}>Tarde (13h-19h)</Text>
+                <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.tarde} plantão{monthStats.tarde !== 1 ? "ões" : ""}</Text>
               </View>
-              <View className="flex-row items-center justify-between">
-                <Text className="text-base" style={{ color: theme.colors.textSecondary }}>Noite (19h-7h)</Text>
-                <Text className="text-lg font-bold" style={{ color: theme.colors.textPrimary }}>{monthStats.noite} plantão{monthStats.noite !== 1 ? "ões" : ""}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary }}>Noite (19h-7h)</Text>
+                <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.noite} plantão{monthStats.noite !== 1 ? "ões" : ""}</Text>
               </View>
             </View>
           </TintedGlassCard>
         </View>
 
         {/* Configurações de Notificações */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
+        <View style={{ gap: theme.space[4] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
             <Bell size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Notificações</Text>
+            <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Notificações</Text>
           </View>
           <TintedGlassCard variant="light">
             {/* Mudanças de Escala */}
-            <View className="rounded-2xl p-4 mb-3" style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}>
-              <View className="flex-row items-center justify-between">
-                <View className="flex-1 pr-4">
-                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Mudanças de Escala</Text>
-                  <Text className="text-base mt-1" style={{ color: theme.colors.textSecondary }}>
+            <View style={profileRowCardStyle}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <View style={{ flex: 1, paddingRight: theme.space[4] }}>
+                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Mudanças de Escala</Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
                     Receber notificações quando uma escala for alterada ou cancelada
                   </Text>
                 </View>
@@ -298,11 +305,11 @@ export default function ProfileScreen() {
             </View>
 
             {/* Lembretes */}
-            <View className="rounded-2xl p-4 mb-3" style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}>
-              <View className="flex-row items-center justify-between">
-                <View className="flex-1 pr-4">
-                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Lembretes de Plantão</Text>
-                  <Text className="text-base mt-1" style={{ color: theme.colors.textSecondary }}>
+            <View style={profileRowCardStyle}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <View style={{ flex: 1, paddingRight: theme.space[4] }}>
+                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Lembretes de Plantão</Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
                     Receber lembrete 30 minutos antes do início do plantão
                   </Text>
                 </View>
@@ -316,11 +323,11 @@ export default function ProfileScreen() {
             </View>
 
             {/* Notificações do HospitalAlert */}
-            <View className="rounded-2xl p-4" style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}>
-              <View className="flex-row items-center justify-between">
-                <View className="flex-1 pr-4">
-                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Integração HospitalAlert</Text>
-                  <Text className="text-base mt-1" style={{ color: theme.colors.textSecondary }}>
+            <View style={[profileRowCardStyle, { marginBottom: 0 }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <View style={{ flex: 1, paddingRight: theme.space[4] }}>
+                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Integração HospitalAlert</Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
                     Receber notificações do sistema HospitalAlert
                   </Text>
                 </View>
@@ -335,20 +342,20 @@ export default function ProfileScreen() {
         </View>
 
         {/* Status de Integração */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
+        <View style={{ gap: theme.space[4] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
             <Link2 size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Integração</Text>
+            <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Integração</Text>
           </View>
           <TintedGlassCard variant="light">
-            <View className="flex-row items-center justify-between">
-              <View className="flex-row items-center gap-3">
-                <View className="w-12 h-12 rounded-full items-center justify-center" style={{ backgroundColor: theme.colors.primarySoft }}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
+                <View style={{ width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.primarySoft }}>
                   <Link2 size={24} color={theme.palette.primary[700]} />
                 </View>
                 <View>
-                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>HospitalAlert</Text>
-                  <Text className="text-base" style={{ color: theme.colors.textSecondary }}>Sistema de alertas hospitalares</Text>
+                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>HospitalAlert</Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>Sistema de alertas hospitalares</Text>
                 </View>
               </View>
               <Badge variant="success">Conectado</Badge>
@@ -555,12 +562,21 @@ export default function ProfileScreen() {
           onPress={handleLogout}
           accessibilityRole="button"
           accessibilityLabel="Sair da conta"
-          className="rounded-2xl p-5 items-center flex-row justify-center gap-3"
-          style={{ backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.danger }}
+          style={{
+            borderRadius: theme.radius.lg,
+            padding: theme.space[5],
+            alignItems: "center",
+            flexDirection: "row",
+            justifyContent: "center",
+            gap: theme.space[3],
+            backgroundColor: "transparent",
+            borderWidth: 1,
+            borderColor: theme.colors.danger,
+          }}
           activeOpacity={0.7}
         >
           <LogOut size={20} color={theme.colors.danger} />
-          <Text className="text-lg font-semibold" style={{ color: theme.colors.danger }}>Sair</Text>
+          <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.danger }}>Sair</Text>
         </TouchableOpacity>
 
         {/* Versão do app */}
@@ -580,3 +596,12 @@ export default function ProfileScreen() {
     </ScreenGradient>
   );
 }
+
+const profileRowCardStyle = {
+  backgroundColor: theme.colors.background,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  borderRadius: theme.radius.lg,
+  padding: theme.space[4],
+  marginBottom: theme.space[3],
+};

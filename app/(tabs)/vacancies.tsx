@@ -206,19 +206,27 @@ export default function VacanciesScreen() {
   }
 
   return (
-    <ScreenGradient variant="light">
-      <ScrollView className="flex-1 px-5 py-4">
+    <ScreenGradient variant="light" scrollable>
         <ScreenContainer>
         {/* Header */}
-        <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Plantões em aberto</Text>
-          <Text className="mt-1 text-base" style={{ color: theme.colors.textSecondary }}>
+        <View style={{ marginBottom: theme.space[6] }}>
+          <Text style={{ ...theme.text.titleLg, color: theme.colors.textPrimary, fontWeight: theme.weight.bold }}>Plantões em aberto</Text>
+          <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
             {vacancies.length} plantões aguardando profissional
           </Text>
         </View>
 
         {/* Filtros */}
-        <View className="mb-6 rounded-2xl border bg-white p-4" style={{ borderColor: theme.colors.border }}>
+        <View
+          style={{
+            marginBottom: theme.space[5],
+            borderRadius: theme.radius.lg,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            backgroundColor: theme.colors.surface,
+            padding: theme.space[4],
+          }}
+        >
           <ShiftFilters
             hospitals={hospitals}
             sectors={sectors}
@@ -230,11 +238,11 @@ export default function VacanciesScreen() {
         </View>
 
         {/* Filtro por modalidade (chips) — PR #66 */}
-        <View className="mb-6">
+        <View style={{ marginBottom: theme.space[5] }}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+            contentContainerStyle={{ gap: theme.space[2], paddingRight: theme.space[2] }}
           >
             {([
               { label: "Todos", value: undefined },
@@ -275,23 +283,28 @@ export default function VacanciesScreen() {
 
         {/* Loading state para vagas */}
         {vacanciesLoading && (
-          <View className="flex-1 items-center justify-center py-20">
+          <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: theme.space[20] }}>
             <ActivityIndicator size="large" color={theme.colors.primary} />
-            <Text className="mt-4 text-base" style={{ color: theme.colors.textSecondary }}>Carregando vagas...</Text>
+            <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary, marginTop: theme.space[4] }}>Carregando vagas...</Text>
           </View>
         )}
 
         {/* Lista de vagas */}
         {!vacanciesLoading && vacancies.length > 0 ? (
-          <View className="gap-4 pb-6">
+          <View style={{ gap: theme.space[4], paddingBottom: theme.space[6] }}>
             {vacancies.map((vacancy) => {
               const isAssumed = assumedVacancies.has(vacancy.id);
               const modalityLabel = formatModalityBadge(vacancy.modality, vacancy.coverageType);
               return (
                 <View
                   key={vacancy.id}
-                  className="rounded-2xl border p-4"
-                  style={{ backgroundColor: theme.colors.surface, borderColor: theme.colors.border }}
+                  style={{
+                    backgroundColor: theme.colors.surface,
+                    borderColor: theme.colors.border,
+                    borderWidth: 1,
+                    borderRadius: theme.radius.lg,
+                    padding: theme.space[4],
+                  }}
                 >
                   {/* Cabeçalho do card */}
                   <View className="flex-row items-center justify-between mb-3">
@@ -398,18 +411,17 @@ export default function VacanciesScreen() {
             })}
           </View>
         ) : !vacanciesLoading ? (
-          <View className="flex-1 items-center justify-center py-20">
+          <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: theme.space[20] }}>
             <Briefcase size={64} color={theme.colors.borderStrong} />
-            <Text className="mt-4 text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+            <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary, marginTop: theme.space[4] }}>
               Nenhum plantão em aberto
             </Text>
-            <Text className="mt-2 text-sm text-center px-6" style={{ color: theme.colors.textMuted }}>
+            <Text style={{ ...theme.text.body, color: theme.colors.textMuted, marginTop: theme.space[2], textAlign: "center", paddingHorizontal: theme.space[6] }}>
               Todos os plantões deste período já estão atribuídos. Tente outro hospital, setor ou data nos filtros acima.
             </Text>
           </View>
         ) : null}
         </ScreenContainer>
-      </ScrollView>
     </ScreenGradient>
   );
 }

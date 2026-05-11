@@ -1,5 +1,6 @@
 import { View, Text, TouchableOpacity, ActivityIndicator, Platform, Alert, ScrollView, TextInput } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
 import { useState, useCallback, useEffect, useMemo } from "react";
@@ -464,12 +465,12 @@ export default function PendingScreen() {
   }
 
   return (
-    <ScreenGradient>
-      <ScrollView className="flex-1 px-5 py-4">
+    <ScreenGradient variant="light" scrollable>
+      <ScreenContainer>
         {/* Header */}
-        <View className="mb-6">
-          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Solicitações</Text>
-          <Text className="mt-1 text-base" style={{ color: theme.colors.textSecondary }}>
+        <View style={{ marginBottom: theme.space[6] }}>
+          <Text style={{ ...theme.text.titleLg, color: theme.colors.textPrimary, fontWeight: theme.weight.bold }}>Solicitações</Text>
+          <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
             {pendingAssignments?.length || 0} alocações aguardando aprovação
           </Text>
         </View>
@@ -589,7 +590,16 @@ export default function PendingScreen() {
         )}
 
         {/* Filtros */}
-        <View className="mb-4">
+        <View
+          style={{
+            marginBottom: theme.space[4],
+            borderRadius: theme.radius.lg,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            backgroundColor: theme.colors.surface,
+            padding: theme.space[4],
+          }}
+        >
           <ShiftFilters
             hospitals={hospitals}
             sectors={sectors}
@@ -601,8 +611,8 @@ export default function PendingScreen() {
         </View>
 
         {/* Filtro por modalidade — passa direto pro listPending (PR #68) */}
-        <View className="mb-6">
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+        <View style={{ marginBottom: theme.space[6] }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: theme.space[2] }}>
             {([
               { value: undefined, label: "Todos" },
               { value: "PLANTAO" as const, label: "Plantão" },
@@ -637,7 +647,7 @@ export default function PendingScreen() {
 
         {/* Lista de pendências */}
         {pendingAssignments && pendingAssignments.length > 0 ? (
-          <View className="gap-4 pb-6">
+          <View style={{ gap: theme.space[4], paddingBottom: theme.space[6] }}>
             {pendingAssignments.map((pending) => {
               // Cast defensivo enquanto o tipo do tRPC nem sempre infere os
               // 4 campos que listPending começou a expor em PR #68.
@@ -658,8 +668,13 @@ export default function PendingScreen() {
               return (
               <View
                 key={pending.assignmentId}
-                className="rounded-2xl border p-4"
-                style={{ backgroundColor: theme.colors.surface, borderColor: theme.colors.border }}
+                style={{
+                  backgroundColor: theme.colors.surface,
+                  borderColor: theme.colors.border,
+                  borderWidth: 1,
+                  borderRadius: theme.radius.lg,
+                  padding: theme.space[4],
+                }}
               >
                 {/* Cabeçalho do card */}
                 <View className="flex-row items-center justify-between mb-3">
@@ -767,17 +782,17 @@ export default function PendingScreen() {
             })}
           </View>
         ) : (
-          <View className="flex-1 items-center justify-center py-20">
+          <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: theme.space[20] }}>
             <ClipboardCheck size={64} color={theme.colors.borderStrong} />
-            <Text className="mt-4 text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+            <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary, marginTop: theme.space[4] }}>
               Nenhuma solicitação no momento
             </Text>
-            <Text className="mt-2 text-sm text-center px-6" style={{ color: theme.colors.textMuted }}>
+            <Text style={{ ...theme.text.body, color: theme.colors.textMuted, marginTop: theme.space[2], textAlign: "center", paddingHorizontal: theme.space[6] }}>
               As solicitações de plantão aparecem aqui quando profissionais pedem para assumir vagas.
             </Text>
           </View>
         )}
-      </ScrollView>
+      </ScreenContainer>
     </ScreenGradient>
   );
 }
