@@ -84,6 +84,31 @@ function formatMonthRange(weekStart: string, weekCount: number): string {
   return `${sm}/${start.getFullYear()} – ${em}/${end.getFullYear()}`;
 }
 
+function buildEmptyAgendaWeeks(weekStart: string, weekCount: number): AgendaWeek[] {
+  const baseMon = startOfWeekMon(new Date(`${weekStart}T00:00:00`));
+
+  return Array.from({ length: weekCount }, (_, weekIndex) => {
+    const wkStart = new Date(baseMon);
+    wkStart.setDate(baseMon.getDate() + weekIndex * 7);
+
+    const days = Array.from({ length: 7 }, (_, dayIndex) => {
+      const dayDate = new Date(wkStart);
+      dayDate.setDate(wkStart.getDate() + dayIndex);
+
+      return {
+        date: toDateKey(dayDate),
+        dow: dayDate.getDay(),
+        groups: [],
+      };
+    });
+
+    return {
+      weekStart: toDateKey(wkStart),
+      days,
+    };
+  });
+}
+
 // ─── Borda do shift segundo o status (T3 do audit) ─────────────────────
 function shiftBorderColor(status: string): string {
   if (status === "OCUPADO") return theme.colors.success;
@@ -115,6 +140,11 @@ export default function AgendaScreen() {
     },
     { enabled: !!user?.id },
   );
+
+  const weeksForRender = useMemo(() => {
+    if (data?.weeks && data.weeks.length > 0) return data.weeks;
+    return buildEmptyAgendaWeeks(anchorWeekStart, weeksCount);
+  }, [anchorWeekStart, data?.weeks, weeksCount]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -217,7 +247,7 @@ export default function AgendaScreen() {
           </View>
         ) : isDesktop ? (
           <DesktopGrid
-            weeks={data?.weeks ?? []}
+            weeks={weeksForRender}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
             }
@@ -227,7 +257,7 @@ export default function AgendaScreen() {
           />
         ) : (
           <MobileDayList
-            weeks={data?.weeks ?? []}
+            weeks={weeksForRender}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
             }
