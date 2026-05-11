@@ -454,8 +454,6 @@ export const shiftsRouter = router({
           startAt: shiftInstances.startAt,
           endAt: shiftInstances.endAt,
           status: shiftInstances.status,
-          modality: shiftInstances.modality,
-          coverageType: shiftInstances.coverageType,
           hospitalName: hospitals.name,
           sectorName: sectors.name,
         })
@@ -597,8 +595,8 @@ export const shiftsRouter = router({
           startAt: r.startAt,
           endAt: r.endAt,
           status: r.status,
-          modality: r.modality,
-          coverageType: r.coverageType,
+          modality: "PLANTAO",
+          coverageType: null,
           professionalNames: myList
             .map((a) => a.professionalName ?? "—")
             .filter((n) => n.trim().length > 0),
