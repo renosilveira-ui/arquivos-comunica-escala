@@ -185,8 +185,30 @@ export const shiftsRouter = router({
       if (!db) throw new Error("Database not available");
 
       const [instance] = await db
-        .select()
+        .select({
+          id: shiftInstances.id,
+          institutionId: shiftInstances.institutionId,
+          hospitalId: shiftInstances.hospitalId,
+          sectorId: shiftInstances.sectorId,
+          label: shiftInstances.label,
+          startAt: shiftInstances.startAt,
+          endAt: shiftInstances.endAt,
+          status: shiftInstances.status,
+          modality: shiftInstances.modality,
+          coverageType: shiftInstances.coverageType,
+          paymentModel: shiftInstances.paymentModel,
+          productivityCapBrl: shiftInstances.productivityCapBrl,
+          createdBy: shiftInstances.createdBy,
+          createdAt: shiftInstances.createdAt,
+          updatedAt: shiftInstances.updatedAt,
+          hospitalName: hospitals.name,
+          sectorName: sectors.name,
+          sectorCategory: sectors.category,
+          sectorColor: sectors.color,
+        })
         .from(shiftInstances)
+        .leftJoin(hospitals, eq(shiftInstances.hospitalId, hospitals.id))
+        .leftJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
         .where(
           and(
             eq(shiftInstances.id, input.id),
@@ -212,8 +234,24 @@ export const shiftsRouter = router({
         .limit(1);
 
       const assignments = await db
-        .select()
+        .select({
+          id: shiftAssignmentsV2.id,
+          shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
+          institutionId: shiftAssignmentsV2.institutionId,
+          hospitalId: shiftAssignmentsV2.hospitalId,
+          sectorId: shiftAssignmentsV2.sectorId,
+          professionalId: shiftAssignmentsV2.professionalId,
+          assignmentType: shiftAssignmentsV2.assignmentType,
+          status: shiftAssignmentsV2.status,
+          isActive: shiftAssignmentsV2.isActive,
+          createdBy: shiftAssignmentsV2.createdBy,
+          createdAt: shiftAssignmentsV2.createdAt,
+          updatedAt: shiftAssignmentsV2.updatedAt,
+          professionalName: professionals.name,
+          userId: professionals.userId,
+        })
         .from(shiftAssignmentsV2)
+        .leftJoin(professionals, eq(shiftAssignmentsV2.professionalId, professionals.id))
         .where(
           and(
             eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
