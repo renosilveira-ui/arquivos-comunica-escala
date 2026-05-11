@@ -19,6 +19,7 @@
  *   5. Creates the matching `professionals` record (GESTOR_PLUS)
  *   6. Links the admin to the institution via `professional_institutions`
  *   7. Grants `manager_scope` over each of the 3 sectors
+ *   8. Creates the default shift templates used by the create-shift form
  *
  * If the admin user already exists, the password is NOT regenerated — the
  * operator can rotate via the app UI or by deleting the user row first.
@@ -37,6 +38,7 @@ import {
   professionalInstitutions,
   professionals,
   sectors,
+  shiftTemplates,
   users,
 } from "../drizzle/schema";
 import { resolveSslConfig } from "../server/_core/db-ssl";
@@ -66,6 +68,12 @@ const SECTORS: Array<{
   { name: "Sala de Recuperação", category: "cirurgico", color: "#16A34A" },
   { name: "Setor de Imagem", category: "servico", color: "#A855F7" },
 ];
+
+const SHIFT_TEMPLATES = [
+  { name: "Manhã", startTime: "07:00:00", endTime: "13:00:00", priority: 10 },
+  { name: "Tarde", startTime: "13:00:00", endTime: "19:00:00", priority: 20 },
+  { name: "Noite", startTime: "19:00:00", endTime: "07:00:00", priority: 30 },
+] as const;
 
 const ADMIN = {
   email: "renosilveira@gmail.com",
@@ -306,6 +314,38 @@ async function main() {
       active: true,
     });
     console.log(`✓ Manager scope on "${sectorName}" granted`);
+  }
+
+  // 8. Shift templates ------------------------------------------------------
+  // Create hospital-level defaults. They are intentionally not sector-scoped,
+  // so every sector in this staging hospital can use Nova Escala immediately.
+  for (const template of SHIFT_TEMPLATES) {
+    const existing = await db
+      .select()
+      .from(shiftTemplates)
+      .where(
+        and(
+          eq(shiftTemplates.institutionId, institutionId),
+          eq(shiftTemplates.hospitalId, hospitalId),
+          eq(shiftTemplates.name, template.name),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) {
+      console.log(`✓ Shift template "${template.name}" exists`);
+      continue;
+    }
+    await db.insert(shiftTemplates).values({
+      institutionId,
+      hospitalId,
+      sectorId: null,
+      name: template.name,
+      startTime: template.startTime,
+      endTime: template.endTime,
+      isActive: true,
+      priority: template.priority,
+    });
+    console.log(`✓ Shift template "${template.name}" created`);
   }
 
   // -------------------------------------------------------------------------
