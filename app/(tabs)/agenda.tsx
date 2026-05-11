@@ -9,9 +9,10 @@ import {
   Platform,
 } from "react-native";
 import { useState, useMemo } from "react";
-import { ChevronLeft, ChevronRight, Plus, Rows3 } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
+import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { useAuth } from "@/hooks/use-auth";
@@ -76,7 +77,20 @@ function formatMonthRange(weekStart: string, weekCount: number): string {
   const start = new Date(`${weekStart}T00:00:00`);
   const end = new Date(start);
   end.setDate(end.getDate() + weekCount * 7 - 1);
-  const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  const months = [
+    "Jan",
+    "Fev",
+    "Mar",
+    "Abr",
+    "Mai",
+    "Jun",
+    "Jul",
+    "Ago",
+    "Set",
+    "Out",
+    "Nov",
+    "Dez",
+  ];
   const sm = months[start.getMonth()];
   const em = months[end.getMonth()];
   if (sm === em && start.getFullYear() === end.getFullYear()) {
@@ -85,7 +99,10 @@ function formatMonthRange(weekStart: string, weekCount: number): string {
   return `${sm}/${start.getFullYear()} – ${em}/${end.getFullYear()}`;
 }
 
-function buildEmptyAgendaWeeks(weekStart: string, weekCount: number): AgendaWeek[] {
+function buildEmptyAgendaWeeks(
+  weekStart: string,
+  weekCount: number,
+): AgendaWeek[] {
   const baseMon = startOfWeekMon(new Date(`${weekStart}T00:00:00`));
 
   return Array.from({ length: weekCount }, (_, weekIndex) => {
@@ -195,12 +212,26 @@ export default function AgendaScreen() {
             >
               Agenda
             </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: theme.space[2],
+              }}
+            >
               <TouchableOpacity onPress={goPrev} style={navBtnStyle}>
                 <ChevronLeft size={20} color={theme.colors.textPrimary} />
               </TouchableOpacity>
               <TouchableOpacity onPress={goToday} style={navTextBtnStyle}>
-                <Text style={{ color: theme.colors.primary, fontWeight: "600", fontSize: 13 }}>Hoje</Text>
+                <Text
+                  style={{
+                    color: theme.colors.primary,
+                    fontWeight: "600",
+                    fontSize: 13,
+                  }}
+                >
+                  Hoje
+                </Text>
               </TouchableOpacity>
               <Text
                 style={{
@@ -219,7 +250,13 @@ export default function AgendaScreen() {
             </View>
           </View>
 
-          <View style={{ flexDirection: "row", gap: theme.space[3], flexWrap: "wrap" }}>
+          <View
+            style={{
+              flexDirection: "row",
+              gap: theme.space[3],
+              flexWrap: "wrap",
+            }}
+          >
             <SegmentedGroup>
               <ScopePill
                 label="Geral"
@@ -249,7 +286,9 @@ export default function AgendaScreen() {
 
         {/* Conteúdo */}
         {isLoading && !data ? (
-          <View style={{ alignItems: "center", paddingVertical: theme.space[10] }}>
+          <View
+            style={{ alignItems: "center", paddingVertical: theme.space[10] }}
+          >
             <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
         ) : viewMode === "panorama" ? (
@@ -258,10 +297,17 @@ export default function AgendaScreen() {
             todayKey={todayKey}
             isDesktop={isDesktop}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={theme.colors.primary}
+              />
             }
             onShiftPress={(id) =>
-              router.push({ pathname: "/shift-details", params: { id: String(id) } })
+              router.push({
+                pathname: "/shift-details",
+                params: { id: String(id) },
+              })
             }
           />
         ) : isDesktop ? (
@@ -269,10 +315,17 @@ export default function AgendaScreen() {
             weeks={weeksForRender}
             todayKey={todayKey}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={theme.colors.primary}
+              />
             }
             onShiftPress={(id) =>
-              router.push({ pathname: "/shift-details", params: { id: String(id) } })
+              router.push({
+                pathname: "/shift-details",
+                params: { id: String(id) },
+              })
             }
           />
         ) : (
@@ -280,10 +333,17 @@ export default function AgendaScreen() {
             weeks={weeksForRender}
             todayKey={todayKey}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={theme.colors.primary}
+              />
             }
             onShiftPress={(id) =>
-              router.push({ pathname: "/shift-details", params: { id: String(id) } })
+              router.push({
+                pathname: "/shift-details",
+                params: { id: String(id) },
+              })
             }
           />
         )}
@@ -335,7 +395,15 @@ function SegmentedGroup({ children }: { children: React.ReactNode }) {
   );
 }
 
-function ScopePill({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function ScopePill({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -392,402 +460,6 @@ type AgendaWeek = {
   days: AgendaDay[];
 };
 
-type PanoramaRow = {
-  key: string;
-  hospitalName: string;
-  sectorName: string;
-  days: Record<string, AgendaShift[]>;
-};
-
-function buildPanoramaRows(week: AgendaWeek): PanoramaRow[] {
-  const rows = new Map<string, PanoramaRow>();
-
-  for (const day of week.days) {
-    for (const group of day.groups) {
-      const key = `${group.hospitalId}-${group.sectorId}`;
-      const row =
-        rows.get(key) ??
-        {
-          key,
-          hospitalName: group.hospitalName,
-          sectorName: group.sectorName,
-          days: {},
-        };
-      row.days[day.date] = group.shifts;
-      rows.set(key, row);
-    }
-  }
-
-  return Array.from(rows.values()).sort((a, b) => {
-    const hospital = a.hospitalName.localeCompare(b.hospitalName, "pt-BR");
-    if (hospital !== 0) return hospital;
-    return a.sectorName.localeCompare(b.sectorName, "pt-BR");
-  });
-}
-
-function summarizeWeeks(weeks: AgendaWeek[]) {
-  let shifts = 0;
-  let open = 0;
-  let pending = 0;
-  let mine = 0;
-
-  for (const week of weeks) {
-    for (const day of week.days) {
-      for (const group of day.groups) {
-        for (const shift of group.shifts) {
-          shifts += 1;
-          if (shift.status === "VAGO") open += 1;
-          if (shift.status === "PENDENTE") pending += 1;
-          if (shift.isMine) mine += 1;
-        }
-      }
-    }
-  }
-
-  return { shifts, open, pending, mine };
-}
-
-function PanoramicAgenda({
-  weeks,
-  todayKey,
-  isDesktop,
-  refreshControl,
-  onShiftPress,
-}: {
-  weeks: AgendaWeek[];
-  todayKey: string;
-  isDesktop: boolean;
-  refreshControl: React.ReactElement<import("react-native").RefreshControlProps>;
-  onShiftPress: (id: number) => void;
-}) {
-  const summary = useMemo(() => summarizeWeeks(weeks), [weeks]);
-
-  if (!isDesktop) {
-    return (
-      <MobilePanorama
-        weeks={weeks}
-        todayKey={todayKey}
-        refreshControl={refreshControl}
-        onShiftPress={onShiftPress}
-      />
-    );
-  }
-
-  return (
-    <View style={{ flexDirection: "row", gap: theme.space[4], alignItems: "flex-start" }}>
-      <ScrollView
-        style={{ flex: 1 }}
-        refreshControl={refreshControl}
-        contentContainerStyle={{ paddingBottom: theme.space[10] }}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={{ gap: theme.space[4] }}>
-          {weeks.map((week) => {
-            const rows = buildPanoramaRows(week);
-            return (
-              <View
-                key={week.weekStart}
-                style={{
-                  borderWidth: 1,
-                  borderColor: theme.colors.border,
-                  borderRadius: theme.radius.lg,
-                  overflow: "hidden",
-                  backgroundColor: theme.colors.surface,
-                }}
-              >
-                <View
-                  style={{
-                    flexDirection: "row",
-                    backgroundColor: theme.colors.surfaceAlt,
-                    borderBottomWidth: 1,
-                    borderBottomColor: theme.colors.border,
-                  }}
-                >
-                  <View style={{ width: 220, padding: theme.space[3], justifyContent: "center" }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-                      <Rows3 size={16} color={theme.colors.primary} />
-                      <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary, fontWeight: theme.weight.bold, textTransform: "uppercase" }}>
-                        Hospital / setor
-                      </Text>
-                    </View>
-                  </View>
-                  {week.days.map((day) => {
-                    const isToday = day.date === todayKey;
-                    return (
-                      <View
-                        key={day.date}
-                        style={{
-                          flex: 1,
-                          minWidth: 104,
-                          padding: theme.space[3],
-                          borderLeftWidth: 1,
-                          borderLeftColor: theme.colors.border,
-                          backgroundColor: isToday ? theme.colors.primarySoft : theme.colors.surfaceAlt,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            ...theme.text.caption,
-                            color: isToday ? theme.colors.primary : theme.colors.textSecondary,
-                            fontWeight: theme.weight.bold,
-                          }}
-                        >
-                          {formatDayHeader(day.date, day.dow)}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-
-                {rows.length === 0 ? (
-                  <View style={{ padding: theme.space[6], alignItems: "center" }}>
-                    <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
-                      Sem plantões nesta semana.
-                    </Text>
-                  </View>
-                ) : (
-                  rows.map((row) => (
-                    <View
-                      key={row.key}
-                      style={{
-                        flexDirection: "row",
-                        borderBottomWidth: 1,
-                        borderBottomColor: theme.colors.border,
-                      }}
-                    >
-                      <View style={{ width: 220, padding: theme.space[3] }}>
-                        <Text numberOfLines={1} style={{ ...theme.text.body, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
-                          {row.hospitalName}
-                        </Text>
-                        <Text numberOfLines={1} style={{ ...theme.text.caption, color: theme.colors.textMuted, marginTop: theme.space[1] }}>
-                          {row.sectorName}
-                        </Text>
-                      </View>
-                      {week.days.map((day) => {
-                        const shifts = row.days[day.date] ?? [];
-                        return (
-                          <View
-                            key={day.date}
-                            style={{
-                              flex: 1,
-                              minWidth: 104,
-                              padding: theme.space[2],
-                              borderLeftWidth: 1,
-                              borderLeftColor: theme.colors.border,
-                              gap: theme.space[1],
-                            }}
-                          >
-                            {shifts.length === 0 ? (
-                              <Text style={{ ...theme.text.caption, color: theme.colors.textDisabled, textAlign: "center" }}>—</Text>
-                            ) : (
-                              shifts.slice(0, 3).map((shift) => (
-                                <TouchableOpacity
-                                  key={shift.id}
-                                  onPress={() => onShiftPress(shift.id)}
-                                  activeOpacity={0.75}
-                                  style={{
-                                    borderLeftWidth: 3,
-                                    borderLeftColor: shiftBorderColor(shift.status),
-                                    backgroundColor: shift.isMine ? theme.colors.primarySoft : theme.colors.surfaceAlt,
-                                    borderRadius: theme.radius.sm,
-                                    paddingHorizontal: theme.space[2],
-                                    paddingVertical: theme.space[1],
-                                  }}
-                                >
-                                  <Text numberOfLines={1} style={{ ...theme.text.caption, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
-                                    {formatTimeRange(shift.startAt, shift.endAt)}
-                                  </Text>
-                                  <Text numberOfLines={1} style={{ fontSize: 10, lineHeight: 14, color: theme.colors.textMuted }}>
-                                    {shift.professionalNames[0] ?? shift.status}
-                                  </Text>
-                                </TouchableOpacity>
-                              ))
-                            )}
-                            {shifts.length > 3 ? (
-                              <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
-                                +{shifts.length - 3}
-                              </Text>
-                            ) : null}
-                          </View>
-                        );
-                      })}
-                    </View>
-                  ))
-                )}
-              </View>
-            );
-          })}
-        </View>
-      </ScrollView>
-
-      <View
-        style={{
-          width: 260,
-          borderWidth: 1,
-          borderColor: theme.colors.border,
-          borderRadius: theme.radius.lg,
-          backgroundColor: theme.colors.surface,
-          padding: theme.space[4],
-          gap: theme.space[3],
-        }}
-      >
-        <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
-          Resumo do período
-        </Text>
-        <SummaryLine label="Plantões" value={summary.shifts} />
-        <SummaryLine label="Em aberto" value={summary.open} accent="warning" />
-        <SummaryLine label="Pendentes" value={summary.pending} accent="warning" />
-        <SummaryLine label="Meus plantões" value={summary.mine} accent="primary" />
-        <View style={{ height: 1, backgroundColor: theme.colors.border, marginVertical: theme.space[1] }} />
-        <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
-          Use esta visão para localizar rapidamente hospitais e setores que concentram demanda.
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-function MobilePanorama({
-  weeks,
-  todayKey,
-  refreshControl,
-  onShiftPress,
-}: {
-  weeks: AgendaWeek[];
-  todayKey: string;
-  refreshControl: React.ReactElement<import("react-native").RefreshControlProps>;
-  onShiftPress: (id: number) => void;
-}) {
-  const flatDays = useMemo(() => weeks.flatMap((week) => week.days), [weeks]);
-  const summary = useMemo(() => summarizeWeeks(weeks), [weeks]);
-
-  return (
-    <ScrollView
-      style={{ flex: 1 }}
-      refreshControl={refreshControl}
-      contentContainerStyle={{ paddingBottom: theme.space[10], gap: theme.space[4] }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View
-        style={{
-          borderWidth: 1,
-          borderColor: theme.colors.border,
-          borderRadius: theme.radius.lg,
-          backgroundColor: theme.colors.surface,
-          padding: theme.space[4],
-          gap: theme.space[3],
-        }}
-      >
-        <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
-          Seu panorama
-        </Text>
-        <View style={{ flexDirection: "row", gap: theme.space[3], flexWrap: "wrap" }}>
-          <SummaryPill label="Meus" value={summary.mine} />
-          <SummaryPill label="Abertos" value={summary.open} />
-          <SummaryPill label="Pendentes" value={summary.pending} />
-        </View>
-      </View>
-
-      {flatDays.map((day) => {
-        const isToday = day.date === todayKey;
-        const total = day.groups.reduce((acc, group) => acc + group.shifts.length, 0);
-        return (
-          <View
-            key={day.date}
-            style={{
-              borderWidth: 1,
-              borderColor: isToday ? theme.colors.primary : theme.colors.border,
-              borderRadius: theme.radius.lg,
-              backgroundColor: theme.colors.surface,
-              padding: theme.space[4],
-              gap: theme.space[3],
-            }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <Text style={{ ...theme.text.title, color: isToday ? theme.colors.primary : theme.colors.textPrimary, fontWeight: theme.weight.bold }}>
-                {formatDayHeader(day.date, day.dow)}
-              </Text>
-              <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
-                {total} plantões
-              </Text>
-            </View>
-            {day.groups.length === 0 ? (
-              <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
-                Nenhum plantão listado.
-              </Text>
-            ) : (
-              day.groups.map((group) => (
-                <View key={`${group.hospitalId}-${group.sectorId}`} style={{ gap: theme.space[2] }}>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
-                    {group.hospitalName} / {group.sectorName}
-                  </Text>
-                  {group.shifts.map((shift) => (
-                    <TouchableOpacity
-                      key={shift.id}
-                      onPress={() => onShiftPress(shift.id)}
-                      style={{
-                        borderLeftWidth: 3,
-                        borderLeftColor: shiftBorderColor(shift.status),
-                        backgroundColor: shift.isMine ? theme.colors.primarySoft : theme.colors.surfaceAlt,
-                        borderRadius: theme.radius.md,
-                        padding: theme.space[3],
-                      }}
-                    >
-                      <Text style={{ ...theme.text.body, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
-                        {formatTimeRange(shift.startAt, shift.endAt)} · {shift.label}
-                      </Text>
-                      <Text style={{ ...theme.text.caption, color: theme.colors.textMuted, marginTop: theme.space[1] }}>
-                        {shift.professionalNames.join(", ") || shift.status}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              ))
-            )}
-          </View>
-        );
-      })}
-    </ScrollView>
-  );
-}
-
-function SummaryLine({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: number;
-  accent?: "primary" | "warning";
-}) {
-  const color = accent === "primary" ? theme.colors.primary : accent === "warning" ? theme.palette.warning[700] : theme.colors.textPrimary;
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-      <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>{label}</Text>
-      <Text style={{ ...theme.text.title, color, fontWeight: theme.weight.bold }}>{value}</Text>
-    </View>
-  );
-}
-
-function SummaryPill({ label, value }: { label: string; value: number }) {
-  return (
-    <View
-      style={{
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: theme.radius.full,
-        backgroundColor: theme.colors.surfaceAlt,
-        paddingHorizontal: theme.space[3],
-        paddingVertical: theme.space[2],
-      }}
-    >
-      <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary, fontWeight: theme.weight.semibold }}>
-        {label}: {value}
-      </Text>
-    </View>
-  );
-}
-
 function DesktopGrid({
   weeks,
   todayKey,
@@ -796,7 +468,9 @@ function DesktopGrid({
 }: {
   weeks: AgendaWeek[];
   todayKey: string;
-  refreshControl: React.ReactElement<import("react-native").RefreshControlProps>;
+  refreshControl: React.ReactElement<
+    import("react-native").RefreshControlProps
+  >;
   onShiftPress: (id: number) => void;
 }) {
   return (
@@ -819,7 +493,9 @@ function DesktopGrid({
                     flex: 1,
                     paddingVertical: theme.space[2],
                     paddingHorizontal: theme.space[2],
-                    backgroundColor: isToday ? theme.colors.primarySoft : theme.colors.surfaceAlt,
+                    backgroundColor: isToday
+                      ? theme.colors.primarySoft
+                      : theme.colors.surfaceAlt,
                     borderTopWidth: isToday ? 2 : 0,
                     borderTopColor: theme.colors.primary,
                     borderRightWidth: 1,
@@ -830,7 +506,9 @@ function DesktopGrid({
                     style={{
                       fontSize: 12,
                       fontWeight: "700",
-                      color: isToday ? theme.colors.primary : theme.colors.textSecondary,
+                      color: isToday
+                        ? theme.colors.primary
+                        : theme.colors.textSecondary,
                       letterSpacing: 0.5,
                     }}
                   >
@@ -864,7 +542,13 @@ function DesktopGrid({
               >
                 {day.groups.length === 0 ? (
                   <View style={{ paddingVertical: theme.space[3] }}>
-                    <Text style={{ fontSize: 11, color: theme.colors.textDisabled, textAlign: "center" }}>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: theme.colors.textDisabled,
+                        textAlign: "center",
+                      }}
+                    >
                       —
                     </Text>
                   </View>
@@ -921,9 +605,10 @@ function DesktopGroupBlock({
 
       {/* Lista de shifts */}
       {group.shifts.map((shift) => {
-        const names = shift.professionalNames.length > 0
-          ? shift.professionalNames.join(", ")
-          : "VAGO";
+        const names =
+          shift.professionalNames.length > 0
+            ? shift.professionalNames.join(", ")
+            : "VAGO";
         return (
           <TouchableOpacity
             key={shift.id}
@@ -935,7 +620,9 @@ function DesktopGroupBlock({
               paddingLeft: theme.space[2],
               paddingVertical: theme.space[1],
               marginBottom: 4,
-              backgroundColor: shift.isMine ? theme.colors.primarySoft : "transparent",
+              backgroundColor: shift.isMine
+                ? theme.colors.primarySoft
+                : "transparent",
               borderRadius: theme.radius.sm,
             }}
           >
@@ -949,7 +636,13 @@ function DesktopGroupBlock({
             >
               {names}
             </Text>
-            <Text style={{ fontSize: 10, color: theme.colors.textMuted, marginTop: 1 }}>
+            <Text
+              style={{
+                fontSize: 10,
+                color: theme.colors.textMuted,
+                marginTop: 1,
+              }}
+            >
               {formatTimeRange(shift.startAt, shift.endAt)}
             </Text>
           </TouchableOpacity>
@@ -968,15 +661,14 @@ function MobileDayList({
 }: {
   weeks: AgendaWeek[];
   todayKey: string;
-  refreshControl: React.ReactElement<import("react-native").RefreshControlProps>;
+  refreshControl: React.ReactElement<
+    import("react-native").RefreshControlProps
+  >;
   onShiftPress: (id: number) => void;
 }) {
   // Linealiza dias com pelo menos 1 grupo, em ordem cronológica
   const flatDays = useMemo(
-    () =>
-      weeks.flatMap((w) =>
-        w.days.filter((d) => d.groups.length > 0),
-      ),
+    () => weeks.flatMap((w) => w.days.filter((d) => d.groups.length > 0)),
     [weeks],
   );
 
@@ -988,7 +680,9 @@ function MobileDayList({
       showsVerticalScrollIndicator={false}
     >
       {flatDays.length === 0 ? (
-        <View style={{ paddingVertical: theme.space[10], alignItems: "center" }}>
+        <View
+          style={{ paddingVertical: theme.space[10], alignItems: "center" }}
+        >
           <Text style={{ color: theme.colors.textMuted }}>
             Nenhum plantão neste período.
           </Text>
@@ -1003,7 +697,9 @@ function MobileDayList({
                 style={{
                   paddingVertical: theme.space[2],
                   paddingHorizontal: theme.space[3],
-                  backgroundColor: isToday ? theme.colors.primarySoft : theme.colors.surfaceAlt,
+                  backgroundColor: isToday
+                    ? theme.colors.primarySoft
+                    : theme.colors.surfaceAlt,
                   borderRadius: theme.radius.md,
                   borderLeftWidth: isToday ? 3 : 0,
                   borderLeftColor: theme.colors.primary,
@@ -1014,7 +710,9 @@ function MobileDayList({
                   style={{
                     fontSize: 14,
                     fontWeight: "700",
-                    color: isToday ? theme.colors.primary : theme.colors.textPrimary,
+                    color: isToday
+                      ? theme.colors.primary
+                      : theme.colors.textPrimary,
                     letterSpacing: 0.3,
                   }}
                 >
@@ -1059,7 +757,9 @@ function MobileDayList({
                         paddingLeft: theme.space[3],
                         paddingVertical: theme.space[2],
                         marginBottom: 4,
-                        backgroundColor: shift.isMine ? theme.colors.primarySoft : "transparent",
+                        backgroundColor: shift.isMine
+                          ? theme.colors.primarySoft
+                          : "transparent",
                         borderRadius: theme.radius.sm,
                       }}
                     >
@@ -1074,8 +774,15 @@ function MobileDayList({
                           ? shift.professionalNames.join(", ")
                           : "VAGO"}
                       </Text>
-                      <Text style={{ fontSize: 12, color: theme.colors.textMuted, marginTop: 2 }}>
-                        {formatTimeRange(shift.startAt, shift.endAt)} • {shift.label}
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color: theme.colors.textMuted,
+                          marginTop: 2,
+                        }}
+                      >
+                        {formatTimeRange(shift.startAt, shift.endAt)} •{" "}
+                        {shift.label}
                       </Text>
                     </TouchableOpacity>
                   ))}
