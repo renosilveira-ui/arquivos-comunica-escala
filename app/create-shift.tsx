@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, ScrollView, Platform, Modal, Pressable, Keyboard, Alert } from "react-native";
+import { useState, useEffect, type ReactNode } from "react";
+import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, Platform, Modal, Pressable, Keyboard, Alert, StyleSheet, useWindowDimensions } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { theme } from "@/lib/theme";
@@ -8,10 +8,10 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, Calendar, Clock, Repeat } from "lucide-react-native";
+import { ChevronLeft, Calendar, Clock, Repeat, CheckCircle2 } from "lucide-react-native";
 import { scheduleShiftReminder } from "@/lib/notifications";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { formatDateBR, toISODateString } from "@/lib/datetime";
+import { formatDateBR } from "@/lib/datetime";
 import { normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
 
 type ShiftType = "Manhã" | "Tarde" | "Noite";
@@ -49,6 +49,11 @@ const PAYMENT_MODEL_OPTIONS: { value: PaymentModel; label: string }[] = [
 ];
 
 const PRODUCTIVITY_CAP_REGEX = /^\d+(\.\d{1,2})?$/;
+const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const PRIMARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 2;
+const SECONDARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 3;
+const OPTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 6;
+const ACTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 5;
 
 /**
  * Tela de Criação de Escala
@@ -60,6 +65,7 @@ export default function CreateShiftScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const utils = trpc.useUtils();
+  const { width } = useWindowDimensions();
 
   // Guard: somente admin/manager podem criar escalas
   useEffect(() => {
@@ -73,14 +79,10 @@ export default function CreateShiftScreen() {
   const [selectedDate, setSelectedDate] = useState(params.date as string || "");
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState<Date | null>(null);
+  const [dateDraft, setDateDraft] = useState(params.date as string || toLocalISODateString(new Date()));
   const [selectedShift, setSelectedShift] = useState<ShiftType | undefined>(
     params.shift as ShiftType || undefined
   );
-  
-  // 3 profissionais por turno (A, B, C) — kept for compile compatibility
-  const [professionalA, setProfessionalA] = useState<number | undefined>(undefined);
-  const [professionalB, setProfessionalB] = useState<number | undefined>(undefined);
-  const [professionalC, setProfessionalC] = useState<number | undefined>(undefined);
   
   // Repetição automática
   const [enableRepeat, setEnableRepeat] = useState(false);
@@ -91,7 +93,7 @@ export default function CreateShiftScreen() {
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
   const [modality, setModality] = useState<Modality>("PLANTAO");
-  const [coverageType, setCoverageType] = useState<CoverageType | undefined>(undefined);
+  const [coverageType, setCoverageType] = useState<CoverageType | undefined>("URGENCIA_EMERGENCIA");
   const [paymentModel, setPaymentModel] = useState<PaymentModel>("FIXO");
   const [productivityCapBrl, setProductivityCapBrl] = useState("");
 
@@ -139,8 +141,9 @@ export default function CreateShiftScreen() {
   };
 
   const handleCreateShift = () => {
-    if (!selectedDate || !selectedShift) {
+    if (!selectedSectorId || !selectedDate || !selectedShift) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Atenção", "Selecione setor, data e turno.");
       return;
     }
 
@@ -244,8 +247,25 @@ export default function CreateShiftScreen() {
   const handleCalendarPress = () => {
     Keyboard.dismiss(); // Fechar teclado antes de abrir modal
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setTempDate(selectedDate ? new Date(selectedDate) : new Date()); // Inicializar tempDate
+    const currentDate = selectedDate || today;
+    setTempDate(currentDate ? new Date(currentDate) : new Date()); // Inicializar tempDate
+    setDateDraft(currentDate);
     setShowDatePicker(true);
+  };
+
+  const handleConfirmWebDate = () => {
+    if (!DATE_REGEX.test(dateDraft)) {
+      Alert.alert("Atenção", "Informe a data no formato AAAA-MM-DD.");
+      return;
+    }
+    const parsed = normalizeToNoon(new Date(dateDraft));
+    if (Number.isNaN(parsed.getTime())) {
+      Alert.alert("Atenção", "Data inválida.");
+      return;
+    }
+    setSelectedDate(toLocalISODateString(parsed));
+    setShowDatePicker(false);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
   if (authLoading || permissionsLoading) {
@@ -268,391 +288,277 @@ export default function CreateShiftScreen() {
     );
   }
 
+  const isWide = width >= theme.spacing.contentMaxWidth;
+  const selectedDateValue = selectedDate || today;
+  const selectedShiftTime = selectedShift ? SHIFT_TIMES[selectedShift] : null;
+  const primaryActionDisabled = createShift.isPending;
+
   return (
     <ScreenGradient scrollable>
-      <View className="gap-6 pb-8">
-        {/* Header com botão voltar */}
-        <View className="flex-row items-center gap-4">
+      <View style={styles.shell}>
+        <View style={styles.header}>
           <TouchableOpacity
             onPress={handleBack}
             activeOpacity={0.7}
-            className="w-10 h-10 items-center justify-center"
+            style={styles.backButton}
           >
             <ChevronLeft size={28} color={theme.colors.textPrimary} />
           </TouchableOpacity>
-          <View className="flex-1">
-            <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Nova Escala</Text>
-            <Text className="text-base mt-1" style={{ color: theme.colors.textMuted }}>Alocar profissionais no turno</Text>
+          <View style={styles.headerText}>
+            <Text style={styles.eyebrow}>Plantão</Text>
+            <Text style={styles.title}>Nova Escala</Text>
+            <Text style={styles.subtitle}>Crie um turno para depois vincular o profissional.</Text>
           </View>
         </View>
 
-        {/* Seleção de Setor */}
-        <TintedGlassCard className="gap-4">
-          <View className="flex-row items-center gap-3">
-            <Calendar size={24} color={theme.colors.textPrimary} />
-            <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Setor *</Text>
-          </View>
+        <View style={styles.contentGrid}>
+          <View style={styles.primaryColumn}>
+            <FormSection title="Setor" icon={<Calendar size={22} color={theme.colors.textPrimary} />} required>
+              {loadingSectors ? (
+                <View style={styles.loadingBox}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                </View>
+              ) : (
+                <View style={styles.optionGrid}>
+                  {sectors?.map((sector) => (
+                    <OptionButton
+                      key={sector.id}
+                      label={sector.name}
+                      selected={selectedSectorId === sector.id}
+                      onPress={() => handleSelectSector(sector.id)}
+                    />
+                  ))}
+                </View>
+              )}
+            </FormSection>
 
-          {loadingSectors ? (
-            <View className="items-center py-6">
-              <ActivityIndicator size="small" color={theme.colors.primary} />
-            </View>
-          ) : (
-            <View className="flex-row flex-wrap gap-3">
-              {sectors?.map((sector) => (
-                <TouchableOpacity
-                  key={sector.id}
-                  onPress={() => handleSelectSector(sector.id)}
-                  className="px-5 py-3 rounded-2xl"
-                  style={{
-                    backgroundColor:
-                      selectedSectorId === sector.id
-                        ? theme.colors.primary
-                        : theme.colors.surfaceAlt,
-                    borderWidth: 1,
-                    borderColor:
-                      selectedSectorId === sector.id
-                        ? theme.colors.primary
-                        : theme.colors.border,
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Text
-                    className="text-base font-semibold"
-                    style={{
-                      color:
-                        selectedSectorId === sector.id
-                          ? theme.colors.surface
-                          : theme.colors.textPrimary,
-                    }}
-                  >
-                    {sector.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-        </TintedGlassCard>
-
-        {/* Data */}
-        <TintedGlassCard className="gap-4">
-          <View className="flex-row items-center gap-3">
-            <TouchableOpacity onPress={handleCalendarPress} activeOpacity={0.7}>
-              <Calendar size={24} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
-            <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Data *</Text>
-          </View>
-
-          <TouchableOpacity
-            onPress={handleCalendarPress}
-            activeOpacity={0.7}
-            className="rounded-2xl px-4 h-12 justify-center"
-            style={{
-              backgroundColor: theme.colors.surfaceAlt,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-            }}
-          >
-            <Text className="text-base" style={{ color: theme.colors.textPrimary }}>
-              {formatDateBR(selectedDate || today)}
-            </Text>
-          </TouchableOpacity>
-          
-
-          
-          {showDatePicker && Platform.OS === "android" && (
-            <DateTimePicker
-              value={selectedDate ? new Date(selectedDate) : new Date()}
-              mode="date"
-              display="default"
-              onChange={handleDateChange}
-              locale="pt-BR"
-              minimumDate={new Date()}
-            />
-          )}
-        </TintedGlassCard>
-
-        {/* Seleção de Turno */}
-        <TintedGlassCard className="gap-4">
-          <View className="flex-row items-center gap-3">
-            <Clock size={24} color={theme.colors.textPrimary} />
-            <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Turno *</Text>
-          </View>
-
-          <View className="gap-3">
-            {(Object.keys(SHIFT_TIMES) as ShiftType[]).map((shift) => (
+            <FormSection title="Data" icon={<Calendar size={22} color={theme.colors.textPrimary} />} required>
               <TouchableOpacity
-                key={shift}
-                onPress={() => handleSelectShift(shift)}
-                className="px-5 py-4 rounded-2xl"
-                style={{
-                  backgroundColor:
-                    selectedShift === shift
-                      ? theme.colors.primary
-                      : theme.colors.surfaceAlt,
-                  borderWidth: 1,
-                  borderColor:
-                    selectedShift === shift
-                      ? theme.colors.primary
-                      : theme.colors.border,
-                }}
-                activeOpacity={0.7}
+                onPress={handleCalendarPress}
+                activeOpacity={0.78}
+                style={styles.dateButton}
               >
-                <Text
-                  className="text-base font-semibold"
-                  style={{
-                    color:
-                      selectedShift === shift
-                        ? theme.colors.surface
-                        : theme.colors.textPrimary,
-                  }}
-                >
-                  {shift}
-                </Text>
-                <Text
-                  className="text-sm mt-1"
-                  style={{
-                    color:
-                      selectedShift === shift
-                        ? theme.colors.onDark.text
-                        : theme.colors.textMuted,
-                  }}
-                >
-                  {SHIFT_TIMES[shift].start} - {SHIFT_TIMES[shift].end}
-                </Text>
+                <View>
+                  <Text style={styles.label}>Data selecionada</Text>
+                  <Text style={styles.dateValue}>{formatDateBR(selectedDateValue)}</Text>
+                </View>
+                <Text style={styles.dateAction}>Alterar</Text>
               </TouchableOpacity>
-            ))}
-          </View>
-        </TintedGlassCard>
 
-        {/* Repetição Automática */}
-        <TintedGlassCard className="gap-4">
-          <View className="flex-row items-center justify-between">
-            <View className="flex-row items-center gap-3 flex-1">
-              <Repeat size={24} color={theme.colors.textPrimary} />
-              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Repetir Escala</Text>
-            </View>
-            <Switch
-              value={enableRepeat}
-              onValueChange={(value) => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setEnableRepeat(value);
-              }}
-              trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-              thumbColor={theme.colors.surface}
-            />
+              {showDatePicker && Platform.OS === "android" && (
+                <DateTimePicker
+                  value={selectedDate ? new Date(selectedDate) : new Date()}
+                  mode="date"
+                  display="default"
+                  onChange={handleDateChange}
+                  locale="pt-BR"
+                  minimumDate={new Date()}
+                />
+              )}
+            </FormSection>
+
+            <FormSection title="Turno" icon={<Clock size={22} color={theme.colors.textPrimary} />} required>
+              <View style={styles.optionGrid}>
+                {(Object.keys(SHIFT_TIMES) as ShiftType[]).map((shift) => (
+                  <OptionButton
+                    key={shift}
+                    label={shift}
+                    description={`${SHIFT_TIMES[shift].start} - ${SHIFT_TIMES[shift].end}`}
+                    selected={selectedShift === shift}
+                    onPress={() => handleSelectShift(shift)}
+                  />
+                ))}
+              </View>
+            </FormSection>
+
+            <FormSection title="Modalidade">
+              <View style={styles.fieldStack}>
+                <View>
+                  <Text style={styles.label}>Modalidade *</Text>
+                  <View style={styles.optionGrid}>
+                    {MODALITY_OPTIONS.map((option) => (
+                      <OptionButton
+                        key={option.value}
+                        label={option.label}
+                        selected={modality === option.value}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          setModality(option.value);
+                          if (option.value === "SOBREAVISO") {
+                            setCoverageType(undefined);
+                          } else {
+                            setCoverageType((current) => current ?? "URGENCIA_EMERGENCIA");
+                          }
+                        }}
+                      />
+                    ))}
+                  </View>
+                </View>
+
+                {modality === "PLANTAO" ? (
+                  <View>
+                    <Text style={styles.label}>Cobertura *</Text>
+                    <View style={styles.optionGrid}>
+                      {COVERAGE_OPTIONS.map((option) => (
+                        <OptionButton
+                          key={option.value}
+                          label={option.label}
+                          selected={coverageType === option.value}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            setCoverageType(option.value);
+                          }}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+
+                <View>
+                  <Text style={styles.label}>Modelo de pagamento *</Text>
+                  <View style={styles.optionList}>
+                    {PAYMENT_MODEL_OPTIONS.map((option) => (
+                      <OptionButton
+                        key={option.value}
+                        label={option.label}
+                        selected={paymentModel === option.value}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          setPaymentModel(option.value);
+                          if (option.value !== "FIXO_PRODUTIVIDADE_TETO") {
+                            setProductivityCapBrl("");
+                          }
+                        }}
+                      />
+                    ))}
+                  </View>
+                </View>
+
+                {paymentModel === "FIXO_PRODUTIVIDADE_TETO" ? (
+                  <View>
+                    <Text style={styles.label}>Teto da produtividade (BRL)</Text>
+                    <TextInput
+                      value={productivityCapBrl}
+                      onChangeText={setProductivityCapBrl}
+                      placeholder="Ex: 1500.00"
+                      placeholderTextColor={theme.colors.textMuted}
+                      keyboardType="decimal-pad"
+                      style={styles.textInput}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            </FormSection>
           </View>
 
-          {enableRepeat && (
-            <View className="gap-4">
-              <View>
-                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Repetir a cada (semanas)</Text>
-                <TextInput
-                  value={repeatWeeks}
-                  onChangeText={setRepeatWeeks}
-                  placeholder="1"
-                  keyboardType="number-pad"
-                  placeholderTextColor={theme.colors.textMuted}
-                  className="rounded-2xl px-4 h-12 text-base"
-                  style={{
-                    backgroundColor: theme.colors.surfaceAlt,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border,
+          <View style={[styles.secondaryColumn, isWide ? styles.secondaryColumnWide : null]}>
+            <FormSection title="Resumo">
+              <View style={styles.summaryStack}>
+                <SummaryLine label="Setor" value={sectors?.find((s) => s.id === selectedSectorId)?.name ?? "Selecione um setor"} />
+                <SummaryLine label="Data" value={formatDateBR(selectedDateValue)} />
+                <SummaryLine
+                  label="Turno"
+                  value={selectedShift && selectedShiftTime ? `${selectedShift} · ${selectedShiftTime.start} - ${selectedShiftTime.end}` : "Selecione um turno"}
+                />
+                <SummaryLine label="Modalidade" value={modality === "PLANTAO" ? "Plantão" : "Sobreaviso"} />
+                {modality === "PLANTAO" ? (
+                  <SummaryLine
+                    label="Cobertura"
+                    value={COVERAGE_OPTIONS.find((option) => option.value === coverageType)?.label ?? "Selecione a cobertura"}
+                  />
+                ) : null}
+                <SummaryLine
+                  label="Pagamento"
+                  value={PAYMENT_MODEL_OPTIONS.find((option) => option.value === paymentModel)?.label ?? "Fixo"}
+                />
+              </View>
+            </FormSection>
+
+            <FormSection title="Repetição" icon={<Repeat size={22} color={theme.colors.textPrimary} />}>
+              <View style={styles.switchRow}>
+                <View style={styles.switchText}>
+                  <Text style={styles.bodyStrong}>Repetir Escala</Text>
+                  <Text style={styles.bodyMuted}>Cria novas escalas em semanas futuras.</Text>
+                </View>
+                <Switch
+                  value={enableRepeat}
+                  onValueChange={(value) => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setEnableRepeat(value);
                   }}
+                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
+                  thumbColor={theme.colors.surface}
                 />
               </View>
 
-              <View>
-                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Data limite</Text>
-                <TextInput
-                  value={repeatEndDate}
-                  onChangeText={setRepeatEndDate}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor={theme.colors.textMuted}
-                  className="rounded-2xl px-4 h-12 text-base"
-                  style={{
-                    backgroundColor: theme.colors.surfaceAlt,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border,
-                  }}
-                />
-              </View>
-            </View>
-          )}
-        </TintedGlassCard>
+              {enableRepeat ? (
+                <View style={styles.fieldStack}>
+                  <View>
+                    <Text style={styles.label}>Repetir a cada (semanas)</Text>
+                    <TextInput
+                      value={repeatWeeks}
+                      onChangeText={setRepeatWeeks}
+                      placeholder="1"
+                      keyboardType="number-pad"
+                      placeholderTextColor={theme.colors.textMuted}
+                      style={styles.textInput}
+                    />
+                  </View>
+                  <View>
+                    <Text style={styles.label}>Data limite</Text>
+                    <TextInput
+                      value={repeatEndDate}
+                      onChangeText={setRepeatEndDate}
+                      placeholder="AAAA-MM-DD"
+                      placeholderTextColor={theme.colors.textMuted}
+                      style={styles.textInput}
+                    />
+                  </View>
+                </View>
+              ) : null}
+            </FormSection>
 
-        {/* Modalidade */}
-        <TintedGlassCard className="gap-4">
-          <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Modalidade</Text>
-
-          {/* Modalidade — PLANTAO / SOBREAVISO */}
-          <View className="gap-2">
-            <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Modalidade *</Text>
-            <View className="flex-row gap-3">
-              {MODALITY_OPTIONS.map((option) => {
-                const isSelected = modality === option.value;
-                return (
-                  <TouchableOpacity
-                    key={option.value}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setModality(option.value);
-                      // Trocar para SOBREAVISO limpa cobertura previamente escolhida.
-                      if (option.value === "SOBREAVISO") {
-                        setCoverageType(undefined);
-                      }
-                    }}
-                    className="flex-1 px-5 py-3 rounded-2xl"
-                    style={{
-                      backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
-                      borderWidth: 1,
-                      borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Text
-                      className="text-base font-semibold text-center"
-                      style={{ color: isSelected ? theme.colors.surface : theme.colors.textPrimary }}
-                    >
-                      {option.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Cobertura — apenas para PLANTAO */}
-          {modality === "PLANTAO" && (
-            <View className="gap-2">
-              <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Cobertura</Text>
-              <View className="flex-row gap-3">
-                {COVERAGE_OPTIONS.map((option) => {
-                  const isSelected = coverageType === option.value;
-                  return (
-                    <TouchableOpacity
-                      key={option.value}
-                      onPress={() => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setCoverageType(option.value);
-                      }}
-                      className="flex-1 px-5 py-3 rounded-2xl"
-                      style={{
-                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
-                        borderWidth: 1,
-                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text
-                        className="text-base font-semibold text-center"
-                        style={{ color: isSelected ? theme.colors.surface : theme.colors.textPrimary }}
-                      >
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-          )}
-
-          {/* Modelo de pagamento — lista vertical */}
-          <View className="gap-2">
-            <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Modelo de pagamento *</Text>
-            <View className="gap-3">
-              {PAYMENT_MODEL_OPTIONS.map((option) => {
-                const isSelected = paymentModel === option.value;
-                return (
-                  <TouchableOpacity
-                    key={option.value}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setPaymentModel(option.value);
-                      // Trocar para um modelo sem teto limpa o valor previamente digitado.
-                      if (option.value !== "FIXO_PRODUTIVIDADE_TETO") {
-                        setProductivityCapBrl("");
-                      }
-                    }}
-                    className="px-5 py-4 rounded-2xl"
-                    style={{
-                      backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
-                      borderWidth: 1,
-                      borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Text
-                      className="text-base font-semibold"
-                      style={{ color: isSelected ? theme.colors.surface : theme.colors.textPrimary }}
-                    >
-                      {option.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Teto da produtividade — apenas para FIXO_PRODUTIVIDADE_TETO */}
-          {paymentModel === "FIXO_PRODUTIVIDADE_TETO" && (
-            <View className="gap-2">
-              <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Teto da produtividade (BRL)</Text>
+            <FormSection title="Observações">
               <TextInput
-                value={productivityCapBrl}
-                onChangeText={setProductivityCapBrl}
-                placeholder="Ex: 1500.00"
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="Informações adicionais..."
                 placeholderTextColor={theme.colors.textMuted}
-                keyboardType="decimal-pad"
-                className="rounded-2xl px-4 h-12 text-base"
-                style={{
-                  backgroundColor: theme.colors.surfaceAlt,
-                  borderWidth: 1,
-                  borderColor: theme.colors.border,
-                  color: theme.colors.textPrimary,
-                }}
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+                style={[styles.textInput, styles.notesInput]}
               />
-            </View>
-          )}
-        </TintedGlassCard>
+            </FormSection>
 
-        {/* Observações */}
-        <TintedGlassCard className="gap-4">
-          <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Observações</Text>
-          <TextInput
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="Informações adicionais..."
-            placeholderTextColor={theme.colors.textMuted}
-            multiline
-            numberOfLines={4}
-            textAlignVertical="top"
-            className="rounded-2xl px-4 py-3 text-base"
-            style={{
-              backgroundColor: theme.colors.surfaceAlt,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              minHeight: 100,
-              color: theme.colors.textPrimary,
-            }}
-          />
-        </TintedGlassCard>
-
-        {/* Botão Criar */}
-        <TouchableOpacity
-          onPress={handleCreateShift}
-          disabled={createShift.isPending}
-          className="rounded-2xl h-14 items-center justify-center" style={{ backgroundColor: theme.colors.primary }}
-          activeOpacity={0.7}
-        >
-          {createShift.isPending ? (
-            <ActivityIndicator size="small" color={theme.colors.surface} />
-          ) : (
-            <Text className="text-lg font-semibold" style={{ color: theme.colors.surface }}>Criar Escala</Text>
-          )}
-        </TouchableOpacity>
+            <TouchableOpacity
+              onPress={handleCreateShift}
+              disabled={primaryActionDisabled}
+              style={[styles.submitButton, primaryActionDisabled ? styles.disabledButton : null]}
+              activeOpacity={0.78}
+            >
+              {createShift.isPending ? (
+                <ActivityIndicator size="small" color={theme.colors.surface} />
+              ) : (
+                <View style={styles.submitContent}>
+                  <CheckCircle2 size={20} color={theme.colors.surface} />
+                  <Text style={styles.submitLabel}>Criar Escala</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
-      
+
+      {showDatePicker && Platform.OS === "web" ? (
+        <DateEntryModal
+          value={dateDraft}
+          onChange={setDateDraft}
+          onCancel={handleCancelDate}
+          onConfirm={handleConfirmWebDate}
+        />
+      ) : null}
+
       {/* Modal de Seleção de Data (iOS) */}
       <Modal
         visible={showDatePicker && Platform.OS === "ios"}
@@ -660,28 +566,10 @@ export default function CreateShiftScreen() {
         animationType="fade"
         onRequestClose={handleCancelDate}
       >
-        <Pressable
-          style={{
-            flex: 1,
-            backgroundColor: theme.colors.overlay,
-            justifyContent: "flex-end",
-          }}
-          onPress={handleCancelDate}
-        >
-          <Pressable
-            style={{
-              backgroundColor: theme.palette.neutral[900],
-              borderTopLeftRadius: 24,
-              borderTopRightRadius: 24,
-              padding: 24,
-              paddingBottom: 40,
-            }}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <Text style={{ color: theme.colors.surface, fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
-              Selecionar data
-            </Text>
-            <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14, marginBottom: 20, textAlign: "center" }}>
+        <Pressable style={styles.modalOverlay} onPress={handleCancelDate}>
+          <Pressable style={styles.dateSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.sheetTitle}>Selecionar data</Text>
+            <Text style={styles.sheetSubtitle}>
               Data selecionada: {tempDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempDate))) : formatDateBR(selectedDate || today)}
             </Text>
             
@@ -695,34 +583,9 @@ export default function CreateShiftScreen() {
               textColor={theme.colors.surface}
             />
             
-            <View style={{ flexDirection: "row", gap: 12, marginTop: 24 }}>
-              <TouchableOpacity
-                onPress={handleCancelDate}
-                style={{
-                  flex: 1,
-                  backgroundColor: theme.colors.onDark.surface,
-                  borderRadius: 12,
-                  padding: 16,
-                  alignItems: "center",
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                onPress={handleConfirmDate}
-                style={{
-                  flex: 1,
-                  backgroundColor: theme.colors.primary,
-                  borderRadius: 12,
-                  padding: 16,
-                  alignItems: "center",
-                }}
-                activeOpacity={0.7}
-              >
-                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
-              </TouchableOpacity>
+            <View style={styles.sheetActions}>
+              <SheetButton label="Cancelar" onPress={handleCancelDate} variant="secondary" />
+              <SheetButton label="Confirmar" onPress={handleConfirmDate} variant="primary" />
             </View>
           </Pressable>
         </Pressable>
@@ -730,3 +593,414 @@ export default function CreateShiftScreen() {
     </ScreenGradient>
   );
 }
+
+function FormSection({
+  title,
+  icon,
+  required,
+  children,
+}: {
+  title: string;
+  icon?: ReactNode;
+  required?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <TintedGlassCard variant="light" style={styles.sectionCard}>
+      <View style={styles.sectionHeader}>
+        {icon}
+        <Text style={styles.sectionTitle}>{title}{required ? " *" : ""}</Text>
+      </View>
+      {children}
+    </TintedGlassCard>
+  );
+}
+
+function OptionButton({
+  label,
+  description,
+  selected,
+  onPress,
+}: {
+  label: string;
+  description?: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.78}
+      style={[styles.optionButton, selected ? styles.optionButtonSelected : null]}
+    >
+      <Text style={[styles.optionLabel, selected ? styles.optionLabelSelected : null]}>{label}</Text>
+      {description ? (
+        <Text style={[styles.optionDescription, selected ? styles.optionDescriptionSelected : null]}>
+          {description}
+        </Text>
+      ) : null}
+    </TouchableOpacity>
+  );
+}
+
+function SummaryLine({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.summaryLine}>
+      <Text style={styles.label}>{label}</Text>
+      <Text style={styles.summaryValue}>{value}</Text>
+    </View>
+  );
+}
+
+function DateEntryModal({
+  value,
+  onChange,
+  onCancel,
+  onConfirm,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
+      <Pressable style={styles.modalOverlay} onPress={onCancel}>
+        <Pressable style={styles.webDateDialog} onPress={(e) => e.stopPropagation()}>
+          <Text style={styles.dialogTitle}>Selecionar data</Text>
+          <Text style={styles.dialogSubtitle}>Informe a data no formato AAAA-MM-DD.</Text>
+          <TextInput
+            value={value}
+            onChangeText={onChange}
+            placeholder="2026-05-13"
+            placeholderTextColor={theme.colors.textMuted}
+            style={styles.textInput}
+            autoFocus
+          />
+          <View style={styles.sheetActions}>
+            <SheetButton label="Cancelar" onPress={onCancel} variant="secondary" />
+            <SheetButton label="Confirmar" onPress={onConfirm} variant="primary" />
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function SheetButton({
+  label,
+  onPress,
+  variant,
+}: {
+  label: string;
+  onPress: () => void;
+  variant: "primary" | "secondary";
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.78}
+      style={[styles.sheetButton, variant === "primary" ? styles.sheetButtonPrimary : styles.sheetButtonSecondary]}
+    >
+      <Text style={[styles.sheetButtonLabel, variant === "primary" ? styles.sheetButtonLabelPrimary : null]}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+const styles = StyleSheet.create({
+  shell: {
+    width: "100%",
+    maxWidth: theme.spacing.contentMaxWidth,
+    alignSelf: "center",
+    gap: theme.space[6],
+    paddingBottom: theme.space[8],
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[3],
+  },
+  backButton: {
+    width: theme.space[10],
+    height: theme.space[10],
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  headerText: {
+    flex: 1,
+  },
+  eyebrow: {
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
+    fontWeight: theme.weight.semibold,
+    textTransform: "uppercase",
+  },
+  title: {
+    ...theme.text.titleLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  subtitle: {
+    ...theme.text.body,
+    color: theme.colors.textMuted,
+  },
+  contentGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.space[6],
+    alignItems: "flex-start",
+  },
+  primaryColumn: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: PRIMARY_COLUMN_MIN_WIDTH,
+    minWidth: theme.space[0],
+    gap: theme.space[5],
+  },
+  secondaryColumn: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: SECONDARY_COLUMN_MIN_WIDTH,
+    minWidth: theme.space[0],
+    gap: theme.space[5],
+  },
+  secondaryColumnWide: {
+    maxWidth: SECONDARY_COLUMN_MIN_WIDTH + theme.space[20],
+  },
+  sectionCard: {
+    gap: theme.space[4],
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[2],
+  },
+  sectionTitle: {
+    ...theme.text.title,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  loadingBox: {
+    minHeight: theme.space[14],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  optionGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.space[3],
+  },
+  optionList: {
+    gap: theme.space[3],
+  },
+  optionButton: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: OPTION_MIN_WIDTH,
+    minWidth: theme.space[0],
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    paddingHorizontal: theme.space[4],
+    paddingVertical: theme.space[3],
+  },
+  optionButtonSelected: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  optionLabel: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  optionLabelSelected: {
+    color: theme.colors.surface,
+  },
+  optionDescription: {
+    ...theme.text.body,
+    color: theme.colors.textMuted,
+    marginTop: theme.space[1],
+  },
+  optionDescriptionSelected: {
+    color: theme.colors.onDark.text,
+  },
+  dateButton: {
+    minHeight: theme.space[14],
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    paddingHorizontal: theme.space[4],
+    paddingVertical: theme.space[3],
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.space[3],
+  },
+  dateValue: {
+    ...theme.text.title,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  dateAction: {
+    ...theme.text.body,
+    color: theme.colors.primary,
+    fontWeight: theme.weight.semibold,
+  },
+  fieldStack: {
+    gap: theme.space[4],
+  },
+  label: {
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
+    fontWeight: theme.weight.semibold,
+    marginBottom: theme.space[2],
+  },
+  textInput: {
+    minHeight: theme.space[14],
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    paddingHorizontal: theme.space[4],
+    paddingVertical: theme.space[3],
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+  },
+  notesInput: {
+    minHeight: theme.space[20] + theme.space[6],
+  },
+  summaryStack: {
+    gap: theme.space[3],
+  },
+  summaryLine: {
+    paddingBottom: theme.space[3],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  summaryValue: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  switchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.space[4],
+  },
+  switchText: {
+    flex: 1,
+  },
+  bodyStrong: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  bodyMuted: {
+    ...theme.text.body,
+    color: theme.colors.textMuted,
+  },
+  submitButton: {
+    minHeight: theme.space[14],
+    minWidth: ACTION_MIN_WIDTH,
+    borderRadius: theme.radius.lg,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: theme.space[4],
+    paddingVertical: theme.space[3],
+  },
+  disabledButton: {
+    opacity: 0.65,
+  },
+  submitContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: theme.space[2],
+  },
+  submitLabel: {
+    ...theme.text.bodyLg,
+    color: theme.colors.surface,
+    fontWeight: theme.weight.bold,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: theme.colors.overlay,
+    justifyContent: "flex-end",
+  },
+  webDateDialog: {
+    width: "100%",
+    maxWidth: SECONDARY_COLUMN_MIN_WIDTH,
+    alignSelf: "center",
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: theme.space[6],
+    margin: theme.space[5],
+    gap: theme.space[4],
+  },
+  dateSheet: {
+    backgroundColor: theme.palette.neutral[900],
+    borderTopLeftRadius: theme.radius["2xl"],
+    borderTopRightRadius: theme.radius["2xl"],
+    padding: theme.space[6],
+    paddingBottom: theme.space[10],
+    gap: theme.space[4],
+  },
+  dialogTitle: {
+    ...theme.text.title,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+    textAlign: "center",
+  },
+  dialogSubtitle: {
+    ...theme.text.body,
+    color: theme.colors.textMuted,
+    textAlign: "center",
+  },
+  sheetTitle: {
+    ...theme.text.title,
+    color: theme.colors.surface,
+    fontWeight: theme.weight.bold,
+    textAlign: "center",
+  },
+  sheetSubtitle: {
+    ...theme.text.body,
+    color: theme.colors.onDark.textMuted,
+    textAlign: "center",
+  },
+  sheetActions: {
+    flexDirection: "row",
+    gap: theme.space[3],
+  },
+  sheetButton: {
+    flex: 1,
+    minHeight: theme.space[14],
+    borderRadius: theme.radius.lg,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: theme.space[4],
+  },
+  sheetButtonPrimary: {
+    backgroundColor: theme.colors.primary,
+  },
+  sheetButtonSecondary: {
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  sheetButtonLabel: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  sheetButtonLabelPrimary: {
+    color: theme.colors.surface,
+  },
+});
