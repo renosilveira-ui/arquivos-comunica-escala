@@ -8,11 +8,11 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, Calendar, Clock, Repeat, CheckCircle2 } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Calendar, Clock, Repeat, CheckCircle2 } from "lucide-react-native";
 import { scheduleShiftReminder } from "@/lib/notifications";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR } from "@/lib/datetime";
-import { normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
+import { fromLocalISODateString, normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
 
 type ShiftType = "Manhã" | "Tarde" | "Noite";
 
@@ -54,6 +54,41 @@ const PRIMARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 2;
 const SECONDARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 3;
 const OPTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 6;
 const ACTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 5;
+const CALENDAR_DAY_NAMES = ["D", "S", "T", "Q", "Q", "S", "S"];
+const CALENDAR_COLUMNS = 7;
+
+function getSafeDateParam(value: string | string[] | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return DATE_REGEX.test(value) ? value : undefined;
+}
+
+function formatLocalDateBR(dateKey: string): string {
+  return formatDateBR(fromLocalISODateString(dateKey));
+}
+
+function getMonthLabel(month: Date): string {
+  const label = month.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function getMonthGrid(month: Date): { dateKey: string; isCurrentMonth: boolean }[] {
+  const firstDay = new Date(month.getFullYear(), month.getMonth(), 1, 12);
+  const gridStart = new Date(firstDay);
+  gridStart.setDate(firstDay.getDate() - firstDay.getDay());
+
+  return Array.from({ length: CALENDAR_COLUMNS * 6 }, (_, index) => {
+    const day = new Date(gridStart);
+    day.setDate(gridStart.getDate() + index);
+    return {
+      dateKey: toLocalISODateString(day),
+      isCurrentMonth: day.getMonth() === month.getMonth(),
+    };
+  });
+}
+
+function addCalendarMonths(month: Date, amount: number): Date {
+  return new Date(month.getFullYear(), month.getMonth() + amount, 1, 12);
+}
 
 /**
  * Tela de Criação de Escala
@@ -66,6 +101,7 @@ export default function CreateShiftScreen() {
   const params = useLocalSearchParams();
   const utils = trpc.useUtils();
   const { width } = useWindowDimensions();
+  const initialDate = getSafeDateParam(params.date) ?? toLocalISODateString(new Date());
 
   // Guard: somente admin/manager podem criar escalas
   useEffect(() => {
@@ -76,10 +112,10 @@ export default function CreateShiftScreen() {
 
   // Estados do formulário
   const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>(undefined);
-  const [selectedDate, setSelectedDate] = useState(params.date as string || "");
+  const [selectedDate, setSelectedDate] = useState(initialDate);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState<Date | null>(null);
-  const [dateDraft, setDateDraft] = useState(params.date as string || toLocalISODateString(new Date()));
+  const [calendarMonth, setCalendarMonth] = useState(() => fromLocalISODateString(initialDate));
   const [selectedShift, setSelectedShift] = useState<ShiftType | undefined>(
     params.shift as ShiftType || undefined
   );
@@ -122,11 +158,13 @@ export default function CreateShiftScreen() {
       }
       
       utils.shifts.listByPeriod.invalidate();
+      utils.shifts.listAgenda.invalidate();
       router.back();
     },
     onError: (error) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       console.error("Erro ao criar escala:", error);
+      Alert.alert("Não foi possível criar", error.message || "Tente novamente em instantes.");
     },
   });
 
@@ -148,18 +186,23 @@ export default function CreateShiftScreen() {
     }
 
     // Encontrar template correspondente ao turno selecionado
-    const template = templates?.find(t => t.name === selectedShift);
+    const selectedSector = sectors?.find((sector) => sector.id === selectedSectorId);
+    const template = templates?.find(
+      (item) => item.name === selectedShift && item.hospitalId === selectedSector?.hospitalId,
+    );
     if (!template) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Atenção", "Turno não disponível para o hospital deste setor.");
       return;
     }
 
     // Validar data de término de repetição
     if (enableRepeat && repeatEndDate) {
-      const startDate = new Date(selectedDate);
-      const endDate = new Date(repeatEndDate);
+      const startDate = fromLocalISODateString(selectedDate);
+      const endDate = fromLocalISODateString(repeatEndDate);
       if (endDate <= startDate) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert("Atenção", "A data limite precisa ser posterior à data inicial.");
         return;
       }
     }
@@ -216,7 +259,9 @@ export default function CreateShiftScreen() {
     if (Platform.OS === "android" && date) {
       // Android: confirmar imediatamente
       const normalized = normalizeToNoon(date);
-      setSelectedDate(toLocalISODateString(normalized));
+      const nextDate = toLocalISODateString(normalized);
+      setSelectedDate(nextDate);
+      setCalendarMonth(fromLocalISODateString(nextDate));
       setShowDatePicker(false);
       setTempDate(null);
     } else if (date) {
@@ -229,7 +274,9 @@ export default function CreateShiftScreen() {
   const handleConfirmDate = () => {
     if (tempDate) {
       const normalized = normalizeToNoon(tempDate);
-      setSelectedDate(toLocalISODateString(normalized));
+      const nextDate = toLocalISODateString(normalized);
+      setSelectedDate(nextDate);
+      setCalendarMonth(fromLocalISODateString(nextDate));
     }
     setShowDatePicker(false);
     setTempDate(null);
@@ -248,22 +295,15 @@ export default function CreateShiftScreen() {
     Keyboard.dismiss(); // Fechar teclado antes de abrir modal
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const currentDate = selectedDate || today;
-    setTempDate(currentDate ? new Date(currentDate) : new Date()); // Inicializar tempDate
-    setDateDraft(currentDate);
+    const localDate = fromLocalISODateString(currentDate);
+    setTempDate(localDate); // Inicializar tempDate
+    setCalendarMonth(localDate);
     setShowDatePicker(true);
   };
 
-  const handleConfirmWebDate = () => {
-    if (!DATE_REGEX.test(dateDraft)) {
-      Alert.alert("Atenção", "Informe a data no formato AAAA-MM-DD.");
-      return;
-    }
-    const parsed = normalizeToNoon(new Date(dateDraft));
-    if (Number.isNaN(parsed.getTime())) {
-      Alert.alert("Atenção", "Data inválida.");
-      return;
-    }
-    setSelectedDate(toLocalISODateString(parsed));
+  const handleSelectWebDate = (dateKey: string) => {
+    setSelectedDate(dateKey);
+    setCalendarMonth(fromLocalISODateString(dateKey));
     setShowDatePicker(false);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
@@ -340,14 +380,14 @@ export default function CreateShiftScreen() {
               >
                 <View>
                   <Text style={styles.label}>Data selecionada</Text>
-                  <Text style={styles.dateValue}>{formatDateBR(selectedDateValue)}</Text>
+                  <Text style={styles.dateValue}>{formatLocalDateBR(selectedDateValue)}</Text>
                 </View>
                 <Text style={styles.dateAction}>Alterar</Text>
               </TouchableOpacity>
 
               {showDatePicker && Platform.OS === "android" && (
                 <DateTimePicker
-                  value={selectedDate ? new Date(selectedDate) : new Date()}
+                  value={selectedDate ? fromLocalISODateString(selectedDate) : new Date()}
                   mode="date"
                   display="default"
                   onChange={handleDateChange}
@@ -455,7 +495,7 @@ export default function CreateShiftScreen() {
             <FormSection title="Resumo">
               <View style={styles.summaryStack}>
                 <SummaryLine label="Setor" value={sectors?.find((s) => s.id === selectedSectorId)?.name ?? "Selecione um setor"} />
-                <SummaryLine label="Data" value={formatDateBR(selectedDateValue)} />
+                <SummaryLine label="Data" value={formatLocalDateBR(selectedDateValue)} />
                 <SummaryLine
                   label="Turno"
                   value={selectedShift && selectedShiftTime ? `${selectedShift} · ${selectedShiftTime.start} - ${selectedShiftTime.end}` : "Selecione um turno"}
@@ -551,11 +591,13 @@ export default function CreateShiftScreen() {
       </View>
 
       {showDatePicker && Platform.OS === "web" ? (
-        <DateEntryModal
-          value={dateDraft}
-          onChange={setDateDraft}
+        <WebCalendarModal
+          selectedDate={selectedDateValue}
+          visibleMonth={calendarMonth}
+          onPreviousMonth={() => setCalendarMonth((current) => addCalendarMonths(current, -1))}
+          onNextMonth={() => setCalendarMonth((current) => addCalendarMonths(current, 1))}
+          onSelectDate={handleSelectWebDate}
           onCancel={handleCancelDate}
-          onConfirm={handleConfirmWebDate}
         />
       ) : null}
 
@@ -570,11 +612,11 @@ export default function CreateShiftScreen() {
           <Pressable style={styles.dateSheet} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.sheetTitle}>Selecionar data</Text>
             <Text style={styles.sheetSubtitle}>
-              Data selecionada: {tempDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempDate))) : formatDateBR(selectedDate || today)}
+              Data selecionada: {tempDate ? formatLocalDateBR(toLocalISODateString(normalizeToNoon(tempDate))) : formatLocalDateBR(selectedDate || today)}
             </Text>
             
             <DateTimePicker
-              value={tempDate || (selectedDate ? new Date(selectedDate) : new Date())}
+              value={tempDate || (selectedDate ? fromLocalISODateString(selectedDate) : new Date())}
               mode="date"
               display="spinner"
               onChange={handleDateChange}
@@ -652,34 +694,88 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DateEntryModal({
-  value,
-  onChange,
+function WebCalendarModal({
+  selectedDate,
+  visibleMonth,
+  onPreviousMonth,
+  onNextMonth,
+  onSelectDate,
   onCancel,
-  onConfirm,
 }: {
-  value: string;
-  onChange: (value: string) => void;
+  selectedDate: string;
+  visibleMonth: Date;
+  onPreviousMonth: () => void;
+  onNextMonth: () => void;
+  onSelectDate: (dateKey: string) => void;
   onCancel: () => void;
-  onConfirm: () => void;
 }) {
+  const calendarDays = getMonthGrid(visibleMonth);
+  const todayKey = toLocalISODateString(new Date());
+
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
       <Pressable style={styles.modalOverlay} onPress={onCancel}>
         <Pressable style={styles.webDateDialog} onPress={(e) => e.stopPropagation()}>
-          <Text style={styles.dialogTitle}>Selecionar data</Text>
-          <Text style={styles.dialogSubtitle}>Informe a data no formato AAAA-MM-DD.</Text>
-          <TextInput
-            value={value}
-            onChangeText={onChange}
-            placeholder="2026-05-13"
-            placeholderTextColor={theme.colors.textMuted}
-            style={styles.textInput}
-            autoFocus
-          />
-          <View style={styles.sheetActions}>
+          <View style={styles.calendarHeader}>
+            <TouchableOpacity onPress={onPreviousMonth} activeOpacity={0.78} style={styles.calendarNavButton}>
+              <ChevronLeft size={20} color={theme.colors.textPrimary} />
+            </TouchableOpacity>
+            <View style={styles.calendarTitleBlock}>
+              <Text style={styles.dialogTitle}>Selecionar data</Text>
+              <Text style={styles.dialogSubtitle}>{getMonthLabel(visibleMonth)}</Text>
+            </View>
+            <TouchableOpacity onPress={onNextMonth} activeOpacity={0.78} style={styles.calendarNavButton}>
+              <ChevronRight size={20} color={theme.colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.calendarWeekRow}>
+            {CALENDAR_DAY_NAMES.map((dayName, index) => (
+              <Text key={`${dayName}-${index}`} style={styles.calendarWeekLabel}>
+                {dayName}
+              </Text>
+            ))}
+          </View>
+
+          <View style={styles.calendarGrid}>
+            {calendarDays.map((day) => {
+              const isSelected = day.dateKey === selectedDate;
+              const isToday = day.dateKey === todayKey;
+              const isPast = day.dateKey < todayKey;
+              const dayNumber = fromLocalISODateString(day.dateKey).getDate();
+
+              return (
+                <TouchableOpacity
+                  key={day.dateKey}
+                  onPress={() => onSelectDate(day.dateKey)}
+                  disabled={isPast}
+                  activeOpacity={0.78}
+                  style={[
+                    styles.calendarDayButton,
+                    !day.isCurrentMonth ? styles.calendarDayMuted : null,
+                    isToday ? styles.calendarDayToday : null,
+                    isSelected ? styles.calendarDaySelected : null,
+                    isPast ? styles.calendarDayDisabled : null,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.calendarDayText,
+                      !day.isCurrentMonth ? styles.calendarDayTextMuted : null,
+                      isSelected ? styles.calendarDayTextSelected : null,
+                      isPast ? styles.calendarDayTextDisabled : null,
+                    ]}
+                  >
+                    {dayNumber}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <View style={styles.calendarFooter}>
+            <Text style={styles.dialogSubtitle}>Data selecionada: {formatLocalDateBR(selectedDate)}</Text>
             <SheetButton label="Cancelar" onPress={onCancel} variant="secondary" />
-            <SheetButton label="Confirmar" onPress={onConfirm} variant="primary" />
           </View>
         </Pressable>
       </Pressable>
@@ -946,6 +1042,84 @@ const styles = StyleSheet.create({
     padding: theme.space[6],
     margin: theme.space[5],
     gap: theme.space[4],
+  },
+  calendarHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.space[3],
+  },
+  calendarTitleBlock: {
+    flex: 1,
+    alignItems: "center",
+  },
+  calendarNavButton: {
+    width: theme.space[10],
+    height: theme.space[10],
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  calendarWeekRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: theme.space[1],
+  },
+  calendarWeekLabel: {
+    width: theme.space[10],
+    textAlign: "center",
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
+    fontWeight: theme.weight.semibold,
+  },
+  calendarGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    rowGap: theme.space[2],
+  },
+  calendarDayButton: {
+    width: theme.space[10],
+    height: theme.space[10],
+    borderRadius: theme.radius.lg,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  calendarDayMuted: {
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  calendarDayToday: {
+    borderColor: theme.colors.primary,
+  },
+  calendarDaySelected: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  calendarDayDisabled: {
+    opacity: 0.42,
+  },
+  calendarDayText: {
+    ...theme.text.body,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  calendarDayTextMuted: {
+    color: theme.colors.textMuted,
+  },
+  calendarDayTextSelected: {
+    color: theme.colors.surface,
+  },
+  calendarDayTextDisabled: {
+    color: theme.colors.textMuted,
+  },
+  calendarFooter: {
+    gap: theme.space[3],
   },
   dateSheet: {
     backgroundColor: theme.palette.neutral[900],
