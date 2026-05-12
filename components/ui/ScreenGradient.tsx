@@ -51,15 +51,16 @@ export function ScreenGradient({
         <SafeAreaView style={{ flex: 1 }} edges={["top", "left", "right"]}>
           {scrollable ? (
             <ScrollView
-              contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 16 }}
+              contentContainerStyle={{ paddingHorizontal: theme.space[5], paddingVertical: theme.space[4] }}
               showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
               refreshControl={refreshControl}
               {...props}
             >
               {children}
             </ScrollView>
           ) : (
-            <View style={{ flex: 1, paddingHorizontal: 20, paddingVertical: 16 }} {...props}>
+            <View style={{ flex: 1, paddingHorizontal: theme.space[5], paddingVertical: theme.space[4] }} {...props}>
               {children}
             </View>
           )}
