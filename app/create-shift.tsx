@@ -142,18 +142,22 @@ export default function CreateShiftScreen() {
     onSuccess: async () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       
-      // Agendar lembrete 30 min antes
-      if (selectedSectorId && selectedDate && selectedShift) {
+      // Agendar lembrete 30 min antes em dispositivos nativos.
+      if (Platform.OS !== "web" && selectedSectorId && selectedDate && selectedShift) {
         const sector = sectors?.find(s => s.id === selectedSectorId);
         const shiftTimes = SHIFT_TIMES[selectedShift];
         const startDateTime = new Date(`${selectedDate}T${shiftTimes.start}:00`);
         
         if (sector) {
-          await scheduleShiftReminder(
-            sector.name,
-            startDateTime,
-            `${selectedShift} (${shiftTimes.start} - ${shiftTimes.end})`
-          );
+          try {
+            await scheduleShiftReminder(
+              sector.name,
+              startDateTime,
+              `${selectedShift} (${shiftTimes.start} - ${shiftTimes.end})`
+            );
+          } catch (error) {
+            console.warn("Não foi possível agendar lembrete local:", error);
+          }
         }
       }
       
