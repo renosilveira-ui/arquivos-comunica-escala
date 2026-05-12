@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
+import { useState, useEffect, type ReactNode } from "react";
+import { Text, View, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions, type ViewStyle } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
@@ -12,6 +12,12 @@ import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle } from "
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 
+const ICON_BOX_SIZE = theme.space[10] + theme.space[2];
+const PRIMARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 2;
+const SECONDARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 3;
+const FIELD_MIN_WIDTH = theme.spacing.contentMaxWidth / 6;
+const ACTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 5;
+
 /**
  * Tela de Detalhes da Escala
  * Mostra informações completas da escala e lista de profissionais alocados
@@ -20,6 +26,7 @@ export default function ShiftDetailsScreen() {
   const { user } = useAuth();
   const router = useRouter();
   const params = useLocalSearchParams();
+  const { width } = useWindowDimensions();
   const shiftId = Number(params.id);
   const [isDemo, setIsDemo] = useState(false);
 
@@ -197,268 +204,491 @@ export default function ShiftDetailsScreen() {
         : shift.status === "VAGO"
           ? "Vago"
           : "Pendente";
+  const isWide = width >= theme.spacing.contentMaxWidth;
+  const timeRange = `${startDate.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}–${endDate.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+  const durationHours = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60));
 
   return (
     <ScreenGradient scrollable>
-      <View className="gap-6">
-        {/* Header com botão voltar */}
-        <View className="flex-row items-center gap-4">
+      <View style={styles.shell}>
+        <View style={styles.header}>
           <TouchableOpacity
             onPress={handleBack}
             activeOpacity={0.7}
-            className="w-10 h-10 items-center justify-center"
+            style={styles.backButton}
           >
             <ChevronLeft size={28} color={theme.colors.textPrimary} />
           </TouchableOpacity>
-          <View className="flex-1">
-            <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>Detalhes da Escala</Text>
+          <View style={styles.headerText}>
+            <Text style={styles.eyebrow}>Plantão</Text>
+            <Text style={styles.title}>Detalhes da Escala</Text>
           </View>
         </View>
 
-        {/* Card de Informações da Escala */}
-        <TintedGlassCard className="gap-6">
-          {/* Setor */}
-          <View className="flex-row items-center gap-4">
-            <View
-              className="w-12 h-12 rounded-2xl items-center justify-center"
-              style={{ backgroundColor: sector?.color || theme.colors.primary }}
-            >
-              <Calendar size={24} color={theme.colors.surface} />
-            </View>
-            <View className="flex-1">
-              <Text className="text-sm mb-1" style={{ color: theme.colors.textMuted }}>Setor</Text>
-              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>
-                {sector?.name || "Não definido"}
-              </Text>
-              <Text className="text-sm capitalize mt-1" style={{ color: theme.colors.textMuted }}>{sector?.category}</Text>
-            </View>
-          </View>
-
-          {/* Data e Horário */}
-          <View className="gap-4">
-            <View>
-              <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Data</Text>
-              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
-                {formatDateBR(startDate)}
-              </Text>
-            </View>
-
-            <View className="flex-row gap-4">
-              <View className="flex-1">
-                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Início</Text>
-                <View className="flex-row items-center gap-2">
-                  <Clock size={18} color={theme.colors.textMuted} />
-                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
-                    {startDate.toLocaleTimeString("pt-BR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </Text>
+        <View style={styles.contentGrid}>
+          <View style={styles.primaryColumn}>
+            <TintedGlassCard variant="light" style={styles.summaryCard}>
+              <View style={styles.summaryHeader}>
+                <View style={styles.iconBox}>
+                  <Calendar size={24} color={theme.colors.surface} />
+                </View>
+                <View style={styles.summaryText}>
+                  <Text style={styles.label}>Setor</Text>
+                  <Text style={styles.sectorTitle}>{sector?.name || "Não definido"}</Text>
+                  {sector?.category ? (
+                    <Text style={styles.subtleText}>{sector.category}</Text>
+                  ) : null}
+                </View>
+                <View style={styles.statusWrap}>
+                  <Badge variant={statusVariant}>{statusLabel}</Badge>
                 </View>
               </View>
-              <View className="flex-1">
-                <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Término</Text>
-                <View className="flex-row items-center gap-2">
-                  <Clock size={18} color={theme.colors.textMuted} />
-                  <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
-                    {endDate.toLocaleTimeString("pt-BR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </Text>
-                </View>
+
+              <View style={styles.divider} />
+
+              <View style={styles.fieldGrid}>
+                <InfoTile label="Data" value={formatDateBR(startDate)} />
+                <InfoTile label="Horário" value={timeRange} icon={<Clock size={18} color={theme.colors.textMuted} />} />
+                <InfoTile label="Duração" value={`${durationHours} horas`} />
               </View>
-            </View>
 
-            {/* Duração */}
-            <View>
-              <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Duração</Text>
-              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
-                {Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60))} horas
-              </Text>
-            </View>
-          </View>
-
-          {/* Status */}
-          <View className="pt-4 border-t" style={{ borderColor: theme.colors.border }}>
-            <Text className="text-sm mb-3" style={{ color: theme.colors.textMuted }}>Status</Text>
-            <Badge variant={statusVariant}>{statusLabel}</Badge>
-          </View>
-
-          {/* Modalidade (PR #61/#63 — leitura) */}
-          {hasModalityInfo && (
-            <View className="pt-4 border-t gap-3" style={{ borderColor: theme.colors.border }}>
-              <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Modalidade</Text>
-
-              {modalityLabel && (
-                <View className="flex-row flex-wrap items-center gap-2">
-                  <View
-                    style={{
-                      paddingHorizontal: 12,
-                      paddingVertical: 6,
-                      borderRadius: 9999,
-                      backgroundColor: theme.colors.primarySoft,
-                      borderWidth: 1,
-                      borderColor: theme.palette.primary[200],
-                    }}
-                  >
-                    <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.primary }}>
-                      {modalityLabel}
-                    </Text>
+              {hasModalityInfo && (
+                <>
+                  <View style={styles.divider} />
+                  <View style={styles.sectionBlock}>
+                    <Text style={styles.sectionTitle}>Modalidade</Text>
+                    <View style={styles.modalityRow}>
+                      {modalityLabel ? <Badge variant="primary">{modalityLabel}</Badge> : null}
+                      {modality === "PLANTAO" && coverageLabel ? (
+                        <Text style={styles.bodyText}>{coverageLabel}</Text>
+                      ) : null}
+                    </View>
+                    {paymentModelLabel ? (
+                      <InfoLine label="Modelo de pagamento" value={paymentModelLabel} />
+                    ) : null}
+                    {formattedCap ? (
+                      <InfoLine label="Teto" value={formattedCap} />
+                    ) : null}
                   </View>
-                  {modality === "PLANTAO" && coverageLabel && (
-                    <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>
-                      {coverageLabel}
-                    </Text>
-                  )}
+                </>
+              )}
+
+              {shift.notes ? (
+                <>
+                  <View style={styles.divider} />
+                  <InfoLine label="Observações" value={shift.notes} />
+                </>
+              ) : null}
+            </TintedGlassCard>
+
+            <View style={styles.actionPanel}>
+              {shift.status !== "cancelada" && shift.status !== "VAGO" && user ? (
+                <ActionButton
+                  label="Confirmar Presença"
+                  onPress={handleConfirmPresence}
+                  icon={<CheckCircle2 size={20} color={theme.colors.surface} />}
+                  variant="success"
+                />
+              ) : null}
+
+              {shift.status !== "cancelada" ? (
+                <View style={styles.actionRow}>
+                  <ActionButton label="Editar Escala" onPress={handleEdit} variant="secondary" />
+                  <ActionButton
+                    label="Solicitar Troca de Plantão"
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      router.push(`/request-swap?id=${shiftId}`);
+                    }}
+                    variant="primarySoft"
+                  />
+                  {isUserAssigned && !userAssignment?.confirmedAt && !userAssignment?.confirmed ? (
+                    <ActionButton label="Confirmar Presença" onPress={handleConfirmPresence} variant="primary" />
+                  ) : null}
                 </View>
-              )}
-
-              {paymentModelLabel && (
-                <View>
-                  <Text className="text-sm mb-1" style={{ color: theme.colors.textMuted }}>
-                    Modelo de pagamento
-                  </Text>
-                  <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                    {paymentModelLabel}
-                  </Text>
-                </View>
-              )}
-
-              {formattedCap && (
-                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Teto: {formattedCap}
-                </Text>
-              )}
+              ) : null}
             </View>
-          )}
-
-          {/* Observações */}
-          {shift.notes && (
-            <View className="pt-4 border-t" style={{ borderColor: theme.colors.border }}>
-              <Text className="text-sm mb-2" style={{ color: theme.colors.textMuted }}>Observações</Text>
-              <Text className="text-base" style={{ color: theme.colors.textSecondary }}>{shift.notes}</Text>
-            </View>
-          )}
-        </TintedGlassCard>
-
-        {/* Lista de Profissionais Alocados */}
-        <View>
-          <View className="flex-row items-center gap-3 mb-4">
-            <Users size={24} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>
-              Profissionais ({assignments?.length || 0})
-            </Text>
           </View>
 
-          {assignments && assignments.length > 0 ? (
-            <View className="gap-3">
-              {assignments.map((assignment: any, index: number) => (
-                <TintedGlassCard key={index}>
-                  <View className="flex-row items-center justify-between">
-                    <View className="flex-1">
-                      <View className="flex-row items-center gap-2 mb-1">
-                        <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+          <View style={[styles.secondaryColumn, isWide ? styles.secondaryColumnWide : null]}>
+            <View style={styles.sectionHeader}>
+              <Users size={22} color={theme.colors.textPrimary} />
+              <Text style={styles.sectionHeading}>Profissionais ({assignments?.length || 0})</Text>
+            </View>
+
+            {assignments && assignments.length > 0 ? (
+              <View style={styles.listStack}>
+                {assignments.map((assignment: any, index: number) => (
+                  <TintedGlassCard key={index} variant="light" style={styles.personCard}>
+                    <View style={styles.personRow}>
+                      <View style={styles.personAvatar}>
+                        <Users size={18} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.personInfo}>
+                        <Text style={styles.personName}>
                           {assignment.professionalName || `Profissional #${assignment.userId || assignment.professionalId}`}
                         </Text>
-                        {assignment.isSubstitute && (
-                          <Badge variant="neutral">
-                            <Text className="text-xs font-semibold" style={{ color: theme.colors.primary }}>Substituto</Text>
-                          </Badge>
-                        )}
+                        {assignment.confirmedAt ? (
+                          <Text style={styles.subtleText}>
+                            Confirmado em {formatDateBR(assignment.confirmedAt)}
+                          </Text>
+                        ) : null}
                       </View>
-                      {assignment.confirmedAt && (
-                        <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                          Confirmado em{" "}
-                          {formatDateBR(assignment.confirmedAt)}
-                        </Text>
+                      {assignment.confirmed || assignment.confirmedAt ? (
+                        <Badge variant="success">Confirmado</Badge>
+                      ) : (
+                        <Badge variant="warning">Pendente</Badge>
                       )}
                     </View>
-                    {assignment.confirmed || assignment.confirmedAt ? (
-                      <View className="flex-row items-center gap-2">
-                        <CheckCircle2 size={20} color={theme.colors.success} />
-                        <Badge variant="success">Confirmado</Badge>
-                      </View>
-                    ) : (
-                      <Badge variant="warning">Pendente</Badge>
-                    )}
-                  </View>
-                </TintedGlassCard>
-              ))}
-            </View>
-          ) : (
-            <TintedGlassCard className="items-center py-8">
-              <Users size={48} color={theme.colors.textMuted} />
-              <Text className="text-base mt-3" style={{ color: theme.colors.textMuted }}>Nenhum profissional alocado</Text>
-            </TintedGlassCard>
-          )}
-        </View>
-
-        {/* Botão de Confirmar Presença */}
-        {shift.status !== "cancelada" && shift.status !== "VAGO" && user && (
-          <TouchableOpacity
-            onPress={handleConfirmPresence}
-            className="rounded-2xl h-16 items-center justify-center"
-            style={{
-              backgroundColor: theme.colors.success,
-            }}
-            activeOpacity={0.8}
-          >
-            <View className="flex-row items-center gap-3">
-              <CheckCircle2 size={24} color={theme.colors.surface} />
-              <Text className="text-xl font-bold" style={{ color: theme.colors.surface }}>Confirmar Presença</Text>
-            </View>
-          </TouchableOpacity>
-        )}
-
-        {/* Botões de Ação */}
-        {shift.status !== "cancelada" && (
-          <View className="gap-4">
-            {/* Botão de Editar */}
-            <TouchableOpacity
-              onPress={handleEdit}
-              className="rounded-2xl h-14 items-center justify-center"
-              style={{
-                backgroundColor: theme.colors.surfaceAlt,
-                borderWidth: 1,
-                borderColor: theme.colors.border,
-              }}
-              activeOpacity={0.7}
-            >
-              <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Editar Escala</Text>
-            </TouchableOpacity>
-
-            {/* Botão de Solicitar Troca */}
-            <TouchableOpacity
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push(`/request-swap?id=${shiftId}`);
-              }}
-              className="rounded-2xl h-14 items-center justify-center"
-              style={{
-                backgroundColor: theme.colors.primarySoft,
-                borderWidth: 1,
-                borderColor: theme.colors.primary,
-              }}
-              activeOpacity={0.7}
-            >
-              <Text className="text-lg font-semibold" style={{ color: theme.colors.primary }}>Solicitar Troca de Plantão</Text>
-            </TouchableOpacity>
-
-            {/* Botão de Confirmação de Presença */}
-            {isUserAssigned && !userAssignment?.confirmedAt && !userAssignment?.confirmed && (
-              <TouchableOpacity
-                onPress={handleConfirmPresence}
-                className="rounded-2xl h-14 items-center justify-center"
-                style={{ backgroundColor: theme.colors.primary }}
-                activeOpacity={0.7}
-              >
-                <Text className="text-lg font-semibold" style={{ color: theme.colors.surface }}>Confirmar Presença</Text>
-              </TouchableOpacity>
+                  </TintedGlassCard>
+                ))}
+              </View>
+            ) : (
+              <TintedGlassCard variant="light" style={styles.emptyCard}>
+                <View style={styles.emptyIcon}>
+                  <Users size={28} color={theme.colors.textMuted} />
+                </View>
+                <Text style={styles.emptyTitle}>Nenhum profissional alocado</Text>
+                <Text style={styles.emptyCopy}>Este plantão ainda está vago.</Text>
+              </TintedGlassCard>
             )}
           </View>
-        )}
+        </View>
       </View>
     </ScreenGradient>
   );
 }
+
+function InfoTile({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon?: ReactNode;
+}) {
+  return (
+    <View style={styles.infoTile}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.valueRow}>
+        {icon}
+        <Text style={styles.tileValue}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
+function InfoLine({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoLine}>
+      <Text style={styles.label}>{label}</Text>
+      <Text style={styles.bodyStrong}>{value}</Text>
+    </View>
+  );
+}
+
+function ActionButton({
+  label,
+  onPress,
+  icon,
+  variant,
+}: {
+  label: string;
+  onPress: () => void;
+  icon?: ReactNode;
+  variant: "primary" | "primarySoft" | "secondary" | "success";
+}) {
+  const buttonStyle: ViewStyle =
+    variant === "success"
+      ? styles.actionSuccess
+      : variant === "primary"
+        ? styles.actionPrimary
+        : variant === "primarySoft"
+          ? styles.actionPrimarySoft
+          : styles.actionSecondary;
+  const labelColor =
+    variant === "primary" || variant === "success"
+      ? theme.colors.surface
+      : variant === "primarySoft"
+        ? theme.colors.primary
+        : theme.colors.textPrimary;
+
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.78} style={[styles.actionButton, buttonStyle]}>
+      <View style={styles.actionContent}>
+        {icon}
+        <Text style={[styles.actionLabel, { color: labelColor }]}>{label}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+const styles = StyleSheet.create({
+  shell: {
+    width: "100%",
+    maxWidth: theme.spacing.contentMaxWidth,
+    alignSelf: "center",
+    gap: theme.space[6],
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[3],
+  },
+  backButton: {
+    width: theme.space[10],
+    height: theme.space[10],
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  headerText: {
+    flex: 1,
+  },
+  eyebrow: {
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
+    fontWeight: theme.weight.semibold,
+    textTransform: "uppercase",
+  },
+  title: {
+    ...theme.text.titleLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  contentGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.space[6],
+    alignItems: "flex-start",
+  },
+  primaryColumn: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: PRIMARY_COLUMN_MIN_WIDTH,
+    minWidth: theme.space[0],
+    gap: theme.space[5],
+  },
+  secondaryColumn: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: SECONDARY_COLUMN_MIN_WIDTH,
+    minWidth: theme.space[0],
+    gap: theme.space[4],
+  },
+  secondaryColumnWide: {
+    maxWidth: SECONDARY_COLUMN_MIN_WIDTH + theme.space[20],
+  },
+  summaryCard: {
+    gap: theme.space[5],
+  },
+  summaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[4],
+    flexWrap: "wrap",
+  },
+  iconBox: {
+    width: ICON_BOX_SIZE,
+    height: ICON_BOX_SIZE,
+    borderRadius: theme.radius.xl,
+    backgroundColor: theme.colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  summaryText: {
+    flex: 1,
+    minWidth: FIELD_MIN_WIDTH,
+  },
+  statusWrap: {
+    alignItems: "flex-start",
+  },
+  label: {
+    ...theme.text.caption,
+    color: theme.colors.textMuted,
+    fontWeight: theme.weight.semibold,
+  },
+  sectorTitle: {
+    ...theme.text.titleLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  subtleText: {
+    ...theme.text.body,
+    color: theme.colors.textSecondary,
+  },
+  bodyText: {
+    ...theme.text.body,
+    color: theme.colors.textSecondary,
+  },
+  bodyStrong: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: theme.colors.border,
+  },
+  fieldGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.space[3],
+  },
+  infoTile: {
+    flexGrow: 1,
+    flexBasis: FIELD_MIN_WIDTH,
+    minWidth: FIELD_MIN_WIDTH,
+    padding: theme.space[4],
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    gap: theme.space[2],
+  },
+  valueRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[2],
+  },
+  tileValue: {
+    ...theme.text.title,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  sectionBlock: {
+    gap: theme.space[3],
+  },
+  sectionTitle: {
+    ...theme.text.title,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  modalityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: theme.space[3],
+  },
+  infoLine: {
+    gap: theme.space[1],
+  },
+  actionPanel: {
+    gap: theme.space[3],
+  },
+  actionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.space[3],
+  },
+  actionButton: {
+    minHeight: theme.space[14],
+    minWidth: ACTION_MIN_WIDTH,
+    flexGrow: 1,
+    borderRadius: theme.radius.lg,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: theme.space[4],
+    paddingVertical: theme.space[3],
+  },
+  actionPrimary: {
+    backgroundColor: theme.colors.primary,
+  },
+  actionSuccess: {
+    backgroundColor: theme.colors.success,
+  },
+  actionPrimarySoft: {
+    backgroundColor: theme.colors.primarySoft,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  actionSecondary: {
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  actionContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: theme.space[2],
+  },
+  actionLabel: {
+    ...theme.text.bodyLg,
+    fontWeight: theme.weight.semibold,
+    textAlign: "center",
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[2],
+  },
+  sectionHeading: {
+    ...theme.text.title,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.bold,
+  },
+  listStack: {
+    gap: theme.space[3],
+  },
+  personCard: {
+    padding: theme.space[4],
+  },
+  personRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[3],
+    flexWrap: "wrap",
+  },
+  personAvatar: {
+    width: theme.space[10],
+    height: theme.space[10],
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.primarySoft,
+  },
+  personInfo: {
+    flex: 1,
+    minWidth: FIELD_MIN_WIDTH,
+  },
+  personName: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  emptyCard: {
+    alignItems: "center",
+    gap: theme.space[3],
+    paddingVertical: theme.space[8],
+  },
+  emptyIcon: {
+    width: theme.space[14],
+    height: theme.space[14],
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  emptyTitle: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+    textAlign: "center",
+  },
+  emptyCopy: {
+    ...theme.text.body,
+    color: theme.colors.textMuted,
+    textAlign: "center",
+  },
+});
