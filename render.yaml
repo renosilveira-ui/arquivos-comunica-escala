@@ -18,7 +18,7 @@ services:
     plan: free
     region: oregon
     branch: main
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    buildCommand: pnpm install --frozen-lockfile && pnpm build
     startCommand: pnpm start
     healthCheckPath: /api/health
     autoDeploy: true
@@ -112,7 +112,7 @@ services:
     runtime: static
     name: escalas-staging-web
     branch: main
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:web
+    buildCommand: pnpm install --frozen-lockfile && pnpm build:web
     staticPublishPath: ./web-build
     autoDeploy: true
     pullRequestPreviewsEnabled: false
