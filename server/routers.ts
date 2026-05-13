@@ -8,6 +8,7 @@ import { auditLog } from "./audit-log";
 import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
 import {
+  assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
   getTenantActorFromContext,
@@ -225,6 +226,7 @@ const shiftInstancesRouter = router({
       if (!targetShift) {
         throw new Error("Turno do assignment não encontrado");
       }
+      assertCanEditScheduleDate(actor, targetShift.startAt);
       await assertNoTimeConflictForProfessional(
         assignment.professionalId,
         targetShift.startAt,
@@ -296,6 +298,15 @@ const shiftInstancesRouter = router({
       if (!managerProfessionalId) {
         throw new Error("Profissional do aprovador não encontrado");
       }
+
+      const [targetShift] = await db
+        .select({ startAt: shiftInstances.startAt })
+        .from(shiftInstances)
+        .where(eq(shiftInstances.id, assignment.shiftInstanceId));
+      if (!targetShift) {
+        throw new Error("Turno do assignment não encontrado");
+      }
+      assertCanEditScheduleDate(actor, targetShift.startAt);
 
       await db
         .update(shiftAssignmentsV2)
