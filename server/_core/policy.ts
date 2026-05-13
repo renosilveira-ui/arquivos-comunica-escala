@@ -6,6 +6,7 @@ import {
   professionalInstitutions,
   professionals,
 } from "../../drizzle/schema";
+import { yearMonthFromDate } from "../../lib/date-utils";
 import type { TrpcContext } from "./context";
 
 export type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -147,6 +148,21 @@ export function assertCanManageInstitutionSchedule(actor: TenantActor): void {
   throw new TRPCError({
     code: "FORBIDDEN",
     message: "Apenas gestores da instituição podem gerenciar escalas",
+  });
+}
+
+export function isSameCalendarMonth(date: Date, now: Date): boolean {
+  return yearMonthFromDate(date) === yearMonthFromDate(now);
+}
+
+export function assertCanEditScheduleDate(actor: TenantActor, date: Date, now = new Date()): void {
+  assertCanManageInstitutionSchedule(actor);
+  if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") return;
+  if (actor.roleInInstitution === "GESTOR_MEDICO" && isSameCalendarMonth(date, now)) return;
+
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "Gestor de hospital só pode editar escala do mês corrente",
   });
 }
 

@@ -1,6 +1,7 @@
-import { professionals, managerScope, institutionConfig, shiftInstances, professionalInstitutions } from "../drizzle/schema";
+import { professionals, managerScope, shiftInstances, professionalInstitutions } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { getDb } from "./db";
+import { yearMonthFromDate } from "../lib/date-utils";
 
 /**
  * Validações RBAC + Jurisdição + Janela Temporal
@@ -163,8 +164,8 @@ export async function checkJurisdiction(
 /**
  * Validação B: Janela Temporal (edit_window_days)
  *
- * Verifica se a data do turno está dentro da janela de edição retroativa.
- * GESTOR_PLUS ignora a janela.
+ * Verifica se a data do turno está no mês corrente para GESTOR_MEDICO.
+ * GESTOR_PLUS ignora a janela; USER não edita.
  */
 export async function checkEditWindow(
   professionalId: number,
@@ -185,28 +186,11 @@ export async function checkEditWindow(
     return { canEdit: false, isRetroactive, reason: "Usuários não podem editar turnos retroativos" };
   }
 
-  if (!isRetroactive) {
-    return { canEdit: true, isRetroactive: false };
-  }
-
-  // GESTOR_MEDICO: verificar janela
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  const [config] = await db
-    .select()
-    .from(institutionConfig)
-    .where(eq(institutionConfig.institutionId, institutionId));
-
-  const editWindowDays = config?.editWindowDays ?? 3;
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - editWindowDays);
-
-  if (shiftDate < cutoffDate) {
+  if (yearMonthFromDate(shiftDate) !== yearMonthFromDate(new Date())) {
     return {
       canEdit: false,
-      isRetroactive: true,
-      reason: `Turno fora da janela de edição (${editWindowDays} dias)`,
+      isRetroactive,
+      reason: "Gestor de hospital só pode editar escala do mês corrente",
     };
   }
 

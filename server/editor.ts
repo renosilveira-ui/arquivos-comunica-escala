@@ -8,6 +8,7 @@ import { recordAudit } from "./audit-trail";
 import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
 import { sql } from "drizzle-orm";
 import {
+  assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
   getTenantActorFromContext,
@@ -65,6 +66,7 @@ export const editorRouter = router({
 
       const shift = shiftRows[0];
       await assertManagerScopeAccess(actor, shift.hospital_id, shift.sector_id);
+      assertCanEditScheduleDate(actor, new Date(shift.start_at));
 
       // 4. Verificar assertMonthEditable
       await assertMonthEditable(
@@ -196,6 +198,7 @@ export const editorRouter = router({
 
       const shift = shiftRows[0];
       await assertManagerScopeAccess(actor, shift.hospital_id, shift.sector_id);
+      assertCanEditScheduleDate(actor, new Date(shift.start_at));
 
       // 4. Verificar assertMonthEditable
       await assertMonthEditable(
@@ -286,6 +289,7 @@ export const editorRouter = router({
 
       const assignment = assignmentRows[0];
       await assertManagerScopeAccess(actor, assignment.hospital_id, assignment.sector_id);
+      assertCanEditScheduleDate(actor, new Date(assignment.start_at));
 
       // 4. Verificar assertMonthEditable
       await assertMonthEditable(

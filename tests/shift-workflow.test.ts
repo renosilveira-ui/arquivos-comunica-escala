@@ -272,13 +272,13 @@ describe("Workflow de Vagas - Validações RBAC", () => {
   });
 
   // ========================================
-  // TESTE 8: markVacant retroativo - GESTOR_MEDICO tenta editar turno de ontem (falha janela temporal)
+  // TESTE 8: markVacant retroativo - GESTOR_MEDICO edita dia anterior no mês corrente
   // ========================================
-  it("Teste 8: GESTOR_MEDICO tenta editar turno retroativo (falha janela temporal)", async () => {
+  it("Teste 8: GESTOR_MEDICO edita turno retroativo dentro do mês corrente", async () => {
     const result = await canEditShift(mariaId, shiftRetroativoId);
     
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("janela de edição");
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBeUndefined();
   });
 
   // ========================================

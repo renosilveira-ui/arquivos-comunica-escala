@@ -16,6 +16,7 @@ import { recordAudit } from "./audit-trail";
 import { notifyVacancyOpened } from "./integrations/comunica-plus";
 import { publishMonth, lockMonth } from "./month-guards";
 import {
+  assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
   getTenantActorFromContext,
@@ -128,6 +129,7 @@ export const shiftsRouter = router({
         template.startTime,
         template.endTime,
       );
+      assertCanEditScheduleDate(actor, startAt);
 
       const [result] = await db.insert(shiftInstances).values({
         institutionId: template.institutionId,
@@ -326,6 +328,7 @@ export const shiftsRouter = router({
       if (Object.keys(patch).length === 0) {
         return existing;
       }
+      assertCanEditScheduleDate(actor, patch.startAt ?? existing.startAt);
 
       await db
         .update(shiftInstances)
@@ -875,6 +878,7 @@ export const shiftsRouter = router({
       for (const shift of sourceShifts) {
         const newStart = new Date(shift.startAt.getTime() + dayOffsetMs);
         const newEnd = new Date(shift.endAt.getTime() + dayOffsetMs);
+        assertCanEditScheduleDate(actor, newStart);
 
         await db.insert(shiftInstances).values({
           institutionId: shift.institutionId,
