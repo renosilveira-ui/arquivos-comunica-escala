@@ -15,7 +15,7 @@ import {
   type ShiftFilterValues,
 } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useRouter } from "expo-router";
 import {
   Check,
@@ -30,7 +30,6 @@ import {
   Search,
   Plus,
 } from "lucide-react-native";
-import * as Auth from "@/lib/_core/auth";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
 import { theme } from "@/lib/theme";
@@ -39,58 +38,26 @@ import { theme } from "@/lib/theme";
 // Helpers for Available Swaps section
 // ---------------------------------------------------------------------------
 
-function getBaseUrl(): string {
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl) return envUrl;
-  if (Platform.OS === "android") return "http://10.0.2.2:3000";
-  return "http://localhost:3000";
-}
-
-async function swapFetch<T>(
-  path: string,
-  options?: RequestInit,
-): Promise<{ ok: boolean; data: T | null }> {
-  const url = getBaseUrl() + path;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options?.headers as Record<string, string>),
-  };
-  if (Platform.OS !== "web") {
-    const token = await Auth.getSessionToken();
-    if (token) headers["Authorization"] = "Bearer " + token;
-  }
-  const res = await fetch(url, {
-    ...options,
-    headers,
-    credentials: Platform.OS === "web" ? "include" : undefined,
-  });
-  let data: T | null = null;
-  try {
-    data = await res.json();
-  } catch {}
-  return { ok: res.ok, data };
-}
-
 interface AvailableSwap {
   id: number;
-  type: "SWAP" | "TRANSFER";
+  type: "SWAP" | "TRANSFER" | "CESSAO";
   reason: string | null;
-  expiresAt: string | null;
-  createdAt: string;
+  expiresAt: Date | string | null;
+  createdAt: Date | string;
   fromProfessional: { name: string; role: string };
   fromShift: {
     id: number;
     label: string;
-    startAt: string;
-    endAt: string;
+    startAt: Date | string;
+    endAt: Date | string;
     hospitalName: string;
     sectorName: string;
   };
   toShift: {
     id: number;
     label: string;
-    startAt: string;
-    endAt: string;
+    startAt: Date | string;
+    endAt: Date | string;
     hospitalName: string;
     sectorName: string;
   } | null;
@@ -107,8 +74,8 @@ const uiAlert = (title: string, message: string) => {
 
 export default function PendingScreen() {
   const router = useRouter();
-  const [refreshing, setRefreshing] = useState(false);
   const { user, isLoading: authLoading } = useAuth();
+  const utils = trpc.useUtils();
   const isAdminOrManager = user?.role === "admin" || user?.role === "manager";
   const [mySearch, setMySearch] = useState("");
   const [myDate, setMyDate] = useState(
@@ -116,51 +83,52 @@ export default function PendingScreen() {
   );
 
   // ── Available Swaps state ──
-  const [availableSwaps, setAvailableSwaps] = useState<AvailableSwap[]>([]);
-  const [swapsLoading, setSwapsLoading] = useState(false);
   const [swapActionId, setSwapActionId] = useState<number | null>(null);
+  const { data: availableSwapsData } = trpc.swaps.listAvailable.useQuery(
+    {},
+    { enabled: !!user?.id },
+  );
+  const availableSwaps = (availableSwapsData ?? []) as AvailableSwap[];
 
-  const fetchAvailableSwaps = useCallback(async () => {
-    if (!user?.id) return;
-    setSwapsLoading(true);
-    const res = await swapFetch<any>(
-      `/api/trpc/swaps.listAvailable?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: {} } }))}`,
-    );
-    const data: AvailableSwap[] =
-      (res.data as any)?.[0]?.result?.data?.json ?? [];
-    setAvailableSwaps(data);
-    setSwapsLoading(false);
-  }, [user?.id]);
+  const acceptSwap = trpc.swaps.accept.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.swaps.listAvailable.invalidate(),
+        utils.swaps.list.invalidate(),
+      ]);
+      uiAlert("Sucesso", "Oferta aceita!");
+    },
+    onError: (error) => {
+      uiAlert("Erro", error.message || "Erro ao aceitar oferta");
+    },
+    onSettled: () => setSwapActionId(null),
+  });
+  const rejectSwap = trpc.swaps.reject.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.swaps.listAvailable.invalidate(),
+        utils.swaps.list.invalidate(),
+      ]);
+      uiAlert("Sucesso", "Oferta recusada!");
+    },
+    onError: (error) => {
+      uiAlert("Erro", error.message || "Erro ao recusar oferta");
+    },
+    onSettled: () => setSwapActionId(null),
+  });
 
-  useEffect(() => {
-    fetchAvailableSwaps();
-  }, [fetchAvailableSwaps]);
-
-  const handleSwapAction = async (
+  const handleSwapAction = (
     swapId: number,
     action: "accept" | "reject",
   ) => {
     setSwapActionId(swapId);
-    const endpoint = action === "accept" ? "swaps.accept" : "swaps.reject";
-    const res = await swapFetch<any>(`/api/trpc/${endpoint}?batch=1`, {
-      method: "POST",
-      body: JSON.stringify({ "0": { json: { swapRequestId: swapId } } }),
-    });
-    setSwapActionId(null);
-    const result = (res.data as any)?.[0];
-    if (result?.error) {
-      uiAlert("Erro", result.error.json?.message ?? "Erro ao processar");
-      return;
-    }
-    uiAlert(
-      "Sucesso",
-      action === "accept" ? "Oferta aceita!" : "Oferta recusada!",
-    );
-    fetchAvailableSwaps();
+    const input = { swapRequestId: swapId };
+    if (action === "accept") acceptSwap.mutate(input);
+    else rejectSwap.mutate(input);
   };
 
-  const fmtSwapDate = (iso: string) => {
-    const d = new Date(iso);
+  const fmtSwapDate = (value: Date | string) => {
+    const d = new Date(value);
     return d.toLocaleDateString("pt-BR", {
       weekday: "short",
       day: "2-digit",
@@ -168,7 +136,7 @@ export default function PendingScreen() {
     });
   };
 
-  const fmtSwapTime = (s: string, e: string) => {
+  const fmtSwapTime = (s: Date | string, e: Date | string) => {
     const sd = new Date(s);
     const ed = new Date(e);
     const p = (n: number) => String(n).padStart(2, "0");
@@ -194,7 +162,7 @@ export default function PendingScreen() {
   const sectors = sectorsData || [];
 
   // Defaults inteligentes baseado em manager_scope
-  const { defaults, isLoading: defaultsLoading } = useFilterDefaults({
+  const { defaults } = useFilterDefaults({
     hospitals,
     sectors,
   });
