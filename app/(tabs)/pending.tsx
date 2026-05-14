@@ -82,8 +82,10 @@ export default function PendingScreen() {
     () => new Date().toISOString().split("T")[0],
   );
 
-  // ── Available Swaps state ──
-  const [swapActionId, setSwapActionId] = useState<number | null>(null);
+  const [swapAction, setSwapAction] = useState<{
+    id: number;
+    action: "accept" | "reject";
+  } | null>(null);
   const { data: availableSwapsData } = trpc.swaps.listAvailable.useQuery(
     {},
     { enabled: !!user?.id },
@@ -101,7 +103,7 @@ export default function PendingScreen() {
     onError: (error) => {
       uiAlert("Erro", error.message || "Erro ao aceitar oferta");
     },
-    onSettled: () => setSwapActionId(null),
+    onSettled: () => setSwapAction(null),
   });
   const rejectSwap = trpc.swaps.reject.useMutation({
     onSuccess: async () => {
@@ -114,18 +116,22 @@ export default function PendingScreen() {
     onError: (error) => {
       uiAlert("Erro", error.message || "Erro ao recusar oferta");
     },
-    onSettled: () => setSwapActionId(null),
+    onSettled: () => setSwapAction(null),
   });
 
   const handleSwapAction = (
     swapId: number,
     action: "accept" | "reject",
   ) => {
-    setSwapActionId(swapId);
+    if (acceptSwap.isPending || rejectSwap.isPending) return;
+
+    setSwapAction({ id: swapId, action });
     const input = { swapRequestId: swapId };
     if (action === "accept") acceptSwap.mutate(input);
     else rejectSwap.mutate(input);
   };
+
+  const isSwapActionPending = acceptSwap.isPending || rejectSwap.isPending;
 
   const fmtSwapDate = (value: Date | string) => {
     const d = new Date(value);
@@ -333,6 +339,227 @@ export default function PendingScreen() {
     });
   };
 
+  const renderAvailableSwapsSection = () => {
+    if (availableSwaps.length === 0) return null;
+
+    return (
+      <View style={{ marginBottom: 24 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 14,
+          }}
+        >
+          <ArrowRightLeft size={22} color={theme.colors.primary} />
+          <Text
+            style={{
+              color: theme.colors.textPrimary,
+              fontSize: 20,
+              fontWeight: "700",
+            }}
+          >
+            Trocas Disponíveis
+          </Text>
+          <View
+            style={{
+              backgroundColor: theme.colors.primary,
+              borderRadius: 10,
+              minWidth: 22,
+              height: 22,
+              alignItems: "center",
+              justifyContent: "center",
+              paddingHorizontal: 6,
+            }}
+          >
+            <Text
+              style={{
+                color: theme.colors.surface,
+                fontSize: 12,
+                fontWeight: "700",
+              }}
+            >
+              {availableSwaps.length}
+            </Text>
+          </View>
+        </View>
+
+        {availableSwaps.map((sw) => (
+          <View
+            key={sw.id}
+            style={{
+              backgroundColor: theme.colors.surface,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              padding: 14,
+              marginBottom: 10,
+            }}
+          >
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+              <View
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  borderRadius: 999,
+                  backgroundColor:
+                    sw.type === "SWAP"
+                      ? theme.colors.primarySoft
+                      : theme.colors.warningSoft,
+                  borderWidth: 1,
+                  borderColor:
+                    sw.type === "SWAP"
+                      ? theme.palette.primary[200]
+                      : theme.colors.warning,
+                }}
+              >
+                <Text
+                  style={{
+                    color: theme.colors.textPrimary,
+                    fontSize: 11,
+                    fontWeight: "600",
+                  }}
+                >
+                  {sw.type === "SWAP" ? "TROCA" : "REPASSE"}
+                </Text>
+              </View>
+            </View>
+
+            <Text
+              style={{
+                color: theme.colors.textPrimary,
+                fontSize: 14,
+                fontWeight: "600",
+              }}
+            >
+              {sw.fromProfessional.name}
+              <Text
+                style={{
+                  color: theme.colors.textDisabled,
+                  fontWeight: "400",
+                }}
+              >
+                {" "}
+                • {sw.fromProfessional.role}
+              </Text>
+            </Text>
+            <Text
+              style={{
+                color: theme.colors.textDisabled,
+                fontSize: 13,
+                marginTop: 4,
+              }}
+            >
+              {sw.fromShift.label} — {fmtSwapDate(sw.fromShift.startAt)} •{" "}
+              {fmtSwapTime(sw.fromShift.startAt, sw.fromShift.endAt)}
+            </Text>
+            <Text style={{ color: theme.colors.textMuted, fontSize: 12 }}>
+              {sw.fromShift.hospitalName} / {sw.fromShift.sectorName}
+            </Text>
+
+            {sw.toShift && (
+              <View
+                style={{
+                  marginTop: 6,
+                  paddingLeft: 10,
+                  borderLeftWidth: 2,
+                  borderLeftColor: theme.colors.warning,
+                }}
+              >
+                <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>
+                  Quer em troca:
+                </Text>
+                <Text style={{ color: theme.colors.textPrimary, fontSize: 13 }}>
+                  {sw.toShift.label} — {fmtSwapDate(sw.toShift.startAt)} •{" "}
+                  {fmtSwapTime(sw.toShift.startAt, sw.toShift.endAt)}
+                </Text>
+              </View>
+            )}
+
+            {sw.reason && (
+              <Text
+                style={{
+                  color: theme.colors.textDisabled,
+                  fontSize: 12,
+                  fontStyle: "italic",
+                  marginTop: 4,
+                }}
+              >{`"${sw.reason}"`}</Text>
+            )}
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+              <TouchableOpacity
+                onPress={() => handleSwapAction(sw.id, "accept")}
+                disabled={isSwapActionPending}
+                style={{
+                  flex: 1,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor: theme.colors.success,
+                  opacity: isSwapActionPending ? 0.6 : 1,
+                }}
+              >
+                {swapAction?.id === sw.id && swapAction.action === "accept" ? (
+                  <ActivityIndicator color={theme.colors.surface} size="small" />
+                ) : (
+                  <>
+                    <Check size={16} color={theme.colors.surface} />
+                    <Text
+                      style={{
+                        color: theme.colors.surface,
+                        fontSize: 14,
+                        fontWeight: "600",
+                      }}
+                    >
+                      Aceitar
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => handleSwapAction(sw.id, "reject")}
+                disabled={isSwapActionPending}
+                style={{
+                  flex: 1,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor: theme.colors.danger,
+                  opacity: isSwapActionPending ? 0.6 : 1,
+                }}
+              >
+                {swapAction?.id === sw.id && swapAction.action === "reject" ? (
+                  <ActivityIndicator color={theme.colors.surface} size="small" />
+                ) : (
+                  <>
+                    <X size={16} color={theme.colors.surface} />
+                    <Text
+                      style={{
+                        color: theme.colors.surface,
+                        fontSize: 14,
+                        fontWeight: "600",
+                      }}
+                    >
+                      Recusar
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
   if (authLoading) {
     return (
       <ScreenGradient>
@@ -514,6 +741,8 @@ export default function PendingScreen() {
             </ScrollView>
           </View>
 
+          {renderAvailableSwapsSection()}
+
           {myShifts.length === 0 ? (
             <View className="items-center justify-center py-16">
               <ClipboardCheck size={60} color={theme.colors.borderStrong} />
@@ -654,227 +883,7 @@ export default function PendingScreen() {
           </Text>
         </View>
 
-        {/* ── Trocas Disponíveis para Você ── */}
-        {availableSwaps.length > 0 && (
-          <View style={{ marginBottom: 24 }}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 10,
-                marginBottom: 14,
-              }}
-            >
-              <ArrowRightLeft size={22} color={theme.colors.primary} />
-              <Text
-                style={{
-                  color: theme.colors.textPrimary,
-                  fontSize: 20,
-                  fontWeight: "700",
-                }}
-              >
-                Trocas Disponíveis
-              </Text>
-              <View
-                style={{
-                  backgroundColor: theme.colors.primary,
-                  borderRadius: 10,
-                  minWidth: 22,
-                  height: 22,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  paddingHorizontal: 6,
-                }}
-              >
-                <Text
-                  style={{
-                    color: theme.colors.surface,
-                    fontSize: 12,
-                    fontWeight: "700",
-                  }}
-                >
-                  {availableSwaps.length}
-                </Text>
-              </View>
-            </View>
-            {availableSwaps.map((sw) => (
-              <View
-                key={sw.id}
-                style={{
-                  backgroundColor: theme.colors.surface,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: theme.colors.border,
-                  padding: 14,
-                  marginBottom: 10,
-                }}
-              >
-                {/* Type badge */}
-                <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
-                  <View
-                    style={{
-                      paddingHorizontal: 10,
-                      paddingVertical: 4,
-                      borderRadius: 999,
-                      backgroundColor:
-                        sw.type === "SWAP"
-                          ? theme.colors.primarySoft
-                          : theme.colors.warningSoft,
-                      borderWidth: 1,
-                      borderColor:
-                        sw.type === "SWAP"
-                          ? theme.palette.primary[200]
-                          : theme.colors.warning,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: theme.colors.textPrimary,
-                        fontSize: 11,
-                        fontWeight: "600",
-                      }}
-                    >
-                      {sw.type === "SWAP" ? "TROCA" : "REPASSE"}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* From info */}
-                <Text
-                  style={{
-                    color: theme.colors.textPrimary,
-                    fontSize: 14,
-                    fontWeight: "600",
-                  }}
-                >
-                  {sw.fromProfessional.name}
-                  <Text
-                    style={{
-                      color: theme.colors.textDisabled,
-                      fontWeight: "400",
-                    }}
-                  >
-                    {" "}
-                    • {sw.fromProfessional.role}
-                  </Text>
-                </Text>
-                <Text
-                  style={{
-                    color: theme.colors.textDisabled,
-                    fontSize: 13,
-                    marginTop: 4,
-                  }}
-                >
-                  {sw.fromShift.label} — {fmtSwapDate(sw.fromShift.startAt)} •{" "}
-                  {fmtSwapTime(sw.fromShift.startAt, sw.fromShift.endAt)}
-                </Text>
-                <Text style={{ color: theme.colors.textMuted, fontSize: 12 }}>
-                  {sw.fromShift.hospitalName} / {sw.fromShift.sectorName}
-                </Text>
-
-                {/* To shift if SWAP */}
-                {sw.toShift && (
-                  <View
-                    style={{
-                      marginTop: 6,
-                      paddingLeft: 10,
-                      borderLeftWidth: 2,
-                      borderLeftColor: theme.colors.warning,
-                    }}
-                  >
-                    <Text
-                      style={{ color: theme.colors.textDisabled, fontSize: 12 }}
-                    >
-                      Quer em troca:
-                    </Text>
-                    <Text
-                      style={{ color: theme.colors.textPrimary, fontSize: 13 }}
-                    >
-                      {sw.toShift.label} — {fmtSwapDate(sw.toShift.startAt)} •{" "}
-                      {fmtSwapTime(sw.toShift.startAt, sw.toShift.endAt)}
-                    </Text>
-                  </View>
-                )}
-
-                {sw.reason && (
-                  <Text
-                    style={{
-                      color: theme.colors.textDisabled,
-                      fontSize: 12,
-                      fontStyle: "italic",
-                      marginTop: 4,
-                    }}
-                  >{`"${sw.reason}"`}</Text>
-                )}
-
-                {/* Action buttons */}
-                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-                  <TouchableOpacity
-                    onPress={() => handleSwapAction(sw.id, "accept")}
-                    disabled={swapActionId === sw.id}
-                    style={{
-                      flex: 1,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 6,
-                      paddingVertical: 10,
-                      borderRadius: 10,
-                      backgroundColor: theme.colors.success,
-                      opacity: swapActionId === sw.id ? 0.6 : 1,
-                    }}
-                  >
-                    {swapActionId === sw.id ? (
-                      <ActivityIndicator
-                        color={theme.colors.surface}
-                        size="small"
-                      />
-                    ) : (
-                      <>
-                        <Check size={16} color={theme.colors.surface} />
-                        <Text
-                          style={{
-                            color: theme.colors.surface,
-                            fontSize: 14,
-                            fontWeight: "600",
-                          }}
-                        >
-                          Aceitar
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleSwapAction(sw.id, "reject")}
-                    disabled={swapActionId === sw.id}
-                    style={{
-                      flex: 1,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 6,
-                      paddingVertical: 10,
-                      borderRadius: 10,
-                      backgroundColor: theme.colors.danger,
-                      opacity: swapActionId === sw.id ? 0.6 : 1,
-                    }}
-                  >
-                    <X size={16} color={theme.colors.surface} />
-                    <Text
-                      style={{
-                        color: theme.colors.surface,
-                        fontSize: 14,
-                        fontWeight: "600",
-                      }}
-                    >
-                      Recusar
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
+        {renderAvailableSwapsSection()}
 
         {/* Filtros */}
         <View
