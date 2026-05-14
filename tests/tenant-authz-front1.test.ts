@@ -19,6 +19,7 @@ import {
   resolveTenantActor,
 } from "../server/_core/policy";
 import { editorRouter } from "../server/editor";
+import { professionalsRouter } from "../server/aux-routers";
 
 describe("Frente 1 - policy tenant + scoping crítico", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
@@ -300,6 +301,98 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
     await expect(assertManagerScopeAccess(actorB, hospitalBId, otherSector.id)).rejects.toThrow(
       /setor/i,
     );
+  });
+
+  it("expõe escopo de gestão conforme a instituição ativa", async () => {
+    const callerA = professionalsRouter.createCaller({
+      user: { id: userId, role: "doctor", name: "Tenant User", email: "tenant@test.local" },
+      institutionId: institutionAId,
+      allowedInstitutionIds: [institutionAId, institutionBId],
+    } as any);
+
+    const callerB = professionalsRouter.createCaller({
+      user: { id: userId, role: "doctor", name: "Tenant User", email: "tenant@test.local" },
+      institutionId: institutionBId,
+      allowedInstitutionIds: [institutionAId, institutionBId],
+    } as any);
+
+    await expect(callerA.getManagerScope()).resolves.toEqual({
+      role: "USER",
+      canManageAll: false,
+      hospitals: [],
+      sectors: [],
+    });
+
+    await expect(callerB.getManagerScope()).resolves.toEqual({
+      role: "GESTOR_MEDICO",
+      canManageAll: false,
+      hospitals: [hospitalBId],
+      sectors: [{ hospitalId: hospitalBId, sectorId: sectorBId }],
+    });
+  });
+
+  it("expõe escopo total para gestor geral técnico", async () => {
+    const caller = professionalsRouter.createCaller({
+      user: { id: adminUserId, role: "admin", name: "Admin User", email: "admin@test.local" },
+      institutionId: institutionAId,
+      allowedInstitutionIds: [institutionAId],
+    } as any);
+
+    await expect(caller.getManagerScope()).resolves.toEqual({
+      role: "GESTOR_PLUS",
+      canManageAll: true,
+      hospitals: [],
+      sectors: [],
+    });
+  });
+
+  it("expõe escopo total para gestor geral vinculado à instituição", async () => {
+    const stamp = Date.now();
+    const [gestorPlusUser] = await db
+      .insert(users)
+      .values({
+        openId: `front1-gestor-plus-${stamp}`,
+        name: `Front1 Gestor Plus ${stamp}`,
+        email: `front1-gestor-plus-${stamp}@test.local`,
+        role: "doctor",
+      })
+      .$returningId();
+
+    const [gestorPlusPro] = await db
+      .insert(professionals)
+      .values({
+        userId: gestorPlusUser.id,
+        name: `Prof Gestor Plus ${stamp}`,
+        role: "Médico",
+        userRole: "USER",
+      })
+      .$returningId();
+
+    await db.insert(professionalInstitutions).values({
+      userId: gestorPlusUser.id,
+      professionalId: gestorPlusPro.id,
+      institutionId: institutionAId,
+      roleInInstitution: "GESTOR_PLUS",
+      active: true,
+    });
+
+    const caller = professionalsRouter.createCaller({
+      user: {
+        id: gestorPlusUser.id,
+        role: "doctor",
+        name: "Gestor Plus User",
+        email: "gestor-plus@test.local",
+      },
+      institutionId: institutionAId,
+      allowedInstitutionIds: [institutionAId],
+    } as any);
+
+    await expect(caller.getManagerScope()).resolves.toEqual({
+      role: "GESTOR_PLUS",
+      canManageAll: true,
+      hospitals: [],
+      sectors: [],
+    });
   });
 
   it("garante vínculo ativo ao resolver ator por tenant", async () => {
