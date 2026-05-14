@@ -169,27 +169,20 @@ export const professionalsRouter = router({
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
-    const [pro] = await db
-      .select()
-      .from(professionals)
-      .where(eq(professionals.userId, ctx.user.id));
+    const actor = await getTenantActorFromContext(ctx);
 
-    if (!pro) {
-      return { role: "USER" as const, canManageAll: false, hospitals: [] as number[], sectors: [] as Array<{ hospitalId: number; sectorId: number }> };
-    }
-
-    if (pro.userRole === "GESTOR_PLUS") {
+    if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") {
       return { role: "GESTOR_PLUS" as const, canManageAll: true, hospitals: [] as number[], sectors: [] as Array<{ hospitalId: number; sectorId: number }> };
     }
 
-    if (pro.userRole === "GESTOR_MEDICO") {
+    if (actor.roleInInstitution === "GESTOR_MEDICO" && actor.professionalId) {
       const scopes = await db
         .select()
         .from(managerScopeTable)
         .where(
           and(
-            eq(managerScopeTable.institutionId, ctx.institutionId),
-            eq(managerScopeTable.managerProfessionalId, pro.id),
+            eq(managerScopeTable.institutionId, actor.institutionId),
+            eq(managerScopeTable.managerProfessionalId, actor.professionalId),
             eq(managerScopeTable.active, true),
           ),
         );
