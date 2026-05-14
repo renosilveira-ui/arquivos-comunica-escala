@@ -92,6 +92,79 @@ const shiftAssignmentsRouter = router({
       return { ok: true, assignmentId: result.insertId, status: "PENDENTE" as const };
     }),
 
+  // Listar solicitações de vaga feitas pelo usuário logado.
+  // Diferente de "minhas escalas": esta lista acompanha o pedido enviado
+  // pelo botão "Assumir Plantão", incluindo pendente, aprovado e recusado.
+  listMyVacancyRequests: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+
+    const userId = ctx.user?.id;
+    if (!userId) throw new Error("Autenticação necessária");
+
+    const [professional] = await db
+      .select({ id: professionals.id })
+      .from(professionals)
+      .where(eq(professionals.userId, userId));
+
+    if (!professional) return [];
+
+    const rows = await db.execute<any>(
+      sql`SELECT
+            sa.id              AS assignmentId,
+            sa.shift_instance_id AS shiftInstanceId,
+            sa.assignment_type AS assignmentType,
+            sa.status          AS status,
+            sa.is_active       AS isActive,
+            sa.created_at      AS createdAt,
+            sa.updated_at      AS updatedAt,
+            si.label           AS shiftLabel,
+            si.status          AS shiftStatus,
+            si.start_at        AS startAt,
+            si.end_at          AS endAt,
+            si.modality        AS modality,
+            si.coverage_type   AS coverageType,
+            si.payment_model   AS paymentModel,
+            si.productivity_cap_brl AS productivityCapBrl,
+            h.name             AS hospitalName,
+            s.name             AS sectorName
+          FROM shift_assignments_v2 sa
+          JOIN shift_instances si ON sa.shift_instance_id = si.id
+          JOIN hospitals h        ON si.hospital_id = h.id
+          JOIN sectors s          ON si.sector_id = s.id
+          WHERE sa.institution_id = ${ctx.institutionId}
+            AND sa.professional_id = ${professional.id}
+            AND sa.created_by = ${userId}
+            AND sa.status IN ('PENDENTE', 'OCUPADO', 'REJEITADO')
+          ORDER BY sa.created_at DESC, si.start_at ASC`
+    );
+
+    const data = (rows as any)[0];
+    return (data as any[]).map((r) => ({
+      assignmentId: r.assignmentId as number,
+      shiftInstanceId: r.shiftInstanceId as number,
+      assignmentType: r.assignmentType as "ON_DUTY" | "BACKUP" | "ON_CALL",
+      status: r.status as "PENDENTE" | "OCUPADO" | "REJEITADO",
+      isActive: r.isActive === true || r.isActive === 1,
+      createdAt: new Date(r.createdAt),
+      updatedAt: new Date(r.updatedAt),
+      shiftLabel: r.shiftLabel as string,
+      shiftStatus: r.shiftStatus as string,
+      startAt: new Date(r.startAt),
+      endAt: new Date(r.endAt),
+      hospitalName: r.hospitalName as string,
+      sectorName: r.sectorName as string,
+      modality: r.modality as "PLANTAO" | "SOBREAVISO",
+      coverageType: (r.coverageType ?? null) as "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
+      paymentModel: r.paymentModel as
+        | "FIXO"
+        | "FIXO_PRODUTIVIDADE_TETO"
+        | "FIXO_PRODUTIVIDADE_SEM_TETO"
+        | "PRODUTIVIDADE_PURA",
+      productivityCapBrl: (r.productivityCapBrl ?? null) as string | null,
+    }));
+  }),
+
   // Listar alocações pendentes com dados enriquecidos.
   // Modalidade do shift subjacente (PR #61) também flui pra cá pra
   // que o gestor consiga filtrar/visualizar por tipo na tela de

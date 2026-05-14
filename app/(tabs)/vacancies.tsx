@@ -119,7 +119,9 @@ export default function VacanciesScreen() {
       // Refetch vagas para atualizar lista
       refetchVacancies();
       if (Platform.OS === "web") {
-        window.alert("Solicitação enviada com sucesso.\n\nStatus: aguardando aprovação do gestor.");
+        window.alert(
+          "Solicitação enviada com sucesso.\n\nStatus: aguardando aprovação do gestor.\n\nVocê pode acompanhar em Perfil > Suas candidaturas.",
+        );
       }
     },
     onError: (error) => {
