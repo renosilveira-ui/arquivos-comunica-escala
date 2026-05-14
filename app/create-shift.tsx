@@ -339,10 +339,6 @@ export default function CreateShiftScreen() {
   const selectedShiftTime = selectedShift ? SHIFT_TIMES[selectedShift] : null;
   const primaryActionDisabled = createShift.isPending;
   const createShiftErrorMessage = createShift.error?.message;
-  const webSubmitProps =
-    Platform.OS === "web"
-      ? ({ onClick: handleCreateShift } as { onClick: () => void })
-      : {};
 
   return (
     <ScreenGradient scrollable>
@@ -582,14 +578,14 @@ export default function CreateShiftScreen() {
               />
             </FormSection>
 
-            <Pressable
+            <TouchableOpacity
               onPress={handleCreateShift}
               disabled={primaryActionDisabled}
               style={[styles.submitButton, primaryActionDisabled ? styles.disabledButton : null]}
+              activeOpacity={0.78}
               accessibilityRole="button"
               accessibilityLabel="Criar Escala"
               accessibilityState={{ disabled: primaryActionDisabled }}
-              {...webSubmitProps}
             >
               {createShift.isPending ? (
                 <ActivityIndicator size="small" color={theme.colors.surface} />
@@ -599,7 +595,7 @@ export default function CreateShiftScreen() {
                   <Text style={styles.submitLabel}>Criar Escala</Text>
                 </View>
               )}
-            </Pressable>
+            </TouchableOpacity>
 
             {createShiftErrorMessage ? (
               <Text style={styles.errorText}>{createShiftErrorMessage}</Text>
