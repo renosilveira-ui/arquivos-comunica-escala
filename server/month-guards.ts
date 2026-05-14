@@ -56,17 +56,17 @@ export async function assertMonthEditable(
   const professionalId = membership?.professionalId ?? null;
   const role = isGlobalAdmin ? "GESTOR_PLUS" : (membership?.roleInInstitution as string);
 
-  // Buscar monthly_roster usando Drizzle query
-  const rosterResult = await db.execute<any>(
-    sql`SELECT status FROM monthly_rosters 
-        WHERE institution_id = ${institutionId} 
-        AND hospital_id = ${hospitalId} 
-        AND year_month = ${yearMonth} 
-        LIMIT 1`
-  );
-
-  const rosterRows = (rosterResult as any).rows || (rosterResult as any[]);
-  const roster = rosterRows && rosterRows.length > 0 ? rosterRows[0] : null;
+  const [roster] = await db
+    .select({ status: monthlyRosters.status })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonth),
+      ),
+    )
+    .limit(1);
   const status = roster ? roster.status : "DRAFT";
 
   // DRAFT → ok (qualquer gestor pode editar)

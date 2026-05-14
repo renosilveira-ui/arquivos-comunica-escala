@@ -166,6 +166,7 @@ export const shiftsRouter = router({
         entityType: "SHIFT_INSTANCE",
         entityId: insertId,
         description: "Turno criado (" + template.name + " em " + input.date + ")",
+        institutionId: ctx.institutionId,
         hospitalId: template.hospitalId,
         sectorId: sectorId,
         shiftInstanceId: insertId,
@@ -350,6 +351,7 @@ export const shiftsRouter = router({
         entityType: "SHIFT_INSTANCE",
         entityId: input.id,
         description: "Turno atualizado",
+        institutionId: ctx.institutionId,
         shiftInstanceId: input.id,
         hospitalId: existing.hospitalId,
         sectorId: existing.sectorId,
@@ -901,6 +903,7 @@ export const shiftsRouter = router({
         entityType: "SHIFT_INSTANCE",
         entityId: 0,
         description: `Replicou ${created} turnos de ${input.fromStartDate} para ${input.toStartDate}`,
+        institutionId: ctx.institutionId,
         hospitalId: input.hospitalId,
       });
 
