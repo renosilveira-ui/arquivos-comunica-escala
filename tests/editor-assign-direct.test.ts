@@ -246,6 +246,57 @@ describe("editor.assignDirect", () => {
     expect(shift?.status).toBe("OCUPADO");
   });
 
+  it("bloqueia duplicidade do mesmo profissional no mesmo plantão", async () => {
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId,
+      institutionId,
+      hospitalId,
+      sectorId,
+      professionalId: targetProfessionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+      createdBy: managerUserId,
+    });
+
+    await db
+      .update(shiftInstances)
+      .set({ status: "OCUPADO" })
+      .where(eq(shiftInstances.id, shiftInstanceId));
+
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    await expect(
+      caller.assignDirect({
+        shiftInstanceId,
+        professionalId: targetProfessionalId,
+        assignmentType: "ON_DUTY",
+        reason: "Teste de duplicidade",
+      }),
+    ).rejects.toThrow(/Conflito de horário/);
+
+    const assignments = await db
+      .select()
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId),
+          eq(shiftAssignmentsV2.professionalId, targetProfessionalId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    expect(assignments).toHaveLength(1);
+  });
+
   it("remove a última alocação e registra auditoria com instituição", async () => {
     const caller = editorRouter.createCaller({
       user: {
