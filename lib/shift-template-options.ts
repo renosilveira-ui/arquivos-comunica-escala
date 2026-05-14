@@ -1,7 +1,7 @@
 export type ShiftTemplateOption = {
   id: number;
   hospitalId: number;
-  sectorId: number | null;
+  sectorId?: number | null;
   name: string;
   startTime: string;
   endTime: string;
@@ -28,18 +28,21 @@ export function getShiftTemplatesForSector(
 ): ShiftTemplateOption[] {
   if (!templates?.length || !sectors?.length || !selectedSectorId) return [];
 
-  const selectedSector = sectors.find((sector) => sector.id === selectedSectorId);
+  const selectedSectorIdNumber = Number(selectedSectorId);
+  const selectedSector = sectors.find((sector) => Number(sector.id) === selectedSectorIdNumber);
   if (!selectedSector) return [];
+
+  const selectedHospitalId = Number(selectedSector.hospitalId);
 
   return templates
     .filter(
       (template) =>
-        template.hospitalId === selectedSector.hospitalId &&
-        (template.sectorId === null || template.sectorId === selectedSector.id),
+        Number(template.hospitalId) === selectedHospitalId &&
+        (template.sectorId == null || Number(template.sectorId) === selectedSectorIdNumber),
     )
     .sort((a, b) => {
-      const aSpecificity = a.sectorId === selectedSector.id ? 0 : 1;
-      const bSpecificity = b.sectorId === selectedSector.id ? 0 : 1;
+      const aSpecificity = Number(a.sectorId) === selectedSectorIdNumber ? 0 : 1;
+      const bSpecificity = Number(b.sectorId) === selectedSectorIdNumber ? 0 : 1;
       if (aSpecificity !== bSpecificity) return aSpecificity - bSpecificity;
 
       const priorityDiff = (a.priority ?? 0) - (b.priority ?? 0);
