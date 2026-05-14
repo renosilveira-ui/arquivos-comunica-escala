@@ -5,7 +5,7 @@ import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, Inbox, Clock, AlertCircle } from "lucide-react-native";
+import { ChevronLeft, Inbox, Clock, AlertCircle, CalendarClock } from "lucide-react-native";
 
 /**
  * Tela "Suas candidaturas" — RECEIVER counterpart de /my-offers.
@@ -30,6 +30,8 @@ type SwapStatus =
   | "CANCELLED"
   | "EXPIRED";
 
+type VacancyRequestStatus = "PENDENTE" | "OCUPADO" | "REJEITADO";
+
 const TYPE_LABEL: Record<SwapType, string> = {
   SWAP: "Troca",
   TRANSFER: "Repasse",
@@ -44,6 +46,12 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
   REJECTED_BY_MANAGER: "Recusada pelo gestor",
   CANCELLED: "Cancelada pelo ofertante",
   EXPIRED: "Expirada",
+};
+
+const VACANCY_STATUS_LABEL: Record<VacancyRequestStatus, string> = {
+  PENDENTE: "Aguardando aprovação do gestor",
+  OCUPADO: "Aprovada — você assumiu o plantão",
+  REJEITADO: "Recusada pelo gestor",
 };
 
 function formatDate(d: Date): string {
@@ -64,6 +72,10 @@ export default function MyApplicationsScreen() {
     { role: "RECEIVER" },
     { enabled: !!user?.id },
   );
+  const {
+    data: vacancyRequestsData,
+    isLoading: vacancyRequestsLoading,
+  } = trpc.shiftAssignments.listMyVacancyRequests.useQuery(undefined, { enabled: !!user?.id });
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -94,8 +106,10 @@ export default function MyApplicationsScreen() {
   }
 
   const applications = (data ?? []) as any[];
+  const vacancyRequests = vacancyRequestsData ?? [];
   const awaitingOwner = applications.filter((a) => a.status === "ACCEPTED");
   const others = applications.filter((a) => a.status !== "ACCEPTED");
+  const hasNoApplications = applications.length === 0 && vacancyRequests.length === 0;
 
   return (
     <ScreenGradient>
@@ -115,28 +129,39 @@ export default function MyApplicationsScreen() {
           </Text>
         </View>
 
-        {isLoading ? (
+        {isLoading || vacancyRequestsLoading ? (
           <View className="items-center py-20">
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>
               Carregando candidaturas...
             </Text>
           </View>
-        ) : applications.length === 0 ? (
+        ) : hasNoApplications ? (
           <View className="items-center justify-center py-20">
             <Inbox size={64} color={theme.colors.textMuted} />
             <Text
               className="mt-4 text-lg font-semibold text-center"
               style={{ color: theme.colors.textPrimary }}
             >
-              Você ainda não se candidatou a nenhuma cessão
+              Você ainda não tem solicitações
             </Text>
             <Text className="mt-2 text-sm text-center px-6" style={{ color: theme.colors.textMuted }}>
-              Veja as ofertas em &ldquo;Solicitações&rdquo; e candidate-se ao plantão que quiser assumir.
+              Plantões que você pedir para assumir e cessões em que se candidatar aparecerão aqui.
             </Text>
           </View>
         ) : (
           <View className="gap-6">
+            {vacancyRequests.length > 0 && (
+              <View className="gap-3">
+                <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Pedidos para assumir plantão
+                </Text>
+                {vacancyRequests.map((request) => (
+                  <VacancyRequestCard key={request.assignmentId} request={request} />
+                ))}
+              </View>
+            )}
+
             {awaitingOwner.length > 0 && (
               <View className="gap-3">
                 <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
@@ -162,6 +187,63 @@ export default function MyApplicationsScreen() {
         )}
       </ScrollView>
     </ScreenGradient>
+  );
+}
+
+function VacancyRequestCard({ request }: { request: any }) {
+  const router = useRouter();
+  const start = new Date(request.startAt);
+  const end = new Date(request.endAt);
+  const status = (request.status ?? "PENDENTE") as VacancyRequestStatus;
+  const highlighted = status === "PENDENTE";
+
+  const handleOpenDetails = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push({
+      pathname: "/shift-details",
+      params: { id: String(request.shiftInstanceId) },
+    });
+  };
+
+  return (
+    <TouchableOpacity
+      className="rounded-2xl border p-4 gap-3"
+      style={{
+        backgroundColor: highlighted ? theme.colors.primarySoft : theme.colors.surface,
+        borderColor: highlighted ? theme.colors.primary : theme.colors.border,
+      }}
+      activeOpacity={0.75}
+      onPress={handleOpenDetails}
+      accessibilityRole="button"
+      accessibilityLabel={`Abrir detalhes de ${request.shiftLabel}`}
+    >
+      <View className="flex-row items-center justify-between">
+        <View className="flex-row items-center gap-2">
+          <CalendarClock size={18} color={highlighted ? theme.colors.primary : theme.colors.textMuted} />
+          <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+            {request.shiftLabel}
+          </Text>
+        </View>
+        <Text className="text-xs" style={{ color: highlighted ? theme.colors.primary : theme.colors.textMuted }}>
+          {VACANCY_STATUS_LABEL[status] ?? status}
+        </Text>
+      </View>
+
+      <View>
+        <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>
+          {formatDate(start)} · {formatTimeRange(start, end)}
+        </Text>
+        <Text className="text-xs mt-1" style={{ color: theme.colors.textMuted }}>
+          {[request.hospitalName, request.sectorName].filter(Boolean).join(" · ")}
+        </Text>
+      </View>
+
+      {highlighted && (
+        <Text className="text-xs italic" style={{ color: theme.colors.textMuted }}>
+          O gestor precisa aprovar sua solicitação para o plantão entrar na sua escala.
+        </Text>
+      )}
+    </TouchableOpacity>
   );
 }
 
