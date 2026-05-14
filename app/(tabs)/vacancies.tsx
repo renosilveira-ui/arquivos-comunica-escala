@@ -3,7 +3,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
 import { useState, useCallback } from "react";
-import { Briefcase, Clock, MapPin, Building2, Calendar, CheckCircle } from "lucide-react-native";
+import { Briefcase, Clock, MapPin, Building2, Calendar } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
 import { AppButton } from "@/components/ui/AppButton";
@@ -30,7 +30,7 @@ export default function VacanciesScreen() {
   const sectors = sectorsData || [];
 
   // Defaults inteligentes baseado em manager_scope
-  const { defaults, isLoading: defaultsLoading } = useFilterDefaults({ hospitals, sectors });
+  const { defaults } = useFilterDefaults({ hospitals, sectors });
 
   // Estado dos filtros
   const [filters, setFilters] = useState<ShiftFilterValues>({
@@ -113,15 +113,13 @@ export default function VacanciesScreen() {
     return null;
   };
 
-  const [assumedVacancies, setAssumedVacancies] = useState<Set<number>>(new Set());
-
   // Mutation para assumir vaga
   const assumeVacancyMutation = trpc.shiftAssignments.assumeVacancy.useMutation({
     onSuccess: () => {
       // Refetch vagas para atualizar lista
       refetchVacancies();
       if (Platform.OS === "web") {
-        window.alert("Plantão assumido com sucesso!\n\nStatus: PENDENTE (aguardando aprovação do gestor)");
+        window.alert("Solicitação enviada com sucesso.\n\nStatus: aguardando aprovação do gestor.");
       }
     },
     onError: (error) => {
@@ -293,7 +291,6 @@ export default function VacanciesScreen() {
         {!vacanciesLoading && vacancies.length > 0 ? (
           <View style={{ gap: theme.space[4], paddingBottom: theme.space[6] }}>
             {vacancies.map((vacancy) => {
-              const isAssumed = assumedVacancies.has(vacancy.id);
               const modalityLabel = formatModalityBadge(vacancy.modality, vacancy.coverageType);
               return (
                 <View
@@ -314,21 +311,20 @@ export default function VacanciesScreen() {
                         {vacancy.shift}
                       </Text>
                     </View>
-                    {/* Status badge segue spec §6.5 + T3 do audit:
-                        VAGO = neutral (não vermelho/verde); PENDENTE = warning. */}
+                    {/* Status badge segue spec §6.5 + T3 do audit: VAGO = neutral. */}
                     <View
                       className="rounded-full px-3 py-1"
                       style={{
-                        backgroundColor: isAssumed ? theme.colors.warningSoft : theme.colors.surfaceAlt,
+                        backgroundColor: theme.colors.surfaceAlt,
                       }}
                     >
                       <Text
                         className="text-xs font-semibold"
                         style={{
-                          color: isAssumed ? theme.palette.warning[700] : theme.colors.textSecondary,
+                          color: theme.colors.textSecondary,
                         }}
                       >
-                        {isAssumed ? "PENDENTE" : "VAGO"}
+                        VAGO
                       </Text>
                     </View>
                   </View>
@@ -380,24 +376,12 @@ export default function VacanciesScreen() {
                   </View>
 
                   {/* Botão de ação */}
-                  {isAdminOrManager ? null : isAssumed ? (
-                    <View
-                      className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4"
-                      style={{
-                        backgroundColor: theme.colors.warningSoft,
-                        borderColor: theme.colors.warning,
-                      }}
-                    >
-                      <CheckCircle size={18} color={theme.palette.warning[700]} />
-                      <Text className="text-sm font-medium" style={{ color: theme.palette.warning[700] }}>
-                        Aguardando aprovação do gestor
-                      </Text>
-                    </View>
-                  ) : (
+                  {isAdminOrManager ? null : (
                     <AppButton
-                      title="Assumir Plantão"
+                      title={assumeVacancyMutation.isPending ? "Enviando..." : "Assumir Plantão"}
                       variant="primary"
                       size="lg"
+                      disabled={!vacancy.canAssume || assumeVacancyMutation.isPending}
                       onPress={() =>
                         handleAssumeVacancy(
                           vacancy.id,

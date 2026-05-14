@@ -386,7 +386,7 @@ const shiftInstancesRouter = router({
             FROM shift_instances si
             JOIN sectors  s ON si.sector_id  = s.id
             JOIN hospitals h ON si.hospital_id = h.id
-            WHERE si.status IN ('VAGO', 'PENDENTE')
+            WHERE si.status = 'VAGO'
               AND si.institution_id = ${ctx.institutionId}
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}

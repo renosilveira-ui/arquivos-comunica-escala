@@ -12,7 +12,7 @@ import { appRouter } from "../server/routers";
  * Os shifts canônicos do seed (após PR #62) cobrem todos os modelos:
  *   - "Plantão Manhã (VAGO)"   → PLANTAO + URGENCIA_EMERGENCIA + FIXO_PRODUTIVIDADE_SEM_TETO
  *   - "Plantão Retroativo …"   → PLANTAO + URGENCIA_EMERGENCIA + FIXO_PRODUTIVIDADE_TETO + 2500.00
- *   - "Plantão Noite (PENDENTE)" → SOBREAVISO + PRODUTIVIDADE_PURA (coverage null)
+ *   - "Plantão Noite (PENDENTE)" → não deve aparecer aqui; já tem candidatura
  */
 
 describe("shiftInstances.listVacancies — modality output + filter", () => {
@@ -61,16 +61,18 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
     expect(retro!.productivityCapBrl).toBe("2500.00");
   });
 
+  it("não retorna plantões pendentes como vagas em aberto", async () => {
+    const rows = await caller().shiftInstances.listVacancies({});
+    expect(rows.every((r) => r.status === "VAGO")).toBe(true);
+    expect(rows.find((r) => r.label === "Plantão Noite (PENDENTE)")).toBeUndefined();
+  });
+
   it("filtro modality=SOBREAVISO retorna apenas sobreavisos", async () => {
     const rows = await caller().shiftInstances.listVacancies({ modality: "SOBREAVISO" });
-    expect(rows.length).toBeGreaterThanOrEqual(1);
     for (const r of rows) {
       expect(r.modality).toBe("SOBREAVISO");
+      expect(r.status).toBe("VAGO");
     }
-    // O "Plantão Noite (PENDENTE)" do seed é SOBREAVISO.
-    const noite = rows.find((r) => r.label === "Plantão Noite (PENDENTE)");
-    expect(noite).toBeDefined();
-    expect(noite!.coverageType).toBeNull();
   });
 
   it("filtro coverageType=ELETIVAS exclui urgência/emergência e sobreavisos", async () => {
