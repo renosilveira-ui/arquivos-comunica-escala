@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, Platform, Modal, Pressable, Keyboard, Alert, StyleSheet, useWindowDimensions } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
@@ -13,14 +13,7 @@ import { scheduleShiftReminder } from "@/lib/notifications";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR } from "@/lib/datetime";
 import { fromLocalISODateString, normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
-
-type ShiftType = "Manhã" | "Tarde" | "Noite";
-
-const SHIFT_TIMES: Record<ShiftType, { start: string; end: string }> = {
-  "Manhã": { start: "07:00", end: "13:00" },
-  "Tarde": { start: "13:00", end: "19:00" },
-  "Noite": { start: "19:00", end: "07:00" },
-};
+import { formatShiftTemplateTimeRange, getShiftTemplatesForSector } from "@/lib/shift-template-options";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -116,9 +109,8 @@ export default function CreateShiftScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState<Date | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => fromLocalISODateString(initialDate));
-  const [selectedShift, setSelectedShift] = useState<ShiftType | undefined>(
-    params.shift as ShiftType || undefined
-  );
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | undefined>(undefined);
+  const [formError, setFormError] = useState<string | null>(null);
   
   // Repetição automática
   const [enableRepeat, setEnableRepeat] = useState(false);
@@ -136,6 +128,28 @@ export default function CreateShiftScreen() {
   // Buscar setores e templates
   const { data: sectors, isLoading: loadingSectors } = trpc.sectors.list.useQuery();
   const { data: templates } = trpc.shifts.listTemplates.useQuery();
+  const availableTemplates = useMemo(
+    () => getShiftTemplatesForSector(templates, sectors, selectedSectorId),
+    [templates, sectors, selectedSectorId],
+  );
+  const selectedTemplate = availableTemplates.find((template) => template.id === selectedTemplateId);
+
+  useEffect(() => {
+    if (!availableTemplates.length) {
+      setSelectedTemplateId(undefined);
+      return;
+    }
+
+    if (selectedTemplateId && availableTemplates.some((template) => template.id === selectedTemplateId)) {
+      return;
+    }
+
+    const requestedShift = typeof params.shift === "string" ? params.shift : undefined;
+    const preferredTemplate = requestedShift
+      ? availableTemplates.find((template) => template.name === requestedShift)
+      : undefined;
+    setSelectedTemplateId((preferredTemplate ?? availableTemplates[0]).id);
+  }, [availableTemplates, params.shift, selectedTemplateId]);
 
   // Mutation para criar escala
   const createShift = trpc.shifts.create.useMutation({
@@ -143,17 +157,16 @@ export default function CreateShiftScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       
       // Agendar lembrete 30 min antes em dispositivos nativos.
-      if (Platform.OS !== "web" && selectedSectorId && selectedDate && selectedShift) {
+      if (Platform.OS !== "web" && selectedSectorId && selectedDate && selectedTemplate) {
         const sector = sectors?.find(s => s.id === selectedSectorId);
-        const shiftTimes = SHIFT_TIMES[selectedShift];
-        const startDateTime = new Date(`${selectedDate}T${shiftTimes.start}:00`);
+        const startDateTime = new Date(`${selectedDate}T${selectedTemplate.startTime}`);
         
         if (sector) {
           try {
             await scheduleShiftReminder(
               sector.name,
               startDateTime,
-              `${selectedShift} (${shiftTimes.start} - ${shiftTimes.end})`
+              `${selectedTemplate.name} (${formatShiftTemplateTimeRange(selectedTemplate)})`
             );
           } catch (error) {
             console.warn("Não foi possível agendar lembrete local:", error);
@@ -168,37 +181,45 @@ export default function CreateShiftScreen() {
     onError: (error) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       console.error("Erro ao criar escala:", error);
-      Alert.alert("Não foi possível criar", error.message || "Tente novamente em instantes.");
+      const message = error.message || "Tente novamente em instantes.";
+      setFormError(message);
+      if (Platform.OS !== "web") {
+        Alert.alert("Não foi possível criar", message);
+      }
     },
   });
 
   const handleSelectSector = (sectorId: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setFormError(null);
     setSelectedSectorId(sectorId);
   };
 
-  const handleSelectShift = (shift: ShiftType) => {
+  const handleSelectTemplate = (templateId: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setSelectedShift(shift);
+    setFormError(null);
+    setSelectedTemplateId(templateId);
+  };
+
+  const showFormError = (message: string) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    setFormError(message);
+    if (Platform.OS !== "web") {
+      Alert.alert("Atenção", message);
+    }
   };
 
   const handleCreateShift = () => {
     if (createShift.isPending) return;
+    setFormError(null);
 
-    if (!selectedSectorId || !selectedDate || !selectedShift) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Selecione setor, data e turno.");
+    if (!selectedSectorId || !selectedDate) {
+      showFormError("Selecione setor e data.");
       return;
     }
 
-    // Encontrar template correspondente ao turno selecionado
-    const selectedSector = sectors?.find((sector) => sector.id === selectedSectorId);
-    const template = templates?.find(
-      (item) => item.name === selectedShift && item.hospitalId === selectedSector?.hospitalId,
-    );
-    if (!template) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Turno não disponível para o hospital deste setor.");
+    if (!selectedTemplate) {
+      showFormError("Selecione um turno disponível para este setor.");
       return;
     }
 
@@ -207,26 +228,22 @@ export default function CreateShiftScreen() {
       const startDate = fromLocalISODateString(selectedDate);
       const endDate = fromLocalISODateString(repeatEndDate);
       if (endDate <= startDate) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert("Atenção", "A data limite precisa ser posterior à data inicial.");
+        showFormError("A data limite precisa ser posterior à data inicial.");
         return;
       }
     }
 
     // Validações de modalidade (light-touch — server enforça as regras duras).
     if (modality === "PLANTAO" && !coverageType) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Selecione a cobertura do plantão.");
+      showFormError("Selecione a cobertura do plantão.");
       return;
     }
     if (paymentModel === "FIXO_PRODUTIVIDADE_TETO" && !productivityCapBrl) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Informe o teto de produtividade ou troque o modelo.");
+      showFormError("Informe o teto de produtividade ou troque o modelo.");
       return;
     }
     if (productivityCapBrl && !PRODUCTIVITY_CAP_REGEX.test(productivityCapBrl)) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).");
+      showFormError("Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).");
       return;
     }
 
@@ -234,7 +251,7 @@ export default function CreateShiftScreen() {
 
     createShift.mutate({
       date: selectedDate,
-      shiftTemplateId: template.id,
+      shiftTemplateId: selectedTemplate.id,
       sectorId: selectedSectorId,
       modality,
       coverageType: modality === "PLANTAO" ? coverageType : null,
@@ -268,6 +285,7 @@ export default function CreateShiftScreen() {
       const nextDate = toLocalISODateString(normalized);
       setSelectedDate(nextDate);
       setCalendarMonth(fromLocalISODateString(nextDate));
+      setFormError(null);
       setShowDatePicker(false);
       setTempDate(null);
     } else if (date) {
@@ -283,6 +301,7 @@ export default function CreateShiftScreen() {
       const nextDate = toLocalISODateString(normalized);
       setSelectedDate(nextDate);
       setCalendarMonth(fromLocalISODateString(nextDate));
+      setFormError(null);
     }
     setShowDatePicker(false);
     setTempDate(null);
@@ -310,6 +329,7 @@ export default function CreateShiftScreen() {
   const handleSelectWebDate = (dateKey: string) => {
     setSelectedDate(dateKey);
     setCalendarMonth(fromLocalISODateString(dateKey));
+    setFormError(null);
     setShowDatePicker(false);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
@@ -336,9 +356,8 @@ export default function CreateShiftScreen() {
 
   const isWide = width >= theme.spacing.contentMaxWidth;
   const selectedDateValue = selectedDate || today;
-  const selectedShiftTime = selectedShift ? SHIFT_TIMES[selectedShift] : null;
   const primaryActionDisabled = createShift.isPending;
-  const createShiftErrorMessage = createShift.error?.message;
+  const createShiftErrorMessage = formError ?? createShift.error?.message;
 
   return (
     <ScreenGradient scrollable>
@@ -406,16 +425,21 @@ export default function CreateShiftScreen() {
 
             <FormSection title="Turno" icon={<Clock size={22} color={theme.colors.textPrimary} />} required>
               <View style={styles.optionGrid}>
-                {(Object.keys(SHIFT_TIMES) as ShiftType[]).map((shift) => (
+                {availableTemplates.map((template) => (
                   <OptionButton
-                    key={shift}
-                    label={shift}
-                    description={`${SHIFT_TIMES[shift].start} - ${SHIFT_TIMES[shift].end}`}
-                    selected={selectedShift === shift}
-                    onPress={() => handleSelectShift(shift)}
+                    key={template.id}
+                    label={template.name}
+                    description={formatShiftTemplateTimeRange(template)}
+                    selected={selectedTemplateId === template.id}
+                    onPress={() => handleSelectTemplate(template.id)}
                   />
                 ))}
               </View>
+              {!availableTemplates.length ? (
+                <Text style={styles.helperText}>
+                  {selectedSectorId ? "Nenhum turno ativo para este setor." : "Selecione um setor para ver os turnos."}
+                </Text>
+              ) : null}
             </FormSection>
 
             <FormSection title="Modalidade">
@@ -505,7 +529,7 @@ export default function CreateShiftScreen() {
                 <SummaryLine label="Data" value={formatLocalDateBR(selectedDateValue)} />
                 <SummaryLine
                   label="Turno"
-                  value={selectedShift && selectedShiftTime ? `${selectedShift} · ${selectedShiftTime.start} - ${selectedShiftTime.end}` : "Selecione um turno"}
+                  value={selectedTemplate ? `${selectedTemplate.name} · ${formatShiftTemplateTimeRange(selectedTemplate)}` : "Selecione um turno"}
                 />
                 <SummaryLine label="Modalidade" value={modality === "PLANTAO" ? "Plantão" : "Sobreaviso"} />
                 {modality === "PLANTAO" ? (
@@ -1017,6 +1041,11 @@ const styles = StyleSheet.create({
   bodyMuted: {
     ...theme.text.body,
     color: theme.colors.textMuted,
+  },
+  helperText: {
+    ...theme.text.body,
+    color: theme.colors.textMuted,
+    marginTop: theme.space[3],
   },
   errorText: {
     ...theme.text.body,
