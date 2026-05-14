@@ -93,7 +93,6 @@ export const editorRouter = router({
         professionalId,
         new Date(shift.start_at),
         new Date(shift.end_at),
-        shiftInstanceId,
       );
 
       // 6. Validar limite de 20 profissionais por setor/turno
