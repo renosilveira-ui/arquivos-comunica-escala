@@ -82,8 +82,10 @@ export default function PendingScreen() {
     () => new Date().toISOString().split("T")[0],
   );
 
-  // ── Available Swaps state ──
-  const [swapActionId, setSwapActionId] = useState<number | null>(null);
+  const [swapAction, setSwapAction] = useState<{
+    id: number;
+    action: "accept" | "reject";
+  } | null>(null);
   const { data: availableSwapsData } = trpc.swaps.listAvailable.useQuery(
     {},
     { enabled: !!user?.id },
@@ -101,7 +103,7 @@ export default function PendingScreen() {
     onError: (error) => {
       uiAlert("Erro", error.message || "Erro ao aceitar oferta");
     },
-    onSettled: () => setSwapActionId(null),
+    onSettled: () => setSwapAction(null),
   });
   const rejectSwap = trpc.swaps.reject.useMutation({
     onSuccess: async () => {
@@ -114,18 +116,22 @@ export default function PendingScreen() {
     onError: (error) => {
       uiAlert("Erro", error.message || "Erro ao recusar oferta");
     },
-    onSettled: () => setSwapActionId(null),
+    onSettled: () => setSwapAction(null),
   });
 
   const handleSwapAction = (
     swapId: number,
     action: "accept" | "reject",
   ) => {
-    setSwapActionId(swapId);
+    if (acceptSwap.isPending || rejectSwap.isPending) return;
+
+    setSwapAction({ id: swapId, action });
     const input = { swapRequestId: swapId };
     if (action === "accept") acceptSwap.mutate(input);
     else rejectSwap.mutate(input);
   };
+
+  const isSwapActionPending = acceptSwap.isPending || rejectSwap.isPending;
 
   const fmtSwapDate = (value: Date | string) => {
     const d = new Date(value);
@@ -485,7 +491,7 @@ export default function PendingScreen() {
             <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
               <TouchableOpacity
                 onPress={() => handleSwapAction(sw.id, "accept")}
-                disabled={swapActionId === sw.id}
+                disabled={isSwapActionPending}
                 style={{
                   flex: 1,
                   flexDirection: "row",
@@ -495,10 +501,10 @@ export default function PendingScreen() {
                   paddingVertical: 10,
                   borderRadius: 10,
                   backgroundColor: theme.colors.success,
-                  opacity: swapActionId === sw.id ? 0.6 : 1,
+                  opacity: isSwapActionPending ? 0.6 : 1,
                 }}
               >
-                {swapActionId === sw.id ? (
+                {swapAction?.id === sw.id && swapAction.action === "accept" ? (
                   <ActivityIndicator color={theme.colors.surface} size="small" />
                 ) : (
                   <>
@@ -517,7 +523,7 @@ export default function PendingScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => handleSwapAction(sw.id, "reject")}
-                disabled={swapActionId === sw.id}
+                disabled={isSwapActionPending}
                 style={{
                   flex: 1,
                   flexDirection: "row",
@@ -527,19 +533,25 @@ export default function PendingScreen() {
                   paddingVertical: 10,
                   borderRadius: 10,
                   backgroundColor: theme.colors.danger,
-                  opacity: swapActionId === sw.id ? 0.6 : 1,
+                  opacity: isSwapActionPending ? 0.6 : 1,
                 }}
               >
-                <X size={16} color={theme.colors.surface} />
-                <Text
-                  style={{
-                    color: theme.colors.surface,
-                    fontSize: 14,
-                    fontWeight: "600",
-                  }}
-                >
-                  Recusar
-                </Text>
+                {swapAction?.id === sw.id && swapAction.action === "reject" ? (
+                  <ActivityIndicator color={theme.colors.surface} size="small" />
+                ) : (
+                  <>
+                    <X size={16} color={theme.colors.surface} />
+                    <Text
+                      style={{
+                        color: theme.colors.surface,
+                        fontSize: 14,
+                        fontWeight: "600",
+                      }}
+                    >
+                      Recusar
+                    </Text>
+                  </>
+                )}
               </TouchableOpacity>
             </View>
           </View>
