@@ -319,39 +319,62 @@ export const editorRouter = router({
         reason || undefined
       );
 
-      // 5. Soft delete assignment
-      await db.execute(
-        sql`UPDATE shift_assignments_v2 
-            SET is_active = false, updated_at = NOW()
-            WHERE id = ${assignmentId}
-            AND institution_id = ${ctx.institutionId}`
-      );
-
-      // 6. Verificar se ainda há assignments ativos no turno
-      const remainingResult = await db.execute<any>(
-        sql`SELECT COUNT(*) as count FROM shift_assignments_v2
-            WHERE shift_instance_id = ${assignment.shift_instance_id}
-            AND institution_id = ${ctx.institutionId}
-            AND is_active = true
-            AND status = 'OCUPADO'`
-      );
-      const remainingRow = firstRowFromExecute<{ count: number | string }>(remainingResult);
-      const hasRemaining = Number(remainingRow?.count ?? 0) > 0;
-
-      // 7. Se não houver mais assignments, marcar turno como VAGO
-      if (!hasRemaining) {
-        await db.execute(
-          sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${assignment.shift_instance_id} AND institution_id = ${ctx.institutionId}`
+      await db.transaction(async (tx) => {
+        // 5. Soft delete assignment
+        await tx.execute(
+          sql`UPDATE shift_assignments_v2
+              SET is_active = false, updated_at = NOW()
+              WHERE id = ${assignmentId}
+              AND institution_id = ${ctx.institutionId}`
         );
-      }
 
-      // 8. Audit log
-      await auditLog({
-        event: "SHIFT_UNASSIGNED",
-        shiftInstanceId: assignment.shift_instance_id,
-        professionalId: managerId,
-        reason,
-        metadata: { assignmentId, unassignedProfessionalId: assignment.professional_id },
+        // 6. Verificar se ainda há assignments ativos no turno
+        const remainingResult = await tx.execute<any>(
+          sql`SELECT COUNT(*) as count FROM shift_assignments_v2
+              WHERE shift_instance_id = ${assignment.shift_instance_id}
+              AND institution_id = ${ctx.institutionId}
+              AND is_active = true
+              AND status = 'OCUPADO'`
+        );
+        const remainingRow = firstRowFromExecute<{ count: number | string }>(remainingResult);
+        const hasRemaining = Number(remainingRow?.count ?? 0) > 0;
+
+        // 7. Se não houver mais assignments, marcar turno como VAGO
+        if (!hasRemaining) {
+          await tx.execute(
+            sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${assignment.shift_instance_id} AND institution_id = ${ctx.institutionId}`
+          );
+        }
+
+        // 8. Auditorias da remoção no mesmo commit da alteração operacional.
+        await auditLog(
+          {
+            event: "SHIFT_UNASSIGNED",
+            shiftInstanceId: assignment.shift_instance_id,
+            institutionId: ctx.institutionId,
+            professionalId: managerId,
+            reason,
+            metadata: { assignmentId, unassignedProfessionalId: assignment.professional_id },
+          },
+          { db: tx },
+        );
+
+        await recordAudit(
+          {
+            actorUserId: userId,
+            actorRole: actor.roleInInstitution,
+            action: "ASSIGNMENT_REMOVED",
+            entityType: "SHIFT_ASSIGNMENT",
+            entityId: assignmentId,
+            description: `Remoção direta do profissional #${assignment.professional_id} no turno #${assignment.shift_instance_id}`,
+            institutionId: ctx.institutionId,
+            shiftInstanceId: assignment.shift_instance_id,
+            hospitalId: assignment.hospital_id as number,
+            sectorId: assignment.sector_id as number,
+            fromProfessionalId: assignment.professional_id,
+          },
+          { db: tx, strict: true },
+        );
       });
 
       return { ok: true };

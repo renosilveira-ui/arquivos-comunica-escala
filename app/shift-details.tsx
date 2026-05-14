@@ -6,6 +6,7 @@ import {
   View,
   TouchableOpacity,
   ActivityIndicator,
+  Platform,
   StyleSheet,
   useWindowDimensions,
   type ViewStyle,
@@ -19,7 +20,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus } from "lucide-react-native";
+import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus, Trash2 } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 
@@ -78,6 +79,21 @@ export default function ShiftDetailsScreen() {
     onError: (error) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("Não foi possível alocar", error.message || "Tente novamente em instantes.");
+    },
+  });
+  const unassignDirect = trpc.editor.unassignDirect.useMutation({
+    onSuccess: async () => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await Promise.all([
+        utils.shifts.get.invalidate({ id: shiftId }),
+        utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
+        utils.shifts.listAgenda.invalidate(),
+      ]);
+      Alert.alert("Alocação removida", "O plantão voltou a ficar disponível para alocação.");
+    },
+    onError: (error) => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Não foi possível remover", error.message || "Tente novamente em instantes.");
     },
   });
   const filteredAssignableProfessionals = useMemo(() => {
@@ -158,6 +174,40 @@ export default function ShiftDetailsScreen() {
     });
   };
 
+  const handleUnassignProfessional = (assignment: { id?: number; professionalName?: string | null }) => {
+    if (!assignment.id) {
+      Alert.alert("Alocação indisponível", "Não foi possível identificar esta alocação.");
+      return;
+    }
+
+    const professionalName = assignment.professionalName ?? "este profissional";
+    const removeAssignment = () => {
+      unassignDirect.mutate({
+        assignmentId: assignment.id!,
+        reason: "Remoção direta pela tela de detalhes",
+      });
+    };
+
+    if (Platform.OS === "web") {
+      const confirmed = globalThis.confirm?.(`Remover ${professionalName} deste plantão?`) ?? false;
+      if (confirmed) removeAssignment();
+      return;
+    }
+
+    Alert.alert(
+      "Remover alocação",
+      `Deseja remover ${professionalName} deste plantão?`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Remover",
+          style: "destructive",
+          onPress: removeAssignment,
+        },
+      ],
+    );
+  };
+
   if (!user && !isDemo) {
     return (
       <ScreenGradient scrollable={false}>
@@ -199,11 +249,12 @@ export default function ShiftDetailsScreen() {
   }
 
   const { shift, sector, assignments } = shiftData;
+  const activeAssignments = assignments ?? [];
   const startDate = new Date(shift.startAt ?? shift.startTime);
   const endDate = new Date(shift.endAt ?? shift.endTime);
 
   // Verificar se usuário está alocado nesta escala
-  const userAssignment = assignments?.find((a: any) => a.professionalId === user?.id || a.userId === user?.id);
+  const userAssignment = activeAssignments.find((a: any) => a.professionalId === user?.id || a.userId === user?.id);
   const isUserAssigned = !!userAssignment;
 
   // Campos de modalidade (PR #61): backend retorna direto no shift_instance.
@@ -434,7 +485,11 @@ export default function ShiftDetailsScreen() {
                     })}
                   </View>
                 ) : (
-                  <Text style={styles.emptyCopy}>Nenhum profissional habilitado disponível para este plantão.</Text>
+                  <Text style={styles.emptyCopy}>
+                    {activeAssignments.length > 0
+                      ? "Não há outros profissionais habilitados disponíveis para este plantão."
+                      : "Nenhum profissional habilitado disponível para este plantão."}
+                  </Text>
                 )}
 
                 <ActionButton
@@ -449,35 +504,56 @@ export default function ShiftDetailsScreen() {
 
             <View style={styles.sectionHeader}>
               <Users size={22} color={theme.colors.textPrimary} />
-              <Text style={styles.sectionHeading}>Profissionais ({assignments?.length || 0})</Text>
+              <Text style={styles.sectionHeading}>Profissionais ({activeAssignments.length})</Text>
             </View>
 
-            {assignments && assignments.length > 0 ? (
+            {activeAssignments.length > 0 ? (
               <View style={styles.listStack}>
-                {assignments.map((assignment: any, index: number) => (
-                  <TintedGlassCard key={index} variant="light" style={styles.personCard}>
-                    <View style={styles.personRow}>
-                      <View style={styles.personAvatar}>
-                        <Users size={18} color={theme.colors.primary} />
-                      </View>
-                      <View style={styles.personInfo}>
-                        <Text style={styles.personName}>
-                          {assignment.professionalName || `Profissional #${assignment.userId || assignment.professionalId}`}
-                        </Text>
-                        {assignment.confirmedAt ? (
-                          <Text style={styles.subtleText}>
-                            Confirmado em {formatDateBR(assignment.confirmedAt)}
+                {activeAssignments.map((assignment: any, index: number) => {
+                  const isConfirmed = !!(assignment.confirmed || assignment.confirmedAt);
+                  const isAllocated = assignment.status === "OCUPADO";
+                  const badgeLabel = isConfirmed ? "Confirmado" : isAllocated ? "Alocado" : "Pendente";
+                  const badgeVariant = isConfirmed || isAllocated ? "success" : "warning";
+                  const canRemoveAssignment =
+                    canManageShift && !isDemo && shift.status !== "cancelada" && !!assignment.id;
+
+                  return (
+                    <TintedGlassCard key={assignment.id ?? index} variant="light" style={styles.personCard}>
+                      <View style={styles.personRow}>
+                        <View style={styles.personAvatar}>
+                          <Users size={18} color={theme.colors.primary} />
+                        </View>
+                        <View style={styles.personInfo}>
+                          <Text style={styles.personName}>
+                            {assignment.professionalName || `Profissional #${assignment.userId || assignment.professionalId}`}
                           </Text>
-                        ) : null}
+                          {assignment.confirmedAt ? (
+                            <Text style={styles.subtleText}>
+                              Confirmado em {formatDateBR(assignment.confirmedAt)}
+                            </Text>
+                          ) : (
+                            <Text style={styles.subtleText}>
+                              {isAllocated ? "Alocação direta ativa" : "Aguardando confirmação"}
+                            </Text>
+                          )}
+                        </View>
+                        <View style={styles.personActions}>
+                          <Badge variant={badgeVariant}>{badgeLabel}</Badge>
+                          {canRemoveAssignment ? (
+                            <ActionButton
+                              label={unassignDirect.isPending ? "Removendo..." : "Remover alocação"}
+                              onPress={() => handleUnassignProfessional(assignment)}
+                              variant="dangerSoft"
+                              icon={<Trash2 size={18} color={theme.colors.danger} />}
+                              disabled={unassignDirect.isPending}
+                              compact
+                            />
+                          ) : null}
+                        </View>
                       </View>
-                      {assignment.confirmed || assignment.confirmedAt ? (
-                        <Badge variant="success">Confirmado</Badge>
-                      ) : (
-                        <Badge variant="warning">Pendente</Badge>
-                      )}
-                    </View>
-                  </TintedGlassCard>
-                ))}
+                    </TintedGlassCard>
+                  );
+                })}
               </View>
             ) : (
               <TintedGlassCard variant="light" style={styles.emptyCard}>
@@ -530,12 +606,14 @@ function ActionButton({
   icon,
   variant,
   disabled = false,
+  compact = false,
 }: {
   label: string;
   onPress: () => void;
   icon?: ReactNode;
-  variant: "primary" | "primarySoft" | "secondary" | "success";
+  variant: "primary" | "primarySoft" | "secondary" | "success" | "dangerSoft";
   disabled?: boolean;
+  compact?: boolean;
 }) {
   const buttonStyle: ViewStyle =
     variant === "success"
@@ -544,20 +622,29 @@ function ActionButton({
         ? styles.actionPrimary
         : variant === "primarySoft"
           ? styles.actionPrimarySoft
-          : styles.actionSecondary;
+          : variant === "dangerSoft"
+            ? styles.actionDangerSoft
+            : styles.actionSecondary;
   const labelColor =
     variant === "primary" || variant === "success"
       ? theme.colors.surface
       : variant === "primarySoft"
         ? theme.colors.primary
-        : theme.colors.textPrimary;
+        : variant === "dangerSoft"
+          ? theme.colors.danger
+          : theme.colors.textPrimary;
 
   return (
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.78}
       disabled={disabled}
-      style={[styles.actionButton, buttonStyle, disabled ? styles.actionButtonDisabled : null]}
+      style={[
+        styles.actionButton,
+        compact ? styles.actionButtonCompact : null,
+        buttonStyle,
+        disabled ? styles.actionButtonDisabled : null,
+      ]}
     >
       <View style={styles.actionContent}>
         {icon}
@@ -741,6 +828,12 @@ const styles = StyleSheet.create({
   actionButtonDisabled: {
     opacity: 0.58,
   },
+  actionButtonCompact: {
+    minHeight: theme.space[10],
+    minWidth: theme.space[20],
+    flexGrow: 0,
+    paddingVertical: theme.space[2],
+  },
   actionPrimary: {
     backgroundColor: theme.colors.primary,
   },
@@ -751,6 +844,11 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.primarySoft,
     borderWidth: 1,
     borderColor: theme.colors.primary,
+  },
+  actionDangerSoft: {
+    backgroundColor: theme.colors.dangerSoft,
+    borderWidth: 1,
+    borderColor: theme.colors.danger,
   },
   actionSecondary: {
     backgroundColor: theme.colors.surface,
@@ -854,6 +952,13 @@ const styles = StyleSheet.create({
   personInfo: {
     flex: 1,
     minWidth: FIELD_MIN_WIDTH,
+  },
+  personActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    gap: theme.space[2],
   },
   personName: {
     ...theme.text.bodyLg,

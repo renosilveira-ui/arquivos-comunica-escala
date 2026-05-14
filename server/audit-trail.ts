@@ -1,6 +1,8 @@
 import { getDb } from "./db";
 import { auditTrail } from "../drizzle/schema";
 
+type AuditDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "insert">;
+
 export interface AuditEntry {
   actorUserId: number;
   actorRole: string;
@@ -62,16 +64,20 @@ export interface AuditEntry {
 }
 
 /**
- * Grava uma entrada no audit trail de forma fire-and-forget.
- * Nunca bloqueia a operação principal em caso de falha.
+ * Grava uma entrada no audit trail. Por padrão preserva o comportamento
+ * histórico de não bloquear a operação principal. Em fluxos transacionais,
+ * `strict` propaga erro para permitir rollback.
  */
-export async function recordAudit(entry: AuditEntry): Promise<void> {
+export async function recordAudit(
+  entry: AuditEntry,
+  options: { db?: AuditDb; strict?: boolean } = {},
+): Promise<void> {
   try {
-    const db = await getDb();
+    const db = options.db ?? await getDb();
     if (!db) return;
     await db.insert(auditTrail).values(entry as any);
   } catch (err) {
-    // Nunca bloquear a operação por falha de audit
+    if (options.strict) throw err;
     console.error("[AuditTrail] Failed to record:", err);
   }
 }

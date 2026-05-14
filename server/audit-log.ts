@@ -2,6 +2,8 @@ import { shiftAuditLog, shiftInstances } from "../drizzle/schema";
 import { eq, desc } from "drizzle-orm";
 import { getDb } from "./db";
 
+type AuditLogDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "insert" | "select">;
+
 /**
  * Sistema de Auditoria Obrigatória
  * 
@@ -39,8 +41,11 @@ export interface AuditLogParams {
  * @param params - Parâmetros do evento
  * @throws Error se RETROACTIVE_EDIT não tiver motivo
  */
-export async function auditLog(params: AuditLogParams): Promise<void> {
-  const db = await getDb();
+export async function auditLog(
+  params: AuditLogParams,
+  options: { db?: AuditLogDb } = {},
+): Promise<void> {
+  const db = options.db ?? await getDb();
   if (!db) throw new Error("Database not available");
 
   const { event, shiftInstanceId, institutionId, professionalId, reason, metadata } = params;

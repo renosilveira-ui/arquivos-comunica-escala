@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -162,6 +162,19 @@ describe("editor.assignDirect", () => {
     shiftInstanceId = shift.id;
   });
 
+  beforeEach(async () => {
+    if (!db || !shiftInstanceId) return;
+    await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId));
+    await db.delete(shiftAuditLog).where(eq(shiftAuditLog.shiftInstanceId, shiftInstanceId));
+    await db
+      .delete(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId));
+    await db
+      .update(shiftInstances)
+      .set({ status: "VAGO" })
+      .where(eq(shiftInstances.id, shiftInstanceId));
+  });
+
   afterAll(async () => {
     if (!db) return;
     await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId));
@@ -231,5 +244,70 @@ describe("editor.assignDirect", () => {
       .from(shiftInstances)
       .where(eq(shiftInstances.id, shiftInstanceId));
     expect(shift?.status).toBe("OCUPADO");
+  });
+
+  it("remove a última alocação e registra auditoria com instituição", async () => {
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    const assignment = await caller.assignDirect({
+      shiftInstanceId,
+      professionalId: targetProfessionalId,
+      assignmentType: "ON_DUTY",
+      reason: "Teste de alocação direta",
+    });
+
+    const result = await caller.unassignDirect({
+      assignmentId: assignment.assignmentId,
+      reason: "Teste de remoção direta",
+    });
+
+    expect(result.ok).toBe(true);
+
+    const assignments = await db
+      .select()
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, assignment.assignmentId));
+    expect(assignments[0]).toMatchObject({
+      professionalId: targetProfessionalId,
+      isActive: false,
+    });
+
+    const [shift] = await db
+      .select({ status: shiftInstances.status })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftInstanceId));
+    expect(shift?.status).toBe("VAGO");
+
+    const auditRows = await db
+      .select({
+        action: auditTrail.action,
+        entityType: auditTrail.entityType,
+        entityId: auditTrail.entityId,
+        institutionId: auditTrail.institutionId,
+        shiftInstanceId: auditTrail.shiftInstanceId,
+      })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.action, "ASSIGNMENT_REMOVED"),
+          eq(auditTrail.entityId, assignment.assignmentId),
+        ),
+      );
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({
+      action: "ASSIGNMENT_REMOVED",
+      entityType: "SHIFT_ASSIGNMENT",
+      institutionId,
+      shiftInstanceId,
+    });
   });
 });
