@@ -64,6 +64,25 @@ describe("shift template options", () => {
     expect(result).toEqual([]);
   });
 
+  it("aceita modelo geral quando sectorId vem ausente do transporte", () => {
+    const result = getShiftTemplatesForSector(
+      [
+        {
+          id: 5,
+          hospitalId: 10,
+          name: "Manhã",
+          startTime: "07:00:00",
+          endTime: "13:00:00",
+          priority: 0,
+        },
+      ],
+      [{ id: 20, hospitalId: 10 }],
+      20,
+    );
+
+    expect(result.map((template) => template.id)).toEqual([5]);
+  });
+
   it("formata horario sem segundos para a tela", () => {
     expect(formatShiftTemplateTimeRange(templates[0])).toBe("19:00 - 07:00");
   });
