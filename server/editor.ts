@@ -7,6 +7,7 @@ import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
 import { sql } from "drizzle-orm";
+import { firstRowFromExecute } from "./_core/db-results";
 import {
   assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
@@ -59,12 +60,18 @@ export const editorRouter = router({
             AND institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
-      const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
-      if (!shiftRows[0]) {
+      const shift = firstRowFromExecute<{
+        institution_id: number;
+        hospital_id: number;
+        sector_id: number;
+        start_at: Date | string;
+        end_at: Date | string;
+        status: string;
+      }>(shiftResult);
+      if (!shift) {
         throw new Error("Turno não encontrado");
       }
 
-      const shift = shiftRows[0];
       await assertManagerScopeAccess(actor, shift.hospital_id, shift.sector_id);
       assertCanEditScheduleDate(actor, new Date(shift.start_at));
 
@@ -99,8 +106,8 @@ export const editorRouter = router({
             AND sa.is_active = true
             AND sa.status = 'OCUPADO'`
       );
-      const limitRows = (limitResult as any).rows || (limitResult as any[]);
-      if (limitRows[0]?.count >= 20) {
+      const limitRow = firstRowFromExecute<{ count: number | string }>(limitResult);
+      if (Number(limitRow?.count ?? 0) >= 20) {
         throw new Error("Limite de 20 profissionais por turno atingido");
       }
 
@@ -113,8 +120,8 @@ export const editorRouter = router({
             AND (sector_id IS NULL OR sector_id = ${shift.sector_id})
             AND can_access = true`
       );
-      const accessRows = (accessResult as any).rows || (accessResult as any[]);
-      if (accessRows[0]?.count === 0) {
+      const accessRow = firstRowFromExecute<{ count: number | string }>(accessResult);
+      if (Number(accessRow?.count ?? 0) === 0) {
         throw new Error("Profissional não tem acesso a este hospital/setor");
       }
 
@@ -126,8 +133,8 @@ export const editorRouter = router({
       );
 
       const assignmentIdResult = await db.execute<any>(sql`SELECT LAST_INSERT_ID() as id`);
-      const assignmentIdRows = (assignmentIdResult as any).rows || (assignmentIdResult as any[]);
-      const assignmentId = assignmentIdRows[0].id;
+      const assignmentIdRow = firstRowFromExecute<{ id: number | string }>(assignmentIdResult);
+      const assignmentId = Number(assignmentIdRow?.id);
 
       await db.execute(
         sql`UPDATE shift_instances SET status = 'OCUPADO' WHERE id = ${shiftInstanceId} AND institution_id = ${ctx.institutionId}`
@@ -142,13 +149,14 @@ export const editorRouter = router({
         metadata: { assignmentId, allocatedProfessionalId: professionalId, assignmentType },
       });
 
-      recordAudit({
+      await recordAudit({
         action: "ASSIGNMENT_CREATED",
         entityType: "SHIFT_ASSIGNMENT",
         entityId: assignmentId,
         actorUserId: userId,
         actorRole: actor.roleInInstitution,
         description: `Alocação direta do profissional #${professionalId} no turno #${shiftInstanceId}`,
+        institutionId: ctx.institutionId,
         shiftInstanceId,
         hospitalId: shift.hospital_id as number,
         sectorId: shift.sector_id as number,
@@ -191,12 +199,16 @@ export const editorRouter = router({
             AND institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
-      const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
-      if (!shiftRows[0]) {
+      const shift = firstRowFromExecute<{
+        institution_id: number;
+        hospital_id: number;
+        sector_id: number;
+        start_at: Date | string;
+      }>(shiftResult);
+      if (!shift) {
         throw new Error("Turno não encontrado");
       }
 
-      const shift = shiftRows[0];
       await assertManagerScopeAccess(actor, shift.hospital_id, shift.sector_id);
       assertCanEditScheduleDate(actor, new Date(shift.start_at));
 
@@ -239,6 +251,7 @@ export const editorRouter = router({
         entityType: "SHIFT_INSTANCE",
         entityId: shiftInstanceId,
         description: "Turno marcado como vago",
+        institutionId: ctx.institutionId,
         shiftInstanceId,
         hospitalId: shift.hospital_id as number,
         sectorId: shift.sector_id as number,
@@ -282,12 +295,18 @@ export const editorRouter = router({
             AND sa.institution_id = ${ctx.institutionId}
             LIMIT 1`
       );
-      const assignmentRows = (assignmentResult as any).rows || (assignmentResult as any[]);
-      if (!assignmentRows[0]) {
+      const assignment = firstRowFromExecute<{
+        shift_instance_id: number;
+        professional_id: number;
+        institution_id: number;
+        hospital_id: number;
+        sector_id: number;
+        start_at: Date | string;
+      }>(assignmentResult);
+      if (!assignment) {
         throw new Error("Alocação não encontrada");
       }
 
-      const assignment = assignmentRows[0];
       await assertManagerScopeAccess(actor, assignment.hospital_id, assignment.sector_id);
       assertCanEditScheduleDate(actor, new Date(assignment.start_at));
 
@@ -316,8 +335,8 @@ export const editorRouter = router({
             AND is_active = true
             AND status = 'OCUPADO'`
       );
-      const remainingRows = (remainingResult as any).rows || (remainingResult as any[]);
-      const hasRemaining = remainingRows[0]?.count > 0;
+      const remainingRow = firstRowFromExecute<{ count: number | string }>(remainingResult);
+      const hasRemaining = Number(remainingRow?.count ?? 0) > 0;
 
       // 7. Se não houver mais assignments, marcar turno como VAGO
       if (!hasRemaining) {
