@@ -1,14 +1,25 @@
-import { useState, useEffect, type ReactNode } from "react";
-import { Text, View, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions, type ViewStyle } from "react-native";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
+import {
+  Alert,
+  Text,
+  TextInput,
+  View,
+  TouchableOpacity,
+  ActivityIndicator,
+  StyleSheet,
+  useWindowDimensions,
+  type ViewStyle,
+} from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle } from "lucide-react-native";
+import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 
@@ -24,11 +35,14 @@ const ACTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 5;
  */
 export default function ShiftDetailsScreen() {
   const { user } = useAuth();
+  const { can } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const { width } = useWindowDimensions();
   const shiftId = Number(params.id);
   const [isDemo, setIsDemo] = useState(false);
+  const [professionalSearch, setProfessionalSearch] = useState("");
+  const [selectedProfessionalId, setSelectedProfessionalId] = useState<number | null>(null);
 
   // Verificar modo demo
   useEffect(() => {
@@ -40,6 +54,40 @@ export default function ShiftDetailsScreen() {
     { id: shiftId },
     { enabled: !!user?.id && !isDemo }
   );
+  const canManageShift = can("edit:shift");
+  const utils = trpc.useUtils();
+  const {
+    data: assignableProfessionals,
+    isLoading: loadingAssignableProfessionals,
+  } = trpc.professionals.listAssignableForShift.useQuery(
+    { shiftInstanceId: shiftId },
+    { enabled: !!user?.id && !isDemo && canManageShift && Number.isFinite(shiftId) },
+  );
+  const assignDirect = trpc.editor.assignDirect.useMutation({
+    onSuccess: async () => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setSelectedProfessionalId(null);
+      setProfessionalSearch("");
+      await Promise.all([
+        utils.shifts.get.invalidate({ id: shiftId }),
+        utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
+        utils.shifts.listAgenda.invalidate(),
+      ]);
+      Alert.alert("Profissional alocado", "O plantão foi atualizado com sucesso.");
+    },
+    onError: (error) => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Não foi possível alocar", error.message || "Tente novamente em instantes.");
+    },
+  });
+  const filteredAssignableProfessionals = useMemo(() => {
+    const normalized = professionalSearch.trim().toLocaleLowerCase("pt-BR");
+    const rows = assignableProfessionals ?? [];
+    if (!normalized) return rows;
+    return rows.filter((professional) =>
+      professional.name.toLocaleLowerCase("pt-BR").includes(normalized),
+    );
+  }, [assignableProfessionals, professionalSearch]);
 
   // Dados demo
   const demoShiftData = isDemo
@@ -91,6 +139,23 @@ export default function ShiftDetailsScreen() {
   const handleEdit = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/edit-shift?id=${shiftId}`);
+  };
+
+  const handleAssignProfessional = () => {
+    if (!selectedProfessionalId) {
+      Alert.alert("Selecione um profissional", "Escolha quem ficará alocado neste plantão.");
+      return;
+    }
+    const selectedAssignmentType =
+      (shiftData?.shift as { modality?: "PLANTAO" | "SOBREAVISO" | null } | undefined)?.modality === "SOBREAVISO"
+        ? "ON_CALL"
+        : "ON_DUTY";
+    assignDirect.mutate({
+      shiftInstanceId: shiftId,
+      professionalId: selectedProfessionalId,
+      assignmentType: selectedAssignmentType,
+      reason: "Alocação direta pela tela de detalhes",
+    });
   };
 
   if (!user && !isDemo) {
@@ -317,6 +382,71 @@ export default function ShiftDetailsScreen() {
           </View>
 
           <View style={[styles.secondaryColumn, isWide ? styles.secondaryColumnWide : null]}>
+            {canManageShift && !isDemo && shift.status !== "cancelada" ? (
+              <TintedGlassCard variant="light" style={styles.allocationCard}>
+                <View style={styles.allocationHeader}>
+                  <View style={styles.personAvatar}>
+                    <UserPlus size={18} color={theme.colors.primary} />
+                  </View>
+                  <View style={styles.personInfo}>
+                    <Text style={styles.sectionHeading}>Alocar profissional</Text>
+                    <Text style={styles.subtleText}>Selecione um profissional habilitado para este setor.</Text>
+                  </View>
+                </View>
+
+                <View style={styles.searchBox}>
+                  <Search size={18} color={theme.colors.textMuted} />
+                  <TextInput
+                    value={professionalSearch}
+                    onChangeText={setProfessionalSearch}
+                    placeholder="Buscar por nome"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={styles.searchInput}
+                  />
+                </View>
+
+                {loadingAssignableProfessionals ? (
+                  <View style={styles.inlineState}>
+                    <ActivityIndicator size="small" color={theme.colors.primary} />
+                    <Text style={styles.subtleText}>Carregando profissionais...</Text>
+                  </View>
+                ) : filteredAssignableProfessionals.length > 0 ? (
+                  <View style={styles.assignableList}>
+                    {filteredAssignableProfessionals.map((professional) => {
+                      const selected = professional.id === selectedProfessionalId;
+                      return (
+                        <TouchableOpacity
+                          key={professional.id}
+                          activeOpacity={0.78}
+                          onPress={() => setSelectedProfessionalId(professional.id)}
+                          style={[
+                            styles.assignableRow,
+                            selected ? styles.assignableRowSelected : null,
+                          ]}
+                        >
+                          <View style={styles.assignableText}>
+                            <Text style={styles.personName}>{professional.name}</Text>
+                            <Text style={styles.subtleText}>{professional.role}</Text>
+                          </View>
+                          {selected ? <Badge variant="primary">Selecionado</Badge> : null}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ) : (
+                  <Text style={styles.emptyCopy}>Nenhum profissional habilitado disponível para este plantão.</Text>
+                )}
+
+                <ActionButton
+                  label={assignDirect.isPending ? "Alocando..." : "Alocar profissional"}
+                  onPress={handleAssignProfessional}
+                  variant="primary"
+                  icon={<UserPlus size={20} color={theme.colors.surface} />}
+                  disabled={!selectedProfessionalId || assignDirect.isPending}
+                />
+              </TintedGlassCard>
+            ) : null}
+
             <View style={styles.sectionHeader}>
               <Users size={22} color={theme.colors.textPrimary} />
               <Text style={styles.sectionHeading}>Profissionais ({assignments?.length || 0})</Text>
@@ -399,11 +529,13 @@ function ActionButton({
   onPress,
   icon,
   variant,
+  disabled = false,
 }: {
   label: string;
   onPress: () => void;
   icon?: ReactNode;
   variant: "primary" | "primarySoft" | "secondary" | "success";
+  disabled?: boolean;
 }) {
   const buttonStyle: ViewStyle =
     variant === "success"
@@ -421,7 +553,12 @@ function ActionButton({
         : theme.colors.textPrimary;
 
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.78} style={[styles.actionButton, buttonStyle]}>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.78}
+      disabled={disabled}
+      style={[styles.actionButton, buttonStyle, disabled ? styles.actionButtonDisabled : null]}
+    >
       <View style={styles.actionContent}>
         {icon}
         <Text style={[styles.actionLabel, { color: labelColor }]}>{label}</Text>
@@ -601,6 +738,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.space[4],
     paddingVertical: theme.space[3],
   },
+  actionButtonDisabled: {
+    opacity: 0.58,
+  },
   actionPrimary: {
     backgroundColor: theme.colors.primary,
   },
@@ -640,6 +780,59 @@ const styles = StyleSheet.create({
   },
   listStack: {
     gap: theme.space[3],
+  },
+  allocationCard: {
+    gap: theme.space[4],
+  },
+  allocationHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[3],
+  },
+  searchBox: {
+    minHeight: ICON_BOX_SIZE,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    paddingHorizontal: theme.space[3],
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[2],
+  },
+  searchInput: {
+    flex: 1,
+    ...theme.text.body,
+    color: theme.colors.textPrimary,
+    paddingVertical: theme.space[3],
+  },
+  inlineState: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[2],
+  },
+  assignableList: {
+    gap: theme.space[2],
+  },
+  assignableRow: {
+    minHeight: theme.space[14],
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    paddingHorizontal: theme.space[3],
+    paddingVertical: theme.space[3],
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[3],
+  },
+  assignableRowSelected: {
+    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.primarySoft,
+  },
+  assignableText: {
+    flex: 1,
+    minWidth: theme.space[0],
   },
   personCard: {
     padding: theme.space[4],

@@ -17,7 +17,12 @@ import {
   shiftInstances,
   shiftAssignmentsV2,
 } from "../drizzle/schema";
-import { actorCapabilities, getTenantActorFromContext } from "./_core/policy";
+import {
+  actorCapabilities,
+  assertCanManageInstitutionSchedule,
+  assertManagerScopeAccess,
+  getTenantActorFromContext,
+} from "./_core/policy";
 
 // ─── professionals ────────────────────────────────────────────────────────────
 
@@ -83,6 +88,78 @@ export const professionalsRouter = router({
       ...actorCapabilities(actor),
     };
   }),
+
+  listAssignableForShift: protectedProcedure
+    .input(z.object({ shiftInstanceId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+
+      const [shift] = await db
+        .select({
+          id: shiftInstances.id,
+          hospitalId: shiftInstances.hospitalId,
+          sectorId: shiftInstances.sectorId,
+        })
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, input.shiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        )
+        .limit(1);
+
+      if (!shift) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Plantão não encontrado" });
+      }
+
+      await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
+
+      const result = await db.execute<{
+        id: number;
+        name: string;
+        role: string;
+        roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
+      }>(
+        sql`
+          SELECT DISTINCT
+            p.id,
+            p.name,
+            p.role,
+            pi.user_role AS roleInInstitution
+          FROM professionals p
+          INNER JOIN professional_institutions pi
+            ON pi.professional_id = p.id
+            AND pi.institution_id = ${ctx.institutionId}
+            AND pi.active = true
+          INNER JOIN professional_access pa
+            ON pa.professional_id = p.id
+            AND pa.institution_id = ${ctx.institutionId}
+            AND pa.hospital_id = ${shift.hospitalId}
+            AND (pa.sector_id IS NULL OR pa.sector_id = ${shift.sectorId})
+            AND pa.can_access = true
+          LEFT JOIN shift_assignments_v2 sa
+            ON sa.professional_id = p.id
+            AND sa.shift_instance_id = ${input.shiftInstanceId}
+            AND sa.is_active = true
+          WHERE sa.id IS NULL
+          ORDER BY p.name ASC
+        `,
+      );
+      const rows =
+        (result as any).rows ||
+        (Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result);
+      return rows.map((row: any) => ({
+        id: Number(row.id),
+        name: String(row.name),
+        role: String(row.role),
+        roleInInstitution: row.roleInInstitution as "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS",
+      }));
+    }),
 
   /**
    * Returns the management scope for the logged-in professional.
