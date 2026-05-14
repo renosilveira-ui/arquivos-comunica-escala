@@ -54,8 +54,10 @@ import mysql from "mysql2";
 import { and, eq } from "drizzle-orm";
 import {
   institutions,
+  professionalAccess,
   professionalInstitutions,
   professionals,
+  sectors,
   users,
 } from "../drizzle/schema";
 import { resolveSslConfig } from "../server/_core/db-ssl";
@@ -245,6 +247,13 @@ async function main() {
     );
   }
   const institutionId = inst.id;
+  const sectorRows = await db
+    .select({
+      id: sectors.id,
+      hospitalId: sectors.hospitalId,
+    })
+    .from(sectors)
+    .where(eq(sectors.institutionId, institutionId));
   console.log(
     `Target institution: ${TARGET_INSTITUTION_NAME} (id=${institutionId})\n`,
   );
@@ -331,6 +340,39 @@ async function main() {
           isPrimary: true,
           active: true,
         });
+      }
+
+      // 4. Ensure the professional can be allocated in current sectors.
+      // The assignment endpoint enforces professional_access; without these
+      // rows newly imported doctors exist but cannot be placed on a shift.
+      for (const sector of sectorRows) {
+        const [existingAccess] = await db
+          .select({ id: professionalAccess.id, canAccess: professionalAccess.canAccess })
+          .from(professionalAccess)
+          .where(
+            and(
+              eq(professionalAccess.professionalId, professionalId),
+              eq(professionalAccess.institutionId, institutionId),
+              eq(professionalAccess.hospitalId, sector.hospitalId),
+              eq(professionalAccess.sectorId, sector.id),
+            ),
+          )
+          .limit(1);
+
+        if (!existingAccess) {
+          await db.insert(professionalAccess).values({
+            professionalId,
+            institutionId,
+            hospitalId: sector.hospitalId,
+            sectorId: sector.id,
+            canAccess: true,
+          });
+        } else if (!existingAccess.canAccess) {
+          await db
+            .update(professionalAccess)
+            .set({ canAccess: true })
+            .where(eq(professionalAccess.id, existingAccess.id));
+        }
       }
     } catch (err) {
       result.error = err instanceof Error ? err.message : String(err);
