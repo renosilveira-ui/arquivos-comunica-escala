@@ -183,6 +183,8 @@ export default function CreateShiftScreen() {
   };
 
   const handleCreateShift = () => {
+    if (createShift.isPending) return;
+
     if (!selectedSectorId || !selectedDate || !selectedShift) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("Atenção", "Selecione setor, data e turno.");
@@ -337,6 +339,10 @@ export default function CreateShiftScreen() {
   const selectedShiftTime = selectedShift ? SHIFT_TIMES[selectedShift] : null;
   const primaryActionDisabled = createShift.isPending;
   const createShiftErrorMessage = createShift.error?.message;
+  const webSubmitProps =
+    Platform.OS === "web"
+      ? ({ onClick: handleCreateShift } as { onClick: () => void })
+      : {};
 
   return (
     <ScreenGradient scrollable>
@@ -583,6 +589,7 @@ export default function CreateShiftScreen() {
               accessibilityRole="button"
               accessibilityLabel="Criar Escala"
               accessibilityState={{ disabled: primaryActionDisabled }}
+              {...webSubmitProps}
             >
               {createShift.isPending ? (
                 <ActivityIndicator size="small" color={theme.colors.surface} />
