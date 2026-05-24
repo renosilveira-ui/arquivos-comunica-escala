@@ -4,7 +4,7 @@
 // 1. SSO_PRIVATE_KEY_JWK env var (JSON string) — for staging/prod (Render, etc.)
 // 2. File at SSO_KEYSTORE_PATH or .sso-keystore.json — for local dev
 // 3. Auto-generate new key pair (dev only) — written to file for reuse
-import { generateKeyPair, exportJWK, importJWK, type KeyLike } from "jose";
+import { generateKeyPair, exportJWK, importJWK, type JWK } from "jose";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { ENV } from "../_core/env";
@@ -15,12 +15,12 @@ const ALG = "RS256";
 interface StoredKeyPair {
   kid: string;
   alg: string;
-  publicJwk: Record<string, unknown>;
-  privateJwk: Record<string, unknown>;
+  publicJwk: JWK;
+  privateJwk: JWK;
 }
 
-let cachedPrivateKey: KeyLike | null = null;
-let cachedPublicJwk: Record<string, unknown> | null = null;
+let cachedPrivateKey: CryptoKey | null = null;
+let cachedPublicJwk: JWK | null = null;
 
 function getKeystorePath(): string {
   return ENV.ssoKeystorePath || join(process.cwd(), ".sso-keystore.json");
@@ -96,7 +96,7 @@ async function generateAndStore(): Promise<StoredKeyPair> {
   return stored;
 }
 
-async function ensureKeyPair(): Promise<{ privateKey: KeyLike; publicJwk: Record<string, unknown> }> {
+async function ensureKeyPair(): Promise<{ privateKey: CryptoKey; publicJwk: JWK }> {
   if (cachedPrivateKey && cachedPublicJwk) {
     return { privateKey: cachedPrivateKey, publicJwk: cachedPublicJwk };
   }
@@ -104,18 +104,22 @@ async function ensureKeyPair(): Promise<{ privateKey: KeyLike; publicJwk: Record
   // Priority: env var > file > auto-generate (dev only)
   const stored = loadFromEnv() ?? loadFromFile() ?? await generateAndStore();
 
-  cachedPrivateKey = (await importJWK(stored.privateJwk, ALG)) as KeyLike;
+  const imported = await importJWK(stored.privateJwk, ALG);
+  if (!(imported instanceof CryptoKey)) {
+    throw new Error("[SSO] Imported private key is not a CryptoKey");
+  }
+  cachedPrivateKey = imported;
   cachedPublicJwk = stored.publicJwk;
 
   return { privateKey: cachedPrivateKey, publicJwk: cachedPublicJwk };
 }
 
-export async function getPrivateKey(): Promise<KeyLike> {
+export async function getPrivateKey(): Promise<CryptoKey> {
   const { privateKey } = await ensureKeyPair();
   return privateKey;
 }
 
-export async function getJwks(): Promise<{ keys: Record<string, unknown>[] }> {
+export async function getJwks(): Promise<{ keys: JWK[] }> {
   const { publicJwk } = await ensureKeyPair();
   return { keys: [publicJwk] };
 }
