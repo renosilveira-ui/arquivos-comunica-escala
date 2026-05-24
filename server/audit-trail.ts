@@ -38,6 +38,8 @@ export interface AuditEntry {
     | "USER_CREATED"
     | "USER_UPDATED"
     | "USER_ROLE_CHANGED"
+    | "SSO_JIT_LINK_CREATED"
+    | "PUSH_DISPATCHED"
     | "CONFLICT_DETECTED"
     | "CONFLICT_OVERRIDDEN";
   entityType:

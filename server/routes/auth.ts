@@ -127,9 +127,11 @@ async function ensureProfessionalLink(user: User): Promise<void> {
   }
 }
 
-async function handleSsoExchange(req: Request, res: Response): Promise<void> {
-  void req;
-  res.status(501).json({ error: "SSO exchange não habilitado neste build" });
+async function handleSsoExchange(_req: Request, res: Response): Promise<void> {
+  res.status(301).json({
+    error: "Endpoint migrado. Use POST /api/sso/generate para gerar handoff token.",
+    redirect: "/api/sso/generate",
+  });
 }
 
 // POST /api/auth/login

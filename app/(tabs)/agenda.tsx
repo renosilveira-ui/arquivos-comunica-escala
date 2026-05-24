@@ -19,6 +19,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { SsoLaunchButton } from "@/components/SsoLaunchButton";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -152,6 +153,9 @@ export default function AgendaScreen() {
   const todayKey = useMemo(() => toDateKey(new Date()), []);
   const weeksCount = isDesktop ? 4 : 2;
 
+  const { data: activeShift, isLoading: loadingActive } =
+    trpc.shifts.getActiveShift.useQuery(undefined, { enabled: !!user?.id });
+
   const { data, isLoading, refetch } = trpc.shifts.listAgenda.useQuery(
     {
       startDate: anchorWeekStart,
@@ -282,6 +286,14 @@ export default function AgendaScreen() {
               />
             </SegmentedGroup>
           </View>
+        </View>
+
+        {/* SSO Comunica+ — contextual ao plantão ativo */}
+        <View style={{ marginBottom: theme.space[3] }}>
+          <SsoLaunchButton
+            activeShift={activeShift}
+            isLoading={loadingActive}
+          />
         </View>
 
         {/* Conteúdo */}

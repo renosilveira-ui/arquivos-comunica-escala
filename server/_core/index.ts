@@ -7,6 +7,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
+import { ssoRouter } from "../sso/router";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { assertProductionSecrets } from "./env-validation";
@@ -104,6 +105,8 @@ async function startServer() {
   registerOAuthRoutes(app);
   app.use("/api/auth", createAuthRateLimit(), authRouter);
   app.use("/api/admin", adminRouter);
+  app.use("/.well-known", ssoRouter);
+  app.use("/api/sso", ssoRouter);
 
   app.use(
     "/api/trpc",

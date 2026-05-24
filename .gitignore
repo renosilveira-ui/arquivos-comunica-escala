@@ -6,6 +6,13 @@ web-build/
 *.tsbuildinfo
 .env
 .env.local
+.sso-keystore.json
+
+# Personal productivity files (do NOT commit — contains personal context)
+TASKS.md
+CLAUDE.md
+memory/
+dashboard.html
 
 # Bulk import artifacts: never commit input CSVs (PII) or output
 # credentials CSVs (plain-text temporary passwords).
