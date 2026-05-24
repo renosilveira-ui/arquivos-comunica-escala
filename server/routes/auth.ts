@@ -7,6 +7,8 @@ import {
   professionals,
   institutions,
   professionalInstitutions,
+  professionalAccess,
+  hospitals,
   type User,
 } from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
@@ -352,14 +354,10 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
 
   const newUserId = (result as any).insertId as number;
 
-  // Auto-create professional global record + canonical tenant link.
+  // Auto-create professional record + tenant link + hospital access.
+  let newProfessionalId: number | null = null;
   try {
-    const [proInsert] = await db.insert(professionals).values({
-      userId: newUserId,
-      name,
-      role: mapRoleToLabel(normalizedRole),
-      userRole: mapRoleToProRole(normalizedRole),
-    });
+    // 1. Ensure institution exists
     await db
       .insert(institutions)
       .values({
@@ -377,6 +375,55 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
           tradeName: DEFAULT_INSTITUTION.tradeName,
         },
       });
+
+    // 2. Create professional record
+    const [proInsert] = await db.insert(professionals).values({
+      userId: newUserId,
+      name,
+      role: mapRoleToLabel(normalizedRole),
+      userRole: mapRoleToProRole(normalizedRole),
+    });
+    newProfessionalId = (proInsert as any).insertId as number;
+
+    // 3. Create professional ↔ institution link
+    if (newProfessionalId) {
+      await db
+        .insert(professionalInstitutions)
+        .values({
+          professionalId: newProfessionalId,
+          userId: newUserId,
+          institutionId: DEFAULT_INSTITUTION.id,
+          roleInInstitution: mapRoleToProRole(normalizedRole),
+          isPrimary: true,
+          active: true,
+        })
+        .onDuplicateKeyUpdate({
+          set: {
+            active: true,
+            roleInInstitution: mapRoleToProRole(normalizedRole),
+            isPrimary: true,
+          },
+        });
+
+      // 4. Grant access to all hospitals in the institution (sectorId=null = all sectors)
+      const institutionHospitals = await db
+        .select({ id: hospitals.id })
+        .from(hospitals)
+        .where(eq(hospitals.institutionId, DEFAULT_INSTITUTION.id));
+
+      for (const hospital of institutionHospitals) {
+        await db
+          .insert(professionalAccess)
+          .values({
+            institutionId: DEFAULT_INSTITUTION.id,
+            professionalId: newProfessionalId,
+            hospitalId: hospital.id,
+            sectorId: null,
+            canAccess: true,
+          })
+          .onDuplicateKeyUpdate({ set: { canAccess: true } });
+      }
+    }
   } catch (err) {
     console.warn("[register] Could not auto-create professional record:", (err as Error).message);
   }
