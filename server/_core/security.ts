@@ -46,7 +46,16 @@ export function createCorsMiddleware(options: CorsOptions): RequestHandler {
   const { allowedOrigins } = options;
   return (req: Request, res: Response, next: NextFunction) => {
     const origin = req.headers.origin;
-    const isAllowed = typeof origin === "string" && allowedOrigins.has(origin);
+
+    // Same-origin: browser sends Origin on credentialed POST even when
+    // frontend and API share the same domain. Always allow the server's
+    // own origin so cookies are accepted.
+    const proto = req.protocol === "https" ||
+      String(req.headers["x-forwarded-proto"]).includes("https")
+        ? "https" : "http";
+    const selfOrigin = `${proto}://${req.headers.host}`;
+    const isAllowed = typeof origin === "string" &&
+      (allowedOrigins.has(origin) || origin === selfOrigin);
 
     if (isAllowed) {
       res.header("Access-Control-Allow-Origin", origin);
