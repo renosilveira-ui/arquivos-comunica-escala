@@ -31,11 +31,27 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 function AuthGuard() {
   const { user, isLoading } = useAuth();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
   const {
     activeInstitutionId,
     isHydrating: isHydratingTenant,
     setActiveInstitutionId,
   } = useTenantState();
+
+  // Invalidate all tRPC caches when user changes (login/logout).
+  // Without this, listMyInstitutions returns stale empty data after login
+  // because the query was attempted (and failed) before the cookie existed.
+  const [prevUserId, setPrevUserId] = useState<number | null>(null);
+  useEffect(() => {
+    const currentId = user?.id ?? null;
+    if (currentId !== prevUserId) {
+      setPrevUserId(currentId);
+      if (currentId !== null) {
+        queryClient.invalidateQueries();
+      }
+    }
+  }, [user?.id, prevUserId, queryClient]);
+
   const { data: institutions, isLoading: institutionsLoading } =
     trpc.professionals.listMyInstitutions.useQuery(undefined, { enabled: !!user });
 
