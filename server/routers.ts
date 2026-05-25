@@ -19,6 +19,7 @@ import { auditRouter } from "./audit-router";
 import { calendarRouter } from "./calendar";
 import { shiftsRouter } from "./shifts-crud";
 import { professionalsRouter, hospitalsRouter, sectorsRouter, filtersRouter } from "./aux-routers";
+import { confirmationRouter } from "./confirmation-router";
 
 const shiftAssignmentsRouter = router({
   // Assumir vaga (USER solicita alocação PENDENTE)
@@ -527,6 +528,7 @@ export const appRouter = router({
   filters:          filtersRouter,
   swaps:            swapRouter,
   audit:            auditRouter,
+  confirmations:    confirmationRouter,
 });
 
 export type AppRouter = typeof appRouter;
