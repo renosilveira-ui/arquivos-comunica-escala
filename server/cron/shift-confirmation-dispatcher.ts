@@ -13,17 +13,17 @@
 // marca AUTO_CONFIRMED, dispara SSO e notifica gestor.
 
 import { randomUUID } from "crypto";
-import { and, eq, gte, lte, isNull, inArray } from "drizzle-orm";
+import { and, eq, gte, lte, inArray } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   shiftInstances,
   shiftAssignmentsV2,
   professionals,
-  users,
   dutyConfirmations,
 } from "../../drizzle/schema";
 import { sendPushNotification } from "../notifications-service";
 import { triggerAutoSso } from "../sso/auto-sso";
+import { managerScope as managerScopeTable, professionalInstitutions } from "../../drizzle/schema";
 
 // ── Trigger schedule ────────────────────────────────────────────────────────
 
@@ -48,14 +48,31 @@ const TRIGGERS: TriggerWindow[] = [
 ];
 
 const RECHECK_DELAY_MS = 30 * 60 * 1000; // 30 minutes
+const TIMEZONE = process.env.TZ_HOSPITAL || "America/Sao_Paulo";
 
 let lastRunMinute = -1;
+
+function getLocalTime(now: Date): { hours: number; minutes: number; dateStr: string } {
+  const local = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: TIMEZONE,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(now);
+
+  const get = (type: string) => local.find((p) => p.type === type)?.value ?? "0";
+  return {
+    hours: Number(get("hour")),
+    minutes: Number(get("minute")),
+    dateStr: `${get("year")}-${get("month")}-${get("day")}`,
+  };
+}
 
 // ── Main tick (called every ~60s) ───────────────────────────────────────────
 
 export async function tick() {
   const now = new Date();
-  const currentMinute = now.getHours() * 60 + now.getMinutes();
+  const local = getLocalTime(now);
+  const currentMinute = local.hours * 60 + local.minutes;
 
   // Prevent double-execution in the same minute
   if (currentMinute === lastRunMinute) return;
@@ -80,12 +97,14 @@ async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
   const db = await getDb();
   if (!db) return;
 
-  // Determine which date the shift is on
-  const shiftDate = new Date(now);
+  // Determine which date the shift is on (using local timezone)
+  const local = getLocalTime(now);
+  let dateStr = local.dateStr;
   if (trigger.shiftNextDay) {
-    shiftDate.setDate(shiftDate.getDate() + 1);
+    const next = new Date(`${dateStr}T12:00:00`);
+    next.setDate(next.getDate() + 1);
+    dateStr = next.toISOString().split("T")[0]!;
   }
-  const dateStr = shiftDate.toISOString().split("T")[0]!;
 
   // Build shift time window
   const shiftStartAt = new Date(`${dateStr}T${trigger.shiftStartTime}:00`);
@@ -188,8 +207,12 @@ async function processRechecks(now: Date) {
   const db = await getDb();
   if (!db) return;
 
-  // Find PENDING confirmations past their recheck time
-  const pendingExpired = await db
+  // Find confirmations past their recheck time that need auto-resolution.
+  // PENDING: doctor never responded
+  // NOMINATED: replacement indicated but hasn't accepted
+  // DECLINED: doctor declined but never indicated replacement
+  // REPLACEMENT_DECLINED: substitute refused, no new nomination
+  const expired = await db
     .select({
       id: dutyConfirmations.id,
       userId: dutyConfirmations.userId,
@@ -201,30 +224,12 @@ async function processRechecks(now: Date) {
     .from(dutyConfirmations)
     .where(
       and(
-        eq(dutyConfirmations.status, "PENDING"),
+        inArray(dutyConfirmations.status, ["PENDING", "NOMINATED", "DECLINED", "REPLACEMENT_DECLINED"]),
         lte(dutyConfirmations.recheckAt, now),
       ),
     );
 
-  // Also find NOMINATED replacements that haven't been accepted
-  const nominatedExpired = await db
-    .select({
-      id: dutyConfirmations.id,
-      userId: dutyConfirmations.userId,
-      professionalId: dutyConfirmations.professionalId,
-      replacementUserId: dutyConfirmations.replacementUserId,
-      shiftInstanceId: dutyConfirmations.shiftInstanceId,
-      institutionId: dutyConfirmations.institutionId,
-    })
-    .from(dutyConfirmations)
-    .where(
-      and(
-        eq(dutyConfirmations.status, "NOMINATED"),
-        lte(dutyConfirmations.recheckAt, now),
-      ),
-    );
-
-  for (const conf of [...pendingExpired, ...nominatedExpired]) {
+  for (const conf of expired) {
     // Auto-confirm: whoever is currently assigned gets logged in
     await db
       .update(dutyConfirmations)
@@ -250,10 +255,100 @@ async function processRechecks(now: Date) {
       console.error("[ConfirmationCron] Auto-SSO failed:", err),
     );
 
-    // Notify manager about the auto-confirmation
-    // TODO (Fase 5): Resolve manager userId and send notification
+    // Notify managers responsible for this shift's hospital/sector
+    await notifyManagersAutoConfirm(conf).catch((err) =>
+      console.error("[ConfirmationCron] Manager notification failed:", err),
+    );
 
     console.log(`[ConfirmationCron] Auto-confirmed userId=${conf.userId} for shift=${conf.shiftInstanceId}`);
+  }
+}
+
+// ── Notify managers about auto-confirmations ────────────────────────────────
+
+async function notifyManagersAutoConfirm(conf: {
+  shiftInstanceId: number;
+  institutionId: number;
+  userId: number;
+}) {
+  const db = await getDb();
+  if (!db) return;
+
+  // Get shift details for context
+  const [shift] = await db
+    .select({
+      hospitalId: shiftInstances.hospitalId,
+      sectorId: shiftInstances.sectorId,
+      label: shiftInstances.label,
+    })
+    .from(shiftInstances)
+    .where(eq(shiftInstances.id, conf.shiftInstanceId))
+    .limit(1);
+
+  if (!shift) return;
+
+  // Get doctor name
+  const [pro] = await db
+    .select({ name: professionals.name })
+    .from(professionals)
+    .where(eq(professionals.userId, conf.userId))
+    .limit(1);
+
+  // Find managers for this hospital/sector via manager_scope
+  const managers = await db
+    .select({
+      userId: professionalInstitutions.userId,
+    })
+    .from(managerScopeTable)
+    .innerJoin(
+      professionalInstitutions,
+      and(
+        eq(professionalInstitutions.professionalId, managerScopeTable.managerProfessionalId),
+        eq(professionalInstitutions.institutionId, conf.institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .where(
+      and(
+        eq(managerScopeTable.institutionId, conf.institutionId),
+        eq(managerScopeTable.hospitalId, shift.hospitalId),
+        eq(managerScopeTable.active, true),
+      ),
+    );
+
+  // Also find GESTOR_PLUS users (institution-wide managers)
+  const gestoresPlus = await db
+    .select({ userId: professionalInstitutions.userId })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.institutionId, conf.institutionId),
+        eq(professionalInstitutions.roleInInstitution, "GESTOR_PLUS"),
+        eq(professionalInstitutions.active, true),
+      ),
+    );
+
+  const managerUserIds = new Set([
+    ...managers.map((m) => m.userId),
+    ...gestoresPlus.map((g) => g.userId),
+  ]);
+
+  const doctorName = pro?.name ?? `Usuário #${conf.userId}`;
+
+  for (const managerUserId of managerUserIds) {
+    await sendPushNotification(managerUserId, {
+      title: "Plantão confirmado automaticamente",
+      body: `${doctorName} não respondeu a confirmação do plantão ${shift.label}. O sistema confirmou automaticamente.`,
+      data: {
+        type: "manager_auto_confirm_alert",
+        shiftInstanceId: conf.shiftInstanceId,
+        userId: conf.userId,
+      },
+    });
+  }
+
+  if (managerUserIds.size > 0) {
+    console.log(`[ConfirmationCron] Notified ${managerUserIds.size} manager(s) about auto-confirm for shift=${conf.shiftInstanceId}`);
   }
 }
 

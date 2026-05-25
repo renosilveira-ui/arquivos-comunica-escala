@@ -7,6 +7,7 @@ import { TRPCError } from "@trpc/server";
 import {
   dutyConfirmations,
   professionals,
+  professionalInstitutions,
   shiftInstances,
   shiftAssignmentsV2,
   sectors,
@@ -17,6 +18,40 @@ import { randomUUID } from "crypto";
 import { triggerAutoSso } from "./sso/auto-sso";
 
 export const confirmationRouter = router({
+  /**
+   * Lista profissionais da instituição ativa (para indicar substituto).
+   * Exclui o próprio usuário logado.
+   */
+  listReplacementCandidates: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+    const rows = await db
+      .select({
+        id: professionals.id,
+        name: professionals.name,
+        role: professionals.role,
+        userId: professionals.userId,
+      })
+      .from(professionals)
+      .innerJoin(
+        professionalInstitutions,
+        and(
+          eq(professionalInstitutions.professionalId, professionals.id),
+          eq(professionalInstitutions.institutionId, ctx.institutionId),
+          eq(professionalInstitutions.active, true),
+        ),
+      )
+      .where(
+        // Exclude the logged-in user
+        eq(professionalInstitutions.userId, professionals.userId),
+      );
+
+    return rows
+      .filter((r) => r.userId !== ctx.user.id)
+      .map((r) => ({ id: r.id, name: r.name, role: r.role }));
+  }),
+
   /**
    * Retorna confirmação pendente para o usuário logado (se houver).
    * Usado pelo frontend para exibir tela de confirmação.

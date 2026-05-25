@@ -1,35 +1,61 @@
 /**
- * Componente que escuta notificações e executa ações
- * Usado para chamar syncNow() quando usuário toca em notificação de erro
+ * Componente que escuta notificações push e roteia para a tela correta.
  */
 
 import { useEffect } from "react";
+import { Linking } from "react-native";
+import { useRouter } from "expo-router";
 import * as Notifications from "expo-notifications";
 
 export function NotificationListener() {
-  // Não usar useHospitalAlertSync aqui para evitar dependência circular
-  // Importar ação diretamente quando necessário
-  
+  const router = useRouter();
+
   useEffect(() => {
-    // Listener para quando usuário toca na notificação
     const subscription = Notifications.addNotificationResponseReceivedListener(async (response) => {
-      console.log("[NotificationListener] Usuário tocou na notificação:", response);
-      
       const data = response.notification.request.content.data;
-      
-      // Se é notificação de erro de sincronização, processar fila
-      if (data?.type === "sync_error") {
-        console.log("[NotificationListener] Processando fila após tocar em notificação de erro");
-        // Importar dinamicamente para evitar dependência circular
-        const { processIntegrationQueue } = await import("@/lib/integrationQueueProcessor");
-        await processIntegrationQueue();
+      if (!data?.type) return;
+
+      switch (data.type) {
+        case "duty_confirmation":
+          router.push({
+            pathname: "/confirm-duty" as any,
+            params: { token: String(data.confirmationToken ?? "") },
+          });
+          break;
+
+        case "duty_nomination":
+          router.push({
+            pathname: "/confirm-duty" as any,
+            params: { token: String(data.confirmationToken ?? "") },
+          });
+          break;
+
+        case "sso_ready":
+          if (data.comunicaUrl) {
+            Linking.openURL(String(data.comunicaUrl)).catch(() => {
+              router.push("/(tabs)/agenda" as any);
+            });
+          }
+          break;
+
+        case "duty_auto_confirmed":
+        case "replacement_accepted":
+        case "replacement_declined":
+          router.push("/(tabs)/agenda" as any);
+          break;
+
+        case "sync_error": {
+          const { processIntegrationQueue } = await import("@/lib/integrationQueueProcessor");
+          await processIntegrationQueue();
+          break;
+        }
       }
     });
-    
+
     return () => {
       subscription.remove();
     };
-  }, []);
-  
-  return null; // Componente invisível
+  }, [router]);
+
+  return null;
 }
