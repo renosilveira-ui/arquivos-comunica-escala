@@ -611,8 +611,101 @@ export const swapRequests = mysqlTable("swap_requests", {
 }));
 
 // ========================================
+// CONFIRMAÇÃO DE PRESENÇA PRÉ-PLANTÃO
+// ========================================
+
+/**
+ * Confirmação de presença antes do plantão.
+ *
+ * Fluxo:
+ *   CRON (11h/17h/22h) → Push "Confirma plantão?" → PENDING
+ *     → SIM: CONFIRMED (auto-SSO no Comunica+)
+ *     → NÃO: DECLINED (abre tela indicar substituto)
+ *     → sem resposta +30min: AUTO_CONFIRMED (loga e notifica gestor)
+ *
+ * Substituição:
+ *   Médico original DECLINED → indica substituto → NOMINATED
+ *   Substituto aceita → REPLACEMENT_CONFIRMED
+ *   Substituto recusa/ignora → fallback para AUTO_CONFIRMED
+ */
+export const dutyConfirmations = mysqlTable(
+  "duty_confirmations",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    shiftInstanceId: int("shift_instance_id").notNull().references(() => shiftInstances.id),
+    assignmentId: int("assignment_id").notNull().references(() => shiftAssignmentsV2.id),
+
+    // Profissional escalado originalmente
+    professionalId: int("professional_id").notNull().references(() => professionals.id),
+    userId: int("user_id").notNull().references(() => users.id),
+
+    status: mysqlEnum("status", [
+      "PENDING",                // Notificação enviada, aguardando resposta
+      "CONFIRMED",              // Médico confirmou presença
+      "DECLINED",               // Médico recusou, pode indicar substituto
+      "NOMINATED",              // Substituto indicado, aguardando aceite
+      "REPLACEMENT_CONFIRMED",  // Substituto aceitou
+      "REPLACEMENT_DECLINED",   // Substituto recusou
+      "AUTO_CONFIRMED",         // Sem resposta → logado automaticamente
+    ]).notNull().default("PENDING"),
+
+    // Substituto (preenchido quando NOMINATED)
+    replacementProfessionalId: int("replacement_professional_id").references(() => professionals.id),
+    replacementUserId: int("replacement_user_id").references(() => users.id),
+
+    // Controle de tempo
+    notifiedAt: timestamp("notified_at"),               // Quando o push foi enviado
+    respondedAt: timestamp("responded_at"),              // Quando médico respondeu
+    recheckAt: timestamp("recheck_at"),                  // Quando rodar rechecagem (+30min)
+    autoConfirmedAt: timestamp("auto_confirmed_at"),     // Se auto-confirmado
+    ssoTriggeredAt: timestamp("sso_triggered_at"),       // Quando SSO foi executado
+
+    // Token único para deep link de confirmação
+    confirmationToken: varchar("confirmation_token", { length: 191 }).notNull().unique(),
+
+    // Metadata
+    declineReason: varchar("decline_reason", { length: 500 }),
+    managerNotified: boolean("manager_notified").notNull().default(false),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    uniqAssignment: unique().on(table.assignmentId),
+    idxStatus: index("idx_duty_conf_status").on(table.status),
+    idxRecheck: index("idx_duty_conf_recheck").on(table.recheckAt),
+    idxShift: index("idx_duty_conf_shift").on(table.shiftInstanceId),
+    idxInstitution: index("idx_duty_conf_institution").on(table.institutionId, table.id),
+  }),
+);
+
+// ========================================
 // RELATIONS (Multi-Tenant Hierarchy)
 // ========================================
+
+export const dutyConfirmationsRelations = relations(dutyConfirmations, ({ one }) => ({
+  institution: one(institutions, {
+    fields: [dutyConfirmations.institutionId],
+    references: [institutions.id],
+  }),
+  shiftInstance: one(shiftInstances, {
+    fields: [dutyConfirmations.shiftInstanceId],
+    references: [shiftInstances.id],
+  }),
+  assignment: one(shiftAssignmentsV2, {
+    fields: [dutyConfirmations.assignmentId],
+    references: [shiftAssignmentsV2.id],
+  }),
+  professional: one(professionals, {
+    fields: [dutyConfirmations.professionalId],
+    references: [professionals.id],
+  }),
+  user: one(users, {
+    fields: [dutyConfirmations.userId],
+    references: [users.id],
+  }),
+}));
 
 export const institutionsRelations = relations(institutions, ({ many }) => ({
   hospitals: many(hospitals),
@@ -631,6 +724,7 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   monthlyRosters: many(monthlyRosters),
   auditTrails: many(auditTrail),
   swapRequests: many(swapRequests),
+  dutyConfirmations: many(dutyConfirmations),
 }));
 
 export const usersRelations = relations(users, ({ many }) => ({

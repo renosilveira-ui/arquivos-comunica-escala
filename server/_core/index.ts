@@ -23,6 +23,7 @@ import {
 } from "./security";
 import { installShutdownHandlers } from "./shutdown";
 import { pingDb } from "../db";
+import { startConfirmationCron } from "../cron/shift-confirmation-dispatcher";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -147,6 +148,7 @@ async function startServer() {
 
   server.listen(port, "0.0.0.0", () => {
     logger.info({ port, env: process.env.NODE_ENV ?? "unset" }, "api server listening");
+    startConfirmationCron();
   });
 
   installShutdownHandlers({ server, logger });
