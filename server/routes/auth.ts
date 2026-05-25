@@ -259,12 +259,21 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
 
 // POST /api/auth/logout
 authRouter.post("/logout", (req: Request, res: Response): void => {
-  // clearCookie must mirror **all attributes** (path, domain, sameSite,
-  // secure) used at Set-Cookie time. Previously this passed only
-  // path+domain — Chrome/Safari/Firefox silently ignored the
-  // Max-Age=0 on cookies with sameSite=none/secure (the staging
-  // config since PR #48), keeping the user logged in.
+  // Clear the cookie with current policy attributes.
   res.clearCookie(COOKIE_NAME, resolveClearCookieOptions({ req }));
+  // Also clear with SameSite=None to invalidate cookies set before the
+  // same-origin migration. Browsers only honour clearCookie when ALL
+  // attributes match the original Set-Cookie; without this, users who
+  // logged in under the old cross-origin setup cannot log out.
+  const isSecure = req.protocol === "https" ||
+    String(req.headers["x-forwarded-proto"] ?? "").includes("https") ||
+    process.env.NODE_ENV === "production";
+  res.clearCookie(COOKIE_NAME, {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "none",
+    path: "/",
+  });
   res.json({ ok: true });
 });
 
