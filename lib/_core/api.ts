@@ -3,7 +3,15 @@ import { Platform } from "react-native";
 import * as Auth from "./auth";
 
 function getBaseUrl(): string {
-  const envUrl = (process.env.EXPO_PUBLIC_API_URL || "").trim();
+  const envUrl = (process.env.EXPO_PUBLIC_API_URL ?? "").trim();
+
+  // Same-origin mode: when EXPO_PUBLIC_API_URL is empty or "/", the web
+  // frontend is served by the same Express server that hosts the API, so
+  // relative paths work and cookies are first-party (no cross-origin issues).
+  if (Platform.OS === "web" && (!envUrl || envUrl === "/")) {
+    return "";
+  }
+
   if (envUrl) return envUrl.replace(/\/$/, "");
 
   // Fallback permitido apenas em desenvolvimento local.

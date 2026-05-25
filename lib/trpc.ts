@@ -9,7 +9,13 @@ import type { AppRouter } from "@/server/routers";
 export const trpc = createTRPCReact<AppRouter>();
 
 function getBaseUrl(): string {
-  const envUrl = (process.env.EXPO_PUBLIC_API_URL || "").trim();
+  const envUrl = (process.env.EXPO_PUBLIC_API_URL ?? "").trim();
+
+  // Same-origin mode: web frontend served by the same Express server.
+  if (Platform.OS === "web" && (!envUrl || envUrl === "/")) {
+    return "";
+  }
+
   if (envUrl) return envUrl.replace(/\/$/, "");
 
   if (process.env.NODE_ENV === "production") {
