@@ -3,6 +3,8 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import { existsSync } from "fs";
+import { join } from "path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { authRouter } from "../routes/auth";
@@ -115,6 +117,25 @@ async function startServer() {
       createContext,
     }),
   );
+
+  // Serve Expo web build from the same origin (eliminates cross-origin
+  // cookie issues). In production the `web-build/` directory is created by
+  // `pnpm build:web` during the Render build step. API routes are registered
+  // above and take priority; the static middleware only handles non-API paths.
+  // The catch-all sends index.html for any unmatched route so that Expo
+  // Router's client-side routing works (deep links, refresh on /agenda, etc.).
+  const webBuildPath = join(process.cwd(), "web-build");
+  if (existsSync(webBuildPath)) {
+    app.use(express.static(webBuildPath, { maxAge: "1h", index: false }));
+    app.get("*", (req, res, next) => {
+      // Don't intercept API or tRPC routes
+      if (req.path.startsWith("/api/") || req.path.startsWith("/.well-known/")) {
+        return next();
+      }
+      res.sendFile(join(webBuildPath, "index.html"));
+    });
+    logger.info({ path: webBuildPath }, "serving web build from same origin");
+  }
 
   const port = parseInt(process.env.PORT || "3000", 10);
   const portFree = await isPortAvailable(port);
