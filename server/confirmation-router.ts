@@ -19,6 +19,19 @@ import { triggerAutoSso } from "./sso/auto-sso";
 
 export const confirmationRouter = router({
   /**
+   * Registra push token do dispositivo para o usuário logado.
+   */
+  registerPushToken: protectedProcedure
+    .input(z.object({
+      token: z.string().min(1),
+      platform: z.enum(["ios", "android", "web"]),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const { registerPushToken: register } = await import("./notifications-service");
+      return register(ctx.user.id, input.token, input.platform);
+    }),
+
+  /**
    * Lista profissionais da instituição ativa (para indicar substituto).
    * Exclui o próprio usuário logado.
    */

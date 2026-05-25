@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
+import { trpc } from '@/lib/trpc';
 
-// Configurar como as notificações devem ser apresentadas quando o app está em primeiro plano
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -19,26 +19,32 @@ export function useNotifications() {
   const [notification, setNotification] = useState<Notifications.Notification | undefined>();
   const notificationListener = useRef<Notifications.Subscription>(undefined!);
   const responseListener = useRef<Notifications.Subscription>(undefined!);
+  const registerMutation = trpc.confirmations.registerPushToken.useMutation();
 
   useEffect(() => {
-    // Registrar para receber push token
-    registerForPushNotificationsAsync().then(token => setExpoPushToken(token));
-
-    // Listener para notificações recebidas enquanto o app está aberto
-    notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
-      setNotification(notification);
+    registerForPushNotificationsAsync().then((token) => {
+      if (!token) return;
+      setExpoPushToken(token);
+      const platform = Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
+      registerMutation.mutate(
+        { token, platform },
+        { onError: (err) => console.warn("[Push] Failed to register token:", err.message) },
+      );
     });
 
-    // Listener para quando o usuário toca na notificação
-    responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
-      console.log('Notificação tocada:', response);
-      // TODO: Navegar para a tela relevante baseado no payload
+    notificationListener.current = Notifications.addNotificationReceivedListener((n) => {
+      setNotification(n);
+    });
+
+    responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
+      console.log('[Push] Notification tapped:', response.notification.request.content.data?.type);
     });
 
     return () => {
-      notificationListener.current && notificationListener.current.remove();
-      responseListener.current && responseListener.current.remove();
+      notificationListener.current?.remove();
+      responseListener.current?.remove();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {
