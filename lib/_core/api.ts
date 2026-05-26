@@ -42,6 +42,8 @@ async function apiFetch<T>(
     if (token) headers["Authorization"] = `Bearer ${token}`;
   }
 
+  console.log(`[apiFetch] ${options?.method ?? "GET"} ${url} (Platform: ${Platform.OS})`);
+
   let res: Response;
   try {
     res = await fetch(url, {
@@ -49,8 +51,10 @@ async function apiFetch<T>(
       headers,
       credentials: Platform.OS === "web" ? "include" : undefined,
     });
+    console.log(`[apiFetch] response: ${res.status}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha de conexão com o servidor.";
+    console.log(`[apiFetch] FETCH ERROR: ${message}`);
     return { ok: false, status: 0, data: null, error: message };
   }
 
@@ -71,7 +75,7 @@ export type AuthUser = {
   role: "admin" | "manager" | "doctor" | "nurse" | "tech";
 };
 
-type LoginResponse = { user: AuthUser };
+type LoginResponse = { user: AuthUser; token?: string };
 type MeResponse = { user: AuthUser };
 
 export const authApi = {
@@ -84,8 +88,11 @@ export const authApi = {
       body: JSON.stringify({ email, password }),
     });
     if (res.ok && res.data?.user) {
-      // Na native, o server retorna o token no header ou cookie — para native
-      // usamos Bearer via SecureStore; o cookie session é suficiente para web.
+      // Native: save token to SecureStore for Bearer auth on subsequent requests.
+      // Web: cookie is set automatically by the browser.
+      if (Platform.OS !== "web" && res.data.token) {
+        await Auth.setSessionToken(res.data.token);
+      }
       return { ok: true, user: res.data.user };
     }
     const errMsg =

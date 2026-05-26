@@ -167,7 +167,7 @@ authRouter.post("/login", async (req: Request, res: Response): Promise<void> => 
 
   const token = await sdk.createSessionToken(String(user.id), { name: user.name ?? "" });
   res.cookie(COOKIE_NAME, token, resolveSetCookieOptions(req));
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role }, token });
 });
 
 // POST /api/auth/ssoExchange (camelCase alias)

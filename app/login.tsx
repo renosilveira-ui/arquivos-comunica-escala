@@ -50,7 +50,9 @@ export default function LoginScreen() {
   const router = useRouter();
 
   const handleLogin = async () => {
+    console.log("[LOGIN] handleLogin called, email:", email, "password length:", password.length);
     if (!email.trim() || !password.trim()) {
+      console.log("[LOGIN] empty fields");
       setErrorMsg("Preencha email e senha.");
       return;
     }
