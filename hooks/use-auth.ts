@@ -46,14 +46,10 @@ export function useAuth() {
       email: string,
       password: string,
     ): Promise<{ ok: boolean; error?: string }> => {
-      console.log("[useAuth] login attempt:", email);
       const result = await authApi.login(email, password);
-      console.log("[useAuth] login result:", JSON.stringify({ ok: result.ok, hasUser: !!result.user, error: result.error }));
       if (result.ok && result.user) {
         setUser(result.user);
         await Auth.setUserInfo(result.user);
-        const savedToken = await Auth.getSessionToken();
-        console.log("[useAuth] token saved:", !!savedToken);
         await clearActiveInstitutionId();
       }
       return result.ok
