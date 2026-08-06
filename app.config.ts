@@ -112,6 +112,14 @@ const config: ExpoConfig = {
     typedRoutes: true,
     reactCompiler: true,
   },
+  // Vínculo com o projeto EAS (@renosilveira/escalas-hospitalares).
+  // Necessário para eas build; criado via `eas init` em 2026-08-06.
+  owner: "renosilveira",
+  extra: {
+    eas: {
+      projectId: "8b135be7-ee5e-4406-9703-ad696d3689e9",
+    },
+  },
 };
 
 export default config;
