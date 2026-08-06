@@ -1,4 +1,4 @@
-import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index, decimal } from "drizzle-orm/mysql-core";
+import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index, decimal, foreignKey } from "drizzle-orm/mysql-core";
 import { relations } from "drizzle-orm";
 
 /**
@@ -650,8 +650,13 @@ export const dutyConfirmations = mysqlTable(
       "AUTO_CONFIRMED",         // Sem resposta → logado automaticamente
     ]).notNull().default("PENDING"),
 
-    // Substituto (preenchido quando NOMINATED)
-    replacementProfessionalId: int("replacement_professional_id").references(() => professionals.id),
+    // Substituto (preenchido quando NOMINATED).
+    // FK declarada explicitamente no callback (fkReplacementProf) porque
+    // o nome auto-gerado pelo drizzle
+    // (duty_confirmations_replacement_professional_id_professionals_id_fk,
+    // 66 chars) excede o limite de 64 do MySQL — ER_TOO_LONG_IDENT
+    // abortava o drizzle-kit push no CI.
+    replacementProfessionalId: int("replacement_professional_id"),
     replacementUserId: int("replacement_user_id").references(() => users.id),
 
     // Controle de tempo
@@ -677,6 +682,12 @@ export const dutyConfirmations = mysqlTable(
     idxRecheck: index("idx_duty_conf_recheck").on(table.recheckAt),
     idxShift: index("idx_duty_conf_shift").on(table.shiftInstanceId),
     idxInstitution: index("idx_duty_conf_institution").on(table.institutionId, table.id),
+    // Nome explícito ≤64 chars (ver comentário na coluna).
+    fkReplacementProf: foreignKey({
+      columns: [table.replacementProfessionalId],
+      foreignColumns: [professionals.id],
+      name: "duty_conf_replacement_prof_fk",
+    }),
   }),
 );
 
