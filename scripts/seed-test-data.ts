@@ -273,12 +273,18 @@ export async function seedTestData() {
       professionalId = (proResult as any).insertId as number;
     }
 
+    // Guard pela unique key REAL da tabela — (user_id, institution_id).
+    // Checar por professionalId quebrava a idempotência: se o professional
+    // foi deletado e recriado com id novo mas o link antigo persistiu, o
+    // guard não encontrava nada e o insert estourava ER_DUP_ENTRY na
+    // unique (user_id, institution_id), derrubando todas as suítes que
+    // rodam o seed no beforeAll a partir do 2º arquivo de teste.
     const [existingLink] = await db
-      .select({ id: professionalInstitutions.id })
+      .select({ id: professionalInstitutions.id, professionalId: professionalInstitutions.professionalId })
       .from(professionalInstitutions)
       .where(
         and(
-          eq(professionalInstitutions.professionalId, professionalId),
+          eq(professionalInstitutions.userId, prof.userId),
           eq(professionalInstitutions.institutionId, institution.id),
         ),
       )
@@ -293,6 +299,12 @@ export async function seedTestData() {
         isPrimary: true,
         active: true,
       });
+    } else if (existingLink.professionalId !== professionalId) {
+      // Link de um professional antigo (recriado com id novo): reaponta.
+      await db
+        .update(professionalInstitutions)
+        .set({ professionalId, roleInInstitution: prof.userRole, active: true })
+        .where(eq(professionalInstitutions.id, existingLink.id));
     }
   }
 
@@ -508,12 +520,14 @@ export async function seedTestData() {
         dummyProfId = (dummyProResult as any).insertId as number;
       }
 
+      // Mesmo guard idempotente do bloco acima: unique real é
+      // (user_id, institution_id), não (professional_id, institution_id).
       const [existingDummyLink] = await db
-        .select({ id: professionalInstitutions.id })
+        .select({ id: professionalInstitutions.id, professionalId: professionalInstitutions.professionalId })
         .from(professionalInstitutions)
         .where(
           and(
-            eq(professionalInstitutions.professionalId, dummyProfId),
+            eq(professionalInstitutions.userId, userId),
             eq(professionalInstitutions.institutionId, institution.id),
           ),
         )
@@ -528,6 +542,11 @@ export async function seedTestData() {
           isPrimary: false,
           active: true,
         });
+      } else if (existingDummyLink.professionalId !== dummyProfId) {
+        await db
+          .update(professionalInstitutions)
+          .set({ professionalId: dummyProfId, active: true })
+          .where(eq(professionalInstitutions.id, existingDummyLink.id));
       }
 
       await db.insert(professionalAccess).values({
