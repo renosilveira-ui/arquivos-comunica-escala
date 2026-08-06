@@ -13,17 +13,18 @@
 // marca AUTO_CONFIRMED, dispara SSO e notifica gestor.
 
 import { randomUUID } from "crypto";
-import { and, eq, gte, lte, inArray } from "drizzle-orm";
+import { and, eq, gte, lte, inArray, isNull } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   shiftInstances,
   shiftAssignmentsV2,
   professionals,
   dutyConfirmations,
+  managerScope as managerScopeTable,
+  professionalInstitutions,
 } from "../../drizzle/schema";
 import { sendPushNotification } from "../notifications-service";
 import { triggerAutoSso } from "../sso/auto-sso";
-import { managerScope as managerScopeTable, professionalInstitutions } from "../../drizzle/schema";
 
 // ── Trigger schedule ────────────────────────────────────────────────────────
 
@@ -89,6 +90,79 @@ export async function tick() {
 
   // 2. Process rechecks (PENDING confirmations past their recheckAt)
   await processRechecks(now);
+
+  // 3. Push de início de plantão (confirmados cujo plantão começou agora)
+  await processShiftStartPushes(now);
+}
+
+// ── Push de início de plantão ───────────────────────────────────────────────
+//
+// Quando o plantão de um médico CONFIRMADO começa, envia push
+// type=sso_ready ("seu plantão começou — abra o Comunica+ já logado").
+// Complementa o push da confirmação: cobre o médico que confirmou cedo
+// (11h/17h/22h) e no início do turno já não tem o push antigo à mão.
+//
+// Dedupe: coluna duty_confirmations.start_push_sent_at (NULL = pendente).
+// Janela de captura: startAt em [now - 5min, now] — o cron roda a cada
+// 60s; a folga de 5min cobre restarts curtos do processo sem re-enviar
+// (o dedupe é persistente) nem notificar plantões antigos.
+
+const START_PUSH_LOOKBACK_MS = 5 * 60 * 1000;
+
+async function processShiftStartPushes(now: Date) {
+  const db = await getDb();
+  if (!db) return;
+
+  const confirmedStatuses = ["CONFIRMED", "AUTO_CONFIRMED", "REPLACEMENT_CONFIRMED"] as const;
+  const windowStart = new Date(now.getTime() - START_PUSH_LOOKBACK_MS);
+
+  const started = await db
+    .select({
+      id: dutyConfirmations.id,
+      userId: dutyConfirmations.userId,
+      replacementUserId: dutyConfirmations.replacementUserId,
+      shiftInstanceId: dutyConfirmations.shiftInstanceId,
+      shiftLabel: shiftInstances.label,
+    })
+    .from(dutyConfirmations)
+    .innerJoin(
+      shiftInstances,
+      eq(dutyConfirmations.shiftInstanceId, shiftInstances.id),
+    )
+    .where(
+      and(
+        inArray(dutyConfirmations.status, confirmedStatuses),
+        isNull(dutyConfirmations.startPushSentAt),
+        gte(shiftInstances.startAt, windowStart),
+        lte(shiftInstances.startAt, now),
+      ),
+    );
+
+  for (const conf of started) {
+    const targetUserId = conf.replacementUserId ?? conf.userId;
+
+    // Marca ANTES de enviar: se o push falhar, preferimos perder um
+    // aviso a re-notificar em loop a cada 60s.
+    await db
+      .update(dutyConfirmations)
+      .set({ startPushSentAt: now })
+      .where(eq(dutyConfirmations.id, conf.id));
+
+    await sendPushNotification(targetUserId, {
+      title: "Seu plantão começou",
+      body: `${conf.shiftLabel}: toque para abrir o Comunica+ já logado.`,
+      data: {
+        type: "sso_ready",
+        shiftInstanceId: conf.shiftInstanceId,
+      },
+    }).catch((err) =>
+      console.error("[ConfirmationCron] Start push failed:", err),
+    );
+
+    console.log(
+      `[ConfirmationCron] Start push sent userId=${targetUserId} shift=${conf.shiftInstanceId}`,
+    );
+  }
 }
 
 // ── Dispatch confirmations for a trigger window ─────────────────────────────
