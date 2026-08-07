@@ -196,7 +196,7 @@ export default function ApproveSwapsScreen() {
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <Shield size={64} color={theme.colors.textMuted} />
           <Text style={{ color: theme.colors.textPrimary, fontSize: 20, fontWeight: "600", marginTop: 16 }}>Acesso Restrito</Text>
-          <Text style={{ color: theme.colors.textDisabled, fontSize: 14, marginTop: 8 }}>Apenas gestores podem gerenciar trocas.</Text>
+          <Text style={{ color: theme.colors.textSecondary, fontSize: 14, marginTop: 8 }}>Apenas gestores podem gerenciar trocas.</Text>
         </View>
       </ScreenGradient>
     );
@@ -298,16 +298,16 @@ export default function ApproveSwapsScreen() {
                 {/* From professional */}
                 <Text style={{ color: theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>
                   {item.fromProfessional.name}
-                  <Text style={{ color: theme.colors.textDisabled, fontWeight: "400" }}> • {item.fromProfessional.role}</Text>
+                  <Text style={{ color: theme.colors.textSecondary, fontWeight: "400" }}> • {item.fromProfessional.role}</Text>
                 </Text>
 
                 {/* From shift */}
                 <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.primary }}>
-                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13 }}>Plantão oferecido</Text>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 13 }}>Plantão oferecido</Text>
                   <Text style={{ color: theme.colors.textPrimary, fontSize: 14 }}>
                     {item.fromShift.label} — {formatDate(item.fromShift.startAt)}
                   </Text>
-                  <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 12 }}>
                     {formatShiftTime(item.fromShift.startAt, item.fromShift.endAt)} • {item.fromShift.hospitalName} / {item.fromShift.sectorName}
                   </Text>
                 </View>
@@ -315,10 +315,10 @@ export default function ApproveSwapsScreen() {
                 {/* Accepted by */}
                 {item.toProfessional && (
                   <View style={{ marginTop: 10 }}>
-                    <Text style={{ color: theme.colors.textDisabled, fontSize: 13 }}>Aceito por</Text>
+                    <Text style={{ color: theme.colors.textSecondary, fontSize: 13 }}>Aceito por</Text>
                     <Text style={{ color: theme.colors.textPrimary, fontSize: 14, fontWeight: "600" }}>
                       {item.toProfessional.name}
-                      <Text style={{ color: theme.colors.textDisabled, fontWeight: "400" }}> • {item.toProfessional.role}</Text>
+                      <Text style={{ color: theme.colors.textSecondary, fontWeight: "400" }}> • {item.toProfessional.role}</Text>
                     </Text>
                   </View>
                 )}
@@ -326,11 +326,11 @@ export default function ApproveSwapsScreen() {
                 {/* To shift (SWAP) */}
                 {item.toShift && (
                   <View style={{ marginTop: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.warning }}>
-                    <Text style={{ color: theme.colors.textDisabled, fontSize: 13 }}>Plantão em troca</Text>
+                    <Text style={{ color: theme.colors.textSecondary, fontSize: 13 }}>Plantão em troca</Text>
                     <Text style={{ color: theme.colors.textPrimary, fontSize: 14 }}>
                       {item.toShift.label} — {formatDate(item.toShift.startAt)}
                     </Text>
-                    <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>
+                    <Text style={{ color: theme.colors.textSecondary, fontSize: 12 }}>
                       {formatShiftTime(item.toShift.startAt, item.toShift.endAt)} • {item.toShift.hospitalName} / {item.toShift.sectorName}
                     </Text>
                   </View>
@@ -338,7 +338,7 @@ export default function ApproveSwapsScreen() {
 
                 {/* Reason */}
                 {item.reason && (
-                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13, fontStyle: "italic", marginTop: 8 }}>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 13, fontStyle: "italic", marginTop: 8 }}>
                     {`"${item.reason}"`}
                   </Text>
                 )}
@@ -422,7 +422,7 @@ export default function ApproveSwapsScreen() {
                 {modalAction === "approve" ? "Aprovar Troca" : "Rejeitar Troca"}
               </Text>
 
-              <Text style={{ color: theme.colors.textDisabled, fontSize: 14, marginBottom: 12 }}>
+              <Text style={{ color: theme.colors.textSecondary, fontSize: 14, marginBottom: 12 }}>
                 {modalAction === "approve"
                   ? "Nota opcional para registro:"
                   : "Informe o motivo da rejeição (obrigatório):"}
@@ -462,7 +462,7 @@ export default function ApproveSwapsScreen() {
                     borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ color: theme.colors.textDisabled, fontSize: 15, fontWeight: "600" }}>Cancelar</Text>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 15, fontWeight: "600" }}>Cancelar</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity

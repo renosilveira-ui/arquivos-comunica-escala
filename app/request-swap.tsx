@@ -212,7 +212,7 @@ export default function RequestSwapScreen() {
       <ScreenGradient scrollable={false}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={{ color: theme.colors.textDisabled, marginTop: 12, fontSize: 16 }}>Carregando turnos...</Text>
+          <Text style={{ color: theme.colors.textSecondary, marginTop: 12, fontSize: 16 }}>Carregando turnos...</Text>
         </View>
       </ScreenGradient>
     );
@@ -311,8 +311,8 @@ export default function RequestSwapScreen() {
                   }}
                 >
                   <Text style={{ color: theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
-                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13, marginTop: 4 }}>{formatShiftDate(s.startAt)}</Text>
-                  <Text style={{ color: theme.colors.textDisabled, fontSize: 13, marginTop: 2 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 13, marginTop: 4 }}>{formatShiftDate(s.startAt)}</Text>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 13, marginTop: 2 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -343,9 +343,9 @@ export default function RequestSwapScreen() {
                   >
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                       <Text style={{ color: theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>{s.label}</Text>
-                      <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>{formatShiftDate(s.startAt)}</Text>
+                      <Text style={{ color: theme.colors.textSecondary, fontSize: 12 }}>{formatShiftDate(s.startAt)}</Text>
                     </View>
-                    <Text style={{ color: theme.colors.textDisabled, fontSize: 13, marginTop: 4 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
+                    <Text style={{ color: theme.colors.textSecondary, fontSize: 13, marginTop: 4 }}>{formatShiftTime(s.startAt, s.endAt)}</Text>
                   </TouchableOpacity>
                 ))}
               </View>

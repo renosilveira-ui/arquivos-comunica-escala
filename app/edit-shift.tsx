@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
   Platform,
   Modal,
   Pressable,
@@ -20,6 +19,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
+import { uiAlert } from "@/lib/ui/alert";
 import { ChevronLeft, Save, Calendar, Clock } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
@@ -114,7 +114,7 @@ export default function EditShiftScreen() {
     },
     onError: (error) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Erro", error.message || "Erro ao atualizar escala");
+      uiAlert("Erro", error.message || "Erro ao atualizar escala");
     },
   });
 
@@ -235,7 +235,7 @@ export default function EditShiftScreen() {
 
   const handleSave = () => {
     if (!startDate || !startTime || !endDate || !endTime) {
-      Alert.alert("Erro", "Preencha todos os campos obrigatórios");
+      uiAlert("Erro", "Preencha todos os campos obrigatórios");
       return;
     }
 
@@ -251,24 +251,24 @@ export default function EditShiftScreen() {
 
     // Validar datas
     if (endDateTime <= startDateTime) {
-      Alert.alert("Erro", "A data/hora de término deve ser posterior à de início");
+      uiAlert("Erro", "A data/hora de término deve ser posterior à de início");
       return;
     }
 
     // Validações de modalidade (light-touch — server enforça as regras duras).
     if (modality === "PLANTAO" && !coverageType) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Selecione a cobertura do plantão.");
+      uiAlert("Atenção", "Selecione a cobertura do plantão.");
       return;
     }
     if (paymentModel === "FIXO_PRODUTIVIDADE_TETO" && !productivityCapBrl) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Informe o teto de produtividade ou troque o modelo.");
+      uiAlert("Atenção", "Informe o teto de produtividade ou troque o modelo.");
       return;
     }
     if (productivityCapBrl && !PRODUCTIVITY_CAP_REGEX.test(productivityCapBrl)) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Atenção", "Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).");
+      uiAlert("Atenção", "Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).");
       return;
     }
 
@@ -327,7 +327,7 @@ export default function EditShiftScreen() {
           </View>
 
           {/* Seleção de Setor */}
-          <TintedGlassCard>
+          <TintedGlassCard variant="light">
             <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Setor *
             </Text>
@@ -366,7 +366,7 @@ export default function EditShiftScreen() {
           </TintedGlassCard>
 
           {/* Data e Hora de Início */}
-          <TintedGlassCard>
+          <TintedGlassCard variant="light">
             <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Início *
             </Text>
@@ -444,7 +444,7 @@ export default function EditShiftScreen() {
           </TintedGlassCard>
 
           {/* Data e Hora de Término */}
-          <TintedGlassCard>
+          <TintedGlassCard variant="light">
             <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Término *
             </Text>
@@ -522,7 +522,7 @@ export default function EditShiftScreen() {
           </TintedGlassCard>
 
           {/* Modalidade */}
-          <TintedGlassCard>
+          <TintedGlassCard variant="light">
             <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Modalidade
             </Text>
@@ -678,7 +678,7 @@ export default function EditShiftScreen() {
           </TintedGlassCard>
 
           {/* Observações */}
-          <TintedGlassCard>
+          <TintedGlassCard variant="light">
             <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
               Observações
             </Text>

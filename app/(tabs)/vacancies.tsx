@@ -185,7 +185,7 @@ export default function VacanciesScreen() {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
-          <Briefcase size={64} color={theme.colors.textDisabled} />
+          <Briefcase size={64} color={theme.colors.textMuted} />
           <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Autenticação Necessária</Text>
           <Text className="text-center mt-2" style={{ color: theme.colors.textSecondary }}>Faça login para visualizar vagas</Text>
         </View>
@@ -197,7 +197,7 @@ export default function VacanciesScreen() {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
-          <Briefcase size={64} color={theme.colors.textDisabled} />
+          <Briefcase size={64} color={theme.colors.textMuted} />
           <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Profissional Não Encontrado</Text>
           <Text className="text-center mt-2" style={{ color: theme.colors.textSecondary }}>Seu usuário não está associado a um profissional</Text>
         </View>

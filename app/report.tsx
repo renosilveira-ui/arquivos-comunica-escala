@@ -176,7 +176,7 @@ export default function ReportScreen() {
         </View>
 
         {/* Seletor de Mês */}
-        <TintedGlassCard>
+        <TintedGlassCard variant="light">
           <View className="flex-row items-center justify-between">
             <TouchableOpacity
               onPress={handlePreviousMonth}
@@ -210,13 +210,13 @@ export default function ReportScreen() {
               <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Resumo do Mês</Text>
               <View className="flex-row gap-4">
                 <View className="flex-1">
-                  <TintedGlassCard>
+                  <TintedGlassCard variant="light">
                     <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Total de Escalas</Text>
                     <Text className="text-4xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{totalShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
-                  <TintedGlassCard>
+                  <TintedGlassCard variant="light">
                     <Text className="text-sm" style={{ color: theme.colors.textMuted }}>Total de Horas</Text>
                     <Text className="text-4xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>
                       {Math.round(totalHours)}h
@@ -228,19 +228,19 @@ export default function ReportScreen() {
               {/* Status das Escalas */}
               <View className="flex-row gap-4">
                 <View className="flex-1">
-                  <TintedGlassCard>
+                  <TintedGlassCard variant="light">
                     <Badge variant="success">Confirmadas</Badge>
                     <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{confirmedShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
-                  <TintedGlassCard>
+                  <TintedGlassCard variant="light">
                     <Badge variant="warning">Pendentes</Badge>
                     <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{pendingShifts}</Text>
                   </TintedGlassCard>
                 </View>
                 <View className="flex-1">
-                  <TintedGlassCard>
+                  <TintedGlassCard variant="light">
                     <Badge variant="critical">Canceladas</Badge>
                     <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{canceledShifts}</Text>
                   </TintedGlassCard>
@@ -251,7 +251,7 @@ export default function ReportScreen() {
             {/* Distribuição por Turno */}
             <View className="gap-4">
               <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Distribuição por Turno</Text>
-              <TintedGlassCard>
+              <TintedGlassCard variant="light">
                 <View className="gap-3">
                   <View className="flex-row justify-between items-center py-2">
                     <Text className="text-lg" style={{ color: theme.colors.textPrimary }}>Manhã (7h-13h)</Text>
@@ -304,7 +304,7 @@ export default function ReportScreen() {
                     const endDate = new Date(shift.endTime);
 
                     return (
-                      <TintedGlassCard key={index}>
+                      <TintedGlassCard variant="light" key={index}>
                         <View className="flex-row justify-between items-start mb-2">
                           <View className="flex-1">
                             <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
@@ -353,7 +353,7 @@ export default function ReportScreen() {
                   )}
                 </View>
               ) : (
-                <TintedGlassCard className="items-center py-8">
+                <TintedGlassCard variant="light" className="items-center py-8">
                   <Calendar size={48} color={theme.colors.textMuted} />
                   <Text className="text-base mt-3" style={{ color: theme.colors.textMuted }}>
                     Nenhuma escala neste mês

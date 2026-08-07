@@ -1,8 +1,9 @@
-import { View, Text, ActivityIndicator, Alert, TextInput, TouchableOpacity, FlatList, Platform } from "react-native";
+import { View, Text, ActivityIndicator, TextInput, TouchableOpacity, FlatList, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState, useMemo } from "react";
 import { UserPlus, Search, Check } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
+import { uiAlert } from "@/lib/ui/alert";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
@@ -33,14 +34,14 @@ export default function NominateReplacementScreen() {
   const nominateMutation = trpc.confirmations.nominateReplacement.useMutation({
     onSuccess: (data) => {
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert(
+      uiAlert(
         "Substituto indicado",
         `${data.replacementName} foi notificado e tem 30 minutos para aceitar.`,
-        [{ text: "OK", onPress: () => router.replace("/(tabs)/agenda" as any) }],
+        () => router.replace("/(tabs)/agenda" as any),
       );
     },
     onError: (err) => {
-      Alert.alert("Erro", err.message);
+      uiAlert("Erro", err.message);
     },
   });
 

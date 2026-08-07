@@ -7,9 +7,17 @@ import { theme } from "@/lib/theme";
 import { formatDateBR } from "@/lib/datetime";
 
 const statusColor: Record<string, string> = {
-  VAGO: theme.colors.textMuted,
+  VAGO: theme.colors.textSecondary,
   PENDENTE: theme.colors.statusPendente,
   OCUPADO: theme.colors.statusOcupado,
+};
+
+// Texto dos badges de status: tom [700] da família — a cor base (500)
+// sobre o próprio tint 13% não atinge 4.5:1 em texto de 11px.
+const statusBadgeText: Record<string, string> = {
+  VAGO: theme.colors.textSecondary,
+  PENDENTE: theme.palette.warning[700],
+  OCUPADO: theme.palette.success[700],
 };
 
 export default function DashboardScreen() {
@@ -42,7 +50,7 @@ export default function DashboardScreen() {
 
   const metricCards = [
     { label: "Total", value: stats.total, color: theme.colors.primary, icon: Calendar },
-    { label: "Vagos", value: stats.vago, color: theme.colors.textMuted, icon: AlertCircle },
+    { label: "Vagos", value: stats.vago, color: theme.colors.textSecondary, icon: AlertCircle },
     { label: "Pendentes", value: stats.pendente, color: theme.colors.statusPendente, icon: Clock },
     { label: "Ocupados", value: stats.ocupado, color: theme.colors.statusOcupado, icon: CheckCircle },
   ];
@@ -121,7 +129,10 @@ export default function DashboardScreen() {
                     paddingHorizontal: 10,
                     paddingVertical: 3,
                   }}>
-                    <Text style={{ fontSize: 11, fontWeight: "700", color: statusColor[shift.status] ?? theme.colors.textMuted }}>
+                    {/* Texto do badge em tom [700] da família: a cor base
+                        (500) sobre o próprio tint 13% ficava ~3:1 —
+                        ilegível em 11px (WCAG pede 4.5:1). */}
+                    <Text style={{ fontSize: 11, fontWeight: "700", color: statusBadgeText[shift.status] ?? theme.colors.textSecondary }}>
                       {shift.status}
                     </Text>
                   </View>

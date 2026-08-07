@@ -1,5 +1,6 @@
 import { View, Text, type ViewProps } from "react-native";
 import { cn } from "@/lib/utils";
+import { theme } from "@/lib/theme";
 
 export interface EmptyStateProps extends ViewProps {
   /**
@@ -43,9 +44,9 @@ export function EmptyState({
       {...props}
     >
       <View className="mb-4 opacity-60">{icon}</View>
-      <Text className="text-white text-xl font-bold text-center mb-2">{title}</Text>
+      <Text className="text-xl font-bold text-center mb-2" style={{ color: theme.colors.textPrimary }}>{title}</Text>
       {description && (
-        <Text className="text-slate-400 text-base text-center mb-6">{description}</Text>
+        <Text className="text-base text-center mb-6" style={{ color: theme.colors.textSecondary }}>{description}</Text>
       )}
       {action && <View className="w-full">{action}</View>}
     </View>

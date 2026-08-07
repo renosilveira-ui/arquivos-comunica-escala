@@ -62,8 +62,8 @@ function formatTimeRange(startAt: Date | string, endAt: Date | string): string {
 }
 
 function shiftBorderColor(status: string): string {
-  if (status === "OCUPADO") return theme.colors.success;
-  if (status === "PENDENTE") return theme.colors.warning;
+  if (status === "OCUPADO") return theme.palette.success[700];
+  if (status === "PENDENTE") return theme.palette.warning[700];
   return theme.colors.border;
 }
 

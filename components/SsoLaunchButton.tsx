@@ -14,6 +14,7 @@ import { useSsoHandoff } from "@/hooks/use-sso-handoff";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
 import { useTenantState } from "@/lib/tenant-state";
+import { theme } from "@/lib/theme";
 
 interface ActiveShift {
   id: number;
@@ -83,13 +84,13 @@ export function SsoLaunchButton({
           }}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <ExternalLink size={20} color="#818CF8" />
+            <ExternalLink size={20} color={theme.colors.primary} />
             <View style={{ flex: 1 }}>
               <Text
                 style={{
                   fontSize: 15,
                   fontWeight: "700",
-                  color: "#FFFFFF",
+                  color: theme.colors.textPrimary,
                 }}
               >
                 {loading ? "Conectando..." : "Abrir Comunica+"}
@@ -97,14 +98,14 @@ export function SsoLaunchButton({
               <Text
                 style={{
                   fontSize: 12,
-                  color: "rgba(242,246,255,0.55)",
+                  color: theme.colors.textSecondary,
                   marginTop: 2,
                 }}
               >
                 Login automático no plantão ativo
               </Text>
             </View>
-            {loading && <ActivityIndicator size="small" color="#818CF8" />}
+            {loading && <ActivityIndicator size="small" color={theme.colors.primary} />}
           </View>
         </TintedGlassCard>
       ) : (
@@ -115,13 +116,13 @@ export function SsoLaunchButton({
           }}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <ExternalLink size={20} color="rgba(242,246,255,0.30)" />
+            <ExternalLink size={20} color={theme.colors.textDisabled} />
             <View style={{ flex: 1 }}>
               <Text
                 style={{
                   fontSize: 15,
                   fontWeight: "600",
-                  color: "rgba(242,246,255,0.40)",
+                  color: theme.colors.textDisabled,
                 }}
               >
                 Comunica+
@@ -129,7 +130,7 @@ export function SsoLaunchButton({
               <Text
                 style={{
                   fontSize: 12,
-                  color: "rgba(242,246,255,0.25)",
+                  color: theme.colors.textMuted,
                   marginTop: 2,
                 }}
               >
@@ -159,14 +160,14 @@ export function SsoLaunchButton({
         >
           <AlertTriangle size={18} color="#F87171" style={{ marginTop: 1 }} />
           <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 13, color: "#F87171", fontWeight: "600" }}>
+            <Text style={{ fontSize: 13, color: theme.palette.danger[600], fontWeight: "600" }}>
               {errorCode === "no_active_duty"
                 ? "Sem plantão ativo"
                 : errorCode === "context_conflict"
                   ? "Múltiplos plantões"
                   : "Erro SSO"}
             </Text>
-            <Text style={{ fontSize: 12, color: "rgba(248,113,113,0.75)", marginTop: 3 }}>
+            <Text style={{ fontSize: 12, color: theme.palette.danger[600], marginTop: 3 }}>
               {error}
             </Text>
           </View>
@@ -220,7 +221,7 @@ export function SsoLaunchButton({
             <Text
               style={{
                 fontSize: 14,
-                color: "rgba(242,246,255,0.55)",
+                color: theme.colors.textSecondary,
                 marginBottom: 16,
               }}
             >
@@ -250,7 +251,7 @@ export function SsoLaunchButton({
                   gap: 12,
                 }}
               >
-                <Radio size={18} color="#818CF8" />
+                <Radio size={18} color={theme.colors.primary} />
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 15, fontWeight: "600", color: "#FFFFFF" }}>
                     {shift.label}
@@ -258,7 +259,7 @@ export function SsoLaunchButton({
                   <Text
                     style={{
                       fontSize: 12,
-                      color: "rgba(242,246,255,0.55)",
+                      color: theme.colors.textSecondary,
                       marginTop: 3,
                     }}
                   >
