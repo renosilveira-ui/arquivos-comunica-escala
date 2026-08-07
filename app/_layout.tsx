@@ -21,6 +21,7 @@ import { trpc, createTRPCClient } from "@/lib/trpc";
 import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
 import { TenantStateProvider, useTenantState } from "@/lib/tenant-state";
 import { IntegrationManagerProvider } from "@/components/IntegrationManagerProvider";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NotificationListener } from "@/components/NotificationListener";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -151,6 +152,7 @@ export default function RootLayout() {
   }, [initialInsets, initialFrame]);
 
   const content = (
+    <AppErrorBoundary>
     <GestureHandlerRootView style={{ flex: 1 }}>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
@@ -173,6 +175,7 @@ export default function RootLayout() {
         </QueryClientProvider>
       </trpc.Provider>
     </GestureHandlerRootView>
+    </AppErrorBoundary>
   );
 
   const shouldOverrideSafeArea = Platform.OS === "web";
