@@ -29,7 +29,13 @@ const config: ExpoConfig = {
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
-  userInterfaceStyle: "automatic",
+  // Travado em "light": o design system é light-only (docs/design/
+  // ui-system.md). Com "automatic", iPhones em dark mode pintavam
+  // componentes nativos (TextInput, Alert, pickers) com paleta escura
+  // sobre nossos fundos claros — texto ilegível/camuflado (reportado
+  // no primeiro teste iOS, 2026-08-06). Reverter só quando houver
+  // dark mode de verdade no design system.
+  userInterfaceStyle: "light",
   newArchEnabled: true,
   ios: {
     supportsTablet: true,
