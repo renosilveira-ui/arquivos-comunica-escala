@@ -29,7 +29,13 @@ const config: ExpoConfig = {
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
-  userInterfaceStyle: "automatic",
+  // Travado em "light": o design system é light-only (docs/design/
+  // ui-system.md). Com "automatic", iPhones em dark mode pintavam
+  // componentes nativos (TextInput, Alert, pickers) com paleta escura
+  // sobre nossos fundos claros — texto ilegível/camuflado (reportado
+  // no primeiro teste iOS, 2026-08-06). Reverter só quando houver
+  // dark mode de verdade no design system.
+  userInterfaceStyle: "light",
   newArchEnabled: true,
   ios: {
     supportsTablet: true,
@@ -111,6 +117,14 @@ const config: ExpoConfig = {
   experiments: {
     typedRoutes: true,
     reactCompiler: true,
+  },
+  // Vínculo com o projeto EAS (@renosilveira/escalas-hospitalares).
+  // Necessário para eas build; criado via `eas init` em 2026-08-06.
+  owner: "renosilveira",
+  extra: {
+    eas: {
+      projectId: "8b135be7-ee5e-4406-9703-ad696d3689e9",
+    },
   },
 };
 

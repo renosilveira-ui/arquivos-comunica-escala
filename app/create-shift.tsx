@@ -959,7 +959,7 @@ const styles = StyleSheet.create({
   },
   optionDescription: {
     ...theme.text.body,
-    color: theme.colors.textMuted,
+    color: theme.colors.textSecondary,
     marginTop: theme.space[1],
   },
   optionDescriptionSelected: {

@@ -43,6 +43,27 @@ updates:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
       include: "scope"
+    # Pacotes cuja versão é DITADA pelo Expo SDK (npx expo install).
+    # Bumps isolados desalinham o par SDK↔pacote e quebram o build EAS
+    # na fase de bundle/codegen — foi exatamente o que aconteceu em
+    # 2026-08 (react-native 0.85 com SDK 54 → codegen error; build
+    # a3927275 falhou; PRs #112/#114 fechadas pelo mesmo motivo).
+    # Estes pacotes só sobem junto com o upgrade deliberado de SDK.
+    ignore:
+      - dependency-name: "expo"
+      - dependency-name: "expo-*"
+      - dependency-name: "react"
+      - dependency-name: "react-dom"
+      - dependency-name: "react-native"
+      - dependency-name: "react-native-gesture-handler"
+      - dependency-name: "react-native-reanimated"
+      - dependency-name: "react-native-safe-area-context"
+      - dependency-name: "react-native-screens"
+      - dependency-name: "react-native-svg"
+      - dependency-name: "react-native-worklets"
+      - dependency-name: "react-native-web"
+      - dependency-name: "@types/react"
+      - dependency-name: "@react-native/*"
 
   - package-ecosystem: "github-actions"
     directory: "/"

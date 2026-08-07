@@ -739,7 +739,7 @@ const styles = StyleSheet.create({
   },
   label: {
     ...theme.text.caption,
-    color: theme.colors.textMuted,
+    color: theme.colors.textSecondary,
     fontWeight: theme.weight.semibold,
   },
   sectorTitle: {

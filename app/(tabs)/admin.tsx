@@ -654,7 +654,7 @@ export default function AdminScreen() {
   // Guards
   if (!user) {
     return (
-      <ScreenGradient scrollable={false}>
+      <ScreenGradient variant="dark" scrollable={false}>
         <View
           style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
         >
@@ -668,7 +668,7 @@ export default function AdminScreen() {
 
   if (user.role !== "admin") {
     return (
-      <ScreenGradient scrollable={false}>
+      <ScreenGradient variant="dark" scrollable={false}>
         <View
           style={{
             flex: 1,
@@ -689,6 +689,7 @@ export default function AdminScreen() {
   // Render
   return (
     <ScreenGradient
+      variant="dark"
       scrollable
       refreshControl={
         <RefreshControl
@@ -771,7 +772,7 @@ export default function AdminScreen() {
           <View style={{ flex: 1 }}>
             <TintedGlassCard>
               <Text
-                style={{ color: theme.colors.textSecondary, fontSize: 13 }}
+                style={{ color: theme.colors.onDark.textMuted, fontSize: 13 }}
               >
                 Total de Usuários
               </Text>
@@ -790,7 +791,7 @@ export default function AdminScreen() {
           <View style={{ flex: 1 }}>
             <TintedGlassCard>
               <Text
-                style={{ color: theme.colors.textSecondary, fontSize: 13 }}
+                style={{ color: theme.colors.onDark.textMuted, fontSize: 13 }}
               >
                 Administradores
               </Text>
@@ -853,7 +854,7 @@ export default function AdminScreen() {
                     </Text>
                     <Text
                       style={{
-                        color: theme.colors.textSecondary,
+                        color: theme.colors.onDark.textMuted,
                         fontSize: 14,
                       }}
                     >

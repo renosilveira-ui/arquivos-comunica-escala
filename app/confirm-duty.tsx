@@ -1,8 +1,9 @@
-import { View, Text, ActivityIndicator, Alert, Platform } from "react-native";
+import { View, Text, ActivityIndicator, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { Check, X, UserPlus, Clock } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
+import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
@@ -25,37 +26,33 @@ export default function ConfirmDutyScreen() {
   const confirmMutation = trpc.confirmations.confirm.useMutation({
     onSuccess: () => {
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert(
+      uiAlert(
         "Plantão confirmado",
         "Seu login no Comunica+ será realizado automaticamente.",
-        [{ text: "OK", onPress: () => router.replace("/(tabs)/agenda" as any) }],
+        () => router.replace("/(tabs)/agenda" as any),
       );
     },
     onError: (err) => {
-      Alert.alert("Erro", err.message);
+      uiAlert("Erro", err.message);
     },
   });
 
   const declineMutation = trpc.confirmations.decline.useMutation({
     onSuccess: () => {
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Alert.alert(
+      // No web o "confirm" vira: OK = indicar substituto, Cancelar = fechar.
+      uiConfirmDestructive(
         "Plantão recusado",
         "Indique um substituto ou o sistema confirmará automaticamente em 30 minutos.",
-        [
-          {
-            text: "Indicar substituto",
-            onPress: () => router.push({
-              pathname: "/nominate-replacement" as any,
-              params: { token: pending?.confirmationToken ?? "" },
-            }),
-          },
-          { text: "Fechar", style: "cancel" },
-        ],
+        "Indicar substituto",
+        () => router.push({
+          pathname: "/nominate-replacement" as any,
+          params: { token: pending?.confirmationToken ?? "" },
+        }),
       );
     },
     onError: (err) => {
-      Alert.alert("Erro", err.message);
+      uiAlert("Erro", err.message);
     },
   });
 
@@ -71,17 +68,11 @@ export default function ConfirmDutyScreen() {
   const handleDecline = () => {
     if (!token) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert(
+    uiConfirmDestructive(
       "Recusar plantão?",
       "Você poderá indicar um substituto. Se ninguém for indicado em 30 minutos, o sistema confirmará automaticamente.",
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Sim, recusar",
-          style: "destructive",
-          onPress: () => declineMutation.mutate({ confirmationToken: token }),
-        },
-      ],
+      "Sim, recusar",
+      () => declineMutation.mutate({ confirmationToken: token }),
     );
   };
 
@@ -137,7 +128,7 @@ export default function ConfirmDutyScreen() {
           Confirmação de Plantão
         </Text>
 
-        <TintedGlassCard>
+        <TintedGlassCard variant="light">
           <View style={{ gap: 12 }}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ fontSize: 20, fontWeight: "700", color: theme.colors.textPrimary }}>

@@ -306,7 +306,7 @@ function OfferCard({
           className="rounded-xl p-3"
           style={{ backgroundColor: theme.colors.surfaceAlt, borderWidth: 1, borderColor: theme.colors.border }}
         >
-          <Text className="text-xs mb-1" style={{ color: theme.colors.textMuted }}>↔ Em troca de</Text>
+          <Text className="text-xs mb-1" style={{ color: theme.colors.textSecondary }}>↔ Em troca de</Text>
           <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
             {offer.toShift.label}
           </Text>

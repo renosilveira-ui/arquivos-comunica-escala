@@ -673,6 +673,11 @@ export const dutyConfirmations = mysqlTable(
     declineReason: varchar("decline_reason", { length: 500 }),
     managerNotified: boolean("manager_notified").notNull().default(false),
 
+    // Push de início de plantão ("seu plantão começou — abra o Comunica+").
+    // Marcado pelo cron quando o push é enviado; NULL = ainda não enviado.
+    // Dedupe: o cron roda a cada 60s e só envia onde isto é NULL.
+    startPushSentAt: timestamp("start_push_sent_at"),
+
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
   },
@@ -688,6 +693,37 @@ export const dutyConfirmations = mysqlTable(
       foreignColumns: [professionals.id],
       name: "duty_conf_replacement_prof_fk",
     }),
+  }),
+);
+
+/**
+ * Códigos de lançamento SSO de uso único (Escala → Comunica+).
+ *
+ * Resolvem o problema do handoff em mobile: o app nativo não consegue
+ * fazer form-POST no browser externo, então o app gera um código opaco
+ * (POST /api/sso/launch-code) e abre o browser em GET /api/sso/launch
+ * ?code=... — o servidor consome o código (one-time), gera o handoff
+ * JWT NA HORA (nunca persiste o token nem o coloca em URL) e devolve
+ * HTML com form auto-submit para o Comunica+; o browser recebe o
+ * cookie de sessão e cai logado.
+ *
+ * TTL: 90s (expiresAt). usedAt marca consumo — one-time garantido via
+ * UPDATE condicional (WHERE used_at IS NULL).
+ */
+export const ssoLaunchCodes = mysqlTable(
+  "sso_launch_codes",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    code: varchar("code", { length: 128 }).notNull().unique(),
+    userId: int("user_id").notNull().references(() => users.id),
+    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    clientNonce: varchar("client_nonce", { length: 191 }).notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    usedAt: timestamp("used_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    idxSsoLaunchExpires: index("idx_sso_launch_expires").on(table.expiresAt),
   }),
 );
 

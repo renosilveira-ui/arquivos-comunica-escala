@@ -1,7 +1,6 @@
 // hooks/use-sso-handoff.ts — SSO handoff flow: Escala → Comunica+
 import { useCallback, useRef, useState } from "react";
-import { Platform, Linking } from "react-native";
-import * as Auth from "@/lib/_core/auth";
+import { Platform } from "react-native";
 
 interface DutyContext {
   dutyType: "PLANTAO" | "SOBREAVISO";
@@ -63,6 +62,29 @@ export function useSsoHandoff() {
     setState({ loading: true, error: null, errorCode: null });
 
     try {
+      // ── Mobile: launch-code ──────────────────────────────────────
+      // O handoff acontece no BROWSER do médico (form auto-submit
+      // servido por GET /api/sso/launch), que é onde a sessão/cookie
+      // do Comunica+ precisa nascer. O fluxo antigo fazia o exchange
+      // via fetch dentro do app e a sessão morria aqui. O /generate
+      // também acontece server-side no resgate do código — nenhuma
+      // chamada extra do app.
+      if (Platform.OS !== "web") {
+        const { openComunicaViaLaunchCode } = await import("@/lib/sso-launch");
+        const launchResult = await openComunicaViaLaunchCode(tenantId);
+        if (!launchResult.ok) {
+          setState({
+            loading: false,
+            error: launchResult.error ?? "Falha ao abrir Comunica+.",
+            errorCode: null,
+          });
+          return;
+        }
+        setState({ loading: false, error: null, errorCode: null });
+        return;
+      }
+
+      // ── Web: form POST direto ────────────────────────────────────
       // 1. Generate clientNonce
       const clientNonce = generateNonce();
 
@@ -75,18 +97,12 @@ export function useSsoHandoff() {
         headers["x-tenant-id"] = String(tenantId);
       }
 
-      // Platform-specific auth
-      if (Platform.OS !== "web") {
-        const token = await Auth.getSessionToken();
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-      }
-
       // 3. Call /api/sso/generate
       const baseUrl = getBaseUrl();
       const res = await fetch(`${baseUrl}/api/sso/generate`, {
         method: "POST",
         headers,
-        credentials: Platform.OS === "web" ? "include" : undefined,
+        credentials: "include",
         body: JSON.stringify({ clientNonce }),
         signal: controller.signal,
       });
@@ -103,62 +119,16 @@ export function useSsoHandoff() {
 
       const data = (await res.json()) as SsoGenerateResponse;
 
-      // 4. Send handoff token to Comunica+
-      if (Platform.OS === "web") {
-        // Web: Form POST (never query string)
-        submitFormPost(data.targetUrl, {
-          handoffToken: data.handoffToken,
-          handoffMethod: "REDIRECT_CODE",
-          clientNonce,
-          sourceApp: "ESCALAS_WEB",
-          responseMode: "redirect",
-          redirectTo: "/entry",
-        });
-        // Form submit navigates away; loading stays true
-        return;
-      }
-
-      // Mobile: JSON POST
-      const exchangeRes = await fetch(data.targetUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          handoffToken: data.handoffToken,
-          handoffMethod: "BACKEND_TOKEN_EXCHANGE",
-          clientNonce,
-          sourceApp: "ESCALAS_MOBILE",
-          responseMode: "json",
-        }),
-        signal: controller.signal,
+      // 4. Send handoff token to Comunica+ — form POST (never query string)
+      submitFormPost(data.targetUrl, {
+        handoffToken: data.handoffToken,
+        handoffMethod: "REDIRECT_CODE",
+        clientNonce,
+        sourceApp: "ESCALAS_WEB",
+        responseMode: "redirect",
+        redirectTo: "/entry",
       });
-
-      if (!exchangeRes.ok) {
-        const errBody = await exchangeRes.json().catch(() => null);
-        const msg =
-          (errBody as any)?.message ??
-          (errBody as any)?.error ??
-          `Comunica+ retornou ${exchangeRes.status}`;
-        setState({ loading: false, error: msg, errorCode: (errBody as any)?.code ?? null });
-        return;
-      }
-
-      const exchangeData = (await exchangeRes.json()) as {
-        ok: boolean;
-        session?: { accessToken: string };
-      };
-
-      if (!exchangeData.ok || !exchangeData.session?.accessToken) {
-        setState({ loading: false, error: "Resposta SSO inválida do Comunica+.", errorCode: null });
-        return;
-      }
-
-      // Open Comunica+ with the session token
-      // The mobile app would typically deep-link or open a WebView
-      const comunicaUrl = data.targetUrl.replace("/auth/sso/exchange", "");
-      const deepLink = `${comunicaUrl}/entry?sso_session=1`;
-      await Linking.openURL(deepLink);
-
-      setState({ loading: false, error: null, errorCode: null });
+      // Form submit navigates away; loading stays true
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
       setState({

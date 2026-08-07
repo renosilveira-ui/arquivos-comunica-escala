@@ -185,7 +185,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
       {appVersion ? (
         <Text
           style={{
-            color: theme.colors.onDark.textDisabled,
+            color: theme.colors.onDark.textMuted,
             fontSize: 12,
             paddingHorizontal: theme.space[1],
             paddingTop: theme.space[2],

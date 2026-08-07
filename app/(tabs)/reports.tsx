@@ -53,7 +53,7 @@ export default function ReportsScreen() {
         {/* Placeholder Cards */}
         <View className="gap-4">
           {/* Card 1: Relatório de Escalas */}
-          <TintedGlassCard className="p-5">
+          <TintedGlassCard variant="light" className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-blue-500/20 items-center justify-center mr-3">
                 <FileText size={24} color={theme.colors.primary} />
@@ -70,7 +70,7 @@ export default function ReportsScreen() {
           </TintedGlassCard>
 
           {/* Card 2: Estatísticas de Alocação */}
-          <TintedGlassCard className="p-5">
+          <TintedGlassCard variant="light" className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-green-500/20 items-center justify-center mr-3">
                 <BarChart3 size={24} color={theme.colors.success} />
@@ -87,10 +87,10 @@ export default function ReportsScreen() {
           </TintedGlassCard>
 
           {/* Card 3: Análise de Cobertura */}
-          <TintedGlassCard className="p-5">
+          <TintedGlassCard variant="light" className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-yellow-500/20 items-center justify-center mr-3">
-                <Calendar size={24} color={theme.colors.warning} />
+                <Calendar size={24} color={theme.palette.warning[700]} />
               </View>
               <View className="flex-1">
                 <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>Análise de Cobertura</Text>
@@ -104,7 +104,7 @@ export default function ReportsScreen() {
           </TintedGlassCard>
 
           {/* Card 4: Relatório de Profissionais */}
-          <TintedGlassCard className="p-5">
+          <TintedGlassCard variant="light" className="p-5">
             <View className="flex-row items-center mb-3">
               <View className="w-12 h-12 rounded-full bg-purple-500/20 items-center justify-center mr-3">
                 {/* Users (profissionais) — sem token roxo na paleta;
@@ -125,7 +125,7 @@ export default function ReportsScreen() {
           </TintedGlassCard>
 
           {/* Nota de Desenvolvimento */}
-          <TintedGlassCard className="p-5 border border-slate-200">
+          <TintedGlassCard variant="light" className="p-5 border border-slate-200">
             <Text className="text-sm text-center leading-relaxed" style={{ color: theme.colors.textMuted }}>
               <Text className="font-semibold" style={{ color: theme.colors.textSecondary }}>Em desenvolvimento:</Text> Esta tela será expandida com 
               funcionalidades completas de relatórios, filtros avançados e exportação em múltiplos formatos.

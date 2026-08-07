@@ -436,7 +436,7 @@ export default function PendingScreen() {
               {sw.fromProfessional.name}
               <Text
                 style={{
-                  color: theme.colors.textDisabled,
+                  color: theme.colors.textSecondary,
                   fontWeight: "400",
                 }}
               >
@@ -446,7 +446,7 @@ export default function PendingScreen() {
             </Text>
             <Text
               style={{
-                color: theme.colors.textDisabled,
+                color: theme.colors.textSecondary,
                 fontSize: 13,
                 marginTop: 4,
               }}
@@ -467,7 +467,7 @@ export default function PendingScreen() {
                   borderLeftColor: theme.colors.warning,
                 }}
               >
-                <Text style={{ color: theme.colors.textDisabled, fontSize: 12 }}>
+                <Text style={{ color: theme.colors.textSecondary, fontSize: 12 }}>
                   Quer em troca:
                 </Text>
                 <Text style={{ color: theme.colors.textPrimary, fontSize: 13 }}>
@@ -480,7 +480,7 @@ export default function PendingScreen() {
             {sw.reason && (
               <Text
                 style={{
-                  color: theme.colors.textDisabled,
+                  color: theme.colors.textSecondary,
                   fontSize: 12,
                   fontStyle: "italic",
                   marginTop: 4,
@@ -580,7 +580,7 @@ export default function PendingScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
-          <ClipboardCheck size={64} color={theme.colors.textDisabled} />
+          <ClipboardCheck size={64} color={theme.colors.textSecondary} />
           <Text
             className="text-xl font-semibold mt-4"
             style={{ color: theme.colors.textPrimary }}
@@ -602,7 +602,7 @@ export default function PendingScreen() {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
-          <ClipboardCheck size={64} color={theme.colors.textDisabled} />
+          <ClipboardCheck size={64} color={theme.colors.textSecondary} />
           <Text
             className="text-xl font-semibold mt-4"
             style={{ color: theme.colors.textPrimary }}

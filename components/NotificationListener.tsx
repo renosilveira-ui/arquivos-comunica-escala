@@ -30,13 +30,24 @@ export function NotificationListener() {
           });
           break;
 
-        case "sso_ready":
-          if (data.comunicaUrl) {
-            Linking.openURL(String(data.comunicaUrl)).catch(() => {
+        case "sso_ready": {
+          // Login de verdade: launch-code one-time → browser abre o
+          // Comunica+ já logado (form auto-submit no servidor).
+          const { openComunicaViaLaunchCode } = await import("@/lib/sso-launch");
+          const result = await openComunicaViaLaunchCode();
+          if (!result.ok) {
+            // Fallback: abre o Comunica+ deslogado (melhor que nada) ou
+            // volta pra agenda, onde o botão manual está disponível.
+            if (data.comunicaUrl) {
+              Linking.openURL(String(data.comunicaUrl)).catch(() => {
+                router.push("/(tabs)/agenda" as any);
+              });
+            } else {
               router.push("/(tabs)/agenda" as any);
-            });
+            }
           }
           break;
+        }
 
         case "duty_auto_confirmed":
         case "replacement_accepted":

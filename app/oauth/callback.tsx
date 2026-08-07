@@ -21,7 +21,7 @@ export default function OAuthCallback() {
 
   return (
     <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-      <ActivityIndicator size="large" />
+      <ActivityIndicator size="large" color={theme.colors.primary} />
       <Text style={{ marginTop: 16, color: theme.colors.textMuted }}>Autenticando...</Text>
     </View>
   );

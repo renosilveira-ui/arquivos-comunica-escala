@@ -118,7 +118,7 @@ export default function LoginScreen() {
                   returnKeyType="next"
                   onFocus={() => setFocusedField("email")}
                   onBlur={() => setFocusedField(null)}
-                  placeholderTextColor={theme.colors.textSecondary}
+                  placeholderTextColor={theme.colors.onDark.textMuted}
                   placeholder="seu@email.com"
                   style={focusedField === "email" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
@@ -136,7 +136,7 @@ export default function LoginScreen() {
                   onFocus={() => setFocusedField("password")}
                   onBlur={() => setFocusedField(null)}
                   onSubmitEditing={handleLogin}
-                  placeholderTextColor={theme.colors.textSecondary}
+                  placeholderTextColor={theme.colors.onDark.textMuted}
                   placeholder="••••••••"
                   style={focusedField === "password" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
                 />
@@ -153,7 +153,7 @@ export default function LoginScreen() {
                     padding: 12,
                   }}
                 >
-                  <Text style={{ color: theme.palette.danger[100], fontSize: 14, textAlign: "center" }}>
+                  <Text style={{ color: theme.palette.danger[600], fontSize: 14, textAlign: "center" }}>
                     {errorMsg}
                   </Text>
                 </View>
