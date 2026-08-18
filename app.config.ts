@@ -114,7 +114,11 @@ const config: ExpoConfig = {
   ],
   experiments: {
     typedRoutes: true,
-    reactCompiler: true,
+    // reactCompiler DESLIGADO em 2026-08-18: compilador experimental
+    // rodando em build de produção é suspeito nº 1 da instabilidade
+    // reportada pelo PO no primeiro build TestFlight. Reavaliar quando
+    // sair de experimental.
+    reactCompiler: false,
   },
   // Vínculo com o projeto EAS (@renosilveira/escalas-hospitalares).
   // Necessário para eas build; criado via `eas init` em 2026-08-06.

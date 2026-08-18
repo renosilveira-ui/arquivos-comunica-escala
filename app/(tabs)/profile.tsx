@@ -1,4 +1,4 @@
-import { Text, View, TouchableOpacity, Switch } from "react-native";
+import { Text, View, TouchableOpacity, Switch, Share } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
@@ -7,12 +7,14 @@ import * as Haptics from "expo-haptics";
 import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
 import { useState, useEffect, useMemo } from "react";
-import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound } from "lucide-react-native";
+import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound, AlertTriangle } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useRouter } from "expo-router";
 import { useTenantState } from "@/lib/tenant-state";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { confirmAction } from "@/lib/ui/confirm";
+import { uiAlert } from "@/lib/ui/alert";
+import { getLastCrash } from "@/components/AppErrorBoundary";
 import {
   requestNotificationPermissions,
   notifyNewShift,
@@ -495,6 +497,49 @@ export default function ProfileScreen() {
                 </Text>
               </View>
               <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
+            </TouchableOpacity>
+          </TintedGlassCard>
+        </View>
+
+        {/* Diagnóstico — último erro registrado no aparelho.
+            Instrumentação de estabilidade (2026-08-18): o AppErrorBoundary
+            e o handler global persistem o último crash; aqui o usuário
+            consegue ver e compartilhar o registro para suporte. */}
+        <View className="gap-4">
+          <View className="flex-row items-center gap-2">
+            <AlertTriangle size={20} color={theme.colors.textPrimary} />
+            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Diagnóstico</Text>
+          </View>
+          <TintedGlassCard variant="light">
+            <TouchableOpacity
+              onPress={async () => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                const crash = await getLastCrash();
+                if (!crash) {
+                  uiAlert("Diagnóstico", "Nenhum erro registrado neste aparelho. 👍");
+                  return;
+                }
+                try {
+                  await Share.share({ message: `Escala+ diagnóstico:\n${crash}` });
+                } catch {
+                  uiAlert("Último erro registrado", crash.slice(0, 1200));
+                }
+              }}
+              className="rounded-xl p-4 flex-row items-center justify-between"
+              style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel="Ver e compartilhar o último erro registrado"
+            >
+              <View className="flex-1 pr-4">
+                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Último erro registrado
+                </Text>
+                <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
+                  Se o app fechou sozinho, toque aqui e compartilhe o registro com o suporte
+                </Text>
+              </View>
+              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Ver</Text>
             </TouchableOpacity>
           </TintedGlassCard>
         </View>

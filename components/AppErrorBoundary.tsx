@@ -111,11 +111,48 @@ export class AppErrorBoundary extends React.Component<Props, State> {
   }
 }
 
-/** Lê (sem limpar) o último crash persistido — para tela de suporte futura. */
+/** Lê (sem limpar) o último crash persistido — exibido em Perfil → Diagnóstico. */
 export async function getLastCrash(): Promise<string | null> {
   try {
     return await AsyncStorage.getItem(CRASH_KEY);
   } catch {
     return null;
   }
+}
+
+export async function clearLastCrash(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(CRASH_KEY);
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Captura erros FATAIS fora do ciclo de render (o boundary só pega erros
+ * de render). Persiste antes do app morrer, preservando o handler
+ * original do RN. Instalado uma única vez no import do root layout.
+ */
+type RNErrorUtils = {
+  getGlobalHandler: () => (error: unknown, isFatal?: boolean) => void;
+  setGlobalHandler: (handler: (error: unknown, isFatal?: boolean) => void) => void;
+};
+const errorUtils = (globalThis as { ErrorUtils?: RNErrorUtils }).ErrorUtils;
+if (errorUtils) {
+  const previous = errorUtils.getGlobalHandler();
+  errorUtils.setGlobalHandler((error, isFatal) => {
+    try {
+      const e = error as Error;
+      const record = {
+        message: String(e?.message ?? error),
+        stack: e?.stack?.slice(0, 4000),
+        fatal: Boolean(isFatal),
+        at: new Date().toISOString(),
+      };
+      AsyncStorage.setItem(CRASH_KEY, JSON.stringify(record)).catch(() => {});
+    } catch {
+      // nunca interferir no fluxo de erro original
+    }
+    previous?.(error, isFatal);
+  });
 }
