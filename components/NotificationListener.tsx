@@ -1,14 +1,30 @@
 /**
  * Componente que escuta notificações push e roteia para a tela correta.
+ * Também monta o registro do push token quando há usuário logado.
  */
 
 import { useEffect } from "react";
 import { Linking } from "react-native";
 import { useRouter } from "expo-router";
 import * as Notifications from "expo-notifications";
+import { useAuth } from "@/hooks/use-auth";
+import { useNotifications } from "@/hooks/use-notifications";
+
+/**
+ * Pede permissão de push e registra o Expo token no backend
+ * (confirmations.registerPushToken). Renderizado apenas com usuário
+ * logado — a mutation exige sessão. Sem este mount, NENHUM token era
+ * registrado (bug descoberto no teste E2E de 2026-08-18: o hook
+ * useNotifications existia mas nunca era montado).
+ */
+function PushTokenRegistrar() {
+  useNotifications();
+  return null;
+}
 
 export function NotificationListener() {
   const router = useRouter();
+  const { user } = useAuth();
 
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener(async (response) => {
@@ -68,5 +84,5 @@ export function NotificationListener() {
     };
   }, [router]);
 
-  return null;
+  return user ? <PushTokenRegistrar /> : null;
 }

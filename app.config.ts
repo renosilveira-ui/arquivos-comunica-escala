@@ -2,11 +2,9 @@
 import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
-// App identity for the staging build. Bundle ID and scheme are
-// provisional ("app.escalas.staging") — they MUST be changed to a
-// production-owned domain (e.g. "br.com.unimedfortaleza.escalas")
-// before publishing to the App Store / Play Store. See
-// docs/operations/mobile-deploy.md for the migration checklist.
+// App identity. Bundle ID definitivo: com.comunicamais.escalas
+// (padrão do ecossistema Comunica+ — decisão do PO em 2026-08-18,
+// registrada para o app record do App Store Connect/TestFlight).
 //
 // Constraints honored by the current values:
 //   - Bundle ID: only letters, numbers and dots; each dot-separated
@@ -18,8 +16,8 @@ const env = {
   appName: "Escalas Hospitalares",
   appSlug: "escalas-hospitalares",
   scheme: "escalas",
-  iosBundleId: "app.escalas.staging",
-  androidPackage: "app.escalas.staging",
+  iosBundleId: "com.comunicamais.escalas",
+  androidPackage: "com.comunicamais.escalas",
 };
 
 const config: ExpoConfig = {
