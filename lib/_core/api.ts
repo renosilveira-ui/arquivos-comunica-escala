@@ -108,6 +108,29 @@ export const authApi = {
   },
 
   /**
+   * Variante do me() que distingue "sessão inválida" (401/403 — deslogar
+   * de verdade) de "falha de rede/servidor" (timeout, 5xx, cold start do
+   * Render — manter a sessão em cache). Tratar os dois igual expulsava
+   * o usuário logado toda vez que o staging hibernado demorava a acordar.
+   */
+  async meDetailed(): Promise<{
+    user: AuthUser | null;
+    sessionInvalid: boolean;
+    networkOrServerError: boolean;
+  }> {
+    const res = await apiFetch<MeResponse>("/api/auth/me");
+    if (res.ok) {
+      return { user: res.data?.user ?? null, sessionInvalid: false, networkOrServerError: false };
+    }
+    const sessionInvalid = res.status === 401 || res.status === 403;
+    return {
+      user: null,
+      sessionInvalid,
+      networkOrServerError: !sessionInvalid, // status 0 (fetch falhou) ou 5xx
+    };
+  },
+
+  /**
    * Change own password. Requires current password (anti-CSRF /
    * anti-stolen-token mitigation) + new password.
    */

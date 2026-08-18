@@ -6,7 +6,7 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { ActivityIndicator, Platform, View } from "react-native";
+import { ActivityIndicator, Platform, Text, TouchableOpacity, View } from "react-native";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -53,8 +53,18 @@ function AuthGuard() {
     }
   }, [user?.id, prevUserId, queryClient]);
 
-  const { data: institutions, isLoading: institutionsLoading } =
-    trpc.professionals.listMyInstitutions.useQuery(undefined, { enabled: !!user });
+  const {
+    data: institutions,
+    isLoading: institutionsLoading,
+    isError: institutionsError,
+    refetch: refetchInstitutions,
+  } = trpc.professionals.listMyInstitutions.useQuery(undefined, {
+    enabled: !!user,
+    // Cold start do Render free leva 30-60s: retries com backoff seguram
+    // a maior parte; o resto cai na tela de reconexão abaixo.
+    retry: 3,
+    retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 15000),
+  });
 
   useEffect(() => {
     if (!user || institutionsLoading || !institutions || activeInstitutionId) return;
@@ -79,8 +89,61 @@ function AuthGuard() {
     return <Redirect href="/login" />;
   }
 
+  // Falha de REDE ao listar instituições (ex.: staging hibernado
+  // acordando) NÃO pode ser tratada como "sem instituições" — antes
+  // disso, o guard expulsava o usuário logado pro login/seleção toda
+  // vez que o servidor demorava. Mostra reconexão com retry.
+  if (institutionsError) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: theme.colors.background,
+          padding: theme.space[6],
+          gap: theme.space[4],
+        }}
+      >
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Text
+          style={{
+            color: theme.colors.textPrimary,
+            fontSize: 16,
+            fontWeight: "600",
+            textAlign: "center",
+          }}
+        >
+          Conectando ao servidor…
+        </Text>
+        <Text
+          style={{
+            color: theme.colors.textSecondary,
+            fontSize: 13,
+            textAlign: "center",
+          }}
+        >
+          O primeiro acesso pode levar até um minuto.
+        </Text>
+        <TouchableOpacity
+          onPress={() => refetchInstitutions()}
+          activeOpacity={0.8}
+          style={{
+            paddingHorizontal: theme.space[5],
+            paddingVertical: theme.space[3],
+            borderRadius: theme.radius.md,
+            backgroundColor: theme.colors.primary,
+          }}
+        >
+          <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>Tentar novamente</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // "Sem instituições" só é decisão válida com resposta REAL do servidor.
   const hasInstitutions = (institutions?.length ?? 0) > 0;
-  if (!hasInstitutions) {
+  if (institutions && !hasInstitutions) {
     return <Redirect href="/login" />;
   }
 

@@ -12,12 +12,24 @@ export function useAuth() {
 
   const refetch = useCallback(async () => {
     try {
-      const me = await authApi.me();
-      setUser(me);
-      if (me) await Auth.setUserInfo(me);
-      else await Auth.clearUserInfo();
+      const result = await authApi.meDetailed();
+      if (result.user) {
+        setUser(result.user);
+        await Auth.setUserInfo(result.user);
+      } else if (result.sessionInvalid) {
+        // Sessão realmente expirada/revogada: desloga e limpa cache.
+        setUser(null);
+        await Auth.clearUserInfo();
+      } else {
+        // Falha de rede/servidor (ex.: cold start do Render): NÃO
+        // deslogar — mantém o usuário do cache local. Antes disso,
+        // qualquer timeout expulsava o usuário logado e apagava o
+        // SecureStore ("volta pra seleção/login sozinho").
+        console.warn("[Auth] me() falhou por rede/servidor — mantendo sessão em cache");
+      }
     } catch {
-      setUser(null);
+      // Erro inesperado: também não desloga — só rede confirmada 401 desloga.
+      console.warn("[Auth] me() lançou erro — mantendo sessão em cache");
     } finally {
       setIsLoading(false);
     }
