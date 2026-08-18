@@ -25,6 +25,7 @@ import {
 } from "../../drizzle/schema";
 import { sendPushNotification } from "../notifications-service";
 import { triggerAutoSso } from "../sso/auto-sso";
+import { syncDutyToComunica } from "../sso/duty-sync";
 
 // ── Trigger schedule ────────────────────────────────────────────────────────
 
@@ -325,6 +326,10 @@ async function processRechecks(now: Date) {
     });
 
     // Auto-SSO for the assigned doctor
+    // Duty-sync: auto-confirmado também vira plantonista declarado
+    syncDutyToComunica(conf.id, "CONFIRM").catch((err) =>
+      console.error("[ConfirmationCron] Duty-sync failed:", err),
+    );
     triggerAutoSso(conf.id).catch((err) =>
       console.error("[ConfirmationCron] Auto-SSO failed:", err),
     );
