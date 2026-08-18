@@ -16,6 +16,7 @@ import { sendPushNotification } from "./notifications-service";
 import { recordAudit } from "./audit-trail";
 import { randomUUID } from "crypto";
 import { triggerAutoSso } from "./sso/auto-sso";
+import { syncDutyToComunica } from "./sso/duty-sync";
 
 export const confirmationRouter = router({
   /**
@@ -152,6 +153,10 @@ export const confirmationRouter = router({
       triggerAutoSso(conf.id).catch((err) =>
         console.error("[Confirmation] Auto-SSO failed:", err),
       );
+      // Fase 1 duty-sync: declara o plantonista no roster do Comunica+
+      syncDutyToComunica(conf.id, "CONFIRM").catch((err) =>
+        console.error("[Confirmation] Duty-sync failed:", err),
+      );
 
       return { ok: true, status: "CONFIRMED" as const };
     }),
@@ -199,6 +204,12 @@ export const confirmationRouter = router({
           recheckAt: newRecheckAt,
         })
         .where(eq(dutyConfirmations.id, conf.id));
+
+      // Duty-sync: retira a declaração no Comunica+ (o médico recusou;
+      // se um substituto aceitar depois, o CONFIRM dele reativa).
+      syncDutyToComunica(conf.id, "WITHDRAW").catch((err) =>
+        console.error("[Confirmation] Duty-sync withdraw failed:", err),
+      );
 
       recordAudit({
         action: "ASSIGNMENT_REJECTED",
@@ -387,6 +398,10 @@ export const confirmationRouter = router({
       // Auto-SSO for replacement → Comunica+ (fire-and-forget)
       triggerAutoSso(conf.id).catch((err) =>
         console.error("[Confirmation] Auto-SSO for replacement failed:", err),
+      );
+      // Duty-sync: o SUBSTITUTO vira o plantonista declarado no Comunica+
+      syncDutyToComunica(conf.id, "CONFIRM").catch((err) =>
+        console.error("[Confirmation] Duty-sync for replacement failed:", err),
       );
 
       // Notify original doctor
