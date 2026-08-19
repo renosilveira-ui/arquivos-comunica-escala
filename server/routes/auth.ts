@@ -62,6 +62,19 @@ async function ensureProfessionalLink(user: User): Promise<void> {
   const db = await getDb();
   if (!db) return;
 
+  // Conveniência APENAS para contas órfãs (legado/dev, sem nenhum
+  // vínculo institucional). Se o usuário já tem qualquer vínculo — ex.:
+  // os anestesistas importados, ligados ao São Carlos — NÃO criar o
+  // vínculo com a instituição default: isso poluía a conta com um
+  // "Hospital das Clínicas" ativo no primeiro login, fazia o seletor
+  // de instituição aparecer e derrubava o usuário no tenant errado.
+  const [existingLink] = await db
+    .select({ id: professionalInstitutions.id })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, user.id))
+    .limit(1);
+  if (existingLink) return;
+
   const [existingProfessional] = await db
     .select({ id: professionals.id })
     .from(professionals)
