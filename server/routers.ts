@@ -6,6 +6,7 @@ import { professionals, shiftInstances, shiftAssignmentsV2, sectors, hospitals }
 import { validateAssignment } from "./shift-validations";
 import { auditLog } from "./audit-log";
 import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
+import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import {
   assertCanEditScheduleDate,
@@ -55,6 +56,9 @@ const shiftAssignmentsRouter = router({
       if (shift.status !== "VAGO") {
         throw new Error(`Turno não está disponível (status: ${shift.status})`);
       }
+
+      // Separação por serviço: anestesista não assume vaga de cirurgia etc.
+      assertSpecialtyCompatible(shift.specialty, professional.specialty);
 
       const validation = await validateAssignment(
         professional.id,
@@ -442,6 +446,13 @@ const shiftInstancesRouter = router({
         endOfDay   = new Date(`${input.date}T23:59:59`);
       }
 
+      // Especialidade do profissional logado: vaga de outro serviço
+      // não aparece (NULL de qualquer lado = sem restrição).
+      const [me] = ctx.user
+        ? await db.select({ specialty: professionals.specialty }).from(professionals).where(eq(professionals.userId, ctx.user.id)).limit(1)
+        : [undefined];
+      const mySpecialty = me?.specialty ?? null;
+
       const rows = await db.execute<any>(
         sql`SELECT
               si.id          AS shiftInstanceId,
@@ -468,6 +479,7 @@ const shiftInstancesRouter = router({
               ${input?.modality   ? sql`AND si.modality    = ${input.modality}`   : sql``}
               ${input?.coverageType ? sql`AND si.coverage_type = ${input.coverageType}` : sql``}
               ${startOfDay && endOfDay ? sql`AND si.start_at BETWEEN ${startOfDay} AND ${endOfDay}` : sql``}
+              ${mySpecialty ? sql`AND (si.specialty IS NULL OR si.specialty = ${mySpecialty})` : sql``}
             ORDER BY si.start_at ASC`
       );
 

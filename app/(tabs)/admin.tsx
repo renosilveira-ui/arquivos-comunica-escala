@@ -31,7 +31,7 @@ interface AdminUser {
   email: string | null;
   role: UserRole;
   createdAt: string;
-  professional: { id: number; userRole: string } | null;
+  professional: { id: number; userRole: string; specialty?: string | null } | null;
 }
 
 /** Conta criada pelo auto-cadastro público, aguardando aprovação. */
@@ -382,6 +382,7 @@ function EditUserModal({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<UserRole>("doctor");
+  const [specialty, setSpecialty] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -392,6 +393,7 @@ function EditUserModal({
         setName(editUser.name ?? "");
         setEmail(editUser.email ?? "");
         setRole(editUser.role);
+        setSpecialty(editUser.professional?.specialty ?? "");
         setError("");
       }
     }, [visible, editUser]),
@@ -413,6 +415,7 @@ function EditUserModal({
           name: name.trim(),
           email: email.trim().toLowerCase(),
           role,
+          specialty: specialty.trim() || null,
         }),
       },
     );
@@ -517,6 +520,31 @@ function EditUserModal({
             placeholderTextColor={theme.colors.textMuted}
             keyboardType="email-address"
             autoCapitalize="none"
+            style={{
+              backgroundColor: theme.colors.surface,
+              color: theme.colors.textPrimary,
+              borderRadius: theme.borderRadius.input,
+              padding: 12,
+              fontSize: 16,
+              marginBottom: 14,
+            }}
+          />
+
+          {/* Especialidade (serviço) */}
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            Especialidade / serviço
+          </Text>
+          <TextInput
+            value={specialty}
+            onChangeText={setSpecialty}
+            placeholder="Ex.: Anestesiologia"
+            placeholderTextColor={theme.colors.textMuted}
             style={{
               backgroundColor: theme.colors.surface,
               color: theme.colors.textPrimary,

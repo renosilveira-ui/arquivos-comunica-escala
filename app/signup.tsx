@@ -53,6 +53,7 @@ export default function SignupScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [specialty, setSpecialty] = useState("");
   const [institutionId, setInstitutionId] = useState<number | null>(null);
   const [institutions, setInstitutions] = useState<{ id: number; name: string }[]>([]);
   const [loadingInstitutions, setLoadingInstitutions] = useState(true);
@@ -105,6 +106,7 @@ export default function SignupScreen() {
         email: email.trim(),
         password,
         institutionId,
+        specialty: specialty.trim() || undefined,
       });
       if (result.ok) {
         setDone(true);
@@ -285,6 +287,19 @@ export default function SignupScreen() {
                 placeholderTextColor={theme.colors.onDark.textMuted}
                 placeholder="••••••••"
                 style={focusedField === "confirm" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
+              />
+            </View>
+
+            <View>
+              <Text style={LABEL_STYLE}>Especialidade (opcional)</Text>
+              <TextInput
+                value={specialty}
+                onChangeText={setSpecialty}
+                returnKeyType="next"
+                onFocus={() => setFocusedField(null)}
+                placeholderTextColor={theme.colors.onDark.textMuted}
+                placeholder="Ex.: Anestesiologia"
+                style={INPUT_STYLE}
               />
             </View>
 

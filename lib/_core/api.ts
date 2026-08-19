@@ -146,6 +146,7 @@ export const authApi = {
     email: string;
     password: string;
     institutionId: number;
+    specialty?: string;
   }): Promise<{ ok: boolean; error?: string }> {
     const res = await apiFetch<{ ok?: boolean; error?: string }>("/api/auth/signup", {
       method: "POST",

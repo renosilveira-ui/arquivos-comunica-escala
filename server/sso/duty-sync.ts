@@ -74,6 +74,7 @@ export async function syncDutyToComunica(
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       modality: shiftInstances.modality,
+      specialty: shiftInstances.specialty,
     })
     .from(shiftInstances)
     .where(eq(shiftInstances.id, conf.shiftInstanceId))
@@ -90,6 +91,9 @@ export async function syncDutyToComunica(
     dutyType: shift.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO",
     dutyStart: new Date(shift.startAt).toISOString(),
     dutyEnd: new Date(shift.endAt).toISOString(),
+    // Serviço do plantão (ex.: "Anestesiologia") — o Comunica+ pode usar
+    // para conferência/roteamento; claim extra é ignorado se não usado.
+    ...(shift.specialty ? { serviceName: shift.specialty } : {}),
   })
     .setProtectedHeader({ alg: ALG, kid: KID, typ: "JWT" })
     .setIssuer(ENV.ssoIssuer)

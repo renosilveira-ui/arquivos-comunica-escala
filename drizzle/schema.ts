@@ -107,6 +107,12 @@ export const professionals = mysqlTable("professionals", {
   userId: int("user_id").notNull().references(() => users.id),
   name: varchar("name", { length: 255 }).notNull(),
   role: varchar("role", { length: 100 }).notNull(), // Ex: "Médico", "Enfermeiro", "Técnico"
+  /**
+   * Serviço/especialidade (2026-08-19): eixo de separação entre
+   * especialistas (ex.: "Anestesiologia", "Cirurgia Geral"). Alinhado
+   * ao campo specialty do Comunica+. NULL = sem restrição (legado).
+   */
+  specialty: varchar("specialty", { length: 100 }),
   userRole: userRoleEnum.notNull().default("USER"), // RBAC: USER, GESTOR_MEDICO, GESTOR_PLUS
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -242,6 +248,8 @@ export const shiftInstances = mysqlTable(
     hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
     sectorId: int("sector_id").notNull().references(() => sectors.id),
     label: varchar("label", { length: 100 }).notNull(),
+    /** Serviço/especialidade do plantão (separação entre especialistas). */
+    specialty: varchar("specialty", { length: 100 }),
     startAt: timestamp("start_at").notNull(),
     endAt: timestamp("end_at").notNull(),
     status: varchar("status", { length: 20 }).notNull().default("VAGO"),

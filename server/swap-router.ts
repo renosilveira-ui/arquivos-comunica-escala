@@ -14,6 +14,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { assertNoTimeConflict } from "./shift-validations-v2";
+import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { notifySwapAccepted, notifySwapApproved } from "./integrations/comunica-plus";
@@ -504,6 +505,10 @@ export const swapRouter = router({
             eq(shiftInstances.institutionId, institutionId),
           ),
         );
+      if (fromShift) {
+        // Separação por serviço: só aceita quem é da especialidade do plantão.
+        assertSpecialtyCompatible(fromShift.specialty, pro.specialty);
+      }
       if (!fromShift) throw new TRPCError({ code: "NOT_FOUND", message: "Turno de origem não encontrado" });
 
       if (isOneWay(swap.type)) {
