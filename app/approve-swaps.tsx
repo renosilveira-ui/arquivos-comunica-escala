@@ -18,6 +18,7 @@ import { useRouter } from "expo-router";
 import { ChevronLeft, Shield, Check, X } from "lucide-react-native";
 import { useFocusEffect } from "expo-router";
 import { theme } from "@/lib/theme";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -104,6 +105,7 @@ export default function ApproveSwapsScreen() {
   const [tab, setTab] = useState<TabFilter>("ACCEPTED");
   const [items, setItems] = useState<SwapItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
   // Modal state
@@ -114,15 +116,30 @@ export default function ApproveSwapsScreen() {
 
   const fetchItems = useCallback(async () => {
     setLoading(true);
+    setLoadError(false);
     const params: Record<string, any> = { limit: 100, offset: 0 };
     if (tab === "ACCEPTED") params.status = "ACCEPTED";
 
-    const res = await apiFetch<any>(
-      `/api/trpc/swaps.list?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: params } }))}`,
-    );
-    const data: SwapItem[] = (res.data as any)?.[0]?.result?.data?.json ?? [];
-    setItems(data);
-    setLoading(false);
+    // try/finally: sem isso, uma rejeição de rede escapava do callback
+    // (unhandled) e o spinner nunca saía da tela; e res.ok ignorado
+    // fazia HTTP 4xx/5xx virar "Nenhuma troca aguardando aprovação".
+    try {
+      const res = await apiFetch<any>(
+        `/api/trpc/swaps.list?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: params } }))}`,
+      );
+      if (!res.ok) {
+        setLoadError(true);
+        setItems([]);
+        return;
+      }
+      const data: SwapItem[] = (res.data as any)?.[0]?.result?.data?.json ?? [];
+      setItems(data);
+    } catch {
+      setLoadError(true);
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
   }, [tab]);
 
   useFocusEffect(
@@ -265,6 +282,11 @@ export default function ApproveSwapsScreen() {
           <View style={{ paddingVertical: 60, alignItems: "center" }}>
             <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
+        ) : loadError ? (
+          <QueryErrorState
+            title="Não foi possível carregar as trocas"
+            onRetry={() => fetchItems()}
+          />
         ) : items.length === 0 ? (
           <View style={{ paddingVertical: 60, alignItems: "center" }}>
             <Shield size={48} color={theme.colors.borderStrong} />

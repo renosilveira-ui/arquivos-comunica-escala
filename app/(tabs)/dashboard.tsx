@@ -4,6 +4,7 @@ import { Calendar, AlertCircle, Clock, CheckCircle } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatDateBR } from "@/lib/datetime";
 
 const statusColor: Record<string, string> = {
@@ -26,7 +27,7 @@ export default function DashboardScreen() {
   const todayISO = new Date().toISOString();
   const nextWeekISO = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const { data: shiftsData, isLoading: shiftsLoading } = trpc.shifts.listByPeriod.useQuery(
+  const { data: shiftsData, isLoading: shiftsLoading, isError: shiftsError, refetch: refetchShifts } = trpc.shifts.listByPeriod.useQuery(
     { startDate: todayISO, endDate: nextWeekISO },
     { enabled: !!user }
   );
@@ -67,7 +68,13 @@ export default function DashboardScreen() {
         </Text>
 
         {/* Métricas 2x2 */}
-        {shiftsLoading ? (
+        {shiftsError ? (
+          // Erro não pode virar métricas zeradas "reais" no dashboard.
+          <QueryErrorState
+            title="Não foi possível carregar o resumo da semana"
+            onRetry={() => refetchShifts()}
+          />
+        ) : shiftsLoading ? (
           <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginTop: 40 }} />
         ) : (
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: theme.spacing.gap }}>
@@ -104,7 +111,7 @@ export default function DashboardScreen() {
           Turnos da Semana
         </Text>
 
-        {shiftsLoading ? (
+        {shiftsError ? null : shiftsLoading ? (
           <ActivityIndicator color={theme.colors.primary} />
         ) : shifts.length > 0 ? (
           <View style={{ gap: theme.spacing.gap }}>

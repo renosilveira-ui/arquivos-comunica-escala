@@ -10,6 +10,7 @@ import { AppButton } from "@/components/ui/AppButton";
 import { confirmAction } from "@/lib/ui/confirm";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { theme } from "@/lib/theme";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -59,7 +60,7 @@ export default function VacanciesScreen() {
 
   // Buscar vagas disponíveis do backend com filtros
   // `modality` é aceito por listVacancies a partir de PR #66.
-  const { data: vacanciesData, isLoading: vacanciesLoading, refetch: refetchVacancies } = trpc.shiftInstances.listVacancies.useQuery(
+  const { data: vacanciesData, isLoading: vacanciesLoading, isError: vacanciesError, refetch: refetchVacancies } = trpc.shiftInstances.listVacancies.useQuery(
     {
       hospitalId: filters.hospitalId ?? undefined,
       sectorId: filters.sectorId ?? undefined,
@@ -396,6 +397,12 @@ export default function VacanciesScreen() {
               );
             })}
           </View>
+        ) : vacanciesError ? (
+          // Erro não pode afirmar "todos os plantões atribuídos".
+          <QueryErrorState
+            title="Não foi possível carregar os plantões em aberto"
+            onRetry={() => refetchVacancies()}
+          />
         ) : !vacanciesLoading ? (
           <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: theme.space[20] }}>
             <Briefcase size={64} color={theme.colors.borderStrong} />
