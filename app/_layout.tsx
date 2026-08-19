@@ -28,6 +28,75 @@ import { useAuth } from "@/hooks/use-auth";
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 
+/**
+ * Tela de bloqueio para contas do auto-cadastro ainda não aprovadas
+ * pelo gestor. "Verificar novamente" refaz o /me — quando o admin
+ * aprovar, o approvalStatus muda e o app libera.
+ */
+function PendingApprovalScreen() {
+  const { logout, refetch } = useAuth();
+
+  return (
+    <View
+      style={{
+        flex: 1,
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: theme.colors.background,
+        padding: theme.space[6],
+        gap: theme.space[4],
+      }}
+    >
+      <Text
+        style={{
+          color: theme.colors.textPrimary,
+          fontSize: 20,
+          fontWeight: "700",
+          textAlign: "center",
+        }}
+      >
+        Aguardando aprovação
+      </Text>
+      <Text
+        style={{
+          color: theme.colors.textSecondary,
+          fontSize: 14,
+          textAlign: "center",
+          lineHeight: 20,
+        }}
+      >
+        Sua conta foi criada e está aguardando aprovação do gestor da
+        instituição. Você receberá acesso assim que for aprovado.
+      </Text>
+      <TouchableOpacity
+        onPress={() => refetch()}
+        activeOpacity={0.8}
+        style={{
+          paddingHorizontal: theme.space[5],
+          paddingVertical: theme.space[3],
+          borderRadius: theme.radius.md,
+          backgroundColor: theme.colors.primary,
+        }}
+      >
+        <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>
+          Verificar novamente
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => logout()} activeOpacity={0.7}>
+        <Text
+          style={{
+            color: theme.colors.textMuted,
+            fontSize: 13,
+            textDecorationLine: "underline",
+          }}
+        >
+          Sair
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 /** Handles auth-gated navigation. Must be rendered inside providers. */
 function AuthGuard() {
   const { user, isLoading } = useAuth();
@@ -86,7 +155,16 @@ function AuthGuard() {
   }
 
   if (!user) {
+    // Rotas públicas: login e auto-cadastro.
+    if (pathname === "/signup") return null;
     return <Redirect href="/login" />;
+  }
+
+  // Conta pendente de aprovação (auto-cadastro): bloqueia o app inteiro
+  // até o gestor aprovar. Precisa vir ANTES da lógica de instituições —
+  // o vínculo do pendente é inativo e cairia no "sem instituições".
+  if (user.approvalStatus === "PENDING") {
+    return <PendingApprovalScreen />;
   }
 
   // Falha de REDE ao listar instituições (ex.: staging hibernado
@@ -226,6 +304,7 @@ export default function RootLayout() {
           {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="login" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+            <Stack.Screen name="signup" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="select-institution" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="oauth/callback" />

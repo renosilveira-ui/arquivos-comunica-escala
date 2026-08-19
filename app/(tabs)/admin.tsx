@@ -15,7 +15,7 @@ import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
 import * as Auth from "@/lib/_core/auth";
-import { Lock, Plus, Pencil, Users, X } from "lucide-react-native";
+import { Lock, Plus, Pencil, Users, X, UserPlus, Check } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useFocusEffect } from "expo-router";
 
@@ -32,6 +32,16 @@ interface AdminUser {
   role: UserRole;
   createdAt: string;
   professional: { id: number; userRole: string } | null;
+}
+
+/** Conta criada pelo auto-cadastro público, aguardando aprovação. */
+interface PendingSignup {
+  id: number;
+  name: string | null;
+  email: string | null;
+  createdAt: string;
+  institutionId: number | null;
+  institutionName: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +625,10 @@ export default function AdminScreen() {
   const [showCreate, setShowCreate] = useState(false);
   const [editTarget, setEditTarget] = useState<AdminUser | null>(null);
 
+  // Cadastros pendentes (auto-cadastro público)
+  const [pendingSignups, setPendingSignups] = useState<PendingSignup[]>([]);
+  const [pendingBusyId, setPendingBusyId] = useState<number | null>(null);
+
   const fetchUsers = useCallback(async () => {
     try {
       const res = await adminFetch<{ users: AdminUser[] }>("/api/admin/users");
@@ -630,15 +644,47 @@ export default function AdminScreen() {
     }
   }, []);
 
+  const fetchPendingSignups = useCallback(async () => {
+    try {
+      const res = await adminFetch<{ pending: PendingSignup[] }>("/api/admin/pending-signups");
+      if (res.ok && res.data?.pending) {
+        setPendingSignups(res.data.pending);
+      }
+    } catch (err) {
+      console.error("[AdminScreen] fetchPendingSignups error:", err);
+    }
+  }, []);
+
+  const handleSignupDecision = useCallback(
+    async (signupId: number, decision: "approve" | "reject") => {
+      setPendingBusyId(signupId);
+      try {
+        const res = await adminFetch<{ ok?: boolean; error?: string }>(
+          `/api/admin/pending-signups/${signupId}/${decision}`,
+          { method: "POST" },
+        );
+        if (res.ok) {
+          setPendingSignups((prev) => prev.filter((p) => p.id !== signupId));
+          fetchUsers();
+        }
+      } finally {
+        setPendingBusyId(null);
+      }
+    },
+    [fetchUsers],
+  );
+
   useFocusEffect(
     useCallback(() => {
       fetchUsers();
-    }, [fetchUsers]),
+      fetchPendingSignups();
+    }, [fetchUsers, fetchPendingSignups]),
   );
 
   const handleRefresh = () => {
     setRefreshing(true);
     fetchUsers();
+    fetchPendingSignups();
   };
 
   // Filter users by search
@@ -808,6 +854,114 @@ export default function AdminScreen() {
             </TintedGlassCard>
           </View>
         </View>
+
+        {/* Cadastros pendentes (auto-cadastro público) */}
+        {pendingSignups.length > 0 && (
+          <View style={{ gap: 10 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <UserPlus size={20} color={theme.colors.warning} />
+              <Text
+                style={{
+                  color: theme.colors.onDark.text,
+                  fontSize: 18,
+                  fontWeight: "700",
+                }}
+              >
+                Cadastros pendentes
+              </Text>
+              <Badge variant="warning">{String(pendingSignups.length)}</Badge>
+            </View>
+            {pendingSignups.map((p) => (
+              <TintedGlassCard key={p.id}>
+                <View style={{ gap: 12 }}>
+                  <View style={{ gap: 4 }}>
+                    <Text
+                      style={{
+                        color: theme.colors.onDark.text,
+                        fontSize: 17,
+                        fontWeight: "700",
+                      }}
+                    >
+                      {p.name ?? "Sem nome"}
+                    </Text>
+                    <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14 }}>
+                      {p.email ?? "—"}
+                    </Text>
+                    {p.institutionName && (
+                      <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 13 }}>
+                        Instituição: {p.institutionName}
+                      </Text>
+                    )}
+                  </View>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    <TouchableOpacity
+                      onPress={() => handleSignupDecision(p.id, "approve")}
+                      disabled={pendingBusyId === p.id}
+                      activeOpacity={0.8}
+                      style={{
+                        flex: 1,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 6,
+                        backgroundColor: theme.colors.success,
+                        paddingVertical: 10,
+                        borderRadius: theme.borderRadius.button,
+                        opacity: pendingBusyId === p.id ? 0.6 : 1,
+                      }}
+                    >
+                      {pendingBusyId === p.id ? (
+                        <ActivityIndicator size="small" color={theme.colors.onDark.text} />
+                      ) : (
+                        <>
+                          <Check size={16} color={theme.colors.onDark.text} />
+                          <Text
+                            style={{
+                              color: theme.colors.onDark.text,
+                              fontSize: 14,
+                              fontWeight: "700",
+                            }}
+                          >
+                            Aprovar
+                          </Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleSignupDecision(p.id, "reject")}
+                      disabled={pendingBusyId === p.id}
+                      activeOpacity={0.8}
+                      style={{
+                        flex: 1,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 6,
+                        backgroundColor: "transparent",
+                        borderWidth: 1.5,
+                        borderColor: theme.colors.danger,
+                        paddingVertical: 10,
+                        borderRadius: theme.borderRadius.button,
+                        opacity: pendingBusyId === p.id ? 0.6 : 1,
+                      }}
+                    >
+                      <X size={16} color={theme.colors.danger} />
+                      <Text
+                        style={{
+                          color: theme.colors.danger,
+                          fontSize: 14,
+                          fontWeight: "700",
+                        }}
+                      >
+                        Recusar
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </TintedGlassCard>
+            ))}
+          </View>
+        )}
 
         {/* User list */}
         {loading ? (

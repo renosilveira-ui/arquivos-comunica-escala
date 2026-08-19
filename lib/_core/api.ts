@@ -69,6 +69,8 @@ export type AuthUser = {
   name: string | null;
   email: string | null;
   role: "admin" | "manager" | "doctor" | "nurse" | "tech";
+  /** PENDING = auto-cadastro aguardando aprovação do gestor (app bloqueado). */
+  approvalStatus?: "PENDING" | "APPROVED";
 };
 
 type LoginResponse = { user: AuthUser; token?: string };
@@ -127,6 +129,32 @@ export const authApi = {
       user: null,
       sessionInvalid,
       networkOrServerError: !sessionInvalid, // status 0 (fetch falhou) ou 5xx
+    };
+  },
+
+  /** Instituições disponíveis para a tela pública de cadastro. */
+  async listSignupInstitutions(): Promise<{ id: number; name: string }[]> {
+    const res = await apiFetch<{ institutions: { id: number; name: string }[] }>(
+      "/api/auth/signup-institutions",
+    );
+    return res.ok ? (res.data?.institutions ?? []) : [];
+  },
+
+  /** Auto-cadastro público — conta nasce pendente de aprovação do gestor. */
+  async signup(input: {
+    name: string;
+    email: string;
+    password: string;
+    institutionId: number;
+  }): Promise<{ ok: boolean; error?: string }> {
+    const res = await apiFetch<{ ok?: boolean; error?: string }>("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    if (res.ok && res.data?.ok) return { ok: true };
+    return {
+      ok: false,
+      error: (res.data as any)?.error ?? res.error ?? "Erro ao criar cadastro",
     };
   },
 

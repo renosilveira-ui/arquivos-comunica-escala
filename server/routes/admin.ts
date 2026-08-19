@@ -1,7 +1,15 @@
 import { Router, type Request, type Response } from "express";
 import { eq, asc, desc, and, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { users, professionals, auditTrail } from "../../drizzle/schema";
+import {
+  users,
+  professionals,
+  auditTrail,
+  institutions,
+  hospitals,
+  professionalInstitutions,
+  professionalAccess,
+} from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
 import { recordAudit } from "../audit-trail";
 
@@ -221,4 +229,155 @@ adminRouter.delete("/users/:id", async (req: Request, res: Response): Promise<vo
   }
 
   res.status(501).json({ error: "Funcionalidade de desativação ainda não implementada (campo isActive não existe na tabela users)" });
+});
+
+// ---------------------------------------------------------------------------
+// Cadastros pendentes (auto-cadastro público — feat/self-signup)
+// ---------------------------------------------------------------------------
+
+// GET /api/admin/pending-signups — contas aguardando aprovação
+adminRouter.get("/pending-signups", async (_req: Request, res: Response): Promise<void> => {
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponível" });
+    return;
+  }
+
+  const rows = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      createdAt: users.createdAt,
+      institutionId: professionalInstitutions.institutionId,
+      institutionName: institutions.name,
+    })
+    .from(users)
+    .leftJoin(professionalInstitutions, eq(professionalInstitutions.userId, users.id))
+    .leftJoin(institutions, eq(institutions.id, professionalInstitutions.institutionId))
+    .where(eq(users.approvalStatus, "PENDING"))
+    .orderBy(asc(users.createdAt));
+
+  res.json({ pending: rows });
+});
+
+// POST /api/admin/pending-signups/:id/approve — aprova a conta:
+// APPROVED + ativa o vínculo institucional + concede acesso a todos os
+// hospitais da instituição escolhida (sectorId null = todos os setores).
+adminRouter.post("/pending-signups/:id/approve", async (req: Request, res: Response): Promise<void> => {
+  const userId = Number(req.params.id);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    res.status(400).json({ error: "ID inválido" });
+    return;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponível" });
+    return;
+  }
+
+  const [pending] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!pending || pending.approvalStatus !== "PENDING") {
+    res.status(404).json({ error: "Cadastro pendente não encontrado" });
+    return;
+  }
+
+  await db.update(users).set({ approvalStatus: "APPROVED" }).where(eq(users.id, userId));
+
+  const links = await db
+    .select({
+      id: professionalInstitutions.id,
+      professionalId: professionalInstitutions.professionalId,
+      institutionId: professionalInstitutions.institutionId,
+    })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, userId));
+
+  for (const link of links) {
+    await db
+      .update(professionalInstitutions)
+      .set({ active: true })
+      .where(eq(professionalInstitutions.id, link.id));
+
+    const institutionHospitals = await db
+      .select({ id: hospitals.id })
+      .from(hospitals)
+      .where(eq(hospitals.institutionId, link.institutionId));
+
+    for (const hospital of institutionHospitals) {
+      await db
+        .insert(professionalAccess)
+        .values({
+          institutionId: link.institutionId,
+          professionalId: link.professionalId,
+          hospitalId: hospital.id,
+          sectorId: null,
+          canAccess: true,
+        })
+        .onDuplicateKeyUpdate({ set: { canAccess: true } });
+    }
+  }
+
+  const caller = (req as any).user;
+  recordAudit({
+    action: "USER_UPDATED",
+    entityType: "USER",
+    entityId: userId,
+    actorUserId: caller.id,
+    actorRole: caller.role,
+    actorName: caller.name ?? undefined,
+    description: `Cadastro de ${pending.name ?? pending.email} aprovado por ${caller.name ?? "admin"}`,
+    metadata: { approval: "APPROVED", selfSignup: true },
+  });
+
+  res.json({ ok: true });
+});
+
+// POST /api/admin/pending-signups/:id/reject — recusa e remove a conta
+// pendente (vínculo + profissional + usuário). Só atua sobre PENDING.
+adminRouter.post("/pending-signups/:id/reject", async (req: Request, res: Response): Promise<void> => {
+  const userId = Number(req.params.id);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    res.status(400).json({ error: "ID inválido" });
+    return;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponível" });
+    return;
+  }
+
+  const [pending] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!pending || pending.approvalStatus !== "PENDING") {
+    res.status(404).json({ error: "Cadastro pendente não encontrado" });
+    return;
+  }
+
+  const caller = (req as any).user;
+  // Auditar ANTES de remover (entityId preservado no trail).
+  recordAudit({
+    action: "USER_UPDATED",
+    entityType: "USER",
+    entityId: userId,
+    actorUserId: caller.id,
+    actorRole: caller.role,
+    actorName: caller.name ?? undefined,
+    description: `Cadastro de ${pending.name ?? pending.email} recusado e removido por ${caller.name ?? "admin"}`,
+    metadata: { approval: "REJECTED", selfSignup: true, email: pending.email },
+  });
+
+  const pros = await db
+    .select({ id: professionals.id })
+    .from(professionals)
+    .where(eq(professionals.userId, userId));
+  for (const pro of pros) {
+    await db.delete(professionalAccess).where(eq(professionalAccess.professionalId, pro.id));
+  }
+  await db.delete(professionalInstitutions).where(eq(professionalInstitutions.userId, userId));
+  await db.delete(professionals).where(eq(professionals.userId, userId));
+  await db.delete(users).where(eq(users.id, userId));
+
+  res.json({ ok: true });
 });
