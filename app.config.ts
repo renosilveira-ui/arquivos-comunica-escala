@@ -39,7 +39,9 @@ const config: ExpoConfig = {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
     "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        // Permite consultar/abrir o app nativo do Comunica+ (Fase 3 do SSO).
+        "LSApplicationQueriesSchemes": ["comunicamais"]
       }
   },
   android: {
