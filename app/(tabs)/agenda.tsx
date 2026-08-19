@@ -281,9 +281,9 @@ export default function AgendaScreen() {
 
   return (
     <ScreenGradient variant="light">
-      {/* flex: sem ele, a MobileDayList (ScrollView flex:1) colapsa para
-          altura zero no NATIVO e a agenda parece vazia mesmo com dados. */}
-      <ScreenContainer flex>
+      {/* Nativo/mobile: frame com rolagem interna (flex evita o colapso de
+          altura zero no iOS). Desktop web: página inteira rolável. */}
+      <ScreenContainer flex={!isDesktop} scrollPage={isDesktop}>
         {/* Header: título + nav mês + toggle Geral/Minha */}
         <View style={{ marginBottom: theme.space[4] }}>
           <View
@@ -509,6 +509,7 @@ export default function AgendaScreen() {
             weeks={weeksForRender}
             monthKey={anchorMonthKey}
             todayKey={todayKey}
+            embedInPage={isDesktop}
             offers={dayOffers}
             refreshControl={
               <RefreshControl
@@ -529,13 +530,6 @@ export default function AgendaScreen() {
           <DesktopGrid
             weeks={weeksForRender}
             todayKey={todayKey}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor={theme.colors.primary}
-              />
-            }
             onShiftPress={(id) =>
               router.push({
                 pathname: "/shift-details",
@@ -678,23 +672,16 @@ type AgendaWeek = {
 function DesktopGrid({
   weeks,
   todayKey,
-  refreshControl,
   onShiftPress,
 }: {
   weeks: AgendaWeek[];
   todayKey: string;
-  refreshControl: React.ReactElement<
-    import("react-native").RefreshControlProps
-  >;
   onShiftPress: (id: number) => void;
 }) {
+  // Desktop rola a PÁGINA inteira (ScreenContainer scrollPage); este
+  // componente só cresce naturalmente — sem ScrollView aninhado.
   return (
-    <ScrollView
-      style={{ flex: 1 }}
-      refreshControl={refreshControl}
-      contentContainerStyle={{ paddingBottom: theme.space[10] }}
-      showsVerticalScrollIndicator={false}
-    >
+    <View style={{ paddingBottom: theme.space[10] }}>
       {weeks.map((week) => (
         <View key={week.weekStart} style={{ marginBottom: theme.space[4] }}>
           {/* Header da semana */}
@@ -781,7 +768,7 @@ function DesktopGrid({
           </View>
         </View>
       ))}
-    </ScrollView>
+    </View>
   );
 }
 

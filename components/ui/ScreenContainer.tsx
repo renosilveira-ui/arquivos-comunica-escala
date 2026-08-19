@@ -1,5 +1,5 @@
 import { ReactNode } from "react";
-import { Platform, View } from "react-native";
+import { Platform, ScrollView, View } from "react-native";
 import { theme } from "@/lib/theme";
 
 type ScreenContainerProps = {
@@ -12,12 +12,40 @@ type ScreenContainerProps = {
    * o layout de página disfarça, por isso o bug só aparecia no iPhone.
    */
   flex?: boolean;
+  /**
+   * Web/desktop: a TELA INTEIRA vira uma página rolável (cabeçalho rola
+   * junto com o conteúdo), em vez de frame fixo com rolador interno
+   * apertado — "não consigo rolar a tela" no desktop. No nativo é
+   * tratado como flex (o frame app-like é o correto lá).
+   */
+  scrollPage?: boolean;
 };
 
 /**
  * Centers web content and keeps mobile full-width.
  */
-export function ScreenContainer({ children, flex = false }: ScreenContainerProps) {
+export function ScreenContainer({ children, flex = false, scrollPage = false }: ScreenContainerProps) {
+  if (Platform.OS === "web" && scrollPage) {
+    return (
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ width: "100%", alignItems: "center" }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View
+          style={{
+            width: "100%",
+            maxWidth: theme.spacing.contentMaxWidth,
+            paddingHorizontal: theme.spacing.screenPadding,
+            paddingVertical: 20,
+          }}
+        >
+          {children}
+        </View>
+      </ScrollView>
+    );
+  }
+
   if (Platform.OS === "web") {
     return (
       <View style={{ width: "100%", alignItems: "center", ...(flex ? { flex: 1 } : {}) }}>

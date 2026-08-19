@@ -103,6 +103,7 @@ export function MonthAgenda({
   todayKey,
   offers,
   refreshControl,
+  embedInPage = false,
   onShiftPress,
   onOfferPress,
 }: {
@@ -112,6 +113,8 @@ export function MonthAgenda({
   todayKey: string;
   offers: DayOffer[];
   refreshControl: ReactElement<RefreshControlProps>;
+  /** Desktop: a página rola por inteiro — sem ScrollView interno aqui. */
+  embedInPage?: boolean;
   onShiftPress: (id: number) => void;
   onOfferPress: () => void;
 }) {
@@ -135,13 +138,8 @@ export function MonthAgenda({
     [offers, selected],
   );
 
-  return (
-    <ScrollView
-      style={{ flex: 1 }}
-      refreshControl={refreshControl}
-      contentContainerStyle={{ paddingBottom: theme.space[10] }}
-      showsVerticalScrollIndicator={false}
-    >
+  const inner = (
+    <>
       {/* Cabeçalho dos dias da semana */}
       <View style={{ flexDirection: "row", marginBottom: theme.space[1] }}>
         {WEEKDAY_HEADERS.map((h) => (
@@ -410,6 +408,20 @@ export function MonthAgenda({
           </View>
         ))
       )}
+    </>
+  );
+
+  if (embedInPage) {
+    return <View style={{ paddingBottom: theme.space[10] }}>{inner}</View>;
+  }
+  return (
+    <ScrollView
+      style={{ flex: 1 }}
+      refreshControl={refreshControl}
+      contentContainerStyle={{ paddingBottom: theme.space[10] }}
+      showsVerticalScrollIndicator={false}
+    >
+      {inner}
     </ScrollView>
   );
 }
