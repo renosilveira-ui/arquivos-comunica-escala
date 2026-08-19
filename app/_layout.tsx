@@ -6,7 +6,7 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { ActivityIndicator, Platform, View } from "react-native";
+import { ActivityIndicator, Platform, Text, TouchableOpacity, View } from "react-native";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -27,6 +27,75 @@ import { useAuth } from "@/hooks/use-auth";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
+
+/**
+ * Tela de bloqueio para contas do auto-cadastro ainda não aprovadas
+ * pelo gestor. "Verificar novamente" refaz o /me — quando o admin
+ * aprovar, o approvalStatus muda e o app libera.
+ */
+function PendingApprovalScreen() {
+  const { logout, refetch } = useAuth();
+
+  return (
+    <View
+      style={{
+        flex: 1,
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: theme.colors.background,
+        padding: theme.space[6],
+        gap: theme.space[4],
+      }}
+    >
+      <Text
+        style={{
+          color: theme.colors.textPrimary,
+          fontSize: 20,
+          fontWeight: "700",
+          textAlign: "center",
+        }}
+      >
+        Aguardando aprovação
+      </Text>
+      <Text
+        style={{
+          color: theme.colors.textSecondary,
+          fontSize: 14,
+          textAlign: "center",
+          lineHeight: 20,
+        }}
+      >
+        Sua conta foi criada e está aguardando aprovação do gestor da
+        instituição. Você receberá acesso assim que for aprovado.
+      </Text>
+      <TouchableOpacity
+        onPress={() => refetch()}
+        activeOpacity={0.8}
+        style={{
+          paddingHorizontal: theme.space[5],
+          paddingVertical: theme.space[3],
+          borderRadius: theme.radius.md,
+          backgroundColor: theme.colors.primary,
+        }}
+      >
+        <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>
+          Verificar novamente
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => logout()} activeOpacity={0.7}>
+        <Text
+          style={{
+            color: theme.colors.textMuted,
+            fontSize: 13,
+            textDecorationLine: "underline",
+          }}
+        >
+          Sair
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
 
 /** Handles auth-gated navigation. Must be rendered inside providers. */
 function AuthGuard() {
@@ -53,8 +122,18 @@ function AuthGuard() {
     }
   }, [user?.id, prevUserId, queryClient]);
 
-  const { data: institutions, isLoading: institutionsLoading } =
-    trpc.professionals.listMyInstitutions.useQuery(undefined, { enabled: !!user });
+  const {
+    data: institutions,
+    isLoading: institutionsLoading,
+    isError: institutionsError,
+    refetch: refetchInstitutions,
+  } = trpc.professionals.listMyInstitutions.useQuery(undefined, {
+    enabled: !!user,
+    // Cold start do Render free leva 30-60s: retries com backoff seguram
+    // a maior parte; o resto cai na tela de reconexão abaixo.
+    retry: 3,
+    retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 15000),
+  });
 
   useEffect(() => {
     if (!user || institutionsLoading || !institutions || activeInstitutionId) return;
@@ -76,11 +155,73 @@ function AuthGuard() {
   }
 
   if (!user) {
+    // Rotas públicas: login e auto-cadastro.
+    if (pathname === "/signup") return null;
     return <Redirect href="/login" />;
   }
 
+  // Conta pendente de aprovação (auto-cadastro): bloqueia o app inteiro
+  // até o gestor aprovar. Precisa vir ANTES da lógica de instituições —
+  // o vínculo do pendente é inativo e cairia no "sem instituições".
+  if (user.approvalStatus === "PENDING") {
+    return <PendingApprovalScreen />;
+  }
+
+  // Falha de REDE ao listar instituições (ex.: staging hibernado
+  // acordando) NÃO pode ser tratada como "sem instituições" — antes
+  // disso, o guard expulsava o usuário logado pro login/seleção toda
+  // vez que o servidor demorava. Mostra reconexão com retry.
+  if (institutionsError) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: theme.colors.background,
+          padding: theme.space[6],
+          gap: theme.space[4],
+        }}
+      >
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Text
+          style={{
+            color: theme.colors.textPrimary,
+            fontSize: 16,
+            fontWeight: "600",
+            textAlign: "center",
+          }}
+        >
+          Conectando ao servidor…
+        </Text>
+        <Text
+          style={{
+            color: theme.colors.textSecondary,
+            fontSize: 13,
+            textAlign: "center",
+          }}
+        >
+          O primeiro acesso pode levar até um minuto.
+        </Text>
+        <TouchableOpacity
+          onPress={() => refetchInstitutions()}
+          activeOpacity={0.8}
+          style={{
+            paddingHorizontal: theme.space[5],
+            paddingVertical: theme.space[3],
+            borderRadius: theme.radius.md,
+            backgroundColor: theme.colors.primary,
+          }}
+        >
+          <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>Tentar novamente</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // "Sem instituições" só é decisão válida com resposta REAL do servidor.
   const hasInstitutions = (institutions?.length ?? 0) > 0;
-  if (!hasInstitutions) {
+  if (institutions && !hasInstitutions) {
     return <Redirect href="/login" />;
   }
 
@@ -163,6 +304,7 @@ export default function RootLayout() {
           {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="login" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+            <Stack.Screen name="signup" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="select-institution" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="oauth/callback" />

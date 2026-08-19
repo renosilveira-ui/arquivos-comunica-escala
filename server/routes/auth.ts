@@ -158,16 +158,30 @@ authRouter.post("/login", async (req: Request, res: Response): Promise<void> => 
     return;
   }
 
-  try {
-    await ensureProfessionalLink(user);
-  } catch (err) {
-    // Não bloquear login por falha de vínculo em ambiente de desenvolvimento.
-    console.warn("[auth.login] ensureProfessionalLink failed:", (err as Error).message);
+  // Conta pendente de aprovação: não criar vínculo com a instituição
+  // default — o auto-cadastro já criou o vínculo (inativo) com a
+  // instituição escolhida, e o app bloqueia na tela de aprovação.
+  if (user.approvalStatus !== "PENDING") {
+    try {
+      await ensureProfessionalLink(user);
+    } catch (err) {
+      // Não bloquear login por falha de vínculo em ambiente de desenvolvimento.
+      console.warn("[auth.login] ensureProfessionalLink failed:", (err as Error).message);
+    }
   }
 
   const token = await sdk.createSessionToken(String(user.id), { name: user.name ?? "" });
   res.cookie(COOKIE_NAME, token, resolveSetCookieOptions(req));
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role }, token });
+  res.json({
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      approvalStatus: user.approvalStatus,
+    },
+    token,
+  });
 });
 
 // POST /api/auth/ssoExchange (camelCase alias)
@@ -281,12 +295,22 @@ authRouter.post("/logout", (req: Request, res: Response): void => {
 authRouter.get("/me", async (req: Request, res: Response): Promise<void> => {
   try {
     const user = await sdk.authenticateRequest(req);
-    try {
-      await ensureProfessionalLink(user as User);
-    } catch (err) {
-      console.warn("[auth.me] ensureProfessionalLink failed:", (err as Error).message);
+    if (user.approvalStatus !== "PENDING") {
+      try {
+        await ensureProfessionalLink(user as User);
+      } catch (err) {
+        console.warn("[auth.me] ensureProfessionalLink failed:", (err as Error).message);
+      }
     }
-    res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    res.json({
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        approvalStatus: user.approvalStatus,
+      },
+    });
   } catch {
     res.status(401).json({ error: "Não autenticado" });
   }
@@ -453,4 +477,147 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
   });
 
   res.status(201).json({ user: newUser });
+});
+
+// ---------------------------------------------------------------------------
+// Auto-cadastro público (feat/self-signup)
+//
+// Fluxo: qualquer pessoa cria conta escolhendo a instituição → a conta
+// nasce com approval_status PENDING e vínculo institucional INATIVO
+// (invisível para escalas/alocação) → um administrador aprova na aba
+// Admin, o que ativa o vínculo e concede acesso aos hospitais.
+//
+// Defesa em profundidade: mesmo logado, o usuário PENDING não passa nas
+// procedures de tenant (sem vínculo ativo) e o app bloqueia na tela
+// "Aguardando aprovação".
+// ---------------------------------------------------------------------------
+
+// GET /api/auth/signup-institutions — público: instituições disponíveis
+// para o seletor da tela de cadastro (somente id + nome).
+authRouter.get("/signup-institutions", async (_req: Request, res: Response): Promise<void> => {
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponível" });
+    return;
+  }
+  const rows = await db
+    .select({ id: institutions.id, name: institutions.name })
+    .from(institutions)
+    .where(eq(institutions.isActive, true))
+    .orderBy(institutions.name);
+  res.json({ institutions: rows });
+});
+
+// POST /api/auth/signup — público: cria conta pendente de aprovação.
+authRouter.post("/signup", async (req: Request, res: Response): Promise<void> => {
+  const { name, email, password, institutionId } = req.body as {
+    name?: unknown;
+    email?: unknown;
+    password?: unknown;
+    institutionId?: unknown;
+  };
+
+  if (
+    typeof name !== "string" ||
+    typeof email !== "string" ||
+    typeof password !== "string" ||
+    !name.trim() ||
+    !email.trim() ||
+    !password
+  ) {
+    res.status(400).json({ error: "name, email e password são obrigatórios" });
+    return;
+  }
+
+  if (password.length < 8) {
+    res.status(400).json({ error: "A senha deve ter pelo menos 8 caracteres" });
+    return;
+  }
+
+  const instId = Number(institutionId);
+  if (!Number.isInteger(instId) || instId <= 0) {
+    res.status(400).json({ error: "Selecione uma instituição" });
+    return;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponível" });
+    return;
+  }
+
+  const [institution] = await db
+    .select({ id: institutions.id, name: institutions.name })
+    .from(institutions)
+    .where(eq(institutions.id, instId))
+    .limit(1);
+  if (!institution) {
+    res.status(400).json({ error: "Instituição não encontrada" });
+    return;
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+  const existing = await getUserByEmail(normalizedEmail);
+  if (existing) {
+    res.status(409).json({ error: "Email já cadastrado" });
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  const trimmedName = name.trim();
+
+  const [result] = await db.insert(users).values({
+    name: trimmedName,
+    email: normalizedEmail,
+    passwordHash,
+    role: "doctor",
+    loginMethod: "email",
+    approvalStatus: "PENDING",
+  });
+  const newUserId = (result as any).insertId as number;
+
+  try {
+    const [proInsert] = await db.insert(professionals).values({
+      userId: newUserId,
+      name: trimmedName,
+      role: mapRoleToLabel("doctor"),
+      userRole: "USER",
+    });
+    const newProfessionalId = (proInsert as any).insertId as number;
+
+    // Vínculo INATIVO até a aprovação: não aparece em listagens de
+    // alocação nem passa no resolveTenantActor.
+    await db.insert(professionalInstitutions).values({
+      professionalId: newProfessionalId,
+      userId: newUserId,
+      institutionId: institution.id,
+      roleInInstitution: "USER",
+      isPrimary: true,
+      active: false,
+    });
+  } catch (err) {
+    // Sem vínculo o usuário fica órfão — remover para permitir novo cadastro.
+    console.error("[signup] Falha ao criar vínculo, revertendo usuário:", (err as Error).message);
+    try {
+      await db.delete(professionals).where(eq(professionals.userId, newUserId));
+      await db.delete(users).where(eq(users.id, newUserId));
+    } catch (cleanupErr) {
+      console.error("[signup] Falha na limpeza do cadastro incompleto:", (cleanupErr as Error).message);
+    }
+    res.status(500).json({ error: "Falha ao criar cadastro. Tente novamente." });
+    return;
+  }
+
+  recordAudit({
+    action: "USER_CREATED",
+    entityType: "USER",
+    entityId: newUserId,
+    actorUserId: newUserId,
+    actorRole: "doctor",
+    actorName: trimmedName,
+    description: `Auto-cadastro de ${trimmedName} (${normalizedEmail}) na instituição ${institution.name} — aguardando aprovação`,
+    metadata: { email: normalizedEmail, institutionId: institution.id, selfSignup: true },
+  });
+
+  res.status(201).json({ ok: true, pending: true });
 });

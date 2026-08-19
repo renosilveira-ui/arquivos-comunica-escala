@@ -19,6 +19,13 @@ export const users = mysqlTable("users", {
   passwordHash: varchar("password_hash", { length: 255 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["admin", "manager", "doctor", "nurse", "tech"]).default("doctor").notNull(),
+  /**
+   * Auto-cadastro (2026-08-18): contas criadas pela página pública de
+   * cadastro nascem PENDING e só operam após aprovação do gestor na aba
+   * Admin. Default APPROVED preserva todas as contas existentes e as
+   * criadas pelo admin.
+   */
+  approvalStatus: mysqlEnum("approval_status", ["PENDING", "APPROVED"]).default("APPROVED").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
