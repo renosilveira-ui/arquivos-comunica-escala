@@ -9,6 +9,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
+import { privacyRouter } from "../routes/privacy";
 import { ssoRouter } from "../sso/router";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -108,6 +109,8 @@ async function startServer() {
   registerOAuthRoutes(app);
   app.use("/api/auth", createAuthRateLimit(), authRouter);
   app.use("/api/admin", adminRouter);
+  // Página pública da Política de Privacidade (App Store + LGPD)
+  app.use(privacyRouter);
   app.use("/.well-known", ssoRouter);
   app.use("/api/sso", ssoRouter);
 
