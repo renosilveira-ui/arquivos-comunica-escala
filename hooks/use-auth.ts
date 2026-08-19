@@ -1,12 +1,44 @@
+// hooks/use-auth.ts — estado de autenticação COMPARTILHADO via Context.
+//
+// A versão anterior era um hook com useState local: CADA componente que
+// chamava useAuth() tinha sua PRÓPRIA cópia de `user`. Ao logar, a tela
+// de login atualizava a cópia dela, mas o AuthGuard (montado no root
+// layout) continuava com user=null e redirecionava de volta pro /login
+// — bounce reproduzido no web em 2026-08-19. O mesmo defeito deixava
+// telas com estados de sessão divergentes entre si.
+//
+// Agora o estado vive UMA vez no AuthProvider (root layout); useAuth()
+// consome o contexto. A API pública do hook é idêntica à anterior.
+
 import { authApi, type AuthUser } from "@/lib/_core/api";
 import * as Auth from "@/lib/_core/auth";
 import { clearActiveInstitutionId } from "@/lib/tenant-state";
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { Platform } from "react-native";
 
 export type { AuthUser as User };
 
-export function useAuth() {
+type AuthContextValue = {
+  user: AuthUser | null;
+  isLoading: boolean;
+  isAuthenticated: boolean;
+  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  logout: () => Promise<void>;
+  refetch: () => Promise<void>;
+};
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -79,12 +111,25 @@ export function useAuth() {
     setUser(null);
   }, []);
 
-  return {
-    user,
-    isLoading,
-    isAuthenticated: Boolean(user),
-    login,
-    logout,
-    refetch,
-  };
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      isLoading,
+      isAuthenticated: Boolean(user),
+      login,
+      logout,
+      refetch,
+    }),
+    [user, isLoading, login, logout, refetch],
+  );
+
+  return createElement(AuthContext.Provider, { value }, children);
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
+  return ctx;
 }
