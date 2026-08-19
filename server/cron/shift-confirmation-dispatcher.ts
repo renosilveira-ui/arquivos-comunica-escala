@@ -181,9 +181,17 @@ async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
     dateStr = next.toISOString().split("T")[0]!;
   }
 
-  // Build shift time window
-  const shiftStartAt = new Date(`${dateStr}T${trigger.shiftStartTime}:00`);
-  const shiftEndAt = new Date(`${dateStr}T${trigger.shiftEndTime}:00`);
+  // Build shift time window.
+  //
+  // shiftStartTime/shiftEndTime são horários de PAREDE do hospital
+  // (America/Sao_Paulo), mas start_at no banco é gravado como instante
+  // UTC pelo editor do app (Manhã 07h BRT = 10:00Z). Sem o offset
+  // explícito, o servidor (TZ=UTC) interpretava "13:00" como 13:00Z e a
+  // janela caía 3h antes dos plantões reais — o cron nunca encontrava
+  // nada criado pelo app. São Paulo é UTC-3 fixo (sem horário de verão
+  // desde 2019).
+  const shiftStartAt = new Date(`${dateStr}T${trigger.shiftStartTime}:00-03:00`);
+  const shiftEndAt = new Date(`${dateStr}T${trigger.shiftEndTime}:00-03:00`);
   // Overnight shift: end time is next day
   if (shiftEndAt <= shiftStartAt) {
     shiftEndAt.setDate(shiftEndAt.getDate() + 1);
