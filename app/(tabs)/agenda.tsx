@@ -156,13 +156,19 @@ export default function AgendaScreen() {
   const { data: activeShift, isLoading: loadingActive } =
     trpc.shifts.getActiveShift.useQuery(undefined, { enabled: !!user?.id });
 
-  const { data, isLoading, refetch } = trpc.shifts.listAgenda.useQuery(
+  const { data, isLoading, isError, refetch } = trpc.shifts.listAgenda.useQuery(
     {
       startDate: anchorWeekStart,
       weeks: weeksCount,
       scope,
     },
-    { enabled: !!user?.id },
+    {
+      enabled: !!user?.id,
+      // Cold start / oscilação de rede não pode virar tela vazia:
+      // retries seguram a maioria; o resto cai no estado de erro abaixo.
+      retry: 2,
+      retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 10000),
+    },
   );
 
   const weeksForRender = useMemo(() => {
@@ -302,6 +308,52 @@ export default function AgendaScreen() {
             style={{ alignItems: "center", paddingVertical: theme.space[10] }}
           >
             <ActivityIndicator size="large" color={theme.colors.primary} />
+          </View>
+        ) : isError && !data ? (
+          // Falha na consulta NÃO pode renderizar a grade vazia como se
+          // não houvesse plantões ("nada aparece" sem explicação) — era
+          // exatamente o sintoma reportado no primeiro teste com dados
+          // reais. Mostra o erro e oferece retry.
+          <View
+            style={{
+              alignItems: "center",
+              paddingVertical: theme.space[10],
+              gap: theme.space[4],
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 15,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                textAlign: "center",
+              }}
+            >
+              Não foi possível carregar a agenda
+            </Text>
+            <Text
+              style={{
+                fontSize: 13,
+                color: theme.colors.textSecondary,
+                textAlign: "center",
+              }}
+            >
+              Verifique sua conexão e tente novamente.
+            </Text>
+            <TouchableOpacity
+              onPress={() => refetch()}
+              activeOpacity={0.8}
+              style={{
+                paddingHorizontal: theme.space[5],
+                paddingVertical: theme.space[3],
+                borderRadius: theme.radius.md,
+                backgroundColor: theme.colors.primary,
+              }}
+            >
+              <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>
+                Tentar novamente
+              </Text>
+            </TouchableOpacity>
           </View>
         ) : viewMode === "panorama" ? (
           <PanoramicAgenda

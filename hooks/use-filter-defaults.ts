@@ -1,6 +1,21 @@
 import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 
+/**
+ * localStorage NÃO existe no React Native — acessá-lo direto lança
+ * ReferenceError dentro do useEffect e derruba a tela inteira (crash da
+ * aba Solicitações no iOS). No nativo a persistência do último filtro é
+ * dispensável: devolve null e o default segue sem memória.
+ */
+function readLastFilter(key: string): string | null {
+  try {
+    if (typeof globalThis.localStorage === "undefined") return null;
+    return globalThis.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 export interface FilterDefaults {
   hospitalId: number | null;
   sectorId: number | null;
@@ -49,9 +64,9 @@ export function useFilterDefaults(options: UseFilterDefaultsOptions) {
 
     // GESTOR_PLUS pode ver tudo, não auto-seleciona nada
     if (managerScope.canManageAll) {
-      // Tentar carregar do localStorage
-      const lastHospitalId = localStorage.getItem("lastHospitalId");
-      const lastSectorId = localStorage.getItem("lastSectorId");
+      // Tentar carregar do localStorage (web-only; null no nativo)
+      const lastHospitalId = readLastFilter("lastHospitalId");
+      const lastSectorId = readLastFilter("lastSectorId");
       
       setDefaults({
         hospitalId: lastHospitalId ? parseInt(lastHospitalId, 10) : null,
@@ -83,7 +98,7 @@ export function useFilterDefaults(options: UseFilterDefaultsOptions) {
       defaultHospitalId = scopedHospitalIds[0];
     } else if (scopedHospitalIds.length > 1) {
       // Tentar carregar do localStorage e validar se ainda tem permissão
-        const lastHospitalId = localStorage.getItem("lastHospitalId");
+        const lastHospitalId = readLastFilter("lastHospitalId");
         if (lastHospitalId) {
           const lastHospitalIdNum = parseInt(lastHospitalId, 10);
           if ((scopedHospitalIds as number[]).includes(lastHospitalIdNum)) {
@@ -106,7 +121,7 @@ export function useFilterDefaults(options: UseFilterDefaultsOptions) {
         defaultSectorId = sectorsInHospital[0].sectorId;
       } else if (sectorsInHospital.length > 1) {
         // Tentar carregar do localStorage e validar se ainda tem permissão
-        const lastSectorId = localStorage.getItem("lastSectorId");
+        const lastSectorId = readLastFilter("lastSectorId");
         if (lastSectorId) {
           const lastSectorIdNum = parseInt(lastSectorId, 10);
           if (sectorsInHospital.some(s => s.sectorId === lastSectorIdNum)) {
