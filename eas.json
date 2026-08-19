@@ -33,7 +33,8 @@
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://escalas-staging.onrender.com"
-      }
+      },
+      "autoIncrement": true
     }
   },
   "submit": {
