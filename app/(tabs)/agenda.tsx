@@ -9,7 +9,7 @@ import {
   Platform,
 } from "react-native";
 import { useState, useMemo } from "react";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Plus, Building2, ChevronDown } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
@@ -19,6 +19,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { useTenantState } from "@/lib/tenant-state";
 import { SsoLaunchButton } from "@/components/SsoLaunchButton";
 
 /**
@@ -139,6 +140,11 @@ function shiftBorderColor(status: string): string {
 export default function AgendaScreen() {
   const { user } = useAuth();
   const { can } = usePermissions();
+  const { activeInstitutionId, clearInstitutionSelection } = useTenantState();
+  const { data: myInstitutions } = trpc.professionals.listMyInstitutions.useQuery(undefined, {
+    enabled: !!user,
+    staleTime: 60_000,
+  });
   const canCreateShift = can("create:shift");
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -175,6 +181,33 @@ export default function AgendaScreen() {
     if (data?.weeks && data.weeks.length > 0) return data.weeks;
     return buildEmptyAgendaWeeks(anchorWeekStart, weeksCount);
   }, [anchorWeekStart, data?.weeks, weeksCount]);
+
+  const activeInstitutionName = useMemo(
+    () => myInstitutions?.find((i) => i.id === activeInstitutionId)?.name ?? null,
+    [myInstitutions, activeInstitutionId],
+  );
+
+  // Total de plantões da janela consultada — distingue "período
+  // realmente vazio" (mensagem explícita) de dados carregados.
+  const totalShifts = useMemo(
+    () =>
+      (data?.weeks ?? []).reduce(
+        (acc, w) =>
+          acc +
+          w.days.reduce(
+            (dAcc, d) => dAcc + d.groups.reduce((gAcc, g) => gAcc + g.shifts.length, 0),
+            0,
+          ),
+        0,
+      ),
+    [data?.weeks],
+  );
+
+  const handleSwitchInstitution = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await clearInstitutionSelection();
+    router.replace("/select-institution" as any);
+  };
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -259,6 +292,38 @@ export default function AgendaScreen() {
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Instituição ativa — SEMPRE visível e tocável para trocar.
+              A agenda é por instituição; sem isso o usuário via a grade
+              vazia da instituição errada sem nenhuma pista do motivo. */}
+          <TouchableOpacity
+            onPress={handleSwitchInstitution}
+            activeOpacity={0.7}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              alignSelf: "flex-start",
+              gap: 6,
+              backgroundColor: theme.colors.primarySoft,
+              borderRadius: theme.radius.md,
+              paddingHorizontal: theme.space[3],
+              paddingVertical: 6,
+              marginBottom: theme.space[3],
+            }}
+          >
+            <Building2 size={14} color={theme.colors.primary} />
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: "600",
+                color: theme.colors.primary,
+              }}
+              numberOfLines={1}
+            >
+              {activeInstitutionName ?? "Selecionar instituição"}
+            </Text>
+            <ChevronDown size={14} color={theme.colors.primary} />
+          </TouchableOpacity>
 
           <View
             style={{
@@ -354,6 +419,42 @@ export default function AgendaScreen() {
                 Tentar novamente
               </Text>
             </TouchableOpacity>
+          </View>
+        ) : data && totalShifts === 0 ? (
+          // Período genuinamente sem plantões: dizer com todas as letras
+          // (e lembrar QUAL instituição está sendo consultada) em vez de
+          // renderizar uma grade vazia muda.
+          <View
+            style={{
+              alignItems: "center",
+              paddingVertical: theme.space[10],
+              paddingHorizontal: theme.space[6],
+              gap: theme.space[3],
+            }}
+          >
+            <Building2 size={40} color={theme.colors.textDisabled} />
+            <Text
+              style={{
+                fontSize: 15,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                textAlign: "center",
+              }}
+            >
+              Nenhum plantão neste período
+              {activeInstitutionName ? ` em ${activeInstitutionName}` : ""}
+            </Text>
+            <Text
+              style={{
+                fontSize: 13,
+                color: theme.colors.textSecondary,
+                textAlign: "center",
+                lineHeight: 19,
+              }}
+            >
+              Se a escala que você procura é de outra instituição, toque no
+              nome da instituição acima para trocar.
+            </Text>
           </View>
         ) : viewMode === "panorama" ? (
           <PanoramicAgenda
