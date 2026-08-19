@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   createElement,
   createContext,
@@ -12,82 +13,76 @@ import {
 
 const TENANT_KEY = "activeInstitutionId";
 
-type AsyncStorageLike = {
-  getItem: (key: string) => Promise<string | null>;
-  setItem: (key: string, value: string) => Promise<void>;
-  removeItem: (key: string) => Promise<void>;
-};
+/**
+ * Fonte IMEDIATA do tenant ativo, em memória de módulo.
+ *
+ * O storage (AsyncStorage/localStorage) é só PERSISTÊNCIA entre
+ * sessões — nunca o caminho crítico de um request. A versão anterior
+ * lia o AsyncStorage via import dinâmico com fallback silencioso a
+ * cada request: quando esse import falhava no build de produção, a
+ * escolha da instituição "gravava" no ar (set silenciosamente perdido)
+ * e todo request saía SEM x-tenant-id — o servidor caía na primeira
+ * instituição do usuário e telas como a Agenda vinham vazias, sem
+ * nenhum erro. Também explicava o app "esquecer" a instituição ao
+ * reabrir. Com a variável de módulo, trocar de instituição passa a
+ * valer instantaneamente para todos os requests da sessão, mesmo que
+ * a persistência falhe (pior caso: pede a instituição de novo no
+ * próximo cold start).
+ */
+let inMemoryTenantId: number | null = null;
+let hydratedFromStorage = false;
 
-async function getNativeStorage(): Promise<AsyncStorageLike | null> {
-  const globalStorage = (globalThis as any)?.AsyncStorage as AsyncStorageLike | undefined;
-  if (globalStorage?.getItem) return globalStorage;
+function parseStored(raw: string | null | undefined): number | null {
+  const value = raw ? Number(raw) : NaN;
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
 
+async function readFromStorage(): Promise<number | null> {
   try {
-    const mod = await import("@react-native-async-storage/async-storage");
-    return mod.default as AsyncStorageLike;
+    if (Platform.OS === "web") {
+      return parseStored(globalThis.localStorage?.getItem(TENANT_KEY));
+    }
+    return parseStored(await AsyncStorage.getItem(TENANT_KEY));
   } catch {
     return null;
   }
 }
 
 export async function getActiveInstitutionId(): Promise<number | null> {
-  if (Platform.OS === "web") {
-    try {
-      const raw = globalThis.localStorage?.getItem(TENANT_KEY);
-      const value = raw ? Number(raw) : NaN;
-      return Number.isInteger(value) && value > 0 ? value : null;
-    } catch {
-      return null;
-    }
+  if (inMemoryTenantId !== null) return inMemoryTenantId;
+  if (!hydratedFromStorage) {
+    hydratedFromStorage = true;
+    inMemoryTenantId = await readFromStorage();
   }
-
-  const storage = await getNativeStorage();
-  if (!storage) return null;
-  try {
-    const raw = await storage.getItem(TENANT_KEY);
-    const value = raw ? Number(raw) : NaN;
-    return Number.isInteger(value) && value > 0 ? value : null;
-  } catch {
-    return null;
-  }
+  return inMemoryTenantId;
 }
 
 export async function setActiveInstitutionId(id: number): Promise<void> {
-  const stringId = String(id);
-  if (Platform.OS === "web") {
-    try {
-      globalThis.localStorage?.setItem(TENANT_KEY, stringId);
-    } catch {
-      // ignore storage errors in web private mode
-    }
-    return;
-  }
-
-  const storage = await getNativeStorage();
-  if (!storage) return;
+  // Memória primeiro: a troca vale AGORA, independente da persistência.
+  inMemoryTenantId = id;
+  hydratedFromStorage = true;
   try {
-    await storage.setItem(TENANT_KEY, stringId);
+    if (Platform.OS === "web") {
+      globalThis.localStorage?.setItem(TENANT_KEY, String(id));
+    } else {
+      await AsyncStorage.setItem(TENANT_KEY, String(id));
+    }
   } catch {
-    // ignore storage errors
+    // Persistência é best-effort; a sessão atual já está correta.
   }
 }
 
 export async function clearActiveInstitutionId(): Promise<void> {
-  if (Platform.OS === "web") {
-    try {
-      globalThis.localStorage?.removeItem(TENANT_KEY);
-    } catch {
-      // ignore storage errors in web private mode
-    }
-    return;
-  }
-
-  const storage = await getNativeStorage();
-  if (!storage) return;
+  inMemoryTenantId = null;
+  hydratedFromStorage = true;
   try {
-    await storage.removeItem(TENANT_KEY);
+    if (Platform.OS === "web") {
+      globalThis.localStorage?.removeItem(TENANT_KEY);
+    } else {
+      await AsyncStorage.removeItem(TENANT_KEY);
+    }
   } catch {
-    // ignore storage errors
+    // best-effort
   }
 }
 
