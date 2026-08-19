@@ -12,7 +12,7 @@ import { useState, useMemo } from "react";
 import { ChevronLeft, ChevronRight, Plus, Building2, ChevronDown } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
+import { MonthAgenda, type DayOffer } from "@/components/agenda/MonthAgenda";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { useAuth } from "@/hooks/use-auth";
@@ -60,6 +60,16 @@ function startOfWeekMon(d: Date): Date {
 
 function toDateKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function monthKeyOf(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthTitle(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number);
+  const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  return `${months[m - 1]} ${y}`;
 }
 
 function formatDayHeader(date: string, dow: number): string {
@@ -159,13 +169,23 @@ export default function AgendaScreen() {
   const todayKey = useMemo(() => toDateKey(new Date()), []);
   const weeksCount = isDesktop ? 4 : 2;
 
+  // Panorama: âncora por MÊS (grade completa). Calendário: por semanas.
+  const [anchorMonthKey, setAnchorMonthKey] = useState(() => monthKeyOf(new Date()));
+  const isPanorama = viewMode === "panorama";
+  const panoramaStart = useMemo(() => {
+    const [y, m] = anchorMonthKey.split("-").map(Number);
+    return toDateKey(startOfWeekMon(new Date(y, m - 1, 1)));
+  }, [anchorMonthKey]);
+  const queryStartDate = isPanorama ? panoramaStart : anchorWeekStart;
+  const queryWeeks = isPanorama ? 6 : weeksCount;
+
   const { data: activeShift, isLoading: loadingActive } =
     trpc.shifts.getActiveShift.useQuery(undefined, { enabled: !!user?.id });
 
   const { data, isLoading, isError, refetch } = trpc.shifts.listAgenda.useQuery(
     {
-      startDate: anchorWeekStart,
-      weeks: weeksCount,
+      startDate: queryStartDate,
+      weeks: queryWeeks,
       scope,
     },
     {
@@ -179,8 +199,27 @@ export default function AgendaScreen() {
 
   const weeksForRender = useMemo(() => {
     if (data?.weeks && data.weeks.length > 0) return data.weeks;
-    return buildEmptyAgendaWeeks(anchorWeekStart, weeksCount);
-  }, [anchorWeekStart, data?.weeks, weeksCount]);
+    return buildEmptyAgendaWeeks(queryStartDate, queryWeeks);
+  }, [queryStartDate, data?.weeks, queryWeeks]);
+
+  const { data: availableSwaps } = trpc.swaps.listAvailable.useQuery(
+    {},
+    { enabled: !!user?.id && isPanorama, staleTime: 60_000 },
+  );
+  const dayOffers = useMemo<DayOffer[]>(() => {
+    return ((availableSwaps ?? []) as any[]).map((sw) => {
+      const start = new Date(sw.fromShift?.startAt ?? 0);
+      const end = new Date(sw.fromShift?.endAt ?? 0);
+      const f = (n: number) => String(n).padStart(2, "0");
+      return {
+        id: sw.id,
+        fromProfessionalName: sw.fromProfessional?.name ?? "Colega",
+        shiftLabel: sw.fromShift?.label ?? "Plantão",
+        date: toDateKey(start),
+        timeRange: `${f(start.getHours())}:${f(start.getMinutes())}–${f(end.getHours())}:${f(end.getMinutes())}`,
+      };
+    });
+  }, [availableSwaps]);
 
   const activeInstitutionName = useMemo(
     () => myInstitutions?.find((i) => i.id === activeInstitutionId)?.name ?? null,
@@ -216,14 +255,20 @@ export default function AgendaScreen() {
     setRefreshing(false);
   };
 
+  const stepMonth = (delta: number) => {
+    const [y, m] = anchorMonthKey.split("-").map(Number);
+    setAnchorMonthKey(monthKeyOf(new Date(y, m - 1 + delta, 1)));
+  };
   const goPrev = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isPanorama) return stepMonth(-1);
     const d = new Date(`${anchorWeekStart}T00:00:00`);
     d.setDate(d.getDate() - weeksCount * 7);
     setAnchorWeekStart(toDateKey(d));
   };
   const goNext = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isPanorama) return stepMonth(1);
     const d = new Date(`${anchorWeekStart}T00:00:00`);
     d.setDate(d.getDate() + weeksCount * 7);
     setAnchorWeekStart(toDateKey(d));
@@ -231,6 +276,7 @@ export default function AgendaScreen() {
   const goToday = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setAnchorWeekStart(toDateKey(startOfWeekMon(new Date())));
+    setAnchorMonthKey(monthKeyOf(new Date()));
   };
 
   return (
@@ -287,7 +333,7 @@ export default function AgendaScreen() {
                   textAlign: "center",
                 }}
               >
-                {formatMonthRange(anchorWeekStart, weeksCount)}
+                {isPanorama ? formatMonthTitle(anchorMonthKey) : formatMonthRange(anchorWeekStart, weeksCount)}
               </Text>
               <TouchableOpacity onPress={goNext} style={navBtnStyle}>
                 <ChevronRight size={20} color={theme.colors.textPrimary} />
@@ -459,10 +505,11 @@ export default function AgendaScreen() {
             </Text>
           </View>
         ) : viewMode === "panorama" ? (
-          <PanoramicAgenda
+          <MonthAgenda
             weeks={weeksForRender}
+            monthKey={anchorMonthKey}
             todayKey={todayKey}
-            isDesktop={isDesktop}
+            offers={dayOffers}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -476,6 +523,7 @@ export default function AgendaScreen() {
                 params: { id: String(id) },
               })
             }
+            onOfferPress={() => router.push("/(tabs)/pending" as any)}
           />
         ) : isDesktop ? (
           <DesktopGrid
