@@ -235,7 +235,9 @@ export default function AgendaScreen() {
 
   return (
     <ScreenGradient variant="light">
-      <ScreenContainer>
+      {/* flex: sem ele, a MobileDayList (ScrollView flex:1) colapsa para
+          altura zero no NATIVO e a agenda parece vazia mesmo com dados. */}
+      <ScreenContainer flex>
         {/* Header: título + nav mês + toggle Geral/Minha */}
         <View style={{ marginBottom: theme.space[4] }}>
           <View
