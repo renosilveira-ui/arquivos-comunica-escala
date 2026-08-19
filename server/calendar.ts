@@ -310,15 +310,17 @@ export const calendarRouter = router({
         ];
 
         for (const def of defaultShifts) {
-          const startAt = new Date(date + `T${String(def.startHour).padStart(2, "0")}:00:00`);
-          let endAt: Date;
-          if (def.endHour < def.startHour) {
+          // Horário de PAREDE do hospital (America/Sao_Paulo, UTC-3 fixo) —
+          // mesma convenção de shifts-crud.buildShiftTimestamps. Sem o
+          // offset, o servidor (TZ=UTC) gravava "Manhã 07:00" como 07:00Z
+          // (= 04:00 BRT), 3h antes dos turnos do editor, e o cron de
+          // confirmação nunca encontrava esses turnos.
+          const pad = (h: number) => String(h).padStart(2, "0");
+          const startAt = new Date(`${date}T${pad(def.startHour)}:00:00-03:00`);
+          let endAt = new Date(`${date}T${pad(def.endHour)}:00:00-03:00`);
+          if (endAt <= startAt) {
             // Noite: termina no dia seguinte
-            endAt = new Date(startAt);
-            endAt.setDate(endAt.getDate() + 1);
-            endAt.setHours(def.endHour, 0, 0, 0);
-          } else {
-            endAt = new Date(date + `T${String(def.endHour).padStart(2, "0")}:00:00`);
+            endAt = new Date(endAt.getTime() + 24 * 60 * 60 * 1000);
           }
 
           await db.execute(

@@ -33,6 +33,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
 import { theme } from "@/lib/theme";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 
 // ---------------------------------------------------------------------------
 // Helpers for Available Swaps section
@@ -206,6 +207,7 @@ export default function PendingScreen() {
   const {
     data: pendingAssignments,
     isLoading,
+    isError: pendingError,
     refetch,
   } = trpc.shiftAssignments.listPending.useQuery(
     {
@@ -228,11 +230,15 @@ export default function PendingScreen() {
     d.setDate(d.getDate() + 90);
     return d.toISOString().split("T")[0];
   }, []);
-  const { data: myShiftsData, isLoading: loadingMyShifts } =
-    trpc.shifts.listByPeriod.useQuery(
-      { startDate: myShiftsStart, endDate: myShiftsEnd },
-      { enabled: !!user?.id && !!professional?.id },
-    );
+  const {
+    data: myShiftsData,
+    isLoading: loadingMyShifts,
+    isError: myShiftsError,
+    refetch: refetchMyShifts,
+  } = trpc.shifts.listByPeriod.useQuery(
+    { startDate: myShiftsStart, endDate: myShiftsEnd },
+    { enabled: !!user?.id && !!professional?.id },
+  );
 
   const myShifts = useMemo(() => {
     if (!myShiftsData || !professional?.id) return [];
@@ -743,7 +749,12 @@ export default function PendingScreen() {
 
           {renderAvailableSwapsSection()}
 
-          {myShifts.length === 0 ? (
+          {myShiftsError ? (
+            <QueryErrorState
+              title="Não foi possível carregar seus plantões"
+              onRetry={() => refetchMyShifts()}
+            />
+          ) : myShifts.length === 0 ? (
             <View className="items-center justify-center py-16">
               <ClipboardCheck size={60} color={theme.colors.borderStrong} />
               <Text
@@ -1164,6 +1175,11 @@ export default function PendingScreen() {
               );
             })}
           </View>
+        ) : pendingError ? (
+          <QueryErrorState
+            title="Não foi possível carregar as solicitações"
+            onRetry={() => refetch()}
+          />
         ) : (
           <View
             style={{

@@ -29,7 +29,7 @@ export const confirmationRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { registerPushToken: register } = await import("./notifications-service");
-      return register(ctx.user.id, input.token, input.platform);
+      return register(ctx.user.id, input.token, input.platform, ctx.institutionId);
     }),
 
   /**
@@ -258,15 +258,27 @@ export const confirmationRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Só é possível indicar substituto após recusar o plantão" });
       }
 
-      // Find replacement professional
+      // Find replacement professional — OBRIGATORIAMENTE com vínculo
+      // ativo na instituição do plantão. Sem esse filtro, qualquer
+      // professionalId do banco podia ser indicado, criando alocação
+      // (e vazando dados do plantão via push) para profissional de
+      // outra instituição. Mesmo critério do listReplacementCandidates.
       const [replacement] = await db
         .select({ id: professionals.id, userId: professionals.userId, name: professionals.name })
         .from(professionals)
+        .innerJoin(
+          professionalInstitutions,
+          and(
+            eq(professionalInstitutions.professionalId, professionals.id),
+            eq(professionalInstitutions.institutionId, conf.institutionId),
+            eq(professionalInstitutions.active, true),
+          ),
+        )
         .where(eq(professionals.id, input.replacementProfessionalId))
         .limit(1);
 
       if (!replacement) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Profissional substituto não encontrado" });
+        throw new TRPCError({ code: "NOT_FOUND", message: "Profissional substituto não encontrado nesta instituição" });
       }
 
       // Reset recheck timer: +30min for replacement to respond
@@ -289,8 +301,10 @@ export const confirmationRouter = router({
         .where(eq(shiftInstances.id, conf.shiftInstanceId))
         .limit(1);
 
-      const startTime = shift ? new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "";
-      const endTime = shift ? new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "";
+      // timeZone explícito: startAt é instante UTC e o servidor roda em UTC.
+      const TZ = "America/Sao_Paulo";
+      const startTime = shift ? new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "";
+      const endTime = shift ? new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "";
 
       // Push to replacement
       await sendPushNotification(replacement.userId, {

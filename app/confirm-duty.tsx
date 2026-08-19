@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/Badge";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { theme } from "@/lib/theme";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 
 export default function ConfirmDutyScreen() {
   const { user } = useAuth();
@@ -18,9 +19,9 @@ export default function ConfirmDutyScreen() {
   const params = useLocalSearchParams<{ token?: string }>();
   const utils = trpc.useUtils();
 
-  const { data: pending, isLoading } = trpc.confirmations.getPending.useQuery(
+  const { data: pending, isLoading, isError, refetch } = trpc.confirmations.getPending.useQuery(
     undefined,
-    { enabled: !!user },
+    { enabled: !!user, retry: 2 },
   );
 
   const confirmMutation = trpc.confirmations.confirm.useMutation({
@@ -81,6 +82,22 @@ export default function ConfirmDutyScreen() {
       <ScreenGradient variant="light">
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  // Erro ≠ "tudo em dia": sem esta distinção, uma falha de rede
+  // mostrava o check verde de sucesso enquanto uma confirmação real
+  // seguia pendente rumo ao auto-confirm dos 30min.
+  if (isError) {
+    return (
+      <ScreenGradient variant="light">
+        <View style={{ flex: 1, justifyContent: "center" }}>
+          <QueryErrorState
+            title="Não foi possível verificar suas confirmações"
+            onRetry={() => refetch()}
+          />
         </View>
       </ScreenGradient>
     );

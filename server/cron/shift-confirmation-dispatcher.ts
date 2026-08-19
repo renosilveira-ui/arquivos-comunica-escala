@@ -259,14 +259,18 @@ async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
       confirmationToken,
     });
 
-    // Send push notification
+    // Send push notification. timeZone explícito: startAt é instante UTC
+    // e o servidor roda em UTC — sem isso o push exibia "16:00–22:00"
+    // para o plantão da Tarde (13:00–19:00 BRT).
     const startTime = new Date(assignment.startAt).toLocaleTimeString("pt-BR", {
       hour: "2-digit",
       minute: "2-digit",
+      timeZone: TIMEZONE,
     });
     const endTime = new Date(assignment.endAt).toLocaleTimeString("pt-BR", {
       hour: "2-digit",
       minute: "2-digit",
+      timeZone: TIMEZONE,
     });
 
     await sendPushNotification(assignment.userId, {

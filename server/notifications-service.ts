@@ -1,6 +1,6 @@
 import { getDb } from "./db";
-import { pushTokens, notifications as notificationsTable } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { pushTokens, notifications as notificationsTable, professionalInstitutions } from "../drizzle/schema";
+import { eq, and, desc } from "drizzle-orm";
 
 /**
  * Serviço de Notificações Push
@@ -53,7 +53,8 @@ async function sendExpoPushNotification(token: string, payload: PushNotification
 export async function registerPushToken(
   userId: number,
   token: string,
-  platform: "ios" | "android" | "web"
+  platform: "ios" | "android" | "web",
+  institutionId?: number | null
 ): Promise<{ success: boolean; message: string }> {
   try {
     const db = await getDb();
@@ -70,9 +71,28 @@ export async function registerPushToken(
       return { success: true, message: "Token já registrado" };
     }
 
+    // Tenant do token: o informado pelo caller (x-tenant-id) ou, na
+    // falta, o vínculo institucional ativo do usuário. O valor fixo 1
+    // anterior corrompia a coluna para todos os outros tenants.
+    let resolvedInstitutionId = institutionId ?? null;
+    if (!resolvedInstitutionId) {
+      const [link] = await db
+        .select({ institutionId: professionalInstitutions.institutionId })
+        .from(professionalInstitutions)
+        .where(
+          and(
+            eq(professionalInstitutions.userId, userId),
+            eq(professionalInstitutions.active, true),
+          ),
+        )
+        .orderBy(desc(professionalInstitutions.isPrimary))
+        .limit(1);
+      resolvedInstitutionId = link?.institutionId ?? 1;
+    }
+
     // Inserir novo token
     await db.insert(pushTokens).values({
-      institutionId: 1,
+      institutionId: resolvedInstitutionId,
       userId,
       token,
       platform,
@@ -140,14 +160,18 @@ export async function notifyNewShift(
   sectorName: string,
   startTime: Date
 ): Promise<void> {
+  // timeZone explícito: instantes UTC formatados no fuso do hospital.
+  const TZ = "America/Sao_Paulo";
   const formattedDate = startTime.toLocaleDateString("pt-BR", {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: TZ,
   });
   const formattedTime = startTime.toLocaleTimeString("pt-BR", {
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: TZ,
   });
 
   await sendPushNotification(userId, {
