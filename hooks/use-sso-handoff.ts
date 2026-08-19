@@ -70,8 +70,10 @@ export function useSsoHandoff() {
       // também acontece server-side no resgate do código — nenhuma
       // chamada extra do app.
       if (Platform.OS !== "web") {
-        const { openComunicaViaLaunchCode } = await import("@/lib/sso-launch");
-        const launchResult = await openComunicaViaLaunchCode(tenantId);
+        // Fase 3: app nativo do Comunica+ primeiro; browser logado
+        // (launch-code) apenas quando o app não está instalado.
+        const { openComunica } = await import("@/lib/sso-launch");
+        const launchResult = await openComunica(tenantId);
         if (!launchResult.ok) {
           setState({
             loading: false,

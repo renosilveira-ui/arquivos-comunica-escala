@@ -47,10 +47,10 @@ export function NotificationListener() {
           break;
 
         case "sso_ready": {
-          // Login de verdade: launch-code one-time → browser abre o
-          // Comunica+ já logado (form auto-submit no servidor).
-          const { openComunicaViaLaunchCode } = await import("@/lib/sso-launch");
-          const result = await openComunicaViaLaunchCode();
+          // Fase 3: app nativo do Comunica+ primeiro (sessão própria);
+          // sem o app instalado, browser já logado via launch-code.
+          const { openComunica } = await import("@/lib/sso-launch");
+          const result = await openComunica();
           if (!result.ok) {
             // Fallback: abre o Comunica+ deslogado (melhor que nada) ou
             // volta pra agenda, onde o botão manual está disponível.

@@ -1,9 +1,14 @@
-// lib/sso-launch.ts — Abre o Comunica+ logado via launch-code (mobile)
+// lib/sso-launch.ts — Abre o Comunica+ a partir do Escala (mobile)
 //
-// Fluxo: POST /api/sso/launch-code (autenticado, Bearer) → recebe
-// launchUrl one-time → Linking.openURL abre o browser externo → o
-// servidor completa o handoff (form auto-submit) → browser cai logado
-// no Comunica+. O token JWT nunca passa pelo app nem por URL.
+// Fase 3 da integração: preferir o APP NATIVO do Comunica+
+// (comunicamais://), que mantém sessão própria persistente — o médico
+// cai direto no app, não no navegador. Se o app não estiver instalado,
+// fallback para o fluxo browser logado via launch-code:
+//
+// POST /api/sso/launch-code (autenticado, Bearer) → recebe launchUrl
+// one-time → Linking.openURL abre o browser externo → o servidor
+// completa o handoff (form auto-submit) → browser cai logado no
+// Comunica+. O token JWT nunca passa pelo app nem por URL.
 //
 // Usado por:
 //   - NotificationListener (toque no push type=sso_ready)
@@ -11,6 +16,9 @@
 
 import { Platform, Linking } from "react-native";
 import * as Auth from "@/lib/_core/auth";
+
+/** Scheme registrado pelo app nativo do Comunica+ (native/app.json). */
+const COMUNICA_APP_URL = "comunicamais://";
 
 function getBaseUrl(): string {
   const envUrl = (process.env.EXPO_PUBLIC_API_URL || "").trim();
@@ -65,4 +73,25 @@ export async function openComunicaViaLaunchCode(
   } catch (err) {
     return { ok: false, error: (err as Error).message || "Falha ao abrir Comunica+" };
   }
+}
+
+/**
+ * Abre o Comunica+ — app nativo se instalado, senão browser logado.
+ *
+ * O app nativo guarda a própria sessão (SecureStore), então abri-lo já
+ * resolve o caso comum. Se o médico estiver deslogado lá, ele cai na
+ * tela de login do próprio app — comportamento aceitável e explícito.
+ * `openURL` para scheme sem handler rejeita a promise (iOS e Android),
+ * e aí caímos no fluxo browser via launch-code.
+ */
+export async function openComunica(tenantId?: number): Promise<SsoLaunchResult> {
+  if (Platform.OS !== "web") {
+    try {
+      await Linking.openURL(COMUNICA_APP_URL);
+      return { ok: true };
+    } catch {
+      // App não instalado — segue para o browser logado.
+    }
+  }
+  return openComunicaViaLaunchCode(tenantId);
 }
