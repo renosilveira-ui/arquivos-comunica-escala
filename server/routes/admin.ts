@@ -57,6 +57,7 @@ adminRouter.get("/users", async (req: Request, res: Response): Promise<void> => 
       createdAt: users.createdAt,
       professionalId: professionals.id,
       userRole: professionals.userRole,
+      specialty: professionals.specialty,
     })
     .from(users)
     .leftJoin(professionals, eq(professionals.userId, users.id))
@@ -69,7 +70,7 @@ adminRouter.get("/users", async (req: Request, res: Response): Promise<void> => 
     role: row.role,
     createdAt: row.createdAt,
     professional: row.professionalId
-      ? { id: row.professionalId, userRole: row.userRole }
+      ? { id: row.professionalId, userRole: row.userRole, specialty: row.specialty }
       : null,
   }));
 
@@ -90,10 +91,11 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
     return;
   }
 
-  const { name, email, role } = req.body as {
+  const { name, email, role, specialty } = req.body as {
     name?: string;
     email?: string;
     role?: string;
+    specialty?: string | null;
   };
 
   const VALID_ROLES: UserRole[] = ["admin", "manager", "doctor", "nurse", "tech"];
@@ -116,6 +118,14 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
   }
 
   await db.update(users).set(updates).where(eq(users.id, userId));
+
+  // Especialidade (serviço) vive no professional
+  if (specialty !== undefined) {
+    await db
+      .update(professionals)
+      .set({ specialty: specialty && specialty.trim() ? specialty.trim() : null })
+      .where(eq(professionals.userId, userId));
+  }
 
   // If role changed, also update professional's userRole
   if (role) {

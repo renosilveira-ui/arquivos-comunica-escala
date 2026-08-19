@@ -523,11 +523,12 @@ authRouter.get("/signup-institutions", async (_req: Request, res: Response): Pro
 
 // POST /api/auth/signup — público: cria conta pendente de aprovação.
 authRouter.post("/signup", async (req: Request, res: Response): Promise<void> => {
-  const { name, email, password, institutionId } = req.body as {
+  const { name, email, password, institutionId, specialty } = req.body as {
     name?: unknown;
     email?: unknown;
     password?: unknown;
     institutionId?: unknown;
+    specialty?: unknown;
   };
 
   if (
@@ -595,6 +596,7 @@ authRouter.post("/signup", async (req: Request, res: Response): Promise<void> =>
       name: trimmedName,
       role: mapRoleToLabel("doctor"),
       userRole: "USER",
+      specialty: typeof specialty === "string" && specialty.trim() ? specialty.trim().slice(0, 100) : null,
     });
     const newProfessionalId = (proInsert as any).insertId as number;
 

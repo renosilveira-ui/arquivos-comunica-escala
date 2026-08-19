@@ -13,6 +13,7 @@ import {
   sectors,
 } from "../drizzle/schema";
 import { sendPushNotification } from "./notifications-service";
+import { assertSpecialtyCompatible, specialtiesConflict } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import { randomUUID } from "crypto";
 import { triggerAutoSso } from "./sso/auto-sso";
@@ -46,6 +47,7 @@ export const confirmationRouter = router({
         name: professionals.name,
         role: professionals.role,
         userId: professionals.userId,
+        specialty: professionals.specialty,
       })
       .from(professionals)
       .innerJoin(
@@ -61,8 +63,16 @@ export const confirmationRouter = router({
         eq(professionalInstitutions.userId, professionals.userId),
       );
 
+    // Só colegas do MESMO serviço podem substituir (NULL = sem restrição).
+    const [me] = await db
+      .select({ specialty: professionals.specialty })
+      .from(professionals)
+      .where(eq(professionals.userId, ctx.user.id))
+      .limit(1);
+
     return rows
       .filter((r) => r.userId !== ctx.user.id)
+      .filter((r) => !specialtiesConflict(me?.specialty ?? null, r.specialty))
       .map((r) => ({ id: r.id, name: r.name, role: r.role }));
   }),
 
@@ -264,7 +274,7 @@ export const confirmationRouter = router({
       // (e vazando dados do plantão via push) para profissional de
       // outra instituição. Mesmo critério do listReplacementCandidates.
       const [replacement] = await db
-        .select({ id: professionals.id, userId: professionals.userId, name: professionals.name })
+        .select({ id: professionals.id, userId: professionals.userId, name: professionals.name, specialty: professionals.specialty })
         .from(professionals)
         .innerJoin(
           professionalInstitutions,
@@ -280,6 +290,14 @@ export const confirmationRouter = router({
       if (!replacement) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Profissional substituto não encontrado nesta instituição" });
       }
+
+      // Substituto deve ser do mesmo serviço do plantão.
+      const [shiftSpec] = await db
+        .select({ specialty: shiftInstances.specialty })
+        .from(shiftInstances)
+        .where(eq(shiftInstances.id, conf.shiftInstanceId))
+        .limit(1);
+      assertSpecialtyCompatible(shiftSpec?.specialty ?? null, replacement.specialty);
 
       // Reset recheck timer: +30min for replacement to respond
       const newRecheckAt = new Date(Date.now() + 30 * 60 * 1000);
