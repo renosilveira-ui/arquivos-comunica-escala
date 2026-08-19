@@ -184,11 +184,28 @@ export default function LoginScreen() {
                 )}
               </TouchableOpacity>
 
+              {/* Criar conta (auto-cadastro com aprovação do gestor) */}
+              <TouchableOpacity
+                onPress={() => router.push("/signup" as any)}
+                activeOpacity={0.7}
+                style={{ alignSelf: "center", marginTop: 16 }}
+              >
+                <Text
+                  style={{
+                    fontSize: 14,
+                    color: theme.colors.primary,
+                    fontWeight: "600",
+                  }}
+                >
+                  Não tem conta? Criar conta
+                </Text>
+              </TouchableOpacity>
+
               {/* Modo Demo */}
               <TouchableOpacity
                 onPress={() => router.replace("/(tabs)")}
                 activeOpacity={0.7}
-                style={{ alignSelf: "center", marginTop: 16 }}
+                style={{ alignSelf: "center", marginTop: 4 }}
               >
                 <Text
                   style={{
