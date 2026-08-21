@@ -8,6 +8,7 @@ import {
   shiftInstances,
   shiftAssignmentsV2,
   professionals,
+  professionalInstitutions,
   hospitals,
   sectors,
   monthlyRosters,
@@ -339,6 +340,9 @@ export const swapRouter = router({
         fromShiftInstanceId: z.number(),
         fromAssignmentId: z.number(),
         toShiftInstanceId: z.number().optional(),
+        /** Oferta DIRECIONADA: só este profissional vê e pode aceitar
+            (usada pelo comando de voz "trocar com Fulano"). */
+        toProfessionalId: z.number().optional(),
         reason: z.string().max(500).optional(),
         expiresInHours: z.number().min(1).max(720).default(48),
       }),
@@ -417,6 +421,33 @@ export const swapRouter = router({
       // 5. Create swap request
       const expiresAt = new Date(Date.now() + input.expiresInHours * 60 * 60 * 1000);
 
+      // Destinatário da oferta direcionada: vínculo ativo na instituição
+      // e serviço compatível com o plantão ofertado.
+      let targetUserId: number | null = null;
+      if (input.toProfessionalId) {
+        const [target] = await db
+          .select({ id: professionals.id, userId: professionals.userId, specialty: professionals.specialty })
+          .from(professionals)
+          .innerJoin(
+            professionalInstitutions,
+            and(
+              eq(professionalInstitutions.professionalId, professionals.id),
+              eq(professionalInstitutions.institutionId, fromShift.institutionId),
+              eq(professionalInstitutions.active, true),
+            ),
+          )
+          .where(eq(professionals.id, input.toProfessionalId))
+          .limit(1);
+        if (!target) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Profissional destinatário não encontrado nesta instituição" });
+        }
+        if (target.userId === userId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Não é possível direcionar a oferta a você mesmo" });
+        }
+        assertSpecialtyCompatible(fromShift.specialty, target.specialty);
+        targetUserId = target.userId;
+      }
+
       const [result] = await db.insert(swapRequests).values({
         type: input.type,
         status: "PENDING",
@@ -425,6 +456,8 @@ export const swapRouter = router({
         fromShiftInstanceId: input.fromShiftInstanceId,
         fromAssignmentId: input.fromAssignmentId,
         toShiftInstanceId: input.toShiftInstanceId ?? null,
+        toProfessionalId: input.toProfessionalId ?? null,
+        toUserId: targetUserId,
         institutionId: fromShift.institutionId,
         hospitalId: fromShift.hospitalId,
         sectorId: fromShift.sectorId,
@@ -493,6 +526,9 @@ export const swapRouter = router({
       }
       if (swap.fromUserId === userId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Você não pode aceitar sua própria oferta" });
+      }
+      if (swap.toProfessionalId && swap.toProfessionalId !== pro.id) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Esta oferta foi direcionada a outro profissional" });
       }
 
       // Fetch from-shift for conflict check
@@ -1213,6 +1249,7 @@ export const swapRouter = router({
         WHERE sr.status = 'PENDING'
           AND sr.institution_id = ${institutionId}
           AND sr.from_user_id != ${userId}
+          AND (sr.to_professional_id IS NULL OR sr.to_professional_id = ${pro.id})
           AND fsi.start_at > NOW()
           AND (sr.expires_at IS NULL OR sr.expires_at > NOW())
           ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
