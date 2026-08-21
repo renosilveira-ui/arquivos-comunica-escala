@@ -12,7 +12,12 @@ import { parseVoiceCommand, resolveSwapCommand } from "./voice/interpret";
 
 export const voiceRouter = router({
   interpret: protectedProcedure
-    .input(z.object({ text: z.string().min(3).max(500) }))
+    .input(z.object({
+      text: z.string().min(3).max(500),
+      /** Desambiguação: o usuário tocou num candidato — usa este
+          profissional em vez do nome dito. */
+      targetProfessionalId: z.number().optional(),
+    }))
     .mutation(async ({ ctx, input }) => {
       const actor = await getTenantActorFromContext(ctx);
       if (!actor.professionalId) {
@@ -28,6 +33,7 @@ export const voiceRouter = router({
         userId: ctx.user.id,
         professionalId: actor.professionalId,
         institutionId: actor.institutionId,
+        targetProfessionalId: input.targetProfessionalId,
       });
     }),
 });

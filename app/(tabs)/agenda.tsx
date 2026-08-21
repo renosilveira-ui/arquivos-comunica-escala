@@ -21,6 +21,7 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { useTenantState } from "@/lib/tenant-state";
 import { SsoLaunchButton } from "@/components/SsoLaunchButton";
+import { VoiceCommandButton } from "@/components/VoiceCommandButton";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -557,6 +558,10 @@ export default function AgendaScreen() {
           />
         )}
       </ScreenContainer>
+
+      {/* Comando de voz: mic flutuante (canto inferior esquerdo) */}
+      {Platform.OS !== "web" && <VoiceCommandButton />}
+
 
       {/* FAB criar plantão */}
       {canCreateShift ? (

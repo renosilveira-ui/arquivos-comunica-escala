@@ -134,7 +134,13 @@ export interface ResolutionFailure {
 
 export async function resolveSwapCommand(
   parsed: ParsedCommand,
-  ctx: { userId: number; professionalId: number; institutionId: number },
+  ctx: {
+    userId: number;
+    professionalId: number;
+    institutionId: number;
+    /** Escolha explícita do usuário após ambiguidade — pula o fuzzy. */
+    targetProfessionalId?: number;
+  },
 ): Promise<ResolvedSwapIntent | ResolutionFailure> {
   const db = await getDb();
   if (!db) return { ok: false, error: "Banco de dados indisponível" };
@@ -221,6 +227,20 @@ export async function resolveSwapCommand(
       ),
     );
 
+  // Desambiguação explícita: o usuário tocou num candidato.
+  if (ctx.targetProfessionalId) {
+    const chosen = colleagues.find(
+      (c) =>
+        c.id === ctx.targetProfessionalId &&
+        c.userId !== ctx.userId &&
+        !specialtiesConflict(shift.specialty, c.specialty),
+    );
+    if (!chosen) {
+      return { ok: false, error: "Profissional escolhido não está disponível para este plantão." };
+    }
+    return buildResolved(shift, chosen, parsed, month);
+  }
+
   const queryTokens = normalize(parsed.targetName).split(" ").filter(Boolean);
   const matches = colleagues
     .filter((c) => c.userId !== ctx.userId)
@@ -251,12 +271,20 @@ export async function resolveSwapCommand(
   if (finalMatches.length > 1) {
     return {
       ok: false,
-      error: `Encontrei ${matches.length} profissionais com esse nome — qual deles?`,
-      candidates: matches.slice(0, 5).map((m) => ({ id: m.id, name: m.name })),
+      error: `Encontrei ${finalMatches.length} profissionais com esse nome — qual deles?`,
+      candidates: finalMatches.slice(0, 5).map((m) => ({ id: m.id, name: m.name })),
     };
   }
 
-  const target = matches[0];
+  return buildResolved(shift, finalMatches[0], parsed, month);
+}
+
+function buildResolved(
+  shift: { shiftInstanceId: number; assignmentId: number; label: string; startAt: Date | string; endAt: Date | string },
+  target: { id: number; name: string },
+  parsed: ParsedCommand,
+  month: number,
+): ResolvedSwapIntent {
   const start = new Date(shift.startAt);
   const end = new Date(shift.endAt);
   const brt = (d: Date) => {

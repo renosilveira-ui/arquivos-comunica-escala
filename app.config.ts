@@ -77,6 +77,13 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     [
+      "expo-speech-recognition",
+      {
+        microphonePermission: "O Escala+ usa o microfone para comandos de voz (ex.: solicitar troca de plantão).",
+        speechRecognitionPermission: "O Escala+ usa o reconhecimento de fala para entender seus comandos de voz.",
+      },
+    ],
+    [
       "expo-audio",
       {
         microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
