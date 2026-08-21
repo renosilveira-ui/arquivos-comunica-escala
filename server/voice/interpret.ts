@@ -241,7 +241,14 @@ export async function resolveSwapCommand(
       error: `Não encontrei "${parsed.targetName}" entre os profissionais do seu serviço nesta instituição.`,
     };
   }
-  if (matches.length > 1) {
+  // Preferência por nome EXATO: "Bruno" é ambíguo entre "Bruno" e
+  // "Bruno Silva", mas quem diz o nome completo igual ao cadastro
+  // resolve sem pergunta.
+  const exact = matches.filter(
+    (c) => normalize(c.name) === normalize(parsed.targetName),
+  );
+  const finalMatches = exact.length === 1 ? exact : matches;
+  if (finalMatches.length > 1) {
     return {
       ok: false,
       error: `Encontrei ${matches.length} profissionais com esse nome — qual deles?`,
