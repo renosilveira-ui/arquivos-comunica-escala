@@ -4,7 +4,6 @@ import {
   View,
   TouchableOpacity,
   TextInput,
-  Alert,
   ActivityIndicator,
   Platform,
   Modal,
@@ -17,6 +16,7 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { ChevronLeft, Shield, Check, X } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,11 +44,6 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<{ ok: b
   try { data = await res.json(); } catch {}
   return { ok: res.ok, data };
 }
-
-const uiAlert = (title: string, message: string) => {
-  if (Platform.OS === "web") window.alert(`${title}\n\n${message}`);
-  else Alert.alert(title, message);
-};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +92,7 @@ const STATUS_LABEL: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export default function ApproveSwapsScreen() {
+  const feedback = useActionFeedback();
   const { user } = useAuth();
   const router = useRouter();
 
@@ -160,7 +156,7 @@ export default function ApproveSwapsScreen() {
 
   const handleModalSubmit = async () => {
     if (modalAction === "reject" && !modalNote.trim()) {
-      uiAlert("Atenção", "Informe o motivo da rejeição.");
+      feedback.error("Informe o motivo da rejeição.");
       return;
     }
 
@@ -180,11 +176,11 @@ export default function ApproveSwapsScreen() {
 
     const result = (res.data as any)?.[0];
     if (result?.error) {
-      uiAlert("Erro", result.error.json?.message ?? "Erro ao processar");
+      feedback.error(result.error.json?.message ?? "Não foi possível processar a troca.");
       return;
     }
 
-    uiAlert("Sucesso", modalAction === "approve" ? "Troca aprovada!" : "Troca rejeitada!");
+    feedback.success(modalAction === "approve" ? "Troca aprovada." : "Troca rejeitada.");
     fetchItems();
   };
 

@@ -13,6 +13,9 @@ import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
+import { Surface } from "@/components/ui/Surface";
+import { SectionHeader } from "@/components/ui/SectionHeader";
+import { SkeletonList } from "@/components/ui/Skeleton";
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -203,25 +206,18 @@ export default function VacanciesScreen() {
   return (
     <ScreenGradient variant="light" scrollable>
         <ScreenContainer>
-        {/* Header */}
-        <View style={{ marginBottom: theme.space[6] }}>
-          <Text style={{ ...theme.text.titleLg, color: theme.colors.textPrimary, fontWeight: theme.weight.bold }}>Plantões em aberto</Text>
-          <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
-            {vacancies.length} plantões aguardando profissional
-          </Text>
-        </View>
+        <SectionHeader
+          size="page"
+          title="Plantões em aberto"
+          subtitle={
+            vacanciesLoading
+              ? "Buscando plantões sem profissional…"
+              : `${vacancies.length} plantão${vacancies.length === 1 ? "" : "ões"} aguardando profissional`
+          }
+          style={{ marginBottom: theme.space[5] }}
+        />
 
-        {/* Filtros */}
-        <View
-          style={{
-            marginBottom: theme.space[5],
-            borderRadius: theme.radius.lg,
-            borderWidth: 1,
-            borderColor: theme.colors.border,
-            backgroundColor: theme.colors.surface,
-            padding: theme.space[4],
-          }}
-        >
+        <Surface level="card" style={{ marginBottom: theme.space[4] }}>
           <ShiftFilters
             hospitals={hospitals}
             sectors={sectors}
@@ -230,7 +226,7 @@ export default function VacanciesScreen() {
             onChange={handleFiltersChange}
             counts={counts}
           />
-        </View>
+        </Surface>
 
         {/* Filtro por modalidade (chips) — PR #66 */}
         <View style={{ marginBottom: theme.space[5] }}>
@@ -253,9 +249,11 @@ export default function VacanciesScreen() {
                   accessibilityState={{ selected }}
                   accessibilityLabel={`Filtrar por ${opt.label}`}
                   style={{
-                    paddingHorizontal: 14,
-                    paddingVertical: 8,
-                    borderRadius: 999,
+                    minHeight: theme.space[10],
+                    justifyContent: "center",
+                    paddingHorizontal: theme.space[4],
+                    paddingVertical: theme.space[2],
+                    borderRadius: theme.radius.full,
                     backgroundColor: selected ? theme.colors.primary : theme.colors.surfaceAlt,
                     borderWidth: 1,
                     borderColor: selected ? theme.colors.primary : theme.colors.border,
@@ -263,9 +261,9 @@ export default function VacanciesScreen() {
                 >
                   <Text
                     style={{
-                      color: selected ? theme.colors.surface : theme.colors.textPrimary,
-                      fontSize: 14,
-                      fontWeight: "600",
+                      ...theme.text.body,
+                      color: selected ? theme.colors.onDark.text : theme.colors.textPrimary,
+                      fontWeight: theme.weight.semibold,
                     }}
                   >
                     {opt.label}
@@ -276,13 +274,8 @@ export default function VacanciesScreen() {
           </ScrollView>
         </View>
 
-        {/* Loading state para vagas */}
-        {vacanciesLoading && (
-          <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: theme.space[20] }}>
-            <ActivityIndicator size="large" color={theme.colors.primary} />
-            <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary, marginTop: theme.space[4] }}>Carregando vagas...</Text>
-          </View>
-        )}
+        {/* Carregando: skeleton com a forma dos cards */}
+        {vacanciesLoading ? <SkeletonList count={3} /> : null}
 
         {/* Lista de vagas */}
         {!vacanciesLoading && vacancies.length > 0 ? (
@@ -290,21 +283,12 @@ export default function VacanciesScreen() {
             {vacancies.map((vacancy) => {
               const modalityLabel = formatModalityBadge(vacancy.modality, vacancy.coverageType);
               return (
-                <View
-                  key={vacancy.id}
-                  style={{
-                    backgroundColor: theme.colors.surface,
-                    borderColor: theme.colors.border,
-                    borderWidth: 1,
-                    borderRadius: theme.radius.lg,
-                    padding: theme.space[4],
-                  }}
-                >
+                <Surface key={vacancy.id} level="card">
                   {/* Cabeçalho do card */}
                   <View className="flex-row items-center justify-between mb-3">
                     <View className="flex-row items-center gap-2 flex-shrink">
                       <Briefcase size={20} color={theme.colors.primary} />
-                      <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+                      <Text style={{ ...theme.text.titleSm, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
                         {vacancy.shift}
                       </Text>
                     </View>
@@ -317,17 +301,18 @@ export default function VacanciesScreen() {
                     <View className="mb-3 flex-row">
                       <View
                         style={{
-                          paddingHorizontal: 10,
-                          paddingVertical: 4,
-                          borderRadius: 999,
+                          paddingHorizontal: theme.space[2],
+                          height: theme.space[5],
+                          justifyContent: "center",
+                          borderRadius: theme.radius.full,
                           backgroundColor: theme.colors.primarySoft,
                         }}
                       >
                         <Text
                           style={{
-                            color: theme.colors.primary,
-                            fontSize: 11,
-                            fontWeight: "600",
+                            ...theme.text.caption,
+                            color: theme.palette.primary[700],
+                            fontWeight: theme.weight.semibold,
                           }}
                         >
                           {modalityLabel}
@@ -361,7 +346,7 @@ export default function VacanciesScreen() {
                   {/* Botão de ação */}
                   {isAdminOrManager ? null : (
                     <AppButton
-                      title={assumeVacancyMutation.isPending ? "Enviando..." : "Assumir Plantão"}
+                      title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}
                       variant="primary"
                       size="lg"
                       disabled={!vacancy.canAssume || assumeVacancyMutation.isPending}
@@ -373,7 +358,7 @@ export default function VacanciesScreen() {
                       }
                     />
                   )}
-                </View>
+                </Surface>
               );
             })}
           </View>
