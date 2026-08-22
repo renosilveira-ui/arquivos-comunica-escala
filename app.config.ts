@@ -41,7 +41,12 @@ const config: ExpoConfig = {
     "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         // Permite consultar/abrir o app nativo do Comunica+ (Fase 3 do SSO).
-        "LSApplicationQueriesSchemes": ["comunicamais"]
+        "LSApplicationQueriesSchemes": ["comunicamais"],
+        // Exigido pela App Store Connect (erro 90683, build 8): expo-image
+        // (PhotoLibraryAssetLoader) e expo-file-system referenciam a API
+        // de fotos mesmo sem uso no app — a purpose string é obrigatória.
+        "NSPhotoLibraryUsageDescription":
+          "O Escala+ só acessa suas fotos se você optar por anexar uma imagem (por exemplo, foto de perfil).",
       }
   },
   android: {
