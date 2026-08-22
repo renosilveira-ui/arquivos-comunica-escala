@@ -1,14 +1,12 @@
 import {
   Text,
   View,
-  ScrollView,
   TouchableOpacity,
   RefreshControl,
-  ActivityIndicator,
   useWindowDimensions,
   Platform,
 } from "react-native";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { ChevronLeft, ChevronRight, Plus, Building2, ChevronDown } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -19,11 +17,15 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
-import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
 import { ManagerActionsMenu } from "@/components/agenda/ManagerActionsMenu";
+import { MobileDayList } from "@/components/agenda/MobileDayList";
+import { NextShiftCard } from "@/components/agenda/NextShiftCard";
+import { SkeletonList } from "@/components/ui/Skeleton";
 import { useTenantState } from "@/lib/tenant-state";
-import { SsoLaunchButton } from "@/components/SsoLaunchButton";
+import { useSsoHandoff } from "@/hooks/use-sso-handoff";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { VoiceCommandButton } from "@/components/VoiceCommandButton";
+import { keepPreviousData } from "@tanstack/react-query";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -182,8 +184,22 @@ export default function AgendaScreen() {
   const queryStartDate = isPanorama ? panoramaStart : anchorWeekStart;
   const queryWeeks = isPanorama ? 6 : weeksCount;
 
-  const { data: activeShift, isLoading: loadingActive } =
-    trpc.shifts.getActiveShift.useQuery(undefined, { enabled: !!user?.id });
+  // Card "Próximo plantão": em andamento ou o próximo futuro.
+  const { data: nextShift } = trpc.shifts.getNextShift.useQuery(undefined, {
+    enabled: !!user?.id,
+    refetchInterval: 60_000,
+  });
+  const { data: pendingConfirmation } = trpc.confirmations.getPending.useQuery(undefined, {
+    enabled: !!user?.id,
+  });
+  // Erro do SSO vira toast (o card não tem área de erro própria).
+  const { launch: ssoLaunch, error: ssoError, clearError: clearSsoError } = useSsoHandoff();
+  const feedback = useActionFeedback();
+  useEffect(() => {
+    if (!ssoError) return;
+    feedback.error(ssoError);
+    clearSsoError();
+  }, [ssoError, clearSsoError, feedback]);
 
   const { data, isLoading, isError, refetch } = trpc.shifts.listAgenda.useQuery(
     {
@@ -197,6 +213,9 @@ export default function AgendaScreen() {
       // retries seguram a maioria; o resto cai no estado de erro abaixo.
       retry: 2,
       retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 10000),
+      // Ao mudar de semana/mês, mantém a grade anterior na tela em vez
+      // de trocar tudo por spinner (o "CARREGANDO" do PegaPlantão).
+      placeholderData: keepPreviousData,
     },
   );
 
@@ -435,21 +454,40 @@ export default function AgendaScreen() {
           </View>
         </View>
 
-        {/* SSO Comunica+ — contextual ao plantão ativo */}
-        <View style={{ marginBottom: theme.space[3] }}>
-          <SsoLaunchButton
-            activeShift={activeShift}
-            isLoading={loadingActive}
+        {/* Próximo plantão (ou em andamento) — a pergunta nº 1 do plantonista */}
+        <View style={{ marginBottom: theme.space[4] }}>
+          <NextShiftCard
+            shift={nextShift ?? null}
+            needsConfirmation={!!nextShift && pendingConfirmation?.shiftInstanceId === nextShift.id}
+            onConfirm={
+              pendingConfirmation
+                ? () =>
+                    router.push({
+                      pathname: "/confirm-duty" as any,
+                      params: { token: pendingConfirmation.confirmationToken },
+                    })
+                : undefined
+            }
+            onSwap={
+              nextShift && !nextShift.inProgress
+                ? () => router.push({ pathname: "/request-swap" as any, params: { fromShiftId: String(nextShift.id) } })
+                : undefined
+            }
+            onOpenComunica={
+              nextShift?.inProgress
+                ? () => {
+                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    ssoLaunch(activeInstitutionId ?? undefined);
+                  }
+                : undefined
+            }
+            onPress={nextShift ? () => router.push({ pathname: "/shift-details", params: { id: String(nextShift.id) } }) : undefined}
           />
         </View>
 
         {/* Conteúdo */}
         {isLoading && !data ? (
-          <View
-            style={{ alignItems: "center", paddingVertical: theme.space[10] }}
-          >
-            <ActivityIndicator size="large" color={theme.colors.primary} />
-          </View>
+          <SkeletonList count={3} />
         ) : isError && !data ? (
           // Falha na consulta NÃO pode renderizar a grade vazia como se
           // não houvesse plantões ("nada aparece" sem explicação) — era
@@ -883,156 +921,6 @@ function DesktopGroupBlock({
         );
       })}
     </View>
-  );
-}
-
-// ─── Mobile day list ────────────────────────────────────────────────
-function MobileDayList({
-  weeks,
-  todayKey,
-  refreshControl,
-  onShiftPress,
-}: {
-  weeks: AgendaWeek[];
-  todayKey: string;
-  refreshControl: React.ReactElement<
-    import("react-native").RefreshControlProps
-  >;
-  onShiftPress: (id: number) => void;
-}) {
-  // Linealiza dias com pelo menos 1 grupo, em ordem cronológica
-  const flatDays = useMemo(
-    () => weeks.flatMap((w) => w.days.filter((d) => d.groups.length > 0)),
-    [weeks],
-  );
-
-  return (
-    <ScrollView
-      style={{ flex: 1 }}
-      refreshControl={refreshControl}
-      contentContainerStyle={{ paddingBottom: theme.space[10] }}
-      showsVerticalScrollIndicator={false}
-    >
-      {flatDays.length === 0 ? (
-        <View
-          style={{ paddingVertical: theme.space[10], alignItems: "center" }}
-        >
-          <Text style={{ color: theme.colors.textMuted }}>
-            Nenhum plantão neste período.
-          </Text>
-        </View>
-      ) : (
-        flatDays.map((day) => {
-          const isToday = day.date === todayKey;
-          return (
-            <View key={day.date} style={{ marginBottom: theme.space[5] }}>
-              {/* Header do dia */}
-              <View
-                style={{
-                  paddingVertical: theme.space[2],
-                  paddingHorizontal: theme.space[3],
-                  backgroundColor: isToday
-                    ? theme.colors.primarySoft
-                    : theme.colors.surfaceAlt,
-                  borderRadius: theme.radius.md,
-                  borderLeftWidth: isToday ? 3 : 0,
-                  borderLeftColor: theme.colors.primary,
-                  marginBottom: theme.space[2],
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 14,
-                    fontWeight: "700",
-                    color: isToday
-                      ? theme.colors.primary
-                      : theme.colors.textPrimary,
-                    letterSpacing: 0.3,
-                  }}
-                >
-                  {formatDayHeader(day.date, day.dow)}
-                </Text>
-              </View>
-              {/* Grupos hospital+setor */}
-              {day.groups.map((group) => (
-                <View
-                  key={`${group.hospitalId}-${group.sectorId}`}
-                  style={{ marginBottom: theme.space[3] }}
-                >
-                  <View
-                    style={{
-                      backgroundColor: theme.colors.primarySoft,
-                      paddingHorizontal: theme.space[3],
-                      paddingVertical: theme.space[2],
-                      borderRadius: theme.radius.sm,
-                      marginBottom: theme.space[1],
-                    }}
-                  >
-                    <Text
-                      style={{
-                        fontSize: 12,
-                        fontWeight: "700",
-                        color: theme.palette.primary[900],
-                        textTransform: "uppercase",
-                        letterSpacing: 0.3,
-                      }}
-                    >
-                      {group.hospitalName} – {group.sectorName}
-                    </Text>
-                  </View>
-                  {group.shifts.map((shift) => (
-                    <TouchableOpacity
-                      key={shift.id}
-                      onPress={() => onShiftPress(shift.id)}
-                      activeOpacity={0.75}
-                      style={{
-                        borderLeftWidth: 3,
-                        borderLeftColor: shiftBorderColor(shift.status),
-                        paddingLeft: theme.space[3],
-                        paddingVertical: theme.space[2],
-                        marginBottom: 4,
-                        backgroundColor: shift.isMine
-                          ? theme.colors.primarySoft
-                          : "transparent",
-                        borderRadius: theme.radius.sm,
-                      }}
-                    >
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-                        <Text
-                          numberOfLines={2}
-                          style={{
-                            flex: 1,
-                            fontSize: 14,
-                            fontWeight: "600",
-                            color: theme.colors.textPrimary,
-                          }}
-                        >
-                          {shift.professionalNames.length > 0
-                            ? shift.professionalNames.join(", ")
-                            : "Sem profissional"}
-                        </Text>
-                        {/* Status com texto + ícone: cor é só reforço. */}
-                        <ShiftStatusBadge status={shift.status} context="actionable" size="sm" />
-                      </View>
-                      <Text
-                        style={{
-                          fontSize: 12,
-                          color: theme.colors.textMuted,
-                          marginTop: 2,
-                        }}
-                      >
-                        {formatTimeRange(shift.startAt, shift.endAt)} •{" "}
-                        {shift.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              ))}
-            </View>
-          );
-        })
-      )}
-    </ScrollView>
   );
 }
 

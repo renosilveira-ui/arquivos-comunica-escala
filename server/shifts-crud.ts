@@ -1072,6 +1072,55 @@ export const shiftsRouter = router({
   }),
 
   // ------------------------------------------------------------------
+  // shifts.getNextShift — o plantão que importa AGORA para o usuário:
+  // o que está em andamento ou, se não houver, o próximo futuro.
+  // Alimenta o card "Próximo plantão" no topo da Agenda.
+  // ------------------------------------------------------------------
+  getNextShift: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+
+    const [professional] = await db
+      .select({ id: professionals.id })
+      .from(professionals)
+      .where(eq(professionals.userId, ctx.user.id));
+    if (!professional) return null;
+
+    const now = new Date();
+    const rows = await db
+      .select({
+        id: shiftInstances.id,
+        label: shiftInstances.label,
+        startAt: shiftInstances.startAt,
+        endAt: shiftInstances.endAt,
+        status: shiftInstances.status,
+        modality: shiftInstances.modality,
+        sectorName: sectors.name,
+        hospitalName: hospitals.name,
+        assignmentId: shiftAssignmentsV2.id,
+      })
+      .from(shiftAssignmentsV2)
+      .innerJoin(shiftInstances, eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id))
+      .innerJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
+      .innerJoin(hospitals, eq(shiftInstances.hospitalId, hospitals.id))
+      .where(
+        and(
+          eq(shiftAssignmentsV2.professionalId, professional.id),
+          eq(shiftAssignmentsV2.isActive, true),
+          eq(shiftInstances.institutionId, ctx.institutionId),
+          // Em andamento (terminou depois de agora) ou futuro.
+          gte(shiftInstances.endAt, now),
+        ),
+      )
+      .orderBy(shiftInstances.startAt)
+      .limit(1);
+
+    if (rows.length === 0) return null;
+    const row = rows[0];
+    return { ...row, inProgress: row.startAt.getTime() <= now.getTime() };
+  }),
+
+  // ------------------------------------------------------------------
   // shifts.publish — DRAFT → PUBLISHED
   // ------------------------------------------------------------------
   publish: protectedProcedure
