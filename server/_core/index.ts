@@ -73,8 +73,19 @@ async function startServer() {
         : Array.from(defaultDevOrigins),
   );
 
+  // Hosts em que a requisição same-origin é confiável (Host é controlável
+  // pelo cliente; ver createCorsMiddleware). Render expõe o hostname
+  // público em RENDER_EXTERNAL_HOSTNAME; dev usa localhost:PORT.
+  const listenPort = process.env.PORT || "3000";
+  const trustedHosts = new Set<string>([
+    `localhost:${listenPort}`,
+    `127.0.0.1:${listenPort}`,
+    ...(process.env.RENDER_EXTERNAL_HOSTNAME ? [process.env.RENDER_EXTERNAL_HOSTNAME] : []),
+    ...(process.env.TRUSTED_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean),
+  ]);
+
   app.use(createHelmetMiddleware());
-  app.use(createCorsMiddleware({ allowedOrigins }));
+  app.use(createCorsMiddleware({ allowedOrigins, trustedHosts }));
 
   // Health check is registered BEFORE rate limiting so probes (Render, uptime
   // monitors) are never throttled. Probes the database with a short timeout
