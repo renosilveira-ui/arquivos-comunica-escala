@@ -14,7 +14,6 @@ import {
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
-import { notifyVacancyOpened } from "./integrations/comunica-plus";
 import { publishMonth, lockMonth } from "./month-guards";
 import { checkTimeConflictForProfessional } from "./shift-validations-v2";
 import {
@@ -595,7 +594,9 @@ export const shiftsRouter = router({
       z
         .object({
           id: z.number().int(),
-          status: z.enum(["VAGO", "PENDENTE", "OCUPADO"]).optional(),
+          // `status` saiu do input: o status do turno é DERIVADO das
+          // alocações ativas (shift-status.ts). Gravar "VAGO" num turno com
+          // titular o devolvia a "Plantões em aberto" (auditoria 22/08, M2).
           startAt: z.string().optional(),
           endAt: z.string().optional(),
         })
@@ -626,7 +627,6 @@ export const shiftsRouter = router({
       assertModalityCoherent(input, existing.modality);
 
       const patch: Partial<typeof shiftInstances.$inferInsert> = {};
-      if (input.status !== undefined) patch.status = input.status;
       if (input.startAt !== undefined) patch.startAt = new Date(input.startAt);
       if (input.endAt !== undefined) patch.endAt = new Date(input.endAt);
       if (input.modality !== undefined) patch.modality = input.modality;
@@ -674,19 +674,6 @@ export const shiftsRouter = router({
         sectorId: existing.sectorId,
         metadata: { changes: patch },
       });
-
-      // Fire-and-forget: notify Comunica+ if shift became vacant
-      if (input.status === "VAGO" && existing.status !== "VAGO") {
-        notifyVacancyOpened({
-          shiftInstanceId: input.id,
-          startAt: existing.startAt.toISOString(),
-          endAt: existing.endAt.toISOString(),
-          templateName: existing.label,
-          sectorName: null, // TODO: resolve sector name from sectorId
-        }).catch((err) =>
-          console.error("[Comunica+] notifyVacancyOpened error:", err),
-        );
-      }
 
       const [updated] = await db
         .select()

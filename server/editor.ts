@@ -333,23 +333,12 @@ export const editorRouter = router({
               AND institution_id = ${ctx.institutionId}`
         );
 
-        // 6. Verificar se ainda há assignments ativos no turno
-        const remainingResult = await tx.execute<any>(
-          sql`SELECT COUNT(*) as count FROM shift_assignments_v2
-              WHERE shift_instance_id = ${assignment.shift_instance_id}
-              AND institution_id = ${ctx.institutionId}
-              AND is_active = true
-              AND status = 'OCUPADO'`
-        );
-        const remainingRow = firstRowFromExecute<{ count: number | string }>(remainingResult);
-        const hasRemaining = Number(remainingRow?.count ?? 0) > 0;
-
-        // 7. Se não houver mais assignments, marcar turno como VAGO
-        if (!hasRemaining) {
-          await tx.execute(
-            sql`UPDATE shift_instances SET status = 'VAGO' WHERE id = ${assignment.shift_instance_id} AND institution_id = ${ctx.institutionId}`
-          );
-        }
+        // 6–7. Status do turno DERIVADO das alocações ativas restantes
+        // (regra única de shift-status.ts). A contagem antiga só olhava
+        // OCUPADO e marcava VAGO com uma PENDENTE ainda ativa — o turno
+        // voltava para "Plantões em aberto" com candidato na fila
+        // (auditoria 22/08, achado M4).
+        await recomputeShiftStatus(tx, assignment.shift_instance_id);
 
         // 8. Auditorias da remoção no mesmo commit da alteração operacional.
         await auditLog(
