@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { assertMonthNotLocked } from "./month-guards";
 import { eq, and, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { professionals, shiftInstances, shiftAssignmentsV2 } from "../drizzle/schema";
@@ -62,6 +63,11 @@ const shiftAssignmentsRouter = router({
 
       // Separação por serviço: anestesista não assume vaga de cirurgia etc.
       assertSpecialtyCompatible(shift.specialty, professional.specialty);
+
+      // Escala trancada não aceita candidatura (auditoria 22/08, M10): o
+      // turno mudaria de status num mês que o gestor de hospital não pode
+      // mais tocar para desfazer.
+      await assertMonthNotLocked(shift.institutionId, shift.hospitalId, shift.startAt);
 
       const validation = await validateAssignment(
         professional.id,
@@ -529,6 +535,14 @@ const shiftInstancesRouter = router({
             JOIN hospitals h ON si.hospital_id = h.id
             WHERE si.status = 'VAGO'
               AND si.institution_id = ${ctx.institutionId}
+              -- Mês trancado não oferece vagas (start_at em UTC → mês do hospital, -03:00)
+              AND NOT EXISTS (
+                SELECT 1 FROM monthly_rosters mr
+                WHERE mr.institution_id = si.institution_id
+                  AND mr.hospital_id = si.hospital_id
+                  AND mr.year_month = DATE_FORMAT(DATE_SUB(si.start_at, INTERVAL 3 HOUR), '%Y-%m')
+                  AND mr.status = 'LOCKED'
+              )
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}

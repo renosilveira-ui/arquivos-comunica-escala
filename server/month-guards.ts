@@ -1,6 +1,7 @@
 import { getDb } from "./db";
-import { yearMonthFromDate } from "../lib/date-utils";
-import { auditLog } from "./audit-log";
+import { TRPCError } from "@trpc/server";
+import { recordAudit } from "./audit-trail";
+import { yearMonthBrt } from "./local-time";
 import { sql, eq, and } from "drizzle-orm";
 import { monthlyRosters, professionalInstitutions, users } from "../drizzle/schema";
 import { notifyRosterPublished } from "./integrations/comunica-plus";
@@ -25,7 +26,8 @@ export async function assertMonthEditable(
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const yearMonth = yearMonthFromDate(date);
+  // Mês no relógio do hospital (-03:00): o servidor roda em UTC.
+  const yearMonth = yearMonthBrt(date);
 
   const [user] = await db
     .select({ role: users.role })
@@ -57,7 +59,7 @@ export async function assertMonthEditable(
   const role = isGlobalAdmin ? "GESTOR_PLUS" : (membership?.roleInInstitution as string);
 
   const [roster] = await db
-    .select({ status: monthlyRosters.status })
+    .select({ id: monthlyRosters.id, status: monthlyRosters.status })
     .from(monthlyRosters)
     .where(
       and(
@@ -77,31 +79,71 @@ export async function assertMonthEditable(
   // PUBLISHED ou LOCKED → só GESTOR_PLUS pode editar
   if (status === "PUBLISHED" || status === "LOCKED") {
     if (role !== "GESTOR_PLUS") {
-      throw new Error(
-        `Mês ${yearMonth} está ${status}. Apenas Gestor+ pode editar.`
-      );
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: `Mês ${yearMonth} está ${status}. Apenas Gestor+ pode editar.`,
+      });
     }
 
     // Exige reason obrigatório (min 5 chars)
     if (!reason || reason.trim().length < 5) {
-      throw new Error(
-        `Edição de mês ${status} exige motivo (mínimo 5 caracteres).`
-      );
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `Edição de mês ${status} exige motivo (mínimo 5 caracteres).`,
+      });
     }
 
-    // Audit: PUBLISHED_MONTH_OVERRIDE (usando RETROACTIVE_EDIT como evento)
-    await auditLog({
-      institutionId,
-      event: "RETROACTIVE_EDIT",
-      shiftInstanceId: 0, // placeholder (não temos shiftInstanceId específico aqui)
-      professionalId: professionalId,
-      reason: `[PUBLISHED_MONTH_OVERRIDE] ${reason}`,
-      metadata: {
+    // Audit do override no audit_trail. (shift_audit_log exige um
+    // shift_instance_id real — o placeholder 0 violava a FK e derrubava
+    // TODA edição de mês publicado/trancado por Gestor+.)
+    await recordAudit(
+      {
+        actorUserId: ctx.user.id,
+        actorRole: role,
+        action: "CONFLICT_OVERRIDDEN",
+        entityType: "MONTHLY_ROSTER",
+        entityId: roster?.id ?? 0,
+        description: `[PUBLISHED_MONTH_OVERRIDE] ${reason.trim()}`,
+        institutionId,
         hospitalId,
-        yearMonth,
-        previousStatus: status,
+        metadata: { yearMonth, previousStatus: status, professionalId },
       },
-    });
+      { strict: true },
+    );
+  }
+}
+
+
+/** Status do mês (DRAFT quando não há roster). */
+export async function getMonthStatus(
+  institutionId: number,
+  hospitalId: number,
+  date: Date,
+): Promise<"DRAFT" | "PUBLISHED" | "LOCKED"> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [roster] = await db
+    .select({ status: monthlyRosters.status })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonthBrt(date)),
+      ),
+    )
+    .limit(1);
+  return roster?.status ?? "DRAFT";
+}
+
+/**
+ * Mês LOCKED não aceita mutação de NINGUÉM pelo fluxo normal (assumir vaga,
+ * ofertar/efetivar troca). Gestor+ edita mês trancado só pelas mutations do
+ * editor, com motivo (assertMonthEditable).
+ */
+export async function assertMonthNotLocked(institutionId: number, hospitalId: number, date: Date): Promise<void> {
+  if ((await getMonthStatus(institutionId, hospitalId, date)) === "LOCKED") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Escala trancada — não é possível alterar este plantão." });
   }
 }
 

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { rowsFromExecute } from "./_core/db-results";
+import { assertMonthEditable } from "./month-guards";
 import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { sql } from "drizzle-orm";
@@ -8,6 +10,7 @@ import { TRPCError } from "@trpc/server";
 import { shiftInstances } from "../drizzle/schema";
 import {
   actorCapabilities,
+  assertCanEditScheduleDate,
   assertManagerScopeAccess,
   getTenantActorFromContext,
   type TenantActor,
@@ -41,10 +44,10 @@ async function checkCalendarAccess(
     sql`SELECT status FROM monthly_rosters 
         WHERE institution_id = ${institutionId} 
         AND hospital_id = ${hospitalId} 
-        AND year_month = ${yearMonth}
+        AND ${sql.identifier("year_month")} = ${yearMonth}
         LIMIT 1`
   );
-  const rosterRows = (rosterResult as any).rows || (rosterResult as any[]);
+  const rosterRows = rowsFromExecute<any>(rosterResult);
   const monthStatus = (rosterRows[0]?.status || "DRAFT") as "DRAFT" | "PUBLISHED" | "LOCKED";
 
   const capabilities = actorCapabilities(actor);
@@ -71,7 +74,7 @@ async function checkCalendarAccess(
 }
 
 // Helper: agrupa shifts por dia e label
-function groupShiftsByDay(shifts: Array<{ start_at: Date; label: string; status: string }>): Record<string, Record<string, string>> {
+function groupShiftsByDay(shifts: { start_at: Date; label: string; status: string }[]): Record<string, Record<string, string>> {
   const grouped: Record<string, Record<string, string>> = {};
 
   for (const shift of shifts) {
@@ -163,7 +166,7 @@ export const calendarRouter = router({
             AND start_at >= ${startOfMonth} AND start_at <= ${endOfMonth}
             ORDER BY start_at ASC`
       );
-      const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
+      const shiftRows = rowsFromExecute<any>(shiftResult);
 
       // 4. Agrupar por dia e label
       const groupedShifts = groupShiftsByDay(shiftRows);
@@ -251,7 +254,7 @@ export const calendarRouter = router({
             AND start_at >= ${startOfDay} AND start_at <= ${endOfDay}
             ORDER BY start_at ASC`
       );
-      const shiftRows = (shiftResult as any).rows || (shiftResult as any[]);
+      const shiftRows = rowsFromExecute<any>(shiftResult);
 
       // 4. Para cada shift, buscar assignments
       const shifts = await Promise.all(
@@ -268,7 +271,7 @@ export const calendarRouter = router({
                 WHERE sa.shift_instance_id = ${shift.id} AND sa.is_active = true
                 ORDER BY sa.assignment_type ASC`
           );
-          const assignmentRows = (assignmentResult as any).rows || (assignmentResult as any[]);
+          const assignmentRows = rowsFromExecute<any>(assignmentResult);
 
           // Criar slots (ON_DUTY, BACKUP, ON_CALL)
           const slotTypes = ["ON_DUTY", "BACKUP", "ON_CALL"];
@@ -301,8 +304,22 @@ export const calendarRouter = router({
         })
       );
 
-      // 5. Se gestor contextual e não existir turno, criar automaticamente como VAGO
-      if (canAutoCreateShifts && shifts.length === 0) {
+      // 5. Se gestor contextual e não existir turno, criar automaticamente
+      // como VAGO — mas SÓ se este gestor pudesse criar esses turnos pelo
+      // editor: janela do mês corrente (GESTOR_MEDICO) e mês em DRAFT.
+      // Abrir um dia de mês publicado/trancado ou fora da alçada numa
+      // *query* gravava 3 turnos sem auditoria (auditoria 22/08, M1).
+      let mayAutoCreate = canAutoCreateShifts && shifts.length === 0;
+      if (mayAutoCreate) {
+        try {
+          const dayStart = new Date(`${date}T00:00:00-03:00`);
+          assertCanEditScheduleDate(actor, dayStart);
+          await assertMonthEditable({ user: { id: ctx.user.id } }, institutionId, hospitalId, dayStart);
+        } catch {
+          mayAutoCreate = false;
+        }
+      }
+      if (mayAutoCreate) {
         // Criar 3 turnos padrão (Manhã, Tarde, Noite)
         const defaultShifts = [
           { label: "Manhã", startHour: 7, endHour: 13 },

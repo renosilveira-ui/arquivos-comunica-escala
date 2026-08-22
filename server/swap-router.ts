@@ -2,6 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
+import { assertMonthNotLocked } from "./month-guards";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import {
   swapRequests,
@@ -9,14 +10,12 @@ import {
   shiftAssignmentsV2,
   professionals,
   professionalInstitutions,
-  monthlyRosters,
   users,
 } from "../drizzle/schema";
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import { recomputeShiftStatus } from "./shift-status";
-import { yearMonthFromDate } from "../lib/date-utils";
 import { notifySwapAccepted, notifySwapApproved } from "./integrations/comunica-plus";
 import {
   assertCanManageInstitutionSchedule,
@@ -118,22 +117,6 @@ function auditNames(type: SwapType, phase: AuditPhase): {
   return { action: m[phase], entityType: "TRANSFER_REQUEST", label: "Repasse" };
 }
 
-async function assertNotLocked(db: any, institutionId: number, hospitalId: number, date: Date) {
-  const ym = yearMonthFromDate(date);
-  const [roster] = await db
-    .select({ status: monthlyRosters.status })
-    .from(monthlyRosters)
-    .where(
-      and(
-        eq(monthlyRosters.institutionId, institutionId),
-        eq(monthlyRosters.hospitalId, hospitalId),
-        eq(monthlyRosters.yearMonth, ym),
-      ),
-    );
-  if (roster?.status === "LOCKED") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Escala trancada — não é possível alterar" });
-  }
-}
 
 /**
  * Efetua um swap/cessão/transfer já em estado ACCEPTED. Roda
@@ -185,7 +168,7 @@ async function effectuateApprovedSwap(
   // Lock guard: o roster pode ter sido publicado/trancado entre a
   // criação da oferta e a aprovação. Bloqueia mutação pós-lock para
   // ambos os lados (from-shift e, em SWAP, to-shift).
-  await assertNotLocked(db, fromShift.institutionId, fromShift.hospitalId, fromShift.startAt);
+  await assertMonthNotLocked(fromShift.institutionId, fromShift.hospitalId, fromShift.startAt);
   if (!isOneWay(swap.type) && swap.toShiftInstanceId) {
     const [toShiftForLock] = await db
       .select({
@@ -196,9 +179,7 @@ async function effectuateApprovedSwap(
       .from(shiftInstances)
       .where(eq(shiftInstances.id, swap.toShiftInstanceId));
     if (toShiftForLock) {
-      await assertNotLocked(
-        db,
-        toShiftForLock.institutionId,
+      await assertMonthNotLocked(toShiftForLock.institutionId,
         toShiftForLock.hospitalId,
         toShiftForLock.startAt,
       );
@@ -438,7 +419,7 @@ export const swapRouter = router({
       }
 
       // 3. Check month not locked
-      await assertNotLocked(db, fromShift.institutionId, fromShift.hospitalId, fromShift.startAt);
+      await assertMonthNotLocked(fromShift.institutionId, fromShift.hospitalId, fromShift.startAt);
 
       // 3b. Uma oferta aberta por alocação. Duas ofertas da mesma alocação
       // aprovadas em sequência colocavam dois médicos no mesmo plantão
