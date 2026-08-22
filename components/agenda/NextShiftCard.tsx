@@ -1,0 +1,174 @@
+// components/agenda/NextShiftCard.tsx — a pergunta nº 1 do plantonista:
+// "quando é o meu próximo plantão?" — respondida no topo da Agenda.
+//
+// Componente puro (dados por props, `now` injetável) para ser testável e
+// renderizável na rota de preview sem servidor. Dois estados:
+//   - em andamento: "Termina às 19:00" + ações (Comunica+)
+//   - futuro: "Começa em 3 h" / "amanhã às 07:00" + ações (Confirmar/Trocar)
+
+import { Text, View } from "react-native";
+import { ArrowRightLeft, CheckCircle2, Clock, ExternalLink, MapPin } from "lucide-react-native";
+import { theme } from "@/lib/theme";
+import { Surface, tonedText } from "@/components/ui/Surface";
+import { AppButton } from "@/components/ui/AppButton";
+import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
+
+export interface NextShiftCardShift {
+  id: number;
+  label: string;
+  startAt: string | Date;
+  endAt: string | Date;
+  status?: string | null;
+  sectorName?: string | null;
+  hospitalName?: string | null;
+}
+
+export interface NextShiftCardProps {
+  shift: NextShiftCardShift | null | undefined;
+  /** Relógio injetável (testes/preview). */
+  now?: Date;
+  /** Há pedido de confirmação pendente para este plantão. */
+  needsConfirmation?: boolean;
+  onConfirm?: () => void;
+  onSwap?: () => void;
+  onOpenComunica?: () => void;
+  onPress?: () => void;
+}
+
+const WEEKDAYS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+
+function fmtTime(d: Date): string {
+  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function sameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/** "Começa em 45 min", "Começa em 3 h", "amanhã às 07:00", "sexta, 28/08 às 19:00". */
+export function describeStart(start: Date, now: Date): string {
+  const diffMin = Math.round((start.getTime() - now.getTime()) / 60000);
+  if (diffMin <= 0) return "Começa agora";
+  if (diffMin < 60) return `Começa em ${diffMin} min`;
+  if (diffMin < 12 * 60) {
+    const h = Math.floor(diffMin / 60);
+    const m = diffMin % 60;
+    return m >= 15 ? `Começa em ${h} h ${m} min` : `Começa em ${h} h`;
+  }
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  if (sameLocalDay(start, tomorrow)) return `Amanhã às ${fmtTime(start)}`;
+  if (sameLocalDay(start, now)) return `Hoje às ${fmtTime(start)}`;
+  const dd = String(start.getDate()).padStart(2, "0");
+  const mm = String(start.getMonth() + 1).padStart(2, "0");
+  return `${WEEKDAYS[start.getDay()]}, ${dd}/${mm} às ${fmtTime(start)}`;
+}
+
+export function NextShiftCard({
+  shift,
+  now = new Date(),
+  needsConfirmation = false,
+  onConfirm,
+  onSwap,
+  onOpenComunica,
+  onPress,
+}: NextShiftCardProps) {
+  if (!shift) {
+    return (
+      <Surface level="card" tone="muted" accessibilityLabel="Sem próximo plantão">
+        <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
+          <Clock size={20} color={theme.colors.textMuted} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ ...theme.text.titleSm, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
+              Nenhum plantão agendado
+            </Text>
+            <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+              Quando você for alocado, ele aparece aqui.
+            </Text>
+          </View>
+        </View>
+      </Surface>
+    );
+  }
+
+  const start = new Date(shift.startAt);
+  const end = new Date(shift.endAt);
+  const inProgress = start.getTime() <= now.getTime() && now.getTime() < end.getTime();
+  const tone = inProgress ? "success" : "primary";
+  const colors = tonedText(tone);
+  const where = [shift.sectorName, shift.hospitalName].filter(Boolean).join(" · ");
+
+  return (
+    <Surface level="raised" tone={tone} onPress={onPress} accessibilityLabel={`${inProgress ? "Plantão em andamento" : "Próximo plantão"}: ${shift.label}`}>
+      <View style={{ gap: theme.space[3] }}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: theme.space[2] }}>
+          <Text
+            style={{
+              ...theme.text.eyebrow,
+              fontWeight: theme.weight.bold,
+              textTransform: "uppercase",
+              color: colors.soft,
+            }}
+          >
+            {inProgress ? "Plantão em andamento" : "Próximo plantão"}
+          </Text>
+          {shift.status ? <ShiftStatusBadge status={shift.status} size="sm" /> : null}
+        </View>
+
+        <View style={{ gap: theme.space[1] }}>
+          <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: colors.strong }}>
+            {inProgress ? `Termina às ${fmtTime(end)}` : describeStart(start, now)}
+          </Text>
+          <Text style={{ ...theme.text.bodyLg, color: colors.strong, fontVariant: ["tabular-nums"] }}>
+            {shift.label} · {fmtTime(start)}–{fmtTime(end)}
+          </Text>
+          {where ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] }}>
+              <MapPin size={14} color={colors.soft} />
+              <Text style={{ ...theme.text.body, color: colors.soft }} numberOfLines={1}>
+                {where}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
+        {inProgress && onOpenComunica ? (
+          <AppButton title="Abrir Comunica+" onPress={onOpenComunica} size="md" />
+        ) : null}
+        {!inProgress && (needsConfirmation || onSwap) ? (
+          <View style={{ flexDirection: "row", gap: theme.space[2] }}>
+            {needsConfirmation && onConfirm ? (
+              <View style={{ flex: 1 }}>
+                <AppButton title="Confirmar presença" onPress={onConfirm} size="md" />
+              </View>
+            ) : null}
+            {onSwap ? (
+              <View style={{ flex: 1 }}>
+                <AppButton title="Trocar" variant="secondary" onPress={onSwap} size="md" />
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {inProgress ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] }}>
+            <CheckCircle2 size={14} color={colors.soft} />
+            <Text style={{ ...theme.text.caption, color: colors.soft }}>Presença registrada para este plantão</Text>
+          </View>
+        ) : null}
+        {!inProgress && !needsConfirmation && !onSwap ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] }}>
+            <ArrowRightLeft size={14} color={colors.soft} />
+            <Text style={{ ...theme.text.caption, color: colors.soft }}>Toque para ver detalhes</Text>
+          </View>
+        ) : null}
+        {inProgress && !onOpenComunica ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] }}>
+            <ExternalLink size={14} color={colors.soft} />
+            <Text style={{ ...theme.text.caption, color: colors.soft }}>Comunica+ disponível no botão abaixo</Text>
+          </View>
+        ) : null}
+      </View>
+    </Surface>
+  );
+}

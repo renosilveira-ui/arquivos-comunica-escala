@@ -78,9 +78,14 @@ const text = {
   display: { fontSize: 32, lineHeight: 40, letterSpacing: -0.5 },
   titleLg: { fontSize: 24, lineHeight: 32, letterSpacing: -0.25 },
   title: { fontSize: 18, lineHeight: 26, letterSpacing: 0 },
+  // Título de card/linha (entre title e bodyLg) — nome do plantão, setor.
+  titleSm: { fontSize: 16, lineHeight: 22, letterSpacing: -0.1 },
   bodyLg: { fontSize: 16, lineHeight: 24, letterSpacing: 0 },
   body: { fontSize: 14, lineHeight: 20, letterSpacing: 0 },
   caption: { fontSize: 12, lineHeight: 16, letterSpacing: 0.1 },
+  // Eyebrow: rótulo curto em caixa alta acima de um título ("PRÓXIMO
+  // PLANTÃO", "SETOR"). Sempre com textTransform: "uppercase".
+  eyebrow: { fontSize: 11, lineHeight: 14, letterSpacing: 0.8 },
 } as const;
 
 const weight = {
@@ -237,6 +242,35 @@ export const theme = {
       divider: "rgba(255, 255, 255, 0.08)",
       hover: "rgba(255, 255, 255, 0.06)",
       primarySoft: "rgba(59, 130, 246, 0.15)", // chip primary em dark
+    },
+  },
+
+  // ─── Níveis de superfície (camadas) ───
+  // A profundidade da UI vem de 3 níveis, não de sombras ad hoc:
+  //   canvas   → o fundo (ScreenGradient / background), sem estilo próprio
+  //   card     → conteúdo agrupado: surface + borda 1px + sombra sm
+  //   raised   → o que precisa se destacar do card: sem borda, sombra md
+  //   floating → sheets, menus, toasts: sombra lg
+  // Usar via <Surface level="..."> (components/ui/Surface.tsx).
+  surface: {
+    card: {
+      backgroundColor: palette.neutral[0],
+      borderWidth: 1,
+      borderColor: palette.neutral[200],
+      borderRadius: radius.lg,
+      ...shadow.sm,
+    },
+    raised: {
+      backgroundColor: palette.neutral[0],
+      borderWidth: 0,
+      borderRadius: radius.xl,
+      ...shadow.md,
+    },
+    floating: {
+      backgroundColor: palette.neutral[0],
+      borderWidth: 0,
+      borderRadius: radius.xl,
+      ...shadow.lg,
     },
   },
 
