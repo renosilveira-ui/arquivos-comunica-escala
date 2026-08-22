@@ -2,15 +2,13 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
-import { eq, and, sql, desc, inArray } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import {
   swapRequests,
   shiftInstances,
   shiftAssignmentsV2,
   professionals,
   professionalInstitutions,
-  hospitals,
-  sectors,
   monthlyRosters,
   users,
 } from "../drizzle/schema";
@@ -240,14 +238,44 @@ async function effectuateApprovedSwap(
     }
   }
 
+  // O tipo da alocação (ON_DUTY / ON_CALL / BACKUP) é preservado na
+  // efetivação: uma cessão de sobreaviso não pode virar plantonista
+  // (auditoria 22/08, achado M5).
+  const [fromAssign] = await db
+    .select({ assignmentType: shiftAssignmentsV2.assignmentType })
+    .from(shiftAssignmentsV2)
+    .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
+  if (!fromAssign) throw new TRPCError({ code: "NOT_FOUND", message: "Alocação de origem não encontrada" });
+  const fromType = fromAssign.assignmentType;
+  let toType: typeof fromType = fromType;
+  if (!isOneWay(swap.type) && swap.toAssignmentId) {
+    const [toAssign] = await db
+      .select({ assignmentType: shiftAssignmentsV2.assignmentType })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, swap.toAssignmentId));
+    if (toAssign) toType = toAssign.assignmentType;
+  }
+
+  // Desativa a alocação de origem SÓ se ela ainda estiver ativa. Sem a
+  // guarda, uma segunda oferta/aprovação sobre a mesma alocação já
+  // desativada inseria outro titular sem erro (achado A2).
+  const deactivateActive = async (tx: any, assignmentId: number, label: string) => {
+    const [done] = await tx
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(and(eq(shiftAssignmentsV2.id, assignmentId), eq(shiftAssignmentsV2.isActive, true)));
+    if (!done.affectedRows) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `A alocação ${label} já foi alterada por outra ação — esta oferta não pode mais ser efetivada.`,
+      });
+    }
+  };
+
   // ─── EFFECTUATE (atômico: tudo ou nada) ─────────────────────────────────────────────
   await db.transaction(async (tx: any) => {
     if (isOneWay(swap.type)) {
-      // Deactivate old from-assignment
-      await tx
-        .update(shiftAssignmentsV2)
-        .set({ isActive: false })
-        .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
+      await deactivateActive(tx, swap.fromAssignmentId, "de origem");
 
       // Create new assignment for the recipient on from-shift
       await tx.insert(shiftAssignmentsV2).values({
@@ -256,23 +284,17 @@ async function effectuateApprovedSwap(
         hospitalId: fromShift.hospitalId,
         sectorId: fromShift.sectorId,
         professionalId: swap.toProfessionalId,
-        assignmentType: "ON_DUTY",
+        assignmentType: fromType,
         status: "OCUPADO",
         isActive: true,
         createdBy: reviewedByUserId,
       });
     } else {
       // SWAP: deactivate both old, create both new
-      await tx
-        .update(shiftAssignmentsV2)
-        .set({ isActive: false })
-        .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
+      await deactivateActive(tx, swap.fromAssignmentId, "de origem");
 
       if (swap.toAssignmentId) {
-        await tx
-          .update(shiftAssignmentsV2)
-          .set({ isActive: false })
-          .where(eq(shiftAssignmentsV2.id, swap.toAssignmentId));
+        await deactivateActive(tx, swap.toAssignmentId, "do colega");
       }
 
       // Offerer → to-shift
@@ -293,7 +315,7 @@ async function effectuateApprovedSwap(
             hospitalId: toShift.hospitalId,
             sectorId: toShift.sectorId,
             professionalId: swap.fromProfessionalId,
-            assignmentType: "ON_DUTY",
+            assignmentType: toType,
             status: "OCUPADO",
             isActive: true,
             createdBy: reviewedByUserId,
@@ -308,7 +330,7 @@ async function effectuateApprovedSwap(
         hospitalId: fromShift.hospitalId,
         sectorId: fromShift.sectorId,
         professionalId: swap.toProfessionalId,
-        assignmentType: "ON_DUTY",
+        assignmentType: fromType,
         status: "OCUPADO",
         isActive: true,
         createdBy: reviewedByUserId,
@@ -417,6 +439,26 @@ export const swapRouter = router({
 
       // 3. Check month not locked
       await assertNotLocked(db, fromShift.institutionId, fromShift.hospitalId, fromShift.startAt);
+
+      // 3b. Uma oferta aberta por alocação. Duas ofertas da mesma alocação
+      // aprovadas em sequência colocavam dois médicos no mesmo plantão
+      // (auditoria 22/08, achado A2).
+      const [openOffer] = await db
+        .select({ id: swapRequests.id, status: swapRequests.status })
+        .from(swapRequests)
+        .where(
+          and(
+            eq(swapRequests.fromAssignmentId, input.fromAssignmentId),
+            inArray(swapRequests.status, ["PENDING", "ACCEPTED"]),
+          ),
+        )
+        .limit(1);
+      if (openOffer) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Já existe uma oferta aberta para este plantão. Cancele-a antes de criar outra.",
+        });
+      }
 
       // 4. SWAP-specific: verify toShiftInstance exists and is occupied by another
       if (input.type === "SWAP") {
@@ -1029,26 +1071,8 @@ export const swapRouter = router({
 
       const pro = await getProfessionalForUser(db, userId);
 
-      // Build WHERE conditions
-      const conditions: any[] = [];
-
-      if (input.status) conditions.push(eq(swapRequests.status, input.status as any));
-      if (input.type) conditions.push(eq(swapRequests.type, input.type));
-
-      // Non-managers see only their own swaps. Mesmo gestores podem
-      // pedir filtro OFFERER/RECEIVER explícito (ex.: gestor ver os
-      // próprios pedidos pessoais separados dos do tenant).
-      if (!isInstitutionManager && pro) {
-        conditions.push(
-          sql`(${swapRequests.fromProfessionalId} = ${pro.id} OR ${swapRequests.toProfessionalId} = ${pro.id})`,
-        );
-      }
-
-      const where = conditions.length > 0 ? and(...conditions) : undefined;
-
-      // Aliases for from/to shift + professionals
-      const fromShift = shiftInstances;
-      const fromPro = professionals;
+      // Filtros (status/type/role e "só os meus" para não-gestor) são
+      // aplicados inline no SQL abaixo.
 
       const rows = await db.execute(sql`
         SELECT
