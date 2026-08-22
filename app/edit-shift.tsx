@@ -65,10 +65,12 @@ export default function EditShiftScreen() {
   const params = useLocalSearchParams();
   const shiftId = Number(params.id);
 
-  // Guard: somente admin/manager podem editar escalas
+  // Guard: somente admin/manager podem editar escalas. `can` muda de
+  // identidade a cada render; o efeito depende do RESULTADO, não da função.
+  const canEditShift = can("edit:shift");
   useEffect(() => {
-    if (!can("edit:shift")) router.back();
-  }, []);
+    if (!canEditShift) router.back();
+  }, [canEditShift, router]);
 
   // Estados do formulário
   const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>();

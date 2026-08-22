@@ -6,7 +6,7 @@ import { useAuth, type User as AuthUser } from "@/hooks/use-auth";
 import * as Haptics from "expo-haptics";
 import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound, AlertTriangle, Trash2, X } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useRouter } from "expo-router";
@@ -114,24 +114,22 @@ export default function ProfileScreen() {
   }, [monthShifts, professional]);
 
 
-  // TODO: Buscar configurações de notificação quando API estiver disponível
-  const settings = {
-    enableShiftChanges: true,
-    enableReminders: true,
-    enableHospitalAlertNotifications: true,
-  };
+  // TODO: Buscar configurações de notificação quando API estiver disponível.
+  // Enquanto não há API, os valores iniciais são fixos — sem efeito de
+  // sincronização (o objeto literal mudava a cada render).
+  const settings = useMemo(
+    () => ({
+      enableShiftChanges: true,
+      enableReminders: true,
+      enableHospitalAlertNotifications: true,
+    }),
+    [],
+  );
 
   // Estados locais para switches
-  const [enableShiftChanges, setEnableShiftChanges] = useState(true);
-  const [enableReminders, setEnableReminders] = useState(true);
-  const [enableHospitalAlert, setEnableHospitalAlert] = useState(true);
-  // Atualizar estados quando settings carrega
-  useEffect(() => {
-    if (settings) {
-      setEnableShiftChanges(settings.enableShiftChanges);
-      setEnableReminders(settings.enableReminders);
-    }
-  }, [settings]);
+  const [enableShiftChanges, setEnableShiftChanges] = useState(settings.enableShiftChanges);
+  const [enableReminders, setEnableReminders] = useState(settings.enableReminders);
+  const [enableHospitalAlert, setEnableHospitalAlert] = useState(settings.enableHospitalAlertNotifications);
 
   // TODO: Mutation para atualizar configurações quando API estiver disponível
   const updateSettings = {

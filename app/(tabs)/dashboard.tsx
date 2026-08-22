@@ -33,7 +33,7 @@ export default function DashboardScreen() {
     { enabled: !!user }
   );
 
-  const shifts = shiftsData || [];
+  const shifts = useMemo(() => shiftsData ?? [], [shiftsData]);
 
   const stats = useMemo(() => ({
     total: shifts.length,
