@@ -454,8 +454,9 @@ export default function AgendaScreen() {
           </View>
         </View>
 
-        {/* Próximo plantão (ou em andamento) — a pergunta nº 1 do plantonista */}
-        <View style={{ marginBottom: theme.space[4] }}>
+        {/* Próximo plantão (ou em andamento) — faixa compacta: a pergunta
+            nº 1 do plantonista sem roubar a visão panorâmica da escala. */}
+        <View style={{ marginBottom: theme.space[3] }}>
           <NextShiftCard
             shift={nextShift ?? null}
             needsConfirmation={!!nextShift && pendingConfirmation?.shiftInstanceId === nextShift.id}
