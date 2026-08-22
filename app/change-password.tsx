@@ -8,7 +8,6 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  Alert,
 } from "react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -37,7 +36,10 @@ import { authApi } from "@/lib/_core/api";
 
 export default function ChangePasswordScreen() {
   const router = useRouter();
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, isLoading: authLoading, refetch } = useAuth();
+  // Senha temporária do admin: o AuthGuard manda pra cá e só libera o
+  // app quando a flag cai (após refetch do /me).
+  const forced = Boolean(user?.mustChangePassword);
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -87,6 +89,12 @@ export default function ChangePasswordScreen() {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      if (forced) {
+        // Atualiza o user (mustChangePassword=false) e entra no app.
+        await refetch();
+        router.replace("/(tabs)");
+        return;
+      }
       // Pequeno delay para o usuário ver o feedback antes de voltar.
       setTimeout(() => router.back(), 1200);
     } catch (err: any) {
@@ -129,20 +137,24 @@ export default function ChangePasswordScreen() {
         <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 }}>
           {/* Header */}
           <View className="flex-row items-center gap-3 mb-2">
-            <TouchableOpacity
-              onPress={handleBack}
-              activeOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel="Voltar"
-            >
-              <ChevronLeft size={28} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
+            {!forced ? (
+              <TouchableOpacity
+                onPress={handleBack}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Voltar"
+              >
+                <ChevronLeft size={28} color={theme.colors.textPrimary} />
+              </TouchableOpacity>
+            ) : null}
             <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>
-              Alterar senha
+              {forced ? "Defina sua nova senha" : "Alterar senha"}
             </Text>
           </View>
           <Text className="text-sm mb-6" style={{ color: theme.colors.textMuted }}>
-            Mínimo 8 caracteres. Use uma senha que você lembre — não há recuperação por e-mail nesta conta de teste.
+            {forced
+              ? "Você entrou com uma senha temporária. Escolha uma senha nova (mínimo 8 caracteres) para continuar."
+              : "Mínimo 8 caracteres. Se esquecer, use \"Esqueci minha senha\" na tela de login."}
           </Text>
 
           <View
@@ -167,7 +179,7 @@ export default function ChangePasswordScreen() {
                 onFocus={() => setFocusedField("current")}
                 onBlur={() => setFocusedField(null)}
                 placeholderTextColor={theme.colors.textMuted}
-                placeholder="Sua senha atual"
+                placeholder={forced ? "A senha temporária que você recebeu" : "Sua senha atual"}
                 style={{
                   backgroundColor: theme.colors.surface,
                   borderRadius: 8,

@@ -71,6 +71,8 @@ export type AuthUser = {
   role: "admin" | "manager" | "doctor" | "nurse" | "tech";
   /** PENDING = auto-cadastro aguardando aprovação do gestor (app bloqueado). */
   approvalStatus?: "PENDING" | "APPROVED";
+  /** Senha temporária definida pelo admin: o app força a troca antes de qualquer tela. */
+  mustChangePassword?: boolean;
 };
 
 type LoginResponse = { user: AuthUser; token?: string };
@@ -179,5 +181,54 @@ export const authApi = {
     const errMsg =
       (res.data as any)?.error ?? res.error ?? "Erro ao alterar senha";
     return { ok: false, error: errMsg };
+  },
+
+  /**
+   * "Esqueci minha senha". O servidor responde 200 neutro sempre (sem
+   * enumeração de contas) — a tela mostra mensagem neutra em qualquer caso.
+   */
+  async forgotPassword(email: string): Promise<{ ok: boolean; error?: string }> {
+    const res = await apiFetch<{ ok?: boolean; error?: string }>("/api/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+    if (res.ok) return { ok: true };
+    return {
+      ok: false,
+      error: (res.data as any)?.error ?? res.error ?? "Não foi possível enviar o pedido",
+    };
+  },
+
+  /** Redefine a senha com o token recebido por e-mail. */
+  async resetPassword(
+    token: string,
+    newPassword: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const res = await apiFetch<{ ok?: boolean; error?: string }>("/api/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, newPassword }),
+    });
+    if (res.ok && res.data?.ok) return { ok: true };
+    return {
+      ok: false,
+      error: (res.data as any)?.error ?? res.error ?? "Erro ao redefinir senha",
+    };
+  },
+
+  /**
+   * Exclusão da própria conta (Apple 5.1.1(v)). Exige a senha atual.
+   * 409 = plantões futuros alocados (mensagem do servidor explica).
+   */
+  async deleteAccount(password: string): Promise<{ ok: boolean; status: number; error?: string }> {
+    const res = await apiFetch<{ ok?: boolean; error?: string }>("/api/auth/me", {
+      method: "DELETE",
+      body: JSON.stringify({ password }),
+    });
+    if (res.ok && res.data?.ok) return { ok: true, status: res.status };
+    return {
+      ok: false,
+      status: res.status,
+      error: (res.data as any)?.error ?? res.error ?? "Erro ao excluir conta",
+    };
   },
 };

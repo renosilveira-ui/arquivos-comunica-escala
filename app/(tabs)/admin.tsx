@@ -15,9 +15,10 @@ import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
 import * as Auth from "@/lib/_core/auth";
-import { Lock, Plus, Pencil, Users, X, UserPlus, Check } from "lucide-react-native";
+import { Lock, Plus, Pencil, Users, X, UserPlus, Check, KeyRound, Copy } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useFocusEffect } from "expo-router";
+import { confirmAction } from "@/lib/ui/confirm";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -385,6 +386,10 @@ function EditUserModal({
   const [specialty, setSpecialty] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // Senha temporária (frente A3): mostrada UMA vez após "Redefinir senha".
+  const [resetting, setResetting] = useState(false);
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // Populate when modal opens or editUser changes
   useFocusEffect(
@@ -395,9 +400,51 @@ function EditUserModal({
         setRole(editUser.role);
         setSpecialty(editUser.professional?.specialty ?? "");
         setError("");
+        setTempPassword(null);
+        setCopied(false);
       }
     }, [visible, editUser]),
   );
+
+  const handleResetPassword = async () => {
+    if (!editUser) return;
+    const confirmed = await confirmAction(
+      `Redefinir a senha de ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual deixa de valer. Uma senha temporária será exibida uma única vez e o usuário terá que trocá-la no próximo login.`,
+    );
+    if (!confirmed) return;
+    setResetting(true);
+    setError("");
+    try {
+      const res = await adminFetch<{ temporaryPassword?: string; error?: string }>(
+        `/api/admin/users/${editUser.id}/reset-password`,
+        { method: "POST" },
+      );
+      if (res.ok && res.data?.temporaryPassword) {
+        setTempPassword(res.data.temporaryPassword);
+        setCopied(false);
+      } else {
+        setError(res.data?.error ?? "Erro ao redefinir senha");
+      }
+    } catch {
+      setError("Erro ao redefinir senha");
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const handleCopyTempPassword = async () => {
+    if (!tempPassword) return;
+    // Sem expo-clipboard no projeto: no web usa a Clipboard API; no
+    // nativo o texto é selecionável (pressionar e segurar → copiar).
+    if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(tempPassword);
+        setCopied(true);
+      } catch {
+        setCopied(false);
+      }
+    }
+  };
 
   const handleUpdate = async () => {
     if (!editUser) return;
@@ -632,6 +679,113 @@ function EditUserModal({
               </Text>
             )}
           </TouchableOpacity>
+
+          {/* Redefinir senha (senha temporária + troca obrigatória) */}
+          <View
+            style={{
+              marginTop: theme.space[4],
+              paddingTop: theme.space[4],
+              borderTopWidth: 1,
+              borderTopColor: theme.colors.border,
+              gap: theme.space[3],
+            }}
+          >
+            {tempPassword ? (
+              <View
+                style={{
+                  backgroundColor: theme.colors.warningSoft,
+                  borderRadius: theme.borderRadius.input,
+                  padding: theme.space[3],
+                  gap: theme.space[2],
+                }}
+              >
+                <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                  Senha temporária — anote agora, ela não será exibida de novo. O usuário terá que
+                  trocá-la no próximo login.
+                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                  <Text
+                    selectable
+                    accessibilityLabel={`Senha temporária: ${tempPassword}`}
+                    style={{
+                      flex: 1,
+                      fontFamily: theme.fontFamily.mono,
+                      ...theme.text.title,
+                      fontWeight: theme.weight.bold,
+                      color: theme.colors.textPrimary,
+                      letterSpacing: 1,
+                    }}
+                  >
+                    {tempPassword}
+                  </Text>
+                  {Platform.OS === "web" ? (
+                    <TouchableOpacity
+                      onPress={handleCopyTempPassword}
+                      accessibilityRole="button"
+                      accessibilityLabel="Copiar senha temporária"
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: theme.space[1],
+                        backgroundColor: theme.colors.surface,
+                        borderWidth: 1,
+                        borderColor: theme.colors.border,
+                        borderRadius: theme.borderRadius.button,
+                        paddingHorizontal: theme.space[3],
+                        paddingVertical: theme.space[2],
+                      }}
+                    >
+                      <Copy size={16} color={theme.colors.textSecondary} />
+                      <Text
+                        style={{
+                          ...theme.text.body,
+                          fontWeight: theme.weight.semibold,
+                          color: theme.colors.textSecondary,
+                        }}
+                      >
+                        {copied ? "Copiado" : "Copiar"}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              </View>
+            ) : (
+              <TouchableOpacity
+                onPress={handleResetPassword}
+                disabled={resetting}
+                accessibilityRole="button"
+                accessibilityLabel="Redefinir senha do usuário"
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: theme.space[2],
+                  borderWidth: 1.5,
+                  borderColor: theme.colors.warning,
+                  borderRadius: theme.borderRadius.button,
+                  padding: theme.space[3],
+                  opacity: resetting ? 0.6 : 1,
+                }}
+              >
+                {resetting ? (
+                  <ActivityIndicator color={theme.colors.warning} />
+                ) : (
+                  <>
+                    <KeyRound size={16} color={theme.colors.warning} />
+                    <Text
+                      style={{
+                        ...theme.text.body,
+                        fontWeight: theme.weight.bold,
+                        color: theme.colors.warning,
+                      }}
+                    >
+                      Redefinir senha
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
