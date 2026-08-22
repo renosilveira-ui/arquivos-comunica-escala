@@ -1,4 +1,4 @@
-import { View, Platform, useWindowDimensions } from "react-native";
+import { View, Platform } from "react-native";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { useState, useEffect, ReactNode } from "react";
@@ -14,7 +14,6 @@ interface AppShellProps {
 const SIDEBAR_COLLAPSED_KEY = "sidebarCollapsed";
 
 export function AppShell({ children, title }: AppShellProps) {
-  const { width } = useWindowDimensions();
   const [collapsed, setCollapsed] = useState(false); // Default: expandida
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 

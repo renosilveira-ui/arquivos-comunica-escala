@@ -33,7 +33,7 @@ export function MonthCalendar({ selectedDate, onSelectDate, shiftsPerDay }: Mont
     const lastDay = new Date(year, month + 1, 0);
     const lastDate = lastDay.getDate();
     
-    const days: Array<{ date: Date; isCurrentMonth: boolean }> = [];
+    const days: { date: Date; isCurrentMonth: boolean }[] = [];
     
     // Dias do mês anterior (para preencher início)
     for (let i = firstDayOfWeek - 1; i >= 0; i--) {

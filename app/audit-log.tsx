@@ -100,7 +100,7 @@ export default function AuditLogScreen() {
     { enabled: !!user?.id },
   ) ?? { data: undefined, isLoading: false, refetch: () => {} };
 
-  const data = (auditQuery.data ?? []) as any[];
+  const data = useMemo(() => (auditQuery.data ?? []) as any[], [auditQuery.data]);
   const isLoading = auditQuery.isLoading as boolean;
 
   const filteredRows = useMemo(() => {

@@ -1,6 +1,5 @@
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView, Alert, Platform } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
-import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
