@@ -1,4 +1,4 @@
-import { Text, View, TouchableOpacity, Switch, Share } from "react-native";
+import { Text, View, TouchableOpacity, Switch, Share, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
@@ -7,13 +7,14 @@ import * as Haptics from "expo-haptics";
 import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
 import { useState, useEffect, useMemo } from "react";
-import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound, AlertTriangle } from "lucide-react-native";
+import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound, AlertTriangle, Trash2, X } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useRouter } from "expo-router";
 import { useTenantState } from "@/lib/tenant-state";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { confirmAction } from "@/lib/ui/confirm";
-import { uiAlert } from "@/lib/ui/alert";
+import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
+import { authApi } from "@/lib/_core/api";
 import { getLastCrash } from "@/components/AppErrorBoundary";
 import {
   requestNotificationPermissions,
@@ -171,6 +172,53 @@ export default function ProfileScreen() {
       await logout();
     } catch (err) {
       console.warn("[Profile] logout failed", err);
+    }
+  };
+
+  // ── Exclusão de conta (Apple 5.1.1(v)) ────────────────────────────────
+  // Confirmação destrutiva → modal com senha → DELETE /api/auth/me → logout.
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDeleteAccountPress = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    uiConfirmDestructive(
+      "Excluir minha conta?",
+      "Seus dados pessoais serão removidos e você perderá o acesso ao Escala+. Esta ação não pode ser desfeita.\n\nSe você tiver plantões futuros alocados, peça ao gestor para realocá-los antes.",
+      "Continuar",
+      () => {
+        setDeletePassword("");
+        setDeleteError(null);
+        setDeleteModalVisible(true);
+      },
+    );
+  };
+
+  const handleConfirmDeleteAccount = async () => {
+    if (!deletePassword) {
+      setDeleteError("Digite sua senha para confirmar.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const result = await authApi.deleteAccount(deletePassword);
+      if (!result.ok) {
+        setDeleteError(result.error ?? "Não foi possível excluir a conta.");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        return;
+      }
+      setDeleteModalVisible(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      uiAlert("Conta excluída", "Sua conta foi removida. Sentiremos sua falta.");
+      await logout();
+    } catch (err) {
+      console.warn("[Profile] deleteAccount failed", err);
+      setDeleteError("Falha de conexão. Tente novamente.");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -602,6 +650,170 @@ export default function ProfileScreen() {
             </View>
           </TintedGlassCard>
         </View>
+        {/* Conta — exclusão (Apple 5.1.1(v)) */}
+        <View style={{ gap: theme.space[4] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+            <Trash2 size={20} color={theme.colors.textPrimary} />
+            <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
+              Conta
+            </Text>
+          </View>
+          <TintedGlassCard variant="light">
+            <TouchableOpacity
+              onPress={handleDeleteAccountPress}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel="Excluir minha conta"
+              style={{
+                borderRadius: theme.radius.lg,
+                padding: theme.space[4],
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                backgroundColor: theme.colors.dangerSoft,
+                borderWidth: 1,
+                borderColor: theme.colors.danger,
+              }}
+            >
+              <View style={{ flex: 1, paddingRight: theme.space[4] }}>
+                <Text style={{ ...theme.text.bodyLg, fontWeight: theme.weight.semibold, color: theme.palette.danger[900] }}>
+                  Excluir minha conta
+                </Text>
+                <Text style={{ ...theme.text.body, marginTop: theme.space[1], color: theme.palette.danger[900] }}>
+                  Remove seus dados pessoais e encerra o acesso. Não pode ser desfeito.
+                </Text>
+              </View>
+              <Text style={{ color: theme.palette.danger[900], fontWeight: theme.weight.bold }}>Excluir</Text>
+            </TouchableOpacity>
+          </TintedGlassCard>
+        </View>
+
+        {/* Modal: confirmar exclusão com senha */}
+        <Modal
+          visible={deleteModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => !deleting && setDeleteModalVisible(false)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={{
+              flex: 1,
+              justifyContent: "center",
+              alignItems: "center",
+              backgroundColor: theme.colors.overlay,
+              padding: theme.space[4],
+            }}
+          >
+            <View
+              style={{
+                width: "100%",
+                maxWidth: 420,
+                backgroundColor: theme.colors.surface,
+                borderRadius: theme.radius.xl,
+                padding: theme.space[6],
+                gap: theme.space[4],
+              }}
+            >
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
+                  Confirme com sua senha
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setDeleteModalVisible(false)}
+                  disabled={deleting}
+                  hitSlop={12}
+                  accessibilityRole="button"
+                  accessibilityLabel="Fechar"
+                >
+                  <X size={22} color={theme.colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                Para excluir a conta de {user.email ?? "usuário"}, digite sua senha atual.
+              </Text>
+              <TextInput
+                value={deletePassword}
+                onChangeText={setDeletePassword}
+                secureTextEntry
+                autoComplete="current-password"
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={handleConfirmDeleteAccount}
+                placeholder="Sua senha"
+                placeholderTextColor={theme.colors.textMuted}
+                accessibilityLabel="Senha atual"
+                style={{
+                  backgroundColor: theme.colors.surface,
+                  color: theme.colors.textPrimary,
+                  borderRadius: theme.radius.md,
+                  borderWidth: 1.5,
+                  borderColor: deleteError ? theme.colors.danger : theme.colors.border,
+                  paddingHorizontal: theme.space[4],
+                  paddingVertical: theme.space[3],
+                  ...theme.text.bodyLg,
+                }}
+              />
+              {deleteError ? (
+                <View
+                  style={{
+                    backgroundColor: theme.colors.dangerSoft,
+                    borderRadius: theme.radius.md,
+                    padding: theme.space[3],
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: theme.space[2],
+                  }}
+                >
+                  <AlertTriangle size={18} color={theme.palette.danger[600]} />
+                  <Text style={{ ...theme.text.body, color: theme.palette.danger[600], flex: 1 }}>
+                    {deleteError}
+                  </Text>
+                </View>
+              ) : null}
+              <TouchableOpacity
+                onPress={handleConfirmDeleteAccount}
+                disabled={deleting}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Excluir conta definitivamente"
+                style={{
+                  backgroundColor: theme.colors.danger,
+                  borderRadius: theme.radius.md,
+                  padding: theme.space[4],
+                  alignItems: "center",
+                  flexDirection: "row",
+                  justifyContent: "center",
+                  gap: theme.space[2],
+                  opacity: deleting ? 0.7 : 1,
+                }}
+              >
+                {deleting ? (
+                  <ActivityIndicator color={theme.colors.surface} />
+                ) : (
+                  <>
+                    <Trash2 size={18} color={theme.colors.surface} />
+                    <Text style={{ ...theme.text.bodyLg, fontWeight: theme.weight.bold, color: theme.colors.surface }}>
+                      Excluir conta
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setDeleteModalVisible(false)}
+                disabled={deleting}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                style={{ alignItems: "center", padding: theme.space[2] }}
+              >
+                <Text style={{ ...theme.text.body, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}>
+                  Cancelar
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
         {/* Botão de Logout */}
         <TouchableOpacity
           onPress={handleLogout}

@@ -26,6 +26,17 @@ export const users = mysqlTable("users", {
    * criadas pelo admin.
    */
   approvalStatus: mysqlEnum("approval_status", ["PENDING", "APPROVED"]).default("APPROVED").notNull(),
+  /**
+   * Senha temporária definida pelo admin (2026-08-22): o app força a
+   * troca antes de liberar qualquer tela. change-password limpa a flag.
+   */
+  mustChangePassword: boolean("must_change_password").default(false).notNull(),
+  /**
+   * Exclusão de conta pelo próprio usuário (Apple 5.1.1(v)). Soft-delete:
+   * a linha permanece (FKs de audit/assignments) mas anonimizada; login e
+   * sessões falham quando preenchido.
+   */
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -33,6 +44,28 @@ export const users = mysqlTable("users", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+/**
+ * Tokens de "esqueci minha senha". Só o sha256 do token é gravado;
+ * o token em claro vai apenas no link do e-mail. Uso único (used_at)
+ * e TTL curto (expires_at, 30 min).
+ */
+export const passwordResets = mysqlTable(
+  "password_resets",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    usedAt: timestamp("used_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxPasswordResetsTokenHash: index("idx_password_resets_token_hash").on(table.tokenHash),
+  }),
+);
+
+export type PasswordReset = typeof passwordResets.$inferSelect;
 
 // ========================================
 // NOVO MODELO MULTI-INSTITUCIONAL
