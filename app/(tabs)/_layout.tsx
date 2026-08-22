@@ -205,10 +205,17 @@ export default function TabLayout() {
   const { user } = useAuth();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
-  // Badge da aba Trocas: ofertas que o médico pode responder.
+  // Barra inferior (celular) = experiência do plantonista, para todo
+  // papel: Agenda · Trocas · Vagas · Perfil. Painel, Solicitações e Admin
+  // são ferramentas de gestão — ficam na sidebar do desktop e, no celular,
+  // em Perfil → Gestão (rotas continuam navegáveis; só saem da barra).
+  // Decisão do PO em 2026-08-22.
+  const showManagementTabs = isDesktopWeb;
+  const showTrocasTab = !isDesktopWeb || !isManager;
+  // Badge da aba Trocas: ofertas que o usuário pode responder.
   const { data: availableSwaps } = trpc.swaps.listAvailable.useQuery(
     {},
-    { enabled: !!user?.id && !isManager, staleTime: 60_000 },
+    { enabled: !!user?.id && showTrocasTab, staleTime: 60_000 },
   );
   const availableSwapsCount = availableSwaps?.length ?? 0;
 
@@ -256,9 +263,10 @@ export default function TabLayout() {
         options={{
           // Médico: porta de entrada para aceitar/oferecer trocas (antes só
           // via atalho do Panorama; "Minhas ofertas" ficava no Perfil).
-          // Gestor vê o mesmo conteúdo dentro de Solicitações.
+          // No desktop o gestor vê o mesmo conteúdo dentro de Solicitações;
+          // no celular todo mundo tem a aba.
           title: "Trocas",
-          href: isManager ? null : undefined,
+          href: showTrocasTab ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="swap" color={color} size={size} />,
           tabBarBadge: availableSwapsCount > 0 ? availableSwapsCount : undefined,
           tabBarBadgeStyle: { backgroundColor: theme.colors.primary, color: theme.colors.onDark.text },
@@ -285,7 +293,7 @@ export default function TabLayout() {
         options={{
           title: "Painel",
           tabBarIcon: ({ color, size }) => <TabIcon name="dashboard" color={color} size={size} />,
-          href: can("view:dashboard") ? undefined : null,
+          href: showManagementTabs && can("view:dashboard") ? undefined : null,
         }}
       />
       <Tabs.Screen
@@ -295,7 +303,7 @@ export default function TabLayout() {
           // cessão (não pendências de plantão). Decisão em
           // docs/product/escala-ux.md §3.
           title: "Solicitações",
-          href: isManager ? undefined : null,
+          href: showManagementTabs && isManager ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
         }}
       />
@@ -326,7 +334,7 @@ export default function TabLayout() {
         options={{
           title: "Admin",
           tabBarIcon: ({ color, size }) => <TabIcon name="admin" color={color} size={size} />,
-          href: can("view:admin") ? undefined : null,
+          href: showManagementTabs && can("view:admin") ? undefined : null,
         }}
       />
       <Tabs.Screen

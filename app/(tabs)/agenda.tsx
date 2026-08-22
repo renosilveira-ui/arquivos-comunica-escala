@@ -555,7 +555,7 @@ export default function AgendaScreen() {
                 textAlign: "center",
               }}
             >
-              Nenhum plantão neste período
+              {scope === "minha" ? "Você não está alocado em nenhum plantão neste período" : "Nenhum plantão neste período"}
               {activeInstitutionName ? ` em ${activeInstitutionName}` : ""}
             </Text>
             <Text
@@ -566,8 +566,9 @@ export default function AgendaScreen() {
                 lineHeight: 19,
               }}
             >
-              Se a escala que você procura é de outra instituição, toque no
-              nome da instituição acima para trocar.
+              {scope === "minha"
+                ? "Toque em Geral para ver todos os plantões da instituição."
+                : "Se a escala que você procura é de outra instituição, toque no nome da instituição acima para trocar."}
             </Text>
           </View>
         ) : viewMode === "panorama" ? (
