@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, ne, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import { professionals, shiftInstances, shiftAssignmentsV2, sectors, hospitals } from "../drizzle/schema";
 import { validateAssignment } from "./shift-validations";
 import { auditLog } from "./audit-log";
 import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
 import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
+import { recomputeShiftStatus } from "./shift-status";
 import {
   assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
@@ -72,21 +74,37 @@ const shiftAssignmentsRouter = router({
         throw new Error(validation.error || "Validation failed");
       }
 
-      const [result] = await db.insert(shiftAssignmentsV2).values({
-        shiftInstanceId: input.shiftInstanceId,
-        institutionId: shift.institutionId,
-        hospitalId: shift.hospitalId,
-        sectorId: shift.sectorId,
-        professionalId: professional.id,
-        assignmentType: input.assignmentType,
-        isActive: true,
-        createdBy: userId,
+      // Transação + guarda otimista: dois médicos assumindo a mesma vaga
+      // ao mesmo tempo → o UPDATE condicional (status ainda VAGO) é a
+      // trava; quem perde recebe CONFLICT e nada fica pela metade.
+      const assignmentId = await db.transaction(async (tx) => {
+        const [claimed] = await tx
+          .update(shiftInstances)
+          .set({ status: "PENDENTE" })
+          .where(
+            and(
+              eq(shiftInstances.id, input.shiftInstanceId),
+              eq(shiftInstances.status, "VAGO"),
+            ),
+          );
+        if (!claimed.affectedRows) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Este plantão acabou de ser assumido por outro profissional.",
+          });
+        }
+        const [result] = await tx.insert(shiftAssignmentsV2).values({
+          shiftInstanceId: input.shiftInstanceId,
+          institutionId: shift.institutionId,
+          hospitalId: shift.hospitalId,
+          sectorId: shift.sectorId,
+          professionalId: professional.id,
+          assignmentType: input.assignmentType,
+          isActive: true,
+          createdBy: userId,
+        });
+        return Number(result.insertId);
       });
-
-      await db
-        .update(shiftInstances)
-        .set({ status: "PENDENTE" })
-        .where(eq(shiftInstances.id, input.shiftInstanceId));
 
       await auditLog({
         event: "VACANCY_REQUESTED",
@@ -95,7 +113,7 @@ const shiftAssignmentsRouter = router({
         metadata: { assignmentType: input.assignmentType, userId },
       });
 
-      return { ok: true, assignmentId: result.insertId, status: "PENDENTE" as const };
+      return { ok: true, assignmentId, status: "PENDENTE" as const };
     }),
 
   // Listar solicitações de vaga feitas pelo usuário logado.
@@ -313,15 +331,24 @@ const shiftInstancesRouter = router({
         assignment.shiftInstanceId,
       );
 
-      await db
-        .update(shiftAssignmentsV2)
-        .set({ status: "OCUPADO", isActive: true })
-        .where(eq(shiftAssignmentsV2.id, input.assignmentId));
-
-      await db
-        .update(shiftInstances)
-        .set({ status: "OCUPADO" })
-        .where(eq(shiftInstances.id, assignment.shiftInstanceId));
+      // Transação + guarda: aprovar duas vezes (dois gestores, duplo clique)
+      // não pode gerar efeito duplo; o status do turno é derivado das
+      // alocações ativas em vez de setado à mão.
+      await db.transaction(async (tx) => {
+        const [approved] = await tx
+          .update(shiftAssignmentsV2)
+          .set({ status: "OCUPADO", isActive: true })
+          .where(
+            and(
+              eq(shiftAssignmentsV2.id, input.assignmentId),
+              ne(shiftAssignmentsV2.status, "OCUPADO"),
+            ),
+          );
+        if (!approved.affectedRows) {
+          throw new TRPCError({ code: "CONFLICT", message: "Esta alocação já foi aprovada." });
+        }
+        await recomputeShiftStatus(tx, assignment.shiftInstanceId);
+      });
 
       await auditLog({
         event: "ASSIGNMENT_APPROVED",
