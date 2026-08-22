@@ -11,6 +11,7 @@ import {
   hospitals,
   institutions,
   managerScope,
+  monthlyRosters,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -208,6 +209,7 @@ describe("shifts.replicateRange", () => {
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, ids));
     }
     await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
+    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(professionalAccess).where(eq(professionalAccess.institutionId, institutionId));
     await db.delete(managerScope).where(eq(managerScope.institutionId, institutionId));
     await db.delete(professionalInstitutions).where(eq(professionalInstitutions.institutionId, institutionId));
@@ -426,6 +428,19 @@ describe("shifts.replicateRange", () => {
         to: { start: "2025-01-12" },
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("rosterStatus: DRAFT sem registro → PUBLISHED após publicar → LOCKED após bloquear", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    const before = await caller.rosterStatus({ hospitalId, yearMonth: "2026-12" });
+    expect(before.status).toBe("DRAFT");
+    await caller.publish({ institutionId, hospitalId, yearMonth: "2026-12" });
+    const published = await caller.rosterStatus({ hospitalId, yearMonth: "2026-12" });
+    expect(published.status).toBe("PUBLISHED");
+    expect(published.publishedAt).toBeTruthy();
+    await caller.lock({ institutionId, hospitalId, yearMonth: "2026-12" });
+    const locked = await caller.rosterStatus({ hospitalId, yearMonth: "2026-12" });
+    expect(locked.status).toBe("LOCKED");
   });
 
   it("médico comum não pode replicar", async () => {

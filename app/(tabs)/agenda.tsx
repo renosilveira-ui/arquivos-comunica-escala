@@ -20,6 +20,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
+import { ManagerActionsMenu } from "@/components/agenda/ManagerActionsMenu";
 import { useTenantState } from "@/lib/tenant-state";
 import { SsoLaunchButton } from "@/components/SsoLaunchButton";
 import { VoiceCommandButton } from "@/components/VoiceCommandButton";
@@ -345,35 +346,60 @@ export default function AgendaScreen() {
 
           {/* Instituição ativa — SEMPRE visível e tocável para trocar.
               A agenda é por instituição; sem isso o usuário via a grade
-              vazia da instituição errada sem nenhuma pista do motivo. */}
-          <TouchableOpacity
-            onPress={handleSwitchInstitution}
-            activeOpacity={0.7}
+              vazia da instituição errada sem nenhuma pista do motivo.
+              À direita, as ações do gestor (replicar/publicar/bloquear). */}
+          <View
             style={{
               flexDirection: "row",
               alignItems: "center",
-              alignSelf: "flex-start",
-              gap: 6,
-              backgroundColor: theme.colors.primarySoft,
-              borderRadius: theme.radius.md,
-              paddingHorizontal: theme.space[3],
-              paddingVertical: 6,
+              justifyContent: "space-between",
+              gap: theme.space[2],
               marginBottom: theme.space[3],
             }}
           >
-            <Building2 size={14} color={theme.colors.primary} />
-            <Text
+            <TouchableOpacity
+              onPress={handleSwitchInstitution}
+              activeOpacity={0.7}
               style={{
-                fontSize: 13,
-                fontWeight: "600",
-                color: theme.colors.primary,
+                flexDirection: "row",
+                alignItems: "center",
+                flexShrink: 1,
+                minHeight: theme.space[10] + theme.space[1],
+                gap: 6,
+                backgroundColor: theme.colors.primarySoft,
+                borderRadius: theme.radius.md,
+                paddingHorizontal: theme.space[3],
+                paddingVertical: 6,
               }}
-              numberOfLines={1}
             >
-              {activeInstitutionName ?? "Selecionar instituição"}
-            </Text>
-            <ChevronDown size={14} color={theme.colors.primary} />
-          </TouchableOpacity>
+              <Building2 size={14} color={theme.colors.primary} />
+              <Text
+                style={{
+                  fontSize: 13,
+                  fontWeight: "600",
+                  color: theme.colors.primary,
+                  flexShrink: 1,
+                }}
+                numberOfLines={1}
+              >
+                {activeInstitutionName ?? "Selecionar instituição"}
+              </Text>
+              <ChevronDown size={14} color={theme.colors.primary} />
+            </TouchableOpacity>
+            {canCreateShift ? (
+              <ManagerActionsMenu
+                institutionId={activeInstitutionId ?? null}
+                period={
+                  isPanorama
+                    ? { kind: "month", monthKey: anchorMonthKey }
+                    : { kind: "week", weekStart: anchorWeekStart }
+                }
+                onChanged={() => {
+                  refetch();
+                }}
+              />
+            ) : null}
+          </View>
 
           <View
             style={{
