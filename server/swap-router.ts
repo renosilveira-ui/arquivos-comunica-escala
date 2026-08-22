@@ -17,6 +17,7 @@ import {
 import { assertNoTimeConflict } from "./shift-validations-v2";
 import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
+import { recomputeShiftStatus } from "./shift-status";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { notifySwapAccepted, notifySwapApproved } from "./integrations/comunica-plus";
 import {
@@ -239,90 +240,111 @@ async function effectuateApprovedSwap(
     }
   }
 
-  // ─── EFFECTUATE ─────────────────────────────────────────────
-  if (isOneWay(swap.type)) {
-    // Deactivate old from-assignment
-    await db
-      .update(shiftAssignmentsV2)
-      .set({ isActive: false })
-      .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
-
-    // Create new assignment for the recipient on from-shift
-    await db.insert(shiftAssignmentsV2).values({
-      shiftInstanceId: swap.fromShiftInstanceId,
-      institutionId: fromShift.institutionId,
-      hospitalId: fromShift.hospitalId,
-      sectorId: fromShift.sectorId,
-      professionalId: swap.toProfessionalId,
-      assignmentType: "ON_DUTY",
-      status: "OCUPADO",
-      isActive: true,
-      createdBy: reviewedByUserId,
-    });
-  } else {
-    // SWAP: deactivate both old, create both new
-    await db
-      .update(shiftAssignmentsV2)
-      .set({ isActive: false })
-      .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
-
-    if (swap.toAssignmentId) {
-      await db
+  // ─── EFFECTUATE (atômico: tudo ou nada) ─────────────────────────────────────────────
+  await db.transaction(async (tx: any) => {
+    if (isOneWay(swap.type)) {
+      // Deactivate old from-assignment
+      await tx
         .update(shiftAssignmentsV2)
         .set({ isActive: false })
-        .where(eq(shiftAssignmentsV2.id, swap.toAssignmentId));
-    }
+        .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
 
-    // Offerer → to-shift
-    if (swap.toShiftInstanceId) {
-      const [toShift] = await db
-        .select()
-        .from(shiftInstances)
-        .where(
-          and(
-            eq(shiftInstances.id, swap.toShiftInstanceId),
-            eq(shiftInstances.institutionId, institutionId),
-          ),
-        );
-      if (toShift) {
-        await db.insert(shiftAssignmentsV2).values({
-          shiftInstanceId: swap.toShiftInstanceId,
-          institutionId: toShift.institutionId,
-          hospitalId: toShift.hospitalId,
-          sectorId: toShift.sectorId,
-          professionalId: swap.fromProfessionalId,
-          assignmentType: "ON_DUTY",
-          status: "OCUPADO",
-          isActive: true,
-          createdBy: reviewedByUserId,
-        });
+      // Create new assignment for the recipient on from-shift
+      await tx.insert(shiftAssignmentsV2).values({
+        shiftInstanceId: swap.fromShiftInstanceId,
+        institutionId: fromShift.institutionId,
+        hospitalId: fromShift.hospitalId,
+        sectorId: fromShift.sectorId,
+        professionalId: swap.toProfessionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: true,
+        createdBy: reviewedByUserId,
+      });
+    } else {
+      // SWAP: deactivate both old, create both new
+      await tx
+        .update(shiftAssignmentsV2)
+        .set({ isActive: false })
+        .where(eq(shiftAssignmentsV2.id, swap.fromAssignmentId));
+
+      if (swap.toAssignmentId) {
+        await tx
+          .update(shiftAssignmentsV2)
+          .set({ isActive: false })
+          .where(eq(shiftAssignmentsV2.id, swap.toAssignmentId));
       }
+
+      // Offerer → to-shift
+      if (swap.toShiftInstanceId) {
+        const [toShift] = await tx
+          .select()
+          .from(shiftInstances)
+          .where(
+            and(
+              eq(shiftInstances.id, swap.toShiftInstanceId),
+              eq(shiftInstances.institutionId, institutionId),
+            ),
+          );
+        if (toShift) {
+          await tx.insert(shiftAssignmentsV2).values({
+            shiftInstanceId: swap.toShiftInstanceId,
+            institutionId: toShift.institutionId,
+            hospitalId: toShift.hospitalId,
+            sectorId: toShift.sectorId,
+            professionalId: swap.fromProfessionalId,
+            assignmentType: "ON_DUTY",
+            status: "OCUPADO",
+            isActive: true,
+            createdBy: reviewedByUserId,
+          });
+        }
+      }
+
+      // Receptor → from-shift
+      await tx.insert(shiftAssignmentsV2).values({
+        shiftInstanceId: swap.fromShiftInstanceId,
+        institutionId: fromShift.institutionId,
+        hospitalId: fromShift.hospitalId,
+        sectorId: fromShift.sectorId,
+        professionalId: swap.toProfessionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: true,
+        createdBy: reviewedByUserId,
+      });
     }
 
-    // Receptor → from-shift
-    await db.insert(shiftAssignmentsV2).values({
-      shiftInstanceId: swap.fromShiftInstanceId,
-      institutionId: fromShift.institutionId,
-      hospitalId: fromShift.hospitalId,
-      sectorId: fromShift.sectorId,
-      professionalId: swap.toProfessionalId,
-      assignmentType: "ON_DUTY",
-      status: "OCUPADO",
-      isActive: true,
-      createdBy: reviewedByUserId,
-    });
-  }
-
-  // Marca solicitação como APPROVED
-  await db
-    .update(swapRequests)
-    .set({
-      status: "APPROVED",
-      reviewedByUserId,
-      reviewedAt: new Date(),
-      reviewNote: note ?? null,
-    })
-    .where(eq(swapRequests.id, swap.id));
+    // Marca solicitação como APPROVED — com guarda: se outra aprovação
+    // concorrente já efetivou (ou a oferta foi cancelada), nada do que foi
+    // escrito acima é mantido.
+    const [done] = await tx
+      .update(swapRequests)
+      .set({
+        status: "APPROVED",
+        reviewedByUserId,
+        reviewedAt: new Date(),
+        reviewNote: note ?? null,
+        version: swap.version + 1,
+      })
+      .where(
+        and(
+          eq(swapRequests.id, swap.id),
+          eq(swapRequests.status, "ACCEPTED"),
+          eq(swapRequests.version, swap.version),
+        ),
+      );
+    if (!done.affectedRows) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "Esta solicitação já foi efetivada ou cancelada.",
+      });
+    }
+    await recomputeShiftStatus(tx, swap.fromShiftInstanceId);
+    if (!isOneWay(swap.type) && swap.toShiftInstanceId) {
+      await recomputeShiftStatus(tx, swap.toShiftInstanceId);
+    }
+  });
 }
 
 // ─── router ─────────────────────────────────────────────────────────────────
@@ -590,15 +612,31 @@ export const swapRouter = router({
         toAssignmentId = toAssign.id;
       }
 
-      await db
+      // Guarda otimista: só aceita se a oferta AINDA estiver PENDING na
+      // mesma versão que lemos. Duas pessoas aceitando ao mesmo tempo →
+      // a segunda recebe CONFLICT em vez de sobrescrever a primeira.
+      const [accepted] = await db
         .update(swapRequests)
         .set({
           status: "ACCEPTED",
           toProfessionalId: pro.id,
           toUserId: userId,
           toAssignmentId,
+          version: swap.version + 1,
         })
-        .where(eq(swapRequests.id, swap.id));
+        .where(
+          and(
+            eq(swapRequests.id, swap.id),
+            eq(swapRequests.status, "PENDING"),
+            eq(swapRequests.version, swap.version),
+          ),
+        );
+      if (!accepted.affectedRows) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Esta oferta já foi respondida por outra pessoa.",
+        });
+      }
 
       const acceptAudit = auditNames(swap.type, "ACCEPTED");
       recordAudit({
