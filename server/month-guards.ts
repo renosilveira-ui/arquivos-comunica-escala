@@ -119,6 +119,31 @@ export async function publishMonth(
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  // Nenhum fluxo cria a linha de monthly_rosters antes daqui: sem este
+  // passo, publicar um mês que nunca foi publicado falhava com "Mês não
+  // encontrado". Primeira publicação cria o rascunho; a unique
+  // (institution, hospital, year_month) protege contra corrida.
+  const [existing] = await db
+    .select({ status: monthlyRosters.status })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonth),
+      ),
+    )
+    .limit(1);
+  if (!existing) {
+    await db.insert(monthlyRosters).values({ institutionId, hospitalId, yearMonth, status: "DRAFT" });
+  } else if (existing.status !== "DRAFT") {
+    throw new Error(
+      existing.status === "LOCKED"
+        ? `A escala de ${yearMonth} já está bloqueada.`
+        : `A escala de ${yearMonth} já foi publicada.`,
+    );
+  }
+
   const result = await db
     .update(monthlyRosters)
     .set({
@@ -137,7 +162,7 @@ export async function publishMonth(
     );
 
   if ((result as any)[0].affectedRows === 0) {
-    throw new Error("Mês não encontrado ou não está em DRAFT");
+    throw new Error(`A escala de ${yearMonth} acabou de ser publicada por outra pessoa.`);
   }
 
   const [rosterRow] = await db
