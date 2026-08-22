@@ -1,4 +1,4 @@
-import { View, Text, ActivityIndicator, Platform, ScrollView, TouchableOpacity } from "react-native";
+import { View, Text, ActivityIndicator, ScrollView, TouchableOpacity } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
@@ -11,6 +11,8 @@ import { confirmAction } from "@/lib/ui/confirm";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -114,21 +116,15 @@ export default function VacanciesScreen() {
     return null;
   };
 
-  // Mutation para assumir vaga
+  // Feedback igual em web e nativo (antes só o web recebia retorno).
+  const feedback = useActionFeedback();
   const assumeVacancyMutation = trpc.shiftAssignments.assumeVacancy.useMutation({
     onSuccess: () => {
-      // Refetch vagas para atualizar lista
       refetchVacancies();
-      if (Platform.OS === "web") {
-        window.alert(
-          "Solicitação enviada com sucesso.\n\nStatus: aguardando aprovação do gestor.\n\nVocê pode acompanhar em Perfil > Suas candidaturas.",
-        );
-      }
+      feedback.success("Solicitação enviada — aguardando aprovação do gestor.");
     },
     onError: (error) => {
-      if (Platform.OS === "web") {
-        window.alert(`Erro ao assumir vaga: ${error.message}`);
-      }
+      feedback.error(error.message);
     },
   });
 
@@ -136,9 +132,7 @@ export default function VacanciesScreen() {
     console.log("[Vacancies] handleAssumeVacancy called", { vacancyId, vacancyDetails });
     
     if (!professional?.id) {
-      if (Platform.OS === "web") {
-        window.alert("Erro: Profissional não encontrado");
-      }
+      feedback.error("Seu cadastro de profissional não foi encontrado. Fale com o gestor.");
       return;
     }
 
@@ -314,22 +308,8 @@ export default function VacanciesScreen() {
                         {vacancy.shift}
                       </Text>
                     </View>
-                    {/* Status badge segue spec §6.5 + T3 do audit: VAGO = neutral. */}
-                    <View
-                      className="rounded-full px-3 py-1"
-                      style={{
-                        backgroundColor: theme.colors.surfaceAlt,
-                      }}
-                    >
-                      <Text
-                        className="text-xs font-semibold"
-                        style={{
-                          color: theme.colors.textSecondary,
-                        }}
-                      >
-                        VAGO
-                      </Text>
-                    </View>
+                    {/* Vaga é ação possível aqui → tom danger (lib/shift-status). */}
+                    <ShiftStatusBadge status="VAGO" context="actionable" />
                   </View>
 
                   {/* Badge de modalidade (PR #66). Oculto em rows legadas sem modality. */}

@@ -3,7 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { Check, X, UserPlus, Clock } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
-import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
+import { uiConfirmDestructive } from "@/lib/ui/alert";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
@@ -12,12 +12,14 @@ import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 export default function ConfirmDutyScreen() {
   const { user } = useAuth();
   const router = useRouter();
   const params = useLocalSearchParams<{ token?: string }>();
   const utils = trpc.useUtils();
+  const feedback = useActionFeedback();
 
   const { data: pending, isLoading, isError, refetch } = trpc.confirmations.getPending.useQuery(
     undefined,
@@ -26,15 +28,11 @@ export default function ConfirmDutyScreen() {
 
   const confirmMutation = trpc.confirmations.confirm.useMutation({
     onSuccess: () => {
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      uiAlert(
-        "Plantão confirmado",
-        "Seu login no Comunica+ será realizado automaticamente.",
-        () => router.replace("/(tabs)/agenda" as any),
-      );
+      feedback.success("Plantão confirmado. Seu login no Comunica+ será automático.");
+      router.replace("/(tabs)/agenda" as any);
     },
     onError: (err) => {
-      uiAlert("Erro", err.message);
+      feedback.error(err.message);
     },
   });
 
@@ -53,7 +51,7 @@ export default function ConfirmDutyScreen() {
       );
     },
     onError: (err) => {
-      uiAlert("Erro", err.message);
+      feedback.error(err.message);
     },
   });
 

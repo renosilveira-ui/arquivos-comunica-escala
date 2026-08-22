@@ -19,6 +19,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
 import { useTenantState } from "@/lib/tenant-state";
 import { SsoLaunchButton } from "@/components/SsoLaunchButton";
 import { VoiceCommandButton } from "@/components/VoiceCommandButton";
@@ -311,7 +312,7 @@ export default function AgendaScreen() {
                 gap: theme.space[2],
               }}
             >
-              <TouchableOpacity onPress={goPrev} style={navBtnStyle}>
+              <TouchableOpacity onPress={goPrev} style={navBtnStyle} hitSlop={8} accessibilityLabel="Período anterior">
                 <ChevronLeft size={20} color={theme.colors.textPrimary} />
               </TouchableOpacity>
               <TouchableOpacity onPress={goToday} style={navTextBtnStyle}>
@@ -336,7 +337,7 @@ export default function AgendaScreen() {
               >
                 {isPanorama ? formatMonthTitle(anchorMonthKey) : formatMonthRange(anchorWeekStart, weeksCount)}
               </Text>
-              <TouchableOpacity onPress={goNext} style={navBtnStyle}>
+              <TouchableOpacity onPress={goNext} style={navBtnStyle} hitSlop={8} accessibilityLabel="Próximo período">
                 <ChevronRight size={20} color={theme.colors.textPrimary} />
               </TouchableOpacity>
             </View>
@@ -970,17 +971,23 @@ function MobileDayList({
                         borderRadius: theme.radius.sm,
                       }}
                     >
-                      <Text
-                        style={{
-                          fontSize: 14,
-                          fontWeight: "600",
-                          color: theme.colors.textPrimary,
-                        }}
-                      >
-                        {shift.professionalNames.length > 0
-                          ? shift.professionalNames.join(", ")
-                          : "VAGO"}
-                      </Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                        <Text
+                          numberOfLines={2}
+                          style={{
+                            flex: 1,
+                            fontSize: 14,
+                            fontWeight: "600",
+                            color: theme.colors.textPrimary,
+                          }}
+                        >
+                          {shift.professionalNames.length > 0
+                            ? shift.professionalNames.join(", ")
+                            : "Sem profissional"}
+                        </Text>
+                        {/* Status com texto + ícone: cor é só reforço. */}
+                        <ShiftStatusBadge status={shift.status} context="actionable" size="sm" />
+                      </View>
                       <Text
                         style={{
                           fontSize: 12,
@@ -1004,10 +1011,11 @@ function MobileDayList({
 }
 
 // ─── Estilos compartilhados ─────────────────────────────────────────
+// 44pt: alvo mínimo de toque (era 32 — difícil de acertar com uma mão).
 const navBtnStyle = {
-  width: 32,
-  height: 32,
-  borderRadius: 16,
+  width: 44,
+  height: 44,
+  borderRadius: 22,
   backgroundColor: theme.colors.surface,
   borderWidth: 1,
   borderColor: theme.colors.border,

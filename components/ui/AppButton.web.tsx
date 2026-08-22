@@ -12,8 +12,8 @@ import { theme } from "@/lib/theme";
  *   - link      → bg transparente, text primary, sem border. Navegação textual.
  *
  * Sizes (height / padding-x / fontSize / fontWeight):
- *   - sm → 32 / space.3 / text.body / weight.medium
- *   - md → 40 / space.4 / text.body / weight.semibold (DEFAULT)
+ *   - sm → 36 / space.3 / text.body / weight.medium
+ *   - md → 44 / space.4 / text.body / weight.semibold (DEFAULT) — alvo de toque mínimo
  *   - lg → 48 / space.5 / text.bodyLg / weight.semibold
  */
 
@@ -32,13 +32,13 @@ type Props = {
 
 const SIZE_MAP: Record<Size, { height: number; paddingX: number; fontSize: number; fontWeight: number }> = {
   sm: {
-    height: 32,
+    height: 36,
     paddingX: theme.space[3],
     fontSize: theme.text.body.fontSize,
     fontWeight: 500,
   },
   md: {
-    height: 40,
+    height: 44,
     paddingX: theme.space[4],
     fontSize: theme.text.body.fontSize,
     fontWeight: 600,
