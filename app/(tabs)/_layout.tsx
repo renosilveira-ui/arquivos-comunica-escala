@@ -2,6 +2,7 @@ import { Tabs } from "expo-router";
 import { BottomTabBar, type BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { TabIcon } from "@/components/ui/TabIcon";
 import { usePermissions } from "@/hooks/use-permissions";
+import { trpc } from "@/lib/trpc";
 import { Platform, Pressable, Text, View, useWindowDimensions, type ViewStyle } from "react-native";
 import Constants from "expo-constants";
 import { theme } from "@/lib/theme";
@@ -201,8 +202,15 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
 
 export default function TabLayout() {
   const { can, isManager } = usePermissions();
+  const { user } = useAuth();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
+  // Badge da aba Trocas: ofertas que o médico pode responder.
+  const { data: availableSwaps } = trpc.swaps.listAvailable.useQuery(
+    {},
+    { enabled: !!user?.id && !isManager, staleTime: 60_000 },
+  );
+  const availableSwapsCount = availableSwaps?.length ?? 0;
 
   return (
     <Tabs
@@ -244,6 +252,19 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="trocas"
+        options={{
+          // Médico: porta de entrada para aceitar/oferecer trocas (antes só
+          // via atalho do Panorama; "Minhas ofertas" ficava no Perfil).
+          // Gestor vê o mesmo conteúdo dentro de Solicitações.
+          title: "Trocas",
+          href: isManager ? null : undefined,
+          tabBarIcon: ({ color, size }) => <TabIcon name="swap" color={color} size={size} />,
+          tabBarBadge: availableSwapsCount > 0 ? availableSwapsCount : undefined,
+          tabBarBadgeStyle: { backgroundColor: theme.colors.primary, color: theme.colors.onDark.text },
+        }}
+      />
+      <Tabs.Screen
         name="calendar"
         options={{
           // Rota legada — agora apenas redireciona para /agenda. Não
@@ -262,7 +283,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="dashboard"
         options={{
-          title: "Dashboard",
+          title: "Painel",
           tabBarIcon: ({ color, size }) => <TabIcon name="dashboard" color={color} size={size} />,
           href: can("view:dashboard") ? undefined : null,
         }}
@@ -283,7 +304,9 @@ export default function TabLayout() {
         options={{
           // Renomeada de "Vagas" — cobre plantões criados sem
           // profissional alocado. Decisão em docs/product/escala-ux.md §3.
-          title: "Plantões em aberto",
+          // Rótulo de aba de UMA palavra (18 caracteres truncavam no iPhone);
+          // o título completo fica no cabeçalho da tela.
+          title: "Vagas",
           tabBarIcon: ({ color, size }) => <TabIcon name="work" color={color} size={size} />,
           href: can("view:vacancies") ? undefined : null,
         }}
@@ -292,8 +315,10 @@ export default function TabLayout() {
         name="reports"
         options={{
           title: "Relatórios",
-          tabBarIcon: ({ color, size }) => <TabIcon name="dashboard" color={color} size={size} />,
-          href: can("view:reports") ? undefined : null,
+          tabBarIcon: ({ color, size }) => <TabIcon name="reports" color={color} size={size} />,
+          // Escondida da barra até ter conteúdo real (hoje é placeholder);
+          // a rota continua acessível por link direto.
+          href: null,
         }}
       />
       <Tabs.Screen
