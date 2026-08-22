@@ -15,6 +15,7 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
+import { toLocalISODateString } from "@/lib/datetime-utils";
 
 export type ManagerPeriod =
   | { kind: "week"; weekStart: string } // YYYY-MM-DD (segunda)
@@ -36,7 +37,7 @@ const MONTHS_PT = [
 function addDaysKey(dateKey: string, days: number): string {
   const d = new Date(`${dateKey}T12:00:00`);
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return toLocalISODateString(d);
 }
 
 function nextMonthKey(monthKey: string): string {

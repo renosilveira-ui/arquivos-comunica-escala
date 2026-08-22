@@ -15,6 +15,7 @@ import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { uiAlert } from "@/lib/ui/alert";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { toLocalISODateString } from "@/lib/datetime-utils";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -78,8 +79,8 @@ export default function RequestSwapScreen() {
     const future = new Date();
     future.setDate(future.getDate() + 60);
     return {
-      startDate: now.toISOString().slice(0, 10),
-      endDate: future.toISOString().slice(0, 10),
+      startDate: toLocalISODateString(now),
+      endDate: toLocalISODateString(future),
     };
   }, []);
 

@@ -13,6 +13,7 @@ import {
   type ShiftFilterValues,
 } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
+import { toLocalISODateString } from "@/lib/datetime-utils";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { shiftStatusMeta } from "@/lib/shift-status";
 import { useState, useCallback, useMemo } from "react";
@@ -46,9 +47,9 @@ export default function PendingScreen() {
   const feedback = useActionFeedback();
   const isAdminOrManager = user?.role === "admin" || user?.role === "manager";
   const [mySearch, setMySearch] = useState("");
-  const [myDate, setMyDate] = useState(
-    () => new Date().toISOString().split("T")[0],
-  );
+  // Chaves de dia sempre LOCAIS: toISOString() é UTC e, depois das 21h no
+  // Brasil, já aponta para amanhã — "Hoje" sumia com os plantões do dia.
+  const [myDate, setMyDate] = useState(() => toLocalISODateString(new Date()));
 
 
   // Buscar profissional associado ao usuário logado
@@ -96,7 +97,7 @@ export default function PendingScreen() {
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
     {
-      date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
+      date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
     },
     {
       enabled: !!user?.id,
@@ -114,7 +115,7 @@ export default function PendingScreen() {
     {
       hospitalId: filters.hospitalId ?? undefined,
       sectorId: filters.sectorId ?? undefined,
-      date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
+      date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
       shiftLabel: filters.shiftLabel ?? undefined,
       modality: modalityFilter,
     },
@@ -124,12 +125,12 @@ export default function PendingScreen() {
   const myShiftsStart = useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
-    return d.toISOString().split("T")[0];
+    return toLocalISODateString(d);
   }, []);
   const myShiftsEnd = useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() + 90);
-    return d.toISOString().split("T")[0];
+    return toLocalISODateString(d);
   }, []);
   const {
     data: myShiftsData,
@@ -149,7 +150,7 @@ export default function PendingScreen() {
         (a: any) => a.professionalId === professional.id && a.isActive,
       );
       if (!assigned) return false;
-      const day = new Date(shift.startAt).toISOString().slice(0, 10);
+      const day = toLocalISODateString(new Date(shift.startAt));
       if (day !== myDate) return false;
       if (!q) return true;
       return `${shift.label} ${shift.status}`.toLowerCase().includes(q);
@@ -375,7 +376,7 @@ export default function PendingScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               <View className="flex-row gap-2">
                 {quickDates.map((d) => {
-                  const key = d.toISOString().slice(0, 10);
+                  const key = toLocalISODateString(d);
                   const selected = key === myDate;
                   return (
                     <TouchableOpacity
