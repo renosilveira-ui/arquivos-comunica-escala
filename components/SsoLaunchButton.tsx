@@ -12,7 +12,6 @@ import { ExternalLink, AlertTriangle, X, Radio } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useSsoHandoff } from "@/hooks/use-sso-handoff";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
-import { PrimaryButton } from "@/components/ui/PrimaryButton";
 import { useTenantState } from "@/lib/tenant-state";
 import { theme } from "@/lib/theme";
 

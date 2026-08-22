@@ -1,7 +1,6 @@
 import { View, Text, ActivityIndicator, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
-import { Check, X, UserPlus, Clock } from "lucide-react-native";
+import { Check, X, Clock } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { uiConfirmDestructive } from "@/lib/ui/alert";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
@@ -18,7 +17,6 @@ export default function ConfirmDutyScreen() {
   const { user } = useAuth();
   const router = useRouter();
   const params = useLocalSearchParams<{ token?: string }>();
-  const utils = trpc.useUtils();
   const feedback = useActionFeedback();
 
   const { data: pending, isLoading, isError, refetch } = trpc.confirmations.getPending.useQuery(

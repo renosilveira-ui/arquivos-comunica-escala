@@ -5,7 +5,6 @@ import { UserPlus, Search, Check } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
-import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
@@ -18,12 +17,6 @@ export default function NominateReplacementScreen() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  // Reuse the shift instance ID from the pending confirmation to get the
-  // same professional list that shift-details uses for allocation.
-  const { data: pending } = trpc.confirmations.getPending.useQuery(
-    undefined,
-    { enabled: !!user },
-  );
 
   const { data: professionals, isLoading } =
     trpc.confirmations.listReplacementCandidates.useQuery(

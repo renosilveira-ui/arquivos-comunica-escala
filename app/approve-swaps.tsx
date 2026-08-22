@@ -3,7 +3,6 @@ import {
   Text,
   View,
   TouchableOpacity,
-  ScrollView,
   TextInput,
   Alert,
   ActivityIndicator,
@@ -14,9 +13,8 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
 import * as Auth from "@/lib/_core/auth";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { ChevronLeft, Shield, Check, X } from "lucide-react-native";
-import { useFocusEffect } from "expo-router";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 
