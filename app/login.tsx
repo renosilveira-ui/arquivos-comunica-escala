@@ -184,11 +184,30 @@ export default function LoginScreen() {
                 )}
               </TouchableOpacity>
 
+              {/* Esqueci minha senha */}
+              <TouchableOpacity
+                onPress={() => router.push("/forgot-password" as any)}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Esqueci minha senha"
+                style={{ alignSelf: "center", marginTop: theme.space[3] }}
+              >
+                <Text
+                  style={{
+                    ...theme.text.body,
+                    color: theme.colors.onDark.textMuted,
+                    textDecorationLine: "underline",
+                  }}
+                >
+                  Esqueci minha senha
+                </Text>
+              </TouchableOpacity>
+
               {/* Criar conta (auto-cadastro com aprovação do gestor) */}
               <TouchableOpacity
                 onPress={() => router.push("/signup" as any)}
                 activeOpacity={0.7}
-                style={{ alignSelf: "center", marginTop: 16 }}
+                style={{ alignSelf: "center", marginTop: theme.space[2] }}
               >
                 <Text
                   style={{

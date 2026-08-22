@@ -127,6 +127,13 @@ class SDKServer {
       throw new ForbiddenError("User not found");
     }
 
+    // Conta excluída pelo próprio usuário: o JWT de sessão é sem estado,
+    // então a revogação acontece aqui — qualquer sessão/bearer antigo
+    // passa a responder 401/403.
+    if (user.deletedAt) {
+      throw new ForbiddenError("User not found");
+    }
+
     return user;
   }
 }
