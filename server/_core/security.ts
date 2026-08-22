@@ -50,17 +50,6 @@ function hostOf(origin: string): string | null {
   }
 }
 
-/**
- * Returns the entry of `set` equal to `value` — i.e. the TRUSTED copy of
- * the string, not the request-controlled one. Echoing this copy (instead
- * of the raw header) is what keeps the response free of tainted input.
- */
-function findTrusted(set: ReadonlySet<string>, value: string): string | null {
-  for (const entry of set) {
-    if (entry === value) return entry;
-  }
-  return null;
-}
 
 /**
  * CORS middleware that:
@@ -91,21 +80,17 @@ export function createCorsMiddleware(options: CorsOptions): RequestHandler {
       String(req.headers["x-forwarded-proto"]).includes("https")
         ? "https" : "http";
 
-    // O valor devolvido em Access-Control-Allow-Origin vem SEMPRE das
-    // listas confiáveis (allowedOrigins / trustedHosts), nunca do header
-    // da requisição — mesmo quando são iguais.
-    const allowedOrigin = typeof origin === "string" ? findTrusted(allowedOrigins, origin) : null;
-    const trustedHost = host ? findTrusted(trustedHosts, host) : null;
-    const selfOrigin = trustedHost ? `${proto}://${trustedHost}` : null;
-    const grantedOrigin =
-      allowedOrigin ??
-      (selfOrigin && typeof origin === "string" && origin.toLowerCase() === selfOrigin
-        ? selfOrigin
-        : null);
-    const isAllowed = grantedOrigin !== null;
+    // Allow-list EFETIVA desta requisição: origens configuradas + a
+    // própria origem do servidor (só quando o Host é confiável). O eco em
+    // Access-Control-Allow-Origin só acontece se `origin` passar pelo
+    // `.has()` dessa allow-list — forma que a análise estática (CodeQL
+    // js/cors-misconfiguration-for-credentials) reconhece como validação.
+    const selfOrigin = trustedHosts.has(host) ? `${proto}://${host}` : null;
+    const effectiveAllowed = selfOrigin ? new Set([...allowedOrigins, selfOrigin]) : allowedOrigins;
+    const isAllowed = typeof origin === "string" && effectiveAllowed.has(origin);
 
-    if (grantedOrigin) {
-      res.header("Access-Control-Allow-Origin", grantedOrigin);
+    if (typeof origin === "string" && effectiveAllowed.has(origin)) {
+      res.header("Access-Control-Allow-Origin", origin);
       res.header("Vary", "Origin");
       res.header("Access-Control-Allow-Credentials", "true");
     }
