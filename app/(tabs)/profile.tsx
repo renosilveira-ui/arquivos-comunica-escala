@@ -1,4 +1,4 @@
-import { Text, View, TouchableOpacity, Switch, Share, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView } from "react-native";
+import { Text, View, TouchableOpacity, Switch, Share, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView, useWindowDimensions } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
@@ -7,10 +7,11 @@ import * as Haptics from "expo-haptics";
 import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
 import { useState, useMemo } from "react";
-import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound, AlertTriangle, Trash2, X } from "lucide-react-native";
+import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound, AlertTriangle, Trash2, X, LayoutDashboard, Inbox, ShieldCheck } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useRouter } from "expo-router";
 import { useTenantState } from "@/lib/tenant-state";
+import { usePermissions } from "@/hooks/use-permissions";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { confirmAction } from "@/lib/ui/confirm";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
@@ -56,6 +57,30 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { clearInstitutionSelection } = useTenantState();
   const utils = trpc.useUtils();
+  // Gestão no celular: Painel/Solicitações/Admin saíram da barra inferior
+  // (decisão do PO, 2026-08-22) e passam a ser alcançados daqui. No
+  // desktop a sidebar já os lista — a seção não se repete.
+  const { can, isManager } = usePermissions();
+  const { width } = useWindowDimensions();
+  const isDesktopWeb = Platform.OS === "web" && width >= 1024;
+  const managementLinks = useMemo(
+    () =>
+      [
+        can("view:dashboard")
+          ? { key: "dashboard", title: "Painel", subtitle: "Resumo dos próximos 7 dias: vagos, pendentes e ocupados", Icon: LayoutDashboard, href: "/(tabs)/dashboard" }
+          : null,
+        isManager
+          ? { key: "pending", title: "Solicitações", subtitle: "Trocas e cessões aguardando sua aprovação", Icon: Inbox, href: "/(tabs)/pending" }
+          : null,
+        can("view:admin")
+          ? { key: "admin", title: "Admin", subtitle: "Usuários, cadastros pendentes e senhas", Icon: ShieldCheck, href: "/(tabs)/admin" }
+          : null,
+      ].filter((l): l is NonNullable<typeof l> => l !== null),
+    // `can` é recriada a cada render do hook; o que muda de fato é o papel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isManager, user?.role],
+  );
+  const showManagement = !isDesktopWeb && managementLinks.length > 0;
 
   // ── Estatísticas do mês atual ──────────────────────────────────────────
   const now = new Date();
@@ -429,6 +454,47 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           </TintedGlassCard>
         </View>
+
+        {/* Gestão (só celular, só gestor/admin) — ver _layout.tsx */}
+        {showManagement ? (
+          <View className="gap-4">
+            <View className="flex-row items-center gap-2">
+              <LayoutDashboard size={20} color={theme.colors.textPrimary} />
+              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Gestão</Text>
+            </View>
+            <TintedGlassCard variant="light">
+              <View className="gap-3">
+                {managementLinks.map((link) => (
+                  <TouchableOpacity
+                    key={link.key}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      router.push(link.href as any);
+                    }}
+                    className="rounded-xl p-4 flex-row items-center justify-between"
+                    style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Abrir ${link.title}`}
+                  >
+                    <View className="flex-row items-center gap-3 flex-1 pr-4">
+                      <link.Icon size={20} color={theme.colors.primary} />
+                      <View className="flex-1">
+                        <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
+                          {link.title}
+                        </Text>
+                        <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
+                          {link.subtitle}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </TintedGlassCard>
+          </View>
+        ) : null}
 
         {/* Cessões e trocas — minhas ofertas + minhas candidaturas */}
         <View className="gap-4">

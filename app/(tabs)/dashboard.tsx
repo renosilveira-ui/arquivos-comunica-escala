@@ -1,5 +1,5 @@
 import { View, Text, ScrollView, ActivityIndicator } from "react-native";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Calendar, AlertCircle, Clock, CheckCircle } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
@@ -14,12 +14,21 @@ import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
 export default function DashboardScreen() {
   const { user, isLoading: authLoading } = useAuth();
 
-  const todayISO = new Date().toISOString();
-  const nextWeekISO = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  // Janela fixada na montagem, com granularidade de dia. Antes era
+  // `new Date().toISOString()` a cada render: a chave da query mudava a
+  // cada milissegundo, cada resposta disparava um render com chave nova e
+  // o Painel ficava em skeleton para sempre ("não carrega").
+  const [window_] = useState(() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 8); // hoje + 7 dias completos
+    return { startDate: start.toISOString(), endDate: end.toISOString() };
+  });
 
   const { data: shiftsData, isLoading: shiftsLoading, isError: shiftsError, refetch: refetchShifts } = trpc.shifts.listByPeriod.useQuery(
-    { startDate: todayISO, endDate: nextWeekISO },
-    { enabled: !!user }
+    window_,
+    { enabled: !!user, staleTime: 60_000 }
   );
 
   const shifts = useMemo(() => shiftsData ?? [], [shiftsData]);

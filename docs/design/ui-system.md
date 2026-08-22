@@ -700,6 +700,15 @@ sm = 36 + `hitSlop` 8; navegação de período da Agenda 44×44; chips de filtro
 de data ≥ 40 + hitSlop. Piso de **12px** para texto de dado (nome, horário);
 11px só em eyebrow/legenda.
 
+## 7.9 Barra inferior = plantonista
+
+No celular a barra inferior tem sempre o mesmo conjunto, para qualquer papel:
+**Agenda · Trocas · Vagas · Perfil**. Painel, Solicitações e Admin são
+ferramentas de gestão: aparecem na sidebar do desktop e, no celular, em
+**Perfil → Gestão** (as rotas continuam navegáveis por link/push; só não
+ocupam a barra). Motivo: seis abas num iPhone truncavam rótulos e expunham
+telas de gestor na interface do plantonista. Decisão do PO em 2026-08-22.
+
 ## 8. Dark mode roadmap
 
 **Não no piloto.** Light-first é decisão acertada para ambiente
