@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { yearMonthBrt } from "./local-time";
+import { addDaysToKey, dayKeyBrt, dayWindowBrt, mondayOfKey, weekdayOfKey, yearMonthBrt } from "./local-time";
 import { eq, and, gte, lte, lt, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
@@ -809,9 +809,10 @@ export const shiftsRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
-      const start = new Date(`${input.startDate}T00:00:00`);
-      const end = new Date(start);
-      end.setDate(end.getDate() + input.weeks * 7);
+      // Janela em dias do hospital (-03:00): o servidor roda em UTC e o
+      // parse sem offset começava a semana às 21h do dia anterior (M6).
+      const start = dayWindowBrt(input.startDate).start;
+      const end = dayWindowBrt(addDaysToKey(input.startDate, input.weeks * 7)).start;
 
       // Resolve professional do user logado uma vez (usado em scope=minha
       // e também útil pra eventual marcação "é um shift meu" no client).
@@ -922,26 +923,15 @@ export const shiftsRouter = router({
         days: AgendaDay[];
       };
 
-      // Helper: começo da semana (Mon) de uma data, como string YYYY-MM-DD.
-      const dateToKey = (d: Date) =>
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      const startOfWeekMon = (d: Date) => {
-        const c = new Date(d);
-        c.setHours(0, 0, 0, 0);
-        const dow = c.getDay();
-        const diff = dow === 0 ? -6 : 1 - dow;
-        c.setDate(c.getDate() + diff);
-        return c;
-      };
+      // Chaves de dia/semana sempre no relógio do hospital (-03:00), por
+      // aritmética de chave — sem getters locais do servidor (UTC).
 
       // Bucket: Map<weekKey, Map<dayKey, Map<groupKey, AgendaGroup>>>
       const weekMap = new Map<string, Map<string, Map<string, AgendaGroup>>>();
 
       for (const r of scoped) {
-        const startDt = new Date(r.startAt);
-        const wkStart = startOfWeekMon(startDt);
-        const wkKey = dateToKey(wkStart);
-        const dayKey = dateToKey(startDt);
+        const dayKey = dayKeyBrt(new Date(r.startAt));
+        const wkKey = mondayOfKey(dayKey);
         const groupKey = `${r.hospitalId}-${r.sectorId}`;
 
         let dayMap = weekMap.get(wkKey);
@@ -986,18 +976,13 @@ export const shiftsRouter = router({
 
       // 5. Constrói weeks completas (incluindo dias vazios) na ordem de input.
       const weeksOut: AgendaWeek[] = [];
-      const cursor = new Date(start);
-      const baseMon = startOfWeekMon(cursor);
+      const baseMon = mondayOfKey(input.startDate);
       for (let w = 0; w < input.weeks; w++) {
-        const wkStart = new Date(baseMon);
-        wkStart.setDate(baseMon.getDate() + w * 7);
-        const wkKey = dateToKey(wkStart);
+        const wkKey = addDaysToKey(baseMon, w * 7);
         const dayMap = weekMap.get(wkKey);
         const days: AgendaDay[] = [];
         for (let d = 0; d < 7; d++) {
-          const dayDate = new Date(wkStart);
-          dayDate.setDate(wkStart.getDate() + d);
-          const dayKey = dateToKey(dayDate);
+          const dayKey = addDaysToKey(wkKey, d);
           const groupMap = dayMap?.get(dayKey);
           const groups: AgendaGroup[] = groupMap
             ? Array.from(groupMap.values())
@@ -1017,7 +1002,7 @@ export const shiftsRouter = router({
                   }),
                 }))
             : [];
-          days.push({ date: dayKey, dow: dayDate.getDay(), groups });
+          days.push({ date: dayKey, dow: weekdayOfKey(dayKey), groups });
         }
         weeksOut.push({ weekStart: wkKey, days });
       }

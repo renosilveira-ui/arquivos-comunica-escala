@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { rowsFromExecute } from "./_core/db-results";
+import { dayKeyBrt, dayWindowBrt, monthWindowBrt } from "./local-time";
+import { dateFromExecute, rowsFromExecute } from "./_core/db-results";
 import { assertMonthEditable } from "./month-guards";
 import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
@@ -74,11 +75,11 @@ async function checkCalendarAccess(
 }
 
 // Helper: agrupa shifts por dia e label
-function groupShiftsByDay(shifts: { start_at: Date; label: string; status: string }[]): Record<string, Record<string, string>> {
+function groupShiftsByDay(shifts: { start_at: Date | string; label: string; status: string }[]): Record<string, Record<string, string>> {
   const grouped: Record<string, Record<string, string>> = {};
 
   for (const shift of shifts) {
-    const date = shift.start_at.toISOString().split("T")[0]; // YYYY-MM-DD
+    const date = dayKeyBrt(dateFromExecute(shift.start_at)); // YYYY-MM-DD no relógio do hospital
     const label = shift.label;
     const status = shift.status;
 
@@ -152,10 +153,8 @@ export const calendarRouter = router({
         throw new ForbiddenError("Você não tem permissão para acessar este calendário");
       }
 
-      // 2. Calcular range do mês
-      const [year, month] = yearMonth.split("-").map(Number);
-      const startOfMonth = new Date(year, month - 1, 1);
-      const endOfMonth = new Date(year, month, 0, 23, 59, 59);
+      // 2. Calcular range do mês no relógio do hospital (-03:00), fim exclusivo.
+      const { start: startOfMonth, end: endOfMonth } = monthWindowBrt(yearMonth);
 
       // 3. Buscar shift_instances do hospital+setor no range
       const shiftResult = await db.execute<any>(
@@ -163,7 +162,7 @@ export const calendarRouter = router({
             FROM shift_instances
             WHERE institution_id = ${institutionId}
             AND hospital_id = ${hospitalId} AND sector_id = ${sectorId}
-            AND start_at >= ${startOfMonth} AND start_at <= ${endOfMonth}
+            AND start_at >= ${startOfMonth} AND start_at < ${endOfMonth}
             ORDER BY start_at ASC`
       );
       const shiftRows = rowsFromExecute<any>(shiftResult);
@@ -243,22 +242,22 @@ export const calendarRouter = router({
       }
 
       // 3. Buscar shift_instances do dia
-      const startOfDay = new Date(date + "T00:00:00");
-      const endOfDay = new Date(date + "T23:59:59");
+      // Dia no relógio do hospital (-03:00), fim exclusivo (auditoria M6).
+      const { start: startOfDay, end: endOfDay } = dayWindowBrt(date);
 
       const shiftResult = await db.execute<any>(
         sql`SELECT id, label, start_at, end_at, status
             FROM shift_instances
             WHERE institution_id = ${institutionId}
             AND hospital_id = ${hospitalId} AND sector_id = ${sectorId}
-            AND start_at >= ${startOfDay} AND start_at <= ${endOfDay}
+            AND start_at >= ${startOfDay} AND start_at < ${endOfDay}
             ORDER BY start_at ASC`
       );
       const shiftRows = rowsFromExecute<any>(shiftResult);
 
       // 4. Para cada shift, buscar assignments
       const shifts = await Promise.all(
-        shiftRows.map(async (shift: { id: number; label: string; start_at: Date; end_at: Date; status: string }) => {
+        shiftRows.map(async (shift: { id: number; label: string; start_at: Date | string; end_at: Date | string; status: string }) => {
           const assignmentResult = await db.execute<any>(
             sql`SELECT 
                   sa.id as assignmentId,
@@ -296,8 +295,8 @@ export const calendarRouter = router({
           return {
             shiftInstanceId: shift.id,
             label: shift.label,
-            startAt: shift.start_at.toISOString(),
-            endAt: shift.end_at.toISOString(),
+            startAt: dateFromExecute(shift.start_at).toISOString(),
+            endAt: dateFromExecute(shift.end_at).toISOString(),
             status: shift.status,
             slots,
           };

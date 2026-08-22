@@ -5,7 +5,8 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { dayWindowBrt } from "./local-time";
+import { eq, and, gte, sql, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   professionals,
@@ -15,7 +16,6 @@ import {
   professionalInstitutions,
   managerScope as managerScopeTable,
   shiftInstances,
-  shiftAssignmentsV2,
 } from "../drizzle/schema";
 import {
   actorCapabilities,
@@ -172,7 +172,7 @@ export const professionalsRouter = router({
     const actor = await getTenantActorFromContext(ctx);
 
     if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") {
-      return { role: "GESTOR_PLUS" as const, canManageAll: true, hospitals: [] as number[], sectors: [] as Array<{ hospitalId: number; sectorId: number }> };
+      return { role: "GESTOR_PLUS" as const, canManageAll: true, hospitals: [] as number[], sectors: [] as { hospitalId: number; sectorId: number }[] };
     }
 
     if (actor.roleInInstitution === "GESTOR_MEDICO" && actor.professionalId) {
@@ -200,7 +200,7 @@ export const professionalsRouter = router({
       };
     }
 
-    return { role: "USER" as const, canManageAll: false, hospitals: [] as number[], sectors: [] as Array<{ hospitalId: number; sectorId: number }> };
+    return { role: "USER" as const, canManageAll: false, hospitals: [] as number[], sectors: [] as { hospitalId: number; sectorId: number }[] };
   }),
 });
 
@@ -243,8 +243,8 @@ export const filtersRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
-      const startOfDay = new Date(`${input.date}T00:00:00`);
-      const endOfDay = new Date(`${input.date}T23:59:59`);
+      // Janela do dia no relógio do hospital (-03:00), fim exclusivo.
+      const { start: startOfDay, end: endOfDay } = dayWindowBrt(input.date);
 
       const instances = await db
         .select()
@@ -253,7 +253,7 @@ export const filtersRouter = router({
           and(
             eq(shiftInstances.institutionId, ctx.institutionId),
             gte(shiftInstances.startAt, startOfDay),
-            lte(shiftInstances.startAt, endOfDay),
+            lt(shiftInstances.startAt, endOfDay),
           ),
         );
 

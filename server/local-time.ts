@@ -40,3 +40,22 @@ export function monthWindowBrt(yearMonth: string): { start: Date; end: Date } {
   const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
   return { start, end: new Date(`${next}-01T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`) };
 }
+
+/** Chave "YYYY-MM-DD" deslocada n dias (aritmética pura, sem fuso). */
+export function addDaysToKey(dayKey: string, days: number): string {
+  const [y, m, d] = dayKey.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
+}
+
+/** Dia da semana da chave (0 = domingo … 6 = sábado). */
+export function weekdayOfKey(dayKey: string): number {
+  const [y, m, d] = dayKey.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/** Segunda-feira da semana da chave. */
+export function mondayOfKey(dayKey: string): string {
+  const dow = weekdayOfKey(dayKey);
+  return addDaysToKey(dayKey, dow === 0 ? -6 : 1 - dow);
+}
