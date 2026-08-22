@@ -575,6 +575,49 @@ Spec:
 
 ---
 
+### 6.15 Surface — níveis de camada (Onda UI)
+
+`components/ui/Surface.tsx` é a única forma de criar profundidade. Três
+níveis (`theme.surface`) e seis tons:
+
+| Nível | Quando | Estilo |
+|---|---|---|
+| `card` | conteúdo agrupado (lista, formulário) | surface + borda 1px + sombra sm, raio lg |
+| `raised` | o que precisa se destacar do card (hero, resumo) | sem borda, sombra md, raio xl |
+| `floating` | sheets, menus, toasts | sombra lg, raio xl |
+
+Tons: `default`, `primary`, `success`, `warning`, `danger`, `muted` — fundo
+`*Soft` + borda `[100]/[200]`; texto dentro do tom via `tonedText(tone)`
+(`strong` = `[900]`, `soft` = `[700]`/`[600]`), sempre ≥ 4,5:1.
+Nunca montar card "na mão" com `borderRadius` + `borderWidth` soltos.
+
+### 6.16 SectionHeader
+
+`components/ui/SectionHeader.tsx`: eyebrow (caixa alta, `text.eyebrow`) +
+título (`title` ou `titleLg` com `size="page"`) + subtítulo + ação à
+direita. Toda seção de tela começa com ele — mesmo ritmo em todas as telas.
+
+### 6.17 Skeleton
+
+`components/ui/Skeleton.tsx` (`Skeleton`, `SkeletonCard`, `SkeletonList`):
+carregamento com a forma do conteúdo, pulso leve (estático com "reduzir
+movimento"). Substitui o spinner central de tela inteira; em navegação
+entre períodos combinar com `placeholderData: keepPreviousData`.
+
+### 6.18 NextShiftCard
+
+`components/agenda/NextShiftCard.tsx`: a pergunta nº 1 do plantonista no
+topo da Agenda. Puro (props + `now` injetável). Estados: futuro
+("Começa em 3 h", "Amanhã às 07:00", "sexta, 28/08 às 19:00") com
+Confirmar/Trocar; em andamento ("Termina às 19:00", tom success) com
+Abrir Comunica+; sem plantão (tom muted).
+
+### 6.19 Galeria de UI
+
+`app/ui-preview.tsx` (só em `__DEV__`, rota pública no AuthGuard) renderiza
+os componentes de base com dados de exemplo — verificação visual sem login
+em `http://localhost:8081/ui-preview`.
+
 ## 7. Estados padronizados
 
 Todo componente que carrega dados precisa endereçar 5 estados:

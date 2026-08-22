@@ -157,10 +157,12 @@ function AuthGuard() {
 
   if (!user) {
     // Rotas públicas: login, auto-cadastro e recuperação de senha.
+    // /ui-preview é a galeria do sistema de UI — só em desenvolvimento.
     if (
       pathname === "/signup" ||
       pathname === "/forgot-password" ||
-      pathname === "/reset-password"
+      pathname === "/reset-password" ||
+      (__DEV__ && pathname === "/ui-preview")
     ) {
       return null;
     }

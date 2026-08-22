@@ -1,5 +1,6 @@
 import { View, Text, type ViewProps } from "react-native";
 import { cn } from "@/lib/utils";
+import { theme } from "@/lib/theme";
 
 export interface StatPillProps extends ViewProps {
   /**
@@ -32,9 +33,9 @@ export function StatPill({ label, value, icon, className, style, ...props }: Sta
     >
       <View className="flex-row items-center gap-1.5 mb-1">
         {icon}
-        <Text className="text-slate-400 text-sm font-medium">{label}</Text>
+        <Text style={{ ...theme.text.caption, fontWeight: theme.weight.medium, color: theme.colors.textSecondary }}>{label}</Text>
       </View>
-      <Text className="text-white text-xl font-bold">{value}</Text>
+      <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary, fontVariant: ["tabular-nums"] }}>{value}</Text>
     </View>
   );
 }
