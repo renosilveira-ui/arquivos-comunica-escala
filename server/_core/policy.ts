@@ -6,7 +6,7 @@ import {
   professionalInstitutions,
   professionals,
 } from "../../drizzle/schema";
-import { yearMonthFromDate } from "../../lib/date-utils";
+import { yearMonthBrt } from "../local-time";
 import type { TrpcContext } from "./context";
 
 export type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -152,7 +152,8 @@ export function assertCanManageInstitutionSchedule(actor: TenantActor): void {
 }
 
 export function isSameCalendarMonth(date: Date, now: Date): boolean {
-  return yearMonthFromDate(date) === yearMonthFromDate(now);
+  // Mês no relógio do hospital (-03:00), não no fuso do servidor (UTC).
+  return yearMonthBrt(date) === yearMonthBrt(now);
 }
 
 export function assertCanEditScheduleDate(actor: TenantActor, date: Date, now = new Date()): void {

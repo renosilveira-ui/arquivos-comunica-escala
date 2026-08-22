@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { yearMonthBrt } from "./local-time";
 import { eq, and, gte, lte, lt, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
@@ -14,7 +15,7 @@ import {
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
-import { publishMonth, lockMonth } from "./month-guards";
+import { assertMonthEditable, lockMonth, publishMonth } from "./month-guards";
 import { checkTimeConflictForProfessional } from "./shift-validations-v2";
 import {
   assertCanEditScheduleDate,
@@ -100,6 +101,8 @@ const replicateRangeInput = z.object({
   to: z.object({ start: z.string().regex(DATE_ONLY, "YYYY-MM-DD") }),
   includeAssignments: z.boolean().optional().default(false),
   dryRun: z.boolean().optional().default(false),
+  /** Obrigatório (≥ 5 caracteres) para Gestor+ replicar sobre mês PUBLISHED/LOCKED. */
+  reason: z.string().max(500).optional(),
 });
 
 type ReplicateRangeInput = z.infer<typeof replicateRangeInput>;
@@ -248,6 +251,17 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
 
   // Permissão por data: falha ANTES de qualquer escrita (sem cópia parcial).
   for (const c of inRange) assertCanEditScheduleDate(actor, c.startAt);
+  // Mês de destino PUBLISHED/LOCKED: só Gestor+ com motivo (um check por mês
+  // alvo; em dryRun não há escrita nem auditoria de override).
+  if (!input.dryRun) {
+    const checked = new Set<string>();
+    for (const c of inRange) {
+      const ym = yearMonthBrt(c.startAt);
+      if (checked.has(ym)) continue;
+      checked.add(ym);
+      await assertMonthEditable({ user: { id: ctx.user.id } }, ctx.institutionId, input.hospitalId, c.startAt, input.reason);
+    }
+  }
 
   // Idempotência pela chave natural (hospital, setor, início, fim, label).
   const existing = await db
@@ -410,6 +424,8 @@ export const shiftsRouter = router({
           date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
           shiftTemplateId: z.number().int(),
           sectorId: z.number().int().optional(),
+          /** Obrigatório (≥ 5 caracteres) para Gestor+ criar em mês PUBLISHED/LOCKED. */
+          reason: z.string().max(500).optional(),
         })
         .merge(modalityFields),
     )
@@ -446,6 +462,8 @@ export const shiftsRouter = router({
         template.endTime,
       );
       assertCanEditScheduleDate(actor, startAt);
+      // Mês PUBLISHED/LOCKED: só Gestor+ com motivo (mesma regra do editor).
+      await assertMonthEditable({ user: { id: ctx.user.id } }, template.institutionId, template.hospitalId, startAt, input.reason);
 
       const [result] = await db.insert(shiftInstances).values({
         institutionId: template.institutionId,
@@ -599,6 +617,8 @@ export const shiftsRouter = router({
           // titular o devolvia a "Plantões em aberto" (auditoria 22/08, M2).
           startAt: z.string().optional(),
           endAt: z.string().optional(),
+          /** Obrigatório (≥ 5 caracteres) para Gestor+ editar mês PUBLISHED/LOCKED. */
+          reason: z.string().max(500).optional(),
         })
         .merge(modalityFields),
     )
@@ -646,7 +666,15 @@ export const shiftsRouter = router({
       if (Object.keys(patch).length === 0) {
         return existing;
       }
-      assertCanEditScheduleDate(actor, patch.startAt ?? existing.startAt);
+      // Data ATUAL e data nova: validar só o destino deixava GESTOR_MEDICO
+      // puxar um turno de outro mês para o corrente (auditoria 22/08, M2).
+      assertCanEditScheduleDate(actor, existing.startAt);
+      if (patch.startAt) assertCanEditScheduleDate(actor, patch.startAt);
+      const monthCtx = { user: { id: ctx.user.id } };
+      await assertMonthEditable(monthCtx, ctx.institutionId, existing.hospitalId, existing.startAt, input.reason);
+      if (patch.startAt && yearMonthBrt(patch.startAt) !== yearMonthBrt(existing.startAt)) {
+        await assertMonthEditable(monthCtx, ctx.institutionId, existing.hospitalId, patch.startAt, input.reason);
+      }
 
       await db
         .update(shiftInstances)

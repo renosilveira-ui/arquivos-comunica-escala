@@ -32,6 +32,7 @@ import { getTenantActorFromContext } from "./_core/policy";
  */
 
 const ACTION_LABEL: Record<string, string> = {
+  CONFLICT_OVERRIDDEN: "Edição de mês publicado/trancado (override)",
   SHIFT_CREATED: "Plantão criado",
   SHIFT_UPDATED: "Plantão editado",
   SHIFT_DELETED: "Plantão removido",
@@ -144,7 +145,7 @@ export const auditRouter = router({
                 AND institution_id = ${institutionId}
                 AND active = 1`,
         );
-        const scopeRows = (scopes as any)[0] as Array<{ hospital_id: number; sector_id: number | null }>;
+        const scopeRows = (scopes as any)[0] as { hospital_id: number; sector_id: number | null }[];
         if (scopeRows.length === 0) {
           // Gestor sem scope ativo: trata como USER.
           return [];
