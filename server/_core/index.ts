@@ -23,6 +23,11 @@ import {
   createHelmetMiddleware,
 } from "./security";
 import { installShutdownHandlers } from "./shutdown";
+import {
+  createErrorHandler,
+  installAsyncRouteForwarding,
+  installProcessGuards,
+} from "./error-handling";
 import { pingDb } from "../db";
 import { startConfirmationCron } from "../cron/shift-confirmation-dispatcher";
 
@@ -37,6 +42,9 @@ function isPortAvailable(port: number): Promise<boolean> {
 }
 
 async function startServer() {
+  // Erro de rota não pode derrubar o processo (ver error-handling.ts).
+  installAsyncRouteForwarding();
+  installProcessGuards(logger);
   assertProductionSecrets();
 
   const app = express();
@@ -151,6 +159,9 @@ async function startServer() {
     });
     logger.info({ path: webBuildPath }, "serving web build from same origin");
   }
+
+  // Último da cadeia: qualquer erro encaminhado por next(err) vira 500 JSON.
+  app.use(createErrorHandler(logger));
 
   const port = parseInt(process.env.PORT || "3000", 10);
   const portFree = await isPortAvailable(port);
