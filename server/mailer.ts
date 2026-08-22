@@ -62,15 +62,12 @@ export const mailer = {
       return sendViaResend(apiKey, from, msg);
     }
     // Sem provedor configurado: log no console (dev/staging sem chave).
-    // Valores vindos do usuário (e-mail, assunto) entram no log sem
-    // quebras de linha/controles, para ninguém forjar linhas de log
-    // (CodeQL js/log-injection).
-    const oneLine = (value: string) => value.replace(/[\r\n\t\u0000-\u001f\u007f]+/g, " ").slice(0, 200);
+    // Conteúdo vindo do usuário (e-mail, assunto, corpo) vai serializado
+    // em JSON: quebras de linha viram "\n" escapado, então ninguém forja
+    // linhas de log (CodeQL js/log-injection) e o link continua legível.
     console.log(
-      `[mailer] (sem RESEND_API_KEY — e-mail NÃO enviado)\n  para: ${oneLine(msg.to)}\n  assunto: ${oneLine(msg.subject)}\n${msg.text
-        .split("\n")
-        .map((line) => `  ${oneLine(line)}`)
-        .join("\n")}`,
+      "[mailer] (sem RESEND_API_KEY — e-mail NÃO enviado) " +
+        JSON.stringify({ to: msg.to, subject: msg.subject, text: msg.text }, null, 2),
     );
     return { delivered: false, transport: "console" };
   },
