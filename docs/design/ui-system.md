@@ -718,6 +718,27 @@ Quando vier (post-piloto):
 Implementação: hook `useColorScheme()` do RN + provider de tema. Não
 inicia no piloto.
 
+## 9. Marca — ícone, favicon e logo
+
+Peças oficiais (PO, 2026-08-18) em `assets/brand/source/`; os arquivos de
+`assets/images/` são **gerados** por `scripts/brand/generate-icons.py`
+(Pillow + numpy) — nunca editar a saída à mão, regenerar.
+
+| Peça | Uso | Arquivo gerado |
+|------|-----|----------------|
+| Calendário navy contornado com E+, fundo branco | **Ícone do app** (iOS light, Android adaptativo: foreground + fundo branco + monochrome) | `icon.png`, `android-icon-*.png`, `icon-tinted.png` |
+| Tile navy com grade e E+ branco | **Favicon** (web) e variante *dark* do ícone no iOS 18+ (só se o usuário escolher ícones escuros) | `favicon.png`, `icon-dark.png` |
+| Wordmark ESCALA+ sobre grade de calendário | **Logo** no login e no splash — fundo transparente (tinta navy + alpha), para não formar caixa branca sobre o gradiente | `logo.png` |
+
+Regras:
+
+- Ícone iOS é 1024² **opaco** (App Store rejeita alpha); a máscara de cantos é
+  do sistema — nada de squircle desenhado dentro do squircle.
+- Android: o glifo fica dentro da zona segura (≤ 66 % do canvas) porque o
+  launcher pode recortar em círculo, squircle ou gota.
+- A logo antiga (plus de vidro em gradiente teal) foi aposentada em
+  2026-08-22; não reintroduzir.
+
 ---
 
 ## Apêndice A — Migração de tokens legados

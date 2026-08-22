@@ -38,6 +38,15 @@ const config: ExpoConfig = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
+    // Marca (PO, 2026-08-18): o ícone do app é o calendário navy contornado
+    // sobre branco; o tile navy "E+" é o favicon — e, no iOS 18+, a variante
+    // "dark" do ícone (só aparece se o usuário escolher ícones escuros na
+    // tela inicial). Gerados por scripts/brand/generate-icons.py.
+    icon: {
+      light: "./assets/images/icon.png",
+      dark: "./assets/images/icon-dark.png",
+      tinted: "./assets/images/icon-tinted.png",
+    },
     "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         // Permite consultar/abrir o app nativo do Comunica+ (Fase 3 do SSO).
@@ -51,7 +60,7 @@ const config: ExpoConfig = {
   },
   android: {
     adaptiveIcon: {
-      backgroundColor: "#E6F4FE",
+      backgroundColor: "#FFFFFF",
       foregroundImage: "./assets/images/android-icon-foreground.png",
       backgroundImage: "./assets/images/android-icon-background.png",
       monochromeImage: "./assets/images/android-icon-monochrome.png",
@@ -104,16 +113,13 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        // Logo oficial Escala+ — PNG horizontal (~16:9) com fundo
-        // branco/light que se mistura ao backgroundColor do splash.
-        // resizeMode "contain" preserva aspect ratio.
+        // Wordmark oficial ESCALA+ (fundo transparente, tinta navy) sobre
+        // branco. Sem variante dark: o app é light-only (userInterfaceStyle)
+        // e a tinta navy sumiria num fundo escuro.
         image: "./assets/images/logo.png",
-        imageWidth: 320,
+        imageWidth: 280,
         resizeMode: "contain",
         backgroundColor: "#ffffff",
-        dark: {
-          backgroundColor: "#0B1F3A",
-        },
       },
     ],
     [
