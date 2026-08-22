@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — portão automático antes de todo commit.
+#
+# Ativado por `pnpm install` (script "prepare": git config core.hooksPath).
+# Roda em segundos: typecheck dos projetos tocados + eslint só nos arquivos
+# staged + bloqueio de segredos. A revisão de convenções e escopo é humana/
+# agente: ver .claude/skills/revisao-pre-commit/SKILL.md.
+#
+# Pular em emergência (com justificativa na mensagem do commit):
+#   SKIP_PRECOMMIT=1 git commit ...
+
+set -euo pipefail
+
+if [[ "${SKIP_PRECOMMIT:-}" == "1" ]]; then
+  echo "pre-commit: pulado (SKIP_PRECOMMIT=1)"
+  exit 0
+fi
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[[ -z "$staged" ]] && exit 0
+
+# 1. Segredos e arquivos que nunca entram no repositório.
+blocked=$(echo "$staged" | grep -E '(^|/)\.env(\..*)?$|\.sso-keystore\.json$|\.pem$|\.p8$|\.p12$|\.mobileprovision$' || true)
+if [[ -n "$blocked" ]]; then
+  echo "pre-commit: BLOQUEADO — arquivo sensível no commit:"
+  echo "$blocked" | sed 's/^/  /'
+  exit 1
+fi
+if git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' | grep -qiE '(RESEND_API_KEY|DATABASE_URL|SSO_PRIVATE_KEY_JWK|PRIVATE KEY-----)\s*[=:]\s*["'"'"']?[A-Za-z0-9+/_-]{16,}'; then
+  echo "pre-commit: BLOQUEADO — parece haver uma credencial literal no diff."
+  exit 1
+fi
+
+ts_files=$(echo "$staged" | grep -E '\.(ts|tsx)$' || true)
+[[ -z "$ts_files" ]] && { echo "pre-commit: nada de TypeScript no commit — ok"; exit 0; }
+
+# 2. Lint só nos arquivos staged (rápido, sem ruído de warnings antigos).
+echo "pre-commit: eslint em $(echo "$ts_files" | wc -l | tr -d ' ') arquivo(s)…"
+# shellcheck disable=SC2086
+pnpm -s exec eslint --max-warnings=0 $ts_files
+
+# 3. Typecheck do(s) projeto(s) tocado(s).
+if echo "$ts_files" | grep -qE '^(server|drizzle|shared|tests|scripts)/'; then
+  echo "pre-commit: typecheck servidor…"
+  pnpm -s typecheck:server
+fi
+if echo "$ts_files" | grep -qE '^(app|components|hooks|lib)/'; then
+  echo "pre-commit: typecheck app…"
+  pnpm -s typecheck:app
+fi
+
+echo "pre-commit: ok"

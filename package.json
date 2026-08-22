@@ -18,6 +18,7 @@
     "typecheck": "pnpm typecheck:app && pnpm typecheck:server",
     "lint": "expo lint",
     "format": "prettier --write .",
+    "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "test": "vitest run",
     "test:e2e": "cross-env NODE_ENV=test vitest run tests/shift-workflow.test.ts",
     "e2e:workflow": "tsx scripts/run-e2e-workflow.ts",
