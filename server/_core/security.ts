@@ -51,6 +51,18 @@ function hostOf(origin: string): string | null {
 }
 
 /**
+ * Returns the entry of `set` equal to `value` — i.e. the TRUSTED copy of
+ * the string, not the request-controlled one. Echoing this copy (instead
+ * of the raw header) is what keeps the response free of tainted input.
+ */
+function findTrusted(set: ReadonlySet<string>, value: string): string | null {
+  for (const entry of set) {
+    if (entry === value) return entry;
+  }
+  return null;
+}
+
+/**
  * CORS middleware that:
  * - only echoes Access-Control-Allow-Origin / Allow-Credentials when the
  *   request origin is on the explicit allow-list (no wildcard credentials).
@@ -78,16 +90,22 @@ export function createCorsMiddleware(options: CorsOptions): RequestHandler {
     const proto = req.protocol === "https" ||
       String(req.headers["x-forwarded-proto"]).includes("https")
         ? "https" : "http";
-    const isSelfOrigin =
-      typeof origin === "string" &&
-      host.length > 0 &&
-      trustedHosts.has(host) &&
-      origin.toLowerCase() === `${proto}://${host}`;
-    const isAllowed = typeof origin === "string" &&
-      (allowedOrigins.has(origin) || isSelfOrigin);
 
-    if (isAllowed) {
-      res.header("Access-Control-Allow-Origin", origin);
+    // O valor devolvido em Access-Control-Allow-Origin vem SEMPRE das
+    // listas confiáveis (allowedOrigins / trustedHosts), nunca do header
+    // da requisição — mesmo quando são iguais.
+    const allowedOrigin = typeof origin === "string" ? findTrusted(allowedOrigins, origin) : null;
+    const trustedHost = host ? findTrusted(trustedHosts, host) : null;
+    const selfOrigin = trustedHost ? `${proto}://${trustedHost}` : null;
+    const grantedOrigin =
+      allowedOrigin ??
+      (selfOrigin && typeof origin === "string" && origin.toLowerCase() === selfOrigin
+        ? selfOrigin
+        : null);
+    const isAllowed = grantedOrigin !== null;
+
+    if (grantedOrigin) {
+      res.header("Access-Control-Allow-Origin", grantedOrigin);
       res.header("Vary", "Origin");
       res.header("Access-Control-Allow-Credentials", "true");
     }
