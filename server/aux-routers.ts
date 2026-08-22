@@ -41,11 +41,28 @@ export const professionalsRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissão para consultar outro usuário" });
       }
 
+      if (isSelf) {
+        const [pro] = await db.select().from(professionals).where(eq(professionals.userId, input.userId));
+        return pro ?? null;
+      }
+
+      // Gestor só enxerga profissionais com vínculo ativo na instituição do
+      // contexto — sem isto ids sequenciais enumeravam o cadastro de todo o
+      // banco, de qualquer tenant (auditoria 22/08, M3).
       const [pro] = await db
-        .select()
+        .select({ professional: professionals })
         .from(professionals)
-        .where(eq(professionals.userId, input.userId));
-      return pro ?? null;
+        .innerJoin(
+          professionalInstitutions,
+          and(
+            eq(professionalInstitutions.professionalId, professionals.id),
+            eq(professionalInstitutions.institutionId, ctx.institutionId),
+            eq(professionalInstitutions.active, true),
+          ),
+        )
+        .where(eq(professionals.userId, input.userId))
+        .limit(1);
+      return pro?.professional ?? null;
     }),
 
   listMyInstitutions: protectedProcedure.query(async ({ ctx }) => {
