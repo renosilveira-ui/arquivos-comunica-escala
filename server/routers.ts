@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { rowsFromExecute } from "./_core/db-results";
 import { dayWindowBrt } from "./local-time";
 import { assertMonthNotLocked } from "./month-guards";
 import { eq, and, sql } from "drizzle-orm";
@@ -13,6 +14,7 @@ import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import { recomputeShiftStatus } from "./shift-status";
 import {
+  actorCapabilities,
   assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
@@ -224,6 +226,36 @@ const shiftAssignmentsRouter = router({
         ({ start: startOfDay, end: endOfDay } = dayWindowBrt(input.date));
       }
 
+      // Solicitações pendentes são assunto de quem aprova: USER comum não
+      // lista pedidos de terceiros; gestor de hospital só vê a própria
+      // jurisdição (manager_scope), como em audit.listShiftMovements
+      // (auditoria 22/08, B1).
+      const actor = await getTenantActorFromContext(ctx);
+      const caps = actorCapabilities(actor);
+      if (!caps.canApproveAssignments) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Apenas gestores podem listar solicitações pendentes." });
+      }
+      let scopeWhere = sql``;
+      const isLocalManager = !actor.isGlobalAdmin && actor.roleInInstitution === "GESTOR_MEDICO";
+      if (isLocalManager) {
+        if (!actor.professionalId) return [];
+        const scopeRows = rowsFromExecute<{ hospital_id: number; sector_id: number | null }>(
+          await db.execute(
+            sql`SELECT hospital_id, sector_id FROM manager_scope
+                WHERE manager_professional_id = ${actor.professionalId}
+                  AND institution_id = ${ctx.institutionId}
+                  AND active = 1`,
+          ),
+        );
+        if (scopeRows.length === 0) return [];
+        const parts = scopeRows.map((r) =>
+          r.sector_id == null
+            ? sql`si.hospital_id = ${r.hospital_id}`
+            : sql`(si.hospital_id = ${r.hospital_id} AND si.sector_id = ${r.sector_id})`,
+        );
+        scopeWhere = sql`AND (${sql.join(parts, sql` OR `)})`;
+      }
+
       const rows = await db.execute<any>(
         sql`SELECT
               sa.id            AS assignmentId,
@@ -250,6 +282,7 @@ const shiftAssignmentsRouter = router({
             WHERE sa.is_active = true
               AND sa.institution_id = ${ctx.institutionId}
               AND sa.status = 'PENDENTE'
+              ${scopeWhere}
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}

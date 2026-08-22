@@ -25,9 +25,18 @@ export async function createContext(opts: CreateExpressContextOptions): Promise<
 
   if (user) {
     const tenantHeader = parseTenantIdHeader(opts.req.headers["x-tenant-id"]);
-    const tenant = await resolveInstitutionForUser(user.id, tenantHeader);
-    institutionId = tenant.institutionId;
-    allowedInstitutionIds = tenant.allowedInstitutionIds;
+    try {
+      const tenant = await resolveInstitutionForUser(user.id, tenantHeader);
+      institutionId = tenant.institutionId;
+      allowedInstitutionIds = tenant.allowedInstitutionIds;
+    } catch {
+      // Sem vínculo ativo (conta pendente, desvinculada) ou tenant inválido:
+      // o contexto NÃO lança — senão toda chamada (inclusive publicProcedure)
+      // virava 500 genérico. requireUser repete a resolução e responde
+      // FORBIDDEN com a mensagem certa (auditoria 22/08, B2).
+      institutionId = null;
+      allowedInstitutionIds = [];
+    }
   }
 
   return {
