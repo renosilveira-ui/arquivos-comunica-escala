@@ -61,7 +61,9 @@ export function describeStart(start: Date, now: Date): string {
   if (sameLocalDay(start, now)) return `Hoje às ${fmtTime(start)}`;
   const dd = String(start.getDate()).padStart(2, "0");
   const mm = String(start.getMonth() + 1).padStart(2, "0");
-  return `${WEEKDAYS[start.getDay()]}, ${dd}/${mm} às ${fmtTime(start)}`;
+  const weekday = WEEKDAYS[start.getDay()];
+  // Título de card: primeira letra maiúscula ("Sexta, 11/09 às 07:00").
+  return `${weekday.charAt(0).toUpperCase()}${weekday.slice(1)}, ${dd}/${mm} às ${fmtTime(start)}`;
 }
 
 export function NextShiftCard({
@@ -136,17 +138,12 @@ export function NextShiftCard({
           <AppButton title="Abrir Comunica+" onPress={onOpenComunica} size="md" />
         ) : null}
         {!inProgress && (needsConfirmation || onSwap) ? (
-          <View style={{ flexDirection: "row", gap: theme.space[2] }}>
+          // Empilhados: lado a lado, "Confirmar presença" quebrava linha em 375px.
+          <View style={{ gap: theme.space[2] }}>
             {needsConfirmation && onConfirm ? (
-              <View style={{ flex: 1 }}>
-                <AppButton title="Confirmar presença" onPress={onConfirm} size="md" />
-              </View>
+              <AppButton title="Confirmar presença" onPress={onConfirm} size="md" />
             ) : null}
-            {onSwap ? (
-              <View style={{ flex: 1 }}>
-                <AppButton title="Trocar" variant="secondary" onPress={onSwap} size="md" />
-              </View>
-            ) : null}
+            {onSwap ? <AppButton title="Trocar este plantão" variant="secondary" onPress={onSwap} size="md" /> : null}
           </View>
         ) : null}
 
