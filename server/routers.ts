@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, and, gte, lte, ne, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { professionals, shiftInstances, shiftAssignmentsV2, sectors, hospitals } from "../drizzle/schema";
+import { professionals, shiftInstances, shiftAssignmentsV2 } from "../drizzle/schema";
 import { validateAssignment } from "./shift-validations";
 import { auditLog } from "./audit-log";
 import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
@@ -334,18 +334,26 @@ const shiftInstancesRouter = router({
       // Transação + guarda: aprovar duas vezes (dois gestores, duplo clique)
       // não pode gerar efeito duplo; o status do turno é derivado das
       // alocações ativas em vez de setado à mão.
+      // Só uma alocação ATIVA e PENDENTE pode ser aprovada. Sem `isActive`
+      // no WHERE, um clique em tela desatualizada reativava uma alocação já
+      // rejeitada/removida e o turno ficava com dois titulares (auditoria
+      // 22/08, achado A3).
       await db.transaction(async (tx) => {
         const [approved] = await tx
           .update(shiftAssignmentsV2)
-          .set({ status: "OCUPADO", isActive: true })
+          .set({ status: "OCUPADO" })
           .where(
             and(
               eq(shiftAssignmentsV2.id, input.assignmentId),
-              ne(shiftAssignmentsV2.status, "OCUPADO"),
+              eq(shiftAssignmentsV2.isActive, true),
+              eq(shiftAssignmentsV2.status, "PENDENTE"),
             ),
           );
         if (!approved.affectedRows) {
-          throw new TRPCError({ code: "CONFLICT", message: "Esta alocação já foi aprovada." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Esta alocação já foi aprovada, rejeitada ou removida.",
+          });
         }
         await recomputeShiftStatus(tx, assignment.shiftInstanceId);
       });
@@ -365,6 +373,10 @@ const shiftInstancesRouter = router({
         entityType: "SHIFT_ASSIGNMENT",
         entityId: input.assignmentId,
         description: "Alocacao aprovada",
+        // audit_trail.institution_id é NOT NULL: sem isto o INSERT falhava
+        // em silêncio ("[AuditTrail] Failed to record") e aprovação/rejeição
+        // não entravam na trilha de auditoria.
+        institutionId: ctx.institutionId,
         shiftInstanceId: assignment.shiftInstanceId,
         hospitalId: assignment.hospitalId,
         sectorId: assignment.sectorId,
@@ -414,15 +426,27 @@ const shiftInstancesRouter = router({
       }
       assertCanEditScheduleDate(actor, targetShift.startAt);
 
-      await db
-        .update(shiftAssignmentsV2)
-        .set({ isActive: false, status: "REJEITADO" })
-        .where(eq(shiftAssignmentsV2.id, input.assignmentId));
-
-      await db
-        .update(shiftInstances)
-        .set({ status: "VAGO" })
-        .where(eq(shiftInstances.id, assignment.shiftInstanceId));
+      // Transação + guarda (só alocação ativa) + status do turno DERIVADO
+      // das alocações restantes: rejeitar Y não pode esvaziar um turno em
+      // que X continua ativo (auditoria 22/08, achado A4).
+      await db.transaction(async (tx) => {
+        const [rejected] = await tx
+          .update(shiftAssignmentsV2)
+          .set({ isActive: false, status: "REJEITADO" })
+          .where(
+            and(
+              eq(shiftAssignmentsV2.id, input.assignmentId),
+              eq(shiftAssignmentsV2.isActive, true),
+            ),
+          );
+        if (!rejected.affectedRows) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Esta alocação já foi respondida ou removida.",
+          });
+        }
+        await recomputeShiftStatus(tx, assignment.shiftInstanceId);
+      });
 
       await auditLog({
         event: "ASSIGNMENT_REJECTED",
@@ -440,6 +464,10 @@ const shiftInstancesRouter = router({
         entityType: "SHIFT_ASSIGNMENT",
         entityId: input.assignmentId,
         description: "Alocacao rejeitada" + (input.reason ? ": " + input.reason : ""),
+        // audit_trail.institution_id é NOT NULL: sem isto o INSERT falhava
+        // em silêncio ("[AuditTrail] Failed to record") e aprovação/rejeição
+        // não entravam na trilha de auditoria.
+        institutionId: ctx.institutionId,
         shiftInstanceId: assignment.shiftInstanceId,
         hospitalId: assignment.hospitalId,
         sectorId: assignment.sectorId,
