@@ -259,7 +259,7 @@ export function VoiceCommandButton() {
                   <Mic size={32} color={theme.colors.danger} />
                 </View>
                 <Text style={{ fontSize: 15, color: theme.colors.textSecondary, textAlign: "center" }}>
-                  {transcript || 'Fale agora — ex.: "trocar meu plantão do dia 2 à noite com o João"'}
+                  {transcript || 'Fale agora — ex.: "trocar meu plantão de hoje à noite com o João" ou "passar o plantão de sexta para a Maria"'}
                 </Text>
                 <TouchableOpacity
                   onPress={stopListening}
