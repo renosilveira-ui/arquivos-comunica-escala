@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { dayWindowBrt } from "./local-time";
 import { assertMonthNotLocked } from "./month-guards";
 import { eq, and, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -214,11 +215,13 @@ const shiftAssignmentsRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
+      // Janela do dia no relógio do hospital (-03:00): o servidor roda em
+      // UTC e `T00:00:00` sem offset cobria 21h do dia anterior a 20h59
+      // (auditoria 22/08, M6).
       let startOfDay: Date | undefined;
       let endOfDay: Date | undefined;
       if (input?.date) {
-        startOfDay = new Date(`${input.date}T00:00:00`);
-        endOfDay = new Date(`${input.date}T23:59:59`);
+        ({ start: startOfDay, end: endOfDay } = dayWindowBrt(input.date));
       }
 
       const rows = await db.execute<any>(
@@ -252,7 +255,7 @@ const shiftAssignmentsRouter = router({
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
               ${input?.modality   ? sql`AND si.modality    = ${input.modality}`   : sql``}
               ${input?.coverageType ? sql`AND si.coverage_type = ${input.coverageType}` : sql``}
-              ${startOfDay && endOfDay ? sql`AND si.start_at BETWEEN ${startOfDay} AND ${endOfDay}` : sql``}
+              ${startOfDay && endOfDay ? sql`AND si.start_at >= ${startOfDay} AND si.start_at < ${endOfDay}` : sql``}
             ORDER BY si.start_at ASC`
       );
 
@@ -501,11 +504,11 @@ const shiftInstancesRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
+      // Janela do dia no relógio do hospital (-03:00) — ver listPending.
       let startOfDay: Date | undefined;
       let endOfDay: Date | undefined;
       if (input?.date) {
-        startOfDay = new Date(`${input.date}T00:00:00`);
-        endOfDay   = new Date(`${input.date}T23:59:59`);
+        ({ start: startOfDay, end: endOfDay } = dayWindowBrt(input.date));
       }
 
       // Especialidade do profissional logado: vaga de outro serviço
@@ -548,7 +551,7 @@ const shiftInstancesRouter = router({
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
               ${input?.modality   ? sql`AND si.modality    = ${input.modality}`   : sql``}
               ${input?.coverageType ? sql`AND si.coverage_type = ${input.coverageType}` : sql``}
-              ${startOfDay && endOfDay ? sql`AND si.start_at BETWEEN ${startOfDay} AND ${endOfDay}` : sql``}
+              ${startOfDay && endOfDay ? sql`AND si.start_at >= ${startOfDay} AND si.start_at < ${endOfDay}` : sql``}
               ${mySpecialty ? sql`AND (si.specialty IS NULL OR si.specialty = ${mySpecialty})` : sql``}
             ORDER BY si.start_at ASC`
       );

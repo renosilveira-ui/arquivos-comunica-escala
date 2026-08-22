@@ -28,20 +28,22 @@ export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
       const ssl = resolveSslConfig(process.env);
-      if (ssl) {
-        const u = new URL(process.env.DATABASE_URL);
-        const pool = mysql.createPool({
-          host: u.hostname,
-          port: u.port ? Number(u.port) : 3306,
-          user: decodeURIComponent(u.username),
-          password: decodeURIComponent(u.password),
-          database: u.pathname.replace(/^\//, ""),
-          ssl,
-        });
-        _db = drizzle(pool);
-      } else {
-        _db = drizzle(process.env.DATABASE_URL);
-      }
+      const u = new URL(process.env.DATABASE_URL);
+      const pool = mysql.createPool({
+        host: u.hostname,
+        port: u.port ? Number(u.port) : 3306,
+        user: decodeURIComponent(u.username),
+        password: decodeURIComponent(u.password),
+        database: u.pathname.replace(/^\//, ""),
+        ...(ssl ? { ssl } : {}),
+        // Instantes são UTC no banco. O query builder do Drizzle já grava e
+        // lê DATETIME como UTC; sem `timezone: "Z"`, um `Date` passado a um
+        // sql`…` cru era formatado no fuso do PROCESSO (mysql2 default
+        // "local") — certo no Render (UTC), 3h errado em qualquer máquina
+        // em -03:00 (testes locais, scripts do PO). Agora é UTC sempre.
+        timezone: "Z",
+      });
+      _db = drizzle(pool);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;

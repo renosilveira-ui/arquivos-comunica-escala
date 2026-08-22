@@ -2,6 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
+import { dayWindowBrt } from "./local-time";
 import { sql } from "drizzle-orm";
 import { getTenantActorFromContext } from "./_core/policy";
 
@@ -124,12 +125,9 @@ export const auditRouter = router({
       const now = new Date();
       const defaultFrom = new Date(now);
       defaultFrom.setDate(defaultFrom.getDate() - 30);
-      const fromDate = input?.fromDate
-        ? new Date(`${input.fromDate}T00:00:00`)
-        : defaultFrom;
-      const toDate = input?.toDate
-        ? new Date(`${input.toDate}T23:59:59`)
-        : now;
+      // Dias no relógio do hospital (-03:00); toDate inclusivo até 23:59:59.
+      const fromDate = input?.fromDate ? dayWindowBrt(input.fromDate).start : defaultFrom;
+      const toDate = input?.toDate ? new Date(dayWindowBrt(input.toDate).end.getTime() - 1000) : now;
 
       const actionsFilter =
         input?.actions && input.actions.length > 0
