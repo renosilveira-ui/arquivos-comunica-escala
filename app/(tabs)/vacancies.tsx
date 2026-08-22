@@ -2,6 +2,7 @@ import { View, Text, ActivityIndicator, ScrollView, TouchableOpacity } from "rea
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
+import { toLocalISODateString } from "@/lib/datetime-utils";
 import { useState, useCallback } from "react";
 import { Briefcase, Clock, MapPin, Building2, Calendar } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
@@ -55,7 +56,7 @@ export default function VacanciesScreen() {
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
     {
-      date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
+      date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
     },
     { 
       enabled: !!user?.id,
@@ -69,7 +70,7 @@ export default function VacanciesScreen() {
     {
       hospitalId: filters.hospitalId ?? undefined,
       sectorId: filters.sectorId ?? undefined,
-      date: filters.date.toISOString().split("T")[0], // YYYY-MM-DD
+      date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
       shiftLabel: filters.shiftLabel ?? undefined,
       modality: modalityFilter,
     },

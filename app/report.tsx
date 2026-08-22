@@ -13,6 +13,7 @@ import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { toLocalISODateString } from "@/lib/datetime-utils";
 
 type UnifiedShift = {
   id: number;
@@ -42,8 +43,8 @@ export default function ReportScreen() {
   // Buscar escalas do mês (API ou demo)
   const startDate = new Date(selectedYear, selectedMonth, 1);
   const endDate = new Date(selectedYear, selectedMonth + 1, 0);
-  const startDateIso = startDate.toISOString().slice(0, 10);
-  const endDateIso = endDate.toISOString().slice(0, 10);
+  const startDateIso = toLocalISODateString(startDate);
+  const endDateIso = toLocalISODateString(endDate);
 
   const { data: apiShifts, isLoading: apiLoading } = trpc.shifts.listByPeriod.useQuery(
     { startDate: startDateIso, endDate: endDateIso },
