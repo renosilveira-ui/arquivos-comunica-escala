@@ -15,6 +15,7 @@ import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import { notifyVacancyOpened } from "./integrations/comunica-plus";
 import { publishMonth, lockMonth } from "./month-guards";
+import { checkTimeConflictForProfessional } from "./shift-validations-v2";
 import {
   assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
@@ -80,6 +81,321 @@ function assertModalityCoherent(input: ModalityInput, existingModality?: "PLANTA
       message: "SOBREAVISO não admite coverageType (apenas PLANTAO usa cobertura)",
     });
   }
+}
+
+// ---------------------------------------------------------------------
+// Replicação de período (semana/mês)
+// ---------------------------------------------------------------------
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const replicateRangeInput = z.object({
+  hospitalId: z.number().int(),
+  sectorId: z.number().int().optional(),
+  from: z.object({
+    start: z.string().regex(DATE_ONLY, "YYYY-MM-DD"),
+    granularity: z.enum(["week", "month"]),
+  }),
+  to: z.object({ start: z.string().regex(DATE_ONLY, "YYYY-MM-DD") }),
+  includeAssignments: z.boolean().optional().default(false),
+  dryRun: z.boolean().optional().default(false),
+});
+
+type ReplicateRangeInput = z.infer<typeof replicateRangeInput>;
+
+/** Instante UTC da meia-noite local (-03:00) de um dia "YYYY-MM-DD". */
+function localDayStart(date: string): Date {
+  return new Date(`${date}T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`);
+}
+
+// Fortaleza/Brasil não tem horário de verão: somar dias em ms preserva
+// a hora local. Se isso mudar, trocar por aritmética com Intl.
+function addDays(d: Date, days: number): Date {
+  return new Date(d.getTime() + days * DAY_MS);
+}
+
+/** Dia da semana LOCAL (0 = domingo) de um instante: hora local = UTC − 3h. */
+function localWeekday(d: Date): number {
+  return new Date(d.getTime() - 3 * 60 * 60 * 1000).getUTCDay();
+}
+
+function firstMondayOnOrAfter(d: Date): Date {
+  const dow = localWeekday(d);
+  return addDays(d, (8 - dow) % 7);
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+interface ReplicationWindow {
+  fromStart: Date;
+  fromEnd: Date;
+  targetStart: Date;
+  targetEnd: Date;
+  offsetDays: number;
+}
+
+/**
+ * Janela de origem [fromStart, fromEnd), janela de destino e o
+ * deslocamento em dias locais.
+ *
+ * - week: 7 dias a partir de from.start → 7 dias a partir de to.start.
+ * - month: mês civil de from.start → mês civil de to.start. O
+ *   deslocamento alinha a primeira segunda-feira da origem à primeira
+ *   segunda-feira do destino, para que cada turno caia no MESMO DIA DA
+ *   SEMANA (escala hospitalar é semanal por natureza). Turnos que, com
+ *   esse deslocamento, caem fora do mês de destino não são copiados e
+ *   contam em outOfRange.
+ */
+function resolveReplicationWindow(
+  from: ReplicateRangeInput["from"],
+  to: ReplicateRangeInput["to"],
+): ReplicationWindow {
+  if (from.granularity === "week") {
+    const fromStart = localDayStart(from.start);
+    const targetStart = localDayStart(to.start);
+    return {
+      fromStart,
+      fromEnd: addDays(fromStart, 7),
+      targetStart,
+      targetEnd: addDays(targetStart, 7),
+      offsetDays: Math.round((targetStart.getTime() - fromStart.getTime()) / DAY_MS),
+    };
+  }
+
+  const [fy, fm] = from.start.split("-").map(Number);
+  const [ty, tm] = to.start.split("-").map(Number);
+  const monthStart = (y: number, m: number) => localDayStart(`${y}-${pad2(m)}-01`);
+  const nextMonthStart = (y: number, m: number) =>
+    m === 12 ? monthStart(y + 1, 1) : monthStart(y, m + 1);
+
+  const fromStart = monthStart(fy, fm);
+  const targetStart = monthStart(ty, tm);
+  const offsetDays = Math.round(
+    (firstMondayOnOrAfter(targetStart).getTime() - firstMondayOnOrAfter(fromStart).getTime()) /
+      DAY_MS,
+  );
+  return {
+    fromStart,
+    fromEnd: nextMonthStart(fy, fm),
+    targetStart,
+    targetEnd: nextMonthStart(ty, tm),
+    offsetDays,
+  };
+}
+
+function naturalKey(x: {
+  hospitalId: number;
+  sectorId: number;
+  startAt: Date;
+  endAt: Date;
+  label: string;
+}): string {
+  return `${x.hospitalId}|${x.sectorId}|${x.startAt.getTime()}|${x.endAt.getTime()}|${x.label}`;
+}
+
+type ReplicateCtx = {
+  user: { id: number; role: string; name?: string | null };
+  institutionId: number;
+};
+
+async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
+  const actor = await getTenantActorFromContext(ctx as any);
+  assertCanManageInstitutionSchedule(actor);
+  await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
+
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const win = resolveReplicationWindow(input.from, input.to);
+  if (win.offsetDays === 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Origem e destino são o mesmo período." });
+  }
+
+  const sourceShifts = await db
+    .select()
+    .from(shiftInstances)
+    .where(
+      and(
+        eq(shiftInstances.institutionId, ctx.institutionId),
+        eq(shiftInstances.hospitalId, input.hospitalId),
+        ...(input.sectorId ? [eq(shiftInstances.sectorId, input.sectorId)] : []),
+        gte(shiftInstances.startAt, win.fromStart),
+        lt(shiftInstances.startAt, win.fromEnd),
+      ),
+    );
+
+  if (sourceShifts.length === 0) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Nenhum turno encontrado no período de origem.",
+    });
+  }
+
+  // Candidatos deslocados; os que caem fora do destino (só no modo mês)
+  // não entram.
+  const candidates = sourceShifts.map((source) => ({
+    source,
+    startAt: addDays(source.startAt, win.offsetDays),
+    endAt: addDays(source.endAt, win.offsetDays),
+  }));
+  const inRange = candidates.filter(
+    (c) => c.startAt >= win.targetStart && c.startAt < win.targetEnd,
+  );
+  const outOfRange = candidates.length - inRange.length;
+
+  // Permissão por data: falha ANTES de qualquer escrita (sem cópia parcial).
+  for (const c of inRange) assertCanEditScheduleDate(actor, c.startAt);
+
+  // Idempotência pela chave natural (hospital, setor, início, fim, label).
+  const existing = await db
+    .select({
+      hospitalId: shiftInstances.hospitalId,
+      sectorId: shiftInstances.sectorId,
+      startAt: shiftInstances.startAt,
+      endAt: shiftInstances.endAt,
+      label: shiftInstances.label,
+    })
+    .from(shiftInstances)
+    .where(
+      and(
+        eq(shiftInstances.institutionId, ctx.institutionId),
+        eq(shiftInstances.hospitalId, input.hospitalId),
+        gte(shiftInstances.startAt, win.targetStart),
+        lt(shiftInstances.startAt, win.targetEnd),
+      ),
+    );
+  const seen = new Set(existing.map(naturalKey));
+  const toCreate: typeof candidates = [];
+  let skipped = 0;
+  for (const c of inRange) {
+    const key = naturalKey({
+      hospitalId: c.source.hospitalId,
+      sectorId: c.source.sectorId,
+      startAt: c.startAt,
+      endAt: c.endAt,
+      label: c.source.label,
+    });
+    if (seen.has(key)) {
+      skipped++;
+      continue;
+    }
+    seen.add(key);
+    toCreate.push(c);
+  }
+
+  // Alocações: só copia quando o profissional está livre no destino.
+  type SourceAssignment = typeof shiftAssignmentsV2.$inferSelect;
+  const plannedAssignments: { sourceShiftId: number; assignment: SourceAssignment }[] = [];
+  let conflicts = 0;
+  if (input.includeAssignments && toCreate.length > 0) {
+    const sourceAssignments = await db
+      .select()
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          inArray(
+            shiftAssignmentsV2.shiftInstanceId,
+            toCreate.map((c) => c.source.id),
+          ),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    for (const a of sourceAssignments) {
+      const c = toCreate.find((x) => x.source.id === a.shiftInstanceId);
+      if (!c) continue;
+      const conflict = await checkTimeConflictForProfessional(a.professionalId, c.startAt, c.endAt);
+      if (conflict.hasConflict) {
+        conflicts++;
+        continue;
+      }
+      plannedAssignments.push({ sourceShiftId: c.source.id, assignment: a });
+    }
+  }
+
+  const summary = {
+    created: toCreate.length,
+    skipped,
+    conflicts,
+    outOfRange,
+    assignmentsCopied: plannedAssignments.length,
+    dryRun: input.dryRun,
+    targetRange: {
+      start: win.targetStart.toISOString(),
+      end: win.targetEnd.toISOString(),
+    },
+  };
+  if (input.dryRun || toCreate.length === 0) return summary;
+
+  await db.transaction(async (tx) => {
+    let firstCreatedId = 0;
+    for (const c of toCreate) {
+      const mine = plannedAssignments.filter((p) => p.sourceShiftId === c.source.id);
+      const status =
+        mine.length === 0
+          ? "VAGO"
+          : mine.some((p) => p.assignment.status === "OCUPADO")
+            ? "OCUPADO"
+            : "PENDENTE";
+
+      const [row] = await tx
+        .insert(shiftInstances)
+        .values({
+          institutionId: c.source.institutionId,
+          hospitalId: c.source.hospitalId,
+          sectorId: c.source.sectorId,
+          label: c.source.label,
+          specialty: c.source.specialty,
+          startAt: c.startAt,
+          endAt: c.endAt,
+          status,
+          modality: c.source.modality,
+          coverageType: c.source.coverageType,
+          paymentModel: c.source.paymentModel,
+          productivityCapBrl: c.source.productivityCapBrl,
+          createdBy: ctx.user.id,
+        })
+        .$returningId();
+      if (!firstCreatedId) firstCreatedId = row.id;
+
+      if (mine.length > 0) {
+        await tx.insert(shiftAssignmentsV2).values(
+          mine.map(({ assignment }) => ({
+            shiftInstanceId: row.id,
+            institutionId: assignment.institutionId,
+            hospitalId: assignment.hospitalId,
+            sectorId: assignment.sectorId,
+            professionalId: assignment.professionalId,
+            assignmentType: assignment.assignmentType,
+            status: assignment.status,
+            isActive: true,
+            createdBy: ctx.user.id,
+          })),
+        );
+      }
+    }
+
+    await recordAudit(
+      {
+        actorUserId: ctx.user.id,
+        actorRole: ctx.user.role,
+        actorName: ctx.user.name ?? undefined,
+        action: "SHIFT_CREATED",
+        entityType: "SHIFT_INSTANCE",
+        entityId: firstCreatedId,
+        description: `Replicou ${summary.created} turnos de ${input.from.start} (${input.from.granularity === "week" ? "semana" : "mês"}) para ${input.to.start}; ${skipped} já existiam; ${plannedAssignments.length} alocações copiadas; ${conflicts} com conflito`,
+        metadata: { replication: true, ...summary, from: input.from, to: input.to },
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+      },
+      { db: tx as any, strict: true },
+    );
+  });
+
+  return summary;
 }
 
 export const shiftsRouter = router({
@@ -835,9 +1151,16 @@ export const shiftsRouter = router({
     }),
 
   // ------------------------------------------------------------------
-  // shifts.replicateWeek — admin/manager only
-  // Copies shiftInstances (without assignments) from one week to another.
+  // shifts.replicateRange — admin/manager only
+  // Copia os turnos (e, opcionalmente, as alocações) de uma semana ou
+  // de um mês para outro período. Idempotente: turnos que já existem
+  // no destino (mesma chave natural) são pulados; dryRun só conta.
   // ------------------------------------------------------------------
+  replicateRange: protectedProcedure
+    .input(replicateRangeInput)
+    .mutation(async ({ ctx, input }) => replicateRange(ctx, input)),
+
+  // Compatibilidade: wrapper fino sobre replicateRange (semana).
   replicateWeek: protectedProcedure
     .input(
       z.object({
@@ -846,69 +1169,13 @@ export const shiftsRouter = router({
         hospitalId: z.number().int(),
       }),
     )
-    .mutation(async ({ ctx, input }) => {
-      const actor = await getTenantActorFromContext(ctx);
-      assertCanManageInstitutionSchedule(actor);
-      await assertManagerScopeAccess(actor, input.hospitalId);
-
-      const db = await getDb();
-      if (!db) throw new Error("Database not available");
-
-      const fromStart = new Date(`${input.fromStartDate}T00:00:00`);
-      const fromEnd = new Date(fromStart);
-      fromEnd.setDate(fromEnd.getDate() + 7);
-
-      const sourceShifts = await db
-        .select()
-        .from(shiftInstances)
-        .where(
-          and(
-            eq(shiftInstances.institutionId, ctx.institutionId),
-            eq(shiftInstances.hospitalId, input.hospitalId),
-            gte(shiftInstances.startAt, fromStart),
-            lt(shiftInstances.startAt, fromEnd),
-          ),
-        );
-
-      if (sourceShifts.length === 0) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Nenhum turno encontrado na semana de origem" });
-      }
-
-      const dayOffsetMs =
-        new Date(`${input.toStartDate}T00:00:00`).getTime() -
-        new Date(`${input.fromStartDate}T00:00:00`).getTime();
-
-      let created = 0;
-      for (const shift of sourceShifts) {
-        const newStart = new Date(shift.startAt.getTime() + dayOffsetMs);
-        const newEnd = new Date(shift.endAt.getTime() + dayOffsetMs);
-        assertCanEditScheduleDate(actor, newStart);
-
-        await db.insert(shiftInstances).values({
-          institutionId: shift.institutionId,
-          hospitalId: shift.hospitalId,
-          sectorId: shift.sectorId,
-          label: shift.label,
-          startAt: newStart,
-          endAt: newEnd,
-          status: "VAGO",
-          createdBy: ctx.user.id,
-        });
-        created++;
-      }
-
-      await recordAudit({
-        actorUserId: ctx.user.id,
-        actorRole: ctx.user.role,
-        actorName: ctx.user.name ?? undefined,
-        action: "SHIFT_CREATED",
-        entityType: "SHIFT_INSTANCE",
-        entityId: 0,
-        description: `Replicou ${created} turnos de ${input.fromStartDate} para ${input.toStartDate}`,
-        institutionId: ctx.institutionId,
+    .mutation(async ({ ctx, input }) =>
+      replicateRange(ctx, {
         hospitalId: input.hospitalId,
-      });
-
-      return { created };
-    }),
+        from: { start: input.fromStartDate, granularity: "week" },
+        to: { start: input.toStartDate },
+        includeAssignments: false,
+        dryRun: false,
+      }),
+    ),
 });
