@@ -50,6 +50,7 @@ function hostOf(origin: string): string | null {
   }
 }
 
+
 /**
  * CORS middleware that:
  * - only echoes Access-Control-Allow-Origin / Allow-Credentials when the
@@ -78,15 +79,17 @@ export function createCorsMiddleware(options: CorsOptions): RequestHandler {
     const proto = req.protocol === "https" ||
       String(req.headers["x-forwarded-proto"]).includes("https")
         ? "https" : "http";
-    const isSelfOrigin =
-      typeof origin === "string" &&
-      host.length > 0 &&
-      trustedHosts.has(host) &&
-      origin.toLowerCase() === `${proto}://${host}`;
-    const isAllowed = typeof origin === "string" &&
-      (allowedOrigins.has(origin) || isSelfOrigin);
 
-    if (isAllowed) {
+    // Allow-list EFETIVA desta requisição: origens configuradas + a
+    // própria origem do servidor (só quando o Host é confiável). O eco em
+    // Access-Control-Allow-Origin só acontece se `origin` passar pelo
+    // `.has()` dessa allow-list — forma que a análise estática (CodeQL
+    // js/cors-misconfiguration-for-credentials) reconhece como validação.
+    const selfOrigin = trustedHosts.has(host) ? `${proto}://${host}` : null;
+    const effectiveAllowed = selfOrigin ? new Set([...allowedOrigins, selfOrigin]) : allowedOrigins;
+    const isAllowed = typeof origin === "string" && effectiveAllowed.has(origin);
+
+    if (typeof origin === "string" && effectiveAllowed.has(origin)) {
       res.header("Access-Control-Allow-Origin", origin);
       res.header("Vary", "Origin");
       res.header("Access-Control-Allow-Credentials", "true");
@@ -132,6 +135,9 @@ export function createHelmetMiddleware(): RequestHandler {
         "object-src": ["'none'"],
         "base-uri": ["'self'"],
         "form-action": ["'self'"],
+        // Default do Helmet; o navegador avisa que é ignorada em
+        // report-only. Volta quando a política virar enforce.
+        "upgrade-insecure-requests": null,
       },
     },
     crossOriginResourcePolicy: { policy: "cross-origin" },
