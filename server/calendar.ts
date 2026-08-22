@@ -5,6 +5,7 @@ import { ForbiddenError } from "../shared/_core/errors";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import { shiftInstances } from "../drizzle/schema";
 import {
   actorCapabilities,
   assertManagerScopeAccess,
@@ -323,15 +324,18 @@ export const calendarRouter = router({
             endAt = new Date(endAt.getTime() + 24 * 60 * 60 * 1000);
           }
 
-          await db.execute(
-            sql`INSERT INTO shift_instances 
-                (institution_id, hospital_id, sector_id, label, start_at, end_at, status)
-                VALUES (${institutionId}, ${hospitalId}, ${sectorId}, ${def.label}, ${startAt}, ${endAt}, 'VAGO')`
-          );
-
-          const idResult = await db.execute<any>(sql`SELECT LAST_INSERT_ID() as id`);
-          const idRows = (idResult as any).rows || (idResult as any[]);
-          const shiftInstanceId = idRows[0].id;
+          // insertId do próprio INSERT: `SELECT LAST_INSERT_ID()` em outra
+          // chamada pode vir de outra conexão do pool.
+          const [inserted] = await db.insert(shiftInstances).values({
+            institutionId,
+            hospitalId,
+            sectorId,
+            label: def.label,
+            startAt,
+            endAt,
+            status: "VAGO",
+          });
+          const shiftInstanceId = Number(inserted.insertId);
 
           shifts.push({
             shiftInstanceId,

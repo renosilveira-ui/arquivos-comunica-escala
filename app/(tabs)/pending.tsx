@@ -3,8 +3,6 @@ import {
   Text,
   TouchableOpacity,
   ActivityIndicator,
-  Platform,
-  Alert,
   ScrollView,
   TextInput,
 } from "react-native";
@@ -15,6 +13,8 @@ import {
   type ShiftFilterValues,
 } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { shiftStatusMeta } from "@/lib/shift-status";
 import { useState, useCallback, useMemo } from "react";
 import { useRouter } from "expo-router";
 import {
@@ -64,19 +64,11 @@ interface AvailableSwap {
   } | null;
 }
 
-// 🔧 Função uiAlert para funcionar no web
-const uiAlert = (title: string, message: string) => {
-  if (Platform.OS === "web") {
-    window.alert(`${title}\n\n${message}`);
-  } else {
-    Alert.alert(title, message);
-  }
-};
-
 export default function PendingScreen() {
   const router = useRouter();
   const { user, isLoading: authLoading } = useAuth();
   const utils = trpc.useUtils();
+  const feedback = useActionFeedback();
   const isAdminOrManager = user?.role === "admin" || user?.role === "manager";
   const [mySearch, setMySearch] = useState("");
   const [myDate, setMyDate] = useState(
@@ -99,10 +91,10 @@ export default function PendingScreen() {
         utils.swaps.listAvailable.invalidate(),
         utils.swaps.list.invalidate(),
       ]);
-      uiAlert("Sucesso", "Oferta aceita!");
+      feedback.success("Oferta aceita. O dono do plantão ainda precisa aprovar.");
     },
     onError: (error) => {
-      uiAlert("Erro", error.message || "Erro ao aceitar oferta");
+      feedback.error(error.message || "Não foi possível aceitar a oferta.");
     },
     onSettled: () => setSwapAction(null),
   });
@@ -112,19 +104,30 @@ export default function PendingScreen() {
         utils.swaps.listAvailable.invalidate(),
         utils.swaps.list.invalidate(),
       ]);
-      uiAlert("Sucesso", "Oferta recusada!");
+      feedback.success("Oferta recusada.");
     },
     onError: (error) => {
-      uiAlert("Erro", error.message || "Erro ao recusar oferta");
+      feedback.error(error.message || "Não foi possível recusar a oferta.");
     },
     onSettled: () => setSwapAction(null),
   });
 
-  const handleSwapAction = (
+  const handleSwapAction = async (
     swapId: number,
     action: "accept" | "reject",
   ) => {
     if (acceptSwap.isPending || rejectSwap.isPending) return;
+
+    // Aceitar/recusar muda a escala de DUAS pessoas: confirmar antes,
+    // em web e nativo.
+    const confirmed = await feedback.confirmDestructive(
+      action === "accept" ? "Aceitar esta oferta?" : "Recusar esta oferta?",
+      action === "accept"
+        ? "Você assume o plantão assim que o dono aprovar."
+        : "A oferta some da sua lista.",
+      action === "accept" ? "Aceitar" : "Recusar",
+    );
+    if (!confirmed) return;
 
     setSwapAction({ id: swapId, action });
     const input = { swapRequestId: swapId };
@@ -268,32 +271,17 @@ export default function PendingScreen() {
     });
   }, []);
 
-  const approveAssignment = trpc.shiftInstances.approveAssignment.useMutation({
-    onSuccess: () => {
-      refetch();
-      Alert.alert("Sucesso", "Alocação aprovada com sucesso!");
-    },
-    onError: (error: any) => {
-      Alert.alert("Erro", error.message);
-    },
-  });
+  // Feedback só na chamada (antes estava no hook E na chamada → dois
+  // alertas "Sucesso" seguidos no nativo).
+  const approveAssignment = trpc.shiftInstances.approveAssignment.useMutation();
+  const rejectAssignment = trpc.shiftInstances.rejectAssignment.useMutation();
 
-  const rejectAssignment = trpc.shiftInstances.rejectAssignment.useMutation({
-    onSuccess: () => {
-      refetch();
-      Alert.alert("Sucesso", "Alocação rejeitada com sucesso!");
-    },
-    onError: (error: any) => {
-      Alert.alert("Erro", error.message);
-    },
-  });
-
-  const handleApprove = (assignmentId: number, professionalName: string) => {
-    let confirmed = true;
-    if (Platform.OS === "web") {
-      confirmed = window.confirm(`Aprovar alocação de ${professionalName}?`);
-    }
-
+  const handleApprove = async (assignmentId: number, professionalName: string) => {
+    const confirmed = await feedback.confirmDestructive(
+      "Aprovar alocação",
+      `Aprovar a alocação de ${professionalName}?`,
+      "Aprovar",
+    );
     if (!confirmed) return;
 
     approveAssignment.mutate(
@@ -301,21 +289,21 @@ export default function PendingScreen() {
       {
         onSuccess: () => {
           refetch();
-          uiAlert("Sucesso", "Alocação aprovada!");
+          feedback.success(`Alocação de ${professionalName} aprovada.`);
         },
         onError: (err: any) => {
-          uiAlert("Erro", err?.message ?? "Falha ao aprovar");
+          feedback.error(err?.message ?? "Não foi possível aprovar.");
         },
       },
     );
   };
 
-  const handleReject = (assignmentId: number, professionalName: string) => {
-    let confirmed = true;
-    if (Platform.OS === "web") {
-      confirmed = window.confirm(`Rejeitar alocação de ${professionalName}?`);
-    }
-
+  const handleReject = async (assignmentId: number, professionalName: string) => {
+    const confirmed = await feedback.confirmDestructive(
+      "Rejeitar alocação",
+      `Rejeitar a alocação de ${professionalName}? O plantão volta a ficar vago.`,
+      "Rejeitar",
+    );
     if (!confirmed) return;
 
     rejectAssignment.mutate(
@@ -323,10 +311,10 @@ export default function PendingScreen() {
       {
         onSuccess: () => {
           refetch();
-          uiAlert("Sucesso", "Alocação rejeitada!");
+          feedback.success(`Alocação de ${professionalName} rejeitada.`);
         },
         onError: (err: any) => {
-          uiAlert("Erro", err?.message ?? "Falha ao rejeitar");
+          feedback.error(err?.message ?? "Não foi possível rejeitar.");
         },
       },
     );
@@ -714,8 +702,10 @@ export default function PendingScreen() {
                       key={key}
                       onPress={() => setMyDate(key)}
                       style={{
+                        minHeight: 40,
+                        justifyContent: "center",
                         paddingHorizontal: 12,
-                        paddingVertical: 8,
+                        paddingVertical: 10,
                         borderRadius: 999,
                         borderWidth: 1,
                         borderColor: selected
@@ -789,10 +779,11 @@ export default function PendingScreen() {
                       <Text
                         style={{
                           color: theme.palette.neutral[700],
-                          fontSize: 11,
+                          fontSize: theme.text.caption.fontSize,
+                          fontWeight: theme.weight.semibold,
                         }}
                       >
-                        {shift.status}
+                        {shiftStatusMeta(shift.status).label}
                       </Text>
                     </View>
                   </View>

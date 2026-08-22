@@ -8,6 +8,8 @@ import { recordAudit } from "./audit-trail";
 import { assertNoTimeConflictForProfessional } from "./shift-validations-v2";
 import { sql } from "drizzle-orm";
 import { firstRowFromExecute } from "./_core/db-results";
+import { shiftAssignmentsV2 } from "../drizzle/schema";
+import { recomputeShiftStatus } from "./shift-status";
 import {
   assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
@@ -124,20 +126,24 @@ export const editorRouter = router({
         throw new Error("Profissional não tem acesso a este hospital/setor");
       }
 
-      // 8. Transação: INSERT assignment + UPDATE shift_instance
-      await db.execute(
-        sql`INSERT INTO shift_assignments_v2 
-            (shift_instance_id, institution_id, hospital_id, sector_id, professional_id, assignment_type, status, is_active, created_by, created_at, updated_at)
-            VALUES (${shiftInstanceId}, ${ctx.institutionId}, ${shift.hospital_id}, ${shift.sector_id}, ${professionalId}, ${assignmentType}, 'OCUPADO', true, ${userId}, NOW(), NOW())`
-      );
-
-      const assignmentIdResult = await db.execute<any>(sql`SELECT LAST_INSERT_ID() as id`);
-      const assignmentIdRow = firstRowFromExecute<{ id: number | string }>(assignmentIdResult);
-      const assignmentId = Number(assignmentIdRow?.id);
-
-      await db.execute(
-        sql`UPDATE shift_instances SET status = 'OCUPADO' WHERE id = ${shiftInstanceId} AND institution_id = ${ctx.institutionId}`
-      );
+      // 8. Transação: INSERT assignment + status do turno. O id vem do
+      // próprio INSERT — `SELECT LAST_INSERT_ID()` em outra chamada podia
+      // cair em outra conexão do pool e devolver 0/errado.
+      const assignmentId = await db.transaction(async (tx) => {
+        const [inserted] = await tx.insert(shiftAssignmentsV2).values({
+          shiftInstanceId,
+          institutionId: ctx.institutionId,
+          hospitalId: shift.hospital_id,
+          sectorId: shift.sector_id,
+          professionalId,
+          assignmentType,
+          status: "OCUPADO",
+          isActive: true,
+          createdBy: userId,
+        });
+        await recomputeShiftStatus(tx, shiftInstanceId);
+        return Number(inserted.insertId);
+      });
 
       // 9. Audit log
       await auditLog({

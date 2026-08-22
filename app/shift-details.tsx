@@ -1,12 +1,10 @@
 import { useState, useEffect, useMemo, type ReactNode } from "react";
 import {
-  Alert,
   Text,
   TextInput,
   View,
   TouchableOpacity,
   ActivityIndicator,
-  Platform,
   StyleSheet,
   useWindowDimensions,
   type ViewStyle,
@@ -23,6 +21,7 @@ import * as Haptics from "expo-haptics";
 import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus, Trash2 } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
+import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
 
 const ICON_BOX_SIZE = theme.space[10] + theme.space[2];
 const PRIMARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 2;
@@ -56,6 +55,19 @@ export default function ShiftDetailsScreen() {
     { enabled: !!user?.id && !isDemo }
   );
   const canManageShift = can("edit:shift");
+  const canRequestSwap = can("request:swap");
+  // Profissional do usuário logado. professionalId ≠ userId (tabelas
+  // diferentes): comparar a alocação com user.id marcava "alocado" a
+  // pessoa errada — mesmo padrão usado em app/(tabs)/pending.tsx.
+  const { data: myProfessional } = trpc.professionals.getByUserId.useQuery(
+    { userId: user?.id ?? 0 },
+    { enabled: !!user?.id && !isDemo },
+  );
+  // Confirmação de presença pendente (cron D-1). Só vira ação aqui quando
+  // for deste plantão; a tela /confirm-duty faz o resto.
+  const { data: pendingConfirmation } = trpc.confirmations.getPending.useQuery(undefined, {
+    enabled: !!user?.id && !isDemo,
+  });
   const utils = trpc.useUtils();
   const {
     data: assignableProfessionals,
@@ -74,11 +86,11 @@ export default function ShiftDetailsScreen() {
         utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
         utils.shifts.listAgenda.invalidate(),
       ]);
-      Alert.alert("Profissional alocado", "O plantão foi atualizado com sucesso.");
+      uiAlert("Profissional alocado", "O plantão foi atualizado com sucesso.");
     },
     onError: (error) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Não foi possível alocar", error.message || "Tente novamente em instantes.");
+      uiAlert("Não foi possível alocar", error.message || "Tente novamente em instantes.");
     },
   });
   const unassignDirect = trpc.editor.unassignDirect.useMutation({
@@ -89,11 +101,11 @@ export default function ShiftDetailsScreen() {
         utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
         utils.shifts.listAgenda.invalidate(),
       ]);
-      Alert.alert("Alocação removida", "O plantão voltou a ficar disponível para alocação.");
+      uiAlert("Alocação removida", "O plantão voltou a ficar disponível para alocação.");
     },
     onError: (error) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Não foi possível remover", error.message || "Tente novamente em instantes.");
+      uiAlert("Não foi possível remover", error.message || "Tente novamente em instantes.");
     },
   });
   const filteredAssignableProfessionals = useMemo(() => {
@@ -142,14 +154,12 @@ export default function ShiftDetailsScreen() {
   };
 
   const handleConfirmPresence = () => {
-    if (!user) return;
-    if (isDemo) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      return; // Modo demo: apenas feedback visual
-    }
+    if (!pendingConfirmation?.confirmationToken) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // TODO: endpoint de confirmação de presença não existe no router tRPC atual.
-    alert("Confirmação de presença ainda não disponível neste ambiente.");
+    router.push({
+      pathname: "/confirm-duty" as any,
+      params: { token: pendingConfirmation.confirmationToken },
+    });
   };
 
   const handleEdit = () => {
@@ -159,7 +169,7 @@ export default function ShiftDetailsScreen() {
 
   const handleAssignProfessional = () => {
     if (!selectedProfessionalId) {
-      Alert.alert("Selecione um profissional", "Escolha quem ficará alocado neste plantão.");
+      uiAlert("Selecione um profissional", "Escolha quem ficará alocado neste plantão.");
       return;
     }
     const selectedAssignmentType =
@@ -176,7 +186,7 @@ export default function ShiftDetailsScreen() {
 
   const handleUnassignProfessional = (assignment: { id?: number; professionalName?: string | null }) => {
     if (!assignment.id) {
-      Alert.alert("Alocação indisponível", "Não foi possível identificar esta alocação.");
+      uiAlert("Alocação indisponível", "Não foi possível identificar esta alocação.");
       return;
     }
 
@@ -188,23 +198,11 @@ export default function ShiftDetailsScreen() {
       });
     };
 
-    if (Platform.OS === "web") {
-      const confirmed = globalThis.confirm?.(`Remover ${professionalName} deste plantão?`) ?? false;
-      if (confirmed) removeAssignment();
-      return;
-    }
-
-    Alert.alert(
+    uiConfirmDestructive(
       "Remover alocação",
       `Deseja remover ${professionalName} deste plantão?`,
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Remover",
-          style: "destructive",
-          onPress: removeAssignment,
-        },
-      ],
+      "Remover",
+      removeAssignment,
     );
   };
 
@@ -253,9 +251,15 @@ export default function ShiftDetailsScreen() {
   const startDate = new Date(shift.startAt ?? shift.startTime);
   const endDate = new Date(shift.endAt ?? shift.endTime);
 
-  // Verificar se usuário está alocado nesta escala
-  const userAssignment = activeAssignments.find((a: any) => a.professionalId === user?.id || a.userId === user?.id);
+  // Usuário alocado neste plantão? Compara com o professional.id real.
+  const userAssignment = myProfessional
+    ? activeAssignments.find(
+        (a: any) => a.professionalId === myProfessional.id && a.isActive !== false,
+      )
+    : undefined;
   const isUserAssigned = !!userAssignment;
+  const hasPendingConfirmationHere =
+    !!pendingConfirmation && pendingConfirmation.shiftInstanceId === shiftId;
 
   // Campos de modalidade (PR #61): backend retorna direto no shift_instance.
   // Cast defensivo enquanto o tipo do retorno do tRPC ainda não infere todas as colunas.
@@ -403,29 +407,33 @@ export default function ShiftDetailsScreen() {
               ) : null}
             </TintedGlassCard>
 
+            {/* Ações contextuais: confirmar presença (só com pedido pendente
+                deste plantão), trocar (só quem está alocado), editar (só
+                quem pode gerir a escala). Nada de botão que não faz nada. */}
             <View style={styles.actionPanel}>
-              {shift.status !== "cancelada" && shift.status !== "VAGO" && user ? (
+              {hasPendingConfirmationHere ? (
                 <ActionButton
-                  label="Confirmar Presença"
+                  label="Confirmar presença"
                   onPress={handleConfirmPresence}
                   icon={<CheckCircle2 size={20} color={theme.colors.surface} />}
                   variant="success"
                 />
               ) : null}
 
-              {shift.status !== "cancelada" ? (
+              {shift.status !== "cancelada" && (canManageShift || (isUserAssigned && canRequestSwap)) ? (
                 <View style={styles.actionRow}>
-                  <ActionButton label="Editar Escala" onPress={handleEdit} variant="secondary" />
-                  <ActionButton
-                    label="Solicitar Troca de Plantão"
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      router.push(`/request-swap?id=${shiftId}`);
-                    }}
-                    variant="primarySoft"
-                  />
-                  {isUserAssigned && !userAssignment?.confirmedAt && !userAssignment?.confirmed ? (
-                    <ActionButton label="Confirmar Presença" onPress={handleConfirmPresence} variant="primary" />
+                  {canManageShift ? (
+                    <ActionButton label="Editar escala" onPress={handleEdit} variant="secondary" />
+                  ) : null}
+                  {isUserAssigned && canRequestSwap ? (
+                    <ActionButton
+                      label="Solicitar troca"
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        router.push(`/request-swap?id=${shiftId}`);
+                      }}
+                      variant="primarySoft"
+                    />
                   ) : null}
                 </View>
               ) : null}

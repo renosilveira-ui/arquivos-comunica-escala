@@ -136,7 +136,7 @@ export function ShiftFilters({
       onPress={onPress}
       activeOpacity={0.78}
       style={{
-        minHeight: 36,
+        minHeight: 40,
         paddingHorizontal: theme.space[3],
         paddingVertical: theme.space[2],
         borderRadius: theme.radius.md,
