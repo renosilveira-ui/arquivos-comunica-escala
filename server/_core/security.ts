@@ -150,6 +150,9 @@ export function createHelmetMiddleware(): RequestHandler {
         "object-src": ["'none'"],
         "base-uri": ["'self'"],
         "form-action": ["'self'"],
+        // Default do Helmet; o navegador avisa que é ignorada em
+        // report-only. Volta quando a política virar enforce.
+        "upgrade-insecure-requests": null,
       },
     },
     crossOriginResourcePolicy: { policy: "cross-origin" },
