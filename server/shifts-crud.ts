@@ -10,6 +10,7 @@ import {
   professionals,
   hospitals,
   sectors,
+  monthlyRosters,
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
@@ -1108,6 +1109,38 @@ export const shiftsRouter = router({
       });
 
       return { ok: true };
+    }),
+
+  // ------------------------------------------------------------------
+  // shifts.rosterStatus — estado do mês (DRAFT quando não há registro)
+  // para o menu de ações do gestor decidir o que oferecer.
+  // ------------------------------------------------------------------
+  rosterStatus: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int(),
+        yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const [roster] = await db
+        .select({ status: monthlyRosters.status, publishedAt: monthlyRosters.publishedAt, lockedAt: monthlyRosters.lockedAt })
+        .from(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, ctx.institutionId),
+            eq(monthlyRosters.hospitalId, input.hospitalId),
+            eq(monthlyRosters.yearMonth, input.yearMonth),
+          ),
+        )
+        .limit(1);
+      return {
+        status: (roster?.status ?? "DRAFT") as "DRAFT" | "PUBLISHED" | "LOCKED",
+        publishedAt: roster?.publishedAt ?? null,
+        lockedAt: roster?.lockedAt ?? null,
+      };
     }),
 
   // ------------------------------------------------------------------
