@@ -7,9 +7,21 @@ import {
   Briefcase,
   BarChart3,
   Grid3X3,
+  ArrowRightLeft,
+  FileText,
 } from "lucide-react-native";
 
-export type TabIconName = "home" | "calendar" | "weekly" | "dashboard" | "work" | "pending" | "admin" | "profile";
+export type TabIconName =
+  | "home"
+  | "calendar"
+  | "weekly"
+  | "dashboard"
+  | "work"
+  | "pending"
+  | "admin"
+  | "profile"
+  | "swap"
+  | "reports";
 
 interface TabIconProps {
   name: TabIconName;
@@ -27,6 +39,8 @@ export function TabIcon({ name, color, size = 24 }: TabIconProps) {
     pending: ClipboardCheck,
     admin: Settings,
     profile: User,
+    swap: ArrowRightLeft,
+    reports: FileText,
   };
 
   const Icon = icons[name];
