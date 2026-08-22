@@ -608,9 +608,15 @@ entre períodos combinar com `placeholderData: keepPreviousData`.
 
 `components/agenda/NextShiftCard.tsx`: a pergunta nº 1 do plantonista no
 topo da Agenda. Puro (props + `now` injetável). Estados: futuro
-("Começa em 3 h", "Amanhã às 07:00", "sexta, 28/08 às 19:00") com
-Confirmar/Trocar; em andamento ("Termina às 19:00", tom success) com
-Abrir Comunica+; sem plantão (tom muted).
+("Começa em 3 h", "Amanhã às 07:00", "sexta, 28/08 às 19:00"); em
+andamento ("termina às 19:00", tom success); sem plantão (tom muted).
+
+Variantes: **`compact` (padrão, é a da Agenda)** — faixa de ~56pt com
+quando · horário · setor e UMA ação à direita (Comunica+ durante o
+plantão, Confirmar quando há pedido pendente, senão a seta de detalhe;
+trocar plantão fica no detalhe). `full` — card grande com Confirmar/Trocar
+empilhados. O PO pediu o compacto em 2026-08-22: o card grande roubava a
+visão panorâmica da escala.
 
 ### 6.19 Galeria de UI
 

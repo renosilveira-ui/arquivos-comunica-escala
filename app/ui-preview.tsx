@@ -37,7 +37,7 @@ function Gallery() {
         <SectionHeader size="page" eyebrow="Sistema de UI" title="Galeria de componentes" subtitle="Só em desenvolvimento. Dados de exemplo." />
 
         <View style={{ gap: theme.space[3] }}>
-          <SectionHeader title="Próximo plantão" subtitle="Estados: futuro com confirmação, em andamento, sem plantão" />
+          <SectionHeader title="Próximo plantão" subtitle="Compacto (Agenda): futuro com confirmação, em andamento, futuro, sem plantão — e a variante full" />
           <NextShiftCard
             now={NOW}
             needsConfirmation
@@ -56,6 +56,14 @@ function Gallery() {
             onPress={() => feedback.info("Detalhe do plantão.")}
           />
           <NextShiftCard now={NOW} shift={null} />
+          <NextShiftCard
+            variant="full"
+            now={NOW}
+            needsConfirmation
+            shift={{ id: 1, label: "Noite", startAt: at("2026-09-09", "19:00"), endAt: at("2026-09-10", "07:00"), status: "OCUPADO", sectorName: "Centro Cirúrgico", hospitalName: "Hospital São Carlos" }}
+            onConfirm={() => feedback.success("Plantão confirmado.")}
+            onSwap={() => feedback.info("Abrir pedido de troca.")}
+          />
         </View>
 
         <View style={{ gap: theme.space[3] }}>
