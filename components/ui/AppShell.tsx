@@ -5,6 +5,7 @@ import { useState, useEffect, ReactNode } from "react";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { toLocalISODateString } from "@/lib/datetime-utils";
 
 interface AppShellProps {
   children: ReactNode;
@@ -25,7 +26,7 @@ export function AppShell({ children, title }: AppShellProps) {
   // Buscar contadores para badges
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
     {
-      date: new Date().toISOString().split("T")[0], // Hoje
+      date: toLocalISODateString(new Date()), // Hoje
     },
     {
       staleTime: 60 * 1000, // Cache de 60 segundos

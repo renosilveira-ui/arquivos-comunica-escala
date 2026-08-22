@@ -23,7 +23,7 @@ import { uiAlert } from "@/lib/ui/alert";
 import { ChevronLeft, Save, Calendar, Clock } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
-import { normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
+import { fromLocalISODateString, normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -245,10 +245,13 @@ export default function EditShiftScreen() {
     const [startHour, startMinute] = startTime.split(":");
     const [endHour, endMinute] = endTime.split(":");
 
-    const startDateTime = new Date(startDate);
+    // "AAAA-MM-DD" em `new Date()` é meia-noite UTC (21h do dia anterior no
+    // Brasil): o setHours caía no dia errado e cada salvamento recuava o
+    // plantão um dia. fromLocalISODateString ancora no meio-dia LOCAL.
+    const startDateTime = fromLocalISODateString(startDate);
     startDateTime.setHours(Number(startHour), Number(startMinute), 0, 0);
 
-    const endDateTime = new Date(endDate);
+    const endDateTime = fromLocalISODateString(endDate);
     endDateTime.setHours(Number(endHour), Number(endMinute), 0, 0);
 
     // Validar datas
@@ -375,7 +378,7 @@ export default function EditShiftScreen() {
             <View style={{ flexDirection: "row", gap: 12 }}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? new Date(startDate) : new Date()); setShowStartDatePicker(true); }} activeOpacity={0.7}>
+                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? fromLocalISODateString(startDate) : new Date()); setShowStartDatePicker(true); }} activeOpacity={0.7}>
                     <Calendar size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
                   <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
@@ -383,7 +386,7 @@ export default function EditShiftScreen() {
                   </Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? new Date(startDate) : new Date()); setShowStartDatePicker(true); }}
+                  onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? fromLocalISODateString(startDate) : new Date()); setShowStartDatePicker(true); }}
                   activeOpacity={0.7}
                   style={{
                     backgroundColor: theme.colors.surfaceAlt,
@@ -399,7 +402,7 @@ export default function EditShiftScreen() {
                 </TouchableOpacity>
                 {showStartDatePicker && (
                   <DateTimePicker
-                    value={startDate ? new Date(startDate) : new Date()}
+                    value={startDate ? fromLocalISODateString(startDate) : new Date()}
                     mode="date"
                     display={Platform.OS === "ios" ? "spinner" : "default"}
                     onChange={handleStartDateChange}
@@ -453,7 +456,7 @@ export default function EditShiftScreen() {
             <View style={{ flexDirection: "row", gap: 12 }}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? new Date(endDate) : new Date()); setShowEndDatePicker(true); }} activeOpacity={0.7}>
+                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? fromLocalISODateString(endDate) : new Date()); setShowEndDatePicker(true); }} activeOpacity={0.7}>
                     <Calendar size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
                   <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
@@ -461,7 +464,7 @@ export default function EditShiftScreen() {
                   </Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? new Date(endDate) : new Date()); setShowEndDatePicker(true); }}
+                  onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? fromLocalISODateString(endDate) : new Date()); setShowEndDatePicker(true); }}
                   activeOpacity={0.7}
                   style={{
                     backgroundColor: theme.colors.surfaceAlt,
@@ -477,7 +480,7 @@ export default function EditShiftScreen() {
                 </TouchableOpacity>
                 {showEndDatePicker && (
                   <DateTimePicker
-                    value={endDate ? new Date(endDate) : new Date()}
+                    value={endDate ? fromLocalISODateString(endDate) : new Date()}
                     mode="date"
                     display={Platform.OS === "ios" ? "spinner" : "default"}
                     onChange={handleEndDateChange}
@@ -780,7 +783,7 @@ export default function EditShiftScreen() {
             </Text>
 
             <DateTimePicker
-              value={tempStartDate || (startDate ? new Date(startDate) : new Date())}
+              value={tempStartDate || (startDate ? fromLocalISODateString(startDate) : new Date())}
               mode="date"
               display="spinner"
               onChange={handleStartDateChange}
@@ -854,7 +857,7 @@ export default function EditShiftScreen() {
             </Text>
 
             <DateTimePicker
-              value={tempEndDate || (endDate ? new Date(endDate) : new Date())}
+              value={tempEndDate || (endDate ? fromLocalISODateString(endDate) : new Date())}
               mode="date"
               display="spinner"
               onChange={handleEndDateChange}

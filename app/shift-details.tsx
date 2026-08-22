@@ -430,7 +430,8 @@ export default function ShiftDetailsScreen() {
                       label="Solicitar troca"
                       onPress={() => {
                         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        router.push(`/request-swap?id=${shiftId}`);
+                        // Mesmo parâmetro que a Agenda usa: Oferecer Troca lê `fromShiftId`.
+                        router.push({ pathname: "/request-swap" as any, params: { fromShiftId: String(shiftId) } });
                       }}
                       variant="primarySoft"
                     />
