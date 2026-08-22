@@ -156,14 +156,8 @@ function AuthGuard() {
   }
 
   if (!user) {
-    // Rotas públicas: login, auto-cadastro e recuperação de senha.
-    if (
-      pathname === "/signup" ||
-      pathname === "/forgot-password" ||
-      pathname === "/reset-password"
-    ) {
-      return null;
-    }
+    // Rotas públicas: login e auto-cadastro.
+    if (pathname === "/signup") return null;
     return <Redirect href="/login" />;
   }
 
@@ -172,13 +166,6 @@ function AuthGuard() {
   // o vínculo do pendente é inativo e cairia no "sem instituições".
   if (user.approvalStatus === "PENDING") {
     return <PendingApprovalScreen />;
-  }
-
-  // Senha temporária definida pelo admin: obriga a troca antes de
-  // qualquer outra tela (mesmo padrão do PENDING — vem antes da lógica
-  // de instituições). change-password refaz o /me e libera o app.
-  if (user.mustChangePassword && pathname !== "/change-password") {
-    return <Redirect href="/change-password" />;
   }
 
   // Falha de REDE ao listar instituições (ex.: staging hibernado
@@ -321,8 +308,6 @@ export default function RootLayout() {
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="login" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="signup" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="forgot-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="reset-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="select-institution" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="oauth/callback" />

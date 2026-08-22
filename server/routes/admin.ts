@@ -1,7 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import bcrypt from "bcryptjs";
-import { randomInt } from "node:crypto";
-import { eq, asc, desc, and, gte, lte, sql, isNull } from "drizzle-orm";
+import { eq, asc, desc, and, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   users,
@@ -63,9 +61,6 @@ adminRouter.get("/users", async (req: Request, res: Response): Promise<void> => 
     })
     .from(users)
     .leftJoin(professionals, eq(professionals.userId, users.id))
-    // Contas excluídas pelo próprio usuário (soft-delete) ficam fora da
-    // lista — já estão anonimizadas e não podem ser editadas.
-    .where(isNull(users.deletedAt))
     .orderBy(asc(users.name));
 
   const result = allUsers.map((row) => ({
@@ -176,79 +171,6 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
       role: updated.role,
     },
   });
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/admin/users/:id/reset-password — senha temporária (frente A3)
-//
-// Gera uma senha legível de 12 caracteres (sem 0/O/1/l/I), grava o hash
-// e liga must_change_password: no próximo login o app obriga a troca.
-// A senha em claro é devolvida UMA vez na resposta — não é persistida
-// nem logada.
-// ---------------------------------------------------------------------------
-
-const TEMP_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-const TEMP_PASSWORD_LENGTH = 12;
-
-function generateTemporaryPassword(): string {
-  let out = "";
-  for (let i = 0; i < TEMP_PASSWORD_LENGTH; i++) {
-    out += TEMP_PASSWORD_ALPHABET[randomInt(TEMP_PASSWORD_ALPHABET.length)];
-  }
-  return out;
-}
-
-adminRouter.post("/users/:id/reset-password", async (req: Request, res: Response): Promise<void> => {
-  const userId = Number(req.params.id);
-  if (!Number.isInteger(userId) || userId <= 0) {
-    res.status(400).json({ error: "ID inválido" });
-    return;
-  }
-
-  const db = await getDb();
-  if (!db) {
-    res.status(503).json({ error: "Banco de dados indisponível" });
-    return;
-  }
-
-  const [target] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
-  if (!target || target.deletedAt) {
-    res.status(404).json({ error: "Usuário não encontrado" });
-    return;
-  }
-
-  const temporaryPassword = generateTemporaryPassword();
-  const passwordHash = await bcrypt.hash(temporaryPassword, 12);
-  await db
-    .update(users)
-    .set({ passwordHash, mustChangePassword: true })
-    .where(eq(users.id, userId));
-
-  // audit_trail.institution_id é NOT NULL: usa a instituição (primária)
-  // do usuário alvo; cai na default (1) quando não há vínculo.
-  const links = await db
-    .select({
-      institutionId: professionalInstitutions.institutionId,
-      isPrimary: professionalInstitutions.isPrimary,
-    })
-    .from(professionalInstitutions)
-    .where(eq(professionalInstitutions.userId, userId));
-  const auditInstitutionId = (links.find((l) => l.isPrimary) ?? links[0])?.institutionId ?? 1;
-
-  const caller = (req as any).user;
-  recordAudit({
-    action: "USER_UPDATED",
-    entityType: "USER",
-    entityId: userId,
-    actorUserId: caller.id,
-    actorRole: caller.role,
-    actorName: caller.name ?? undefined,
-    description: `Senha de usuário #${userId} redefinida por ${caller.name ?? "admin"} (senha temporária, troca obrigatória no próximo login)`,
-    metadata: { mustChangePassword: true },
-    institutionId: auditInstitutionId,
-  });
-
-  res.json({ ok: true, temporaryPassword });
 });
 
 // GET /api/admin/audit — query audit trail
