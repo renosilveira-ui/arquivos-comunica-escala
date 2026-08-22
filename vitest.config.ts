@@ -13,7 +13,12 @@ export default defineConfig({
     fileParallelism: false,
     setupFiles: ["./tests/setup.ts"],
     env: {
-      DATABASE_URL: "mysql://root:root@127.0.0.1:3306/escalas_test",
+      // TEST_DATABASE_URL permite rodar suítes em paralelo em bancos
+      // distintos (um por worktree/agente). Nunca lê DATABASE_URL do
+      // shell: o seed apaga dados e .env.local aponta para o staging.
+      DATABASE_URL:
+        process.env.TEST_DATABASE_URL ??
+        "mysql://root:root@127.0.0.1:3306/escalas_test",
       NODE_ENV: "test",
     },
     exclude: [
