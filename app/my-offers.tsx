@@ -1,4 +1,4 @@
-import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView, Alert, Platform } from "react-native";
+import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
@@ -7,6 +7,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, Inbox, Clock, AlertCircle } from "lucide-react-native";
 import { confirmAction } from "@/lib/ui/confirm";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 /**
  * Tela "Minhas ofertas" — consome `swaps.list({ role: "OFFERER" })`
@@ -69,38 +70,27 @@ export default function MyOffersScreen() {
   );
 
   const utils = trpc.useUtils();
+  const feedback = useActionFeedback();
 
   const approveMutation = trpc.swaps.approveByOwner.useMutation({
     onSuccess: () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       utils.swaps.list.invalidate();
       refetch();
+      feedback.success("Candidatura aprovada — o plantão foi transferido.");
     },
     onError: (error) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      const msg = error.message || "Erro ao aprovar a candidatura";
-      if (Platform.OS === "web") {
-        window.alert(msg);
-      } else {
-        Alert.alert("Erro", msg);
-      }
+      feedback.error(error.message || "Não foi possível aprovar a candidatura.");
     },
   });
 
   const cancelMutation = trpc.swaps.cancel.useMutation({
     onSuccess: () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       utils.swaps.list.invalidate();
       refetch();
+      feedback.success("Oferta cancelada.");
     },
     onError: (error) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      const msg = error.message || "Erro ao cancelar a oferta";
-      if (Platform.OS === "web") {
-        window.alert(msg);
-      } else {
-        Alert.alert("Erro", msg);
-      }
+      feedback.error(error.message || "Não foi possível cancelar a oferta.");
     },
   });
 

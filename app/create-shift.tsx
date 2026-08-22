@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, type ReactNode } from "react";
-import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, Platform, Modal, Pressable, Keyboard, Alert, StyleSheet, useWindowDimensions } from "react-native";
+import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, Platform, Modal, Pressable, Keyboard, StyleSheet, useWindowDimensions } from "react-native";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { theme } from "@/lib/theme";
@@ -88,6 +89,7 @@ function addCalendarMonths(month: Date, amount: number): Date {
  * Formulário avançado com 3 profissionais por turno e repetição automática
  */
 export default function CreateShiftScreen() {
+  const feedback = useActionFeedback();
   const { user, isLoading: authLoading } = useAuth();
   const { can, isLoading: permissionsLoading } = usePermissions();
   const router = useRouter();
@@ -183,9 +185,7 @@ export default function CreateShiftScreen() {
       console.error("Erro ao criar escala:", error);
       const message = error.message || "Tente novamente em instantes.";
       setFormError(message);
-      if (Platform.OS !== "web") {
-        Alert.alert("Não foi possível criar", message);
-      }
+      feedback.error(message);
     },
   });
 
@@ -202,11 +202,8 @@ export default function CreateShiftScreen() {
   };
 
   const showFormError = (message: string) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     setFormError(message);
-    if (Platform.OS !== "web") {
-      Alert.alert("Atenção", message);
-    }
+    feedback.error(message);
   };
 
   const handleCreateShift = () => {
