@@ -6,21 +6,10 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatDateBR } from "@/lib/datetime";
-import { shiftStatusMeta } from "@/lib/shift-status";
-
-const statusColor: Record<string, string> = {
-  VAGO: theme.colors.textSecondary,
-  PENDENTE: theme.colors.statusPendente,
-  OCUPADO: theme.colors.statusOcupado,
-};
-
-// Texto dos badges de status: tom [700] da família — a cor base (500)
-// sobre o próprio tint 13% não atinge 4.5:1 em texto de 11px.
-const statusBadgeText: Record<string, string> = {
-  VAGO: theme.colors.textSecondary,
-  PENDENTE: theme.palette.warning[700],
-  OCUPADO: theme.palette.success[700],
-};
+import { Surface } from "@/components/ui/Surface";
+import { SectionHeader } from "@/components/ui/SectionHeader";
+import { SkeletonList } from "@/components/ui/Skeleton";
+import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
 
 export default function DashboardScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -60,13 +49,7 @@ export default function DashboardScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: theme.spacing.screenPadding, paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <Text style={{ fontSize: 24, fontWeight: "700", color: theme.colors.textPrimary, marginBottom: 4 }}>
-          Dashboard
-        </Text>
-        <Text style={{ fontSize: 14, color: theme.colors.textSecondary, marginBottom: 20 }}>
-          Resumo das escalas da semana
-        </Text>
+        <SectionHeader size="page" title="Painel" subtitle="Resumo dos próximos 7 dias" style={{ marginBottom: theme.space[5] }} />
 
         {/* Métricas 2x2 */}
         {shiftsError ? (
@@ -76,98 +59,68 @@ export default function DashboardScreen() {
             onRetry={() => refetchShifts()}
           />
         ) : shiftsLoading ? (
-          <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginTop: 40 }} />
+          <SkeletonList count={2} />
         ) : (
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: theme.spacing.gap }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: theme.space[3] }}>
             {metricCards.map(card => {
               const Icon = card.icon;
               return (
-                <View
-                  key={card.label}
-                  style={{
-                    flex: 1,
-                    minWidth: "45%",
-                    backgroundColor: theme.colors.surface,
-                    borderRadius: theme.borderRadius.card,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border,
-                    padding: theme.spacing.cardPadding,
-                  }}
-                >
+                <Surface key={card.label} level="card" style={{ flex: 1, minWidth: "45%" }}>
                   <Icon size={20} color={card.color} />
-                  <Text style={{ fontSize: 28, fontWeight: "700", color: theme.colors.textPrimary, marginTop: 8 }}>
+                  <Text
+                    style={{
+                      ...theme.text.display,
+                      fontWeight: theme.weight.bold,
+                      color: theme.colors.textPrimary,
+                      marginTop: theme.space[2],
+                      fontVariant: ["tabular-nums"],
+                    }}
+                  >
                     {card.value}
                   </Text>
-                  <Text style={{ fontSize: 12, color: theme.colors.textSecondary, marginTop: 2 }}>
+                  <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
                     {card.label}
                   </Text>
-                </View>
+                </Surface>
               );
             })}
           </View>
         )}
 
-        {/* Turnos da Semana */}
-        <Text style={{ fontSize: 20, fontWeight: "700", color: theme.colors.textPrimary, marginTop: 24, marginBottom: 12 }}>
-          Turnos da Semana
-        </Text>
+        <SectionHeader
+          title="Plantões da semana"
+          subtitle={shiftsLoading ? undefined : `${Math.min(shifts.length, 20)} de ${shifts.length}`}
+          style={{ marginTop: theme.space[6], marginBottom: theme.space[3] }}
+        />
 
         {shiftsError ? null : shiftsLoading ? (
-          <ActivityIndicator color={theme.colors.primary} />
+          <SkeletonList count={3} />
         ) : shifts.length > 0 ? (
-          <View style={{ gap: theme.spacing.gap }}>
+          <View style={{ gap: theme.space[3] }}>
             {shifts.slice(0, 20).map(shift => (
-              <View
-                key={shift.id}
-                style={{
-                  backgroundColor: theme.colors.surface,
-                  borderRadius: theme.borderRadius.card,
-                  borderWidth: 1,
-                  borderColor: theme.colors.border,
-                  padding: theme.spacing.cardPadding,
-                }}
-              >
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <Text style={{ fontSize: 16, fontWeight: "600", color: theme.colors.textPrimary }}>
+              <Surface key={shift.id} level="card">
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: theme.space[2], marginBottom: theme.space[1] }}>
+                  <Text style={{ flex: 1, ...theme.text.titleSm, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }} numberOfLines={1}>
                     {shift.label}
                   </Text>
-                  <View style={{
-                    backgroundColor: `${statusColor[shift.status] ?? theme.colors.textMuted}22`,
-                    borderRadius: 8,
-                    paddingHorizontal: 10,
-                    paddingVertical: 3,
-                  }}>
-                    {/* Texto do badge em tom [700] da família: a cor base
-                        (500) sobre o próprio tint 13% ficava ~3:1 —
-                        ilegível em 11px (WCAG pede 4.5:1). */}
-                    <Text style={{ fontSize: theme.text.caption.fontSize, fontWeight: "700", color: statusBadgeText[shift.status] ?? theme.colors.textSecondary }}>
-                      {shiftStatusMeta(shift.status, { context: "listing" }).label}
-                    </Text>
-                  </View>
+                  <ShiftStatusBadge status={shift.status} context="listing" size="sm" />
                 </View>
-                <Text style={{ fontSize: 13, color: theme.colors.textSecondary }}>
+                <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, fontVariant: ["tabular-nums"] }}>
                   {formatDateBR(shift.startAt)}{" · "}
                   {new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                   {" – "}
                   {new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                 </Text>
-              </View>
+              </Surface>
             ))}
           </View>
         ) : (
-          <View style={{
-            backgroundColor: theme.colors.surface,
-            borderRadius: theme.borderRadius.card,
-            borderWidth: 1,
-            borderColor: theme.colors.border,
-            padding: 24,
-            alignItems: "center",
-          }}>
-            <Calendar size={32} color={theme.colors.textMuted} />
-            <Text style={{ fontSize: 15, color: theme.colors.textSecondary, marginTop: 8, textAlign: "center" }}>
-              Nenhum turno na semana
+          <Surface level="card" tone="muted" style={{ alignItems: "center", gap: theme.space[2], paddingVertical: theme.space[6] }}>
+            <Calendar size={28} color={theme.colors.textMuted} />
+            <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, textAlign: "center" }}>
+              Nenhum plantão nos próximos 7 dias.
             </Text>
-          </View>
+          </Surface>
         )}
       </ScrollView>
     </View>
