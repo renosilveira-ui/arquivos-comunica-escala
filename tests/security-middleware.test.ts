@@ -9,11 +9,16 @@ import {
   createHelmetMiddleware,
 } from "../server/_core/security";
 
-function buildApp(allowedOrigins: string[]) {
+function buildApp(allowedOrigins: string[], trustedHosts: string[] = []) {
   const app = express();
   app.set("trust proxy", 1);
   app.use(createHelmetMiddleware());
-  app.use(createCorsMiddleware({ allowedOrigins: new Set(allowedOrigins) }));
+  app.use(
+    createCorsMiddleware({
+      allowedOrigins: new Set(allowedOrigins),
+      trustedHosts: new Set(trustedHosts),
+    }),
+  );
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.use(express.json({ limit: PAYLOAD_LIMIT }));
   app.post("/echo", (req, res) => res.json({ body: req.body }));
@@ -29,8 +34,13 @@ describe("Frente 2.2 - helmet", () => {
     expect(res.headers["x-dns-prefetch-control"]).toBe("off");
     expect(res.headers["strict-transport-security"]).toBeDefined();
     expect(res.headers["x-frame-options"]).toBe("SAMEORIGIN");
-    // CSP intentionally disabled on the JSON API (belongs on the frontend).
+    // CSP em report-only (fase 1): presente, mas sem bloquear nada.
     expect(res.headers["content-security-policy"]).toBeUndefined();
+    const csp = res.headers["content-security-policy-report-only"];
+    expect(csp).toBeDefined();
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
   });
 
   it("does not leak the X-Powered-By: Express header", async () => {
@@ -58,6 +68,38 @@ describe("Frente 2.2 - CORS hardening", () => {
     const res = await request(app)
       .get("/api/health")
       .set("Origin", "https://evil.example.com");
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(res.headers["access-control-allow-credentials"]).toBeUndefined();
+  });
+
+  it("allows a same-origin request when the Host is a trusted host", async () => {
+    const app = buildApp(["https://app.example.com"], ["api.example.com"]);
+    const res = await request(app)
+      .get("/api/health")
+      .set("Host", "api.example.com")
+      .set("X-Forwarded-Proto", "https")
+      .set("Origin", "https://api.example.com");
+    expect(res.headers["access-control-allow-origin"]).toBe("https://api.example.com");
+    expect(res.headers["access-control-allow-credentials"]).toBe("true");
+  });
+
+  it("treats the host of each allowed origin as trusted by default", async () => {
+    const app = buildApp(["https://app.example.com"]);
+    const res = await request(app)
+      .get("/api/health")
+      .set("Host", "app.example.com")
+      .set("X-Forwarded-Proto", "https")
+      .set("Origin", "https://app.example.com");
+    expect(res.headers["access-control-allow-credentials"]).toBe("true");
+  });
+
+  it("REJECTS a spoofed Host: Origin === Host but the host is not trusted", async () => {
+    const app = buildApp(["https://app.example.com"]);
+    const res = await request(app)
+      .get("/api/health")
+      .set("Host", "evil.example.net")
+      .set("X-Forwarded-Proto", "https")
+      .set("Origin", "https://evil.example.net");
     expect(res.headers["access-control-allow-origin"]).toBeUndefined();
     expect(res.headers["access-control-allow-credentials"]).toBeUndefined();
   });
