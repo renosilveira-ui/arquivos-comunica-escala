@@ -5,9 +5,7 @@ import {
   TouchableOpacity,
   ScrollView,
   TextInput,
-  Alert,
   ActivityIndicator,
-  Platform,
 } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { useAuth } from "@/hooks/use-auth";
@@ -15,19 +13,14 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { ChevronLeft, Send, ArrowRightLeft } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
+import { uiAlert } from "@/lib/ui/alert";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const uiAlert = (title: string, message: string, onOk?: () => void) => {
-  if (Platform.OS === "web") {
-    window.alert(`${title}\n\n${message}`);
-    onOk?.();
-  } else {
-    Alert.alert(title, message, [{ text: "OK", onPress: onOk }]);
-  }
-};
+// uiAlert vem de lib/ui/alert (cross-platform); sucesso vira toast.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,14 +96,14 @@ export default function RequestSwapScreen() {
     isLoading: shiftsLoading,
     error: shiftsError,
   } = trpc.shifts.listByPeriod.useQuery(period, { enabled: !!user?.id });
+  const feedback = useActionFeedback();
   const offerMutation = trpc.swaps.offer.useMutation({
     onSuccess: async () => {
       await utils.swaps.list.invalidate();
-      uiAlert(
-        "Sucesso",
-        type === "SWAP" ? "Troca oferecida com sucesso!" : "Repasse oferecido com sucesso!",
-        () => router.back(),
+      feedback.success(
+        type === "SWAP" ? "Troca oferecida. Você será avisado da resposta." : "Repasse oferecido. Você será avisado da resposta.",
       );
+      router.back();
     },
     onError: (mutationError) => {
       setError(mutationError.message || "Erro ao enviar oferta");

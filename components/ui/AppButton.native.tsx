@@ -25,14 +25,15 @@ const SIZE_MAP: Record<
   Size,
   { height: number; paddingX: number; fontSize: number; fontWeight: TextStyle["fontWeight"] }
 > = {
+  // Alvos de toque: md = 44 (mínimo iOS/Android), sm = 36 + hitSlop 8.
   sm: {
-    height: 32,
+    height: 36,
     paddingX: theme.space[3],
     fontSize: theme.text.body.fontSize,
     fontWeight: theme.weight.medium,
   },
   md: {
-    height: 40,
+    height: 44,
     paddingX: theme.space[4],
     fontSize: theme.text.body.fontSize,
     fontWeight: theme.weight.semibold,
@@ -94,6 +95,9 @@ export function AppButton({
   return (
     <Pressable
       onPress={disabled ? undefined : onPress}
+      hitSlop={size === "sm" ? 8 : undefined}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
       style={({ pressed }) => [
         {
           minHeight: sz.height,

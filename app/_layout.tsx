@@ -24,6 +24,7 @@ import { IntegrationManagerProvider } from "@/components/IntegrationManagerProvi
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NotificationListener } from "@/components/NotificationListener";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
+import { ToastProvider } from "@/components/ui/Toast";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -298,6 +299,7 @@ export default function RootLayout() {
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+          <ToastProvider>
           <TenantStateProvider>
             <IntegrationManagerProvider>
           {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
@@ -315,6 +317,7 @@ export default function RootLayout() {
           <NotificationListener />
             </IntegrationManagerProvider>
           </TenantStateProvider>
+          </ToastProvider>
           </AuthProvider>
         </QueryClientProvider>
       </trpc.Provider>

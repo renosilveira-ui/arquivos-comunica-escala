@@ -20,6 +20,7 @@ import {
 } from "react-native";
 import { ArrowRightLeft } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+import { shiftStatusMeta } from "@/lib/shift-status";
 
 type AgendaShift = {
   id: number;
@@ -87,12 +88,15 @@ function shiftBorderColor(status: string): string {
   return theme.colors.danger; // VAGO chama atenção no detalhe
 }
 
+// Chip de status pela semântica única de lib/shift-status. Texto em tom
+// [700]/[600] sobre o tint: warning[500] sobre warningSoft dava ~1,9:1.
 function statusChip(status: string): { label: string; bg: string; fg: string } | null {
-  if (status === "VAGO") {
-    return { label: "VAGO", bg: theme.colors.dangerSoft, fg: theme.palette.danger[600] };
+  const meta = shiftStatusMeta(status, { context: "actionable" });
+  if (meta.tone === "danger") {
+    return { label: meta.label, bg: theme.colors.dangerSoft, fg: theme.palette.danger[600] };
   }
-  if (status === "PENDENTE") {
-    return { label: "Pendente", bg: theme.colors.warningSoft ?? theme.colors.surfaceAlt, fg: theme.colors.warning };
+  if (meta.tone === "warning") {
+    return { label: meta.label, bg: theme.colors.warningSoft, fg: theme.palette.warning[700] };
   }
   return null;
 }
@@ -221,16 +225,16 @@ export function MonthAgenda({
                   }}
                 >
                   {nOcupado > 0 && (
-                    <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.success }} />
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.success }} />
                   )}
                   {nPendente > 0 && (
-                    <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.warning }} />
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.warning }} />
                   )}
                   {nVago > 0 && (
-                    <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.danger }} />
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.danger }} />
                   )}
                   {hasOffer && (
-                    <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.primary }} />
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.primary }} />
                   )}
                 </View>
               </TouchableOpacity>
@@ -257,7 +261,7 @@ export function MonthAgenda({
           { c: theme.colors.primary, l: "Oferta" },
         ].map((item) => (
           <View key={item.l} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: item.c }} />
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: item.c }} />
             <Text style={{ fontSize: 11, color: theme.colors.textMuted }}>{item.l}</Text>
           </View>
         ))}

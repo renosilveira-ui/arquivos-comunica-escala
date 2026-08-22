@@ -618,6 +618,45 @@ post-piloto.
 
 ---
 
+## 7.6 Feedback de ação (toast) — Onda 1
+
+Toda resposta de mutation passa por `hooks/use-action-feedback.ts`:
+
+| Situação | Chamada | Apresentação |
+|---|---|---|
+| Sucesso | `feedback.success(msg)` | toast verde, 3 s, háptico no nativo |
+| Erro | `feedback.error(msg, { retry? })` | toast vermelho, 5 s, botão "Tentar novamente" |
+| Informação | `feedback.info(msg)` | toast neutro |
+| Ação irreversível | `await feedback.confirmDestructive(título, msg, rótulo)` | diálogo modal (web e nativo) **antes** da ação |
+
+Regras: nunca `Alert.alert` / `window.alert` direto nas telas (no web é
+no-op ou modal bloqueante); feedback registrado **uma** vez (na chamada
+`mutate`, não no hook E na chamada); o toast mora em
+`components/ui/Toast.tsx` e é montado uma vez em `app/_layout.tsx`.
+
+## 7.7 Status de plantão — semântica única
+
+`lib/shift-status.ts` + `components/ui/ShiftStatusBadge.tsx` (texto + ícone;
+cor é reforço, nunca o único canal).
+
+| Status | Rótulo | Tom | Onde |
+|---|---|---|---|
+| VAGO | Vago | **danger** onde o usuário pode agir (vagas, panorama, detalhe) · neutral em listagem geral (dashboard) | `context="actionable"` / `"listing"` |
+| PENDENTE | Pendente | warning | — |
+| OCUPADO | Ocupado | success | — |
+| cancelada | Cancelada | neutral | — |
+
+Texto do chip em tom `[700]` (warning/success) ou `[600]` (danger) sobre o
+tint `*Soft` — o tom `[500]` sobre o tint não passa de ~2:1 em 12px.
+Nunca renderizar o enum cru (`OCUPADO`, `PENDENTE`).
+
+## 7.8 Alvos de toque
+
+Mínimo **44pt** para qualquer controle tocável: `AppButton` md = 44 (default),
+sm = 36 + `hitSlop` 8; navegação de período da Agenda 44×44; chips de filtro e
+de data ≥ 40 + hitSlop. Piso de **12px** para texto de dado (nome, horário);
+11px só em eyebrow/legenda.
+
 ## 8. Dark mode roadmap
 
 **Não no piloto.** Light-first é decisão acertada para ambiente

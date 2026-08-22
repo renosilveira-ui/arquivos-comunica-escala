@@ -6,6 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatDateBR } from "@/lib/datetime";
+import { shiftStatusMeta } from "@/lib/shift-status";
 
 const statusColor: Record<string, string> = {
   VAGO: theme.colors.textSecondary,
@@ -139,8 +140,8 @@ export default function DashboardScreen() {
                     {/* Texto do badge em tom [700] da família: a cor base
                         (500) sobre o próprio tint 13% ficava ~3:1 —
                         ilegível em 11px (WCAG pede 4.5:1). */}
-                    <Text style={{ fontSize: 11, fontWeight: "700", color: statusBadgeText[shift.status] ?? theme.colors.textSecondary }}>
-                      {shift.status}
+                    <Text style={{ fontSize: theme.text.caption.fontSize, fontWeight: "700", color: statusBadgeText[shift.status] ?? theme.colors.textSecondary }}>
+                      {shiftStatusMeta(shift.status, { context: "listing" }).label}
                     </Text>
                   </View>
                 </View>

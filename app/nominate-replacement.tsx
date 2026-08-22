@@ -3,7 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState, useMemo } from "react";
 import { UserPlus, Search, Check } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
-import { uiAlert } from "@/lib/ui/alert";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
@@ -31,17 +31,14 @@ export default function NominateReplacementScreen() {
       { enabled: !!user },
     );
 
+  const feedback = useActionFeedback();
   const nominateMutation = trpc.confirmations.nominateReplacement.useMutation({
     onSuccess: (data) => {
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      uiAlert(
-        "Substituto indicado",
-        `${data.replacementName} foi notificado e tem 30 minutos para aceitar.`,
-        () => router.replace("/(tabs)/agenda" as any),
-      );
+      feedback.success(`${data.replacementName} foi notificado e tem 30 minutos para aceitar.`);
+      router.replace("/(tabs)/agenda" as any);
     },
     onError: (err) => {
-      uiAlert("Erro", err.message);
+      feedback.error(err.message);
     },
   });
 
