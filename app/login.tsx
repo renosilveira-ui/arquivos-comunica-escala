@@ -81,7 +81,9 @@ export default function LoginScreen() {
           <View style={{ alignItems: "center", gap: theme.space[2] }}>
             <Image
               source={require("@/assets/images/logo.png")}
-              style={{ width: 240, height: 100 }}
+              // Wordmark 1435×865 (≈1.66:1) com fundo transparente — sem caixa
+              // branca sobre o gradiente.
+              style={{ width: 256, height: 154 }}
               resizeMode="contain"
               accessibilityLabel="Escala+"
             />
