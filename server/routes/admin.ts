@@ -122,30 +122,36 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
     return;
   }
 
-  await db.update(users).set(updates).where(eq(users.id, userId));
+  // Vários writes dependentes → transação: papel, especialidade e vínculos
+  // mudam juntos ou não mudam.
+  await db.transaction(async (tx) => {
+    await tx.update(users).set(updates).where(eq(users.id, userId));
 
-  // Especialidade (serviço) vive no professional
-  if (specialty !== undefined) {
-    await db
-      .update(professionals)
-      .set({ specialty: specialty && specialty.trim() ? specialty.trim() : null })
-      .where(eq(professionals.userId, userId));
-  }
-
-  // If role changed, also update professional's userRole
-  if (role) {
-    const [pro] = await db
-      .select()
-      .from(professionals)
-      .where(eq(professionals.userId, userId));
-
-    if (pro) {
-      await db
+    // Especialidade (serviço) vive no professional
+    if (specialty !== undefined) {
+      await tx
         .update(professionals)
-        .set({ userRole: mapRoleToProRole(role as UserRole) })
-        .where(eq(professionals.id, pro.id));
+        .set({ specialty: specialty && specialty.trim() ? specialty.trim() : null })
+        .where(eq(professionals.userId, userId));
     }
-  }
+
+    if (role) {
+      const proRole = mapRoleToProRole(role as UserRole);
+      await tx
+        .update(professionals)
+        .set({ userRole: proRole })
+        .where(eq(professionals.userId, userId));
+
+      // A autorização por tenant (policy.ts, month-guards, editor, swaps)
+      // lê SOMENTE professional_institutions.role_in_institution. Sem esta
+      // linha, rebaixar um gestor não revogava nada e promover um médico
+      // não concedia nada (auditoria 22/08, achado A1).
+      await tx
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: proRole })
+        .where(eq(professionalInstitutions.userId, userId));
+    }
+  });
 
   // Return updated user
   const [updated] = await db.select().from(users).where(eq(users.id, userId));
