@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { createHash, randomBytes } from "node:crypto";
+import { and, eq, gt } from "drizzle-orm";
 import { getDb, getUserByEmail } from "../db";
 import {
   users,
@@ -9,11 +10,16 @@ import {
   professionalInstitutions,
   professionalAccess,
   hospitals,
+  passwordResets,
+  pushTokens,
+  shiftAssignmentsV2,
+  shiftInstances,
   type User,
 } from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
 import { COOKIE_NAME } from "../../shared/const.js";
 import { recordAudit } from "../audit-trail";
+import { mailer } from "../mailer";
 import {
   resolveClearCookieOptions,
   resolveSetCookieOptions,
@@ -160,7 +166,9 @@ authRouter.post("/login", async (req: Request, res: Response): Promise<void> => 
 
   const user = await getUserByEmail(email.toLowerCase().trim());
 
-  if (!user || !user.passwordHash) {
+  // Conta excluída (soft-delete) responde igual a credencial inválida —
+  // não revela que o e-mail já existiu.
+  if (!user || !user.passwordHash || user.deletedAt) {
     res.status(401).json({ error: "Credenciais inválidas" });
     return;
   }
@@ -192,6 +200,7 @@ authRouter.post("/login", async (req: Request, res: Response): Promise<void> => 
       email: user.email,
       role: user.role,
       approvalStatus: user.approvalStatus,
+      mustChangePassword: user.mustChangePassword,
     },
     token,
   });
@@ -267,7 +276,12 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
   }
 
   const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
-  await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
+  // Troca voluntária (ou forçada após senha temporária do admin) limpa
+  // a flag must_change_password.
+  await db
+    .update(users)
+    .set({ passwordHash: newHash, mustChangePassword: false })
+    .where(eq(users.id, user.id));
 
   // Audit trail — útil pra detectar abuso (alguém trocou senha alheia).
   await recordAudit({
@@ -281,6 +295,335 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
     institutionId: 1,
   });
 
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Esqueci minha senha (frente A3)
+//
+// POST /forgot-password {email} → sempre 200 (sem enumeração de contas).
+// Se o e-mail existir, estiver ativo (não excluído) e tiver senha, gera
+// token aleatório (32 bytes), grava só o sha256 com TTL de 30 min e envia
+// o link por e-mail (server/mailer.ts — loga no console sem RESEND_API_KEY).
+//
+// POST /reset-password {token, newPassword} → valida (existe, não usado,
+// não expirado), grava o novo hash e marca used_at.
+//
+// Sessões existentes: o cookie é um JWT sem estado (1 ano) e não há lista
+// de revogação — outras sessões do usuário continuam válidas após o reset
+// (mesma limitação já documentada em change-password).
+// ---------------------------------------------------------------------------
+
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
+const FORGOT_RATE_LIMIT_MAX = 3;
+const FORGOT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/** Rate-limit em memória: 3 pedidos por e-mail por hora. */
+const forgotAttemptsByEmail = new Map<string, number[]>();
+
+function isForgotRateLimited(email: string, now = Date.now()): boolean {
+  const recent = (forgotAttemptsByEmail.get(email) ?? []).filter(
+    (ts) => now - ts < FORGOT_RATE_LIMIT_WINDOW_MS,
+  );
+  if (recent.length >= FORGOT_RATE_LIMIT_MAX) {
+    forgotAttemptsByEmail.set(email, recent);
+    return true;
+  }
+  recent.push(now);
+  forgotAttemptsByEmail.set(email, recent);
+  // Poda oportunista para o Map não crescer indefinidamente.
+  if (forgotAttemptsByEmail.size > 5000) {
+    for (const [key, stamps] of forgotAttemptsByEmail) {
+      if (!stamps.some((ts) => now - ts < FORGOT_RATE_LIMIT_WINDOW_MS)) {
+        forgotAttemptsByEmail.delete(key);
+      }
+    }
+  }
+  return false;
+}
+
+function hashResetToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * audit_trail.institution_id é NOT NULL: usa a instituição (primária)
+ * do usuário; cai na default quando a conta ainda não tem vínculo.
+ */
+async function resolveAuditInstitutionId(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return DEFAULT_INSTITUTION.id;
+  const links = await db
+    .select({
+      institutionId: professionalInstitutions.institutionId,
+      isPrimary: professionalInstitutions.isPrimary,
+    })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, userId));
+  const primary = links.find((l) => l.isPrimary) ?? links[0];
+  return primary?.institutionId ?? DEFAULT_INSTITUTION.id;
+}
+
+/** Base pública do app para montar o link de redefinição. */
+function resolvePublicBaseUrl(req: Request): string {
+  const configured = (process.env.APP_PUBLIC_URL ?? "").trim();
+  if (configured) return configured.replace(/\/$/, "");
+  const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
+  const proto = forwardedProto || req.protocol || "http";
+  const host = req.get("host") ?? "localhost";
+  return `${proto}://${host}`;
+}
+
+authRouter.post("/forgot-password", async (req: Request, res: Response): Promise<void> => {
+  const { email } = req.body as { email?: unknown };
+  if (typeof email !== "string" || !email.trim()) {
+    res.status(400).json({ error: "email é obrigatório" });
+    return;
+  }
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Resposta neutra em TODOS os caminhos abaixo (inclusive rate-limit):
+  // quem pede não descobre se a conta existe.
+  const neutral = { ok: true };
+
+  if (isForgotRateLimited(normalizedEmail)) {
+    res.json(neutral);
+    return;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    res.json(neutral);
+    return;
+  }
+
+  const user = await getUserByEmail(normalizedEmail);
+  if (!user || user.deletedAt || !user.passwordHash || !user.email) {
+    res.json(neutral);
+    return;
+  }
+
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+  await db.insert(passwordResets).values({
+    userId: user.id,
+    tokenHash: hashResetToken(token),
+    expiresAt,
+  });
+
+  const link = `${resolvePublicBaseUrl(req)}/reset-password?token=${token}`;
+  const firstName = resolveProfessionalName(user).split(" ")[0];
+  await mailer.sendMail({
+    to: user.email,
+    subject: "Escala+ — redefinir sua senha",
+    text: [
+      `Olá, ${firstName}.`,
+      "",
+      "Recebemos um pedido para redefinir a senha da sua conta no Escala+.",
+      "Abra o link abaixo para escolher uma nova senha (válido por 30 minutos):",
+      "",
+      link,
+      "",
+      "Se você não pediu isso, ignore este e-mail — sua senha continua a mesma.",
+    ].join("\n"),
+  });
+
+  recordAudit({
+    actorUserId: user.id,
+    actorRole: user.role ?? "doctor",
+    actorName: user.name ?? undefined,
+    action: "USER_UPDATED",
+    entityType: "USER",
+    entityId: user.id,
+    description: "Pedido de redefinição de senha (esqueci minha senha)",
+    metadata: { expiresAt: expiresAt.toISOString() },
+    institutionId: await resolveAuditInstitutionId(user.id),
+  });
+
+  res.json(neutral);
+});
+
+authRouter.post("/reset-password", async (req: Request, res: Response): Promise<void> => {
+  const { token, newPassword } = req.body as { token?: unknown; newPassword?: unknown };
+
+  if (typeof token !== "string" || !token.trim() || typeof newPassword !== "string" || !newPassword) {
+    res.status(400).json({ error: "token e newPassword são obrigatórios" });
+    return;
+  }
+  if (newPassword.length < 8) {
+    res.status(400).json({ error: "Nova senha precisa ter ao menos 8 caracteres" });
+    return;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponível" });
+    return;
+  }
+
+  const INVALID = "Link inválido ou expirado. Peça uma nova redefinição de senha.";
+
+  const [reset] = await db
+    .select()
+    .from(passwordResets)
+    .where(eq(passwordResets.tokenHash, hashResetToken(token.trim())))
+    .limit(1);
+
+  if (!reset || reset.usedAt || reset.expiresAt.getTime() <= Date.now()) {
+    res.status(400).json({ error: INVALID });
+    return;
+  }
+
+  const [user] = await db.select().from(users).where(eq(users.id, reset.userId)).limit(1);
+  if (!user || user.deletedAt) {
+    res.status(400).json({ error: INVALID });
+    return;
+  }
+
+  const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+  await db
+    .update(users)
+    .set({ passwordHash: newHash, mustChangePassword: false })
+    .where(eq(users.id, user.id));
+  await db
+    .update(passwordResets)
+    .set({ usedAt: new Date() })
+    .where(eq(passwordResets.id, reset.id));
+
+  recordAudit({
+    actorUserId: user.id,
+    actorRole: user.role ?? "doctor",
+    actorName: user.name ?? undefined,
+    action: "USER_UPDATED",
+    entityType: "USER",
+    entityId: user.id,
+    description: "Senha redefinida via link de 'esqueci minha senha'",
+    institutionId: await resolveAuditInstitutionId(user.id),
+  });
+
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Exclusão de conta pelo próprio usuário (Apple 5.1.1(v))
+//
+// DELETE /me {password} → exige a senha correta. Bloqueia (409) se houver
+// plantão futuro alocado — o gestor precisa realocar antes. Caso contrário
+// faz soft-delete: anonimiza nome/e-mail, marca deleted_at, desativa os
+// vínculos institucionais, apaga push tokens e encerra a sessão.
+//
+// A linha de users permanece (FKs em audit_trail, shift_assignments,
+// swap_requests etc.) — apenas anonimizada.
+// ---------------------------------------------------------------------------
+
+const FUTURE_SHIFTS_MESSAGE =
+  "Você tem plantões futuros alocados — peça ao gestor para realocá-los antes de excluir a conta.";
+
+authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
+  let authUser: User;
+  try {
+    authUser = await sdk.authenticateRequest(req);
+  } catch {
+    res.status(401).json({ error: "Não autenticado" });
+    return;
+  }
+
+  const { password } = req.body as { password?: unknown };
+  if (typeof password !== "string" || !password) {
+    res.status(400).json({ error: "password é obrigatório" });
+    return;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    res.status(503).json({ error: "Banco de dados indisponível" });
+    return;
+  }
+
+  const [user] = await db.select().from(users).where(eq(users.id, authUser.id)).limit(1);
+  if (!user || user.deletedAt) {
+    res.status(401).json({ error: "Não autenticado" });
+    return;
+  }
+  if (!user.passwordHash) {
+    res.status(400).json({ error: "Conta sem senha definida" });
+    return;
+  }
+
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) {
+    res.status(401).json({ error: "Senha incorreta" });
+    return;
+  }
+
+  // Plantões futuros: qualquer alocação ativa em shift_instances com
+  // start_at no futuro (instante UTC no banco; comparação por instante).
+  const professionalRows = await db
+    .select({ id: professionals.id })
+    .from(professionals)
+    .where(eq(professionals.userId, user.id));
+  const professionalIds = professionalRows.map((p) => p.id);
+
+  if (professionalIds.length > 0) {
+    for (const professionalId of professionalIds) {
+      const [future] = await db
+        .select({ id: shiftAssignmentsV2.id })
+        .from(shiftAssignmentsV2)
+        .innerJoin(shiftInstances, eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId))
+        .where(
+          and(
+            eq(shiftAssignmentsV2.professionalId, professionalId),
+            eq(shiftAssignmentsV2.isActive, true),
+            gt(shiftInstances.startAt, new Date()),
+          ),
+        )
+        .limit(1);
+      if (future) {
+        res.status(409).json({ error: FUTURE_SHIFTS_MESSAGE });
+        return;
+      }
+    }
+  }
+
+  const originalEmail = user.email;
+  const now = new Date();
+  // Resolver ANTES de desativar os vínculos (a auditoria precisa da
+  // instituição do usuário).
+  const auditInstitutionId = await resolveAuditInstitutionId(user.id);
+
+  await db
+    .update(users)
+    .set({
+      deletedAt: now,
+      name: "Conta removida",
+      email: `removido+${user.id}@anon.local`,
+      mustChangePassword: false,
+    })
+    .where(eq(users.id, user.id));
+
+  await db
+    .update(professionalInstitutions)
+    .set({ active: false })
+    .where(eq(professionalInstitutions.userId, user.id));
+
+  await db.delete(pushTokens).where(eq(pushTokens.userId, user.id));
+
+  // Tokens de reset pendentes deixam de fazer sentido.
+  await db.delete(passwordResets).where(eq(passwordResets.userId, user.id));
+
+  recordAudit({
+    actorUserId: user.id,
+    actorRole: user.role ?? "doctor",
+    actorName: user.name ?? undefined,
+    action: "USER_UPDATED",
+    entityType: "USER",
+    entityId: user.id,
+    description: "Conta excluída pelo próprio usuário (soft-delete, dados anonimizados)",
+    metadata: { emailHash: originalEmail ? hashResetToken(originalEmail) : null },
+    institutionId: auditInstitutionId,
+  });
+
+  res.clearCookie(COOKIE_NAME, resolveClearCookieOptions({ req }));
   res.json({ ok: true });
 });
 
@@ -322,6 +665,7 @@ authRouter.get("/me", async (req: Request, res: Response): Promise<void> => {
         email: user.email,
         role: user.role,
         approvalStatus: user.approvalStatus,
+        mustChangePassword: user.mustChangePassword,
       },
     });
   } catch {
