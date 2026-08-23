@@ -1015,6 +1015,9 @@ authRouter.post("/signup", async (req: Request, res: Response): Promise<void> =>
   }
 
   recordAudit({
+    // institution_id é NOT NULL: sem ele o auto-cadastro nunca entrava na
+    // trilha de auditoria (INSERT falhava em silêncio).
+    institutionId: institution.id,
     action: "USER_CREATED",
     entityType: "USER",
     entityId: newUserId,
