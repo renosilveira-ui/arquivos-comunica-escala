@@ -83,6 +83,34 @@ services:
       - key: COMUNICA_TENANT_MAP
         sync: false
 
+      # ---- SSO Escala → Comunica+ (RS256 + JWKS) ----
+      # Sem estes, uma instância nova do Blueprint sobe com o SSO apontando
+      # para localhost e sem chave (o botão "Abrir Comunica+" falha).
+      - key: SSO_TARGET_URL
+        value: https://comunicamais-staging.onrender.com
+      - key: SSO_ISSUER
+        value: escalas-app
+      - key: SSO_AUDIENCE
+        value: comunicamais
+      - key: SSO_KID
+        value: escala-sso-staging-2026
+      # {"<institutionId>":"<uuid da organização no Comunica+>"}
+      - key: SSO_ORG_MAP
+        sync: false
+      # Chave privada RSA (JWK JSON). Em dev é gerada em .sso-keystore.json.
+      - key: SSO_PRIVATE_KEY_JWK
+        sync: false
+
+      # ---- E-mail transacional ("Esqueci minha senha") ----
+      # Sem RESEND_API_KEY o servidor só LOGA o link: a tela diz que o
+      # e-mail foi enviado, mas ninguém recebe.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        value: "Escala+ <no-reply@escalas-staging.onrender.com>"
+      - key: APP_PUBLIC_URL
+        value: https://escalas-staging.onrender.com
+
       # ---- HospitalAlert integration (optional) ----
       - key: HOSPITAL_ALERT_URL
         value: https://hospital-alert.example.com

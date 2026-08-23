@@ -292,7 +292,7 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
     entityType: "USER",
     entityId: user.id,
     description: "Senha alterada pelo próprio usuário",
-    institutionId: 1,
+    institutionId: await primaryInstitutionOf(user.id),
   });
 
   res.json({ ok: true });
@@ -684,6 +684,46 @@ authRouter.get("/me", async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+/**
+ * Instituição em que o admin cadastra o usuário: `institutionId` do body
+ * (precisa existir) ou o tenant ativo do admin (x-tenant-id validado
+ * contra os vínculos dele), ou o vínculo primário do admin. Sem nenhum → 400.
+ */
+class RegisterInstitutionError extends Error {}
+async function resolveRegisterInstitution(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  caller: User,
+  req: Request,
+): Promise<number> {
+  const fromBody = Number((req.body as { institutionId?: unknown })?.institutionId);
+  if (Number.isFinite(fromBody) && fromBody > 0) {
+    const [inst] = await db.select({ id: institutions.id }).from(institutions).where(eq(institutions.id, fromBody)).limit(1);
+    if (!inst) throw new RegisterInstitutionError("Instituição informada não existe");
+    return inst.id;
+  }
+  const header = req.headers["x-tenant-id"];
+  const fromHeader = typeof header === "string" ? Number(header) : NaN;
+  const links = await db
+    .select({ institutionId: professionalInstitutions.institutionId, isPrimary: professionalInstitutions.isPrimary })
+    .from(professionalInstitutions)
+    .where(and(eq(professionalInstitutions.userId, caller.id), eq(professionalInstitutions.active, true)));
+  if (Number.isFinite(fromHeader) && links.some((l) => l.institutionId === fromHeader)) return fromHeader;
+  const primary = links.find((l) => l.isPrimary) ?? links[0];
+  if (primary) return primary.institutionId;
+  throw new RegisterInstitutionError("Informe a instituição do novo usuário (institutionId): o admin não tem vínculo ativo");
+}
+
+/** Instituição primária (ou única ativa) do usuário, para a trilha de auditoria. */
+async function primaryInstitutionOf(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return DEFAULT_INSTITUTION.id;
+  const links = await db
+    .select({ institutionId: professionalInstitutions.institutionId, isPrimary: professionalInstitutions.isPrimary })
+    .from(professionalInstitutions)
+    .where(and(eq(professionalInstitutions.userId, userId), eq(professionalInstitutions.active, true)));
+  return (links.find((l) => l.isPrimary) ?? links[0])?.institutionId ?? DEFAULT_INSTITUTION.id;
+}
+
 // POST /api/auth/register — somente admin
 authRouter.post("/register", async (req: Request, res: Response): Promise<void> => {
   let caller;
@@ -746,6 +786,16 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
     res.status(503).json({ error: "Banco de dados indisponível" });
     return;
   }
+  let targetInstitutionId: number;
+  try {
+    targetInstitutionId = await resolveRegisterInstitution(db, caller, req);
+  } catch (err) {
+    if (err instanceof RegisterInstitutionError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 
   const [result] = await db.insert(users).values({
     name,
@@ -760,25 +810,10 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
   // Auto-create professional record + tenant link + hospital access.
   let newProfessionalId: number | null = null;
   try {
-    // 1. Ensure institution exists
-    await db
-      .insert(institutions)
-      .values({
-        id: DEFAULT_INSTITUTION.id,
-        name: DEFAULT_INSTITUTION.name,
-        cnpj: DEFAULT_INSTITUTION.cnpj,
-        legalName: DEFAULT_INSTITUTION.legalName,
-        tradeName: DEFAULT_INSTITUTION.tradeName,
-      })
-      .onDuplicateKeyUpdate({
-        set: {
-          name: DEFAULT_INSTITUTION.name,
-          cnpj: DEFAULT_INSTITUTION.cnpj,
-          legalName: DEFAULT_INSTITUTION.legalName,
-          tradeName: DEFAULT_INSTITUTION.tradeName,
-        },
-      });
-
+    // 1. Instituição-alvo já resolvida (instituição do admin / body).
+    //    NUNCA cria/sobrescreve instituição aqui — o upsert antigo renomeava
+    //    "Hospital das Clínicas" e zerava o CNPJ a cada cadastro
+    //    (auditoria 22/08 parte 2).
     // 2. Create professional record
     const [proInsert] = await db.insert(professionals).values({
       userId: newUserId,
@@ -795,7 +830,7 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
         .values({
           professionalId: newProfessionalId,
           userId: newUserId,
-          institutionId: DEFAULT_INSTITUTION.id,
+          institutionId: targetInstitutionId,
           roleInInstitution: mapRoleToProRole(normalizedRole),
           isPrimary: true,
           active: true,
@@ -812,13 +847,13 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
       const institutionHospitals = await db
         .select({ id: hospitals.id })
         .from(hospitals)
-        .where(eq(hospitals.institutionId, DEFAULT_INSTITUTION.id));
+        .where(eq(hospitals.institutionId, targetInstitutionId));
 
       for (const hospital of institutionHospitals) {
         await db
           .insert(professionalAccess)
           .values({
-            institutionId: DEFAULT_INSTITUTION.id,
+            institutionId: targetInstitutionId,
             professionalId: newProfessionalId,
             hospitalId: hospital.id,
             sectorId: null,
@@ -834,6 +869,7 @@ authRouter.post("/register", async (req: Request, res: Response): Promise<void> 
   const newUser = { id: newUserId, name, email: normalizedEmail, role: normalizedRole };
 
   recordAudit({
+    institutionId: targetInstitutionId,
     action: "USER_CREATED",
     entityType: "USER",
     entityId: newUserId,

@@ -23,6 +23,19 @@ function mapRoleToProRole(role: UserRole): "USER" | "GESTOR_MEDICO" | "GESTOR_PL
   return "USER";
 }
 
+/** Instituição do usuário-alvo (primária) — ou a do admin — para a trilha de auditoria (institution_id é NOT NULL). */
+async function auditInstitutionFor(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, targetUserId: number, callerUserId: number): Promise<number> {
+  for (const uid of [targetUserId, callerUserId]) {
+    const links = await db
+      .select({ institutionId: professionalInstitutions.institutionId, isPrimary: professionalInstitutions.isPrimary })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, uid));
+    const pick = (links.find((l) => l.isPrimary) ?? links[0])?.institutionId;
+    if (pick) return pick;
+  }
+  return 1;
+}
+
 export const adminRouter = Router();
 
 /** Middleware: require authenticated admin */
@@ -162,6 +175,7 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
 
   const caller = (req as any).user;
   recordAudit({
+    institutionId: await auditInstitutionFor(db, userId, caller.id),
     action: role ? "USER_ROLE_CHANGED" : "USER_UPDATED",
     entityType: "USER",
     entityId: userId,
@@ -415,6 +429,7 @@ adminRouter.post("/pending-signups/:id/approve", async (req: Request, res: Respo
 
   const caller = (req as any).user;
   recordAudit({
+    institutionId: await auditInstitutionFor(db, userId, caller.id),
     action: "USER_UPDATED",
     entityType: "USER",
     entityId: userId,
@@ -452,6 +467,7 @@ adminRouter.post("/pending-signups/:id/reject", async (req: Request, res: Respon
   const caller = (req as any).user;
   // Auditar ANTES de remover (entityId preservado no trail).
   recordAudit({
+    institutionId: await auditInstitutionFor(db, userId, caller.id),
     action: "USER_UPDATED",
     entityType: "USER",
     entityId: userId,
