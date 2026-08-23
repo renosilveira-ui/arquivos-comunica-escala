@@ -149,9 +149,13 @@ export default function ProfileScreen() {
   );
   const showManagement = !isDesktopWeb && managementLinks.length > 0;
 
-  // Fila de aprovação do gestor — mesma procedure da tela Solicitações
-  // (papel e jurisdição aplicados no servidor; USER receberia FORBIDDEN,
-  // por isso `enabled` só para gestor).
+  // Fila de aprovação do gestor — mesma procedure da tela Solicitações.
+  // `listPending` já aplica papel e jurisdição no servidor (gestor de hospital
+  // vê só o próprio manager_scope). `enabled: isManager` é obrigatório: para
+  // USER a query responde FORBIDDEN e viraria toast de erro. No desktop web o
+  // grupo Gestão não existe (vai para a sidebar), então nem consulta. NÃO usar
+  // filters.summaryCounts.pendingByHospital — aquele é filtrado por "hoje" e
+  // não representa a fila inteira.
   const { data: pendingAssignments } = trpc.shiftAssignments.listPending.useQuery(
     {},
     { enabled: !!user?.id && isManager && !isDesktopWeb, staleTime: 60_000 },
@@ -463,10 +467,16 @@ export default function ProfileScreen() {
                     subtitle={link.subtitle}
                     Icon={link.Icon}
                     tone={link.tone}
-                    value={link.key === "pending" && pendingCount > 0 ? String(pendingCount) : undefined}
                     divided={i > 0}
+                    // Só a fila de aprovação tem contagem, e só quando há fila.
+                    value={link.key === "pending" && pendingCount > 0 ? String(pendingCount) : undefined}
+                    valueTone="count"
                     onPress={go(link.href)}
-                    accessibilityLabel={`Abrir ${link.title}`}
+                    accessibilityLabel={
+                      link.key === "pending" && pendingCount > 0
+                        ? `Abrir Solicitações, ${pendingCount} aguardando aprovação`
+                        : `Abrir ${link.title}`
+                    }
                   />
                 ))}
               </Surface>
@@ -547,6 +557,7 @@ export default function ProfileScreen() {
                 subtitle="Trocar a instituição em uso neste aparelho"
                 Icon={Building2}
                 value="Alterar"
+                valueTone="action"
                 divided={false}
                 onPress={handleSwitchInstitution}
                 accessibilityLabel="Trocar instituição ativa"

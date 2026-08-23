@@ -652,7 +652,11 @@ título, subtítulo e um terminador (chevron, `value` curto, `toggle` ou
 `trailing` livre). Não desenha superfície própria: vive dentro de
 `<Surface padded={false}>` e desenha só o divisor de topo (`divided`).
 Tons `default | brand | warning | success | danger`. Altura mínima 56 (a
-lista é operada com uma mão). Substitui os blocos "TouchableOpacity + View +
+lista é operada com uma mão). O `value` tem três tons (`valueTone`):
+`muted` (padrão, informação — "2 abertas"), `action` (primary — o valor É a
+ação, "Alterar") e `count` (pílula âmbar preenchida, mono — fila que exige
+ação; só renderizar quando > 0, um "0" é ruído, e o `accessibilityLabel`
+deve dizer a contagem: "Abrir Solicitações, 7 aguardando aprovação"). Substitui os blocos "TouchableOpacity + View +
 2 Text + Abrir" do Perfil; serve Solicitações, Vagas e Admin.
 
 O Perfil (23/08) é a referência de uso: quatro grupos — Gestão (com a

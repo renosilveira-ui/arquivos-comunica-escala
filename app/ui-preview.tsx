@@ -72,7 +72,9 @@ function Gallery() {
           <SectionHeader title="ListRow" subtitle="Linha de lista dentro de Surface padded={false}: ícone · título · subtítulo · terminador (chevron, valor, switch)" />
           <Surface padded={false}>
             <ListRow title="Painel" subtitle="Próximos 7 dias" Icon={LayoutDashboard} tone="brand" divided={false} onPress={() => feedback.info("Painel")} />
-            <ListRow title="Solicitações" subtitle="Aguardando sua aprovação" Icon={Inbox} tone="warning" value="7" onPress={() => feedback.info("Solicitações")} />
+            <ListRow title="Solicitações" subtitle="Aguardando sua aprovação" Icon={Inbox} tone="warning" value="7" valueTone="count" onPress={() => feedback.info("Solicitações")} />
+            <ListRow title="Instituição ativa" subtitle="Hospital São Carlos" Icon={LayoutDashboard} value="Alterar" valueTone="action" onPress={() => feedback.info("Instituição")} />
+            <ListRow title="Minhas ofertas" Icon={Inbox} value="2 abertas" onPress={() => feedback.info("Ofertas")} />
             <ListRow title="Alterar senha" Icon={KeyRound} onPress={() => feedback.info("Senha")} />
             <ListRow title="Lembrete de plantão" subtitle="30 minutos antes" Icon={KeyRound} toggle={{ value: true, onValueChange: () => feedback.info("toggle") }} />
             <ListRow title="Sair da conta" Icon={LogOut} tone="danger" onPress={() => feedback.info("Sair")} />

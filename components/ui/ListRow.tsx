@@ -23,6 +23,12 @@ export interface ListRowProps {
   tone?: ListRowTone;
   /** Texto curto à direita (contagem, "Alterar", "2 abertas"). */
   value?: string;
+  /**
+   * Cor do `value`. "muted" (padrão) para informação; "action" (primary) quando
+   * o valor É a ação ("Alterar"); "count" desenha pílula âmbar preenchida —
+   * fila que exige ação (só renderizar quando > 0: um "0" é ruído).
+   */
+  valueTone?: "muted" | "action" | "count";
   /** Switch à direita. Quando definido, a linha não mostra chevron. */
   toggle?: { value: boolean; onValueChange: (v: boolean) => void; accessibilityLabel?: string };
   /** Substitui o terminador padrão (badge, botão). */
@@ -55,6 +61,7 @@ export function ListRow({
   Icon,
   tone = "default",
   value,
+  valueTone = "muted",
   toggle,
   trailing,
   divided = true,
@@ -101,9 +108,39 @@ export function ListRow({
       ) : null}
 
       {!trailing && !toggle && value ? (
-        <Text style={{ ...theme.text.caption, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}>
-          {value}
-        </Text>
+        valueTone === "count" ? (
+          <View
+            style={{
+              minWidth: 24,
+              paddingHorizontal: theme.space[2],
+              paddingVertical: 2,
+              borderRadius: theme.radius.full,
+              backgroundColor: theme.palette.warning[700],
+              alignItems: "center",
+            }}
+          >
+            <Text
+              style={{
+                ...theme.text.caption,
+                fontFamily: theme.fontFamily.mono,
+                fontWeight: theme.weight.bold,
+                color: theme.colors.surface,
+              }}
+            >
+              {value}
+            </Text>
+          </View>
+        ) : (
+          <Text
+            style={{
+              ...theme.text.caption,
+              fontWeight: theme.weight.semibold,
+              color: valueTone === "action" ? theme.colors.primary : theme.colors.textSecondary,
+            }}
+          >
+            {value}
+          </Text>
+        )
       ) : null}
 
       {!trailing && !toggle && onPress ? <ChevronRight size={16} color={theme.colors.textDisabled} /> : null}
