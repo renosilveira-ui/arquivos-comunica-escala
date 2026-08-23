@@ -402,7 +402,7 @@ export default function ProfileScreen() {
                     ))}
                   </View>
                 </View>
-              ) : monthQuery.isError ? (
+              ) : monthQuery.isError && !monthQuery.data ? (
                 <View
                   style={{
                     backgroundColor: theme.colors.warningSoft,

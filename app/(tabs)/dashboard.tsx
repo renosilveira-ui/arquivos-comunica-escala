@@ -61,7 +61,7 @@ export default function DashboardScreen() {
         <SectionHeader size="page" title="Painel" subtitle="Resumo dos próximos 7 dias" style={{ marginBottom: theme.space[5] }} />
 
         {/* Métricas 2x2 */}
-        {shiftsError ? (
+        {shiftsError && !shiftsData ? (
           // Erro não pode virar métricas zeradas "reais" no dashboard.
           <QueryErrorState
             title="Não foi possível carregar o resumo da semana"
@@ -102,7 +102,7 @@ export default function DashboardScreen() {
           style={{ marginTop: theme.space[6], marginBottom: theme.space[3] }}
         />
 
-        {shiftsError ? null : shiftsLoading ? (
+        {shiftsError && !shiftsData ? null : shiftsLoading ? (
           <SkeletonList count={3} />
         ) : shifts.length > 0 ? (
           <View style={{ gap: theme.space[3] }}>

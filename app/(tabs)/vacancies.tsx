@@ -363,7 +363,7 @@ export default function VacanciesScreen() {
               );
             })}
           </View>
-        ) : vacanciesError ? (
+        ) : vacanciesError && !vacanciesData ? (
           // Erro não pode afirmar "todos os plantões atribuídos".
           <QueryErrorState
             title="Não foi possível carregar os plantões em aberto"

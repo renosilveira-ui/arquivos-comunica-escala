@@ -42,6 +42,17 @@ export async function getDb() {
         // "local") — certo no Render (UTC), 3h errado em qualquer máquina
         // em -03:00 (testes locais, scripts do PO). Agora é UTC sempre.
         timezone: "Z",
+        // O banco é gerenciado em OUTRA região (DigitalOcean NYC ↔ Render
+        // Oregon, ≈90 ms por ida e volta) e cada conexão nova paga TCP +
+        // handshake TLS (centenas de ms). O default do mysql2 fechava
+        // conexões ociosas em 60 s: qualquer pausa do app reabria conexão
+        // no pedido seguinte. Mantém até 4 ociosas por 10 min, com
+        // keep-alive TCP para o proxy não derrubar no meio.
+        connectionLimit: 10,
+        maxIdle: 4,
+        idleTimeout: 600_000,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 10_000,
       });
       _db = drizzle(pool);
     } catch (error) {
@@ -144,7 +155,13 @@ function classifyDbError(err: unknown): DbProbeStatus {
  * the raw driver message intended for server-side logs only and MUST NOT be
  * propagated to unauthenticated responses.
  */
-export async function pingDb(timeoutMs = 2000): Promise<DbProbeResult> {
+// 5 s (era 2 s): a PRIMEIRA conexão ao MySQL gerenciado de outra região,
+// com TLS, numa instância free do Render (0,1 CPU) passava de 2 s — o
+// health check respondia 503, o Render não liberava o deploy ("port scan
+// timeout", 23/08 03:04Z) e o serviço ficava fora do ar até o deploy
+// seguinte. O pool agora é aquecido antes do listen (server/_core/index.ts);
+// o timeout maior é a segunda linha de defesa.
+export async function pingDb(timeoutMs = 5000): Promise<DbProbeResult> {
   const db = await getDb();
   if (!db) {
     return { ok: false, status: "uninitialized", detail: "database not initialized" };

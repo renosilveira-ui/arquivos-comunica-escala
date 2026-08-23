@@ -420,7 +420,7 @@ export default function PendingScreen() {
 
           {renderAvailableSwapsSection()}
 
-          {myShiftsError ? (
+          {myShiftsError && !myShiftsData ? (
             <QueryErrorState
               title="Não foi possível carregar seus plantões"
               onRetry={() => refetchMyShifts()}
@@ -847,7 +847,7 @@ export default function PendingScreen() {
               );
             })}
           </View>
-        ) : pendingError ? (
+        ) : pendingError && !pendingAssignments ? (
           <QueryErrorState
             title="Não foi possível carregar as solicitações"
             onRetry={() => refetch()}

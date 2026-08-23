@@ -18,6 +18,7 @@ import { NextShiftCard } from "@/components/agenda/NextShiftCard";
 import { ListRow } from "@/components/ui/ListRow";
 import { Inbox, KeyRound, LayoutDashboard, LogOut } from "lucide-react-native";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { BootScreen } from "@/components/BootScreen";
 import { theme } from "@/lib/theme";
 
 const NOW = new Date("2026-09-09T15:00:00-03:00");
@@ -121,6 +122,10 @@ function Gallery() {
         </View>
 
         <View style={{ gap: theme.space[3] }}>
+          <SectionHeader title="Abertura do app" subtitle="BootScreen: só enquanto usuário/instituição são desconhecidos; o aviso aparece após 2,5 s" />
+          <Surface padded={false} style={{ height: 320, overflow: "hidden" }}>
+            <BootScreen />
+          </Surface>
           <SectionHeader title="Carregando" subtitle="Skeleton no lugar do spinner central" />
           <SkeletonList count={2} />
           <Skeleton width="60%" height={theme.space[6]} />

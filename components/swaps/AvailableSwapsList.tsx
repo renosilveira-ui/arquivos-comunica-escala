@@ -107,7 +107,8 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
     else rejectSwap.mutate(input);
   }
 
-  if (isError) {
+  // Erro com dados em cache (cold start do servidor) mantém a lista.
+  if (isError && !data) {
     return <QueryErrorState title="Não foi possível carregar as ofertas" onRetry={() => refetch()} />;
   }
   if (isLoading) {
