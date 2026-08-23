@@ -14,7 +14,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
-import * as Auth from "@/lib/_core/auth";
+import { apiFetch } from "@/lib/_core/api";
 import { Lock, Plus, Pencil, Users, X, UserPlus, Check, KeyRound, Copy } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useFocusEffect } from "expo-router";
@@ -49,37 +49,8 @@ interface PendingSignup {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getBaseUrl(): string {
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl) return envUrl;
-  if (Platform.OS === "android") return "http://10.0.2.2:3000";
-  return "http://localhost:3000";
-}
-
-async function adminFetch<T>(
-  path: string,
-  options?: RequestInit,
-): Promise<{ ok: boolean; data: T | null }> {
-  const url = getBaseUrl() + path;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options?.headers as Record<string, string>),
-  };
-  if (Platform.OS !== "web") {
-    const token = await Auth.getSessionToken();
-    if (token) headers["Authorization"] = "Bearer " + token;
-  }
-  const res = await fetch(url, {
-    ...options,
-    headers,
-    credentials: Platform.OS === "web" ? "include" : undefined,
-  });
-  let data: T | null = null;
-  try {
-    data = await res.json();
-  } catch {}
-  return { ok: res.ok, data };
-}
+// Fetch REST com URL base, sessão e tenant do app (lib/_core/api.ts).
+const adminFetch = apiFetch;
 
 const ROLE_LABELS: Record<UserRole, string> = {
   admin: "Administrador",
