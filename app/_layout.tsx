@@ -256,6 +256,18 @@ export const unstable_settings = {
   anchor: "(tabs)",
 };
 
+/**
+ * O estado do tenant vive por usuário: ao trocar de conta (logout/login) o
+ * provider é REMONTADO e re-hidrata do storage já limpo. Antes, o contexto
+ * guardava a instituição do usuário anterior — o AuthGuard pulava a
+ * seleção e a UI apontava para um tenant que o novo usuário nem tinha
+ * (auditoria 22/08, parte 2).
+ */
+function TenantScope({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  return <TenantStateProvider key={user?.id ?? "anon"}>{children}</TenantStateProvider>;
+}
+
 export default function RootLayout() {
   const initialInsets = initialWindowMetrics?.insets ?? DEFAULT_WEB_INSETS;
   const initialFrame = initialWindowMetrics?.frame ?? DEFAULT_WEB_FRAME;
@@ -315,7 +327,7 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
           <ToastProvider>
-          <TenantStateProvider>
+          <TenantScope>
             <IntegrationManagerProvider>
           {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
           {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
@@ -333,7 +345,7 @@ export default function RootLayout() {
           <StatusBar style="auto" />
           <NotificationListener />
             </IntegrationManagerProvider>
-          </TenantStateProvider>
+          </TenantScope>
           </ToastProvider>
           </AuthProvider>
         </QueryClientProvider>

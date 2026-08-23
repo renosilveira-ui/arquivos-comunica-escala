@@ -1,8 +1,14 @@
-// lib/_core/api.ts — Wrapper HTTP para chamadas à API do server
+// lib/_core/api.ts — Wrapper HTTP para chamadas à API do server.
+//
+// ÚNICA fonte da URL base e dos headers de sessão/tenant do app. Cópias
+// locais (admin, aprovar trocas, SSO) divergiam: na web same-origin
+// (EXPO_PUBLIC_API_URL="" no Render) caíam em http://localhost:3000 e não
+// mandavam x-tenant-id — auditoria 22/08, parte 2.
 import { Platform } from "react-native";
 import * as Auth from "./auth";
+import { getActiveInstitutionId } from "../tenant-state";
 
-function getBaseUrl(): string {
+export function getApiBaseUrl(): string {
   const envUrl = (process.env.EXPO_PUBLIC_API_URL ?? "").trim();
 
   // Same-origin mode: when EXPO_PUBLIC_API_URL is empty or "/", the web
@@ -27,15 +33,20 @@ function getBaseUrl(): string {
   return `http://localhost:${fallbackPort}`;
 }
 
-async function apiFetch<T>(
+export async function apiFetch<T>(
   path: string,
   options?: RequestInit,
 ): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
-  const url = `${getBaseUrl()}${path}`;
+  const url = `${getApiBaseUrl()}${path}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options?.headers as Record<string, string>),
   };
+
+  // Mesmo tenant que o tRPC (lib/trpc.ts): sem isto o servidor caía na
+  // primeira instituição do usuário, não na ativa.
+  const activeInstitutionId = await getActiveInstitutionId();
+  if (activeInstitutionId) headers["x-tenant-id"] = String(activeInstitutionId);
 
   if (Platform.OS !== "web") {
     const token = await Auth.getSessionToken();

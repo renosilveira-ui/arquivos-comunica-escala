@@ -16,20 +16,11 @@
 
 import { Platform, Linking } from "react-native";
 import * as Auth from "@/lib/_core/auth";
+import { getApiBaseUrl } from "@/lib/_core/api";
 
 /** Scheme registrado pelo app nativo do Comunica+ (native/app.json). */
 const COMUNICA_APP_URL = "comunicamais://";
 
-function getBaseUrl(): string {
-  const envUrl = (process.env.EXPO_PUBLIC_API_URL || "").trim();
-  if (envUrl) return envUrl.replace(/\/$/, "");
-  const fallbackPort = (process.env.EXPO_PUBLIC_API_PORT || "3000").trim();
-  if (Platform.OS === "android") return `http://10.0.2.2:${fallbackPort}`;
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    return `${window.location.protocol}//${window.location.hostname}:${fallbackPort}`;
-  }
-  return `http://localhost:${fallbackPort}`;
-}
 
 export interface SsoLaunchResult {
   ok: boolean;
@@ -52,7 +43,7 @@ export async function openComunicaViaLaunchCode(
     const token = await Auth.getSessionToken();
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const res = await fetch(`${getBaseUrl()}/api/sso/launch-code`, {
+    const res = await fetch(`${getApiBaseUrl()}/api/sso/launch-code`, {
       method: "POST",
       headers,
       body: JSON.stringify({}),
