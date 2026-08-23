@@ -1,30 +1,83 @@
-import { Text, View, TouchableOpacity, Switch, Share, Modal, TextInput, ActivityIndicator, Platform, KeyboardAvoidingView, useWindowDimensions } from "react-native";
-import { ScreenGradient } from "@/components/ui/ScreenGradient";
-import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
-import { Badge } from "@/components/ui/Badge";
-import { useAuth, type User as AuthUser } from "@/hooks/use-auth";
-import * as Haptics from "expo-haptics";
+// app/(tabs)/profile.tsx — Perfil.
+//
+// Redesign 23/08 (proposta de design, Claude Design). O que mudou e por quê:
+//
+// 1. Onze pares "cabeçalho 24px + TintedGlassCard" viraram QUATRO grupos com
+//    um padrão único de linha (ListRow): Gestão · Sua atividade ·
+//    Notificações · Conta e app, mais a zona de risco no fim. Onze títulos
+//    do mesmo peso na mesma tela é uma lista de configurações sem hierarquia.
+// 2. Gestão subiu para o topo. Painel/Solicitações/Admin saíram da barra
+//    inferior (PO, 2026-08-22), então é a razão pela qual um gestor abre esta
+//    tela — estava em sexto lugar.
+// 3. O avatar de 96px centralizado (com nome, e-mail e papel empilhados)
+//    consumia quase metade da primeira tela. Em 56px na horizontal, o mesmo
+//    card ainda carrega as horas do mês e a distribuição de turnos acima dos
+//    812pt.
+// 4. TintedGlassCard → Surface. Blur é iOS-only; Android já caía para o
+//    fallback opaco, então a mesma tela tinha duas aparências.
+// 5. "Integração" e "Diagnóstico" deixaram de ser seções com cabeçalho para
+//    carregar uma linha cada: viraram linhas em Notificações e Conta e app.
+// 6. "Testar Notificações" removido (PR #232) — disparava push falso em build
+//    de produção.
+// 7. Estados: skeleton com a forma do conteúdo, e erro LOCAL ao bloco do mês
+//    (listByPeriod falhar não derruba identidade nem as rotas de gestão).
+
+import { useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Share,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import {
+  AlertTriangle,
+  ArrowRightLeft,
+  Bell,
+  Building2,
+  CalendarDays,
+  History,
+  Inbox,
+  KeyRound,
+  LayoutDashboard,
+  Link2,
+  LogOut,
+  ShieldCheck,
+  Trash2,
+  UserPlus,
+  X,
+} from "lucide-react-native";
 import Constants from "expo-constants";
-import { trpc } from "@/lib/trpc";
-import { useState, useMemo } from "react";
-import { User, Bell, Link2, LogOut, Briefcase, ArrowRightLeft, History, KeyRound, AlertTriangle, Trash2, X, LayoutDashboard, Inbox, ShieldCheck } from "lucide-react-native";
-import { theme } from "@/lib/theme";
+import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { useTenantState } from "@/lib/tenant-state";
-import { usePermissions } from "@/hooks/use-permissions";
+
+import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
+import { Surface } from "@/components/ui/Surface";
+import { SectionHeader } from "@/components/ui/SectionHeader";
+import { ListRow } from "@/components/ui/ListRow";
+import { Badge } from "@/components/ui/Badge";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { AppButton } from "@/components/ui/AppButton";
+import { getLastCrash } from "@/components/AppErrorBoundary";
+import { useAuth, type User as AuthUser } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
+import { authApi } from "@/lib/_core/api";
+import { theme } from "@/lib/theme";
+import { trpc } from "@/lib/trpc";
+import { useTenantState } from "@/lib/tenant-state";
 import { confirmAction } from "@/lib/ui/confirm";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
-import { authApi } from "@/lib/_core/api";
-import { getLastCrash } from "@/components/AppErrorBoundary";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-/**
- * Mapeia o role do usuário para um label legível em PT-BR.
- */
 function roleLabel(role: AuthUser["role"] | null | undefined): string {
   switch (role) {
     case "admin":
@@ -42,32 +95,52 @@ function roleLabel(role: AuthUser["role"] | null | undefined): string {
   }
 }
 
-/**
- * Tela de Perfil
- * Exibe informações do usuário e configurações de notificações
- */
+const MONTH_LABELS = [
+  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+];
+
 export default function ProfileScreen() {
   const { user, logout } = useAuth();
   const router = useRouter();
   const { clearInstitutionSelection } = useTenantState();
   const utils = trpc.useUtils();
-  // Gestão no celular: Painel/Solicitações/Admin saíram da barra inferior
-  // (decisão do PO, 2026-08-22) e passam a ser alcançados daqui. No
-  // desktop a sidebar já os lista — a seção não se repete.
   const { can, isManager } = usePermissions();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
+
   const managementLinks = useMemo(
     () =>
       [
         can("view:dashboard")
-          ? { key: "dashboard", title: "Painel", subtitle: "Resumo dos próximos 7 dias: vagos, pendentes e ocupados", Icon: LayoutDashboard, href: "/(tabs)/dashboard" }
+          ? {
+              key: "dashboard",
+              title: "Painel",
+              subtitle: "Próximos 7 dias: vagos, pendentes e ocupados",
+              Icon: LayoutDashboard,
+              tone: "brand" as const,
+              href: "/(tabs)/dashboard",
+            }
           : null,
         isManager
-          ? { key: "pending", title: "Solicitações", subtitle: "Trocas e cessões aguardando sua aprovação", Icon: Inbox, href: "/(tabs)/pending" }
+          ? {
+              key: "pending",
+              title: "Solicitações",
+              subtitle: "Trocas e cessões aguardando sua aprovação",
+              Icon: Inbox,
+              tone: "warning" as const,
+              href: "/(tabs)/pending",
+            }
           : null,
         can("view:admin")
-          ? { key: "admin", title: "Admin", subtitle: "Usuários, cadastros pendentes e senhas", Icon: ShieldCheck, href: "/(tabs)/admin" }
+          ? {
+              key: "admin",
+              title: "Admin",
+              subtitle: "Usuários, cadastros pendentes e senhas",
+              Icon: ShieldCheck,
+              tone: "default" as const,
+              href: "/(tabs)/admin",
+            }
           : null,
       ].filter((l): l is NonNullable<typeof l> => l !== null),
     // `can` é recriada a cada render do hook; o que muda de fato é o papel.
@@ -76,35 +149,42 @@ export default function ProfileScreen() {
   );
   const showManagement = !isDesktopWeb && managementLinks.length > 0;
 
+  // Fila de aprovação do gestor — mesma procedure da tela Solicitações
+  // (papel e jurisdição aplicados no servidor; USER receberia FORBIDDEN,
+  // por isso `enabled` só para gestor).
+  const { data: pendingAssignments } = trpc.shiftAssignments.listPending.useQuery(
+    {},
+    { enabled: !!user?.id && isManager && !isDesktopWeb, staleTime: 60_000 },
+  );
+  const pendingCount = pendingAssignments?.length ?? 0;
+
   // ── Estatísticas do mês atual ──────────────────────────────────────────
   const now = new Date();
-  const monthStartDate = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthEndDateExclusive = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const monthStart = toDateKey(monthStartDate);
-  const monthEnd = toDateKey(monthEndDateExclusive);
+  const monthStart = toDateKey(new Date(now.getFullYear(), now.getMonth(), 1));
+  const monthEnd = toDateKey(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+  const monthName = MONTH_LABELS[now.getMonth()];
 
   const { data: professional } = trpc.professionals.getByUserId.useQuery(
     { userId: user?.id ?? 0 },
     { enabled: !!user?.id },
   );
 
-  const { data: monthShifts } = trpc.shifts.listByPeriod.useQuery(
+  const monthQuery = trpc.shifts.listByPeriod.useQuery(
     { startDate: monthStart, endDate: monthEnd },
-    { enabled: !!user?.id }
+    { enabled: !!user?.id },
   );
 
   const monthStats = useMemo(() => {
     const empty = { totalHours: 0, totalShifts: 0, manha: 0, tarde: 0, noite: 0 };
-    if (!monthShifts) return empty;
+    if (!monthQuery.data) return empty;
 
-    const isManager =
-      professional?.userRole === "GESTOR_MEDICO" ||
-      professional?.userRole === "GESTOR_PLUS";
+    const viewerIsManager =
+      professional?.userRole === "GESTOR_MEDICO" || professional?.userRole === "GESTOR_PLUS";
 
-    const relevant = (monthShifts as any[]).filter((shift) => {
-      if (isManager) return true;
+    const relevant = (monthQuery.data as any[]).filter((shift) => {
+      if (viewerIsManager) return true;
       return (shift.assignments as any[]).some(
-        (a: any) => a.professionalId === professional?.id && a.isActive
+        (a: any) => a.professionalId === professional?.id && a.isActive,
       );
     });
 
@@ -123,65 +203,34 @@ export default function ProfileScreen() {
       else if (label === "Noite") noite++;
     }
 
-    return {
-      totalHours: Math.round(totalHours),
-      totalShifts: relevant.length,
-      manha,
-      tarde,
-      noite,
-    };
-  }, [monthShifts, professional]);
+    return { totalHours: Math.round(totalHours), totalShifts: relevant.length, manha, tarde, noite };
+  }, [monthQuery.data, professional]);
 
+  // ── Notificações ───────────────────────────────────────────────────────
+  // TODO: sem API ainda — valores iniciais fixos, sem efeito de sincronização.
+  const [enableShiftChanges, setEnableShiftChanges] = useState(true);
+  const [enableReminders, setEnableReminders] = useState(true);
+  const [enableHospitalAlert, setEnableHospitalAlert] = useState(true);
 
-  // TODO: Buscar configurações de notificação quando API estiver disponível.
-  // Enquanto não há API, os valores iniciais são fixos — sem efeito de
-  // sincronização (o objeto literal mudava a cada render).
-  const settings = useMemo(
-    () => ({
-      enableShiftChanges: true,
-      enableReminders: true,
-      enableHospitalAlertNotifications: true,
-    }),
-    [],
-  );
-
-  // Estados locais para switches
-  const [enableShiftChanges, setEnableShiftChanges] = useState(settings.enableShiftChanges);
-  const [enableReminders, setEnableReminders] = useState(settings.enableReminders);
-  const [enableHospitalAlert, setEnableHospitalAlert] = useState(settings.enableHospitalAlertNotifications);
-
-  // TODO: Mutation para atualizar configurações quando API estiver disponível
-  const updateSettings = {
-    mutate: (data: any) => {
-      console.log("Atualizar configurações:", data);
-    },
+  const updateSettings = (data: Record<string, unknown>) => {
+    // TODO: mutation quando a API existir.
+    console.log("Atualizar configurações:", data);
   };
 
-  const handleToggleShiftChanges = (value: boolean) => {
+  const toggleWithHaptic = (setter: (v: boolean) => void, key: string) => (value: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setEnableShiftChanges(value);
-    updateSettings.mutate({
-      userId: user?.id ?? 0,
-      enableShiftChanges: value,
-    });
+    setter(value);
+    updateSettings({ userId: user?.id ?? 0, [key]: value });
   };
 
-  const handleToggleReminders = (value: boolean) => {
+  const go = (href: string) => () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setEnableReminders(value);
-    updateSettings.mutate({
-      userId: user?.id ?? 0,
-      enableReminders: value,
-    });
-  };
-
-  const handleToggleHospitalAlert = (value: boolean) => {
-    setEnableHospitalAlert(value);
+    router.push(href as any);
   };
 
   const handleLogout = async () => {
     const confirmed = await confirmAction(
-      "Sair da conta?\n\nVocê precisará fazer login novamente para acessar o app."
+      "Sair da conta?\n\nVocê precisará fazer login novamente para acessar o app.",
     );
     if (!confirmed) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -192,8 +241,28 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleSwitchInstitution = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await clearInstitutionSelection();
+    await utils.invalidate();
+    router.replace("/select-institution" as any);
+  };
+
+  const handleShowCrash = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const crash = await getLastCrash();
+    if (!crash) {
+      uiAlert("Diagnóstico", "Nenhum erro registrado neste aparelho.");
+      return;
+    }
+    try {
+      await Share.share({ message: `Escala+ diagnóstico:\n${crash}` });
+    } catch {
+      uiAlert("Último erro registrado", crash.slice(0, 1200));
+    }
+  };
+
   // ── Exclusão de conta (Apple 5.1.1(v)) ────────────────────────────────
-  // Confirmação destrutiva → modal com senha → DELETE /api/auth/me → logout.
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [deletePassword, setDeletePassword] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -239,453 +308,303 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleSwitchInstitution = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await clearInstitutionSelection();
-    await utils.invalidate();
-    router.replace("/select-institution" as any);
-  };
-
   if (!user) {
     return (
       <ScreenGradient scrollable={false} variant="light">
-        <View className="flex-1 justify-center items-center">
-          <Text className="text-lg" style={{ color: theme.colors.textSecondary }}>Faça login para continuar</Text>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+          <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary }}>
+            Faça login para continuar
+          </Text>
         </View>
       </ScreenGradient>
     );
   }
 
+  const initial = (user.name?.charAt(0) || user.email?.charAt(0) || "U").toUpperCase();
+
   return (
     <ScreenGradient scrollable variant="light">
       <ScreenContainer>
-      <View style={{ gap: theme.space[6] }}>
-        {/* Header */}
-        <View style={{ gap: 6 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
-            <User size={28} color={theme.colors.textPrimary} />
-            <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Perfil</Text>
-          </View>
-          <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-            Dados da conta, notificações e preferências.
-          </Text>
-        </View>
-
-        {/* Informações do Usuário */}
-        <TintedGlassCard variant="light">
-          <View style={{ alignItems: "center", paddingVertical: theme.space[4] }}>
+        <View style={{ gap: theme.space[5] }}>
+          {/* ── Identidade + mês (raised: é o único bloco que sobe) ── */}
+          <Surface level="raised" padded={false}>
             <View
               style={{
-                width: 96,
-                height: 96,
-                borderRadius: 48,
-                alignItems: "center",
-                justifyContent: "center",
-                marginBottom: theme.space[4],
-                backgroundColor: theme.colors.primary,
-              }}
-            >
-              <Text style={{ fontSize: 34, lineHeight: 40, fontWeight: theme.weight.bold, color: theme.colors.surface }}>
-                {(user.name?.charAt(0) || user.email?.charAt(0) || "U").toUpperCase()}
-              </Text>
-            </View>
-            <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{user.name || "Usuário"}</Text>
-            {user.email ? (
-              <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary, marginTop: theme.space[2] }}>{user.email}</Text>
-            ) : null}
-            {roleLabel(user.role) ? (
-              <Text style={{ ...theme.text.body, color: theme.colors.textMuted, marginTop: theme.space[1] }}>{roleLabel(user.role)}</Text>
-            ) : null}
-          </View>
-        </TintedGlassCard>
-
-
-        {/* Estatísticas do Mês */}
-        <View style={{ gap: theme.space[4] }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-            <Briefcase size={20} color={theme.colors.textPrimary} />
-            <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Estatísticas do Mês</Text>
-          </View>
-          <View style={{ flexDirection: "row", gap: theme.space[4] }}>
-            {/* Total de Horas */}
-            <View style={{ flex: 1 }}>
-              <TintedGlassCard variant="light">
-                <View style={{ alignItems: "center", paddingVertical: theme.space[4] }}>
-                  <Text style={{ ...theme.text.display, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.totalHours}</Text>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[2] }}>Horas Trabalhadas</Text>
-                </View>
-              </TintedGlassCard>
-            </View>
-            {/* Total de Plantões */}
-            <View style={{ flex: 1 }}>
-              <TintedGlassCard variant="light">
-                <View style={{ alignItems: "center", paddingVertical: theme.space[4] }}>
-                  <Text style={{ ...theme.text.display, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.totalShifts}</Text>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[2] }}>Plantões</Text>
-                </View>
-              </TintedGlassCard>
-            </View>
-          </View>
-          {/* Distribuição de Turnos */}
-          <TintedGlassCard variant="light">
-            <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary, marginBottom: theme.space[4] }}>Distribuição de Turnos</Text>
-            <View style={{ gap: theme.space[3] }}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary }}>Manhã (7h-13h)</Text>
-                <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.manha} plantão{monthStats.manha !== 1 ? "ões" : ""}</Text>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary }}>Tarde (13h-19h)</Text>
-                <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.tarde} plantão{monthStats.tarde !== 1 ? "ões" : ""}</Text>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <Text style={{ ...theme.text.bodyLg, color: theme.colors.textSecondary }}>Noite (19h-7h)</Text>
-                <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{monthStats.noite} plantão{monthStats.noite !== 1 ? "ões" : ""}</Text>
-              </View>
-            </View>
-          </TintedGlassCard>
-        </View>
-
-        {/* Configurações de Notificações */}
-        <View style={{ gap: theme.space[4] }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-            <Bell size={20} color={theme.colors.textPrimary} />
-            <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Notificações</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            {/* Mudanças de Escala */}
-            <View style={profileRowCardStyle}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <View style={{ flex: 1, paddingRight: theme.space[4] }}>
-                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Mudanças de Escala</Text>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
-                    Receber notificações quando uma escala for alterada ou cancelada
-                  </Text>
-                </View>
-                <Switch
-                  value={enableShiftChanges}
-                  onValueChange={handleToggleShiftChanges}
-                  trackColor={{ false: theme.colors.borderStrong, true: theme.colors.primary }}
-                  thumbColor={theme.colors.surface}
-                />
-              </View>
-            </View>
-
-            {/* Lembretes */}
-            <View style={profileRowCardStyle}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <View style={{ flex: 1, paddingRight: theme.space[4] }}>
-                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Lembretes de Plantão</Text>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
-                    Receber lembrete 30 minutos antes do início do plantão
-                  </Text>
-                </View>
-                <Switch
-                  value={enableReminders}
-                  onValueChange={handleToggleReminders}
-                  trackColor={{ false: theme.colors.borderStrong, true: theme.colors.primary }}
-                  thumbColor={theme.colors.surface}
-                />
-              </View>
-            </View>
-
-            {/* Notificações do HospitalAlert */}
-            <View style={[profileRowCardStyle, { marginBottom: 0 }]}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <View style={{ flex: 1, paddingRight: theme.space[4] }}>
-                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Integração HospitalAlert</Text>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
-                    Receber notificações do sistema HospitalAlert
-                  </Text>
-                </View>
-                <Switch
-                  value={enableHospitalAlert}
-                  onValueChange={handleToggleHospitalAlert}
-                  trackColor={{ false: theme.colors.borderStrong, true: theme.colors.primary }}
-                  thumbColor={theme.colors.surface} />
-              </View>
-            </View>
-          </TintedGlassCard>
-        </View>
-
-        {/* Status de Integração */}
-        <View style={{ gap: theme.space[4] }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-            <Link2 size={20} color={theme.colors.textPrimary} />
-            <Text style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Integração</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
-                <View style={{ width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.primarySoft }}>
-                  <Link2 size={24} color={theme.palette.primary[700]} />
-                </View>
-                <View>
-                  <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>HospitalAlert</Text>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>Sistema de alertas hospitalares</Text>
-                </View>
-              </View>
-              <Badge variant="success">Conectado</Badge>
-            </View>
-          </TintedGlassCard>
-        </View>
-
-        {/* Tenant / Instituição ativa */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <Briefcase size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Instituição</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <TouchableOpacity
-              onPress={handleSwitchInstitution}
-              className="rounded-xl p-4 items-center flex-row justify-between"
-              style={{ backgroundColor: theme.colors.primarySoft, borderWidth: 1, borderColor: theme.palette.primary[200] }}
-              activeOpacity={0.75}
-            >
-              <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>Trocar instituição ativa</Text>
-              <Text style={{ color: theme.palette.primary[700], fontWeight: "700" }}>Alterar</Text>
-            </TouchableOpacity>
-          </TintedGlassCard>
-        </View>
-
-        {/* Gestão (só celular, só gestor/admin) — ver _layout.tsx */}
-        {showManagement ? (
-          <View className="gap-4">
-            <View className="flex-row items-center gap-2">
-              <LayoutDashboard size={20} color={theme.colors.textPrimary} />
-              <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Gestão</Text>
-            </View>
-            <TintedGlassCard variant="light">
-              <View className="gap-3">
-                {managementLinks.map((link) => (
-                  <TouchableOpacity
-                    key={link.key}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      router.push(link.href as any);
-                    }}
-                    className="rounded-xl p-4 flex-row items-center justify-between"
-                    style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
-                    activeOpacity={0.75}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Abrir ${link.title}`}
-                  >
-                    <View className="flex-row items-center gap-3 flex-1 pr-4">
-                      <link.Icon size={20} color={theme.colors.primary} />
-                      <View className="flex-1">
-                        <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                          {link.title}
-                        </Text>
-                        <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                          {link.subtitle}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </TintedGlassCard>
-          </View>
-        ) : null}
-
-        {/* Cessões e trocas — minhas ofertas + minhas candidaturas */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <ArrowRightLeft size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Cessões e trocas</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <View className="gap-3">
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  router.push("/my-offers");
-                }}
-                className="rounded-xl p-4 flex-row items-center justify-between"
-                style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
-                activeOpacity={0.75}
-                accessibilityRole="button"
-                accessibilityLabel="Ver minhas ofertas de cessão e troca"
-              >
-                <View className="flex-1 pr-4">
-                  <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                    Minhas ofertas
-                  </Text>
-                  <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                    Plantões que você ofereceu — aprove candidaturas aqui
-                  </Text>
-                </View>
-                <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  router.push("/my-applications");
-                }}
-                className="rounded-xl p-4 flex-row items-center justify-between"
-                style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
-                activeOpacity={0.75}
-                accessibilityRole="button"
-                accessibilityLabel="Ver suas candidaturas a cessões e trocas"
-              >
-                <View className="flex-1 pr-4">
-                  <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                    Suas candidaturas
-                  </Text>
-                  <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                    Plantões a que você se candidatou — aguardando aprovação do dono
-                  </Text>
-                </View>
-                <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
-              </TouchableOpacity>
-            </View>
-          </TintedGlassCard>
-        </View>
-
-        {/* Segurança da conta */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <KeyRound size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Segurança</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <TouchableOpacity
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push("/change-password");
-              }}
-              className="rounded-xl p-4 flex-row items-center justify-between"
-              style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
-              activeOpacity={0.75}
-              accessibilityRole="button"
-              accessibilityLabel="Alterar minha senha"
-            >
-              <View className="flex-1 pr-4">
-                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Alterar senha
-                </Text>
-                <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                  Trocar a senha de acesso da sua conta
-                </Text>
-              </View>
-              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
-            </TouchableOpacity>
-          </TintedGlassCard>
-        </View>
-
-        {/* Auditoria de movimentações (PR #77 backend, esta tela frontend) */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <History size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Auditoria</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <TouchableOpacity
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push("/audit-log");
-              }}
-              className="rounded-xl p-4 flex-row items-center justify-between"
-              style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
-              activeOpacity={0.75}
-              accessibilityRole="button"
-              accessibilityLabel="Ver auditoria de movimentações de plantão"
-            >
-              <View className="flex-1 pr-4">
-                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Movimentações de plantão
-                </Text>
-                <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                  Quem alterou, quem foi alterado e quando — últimos 30 dias
-                </Text>
-              </View>
-              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Abrir</Text>
-            </TouchableOpacity>
-          </TintedGlassCard>
-        </View>
-
-        {/* Diagnóstico — último erro registrado no aparelho.
-            Instrumentação de estabilidade (2026-08-18): o AppErrorBoundary
-            e o handler global persistem o último crash; aqui o usuário
-            consegue ver e compartilhar o registro para suporte. */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <AlertTriangle size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Diagnóstico</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <TouchableOpacity
-              onPress={async () => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                const crash = await getLastCrash();
-                if (!crash) {
-                  uiAlert("Diagnóstico", "Nenhum erro registrado neste aparelho. 👍");
-                  return;
-                }
-                try {
-                  await Share.share({ message: `Escala+ diagnóstico:\n${crash}` });
-                } catch {
-                  uiAlert("Último erro registrado", crash.slice(0, 1200));
-                }
-              }}
-              className="rounded-xl p-4 flex-row items-center justify-between"
-              style={{ backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }}
-              activeOpacity={0.75}
-              accessibilityRole="button"
-              accessibilityLabel="Ver e compartilhar o último erro registrado"
-            >
-              <View className="flex-1 pr-4">
-                <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Último erro registrado
-                </Text>
-                <Text className="text-sm mt-1" style={{ color: theme.colors.textMuted }}>
-                  Se o app fechou sozinho, toque aqui e compartilhe o registro com o suporte
-                </Text>
-              </View>
-              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>Ver</Text>
-            </TouchableOpacity>
-          </TintedGlassCard>
-        </View>
-
-        {/* Conta — exclusão (Apple 5.1.1(v)) */}
-        <View style={{ gap: theme.space[4] }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-            <Trash2 size={20} color={theme.colors.textPrimary} />
-            <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
-              Conta
-            </Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <TouchableOpacity
-              onPress={handleDeleteAccountPress}
-              activeOpacity={0.75}
-              accessibilityRole="button"
-              accessibilityLabel="Excluir minha conta"
-              style={{
-                borderRadius: theme.radius.lg,
-                padding: theme.space[4],
                 flexDirection: "row",
                 alignItems: "center",
-                justifyContent: "space-between",
-                backgroundColor: theme.colors.dangerSoft,
-                borderWidth: 1,
-                borderColor: theme.colors.danger,
+                gap: theme.space[3],
+                padding: theme.space[4],
+                borderBottomWidth: 1,
+                borderBottomColor: theme.colors.border,
               }}
             >
-              <View style={{ flex: 1, paddingRight: theme.space[4] }}>
-                <Text style={{ ...theme.text.bodyLg, fontWeight: theme.weight.semibold, color: theme.palette.danger[900] }}>
-                  Excluir minha conta
-                </Text>
-                <Text style={{ ...theme.text.body, marginTop: theme.space[1], color: theme.palette.danger[900] }}>
-                  Remove seus dados pessoais e encerra o acesso. Não pode ser desfeito.
+              <View
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: theme.radius.lg,
+                  backgroundColor: theme.colors.brand,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Text
+                  style={{
+                    ...theme.text.titleLg,
+                    fontWeight: theme.weight.bold,
+                    color: theme.colors.surface,
+                  }}
+                >
+                  {initial}
                 </Text>
               </View>
-              <Text style={{ color: theme.palette.danger[900], fontWeight: theme.weight.bold }}>Excluir</Text>
-            </TouchableOpacity>
-          </TintedGlassCard>
+              <View style={{ flex: 1, gap: theme.space[1] }}>
+                <Text
+                  numberOfLines={1}
+                  style={{ ...theme.text.title, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}
+                >
+                  {user.name || "Usuário"}
+                </Text>
+                {user.email ? (
+                  <Text numberOfLines={1} style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
+                    {user.email}
+                  </Text>
+                ) : null}
+                {roleLabel(user.role) ? (
+                  <View style={{ alignSelf: "flex-start", marginTop: theme.space[1] }}>
+                    <Badge variant="info" label={roleLabel(user.role)} />
+                  </View>
+                ) : null}
+              </View>
+            </View>
+
+            {/* Mês: skeleton → erro local → dados. Erro NUNCA vira zero. */}
+            <View style={{ padding: theme.space[4], gap: theme.space[3] }}>
+              {monthQuery.isLoading ? (
+                <View style={{ gap: theme.space[3] }}>
+                  <View style={{ flexDirection: "row", gap: theme.space[4] }}>
+                    <View style={{ flex: 1, gap: theme.space[2] }}>
+                      <Skeleton width="70%" height={theme.space[3]} />
+                      <Skeleton width="45%" height={theme.space[6]} />
+                    </View>
+                    <View style={{ flex: 1, gap: theme.space[2] }}>
+                      <Skeleton width="60%" height={theme.space[3]} />
+                      <Skeleton width="40%" height={theme.space[6]} />
+                    </View>
+                  </View>
+                  <View style={{ flexDirection: "row", gap: theme.space[2] }}>
+                    {[0, 1, 2].map((i) => (
+                      <Skeleton key={i} height={theme.space[10]} radius={theme.radius.md} />
+                    ))}
+                  </View>
+                </View>
+              ) : monthQuery.isError ? (
+                <View
+                  style={{
+                    backgroundColor: theme.colors.warningSoft,
+                    borderWidth: 1,
+                    borderColor: theme.palette.warning[100],
+                    borderLeftWidth: 4,
+                    borderLeftColor: theme.palette.warning[700],
+                    borderRadius: theme.radius.lg,
+                    padding: theme.space[4],
+                    gap: theme.space[3],
+                  }}
+                >
+                  <Text
+                    style={{
+                      ...theme.text.titleSm,
+                      fontWeight: theme.weight.semibold,
+                      color: theme.palette.warning[900],
+                    }}
+                  >
+                    Não foi possível carregar suas horas de {monthName}
+                  </Text>
+                  <Text style={{ ...theme.text.caption, color: theme.palette.warning[900] }}>
+                    Seus dados de conta continuam disponíveis. Só o resumo do mês falhou.
+                  </Text>
+                  <AppButton
+                    title="Tentar novamente"
+                    onPress={() => monthQuery.refetch()}
+                    size="md"
+                    fullWidth={false}
+                    style={{ alignSelf: "flex-start", backgroundColor: theme.colors.brand }}
+                  />
+                </View>
+              ) : (
+                <>
+                  <View style={{ flexDirection: "row", gap: theme.space[4] }}>
+                    <StatBlock label={`Horas em ${monthName}`} value={monthStats.totalHours} unit="h" />
+                    <StatBlock label="Plantões" value={monthStats.totalShifts} unit="no mês" />
+                  </View>
+                  <View style={{ flexDirection: "row", gap: theme.space[2] }}>
+                    <TurnBlock label="Manhã" hours="7–13" value={monthStats.manha} />
+                    <TurnBlock label="Tarde" hours="13–19" value={monthStats.tarde} />
+                    <TurnBlock label="Noite" hours="19–7" value={monthStats.noite} />
+                  </View>
+                </>
+              )}
+            </View>
+          </Surface>
+
+          {/* ── Gestão (só celular, só gestor/admin) ── */}
+          {showManagement ? (
+            <View style={{ gap: theme.space[2] }}>
+              <SectionHeader
+                title="Gestão"
+                eyebrow="Sua equipe"
+                action={<Badge variant="info" label="Só gestor" />}
+              />
+              <Surface padded={false}>
+                {managementLinks.map((link, i) => (
+                  <ListRow
+                    key={link.key}
+                    title={link.title}
+                    subtitle={link.subtitle}
+                    Icon={link.Icon}
+                    tone={link.tone}
+                    value={link.key === "pending" && pendingCount > 0 ? String(pendingCount) : undefined}
+                    divided={i > 0}
+                    onPress={go(link.href)}
+                    accessibilityLabel={`Abrir ${link.title}`}
+                  />
+                ))}
+              </Surface>
+              <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
+                No desktop a sidebar já lista estes — a seção não se repete.
+              </Text>
+            </View>
+          ) : null}
+
+          {/* ── Sua atividade ── */}
+          <View style={{ gap: theme.space[2] }}>
+            <SectionHeader title="Sua atividade" eyebrow="Cessões e trocas" />
+            <Surface padded={false}>
+              <ListRow
+                title="Minhas ofertas"
+                subtitle="Plantões que você ofereceu — aprove candidaturas aqui"
+                Icon={ArrowRightLeft}
+                divided={false}
+                onPress={go("/my-offers")}
+                accessibilityLabel="Ver minhas ofertas de cessão e troca"
+              />
+              <ListRow
+                title="Suas candidaturas"
+                subtitle="Aguardando aprovação do dono do plantão"
+                Icon={UserPlus}
+                onPress={go("/my-applications")}
+                accessibilityLabel="Ver suas candidaturas a cessões e trocas"
+              />
+              <ListRow
+                title="Movimentações de plantão"
+                subtitle="Quem alterou, quem foi alterado e quando — últimos 30 dias"
+                Icon={History}
+                onPress={go("/audit-log")}
+                accessibilityLabel="Ver auditoria de movimentações de plantão"
+              />
+            </Surface>
+          </View>
+
+          {/* ── Notificações (Integração virou a terceira linha) ── */}
+          <View style={{ gap: theme.space[2] }}>
+            <SectionHeader title="Notificações" eyebrow="Avisos" />
+            <Surface padded={false}>
+              <ListRow
+                title="Mudanças de escala"
+                subtitle="Quando uma escala for alterada ou cancelada"
+                Icon={CalendarDays}
+                divided={false}
+                toggle={{
+                  value: enableShiftChanges,
+                  onValueChange: toggleWithHaptic(setEnableShiftChanges, "enableShiftChanges"),
+                }}
+              />
+              <ListRow
+                title="Lembrete de plantão"
+                subtitle="30 minutos antes do início"
+                Icon={Bell}
+                toggle={{
+                  value: enableReminders,
+                  onValueChange: toggleWithHaptic(setEnableReminders, "enableReminders"),
+                }}
+              />
+              <ListRow
+                title="Comunica+"
+                subtitle="Alertas do sistema hospitalar"
+                Icon={Link2}
+                tone="success"
+                toggle={{ value: enableHospitalAlert, onValueChange: setEnableHospitalAlert }}
+              />
+            </Surface>
+          </View>
+
+          {/* ── Conta e app (Instituição, Segurança e Diagnóstico juntos) ── */}
+          <View style={{ gap: theme.space[2] }}>
+            <SectionHeader title="Conta e app" eyebrow="Preferências" />
+            <Surface padded={false}>
+              <ListRow
+                title="Instituição ativa"
+                subtitle="Trocar a instituição em uso neste aparelho"
+                Icon={Building2}
+                value="Alterar"
+                divided={false}
+                onPress={handleSwitchInstitution}
+                accessibilityLabel="Trocar instituição ativa"
+              />
+              <ListRow
+                title="Alterar senha"
+                Icon={KeyRound}
+                onPress={go("/change-password")}
+                accessibilityLabel="Alterar minha senha"
+              />
+              <ListRow
+                title="Último erro registrado"
+                subtitle="Se o app fechou sozinho, compartilhe o registro com o suporte"
+                Icon={AlertTriangle}
+                onPress={handleShowCrash}
+                accessibilityLabel="Ver e compartilhar o último erro registrado"
+              />
+            </Surface>
+          </View>
+
+          {/* ── Conta: sair e excluir (Apple 5.1.1(v)) ── */}
+          <View style={{ gap: theme.space[2] }}>
+            <SectionHeader title="Conta" eyebrow="Zona de risco" />
+            <Surface padded={false} style={{ borderColor: theme.palette.danger[100] }}>
+              <ListRow
+                title="Sair da conta"
+                Icon={LogOut}
+                tone="danger"
+                divided={false}
+                onPress={handleLogout}
+                accessibilityLabel="Sair da conta"
+              />
+              <ListRow
+                title="Excluir minha conta"
+                subtitle="Remove seus dados e encerra o acesso. Não pode ser desfeito."
+                Icon={Trash2}
+                tone="danger"
+                onPress={handleDeleteAccountPress}
+                accessibilityLabel="Excluir minha conta"
+                style={{ backgroundColor: theme.colors.dangerSoft }}
+              />
+            </Surface>
+          </View>
+
+          {Constants.expoConfig?.version ? (
+            <Text
+              style={{
+                ...theme.text.caption,
+                fontFamily: theme.fontFamily.mono,
+                color: theme.colors.textMuted,
+                textAlign: "center",
+              }}
+            >
+              Escala+ v{Constants.expoConfig.version}
+            </Text>
+          ) : null}
+
+          <View style={{ height: theme.space[8] }} />
         </View>
 
         {/* Modal: confirmar exclusão com senha */}
@@ -709,8 +628,7 @@ export default function ProfileScreen() {
               style={{
                 width: "100%",
                 maxWidth: 420,
-                backgroundColor: theme.colors.surface,
-                borderRadius: theme.radius.xl,
+                ...theme.surface.floating,
                 padding: theme.space[6],
                 gap: theme.space[4],
               }}
@@ -748,7 +666,7 @@ export default function ProfileScreen() {
                   color: theme.colors.textPrimary,
                   borderRadius: theme.radius.md,
                   borderWidth: 1.5,
-                  borderColor: deleteError ? theme.colors.danger : theme.colors.border,
+                  borderColor: deleteError ? theme.colors.danger : theme.colors.borderStrong,
                   paddingHorizontal: theme.space[4],
                   paddingVertical: theme.space[3],
                   ...theme.text.bodyLg,
@@ -766,9 +684,7 @@ export default function ProfileScreen() {
                   }}
                 >
                   <AlertTriangle size={18} color={theme.palette.danger[600]} />
-                  <Text style={{ ...theme.text.body, color: theme.palette.danger[600], flex: 1 }}>
-                    {deleteError}
-                  </Text>
+                  <Text style={{ ...theme.text.body, color: theme.palette.danger[600], flex: 1 }}>{deleteError}</Text>
                 </View>
               ) : null}
               <TouchableOpacity
@@ -793,7 +709,9 @@ export default function ProfileScreen() {
                 ) : (
                   <>
                     <Trash2 size={18} color={theme.colors.surface} />
-                    <Text style={{ ...theme.text.bodyLg, fontWeight: theme.weight.bold, color: theme.colors.surface }}>
+                    <Text
+                      style={{ ...theme.text.bodyLg, fontWeight: theme.weight.bold, color: theme.colors.surface }}
+                    >
                       Excluir conta
                     </Text>
                   </>
@@ -806,59 +724,82 @@ export default function ProfileScreen() {
                 accessibilityRole="button"
                 style={{ alignItems: "center", padding: theme.space[2] }}
               >
-                <Text style={{ ...theme.text.body, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}>
+                <Text
+                  style={{ ...theme.text.body, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}
+                >
                   Cancelar
                 </Text>
               </TouchableOpacity>
             </View>
           </KeyboardAvoidingView>
         </Modal>
-
-        {/* Botão de Logout */}
-        <TouchableOpacity
-          onPress={handleLogout}
-          accessibilityRole="button"
-          accessibilityLabel="Sair da conta"
-          style={{
-            borderRadius: theme.radius.lg,
-            padding: theme.space[5],
-            alignItems: "center",
-            flexDirection: "row",
-            justifyContent: "center",
-            gap: theme.space[3],
-            backgroundColor: "transparent",
-            borderWidth: 1,
-            borderColor: theme.colors.danger,
-          }}
-          activeOpacity={0.7}
-        >
-          <LogOut size={20} color={theme.colors.danger} />
-          <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.danger }}>Sair</Text>
-        </TouchableOpacity>
-
-        {/* Versão do app */}
-        {Constants.expoConfig?.version ? (
-          <Text
-            className="text-center text-xs"
-            style={{ color: theme.colors.textMuted }}
-          >
-            v{Constants.expoConfig.version}
-          </Text>
-        ) : null}
-
-        {/* Espaçamento inferior */}
-        <View className="h-8" />
-      </View>
       </ScreenContainer>
     </ScreenGradient>
   );
 }
 
-const profileRowCardStyle = {
-  backgroundColor: theme.colors.background,
-  borderWidth: 1,
-  borderColor: theme.colors.border,
-  borderRadius: theme.radius.lg,
-  padding: theme.space[4],
-  marginBottom: theme.space[3],
-};
+/** Número grande do mês. Numeral sempre em fontFamily.mono (tabular). */
+function StatBlock({ label, value, unit }: { label: string; value: number; unit: string }) {
+  return (
+    <View style={{ flex: 1, gap: theme.space[1] }}>
+      <Text
+        style={{
+          ...theme.text.eyebrow,
+          fontWeight: theme.weight.bold,
+          textTransform: "uppercase",
+          color: theme.colors.textSecondary,
+        }}
+      >
+        {label}
+      </Text>
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: theme.space[1] }}>
+        <Text
+          style={{
+            ...theme.text.display,
+            fontFamily: theme.fontFamily.mono,
+            fontWeight: theme.weight.bold,
+            color: theme.colors.textPrimary,
+          }}
+        >
+          {value}
+        </Text>
+        <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>{unit}</Text>
+      </View>
+    </View>
+  );
+}
+
+/** Distribuição de turnos — três blocos em linha, não três linhas. */
+function TurnBlock({ label, hours, value }: { label: string; hours: string; value: number }) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: theme.colors.surfaceAlt,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: theme.radius.md,
+        paddingHorizontal: theme.space[2],
+        paddingVertical: theme.space[2],
+        gap: 1,
+      }}
+    >
+      <Text
+        style={{
+          ...theme.text.titleSm,
+          fontFamily: theme.fontFamily.mono,
+          fontWeight: theme.weight.bold,
+          color: theme.colors.brand,
+        }}
+      >
+        {value}
+      </Text>
+      <Text style={{ ...theme.text.caption, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
+        {label}
+      </Text>
+      <Text style={{ ...theme.text.caption, fontFamily: theme.fontFamily.mono, color: theme.colors.textMuted }}>
+        {hours}
+      </Text>
+    </View>
+  );
+}
