@@ -135,7 +135,7 @@ describe("auth.changePassword endpoint", () => {
       .set("Cookie", cookie!)
       .send({ currentPassword: ORIGINAL_PASSWORD, newPassword: NEW_PASSWORD });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toMatchObject({ ok: true }); // + token: sessão nova deste aparelho (B3)
 
     // 2. Hash atualizado no banco
     const [updated] = await db!.select().from(users).where(eq(users.id, testUserId));

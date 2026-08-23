@@ -14,6 +14,8 @@ const isNonEmptyString = (value: unknown): value is string =>
 export type SessionPayload = {
   userId: string;
   name: string;
+  /** users.session_version no momento da emissão; sessões com `sv` antigo são rejeitadas. */
+  sessionVersion: number;
 };
 
 class SDKServer {
@@ -33,9 +35,19 @@ class SDKServer {
 
   async createSessionToken(
     userId: string,
-    options: { expiresInMs?: number; name?: string } = {},
+    options: { expiresInMs?: number; name?: string; sessionVersion?: number } = {},
   ): Promise<string> {
-    return this.signSession({ userId, name: options.name || "" }, options);
+    // Sem a versão informada, lê a atual do banco — nunca emitir sessão
+    // com versão velha (seria rejeitada na próxima requisição).
+    let sessionVersion = options.sessionVersion;
+    if (sessionVersion === undefined) {
+      const dbInstance = await getDb();
+      const [row] = dbInstance
+        ? await dbInstance.select({ sessionVersion: users.sessionVersion }).from(users).where(eq(users.id, Number(userId)))
+        : [];
+      sessionVersion = row?.sessionVersion ?? 1;
+    }
+    return this.signSession({ userId, name: options.name || "", sessionVersion }, options);
   }
 
   async signSession(
@@ -47,7 +59,7 @@ class SDKServer {
     const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
     const secretKey = this.getSessionSecret();
 
-    return new SignJWT({ userId: payload.userId, name: payload.name })
+    return new SignJWT({ userId: payload.userId, name: payload.name, sv: payload.sessionVersion })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setExpirationTime(expirationSeconds)
       .sign(secretKey);
@@ -55,7 +67,7 @@ class SDKServer {
 
   async verifySession(
     cookieValue: string | undefined | null,
-  ): Promise<{ userId: string; name: string } | null> {
+  ): Promise<{ userId: string; name: string; sessionVersion: number } | null> {
     if (!cookieValue) {
       console.warn("[Auth] Missing session cookie");
       return null;
@@ -66,14 +78,16 @@ class SDKServer {
       const { payload } = await jwtVerify(cookieValue, secretKey, {
         algorithms: ["HS256"],
       });
-      const { userId, name } = payload as Record<string, unknown>;
+      const { userId, name, sv } = payload as Record<string, unknown>;
 
       if (!isNonEmptyString(userId) || !isNonEmptyString(name)) {
         console.warn("[Auth] Session payload missing required fields");
         return null;
       }
 
-      return { userId, name };
+      // Sessões emitidas antes da versão de sessão (sem `sv`) valem como v1.
+      const sessionVersion = typeof sv === "number" && Number.isFinite(sv) ? sv : 1;
+      return { userId, name, sessionVersion };
     } catch (error) {
       console.warn("[Auth] Session verification failed", String(error));
       return null;
@@ -132,6 +146,13 @@ class SDKServer {
     // passa a responder 401/403.
     if (user.deletedAt) {
       throw new ForbiddenError("User not found");
+    }
+
+    // Senha trocada/redefinida depois desta sessão ser emitida: revogada.
+    // (Auditoria 22/08, B3 — antes um aparelho com a senha antiga seguia
+    // logado para sempre.)
+    if (session.sessionVersion !== user.sessionVersion) {
+      throw new ForbiddenError("Session revoked");
     }
 
     return user;

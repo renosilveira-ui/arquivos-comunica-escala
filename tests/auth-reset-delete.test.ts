@@ -322,7 +322,9 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .send({ currentPassword: temp, newPassword: PASSWORD });
     expect(change.status).toBe(200);
 
-    const meAfter = await request(app).get("/api/auth/me").set("Cookie", cookie);
+    // A troca revoga a sessão antiga (B3) e devolve a nova no Set-Cookie.
+    expect((await request(app).get("/api/auth/me").set("Cookie", cookie)).status).toBe(401);
+    const meAfter = await request(app).get("/api/auth/me").set("Cookie", cookieOf(change)!);
     expect(meAfter.body.user.mustChangePassword).toBe(false);
     const relogin = await login(EMAILS.doctor, PASSWORD);
     expect(relogin.status).toBe(200);

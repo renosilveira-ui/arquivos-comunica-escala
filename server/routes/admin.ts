@@ -241,7 +241,9 @@ adminRouter.post("/users/:id/reset-password", async (req: Request, res: Response
   const passwordHash = await bcrypt.hash(temporaryPassword, 12);
   await db
     .update(users)
-    .set({ passwordHash, mustChangePassword: true })
+    // Senha temporária do admin revoga todas as sessões do alvo (B3):
+    // quem estava logado com a senha antiga precisa entrar de novo.
+    .set({ passwordHash, mustChangePassword: true, sessionVersion: sql`${users.sessionVersion} + 1` })
     .where(eq(users.id, userId));
 
   // audit_trail.institution_id é NOT NULL: usa a instituição (primária)
