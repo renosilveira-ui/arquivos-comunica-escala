@@ -1,7 +1,8 @@
-# Planos — Grátis, Lite e Inteligent
+# Planos — Grátis, Lite e Intelligent
 
 > Status: **rascunho de produto** consolidado das decisões do PO em
-> 23/08/2026. Este documento é o contrato dos planos: o que cada pessoa
+> 23/08/2026 (duas rodadas: matriz e, depois, preço do Lite, limite do
+> Grátis e novas funções do Intelligent). Este documento é o contrato dos planos: o que cada pessoa
 > vê em cada plano, os limites e como o servidor decide. Contradições
 > aqui devem ser resolvidas antes de implementar. Complementa
 > [escala-ux.md](./escala-ux.md) (produto) e o sistema de UI.
@@ -27,8 +28,12 @@ Duas frentes, independentes:
 
 | Quem | O que compra | Onde compra | Vale para |
 |---|---|---|---|
-| **Instituição** (hospital, cooperativa, serviço) | O plano do **grupo da escala**: Grátis, Lite ou Inteligent | Contrato direto (fora das lojas): PIX/boleto/cartão via gateway, ou manual no início | Todos os profissionais e gestores vinculados à instituição |
+| **Instituição** (hospital, cooperativa, serviço) | O plano do **grupo da escala**: Grátis, Lite ou Intelligent | **Contratado pelo gestor** (GESTOR_PLUS) em nome do grupo, fora das lojas: checkout web com PIX/cartão via gateway (manual no início). Uma assinatura por instituição, não por pessoa | Todos os profissionais e gestores vinculados à instituição |
 | **Profissional** (usuário individual) | O **plano individual**: recursos pessoais, independentes da instituição | App Store / Google Play (compra dentro do app) | Só a conta dele, em qualquer instituição |
+
+A **assinatura de grupo é do gestor**: quem administra a escala contrata,
+recebe o aviso de limite e de vencimento, e troca de plano. Os
+profissionais nunca veem preço de grupo — só o do plano individual.
 
 A instituição compra o que é *da escala* (publicar mês, painel, vagas,
 auditoria…). O profissional compra o que é *dele* (ver próximo plantão,
@@ -37,9 +42,10 @@ Detalhe em §4 e §6.
 
 ## 2. Os três planos da instituição
 
-| | **Grátis** | **Lite** | **Inteligent** |
+| | **Grátis** | **Lite** | **Intelligent** |
 |---|---|---|---|
-| Profissionais ativos | até **30** | até **60** | **ilimitado** |
+| Profissionais ativos | até **20** | **21 a 60** | **ilimitado** |
+| Preço (proposta do PO) | R$ 0 | **R$ 9,99/mês por grupo** — baixo de propósito, para criar o hábito de pagar; o 21º profissional já exige Lite | a definir (funções inteligentes) |
 | Hospitais por instituição | 1 | 1 | **multi-hospital** |
 | Agenda (lista, folha de mês, Geral/Minha) | ✓ | ✓ | ✓ |
 | Perfil, instituição ativa, senha | ✓ | ✓ | ✓ |
@@ -57,9 +63,12 @@ Detalhe em §4 e §6.
 | **SSO / Comunica+** (abrir logado, auto-SSO na confirmação) | — | — | ✓ |
 | **Admin de usuários** (papéis, senha temporária, desativar) | — | — | ✓ |
 | Panorama hospital × dia (desktop) | — | — | ✓ |
+| **WhatsApp**: pedir troca de plantão por um canal do app no WhatsApp (novo) | — | — | ✓ |
+| **PDF executivo** da escala (novo) | — | — | ✓ |
+| **Importar escala** lendo um padrão (planilha, PDF, foto) e inserindo automaticamente (novo) | — | — | ✓ |
 
-Nomes dos planos como o PO escreveu: **Grátis**, **Lite**, **Inteligent**
-(grafia a confirmar — ver §10).
+Nomes: **Grátis**, **Lite**, **Intelligent** (grafia confirmada pelo PO na
+2ª rodada).
 
 ## 3. Matriz por pessoa: profissional × gestor
 
@@ -75,7 +84,7 @@ plano, o que aparece para o profissional comum (`USER`) e para o gestor
 | Agenda: lista dia-a-dia, folha de mês, Geral/Minha | Tudo do profissional |
 | Detalhe do plantão | Criar, editar e cancelar plantão; alocar e desalocar profissionais |
 | Trocas: ofertar (geral ou dirigida), aceitar oferta, aprovar como dono | Aprovar auto-cadastro (fila no Perfil → Gestão) |
-| Minhas ofertas / Minhas candidaturas a troca | Trocar papel só entre USER e gestor local? **Não** — papéis ficam no Inteligent (admin) |
+| Minhas ofertas / Minhas candidaturas a troca | Trocar papel só entre USER e gestor local? **Não** — papéis ficam no Intelligent (admin) |
 | Perfil: instituição ativa, alterar senha, notificações de mudança de escala | Barra inferior: Agenda · Trocas · Perfil (sem Vagas) |
 | Barra inferior: Agenda · Trocas · Perfil | Perfil → Gestão mostra só "Cadastros pendentes" |
 | Sem: faixa Próximo plantão, confirmação de presença, voz, Comunica+ | Sem: replicar/publicar/bloquear, Painel, Solicitações, relatórios, auditoria, admin |
@@ -93,7 +102,7 @@ Tudo do Grátis, mais:
 | **Confirmação de presença**: push pré-plantão, "Sim confirmo / Não poderei", indicar substituto, aceitar indicação | Recebe o aviso de auto-confirmação e de recusa sem substituto |
 | Histórico das próprias confirmações no detalhe do plantão | Editar mês publicado exige motivo (guardas de mês) |
 
-### Inteligent
+### Intelligent
 
 Tudo do Lite, mais:
 
@@ -103,23 +112,25 @@ Tudo do Lite, mais:
 | **Comando de voz** (microfone no cabeçalho da Agenda) | **Solicitações**: aprovar/rejeitar candidaturas a vaga e cessões que exigem gestor |
 | **Comunica+**: abrir logado a partir da Agenda; auto-SSO após confirmar presença | **Relatórios** e **Movimentações de plantão** (auditoria) |
 | Ver a agenda de **vários hospitais** da instituição | **Admin de usuários**: criar, trocar papel, senha temporária, desativar |
-| | **Multi-hospital**: cadastrar hospitais e setores além do primeiro; Panorama hospital × dia |
+| **WhatsApp**: pedir troca/cessão mandando mensagem ao canal do Escala+ (o app confirma e registra a oferta) | **Multi-hospital**: cadastrar hospitais e setores além do primeiro; Panorama hospital × dia |
+| Receber o **PDF executivo** da escala publicada | Gerar o **PDF executivo** (mês/semana, por hospital/setor) |
+| | **Importar escala** de planilha/PDF/foto com revisão antes de gravar |
 
 ### Resumo do que é "do usuário comum" × "do gestor"
 
 - **Sempre do usuário comum, em qualquer plano**: agenda, detalhe,
   trocas/cessões entre colegas, perfil. No Lite ganha o *seu* plantão
-  (próximo + confirmação); no Inteligent ganha autonomia (vagas, voz,
+  (próximo + confirmação); no Intelligent ganha autonomia (vagas, voz,
   Comunica+).
 - **Sempre do gestor**: montar a escala (criar/alocar) é básico e está no
   Grátis — sem isso não existe escala. O que o gestor paga é **governança**
   (publicar/bloquear no Lite) e **operação em escala** (painel, fila de
-  aprovação, relatórios, admin, multi-hospital no Inteligent).
+  aprovação, relatórios, admin, multi-hospital no Intelligent).
 
 ## 4. Plano individual do profissional
 
 Um profissional pode estar numa instituição **Grátis** e querer, para si,
-o que o Lite/Inteligent dão *a ele*. O plano individual (nome de trabalho:
+o que o Lite/Intelligent dão *a ele*. O plano individual (nome de trabalho:
 **Escala+ Pro**, a confirmar) libera **só recursos pessoais**:
 
 | Recurso pessoal | Grátis (sem Pro) | Com Pro |
@@ -127,7 +138,7 @@ o que o Lite/Inteligent dão *a ele*. O plano individual (nome de trabalho:
 | Faixa Próximo plantão | — | ✓ |
 | Confirmação de presença | — | ✓ **se** a instituição tiver Lite+ (o fluxo envolve o gestor e o cron da instituição) — senão, só "confirmação pessoal" sem gestor (ver §10) |
 | Comando de voz | — | ✓ |
-| Comunica+ (abrir logado) | — | ✓ **se** a instituição tiver SSO configurado (Inteligent) |
+| Comunica+ (abrir logado) | — | ✓ **se** a instituição tiver SSO configurado (Intelligent) |
 | Ver várias instituições/hospitais onde está vinculado | ✓ (já existe) | ✓ |
 | Exportar as próprias horas do mês (PDF/CSV) | — | ✓ (novo) |
 
@@ -141,15 +152,15 @@ servidor confirmou.
 
 ## 5. Limites e o que acontece quando estouram
 
-| Limite | Grátis | Lite | Inteligent | Onde é checado |
+| Limite | Grátis | Lite | Intelligent | Onde é checado |
 |---|---|---|---|---|
-| Profissionais **ativos** na instituição | 30 | 60 | ∞ | Ao criar vínculo: admin cria usuário, aprova auto-cadastro, `register`. Acima do limite → erro claro: "Limite de 30 profissionais do plano Grátis. Desative alguém ou mude para o Lite." |
+| Profissionais **ativos** na instituição | 20 | 60 | ∞ | Ao criar vínculo: admin cria usuário, aprova auto-cadastro, `register`. Acima do limite → erro claro: "Limite de 20 profissionais do plano Grátis. Desative alguém ou mude para o Lite (R$ 9,99/mês)." |
 | Hospitais | 1 | 1 | ∞ | Ao criar hospital (admin) |
 | Mês publicado/bloqueado | — | ✓ | ✓ | `shifts.publish` / `lock` |
 
 - **Contam** só vínculos ativos (`professional_institutions.active = 1`);
   desativar libera vaga.
-- **Downgrade** (Lite → Grátis com 45 ativos): nada é apagado; ninguém é
+- **Downgrade** (Lite → Grátis com 45 ativos, ou Intelligent → Lite com 80): nada é apagado; ninguém é
   desativado automaticamente; **não dá para adicionar** até ficar abaixo
   do limite. Recursos do plano antigo somem na hora (faixa, confirmação)
   — o cron de confirmação ignora instituições sem Lite+.
@@ -165,7 +176,7 @@ servidor confirmou.
 4. Gestor **não** tem plano individual de gestão: quem paga a governança é
    a instituição.
 5. A instituição do piloto (Hospital São Carlos, id 4) entra como
-   **Inteligent** (cortesia) para nada do que já está em uso parar.
+   **Intelligent** (cortesia) para nada do que já está em uso parar.
 
 ## 7. Como o app mostra o que está fora do plano
 
@@ -174,12 +185,12 @@ liberar**. Três tratamentos, escolhidos por peso:
 
 | Situação | Tratamento | Exemplo |
 |---|---|---|
-| Aba inteira fora do plano | **Some da barra** (como Painel/Solicitações já somem para USER); aparece no Perfil → Gestão/Sua atividade como linha com `Badge "Inteligent"` e sem chevron (toque abre a tela de planos) | Vagas no Grátis/Lite |
+| Aba inteira fora do plano | **Some da barra** (como Painel/Solicitações já somem para USER); aparece no Perfil → Gestão/Sua atividade como linha com `Badge "Intelligent"` e sem chevron (toque abre a tela de planos) | Vagas no Grátis/Lite |
 | Ação dentro de uma tela | Botão fica **visível e desabilitado** com rótulo do plano ("Publicar mês · Lite") | Ações do gestor no Grátis |
 | Faixa/recurso pessoal | Uma linha discreta no lugar ("Veja seu próximo plantão no Escala+ Pro") — uma vez por sessão, sem ocupar o lugar do conteúdo | Faixa Próximo plantão no Grátis |
 | Limite estourado | Erro de ação com o número e a saída ("Limite de 30… desative alguém ou mude de plano") | Aprovar cadastro acima do limite |
 
-Perfil ganha a linha **Plano** em "Conta e app": "Grátis · 18 de 30
+Perfil ganha a linha **Plano** em "Conta e app": "Grátis · 18 de 20
 profissionais" (gestor) ou "Escala+ Pro até 23/09" (profissional), que abre
 a tela de planos. A tela de planos (nova, `app/plans.tsx`) é a única que
 fala de preço; compra individual acontece nela; plano da instituição
@@ -284,7 +295,7 @@ Ordem pensada para o piloto não parar e para cada PR ser verificável:
 | PR | Entrega | Risco | Verificação |
 |---|---|---|---|
 | **1. Catálogo + schema + cortesia** | `shared/plans.ts`, migração (`plan` FREE por padrão; São Carlos = INTELIGENT), `resolveEntitlements` no contexto, `getMyCapabilities` com `features` — **sem negar nada ainda** | baixo | Testes do catálogo e do contexto; app continua igual |
-| **2. Guardas no servidor** | `requireFeature` nos procedures Inteligent e Lite (publish/lock/replicate, vagas apply, painel, solicitações, relatórios, auditoria, admin, voz, SSO, confirmação); `assertSeatAvailable`/hospital; cron filtrado | médio | Testes por plano (FREE nega, LITE/INTELIGENT libera); suíte completa |
+| **2. Guardas no servidor** | `requireFeature` nos procedures Intelligent e Lite (publish/lock/replicate, vagas apply, painel, solicitações, relatórios, auditoria, admin, voz, SSO, confirmação); `assertSeatAvailable`/hospital; cron filtrado | médio | Testes por plano (FREE nega, LITE/INTELIGENT libera); suíte completa |
 | **3. App reflete o plano** | `usePlan`, `PlanGate`, abas por plano, linha Plano no Perfil, tela de planos (sem compra), erro `PLAN_REQUIRED` tratado | médio | Galeria com os três planos simulados; web staging com instituição de teste em FREE |
 | **4. Admin interno de planos** | Tela/admin para definir plano, validade e seats; trial de 30 dias na criação da instituição | baixo | Teste de fluxo |
 | **5. Plano individual (lojas)** | IAP, verificação de recibo, webhooks, `individual_plan`; recursos pessoais via "ou" | alto | Sandbox das lojas; build de teste (TestFlight/interno) |
@@ -293,10 +304,34 @@ Ordem pensada para o piloto não parar e para cada PR ser verificável:
 Só o PR 5 exige build nova para ser testado; 1–4 são verificáveis no web
 staging e na galeria.
 
+## 9.1 Funções inteligentes (Intelligent) — escopo e custo basal
+
+Três funções novas pedidas pelo PO na 2ª rodada. Custo **fixo** extra
+≈ zero; o que muda é **variável por uso**, e uma condição: todas
+precisam do servidor **acordado** (o webhook do WhatsApp tem de responder
+em segundos; PDF e importação rodam no servidor) — ou seja, **Render
+Starter (US$ 7/mês)** deixa de ser opcional.
+
+| Função | Como | Custo fixo | Custo variável (estimativa) |
+|---|---|---|---|
+| **Troca por WhatsApp** | Canal oficial do Escala+ na **WhatsApp Cloud API** (Meta, direto, sem intermediário): o profissional manda "quero trocar meu plantão de sexta"; o servidor interpreta (o `voice.interpret` já faz isso com texto), responde com os candidatos e registra a oferta; o colega recebe a proposta no WhatsApp e responde "aceito". Exige número dedicado, verificação do negócio na Meta e aprovação dos templates. | US$ 0 na API direta (um BSP como Twilio/Zenvia cobra ~US$ 0,005/msg a mais) | Mensagens **de serviço** (o usuário iniciou, janela de 24 h) são grátis; **templates** (o app inicia: "T. Guedes propôs troca…") ≈ US$ 0,008–0,035 cada no Brasil. Grupo de 20 com ~40 trocas/mês ≈ 100 templates ≈ **US$ 1–3/mês por grupo** |
+| **PDF executivo** | Gerado no servidor com `@react-pdf/renderer` ou `pdfkit` (sem Chromium — cabe na instância pequena); layout com a marca (moldura, numeral tabular); enviado por e-mail/WhatsApp ou aberto no app. Sem armazenar: gera sob demanda. | US$ 0 (se guardar histórico: DO Spaces, US$ 5/mês por 250 GB) | ≈ 0 — segundos de CPU por PDF |
+| **Importar escala por padrão** | Planilha/CSV: parser determinístico, grátis. PDF/foto: leitura com modelo de visão (API da Anthropic — Claude Haiku/Sonnet) que devolve JSON estruturado; o gestor **revisa** na tela antes de gravar (nunca grava direto). | US$ 0 | ≈ **US$ 0,01–0,05 por importação** (2 páginas ≈ 3–5 mil tokens de entrada); 1–4 importações/mês por grupo ≈ centavos |
+
+Basal consolidado com as três funções: **≈ US$ 45–55/mês fixo** (Render
+Starter + banco + Apple) e **< US$ 5/mês por grupo Intelligent ativo** em
+variável. O custo relevante é de **engenharia**: integração e homologação
+do WhatsApp (número, verificação, templates, webhook, anti-abuso), layout
+do PDF e a tela de revisão da importação (mapear nomes → profissionais,
+setores e horários, com confiança por linha).
+
+Ordem sugerida dentro do Intelligent: PDF executivo (menor risco, valor
+imediato para o gestor) → importação por planilha → troca por WhatsApp →
+importação por PDF/foto.
+
 ## 10. Decisões pendentes
 
-1. **Grafia do plano**: "Inteligent" (como escrito), "Inteligente" ou
-   "Intelligent"? Recomendo **Inteligente** (português, como o resto da UI).
+1. ~~Grafia do plano~~ — confirmada pelo PO: **Intelligent**.
 2. **Nome do plano individual**: "Escala+ Pro"?
 3. **Confirmação de presença no Pro quando a instituição é Grátis**: o fluxo
    real envolve gestor (substituto, auto-confirmação, aviso). Opções:
@@ -305,9 +340,14 @@ staging e na galeria.
    (b) "confirmação pessoal" sem gestor (só registra presença).
 4. **Vagas no Grátis/Lite**: a aba some (proposta acima) ou fica visível
    só como lista "plantões em aberto" sem candidatura?
-5. **Trial**: Lite por 30 dias em toda instituição nova? Inteligent por
+5. **Trial**: Lite por 30 dias em toda instituição nova? Intelligent por
    14 dias?
-6. **Preços** e periodicidade (mensal/anual) — fora deste documento.
+6. **Preços**: Lite proposto em **R$ 9,99/mês por grupo** (o basal da
+   plataforma, ≈ R$ 210–250/mês, se paga com ~25 grupos Lite);
+   Intelligent e plano individual a definir; periodicidade mensal/anual.
+   Se o gestor assinar **dentro do app iOS**, a Apple retém 15–30 %
+   (R$ 9,99 → R$ 7–8,5 líquidos) — por isso o checkout de grupo é web
+   (PIX/cartão), fora das lojas.
 7. **Gateway** para a instituição (Stripe Brasil, Pagar.me, Asaas…) e
    meio de pagamento mínimo (PIX).
 8. **Lojas**: a compra individual exige IAP; o plano institucional vendido
