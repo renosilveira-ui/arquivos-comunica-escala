@@ -126,7 +126,11 @@ async function startServer() {
   app.use(express.urlencoded({ limit: PAYLOAD_LIMIT, extended: true }));
 
   registerOAuthRoutes(app);
-  app.use("/api/auth", createAuthRateLimit(), authRouter);
+  // Rate limit só em mutações (login, register, reset…): GET /api/auth/me
+  // roda a cada abertura do app — 20/15min por IP bloqueava clínicas
+  // inteiras atrás de NAT (auditoria 22/08 parte 2).
+  const authRateLimit = createAuthRateLimit();
+  app.use("/api/auth", (req, res, next) => (req.method === "GET" ? next() : authRateLimit(req, res, next)), authRouter);
   app.use("/api/admin", adminRouter);
   // Página pública da Política de Privacidade (App Store + LGPD)
   app.use(privacyRouter);

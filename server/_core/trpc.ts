@@ -4,8 +4,20 @@ import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { parseTenantIdHeader, resolveInstitutionForUser } from "./tenant";
 
+/** Mensagem de erro que vaza detalhes do driver (SQL, códigos MySQL) não vai para o cliente. */
+export function isDriverErrorMessage(message: string): boolean {
+  return /Failed query|sqlMessage|ER_[A-Z_]+|errno:|ECONNREFUSED|ETIMEDOUT|PROTOCOL_/.test(message);
+}
+
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
+  errorFormatter({ shape, error }) {
+    if (error.code === "INTERNAL_SERVER_ERROR" && isDriverErrorMessage(error.message)) {
+      console.error("[tRPC] erro interno mascarado:", JSON.stringify(error.message.slice(0, 300)));
+      return { ...shape, message: "Erro interno no servidor. Tente novamente em instantes." };
+    }
+    return shape;
+  },
 });
 
 export const router = t.router;

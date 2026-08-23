@@ -45,10 +45,15 @@ ssoRouter.post("/generate", async (req: Request, res: Response): Promise<void> =
   // 3. Resolve tenant
   const tenantHeader = req.headers["x-tenant-id"];
   const parsedTenantId = typeof tenantHeader === "string" ? Number(tenantHeader) : null;
-  const tenant = await resolveInstitutionForUser(
-    user.id,
-    Number.isFinite(parsedTenantId) ? parsedTenantId : null,
-  );
+  let tenant;
+  try {
+    tenant = await resolveInstitutionForUser(user.id, Number.isFinite(parsedTenantId) ? parsedTenantId : null);
+  } catch (err) {
+    // Sem vínculo ativo / tenant inválido lança — virava 500 genérico e o
+    // 403 abaixo era inalcançável (auditoria 22/08 parte 2).
+    res.status(403).json({ error: err instanceof Error ? err.message : "Sem vínculo institucional ativo" });
+    return;
+  }
 
   if (!tenant.institutionId) {
     res.status(403).json({ error: "Sem vínculo institucional ativo" });
@@ -126,10 +131,15 @@ ssoRouter.post("/launch-code", async (req: Request, res: Response): Promise<void
 
   const tenantHeader = req.headers["x-tenant-id"];
   const parsedTenantId = typeof tenantHeader === "string" ? Number(tenantHeader) : null;
-  const tenant = await resolveInstitutionForUser(
-    user.id,
-    Number.isFinite(parsedTenantId) ? parsedTenantId : null,
-  );
+  let tenant;
+  try {
+    tenant = await resolveInstitutionForUser(user.id, Number.isFinite(parsedTenantId) ? parsedTenantId : null);
+  } catch (err) {
+    // Sem vínculo ativo / tenant inválido lança — virava 500 genérico e o
+    // 403 abaixo era inalcançável (auditoria 22/08 parte 2).
+    res.status(403).json({ error: err instanceof Error ? err.message : "Sem vínculo institucional ativo" });
+    return;
+  }
 
   if (!tenant.institutionId) {
     res.status(403).json({ error: "Sem vínculo institucional ativo" });
