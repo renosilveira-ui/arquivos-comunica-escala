@@ -2,6 +2,8 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { assertMonthNotLocked } from "./month-guards";
+import { recomputeShiftStatus } from "./shift-status";
 import { eq, and } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
@@ -15,9 +17,23 @@ import {
 import { sendPushNotification } from "./notifications-service";
 import { assertSpecialtyCompatible, specialtiesConflict } from "./specialty";
 import { recordAudit } from "./audit-trail";
-import { randomUUID } from "crypto";
 import { triggerAutoSso } from "./sso/auto-sso";
 import { syncDutyToComunica } from "./sso/duty-sync";
+
+/** Confirmar/auto-confirmar só faz sentido se a alocação ainda está ativa. */
+export async function assertAssignmentStillActive(db: any, assignmentId: number): Promise<void> {
+  const [row] = await db
+    .select({ isActive: shiftAssignmentsV2.isActive })
+    .from(shiftAssignmentsV2)
+    .where(eq(shiftAssignmentsV2.id, assignmentId))
+    .limit(1);
+  if (!row || !row.isActive) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Esta alocação foi removida da escala — não há o que confirmar.",
+    });
+  }
+}
 
 export const confirmationRouter = router({
   /**
@@ -31,6 +47,50 @@ export const confirmationRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { registerPushToken: register } = await import("./notifications-service");
       return register(ctx.user.id, input.token, input.platform, ctx.institutionId);
+    }),
+
+  /** Logout / troca de conta: o aparelho deixa de receber push deste usuário. */
+  unregisterPushToken: protectedProcedure
+    .input(z.object({ token: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const { unregisterPushToken: unregister } = await import("./notifications-service");
+      return unregister(ctx.user.id, input.token);
+    }),
+
+  /**
+   * Indicação dirigida a MIM (substituto): dados do plantão + quem indicou,
+   * para a tela de aceite. Só responde se a indicação ainda está aberta.
+   */
+  getNomination: protectedProcedure
+    .input(z.object({ confirmationToken: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const [row] = await db
+        .select({
+          id: dutyConfirmations.id,
+          status: dutyConfirmations.status,
+          confirmationToken: dutyConfirmations.confirmationToken,
+          shiftInstanceId: dutyConfirmations.shiftInstanceId,
+          shiftLabel: shiftInstances.label,
+          shiftStartAt: shiftInstances.startAt,
+          shiftEndAt: shiftInstances.endAt,
+          sectorName: sectors.name,
+          nominatedByName: professionals.name,
+        })
+        .from(dutyConfirmations)
+        .innerJoin(shiftInstances, eq(dutyConfirmations.shiftInstanceId, shiftInstances.id))
+        .innerJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
+        .innerJoin(professionals, eq(dutyConfirmations.professionalId, professionals.id))
+        .where(
+          and(
+            eq(dutyConfirmations.confirmationToken, input.confirmationToken),
+            eq(dutyConfirmations.replacementUserId, ctx.user.id),
+            eq(dutyConfirmations.status, "NOMINATED"),
+          ),
+        )
+        .limit(1);
+      return row ?? null;
     }),
 
   /**
@@ -138,6 +198,7 @@ export const confirmationRouter = router({
       if (conf.status !== "PENDING") {
         throw new TRPCError({ code: "BAD_REQUEST", message: `Confirmação já processada (${conf.status})` });
       }
+      await assertAssignmentStillActive(db, conf.assignmentId);
 
       await db
         .update(dutyConfirmations)
@@ -391,21 +452,41 @@ export const confirmationRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Profissional não encontrado" });
       }
 
-      // Deactivate old assignment
-      await db
-        .update(shiftAssignmentsV2)
-        .set({ isActive: false })
-        .where(eq(shiftAssignmentsV2.id, conf.assignmentId));
-
-      // Create new assignment for replacement
+      // Realocação é a mesma operação de uma cessão: transação, alocação
+      // de origem ainda ativa, mês não trancado e status do turno
+      // derivado (auditoria 22/08 parte 2).
       const [oldAssignment] = await db
         .select()
         .from(shiftAssignmentsV2)
         .where(eq(shiftAssignmentsV2.id, conf.assignmentId))
         .limit(1);
+      if (!oldAssignment || !oldAssignment.isActive) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "A alocação original já foi alterada — esta indicação não vale mais.",
+        });
+      }
+      const [shift] = await db
+        .select({ startAt: shiftInstances.startAt })
+        .from(shiftInstances)
+        .where(eq(shiftInstances.id, oldAssignment.shiftInstanceId))
+        .limit(1);
+      if (shift) {
+        await assertMonthNotLocked(oldAssignment.institutionId, oldAssignment.hospitalId, shift.startAt);
+      }
 
-      if (oldAssignment) {
-        await db.insert(shiftAssignmentsV2).values({
+      await db.transaction(async (tx) => {
+        const [deactivated] = await tx
+          .update(shiftAssignmentsV2)
+          .set({ isActive: false })
+          .where(and(eq(shiftAssignmentsV2.id, conf.assignmentId), eq(shiftAssignmentsV2.isActive, true)));
+        if (!deactivated.affectedRows) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A alocação original já foi alterada — esta indicação não vale mais.",
+          });
+        }
+        await tx.insert(shiftAssignmentsV2).values({
           shiftInstanceId: oldAssignment.shiftInstanceId,
           institutionId: oldAssignment.institutionId,
           hospitalId: oldAssignment.hospitalId,
@@ -416,16 +497,15 @@ export const confirmationRouter = router({
           isActive: true,
           createdBy: ctx.user.id,
         });
-      }
-
-      // Update confirmation
-      await db
-        .update(dutyConfirmations)
-        .set({
-          status: "REPLACEMENT_CONFIRMED",
-          respondedAt: new Date(),
-        })
-        .where(eq(dutyConfirmations.id, conf.id));
+        await recomputeShiftStatus(tx, oldAssignment.shiftInstanceId);
+        const [done] = await tx
+          .update(dutyConfirmations)
+          .set({ status: "REPLACEMENT_CONFIRMED", respondedAt: new Date() })
+          .where(and(eq(dutyConfirmations.id, conf.id), eq(dutyConfirmations.status, "NOMINATED")));
+        if (!done.affectedRows) {
+          throw new TRPCError({ code: "CONFLICT", message: "Esta indicação já foi processada." });
+        }
+      });
 
       // Auto-SSO for replacement → Comunica+ (fire-and-forget)
       triggerAutoSso(conf.id).catch((err) =>

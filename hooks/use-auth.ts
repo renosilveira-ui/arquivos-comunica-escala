@@ -10,6 +10,7 @@
 // Agora o estado vive UMA vez no AuthProvider (root layout); useAuth()
 // consome o contexto. A API pública do hook é idêntica à anterior.
 
+import { getLastPushToken, setLastPushToken } from "@/lib/push-token";
 import { authApi, type AuthUser } from "@/lib/_core/api";
 import * as Auth from "@/lib/_core/auth";
 import { clearActiveInstitutionId } from "@/lib/tenant-state";
@@ -104,7 +105,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await authApi.logout();
+    await authApi.logout(getLastPushToken());
+    setLastPushToken(null);
     await Auth.removeSessionToken();
     await Auth.clearUserInfo();
     await clearActiveInstitutionId();

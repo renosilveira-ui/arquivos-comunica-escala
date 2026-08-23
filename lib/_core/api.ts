@@ -113,8 +113,11 @@ export const authApi = {
     return { ok: false, error: errMsg };
   },
 
-  async logout(): Promise<void> {
-    await apiFetch("/api/auth/logout", { method: "POST" });
+  async logout(pushToken?: string | null): Promise<void> {
+    await apiFetch("/api/auth/logout", {
+      method: "POST",
+      body: JSON.stringify(pushToken ? { pushToken } : {}),
+    });
   },
 
   async me(): Promise<AuthUser | null> {

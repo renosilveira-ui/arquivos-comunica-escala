@@ -23,6 +23,27 @@ export default function ConfirmDutyScreen() {
     undefined,
     { enabled: !!user, retry: 2 },
   );
+  // Push "duty_nomination": o token é de uma indicação dirigida a MIM.
+  const nominationQuery = trpc.confirmations.getNomination.useQuery(
+    { confirmationToken: params.token ?? "" },
+    { enabled: !!user && !!params.token, retry: 1 },
+  );
+  const nomination = nominationQuery.data ?? null;
+
+  const acceptNominationMutation = trpc.confirmations.acceptNomination.useMutation({
+    onSuccess: () => {
+      feedback.success("Plantão assumido. Seu login no Comunica+ será automático.");
+      router.replace("/(tabs)/agenda" as any);
+    },
+    onError: (err) => feedback.error(err.message),
+  });
+  const declineNominationMutation = trpc.confirmations.declineNomination.useMutation({
+    onSuccess: () => {
+      feedback.info("Indicação recusada.");
+      router.replace("/(tabs)/agenda" as any);
+    },
+    onError: (err) => feedback.error(err.message),
+  });
 
   const confirmMutation = trpc.confirmations.confirm.useMutation({
     onSuccess: () => {
@@ -73,7 +94,7 @@ export default function ConfirmDutyScreen() {
     );
   };
 
-  if (isLoading) {
+  if (isLoading || (params.token && nominationQuery.isLoading)) {
     return (
       <ScreenGradient variant="light">
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
@@ -94,6 +115,67 @@ export default function ConfirmDutyScreen() {
             title="Não foi possível verificar suas confirmações"
             onRetry={() => refetch()}
           />
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (nomination) {
+    const nStart = new Date(nomination.shiftStartAt);
+    const nEnd = new Date(nomination.shiftEndAt);
+    const fmt = (d: Date) => d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const nDate = nStart.toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" });
+    const nBusy = acceptNominationMutation.isPending || declineNominationMutation.isPending;
+    return (
+      <ScreenGradient variant="light">
+        <View style={{ flex: 1, justifyContent: "center", paddingHorizontal: 20, gap: 20 }}>
+          <Text style={{ fontSize: 24, fontWeight: "800", color: theme.colors.textPrimary, textAlign: "center" }}>
+            Você foi indicado como substituto
+          </Text>
+          <TintedGlassCard variant="light">
+            <View style={{ gap: 12 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <Text style={{ fontSize: 20, fontWeight: "700", color: theme.colors.textPrimary }}>{nomination.shiftLabel}</Text>
+                <Badge variant="warning" label="Aguardando você" />
+              </View>
+              <Text style={{ fontSize: 16, color: theme.colors.textSecondary, textTransform: "capitalize" }}>{nDate}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Clock size={18} color={theme.colors.textSecondary} />
+                <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary }}>
+                  {fmt(nStart)} – {fmt(nEnd)}
+                </Text>
+              </View>
+              <Text style={{ fontSize: 15, color: theme.colors.textSecondary }}>{nomination.sectorName}</Text>
+              <Text style={{ fontSize: 15, color: theme.colors.textSecondary }}>Indicado por {nomination.nominatedByName}</Text>
+            </View>
+          </TintedGlassCard>
+          <Text style={{ fontSize: 16, color: theme.colors.textSecondary, textAlign: "center", lineHeight: 22 }}>
+            Ao aceitar, o plantão passa para você e o login no Comunica+ será feito automaticamente.
+          </Text>
+          <View style={{ gap: 12 }}>
+            <PrimaryButton
+              label={acceptNominationMutation.isPending ? "Assumindo..." : "Aceitar o plantão"}
+              icon={<Check size={20} color="#FFFFFF" />}
+              onPress={() => acceptNominationMutation.mutate({ confirmationToken: nomination.confirmationToken })}
+              disabled={nBusy}
+              loading={acceptNominationMutation.isPending}
+            />
+            <PrimaryButton
+              label={declineNominationMutation.isPending ? "Processando..." : "Não posso assumir"}
+              icon={<X size={20} color="#FFFFFF" />}
+              onPress={() =>
+                uiConfirmDestructive(
+                  "Recusar a indicação?",
+                  "Quem indicou você será avisado para indicar outra pessoa.",
+                  "Sim, recusar",
+                  () => declineNominationMutation.mutate({ confirmationToken: nomination.confirmationToken }),
+                )
+              }
+              disabled={nBusy}
+              loading={declineNominationMutation.isPending}
+              className="bg-red-500"
+            />
+          </View>
         </View>
       </ScreenGradient>
     );
