@@ -45,7 +45,9 @@ Detalhe em §4 e §6.
 | | **Grátis** | **Lite** | **Intelligent** |
 |---|---|---|---|
 | Profissionais ativos | até **20** | **21 a 60** | **ilimitado** |
-| Preço (proposta do PO) | R$ 0 | **R$ 9,99/mês por grupo** — baixo de propósito, para criar o hábito de pagar; o 21º profissional já exige Lite | a definir (funções inteligentes) |
+| Preço (PO, 23/08 — 3ª rodada) | R$ 0 | **R$ 12,90 por usuário/mês** (o 21º profissional já exige Lite) | **R$ 28,90 por usuário/mês** |
+| Grupo de escala contratado junto (fora da loja da Apple) | — | **−25 %** | **−25 %** |
+| Pagamento anual | — | **−10 %** (cumulativo) | **−10 %** (cumulativo) |
 | Hospitais por instituição | 1 | 1 | **multi-hospital** |
 | Agenda (lista, folha de mês, Geral/Minha) | ✓ | ✓ | ✓ |
 | Perfil, instituição ativa, senha | ✓ | ✓ | ✓ |
@@ -154,7 +156,7 @@ servidor confirmou.
 
 | Limite | Grátis | Lite | Intelligent | Onde é checado |
 |---|---|---|---|---|
-| Profissionais **ativos** na instituição | 20 | 60 | ∞ | Ao criar vínculo: admin cria usuário, aprova auto-cadastro, `register`. Acima do limite → erro claro: "Limite de 20 profissionais do plano Grátis. Desative alguém ou mude para o Lite (R$ 9,99/mês)." |
+| Profissionais **ativos** na instituição | 20 | 60 | ∞ | Ao criar vínculo: admin cria usuário, aprova auto-cadastro, `register`. Acima do limite → erro claro: "Limite de 20 profissionais do plano Grátis. Desative alguém ou mude para o Lite." |
 | Hospitais | 1 | 1 | ∞ | Ao criar hospital (admin) |
 | Mês publicado/bloqueado | — | ✓ | ✓ | `shifts.publish` / `lock` |
 
@@ -304,6 +306,32 @@ Ordem pensada para o piloto não parar e para cada PR ser verificável:
 Só o PR 5 exige build nova para ser testado; 1–4 são verificáveis no web
 staging e na galeria.
 
+## 8.1 Preços (decisão do PO, 23/08 — 3ª rodada)
+
+Cobrança **por usuário** (profissional ativo), não por grupo:
+
+| | Lite | Intelligent |
+|---|---|---|
+| Por usuário/mês (individual, na loja) | **R$ 12,90** | **R$ 28,90** |
+| Grupo de escala junto, contratado pelo gestor **fora da loja da Apple** (checkout web) | **−25 %** → R$ 9,68 | **−25 %** → R$ 21,68 |
+| Pagamento **anual** | **−10 %** a mais (cumulativo com o de grupo) | idem |
+
+Exemplos: grupo Lite de 30 pessoas, mensal = 30 × 12,90 × 0,75 =
+**R$ 290,25/mês**; anual = × 0,90 × 12 = **R$ 3.134,70/ano**. Grupo
+Intelligent de 50 pessoas, mensal = 50 × 28,90 × 0,75 = **R$ 1.083,75/mês**.
+
+Regras:
+- **Assentos** = profissionais ativos na instituição no dia da cobrança
+  (o limite de 60 do Lite continua; acima, Intelligent).
+- O desconto de 25 % existe porque o grupo paga fora das lojas (sem a
+  retenção de 15–30 % da Apple/Google) — nunca oferecer o preço de grupo
+  dentro do app iOS.
+- O **plano individual** (§4) é o preço cheio da loja e libera só
+  recursos pessoais; o gestor que quer governança contrata o grupo.
+- Custo basal de referência (§9.1 e memória): ≈ R$ 245–310/mês fixo para a
+  plataforma inteira + centavos por usuário Grátis/Lite e ≈ R$ 0,25–1,40
+  por usuário Intelligent — a margem por usuário pago é > 90 %.
+
 ## 9.1 Funções inteligentes (Intelligent) — escopo e custo basal
 
 Três funções novas pedidas pelo PO na 2ª rodada. Custo **fixo** extra
@@ -342,12 +370,8 @@ importação por PDF/foto.
    só como lista "plantões em aberto" sem candidatura?
 5. **Trial**: Lite por 30 dias em toda instituição nova? Intelligent por
    14 dias?
-6. **Preços**: Lite proposto em **R$ 9,99/mês por grupo** (o basal da
-   plataforma, ≈ R$ 210–250/mês, se paga com ~25 grupos Lite);
-   Intelligent e plano individual a definir; periodicidade mensal/anual.
-   Se o gestor assinar **dentro do app iOS**, a Apple retém 15–30 %
-   (R$ 9,99 → R$ 7–8,5 líquidos) — por isso o checkout de grupo é web
-   (PIX/cartão), fora das lojas.
+6. ~~Preços~~ — decididos (§8.1): Lite R$ 12,90 e Intelligent R$ 28,90 por
+   usuário/mês; grupo −25 % fora da loja; anual −10 %.
 7. **Gateway** para a instituição (Stripe Brasil, Pagar.me, Asaas…) e
    meio de pagamento mínimo (PIX).
 8. **Lojas**: a compra individual exige IAP; o plano institucional vendido
