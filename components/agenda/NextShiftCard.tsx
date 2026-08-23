@@ -7,13 +7,14 @@
 //   - futuro: "Começa em 3 h" / "amanhã às 07:00" + ações (Confirmar/Trocar)
 //
 // Variantes:
-//   - "compact" (padrão, usada na Agenda): UMA faixa — quando · horário ·
-//     setor + uma única ação (Confirmar / Comunica+) ou a seta de detalhe.
-//     O PO pediu (2026-08-22) o card bem menor para não roubar a visão
-//     panorâmica da escala; trocar plantão fica no detalhe.
+//   - "compact" (padrão, usada na Agenda): faixa de duas linhas — eyebrow +
+//     quando (com a única ação ao lado: Confirmar / Comunica+ / seta) e o
+//     detalhe "turno horário · setor" em linha própria. Navy sólido quando
+//     é o próximo; verde tinted em andamento. O PO pediu (2026-08-22) o card
+//     bem menor para não roubar a visão panorâmica; trocar fica no detalhe.
 //   - "full": card grande com título, local e botões empilhados.
 
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { ArrowRightLeft, CheckCircle2, ChevronRight, Clock, ExternalLink, MapPin, PlayCircle } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { Surface, tonedText } from "@/components/ui/Surface";
@@ -197,15 +198,31 @@ type CompactProps = Pick<NextShiftCardProps, "shift" | "needsConfirmation" | "on
   now: Date;
 };
 
-/** Faixa de uma linha: ~56pt. Só UMA ação à direita (a que importa agora). */
+/**
+ * Faixa de DUAS linhas (~78pt; menos da metade da variante "full").
+ *
+ * Proposta de design 23/08: em uma linha só, a coluna de texto ficava com
+ * 184pt entre o ícone e o botão e as strings reais não cabiam — "Próximo ·
+ * amanhã às 07:00" perdia o horário e "Manhã 07:00–13:00 · Centro
+ * cirúrgico" perdia o setor. A faixa elidia exatamente as duas respostas
+ * que ela existe para dar. Agora: eyebrow + horário na primeira linha (com
+ * a ação ao lado) e o detalhe em linha própria, de largura cheia, que pode
+ * quebrar.
+ *
+ * Só UMA coisa por tela recebe navy preenchido: a que exige decisão agora.
+ * A faixa do próximo plantão é essa coisa — navy sólido. Em andamento, a
+ * faixa é verde tinted (nada disputa o primeiro lugar com ela).
+ */
 function CompactNextShift({ shift, now, needsConfirmation, onConfirm, onOpenComunica, onPress }: CompactProps) {
-  const rowStyle = { flexDirection: "row", alignItems: "center", gap: theme.space[3] } as const;
-  const compactSurface = { paddingVertical: theme.space[2], paddingHorizontal: theme.space[3] };
-
   if (!shift) {
     return (
-      <Surface level="card" tone="muted" style={compactSurface} accessibilityLabel="Sem próximo plantão">
-        <View style={rowStyle}>
+      <Surface
+        level="card"
+        tone="muted"
+        style={{ paddingVertical: theme.space[2], paddingHorizontal: theme.space[3] }}
+        accessibilityLabel="Sem próximo plantão"
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
           <Clock size={18} color={theme.colors.textMuted} />
           <Text style={{ flex: 1, ...theme.text.body, color: theme.colors.textSecondary }} numberOfLines={1}>
             Nenhum plantão agendado
@@ -218,43 +235,99 @@ function CompactNextShift({ shift, now, needsConfirmation, onConfirm, onOpenComu
   const start = new Date(shift.startAt);
   const end = new Date(shift.endAt);
   const inProgress = start.getTime() <= now.getTime() && now.getTime() < end.getTime();
-  const tone = inProgress ? "success" : "primary";
-  const colors = tonedText(tone);
   const where = [shift.sectorName, shift.hospitalName].filter(Boolean).join(" · ");
-  const headline = inProgress ? `Em andamento · termina às ${fmtTime(end)}` : `Próximo · ${describeStart(start, now)}`;
+  const headline = inProgress ? `Termina às ${fmtTime(end)}` : describeStart(start, now);
   const detail = `${shift.label} ${fmtTime(start)}–${fmtTime(end)}${where ? ` · ${where}` : ""}`;
 
+  const ink = inProgress
+    ? {
+        bg: theme.palette.success[50],
+        border: theme.palette.success[200],
+        bar: theme.palette.success[700],
+        eyebrow: theme.palette.success[700],
+        headline: theme.palette.success[900],
+        detail: theme.palette.success[700],
+        icon: theme.palette.success[700],
+        buttonBg: theme.palette.success[700],
+        buttonFg: theme.colors.onDark.text,
+        chevron: theme.palette.success[700],
+      }
+    : {
+        bg: theme.colors.brand,
+        border: theme.colors.brand,
+        bar: theme.colors.brand,
+        eyebrow: theme.colors.onDark.textMuted,
+        headline: theme.colors.onDark.text,
+        detail: theme.colors.onDark.textSoft,
+        icon: theme.colors.onDark.textSoft,
+        buttonBg: theme.colors.surface,
+        buttonFg: theme.colors.brand,
+        chevron: theme.colors.onDark.textSoft,
+      };
+
   // Uma ação só: Comunica+ durante o plantão; Confirmar quando pendente;
-  // senão, a seta de detalhe (o card inteiro já é tocável).
-  const action =
-    inProgress && onOpenComunica ? (
-      <AppButton title="Comunica+" onPress={onOpenComunica} size="sm" fullWidth={false} />
-    ) : !inProgress && needsConfirmation && onConfirm ? (
-      <AppButton title="Confirmar" onPress={onConfirm} size="sm" fullWidth={false} />
-    ) : onPress ? (
-      <ChevronRight size={18} color={colors.soft} />
-    ) : null;
+  // senão, a seta de detalhe (a faixa inteira já é tocável).
+  const actionLabel = inProgress && onOpenComunica ? "Comunica+" : !inProgress && needsConfirmation && onConfirm ? "Confirmar" : null;
+  const actionPress = inProgress ? onOpenComunica : onConfirm;
 
   return (
-    <Surface
-      level="card"
-      tone={tone}
+    <Pressable
       onPress={onPress}
-      style={compactSurface}
-      accessibilityLabel={`${inProgress ? "Plantão em andamento" : "Próximo plantão"}: ${shift.label}, ${headline}`}
+      disabled={!onPress}
+      accessibilityRole={onPress ? "button" : undefined}
+      accessibilityLabel={`${inProgress ? "Plantão em andamento" : "Próximo plantão"}: ${headline}. ${detail}`}
+      style={({ pressed }) => ({
+        backgroundColor: ink.bg,
+        borderWidth: 1,
+        borderColor: ink.border,
+        borderLeftWidth: inProgress ? 4 : 1,
+        borderLeftColor: ink.bar,
+        borderRadius: theme.radius.lg,
+        paddingVertical: theme.space[3] - 1,
+        paddingHorizontal: theme.space[3] + 1,
+        gap: theme.space[2] - 1,
+        opacity: pressed ? 0.92 : 1,
+        ...(inProgress ? {} : theme.shadow.md),
+      })}
     >
-      <View style={rowStyle}>
-        {inProgress ? <PlayCircle size={18} color={colors.strong} /> : <Clock size={18} color={colors.strong} />}
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text numberOfLines={1} style={{ ...theme.text.body, fontWeight: theme.weight.semibold, color: colors.strong }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] - 1 }}>
+        {inProgress ? <PlayCircle size={19} color={ink.icon} /> : <Clock size={19} color={ink.icon} />}
+        <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+          <Text style={{ ...theme.text.eyebrow, fontSize: 10, fontWeight: theme.weight.bold, textTransform: "uppercase", color: ink.eyebrow }}>
+            {inProgress ? "Em andamento" : "Próximo plantão"}
+          </Text>
+          <Text
+            numberOfLines={1}
+            style={{ fontSize: 17, lineHeight: 22, letterSpacing: -0.25, fontWeight: theme.weight.bold, color: ink.headline, fontVariant: ["tabular-nums"] }}
+          >
             {headline}
           </Text>
-          <Text numberOfLines={1} style={{ ...theme.text.caption, color: colors.soft, fontVariant: ["tabular-nums"] }}>
-            {detail}
-          </Text>
         </View>
-        {action}
+        {actionLabel && actionPress ? (
+          <Pressable
+            onPress={actionPress}
+            accessibilityRole="button"
+            accessibilityLabel={actionLabel === "Confirmar" ? "Confirmar presença" : "Abrir Comunica+"}
+            hitSlop={6}
+            style={({ pressed }) => ({
+              minHeight: 38,
+              paddingHorizontal: theme.space[3] + 1,
+              borderRadius: theme.radius.md,
+              backgroundColor: ink.buttonBg,
+              alignItems: "center",
+              justifyContent: "center",
+              opacity: pressed ? 0.85 : 1,
+            })}
+          >
+            <Text style={{ ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.bold, color: ink.buttonFg }}>{actionLabel}</Text>
+          </Pressable>
+        ) : onPress ? (
+          <ChevronRight size={18} color={ink.chevron} />
+        ) : null}
       </View>
-    </Surface>
+      <Text style={{ ...theme.text.caption, fontSize: 12.5, lineHeight: 17, fontFamily: theme.fontFamily.mono, fontVariant: ["tabular-nums"], color: ink.detail }}>
+        {detail}
+      </Text>
+    </Pressable>
   );
 }

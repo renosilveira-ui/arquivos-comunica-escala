@@ -1,26 +1,30 @@
-// components/agenda/MonthAgenda.tsx — visão "Panorama" da Agenda.
+// components/agenda/MonthAgenda.tsx — a FOLHA DE MÊS da Agenda (Panorama
+// no celular; "Calendário" no desktop).
 //
 // Pedido do PO (2026-08-19): "ver o calendário inteiro, pra poder
-// selecionar o dia e ver o detalhe do dia (plantonistas, ofertas,
-// vagas etc)".
+// selecionar o dia e ver o detalhe do dia (plantonistas, ofertas, vagas)".
 //
-// Layout: grade do mês (7 colunas, SEG→DOM) com indicadores por dia
-// (pontos: verde=ocupado, âmbar=pendente, vermelho=vago) → tocar num
-// dia seleciona → detalhe do dia abaixo da grade: grupos
-// hospital+setor com os plantões (plantonistas, sobreaviso, vagas) e
-// as ofertas de troca disponíveis naquele dia.
+// Proposta "Escala+ Personalidade" (23/08): a folha de mês É a logo. As 42
+// células deixam de ser cartõezinhos com borda própria e viram uma folha
+// só — moldura navy de 2 px, os dois furos de pendurar, réguas de 1 px em
+// navy a 14% e cabeçalho navy com as iniciais dos dias. Dentro:
+//   - hoje é CIRCULADO (anel navy), não pintado; o dia selecionado é papel
+//     tingido — os dois se acumulam em vez de um vencer o outro, e os
+//     traços coloridos sobrevivem ao toque (antes, selecionar apagava o
+//     próprio status do dia);
+//   - traços: um por plantão até três, e daí "+n" — presença E quantidade;
+//   - fim de semana é papel levemente rebaixado: "o fim de semana está
+//     descoberto" vira varredura, não contagem;
+//   - a legenda vive DENTRO da moldura, na faixa navy do topo — nada a
+//     cobre (antes ficava entre a grade e o detalhe, sob a barra de abas).
 
 import { useMemo, useState, useEffect, type ReactElement } from "react";
-import {
-  ScrollView,
-  Text,
-  TouchableOpacity,
-  View,
-  type RefreshControlProps,
-} from "react-native";
+import { Pressable, ScrollView, Text, View, type RefreshControlProps } from "react-native";
 import { ArrowRightLeft } from "lucide-react-native";
 import { theme } from "@/lib/theme";
-import { shiftStatusMeta } from "@/lib/shift-status";
+import { shiftTickColor } from "@/lib/shift-visual";
+import { CalendarFrame, CalendarLegend, DayNumeral, numeral } from "./CalendarSheet";
+import { ShiftRowCard } from "./ShiftRowCard";
 
 type AgendaShift = {
   id: number;
@@ -70,35 +74,12 @@ const WEEKDAYS_PT = [
   "domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado",
 ] as const;
 
-function formatTimeRange(startAt: Date | string, endAt: Date | string): string {
-  const s = new Date(startAt);
-  const e = new Date(endAt);
-  const f = (n: number) => String(n).padStart(2, "0");
-  return `${f(s.getHours())}:${f(s.getMinutes())}–${f(e.getHours())}:${f(e.getMinutes())}`;
-}
+const MAX_TICKS = 3;
 
 function formatSelectedDay(dateKey: string): string {
   const d = new Date(`${dateKey}T12:00:00`);
-  return `${WEEKDAYS_PT[d.getDay()]}, ${d.getDate()} de ${MONTHS_PT[d.getMonth()]}`;
-}
-
-function shiftBorderColor(status: string): string {
-  if (status === "OCUPADO") return theme.colors.success;
-  if (status === "PENDENTE") return theme.colors.warning;
-  return theme.colors.danger; // VAGO chama atenção no detalhe
-}
-
-// Chip de status pela semântica única de lib/shift-status. Texto em tom
-// [700]/[600] sobre o tint: warning[500] sobre warningSoft dava ~1,9:1.
-function statusChip(status: string): { label: string; bg: string; fg: string } | null {
-  const meta = shiftStatusMeta(status, { context: "actionable" });
-  if (meta.tone === "danger") {
-    return { label: meta.label, bg: theme.colors.dangerSoft, fg: theme.palette.danger[600] };
-  }
-  if (meta.tone === "warning") {
-    return { label: meta.label, bg: theme.colors.warningSoft, fg: theme.palette.warning[700] };
-  }
-  return null;
+  const weekday = WEEKDAYS_PT[d.getDay()];
+  return `${weekday.charAt(0).toUpperCase()}${weekday.slice(1)}, ${d.getDate()} de ${MONTHS_PT[d.getMonth()]}`;
 }
 
 export function MonthAgenda({
@@ -137,281 +118,183 @@ export function MonthAgenda({
   }, [monthKey, todayKey]);
 
   const selectedDay = dayByKey.get(selected);
-  const selectedOffers = useMemo(
-    () => offers.filter((o) => o.date === selected),
-    [offers, selected],
-  );
+  const selectedOffers = useMemo(() => offers.filter((o) => o.date === selected), [offers, selected]);
+
+  const legend = [
+    { label: "Ocupado", color: theme.colors.statusOcupado },
+    { label: "Pendente", color: theme.colors.statusPendente },
+    { label: "Vago", color: theme.colors.statusVagoActionable },
+    { label: "Oferta", color: theme.colors.info },
+    { label: "Meu", color: theme.colors.onDark.text },
+  ];
 
   const inner = (
     <>
-      {/* Cabeçalho dos dias da semana */}
-      <View style={{ flexDirection: "row", marginBottom: theme.space[1] }}>
-        {WEEKDAY_HEADERS.map((h) => (
-          <Text
-            key={h}
-            style={{
-              flex: 1,
-              textAlign: "center",
-              fontSize: 11,
-              fontWeight: "700",
-              color: theme.colors.textMuted,
-              letterSpacing: 0.4,
-            }}
-          >
-            {h}
-          </Text>
-        ))}
-      </View>
+      <CalendarFrame>
+        <CalendarLegend items={legend} />
 
-      {/* Grade do mês */}
-      {weeks.map((week) => (
-        <View key={week.weekStart} style={{ flexDirection: "row" }}>
-          {week.days.map((day) => {
-            const inMonth = day.date.startsWith(monthKey);
-            const isToday = day.date === todayKey;
-            const isSelected = day.date === selected;
-            const shifts = day.groups.flatMap((g) => g.shifts);
-            const nOcupado = shifts.filter((s) => s.status === "OCUPADO").length;
-            const nPendente = shifts.filter((s) => s.status === "PENDENTE").length;
-            const nVago = shifts.filter((s) => s.status === "VAGO").length;
-            const hasOffer = offers.some((o) => o.date === day.date);
-            const dayNum = parseInt(day.date.slice(8, 10), 10);
-
-            return (
-              <TouchableOpacity
-                key={day.date}
-                onPress={() => setSelected(day.date)}
-                activeOpacity={0.7}
-                style={{
-                  flex: 1,
-                  aspectRatio: 0.82,
-                  margin: 1.5,
-                  borderRadius: theme.radius.md,
-                  backgroundColor: isSelected
-                    ? theme.colors.primary
-                    : isToday
-                      ? theme.colors.primarySoft
-                      : theme.colors.surface,
-                  borderWidth: 1,
-                  borderColor: isSelected
-                    ? theme.colors.primary
-                    : isToday
-                      ? theme.colors.primary
-                      : theme.colors.border,
-                  alignItems: "center",
-                  paddingTop: 6,
-                  opacity: inMonth ? 1 : 0.35,
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 14,
-                    fontWeight: isToday || isSelected ? "800" : "600",
-                    color: isSelected
-                      ? theme.colors.onDark.text
-                      : theme.colors.textPrimary,
-                  }}
-                >
-                  {dayNum}
-                </Text>
-                <View
-                  style={{
-                    flexDirection: "row",
-                    gap: 2,
-                    marginTop: 3,
-                    flexWrap: "wrap",
-                    justifyContent: "center",
-                    paddingHorizontal: 2,
-                  }}
-                >
-                  {nOcupado > 0 && (
-                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.success }} />
-                  )}
-                  {nPendente > 0 && (
-                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.warning }} />
-                  )}
-                  {nVago > 0 && (
-                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.danger }} />
-                  )}
-                  {hasOffer && (
-                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: isSelected ? theme.colors.onDark.text : theme.colors.primary }} />
-                  )}
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      ))}
-
-      {/* Legenda */}
-      <View
-        style={{
-          flexDirection: "row",
-          gap: theme.space[3],
-          justifyContent: "center",
-          marginTop: theme.space[2],
-          marginBottom: theme.space[4],
-          flexWrap: "wrap",
-        }}
-      >
-        {[
-          { c: theme.colors.success, l: "Ocupado" },
-          { c: theme.colors.warning, l: "Pendente" },
-          { c: theme.colors.danger, l: "Vago" },
-          { c: theme.colors.primary, l: "Oferta" },
-        ].map((item) => (
-          <View key={item.l} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: item.c }} />
-            <Text style={{ fontSize: 11, color: theme.colors.textMuted }}>{item.l}</Text>
-          </View>
-        ))}
-      </View>
-
-      {/* Detalhe do dia selecionado */}
-      <Text
-        style={{
-          fontSize: 16,
-          fontWeight: "800",
-          color: theme.colors.textPrimary,
-          marginBottom: theme.space[3],
-          textTransform: "capitalize",
-        }}
-      >
-        {formatSelectedDay(selected)}
-      </Text>
-
-      {/* Ofertas de troca do dia */}
-      {selectedOffers.length > 0 && (
-        <View style={{ marginBottom: theme.space[3] }}>
-          {selectedOffers.map((offer) => (
-            <TouchableOpacity
-              key={offer.id}
-              onPress={onOfferPress}
-              activeOpacity={0.8}
+        {/* Iniciais dos dias, sobre navy */}
+        <View style={{ flexDirection: "row", backgroundColor: theme.colors.brand }}>
+          {WEEKDAY_HEADERS.map((h, i) => (
+            <View
+              key={h}
               style={{
-                flexDirection: "row",
+                flex: 1,
+                paddingVertical: theme.space[1] + 2,
                 alignItems: "center",
-                gap: theme.space[3],
-                backgroundColor: theme.colors.primarySoft,
-                borderRadius: theme.radius.md,
-                borderWidth: 1,
-                borderColor: theme.colors.primary,
-                padding: theme.space[3],
-                marginBottom: theme.space[2],
+                borderLeftWidth: i === 0 ? 0 : 1,
+                borderLeftColor: theme.colors.onDark.divider,
               }}
             >
-              <ArrowRightLeft size={18} color={theme.colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 14, fontWeight: "700", color: theme.colors.primary }}>
-                  Oferta de troca — {offer.shiftLabel}
-                </Text>
-                <Text style={{ fontSize: 12, color: theme.colors.textSecondary }}>
-                  {offer.fromProfessionalName} · {offer.timeRange} · toque para responder
-                </Text>
-              </View>
-            </TouchableOpacity>
+              <Text style={{ ...theme.text.eyebrow, fontSize: 10, letterSpacing: 1, fontWeight: theme.weight.bold, color: theme.colors.onDark.textMuted }}>
+                {h}
+              </Text>
+            </View>
           ))}
         </View>
-      )}
 
-      {!selectedDay || selectedDay.groups.length === 0 ? (
-        <View
-          style={{
-            paddingVertical: theme.space[8],
-            alignItems: "center",
-            backgroundColor: theme.colors.surfaceAlt,
-            borderRadius: theme.radius.md,
-          }}
-        >
-          <Text style={{ color: theme.colors.textMuted }}>
-            Nenhum plantão neste dia.
-          </Text>
+        {/* A grade: réguas de 1px em navy a 14% (a malha do ícone) */}
+        {weeks.map((week) => (
+          <View key={week.weekStart} style={{ flexDirection: "row" }}>
+            {week.days.map((day, i) => {
+              const inMonth = day.date.startsWith(monthKey);
+              const isToday = day.date === todayKey;
+              const isSelected = day.date === selected;
+              const isWeekend = day.dow === 0 || day.dow === 6;
+              const shifts = day.groups.flatMap((g) => g.shifts);
+              const isMineDay = shifts.some((s) => s.isMine);
+              const ticks = shifts.map((s) => shiftTickColor(s.status, s.isMine));
+              if (offers.some((o) => o.date === day.date)) ticks.push(theme.colors.info);
+              const extra = ticks.length - MAX_TICKS;
+              const dayNum = parseInt(day.date.slice(8, 10), 10);
+
+              return (
+                <Pressable
+                  key={day.date}
+                  onPress={() => setSelected(day.date)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  accessibilityLabel={`${formatSelectedDay(day.date)}${isToday ? ", hoje" : ""}, ${shifts.length} plantão${shifts.length === 1 ? "" : "ões"}`}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: 52,
+                    paddingTop: 5,
+                    paddingBottom: 4,
+                    paddingHorizontal: 3,
+                    borderTopWidth: 1,
+                    borderTopColor: theme.colors.gridLine,
+                    borderLeftWidth: i === 0 ? 0 : 1,
+                    borderLeftColor: theme.colors.gridLine,
+                    backgroundColor: isSelected
+                      ? theme.colors.paperSelected
+                      : isWeekend && inMonth
+                        ? theme.colors.paperWeekend
+                        : "transparent",
+                    alignItems: "center",
+                    gap: 4,
+                    opacity: pressed ? 0.8 : 1,
+                  })}
+                >
+                  <DayNumeral
+                    day={dayNum}
+                    size={24}
+                    emphasis={!inMonth ? "muted" : isToday ? "today" : isMineDay ? "mine" : "plain"}
+                  />
+                  <View style={{ alignItems: "center", gap: 2 }}>
+                    {ticks.slice(0, MAX_TICKS).map((color, t) => (
+                      <View key={t} style={{ width: 16, height: 3, borderRadius: 2, backgroundColor: inMonth ? color : theme.colors.border }} />
+                    ))}
+                    {extra > 0 ? (
+                      <Text style={{ ...numeral, fontSize: 11, lineHeight: 12, fontWeight: theme.weight.bold, color: theme.colors.textSecondary }}>+{extra}</Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
+      </CalendarFrame>
+
+      {/* Detalhe do dia selecionado */}
+      <View style={{ marginTop: theme.space[3] + 1, gap: theme.space[2] + 1 }}>
+        <View style={{ flexDirection: "row", alignItems: "baseline", gap: theme.space[2], paddingHorizontal: 2 }}>
+          <Text style={{ ...theme.text.titleSm, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{formatSelectedDay(selected)}</Text>
+          {selected === todayKey ? (
+            <Text style={{ ...theme.text.eyebrow, fontSize: 10, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.brand }}>
+              Hoje
+            </Text>
+          ) : null}
         </View>
-      ) : (
-        selectedDay.groups.map((group) => (
-          <View
-            key={`${group.hospitalId}-${group.sectorId}`}
-            style={{ marginBottom: theme.space[3] }}
+
+        {selectedOffers.map((offer) => (
+          <Pressable
+            key={offer.id}
+            onPress={onOfferPress}
+            accessibilityRole="button"
+            accessibilityLabel={`Oferta de troca, ${offer.shiftLabel}, ${offer.fromProfessionalName}, ${offer.timeRange}. Toque para responder`}
+            style={({ pressed }) => ({
+              flexDirection: "row",
+              alignItems: "center",
+              gap: theme.space[2] + 2,
+              paddingVertical: theme.space[2] + 2,
+              paddingHorizontal: theme.space[3] - 1,
+              backgroundColor: theme.palette.primary[50],
+              borderWidth: 1,
+              borderColor: theme.palette.primary[200],
+              borderLeftWidth: 4,
+              borderLeftColor: theme.colors.brand,
+              borderRadius: theme.radius.md + 2,
+              opacity: pressed ? 0.9 : 1,
+            })}
           >
-            <View
-              style={{
-                backgroundColor: theme.colors.primarySoft,
-                paddingHorizontal: theme.space[3],
-                paddingVertical: theme.space[2],
-                borderRadius: theme.radius.sm,
-                marginBottom: theme.space[1],
-              }}
-            >
+            <ArrowRightLeft size={17} color={theme.colors.brand} />
+            <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+              <Text style={{ ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.bold, color: theme.colors.brand }}>
+                Oferta de troca — {offer.shiftLabel}
+              </Text>
+              <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
+                {offer.fromProfessionalName} · {offer.timeRange} · toque para responder
+              </Text>
+            </View>
+          </Pressable>
+        ))}
+
+        {!selectedDay || selectedDay.groups.length === 0 ? (
+          <View
+            style={{
+              paddingVertical: theme.space[6],
+              alignItems: "center",
+              backgroundColor: theme.colors.surfaceAlt,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              borderRadius: theme.radius.md + 2,
+            }}
+          >
+            <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>Nenhum plantão neste dia.</Text>
+          </View>
+        ) : (
+          selectedDay.groups.map((group) => (
+            <View key={`${group.hospitalId}-${group.sectorId}`} style={{ gap: theme.space[1] + 1 }}>
               <Text
+                numberOfLines={1}
                 style={{
-                  fontSize: 12,
-                  fontWeight: "700",
-                  color: theme.palette.primary[900],
+                  ...theme.text.eyebrow,
+                  fontSize: 10.5,
+                  fontWeight: theme.weight.bold,
                   textTransform: "uppercase",
-                  letterSpacing: 0.3,
+                  color: theme.colors.textSecondary,
+                  paddingHorizontal: 2,
                 }}
               >
                 {group.hospitalName} – {group.sectorName}
               </Text>
+              {group.shifts.map((shift) => (
+                <ShiftRowCard key={shift.id} shift={shift} context="actionable" onPress={() => onShiftPress(shift.id)} />
+              ))}
             </View>
-            {group.shifts.map((shift) => {
-              const chip = statusChip(shift.status);
-              return (
-                <TouchableOpacity
-                  key={shift.id}
-                  onPress={() => onShiftPress(shift.id)}
-                  activeOpacity={0.75}
-                  style={{
-                    borderLeftWidth: 3,
-                    borderLeftColor: shiftBorderColor(shift.status),
-                    backgroundColor: theme.colors.surface,
-                    borderRadius: theme.radius.sm,
-                    paddingHorizontal: theme.space[3],
-                    paddingVertical: theme.space[2],
-                    marginBottom: theme.space[1],
-                    flexDirection: "row",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={{
-                        fontSize: 14,
-                        fontWeight: "600",
-                        color: theme.colors.textPrimary,
-                      }}
-                      numberOfLines={1}
-                    >
-                      {shift.professionalNames.length > 0
-                        ? shift.professionalNames.join(", ")
-                        : "— sem plantonista —"}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: theme.colors.textSecondary }}>
-                      {formatTimeRange(shift.startAt, shift.endAt)} · {shift.label}
-                    </Text>
-                  </View>
-                  {chip && (
-                    <View
-                      style={{
-                        backgroundColor: chip.bg,
-                        borderRadius: theme.radius.sm,
-                        paddingHorizontal: theme.space[2],
-                        paddingVertical: 3,
-                        marginLeft: theme.space[2],
-                      }}
-                    >
-                      <Text style={{ fontSize: 11, fontWeight: "700", color: chip.fg }}>
-                        {chip.label}
-                      </Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        ))
-      )}
+          ))
+        )}
+      </View>
     </>
   );
 
@@ -422,7 +305,8 @@ export function MonthAgenda({
     <ScrollView
       style={{ flex: 1 }}
       refreshControl={refreshControl}
-      contentContainerStyle={{ paddingBottom: theme.space[10] }}
+      // 76pt de respiro para o botão "+" não cobrir o fim do mês.
+      contentContainerStyle={{ paddingBottom: theme.space[20] }}
       showsVerticalScrollIndicator={false}
     >
       {inner}

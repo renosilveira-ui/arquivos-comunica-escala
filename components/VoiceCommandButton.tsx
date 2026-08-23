@@ -46,7 +46,7 @@ interface ResolvedAction {
   timeRange: string;
 }
 
-export function VoiceCommandButton() {
+export function VoiceCommandButton({ variant = "fab" }: { variant?: "fab" | "inline" } = {}) {
   const [visible, setVisible] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [transcript, setTranscript] = useState("");
@@ -192,29 +192,49 @@ export function VoiceCommandButton() {
 
   return (
     <>
-      <TouchableOpacity
-        onPress={open}
-        activeOpacity={0.85}
-        accessibilityLabel="Comando de voz"
-        style={{
-          position: "absolute",
-          bottom: 24,
-          left: 20,
-          width: 52,
-          height: 52,
-          borderRadius: 26,
-          backgroundColor: theme.colors.primary,
-          alignItems: "center",
-          justifyContent: "center",
-          shadowColor: "#000",
-          shadowOpacity: 0.25,
-          shadowRadius: 6,
-          shadowOffset: { width: 0, height: 3 },
-          elevation: 6,
-        }}
-      >
-        <Mic size={24} color={theme.colors.onDark.text} />
-      </TouchableOpacity>
+      {variant === "inline" ? (
+        // No cabeçalho da Agenda (proposta de design 23/08): o microfone é
+        // comando, não ação primária — sai do canto flutuante, onde cobria
+        // o fim do mês, e vira ícone ao lado de "Hoje".
+        <TouchableOpacity
+          onPress={open}
+          activeOpacity={0.8}
+          accessibilityLabel="Comando de voz"
+          hitSlop={6}
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: theme.radius.md,
+            borderWidth: 1,
+            borderColor: theme.colors.borderStrong,
+            backgroundColor: theme.colors.surface,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Mic size={16} color={theme.colors.brand} />
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity
+          onPress={open}
+          activeOpacity={0.85}
+          accessibilityLabel="Comando de voz"
+          style={{
+            position: "absolute",
+            bottom: 24,
+            left: 20,
+            width: 52,
+            height: 52,
+            borderRadius: 26,
+            backgroundColor: theme.colors.primary,
+            alignItems: "center",
+            justifyContent: "center",
+            ...theme.shadow.lg,
+          }}
+        >
+          <Mic size={24} color={theme.colors.onDark.text} />
+        </TouchableOpacity>
+      )}
 
       <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
         <View

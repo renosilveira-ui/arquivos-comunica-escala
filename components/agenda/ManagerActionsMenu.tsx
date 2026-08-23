@@ -25,6 +25,14 @@ interface Props {
   institutionId: number | null;
   period: ManagerPeriod;
   onChanged?: () => void;
+  /**
+   * "button" (padrão): só o botão "Ações".
+   * "strip": faixa de largura cheia com o STATUS da escala do mês
+   * ("Agosto · rascunho") e o botão ao lado — o estado que decide se
+   * publicar/bloquear está disponível passa a ser lido antes do toque
+   * (proposta de design 23/08), como a contagem de Solicitações no Perfil.
+   */
+  variant?: "button" | "strip";
 }
 
 type Step = "menu" | "replicate" | "busy";
@@ -64,7 +72,7 @@ const ROSTER_LABEL: Record<string, string> = {
   LOCKED: "Bloqueada",
 };
 
-export function ManagerActionsMenu({ institutionId, period, onChanged }: Props) {
+export function ManagerActionsMenu({ institutionId, period, onChanged, variant = "button" }: Props) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("menu");
   const [hospitalId, setHospitalId] = useState<number | null>(null);
@@ -73,7 +81,11 @@ export function ManagerActionsMenu({ institutionId, period, onChanged }: Props) 
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
 
-  const { data: hospitals } = trpc.hospitals.list.useQuery(undefined, { enabled: open, staleTime: 60_000 });
+  // Na faixa (variant "strip") o status da escala precisa existir ANTES do
+  // toque, então hospitais e rosterStatus carregam com a tela, não só com
+  // o menu aberto.
+  const wantsStatus = open || variant === "strip";
+  const { data: hospitals } = trpc.hospitals.list.useQuery(undefined, { enabled: wantsStatus, staleTime: 60_000 });
   useEffect(() => {
     if (!hospitalId && hospitals?.length) setHospitalId(hospitals[0].id);
   }, [hospitals, hospitalId]);
@@ -81,7 +93,7 @@ export function ManagerActionsMenu({ institutionId, period, onChanged }: Props) 
   const monthKey = period.kind === "month" ? period.monthKey : period.weekStart.slice(0, 7);
   const { data: roster } = trpc.shifts.rosterStatus.useQuery(
     { hospitalId: hospitalId ?? 0, yearMonth: monthKey },
-    { enabled: open && !!hospitalId },
+    { enabled: wantsStatus && !!hospitalId, staleTime: 60_000 },
   );
 
   const replicate = trpc.shifts.replicateRange.useMutation();
@@ -196,8 +208,10 @@ export function ManagerActionsMenu({ institutionId, period, onChanged }: Props) 
 
   const rosterStatus = roster?.status ?? "DRAFT";
 
-  return (
-    <>
+  const trigger =
+    variant === "strip" ? (
+      <RosterStatusStrip monthKey={monthKey} status={rosterStatus} onPressActions={openMenu} />
+    ) : (
       <Pressable
         onPress={openMenu}
         accessibilityRole="button"
@@ -221,6 +235,11 @@ export function ManagerActionsMenu({ institutionId, period, onChanged }: Props) 
           Ações
         </Text>
       </Pressable>
+    );
+
+  return (
+    <>
+      {trigger}
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
         <Pressable
@@ -427,5 +446,79 @@ function MenuItem({
         <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>{subtitle}</Text>
       </View>
     </Pressable>
+  );
+}
+
+/**
+ * Faixa do gestor: o estado da escala do mês lido ANTES do toque.
+ * Rascunho = âmbar (publicar disponível); publicada = verde (bloquear
+ * disponível, editar exige motivo); bloqueada = neutra com cadeado.
+ */
+function RosterStatusStrip({
+  monthKey,
+  status,
+  onPressActions,
+}: {
+  monthKey: string;
+  status: string;
+  onPressActions: () => void;
+}) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const month = MONTHS_PT[m - 1];
+  const monthTitle = `${month.charAt(0).toUpperCase()}${month.slice(1)}`;
+  const label = ROSTER_LABEL[status]?.toLowerCase() ?? "rascunho";
+  const tone =
+    status === "PUBLISHED"
+      ? { bg: theme.palette.success[50], border: theme.palette.success[200], fg: theme.palette.success[900], icon: theme.palette.success[700] }
+      : status === "LOCKED"
+        ? { bg: theme.colors.surfaceAlt, border: theme.colors.borderStrong, fg: theme.colors.textPrimary, icon: theme.colors.textSecondary }
+        : { bg: theme.palette.warning[50], border: theme.palette.warning[200], fg: theme.palette.warning[900], icon: theme.palette.warning[700] };
+  const Icon = status === "LOCKED" ? Lock : CalendarRange;
+  const showYear = y !== new Date().getFullYear();
+
+  return (
+    <View
+      accessibilityLabel={`Escala de ${month}${showYear ? ` de ${y}` : ""}: ${label}`}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: theme.space[2],
+        minHeight: 36,
+        paddingLeft: theme.space[2] + 2,
+        paddingRight: theme.space[1],
+        paddingVertical: theme.space[1],
+        borderRadius: theme.radius.md + 1,
+        backgroundColor: tone.bg,
+        borderWidth: 1,
+        borderColor: tone.border,
+      }}
+    >
+      <Icon size={15} color={tone.icon} />
+      <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, ...theme.text.caption, fontSize: 12.5, fontWeight: theme.weight.semibold, color: tone.fg }}>
+        {monthTitle}
+        {showYear ? ` ${y}` : ""} · {label}
+      </Text>
+      <Pressable
+        onPress={onPressActions}
+        accessibilityRole="button"
+        accessibilityLabel="Ações do gestor"
+        hitSlop={4}
+        style={({ pressed }) => ({
+          flexDirection: "row",
+          alignItems: "center",
+          gap: theme.space[1] + 1,
+          height: 28,
+          paddingHorizontal: theme.space[2] + 2,
+          borderRadius: theme.radius.md - 1,
+          backgroundColor: theme.colors.surface,
+          borderWidth: 1,
+          borderColor: theme.colors.borderStrong,
+          opacity: pressed ? 0.85 : 1,
+        })}
+      >
+        <Settings2 size={14} color={theme.colors.textPrimary} />
+        <Text style={{ ...theme.text.caption, fontSize: 12.5, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>Ações</Text>
+      </Pressable>
+    </View>
   );
 }

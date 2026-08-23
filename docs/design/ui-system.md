@@ -663,6 +663,57 @@ O Perfil (23/08) é a referência de uso: quatro grupos — Gestão (com a
 contagem de Solicitações vinda de `shiftAssignments.listPending`), Sua
 atividade, Notificações, Conta e app — mais a zona de risco.
 
+### 6.21 Folha de calendário (CalendarSheet) e o traje do plantão
+
+Proposta "Escala+ Personalidade" (23/08). O ícone do app É um calendário
+de parede — moldura navy de cantos arredondados, dois furos de pendurar,
+malha de planta baixa por dentro — e a Agenda passa a falar esse idioma
+em vez de 42 cartõezinhos genéricos:
+
+- `components/agenda/CalendarSheet.tsx`: `CalendarFrame` (moldura navy de
+  2 px + `HangingHoles`), `CalendarLegend` (faixa navy com a legenda dos
+  traços, DENTRO da moldura — nada a cobre), `DayNumeral` (o numeral do
+  dia no círculo: `todayOnDark` anel branco sobre navy, `today` anel navy,
+  `default` anel cinza, `mine` navy em negrito, `plain`, `muted` fora do
+  mês) e `DayRule` (régua do dia na lista: hoje navy sólido). Hoje é
+  CIRCULADO, não pintado. `numeral` é o estilo tabular (`fontFamily.mono`
+  + `tabular-nums`) de toda hora, contagem e dia — e `fontFamily.mono` é
+  `Platform.select` (Menlo / monospace / pilha CSS): no nativo uma pilha
+  CSS caía na fonte do sistema.
+- `lib/shift-visual.ts`: o traje — barra de 4 px à esquerda + fundo tinted
+  + cores de nome/hora por estado (`vago` neutro, `vagoAcao` danger,
+  `pendente` âmbar, `ocupado` branco com barra verde, `meu` navy da
+  marca, `confirmada`, `cancelada`). A semântica continua em
+  `lib/shift-status.ts`; `shiftVisualFor(status, { isMine, context })`
+  junta os dois. A força vem da barra e do tinted, não de chip pintado:
+  OCUPADO, que é a maioria, não grita.
+- `components/agenda/ShiftRowCard.tsx`: um plantão na lista/detalhe
+  (58 pt, nome + chip texto+ícone + horário tabular).
+- Tokens novos: `colors.paperWeekend` / `paperSelected` (papel com véu de
+  navy), `onDark.ring`, `onDark.textSoft`, `palette.{success,warning,danger}[200]`.
+
+Onde aparece:
+
+- **Lista** (`MobileDayList`): `DayRule` + eyebrow do hospital·setor +
+  `ShiftRowCard` (contexto `actionable`); dia vazio é linha fina de 36 pt.
+- **Folha de mês** (`MonthAgenda` — Panorama no celular, Calendário no
+  desktop): `CalendarFrame` com legenda e iniciais dos dias em navy,
+  réguas `gridLine`, hoje circulado, selecionado = `paperSelected`, fim de
+  semana = `paperWeekend`, um traço por plantão até 3 e "+n" (presença E
+  quantidade; o dia selecionado não apaga mais o próprio status).
+- **Panorama hospital × dia** (`PanoramicAgenda`, desktop): cabeçalho navy
+  com `DayNumeral`, hospital escrito uma vez, chips com barra de 4 px e
+  hora tabular, resumo do período na moldura.
+- **Cabeçalho da Agenda** (um só para as três vistas): título + ‹ mês › +
+  "Hoje" (o único botão preenchido, navy) + microfone inline; instituição
+  + Geral/Minha (ativo navy); trocador de vista de largura cheia (ativo
+  branco/navy); e, só para gestor, `ManagerActionsMenu variant="strip"`
+  com "Agosto · rascunho" lido antes do toque.
+- **Faixa "Próximo plantão"** (`NextShiftCard` compact): duas linhas —
+  eyebrow + quando (com a única ação ao lado) e o detalhe "turno horário
+  · setor" em linha própria que pode quebrar. Navy sólido quando é o
+  próximo (a única coisa preenchida da tela); verde tinted em andamento.
+
 ## 7. Estados padronizados
 
 Todo componente que carrega dados precisa endereçar 5 estados:

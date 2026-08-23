@@ -1,13 +1,25 @@
+// components/agenda/PanoramicAgenda.tsx — o Panorama hospital × dia
+// (desktop): a grade grande como FOLHA DE CALENDÁRIO da marca.
+//
+// Proposta "Escala+ Personalidade" (23/08): a estrutura aprovada continua
+// — hospital/setor nas linhas, os sete dias nas colunas. O que muda é o
+// traje: moldura navy de 2 px com os dois furos de pendurar, malha de 1 px
+// em navy a 14% em toda célula, cabeçalho navy sólido com o numeral do dia
+// circulado (hoje = anel branco, em vez de coluna pintada), fim de semana
+// em papel rebaixado, hospital escrito UMA vez (os setores indentam abaixo)
+// e o resumo do período na própria moldura.
+//
+// A grade não sobrevive a 375 pt (47 pt por coluna): no celular a Agenda
+// usa a folha de mês (MonthAgenda). Aqui, fora do desktop, ela rola na
+// horizontal como último recurso.
+
 import { useMemo, type ReactElement } from "react";
-import {
-  ScrollView,
-  Text,
-  TouchableOpacity,
-  View,
-  type RefreshControlProps,
-} from "react-native";
+import { ScrollView, Text, Pressable, View, type RefreshControlProps } from "react-native";
 import { Rows3 } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+import { shiftVisualFor } from "@/lib/shift-visual";
+import { CalendarFrame, DayNumeral, numeral } from "./CalendarSheet";
+import { formatTimeRange } from "./ShiftRowCard";
 
 type AgendaShift = {
   id: number;
@@ -44,32 +56,21 @@ type PanoramaRow = {
   key: string;
   hospitalName: string;
   sectorName: string;
+  /** Primeira linha do hospital: o nome aparece aqui, só aqui. */
+  firstOfHospital: boolean;
   days: Record<string, AgendaShift[]>;
 };
 
 const DAY_LABELS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"] as const;
-
-function formatDayHeader(date: string, dow: number): string {
-  const day = parseInt(date.slice(8, 10), 10);
-  return `${String(day).padStart(2, "0")} ${DAY_LABELS[dow]}`;
-}
-
-function formatTimeRange(startAt: Date | string, endAt: Date | string): string {
-  const s = new Date(startAt);
-  const e = new Date(endAt);
-  const f = (n: number) => String(n).padStart(2, "0");
-  return `${f(s.getHours())}:${f(s.getMinutes())}-${f(e.getHours())}:${f(e.getMinutes())}`;
-}
-
-function shiftBorderColor(status: string): string {
-  if (status === "OCUPADO") return theme.palette.success[700];
-  if (status === "PENDENTE") return theme.palette.warning[700];
-  return theme.colors.border;
-}
+const MONTHS_PT = [
+  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+] as const;
+const LABEL_COL = 214;
+const MAX_CHIPS = 3;
 
 function buildPanoramaRows(week: AgendaWeek): PanoramaRow[] {
   const rows = new Map<string, PanoramaRow>();
-
   for (const day of week.days) {
     for (const group of day.groups) {
       const key = `${group.hospitalId}-${group.sectorId}`;
@@ -77,18 +78,24 @@ function buildPanoramaRows(week: AgendaWeek): PanoramaRow[] {
         key,
         hospitalName: group.hospitalName,
         sectorName: group.sectorName,
+        firstOfHospital: false,
         days: {},
       };
       row.days[day.date] = group.shifts;
       rows.set(key, row);
     }
   }
-
-  return Array.from(rows.values()).sort((a, b) => {
+  const sorted = Array.from(rows.values()).sort((a, b) => {
     const hospital = a.hospitalName.localeCompare(b.hospitalName, "pt-BR");
     if (hospital !== 0) return hospital;
     return a.sectorName.localeCompare(b.sectorName, "pt-BR");
   });
+  let last: string | null = null;
+  for (const row of sorted) {
+    row.firstOfHospital = row.hospitalName !== last;
+    last = row.hospitalName;
+  }
+  return sorted;
 }
 
 function summarizeWeeks(weeks: AgendaWeek[]) {
@@ -96,7 +103,6 @@ function summarizeWeeks(weeks: AgendaWeek[]) {
   let open = 0;
   let pending = 0;
   let mine = 0;
-
   for (const week of weeks) {
     for (const day of week.days) {
       for (const group of day.groups) {
@@ -109,9 +115,22 @@ function summarizeWeeks(weeks: AgendaWeek[]) {
       }
     }
   }
-
   return { shifts, open, pending, mine };
 }
+
+function weekTitle(week: AgendaWeek): { eyebrow: string; title: string } {
+  const first = new Date(`${week.days[0]?.date ?? week.weekStart}T12:00:00`);
+  const last = new Date(`${week.days[week.days.length - 1]?.date ?? week.weekStart}T12:00:00`);
+  const month = MONTHS_PT[first.getMonth()];
+  const eyebrow = `${month.charAt(0).toUpperCase()}${month.slice(1)} ${first.getFullYear()}`;
+  const title =
+    first.getMonth() === last.getMonth()
+      ? `Semana ${first.getDate()} – ${last.getDate()}`
+      : `Semana ${first.getDate()}/${String(first.getMonth() + 1).padStart(2, "0")} – ${last.getDate()}/${String(last.getMonth() + 1).padStart(2, "0")}`;
+  return { eyebrow, title };
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
 
 export function PanoramicAgenda({
   weeks,
@@ -128,515 +147,208 @@ export function PanoramicAgenda({
 }) {
   const summary = useMemo(() => summarizeWeeks(weeks), [weeks]);
 
-  if (!isDesktop) {
-    return (
-      <MobilePanorama
-        weeks={weeks}
-        todayKey={todayKey}
-        refreshControl={refreshControl}
-        onShiftPress={onShiftPress}
-      />
-    );
-  }
+  const sheets = (
+    <View style={{ gap: theme.space[6], minWidth: isDesktop ? undefined : 760 }}>
+      {weeks.map((week, index) => {
+        const rows = buildPanoramaRows(week);
+        const { eyebrow, title } = weekTitle(week);
+        return (
+          <CalendarFrame key={week.weekStart}>
+            {/* Cabeçalho da folha: período + resumo do período (na 1ª folha) */}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: theme.space[4],
+                paddingVertical: theme.space[3] + 1,
+                paddingHorizontal: theme.space[5],
+                borderBottomWidth: 2,
+                borderBottomColor: theme.colors.brand,
+              }}
+            >
+              <View style={{ gap: 1 }}>
+                <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.textSecondary }}>
+                  {eyebrow}
+                </Text>
+                <Text style={{ ...theme.text.title, fontSize: 21, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>{title}</Text>
+              </View>
+              {index === 0 ? (
+                <View style={{ marginLeft: "auto", flexDirection: "row" }}>
+                  <SummaryCell label="Plantões" value={summary.shifts} color={theme.colors.textPrimary} />
+                  <SummaryCell label="Em aberto" value={summary.open} color={theme.palette.warning[700]} />
+                  <SummaryCell label="Pendentes" value={summary.pending} color={theme.palette.warning[700]} />
+                  <SummaryCell label="Meus" value={summary.mine} color={theme.colors.brand} />
+                </View>
+              ) : null}
+            </View>
 
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        gap: theme.space[4],
-        alignItems: "flex-start",
-      }}
-    >
-      <ScrollView
-        style={{ flex: 1 }}
-        refreshControl={refreshControl}
-        contentContainerStyle={{ paddingBottom: theme.space[10] }}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={{ gap: theme.space[4] }}>
-          {weeks.map((week) => {
-            const rows = buildPanoramaRows(week);
-            return (
-              <View
-                key={week.weekStart}
-                style={{
-                  borderWidth: 1,
-                  borderColor: theme.colors.border,
-                  borderRadius: theme.radius.lg,
-                  overflow: "hidden",
-                  backgroundColor: theme.colors.surface,
-                }}
-              >
-                <View
-                  style={{
-                    flexDirection: "row",
-                    backgroundColor: theme.colors.surfaceAlt,
-                    borderBottomWidth: 1,
-                    borderBottomColor: theme.colors.border,
-                  }}
-                >
+            {/* Linha de cabeçalho navy: Hospital / setor + os sete dias */}
+            <View style={{ flexDirection: "row", backgroundColor: theme.colors.brand }}>
+              <View style={{ width: LABEL_COL, flexDirection: "row", alignItems: "center", gap: theme.space[2], paddingVertical: theme.space[3] - 1, paddingHorizontal: theme.space[3] + 2 }}>
+                <Rows3 size={15} color={theme.colors.onDark.textMuted} />
+                <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.onDark.textSoft }}>
+                  Hospital / setor
+                </Text>
+              </View>
+              {week.days.map((day) => {
+                const isToday = day.date === todayKey;
+                return (
                   <View
+                    key={day.date}
                     style={{
-                      width: 220,
-                      padding: theme.space[3],
-                      justifyContent: "center",
+                      flex: 1,
+                      minWidth: 78,
+                      alignItems: "center",
+                      gap: 3,
+                      paddingVertical: theme.space[2] + 1,
+                      paddingHorizontal: theme.space[2],
+                      borderLeftWidth: 1,
+                      borderLeftColor: theme.colors.onDark.surface,
                     }}
                   >
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: theme.space[2],
-                      }}
-                    >
-                      <Rows3 size={16} color={theme.colors.primary} />
-                      <Text
-                        style={{
-                          ...theme.text.caption,
-                          color: theme.colors.textSecondary,
-                          fontWeight: theme.weight.bold,
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        Hospital / setor
+                    <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, fontWeight: theme.weight.bold, color: theme.colors.onDark.textMuted }}>
+                      {DAY_LABELS[day.dow]}
+                    </Text>
+                    <DayNumeral day={parseInt(day.date.slice(8, 10), 10)} size={30} emphasis={isToday ? "todayOnDark" : "onDark"} />
+                  </View>
+                );
+              })}
+            </View>
+
+            {rows.length === 0 ? (
+              <View style={{ padding: theme.space[6], alignItems: "center" }}>
+                <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>Sem plantões nesta semana.</Text>
+              </View>
+            ) : (
+              rows.map((row) => (
+                <View key={row.key} style={{ flexDirection: "row" }}>
+                  <View
+                    style={{
+                      width: LABEL_COL,
+                      justifyContent: "center",
+                      gap: 1,
+                      paddingVertical: theme.space[2] + 1,
+                      paddingHorizontal: theme.space[3] + 2,
+                      borderBottomWidth: 1,
+                      borderBottomColor: theme.colors.gridLine,
+                      borderRightWidth: 2,
+                      borderRightColor: theme.colors.brand,
+                      backgroundColor: row.firstOfHospital ? theme.colors.surfaceAlt : theme.colors.surface,
+                    }}
+                  >
+                    {row.firstOfHospital ? (
+                      <Text numberOfLines={1} style={{ ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.bold, color: theme.colors.brand }}>
+                        {row.hospitalName}
                       </Text>
-                    </View>
+                    ) : null}
+                    <Text numberOfLines={1} style={{ ...theme.text.body, fontSize: 13, color: theme.colors.textSecondary }}>
+                      {row.sectorName}
+                    </Text>
                   </View>
                   {week.days.map((day) => {
-                    const isToday = day.date === todayKey;
+                    const shifts = row.days[day.date] ?? [];
+                    const isWeekend = day.dow === 0 || day.dow === 6;
                     return (
                       <View
                         key={day.date}
                         style={{
                           flex: 1,
-                          minWidth: 104,
-                          padding: theme.space[3],
+                          minWidth: 78,
+                          minHeight: 66,
+                          padding: 5,
+                          gap: 4,
+                          borderBottomWidth: 1,
+                          borderBottomColor: theme.colors.gridLine,
                           borderLeftWidth: 1,
-                          borderLeftColor: theme.colors.border,
-                          backgroundColor: isToday
-                            ? theme.colors.primarySoft
-                            : theme.colors.surfaceAlt,
+                          borderLeftColor: theme.colors.gridLine,
+                          backgroundColor: isWeekend ? theme.colors.paperWeekend : theme.colors.surface,
                         }}
                       >
-                        <Text
-                          style={{
-                            ...theme.text.caption,
-                            color: isToday
-                              ? theme.colors.primary
-                              : theme.colors.textSecondary,
-                            fontWeight: theme.weight.bold,
-                          }}
-                        >
-                          {formatDayHeader(day.date, day.dow)}
-                        </Text>
+                        {shifts.length === 0 ? (
+                          <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                            <Text style={{ ...numeral, fontSize: 13, color: theme.colors.textDisabled }}>·</Text>
+                          </View>
+                        ) : (
+                          shifts.slice(0, MAX_CHIPS).map((shift) => <GridChip key={shift.id} shift={shift} onPress={() => onShiftPress(shift.id)} />)
+                        )}
+                        {shifts.length > MAX_CHIPS ? (
+                          <Text style={{ ...numeral, fontSize: 11, fontWeight: theme.weight.bold, color: theme.colors.textSecondary, paddingLeft: 2 }}>
+                            +{shifts.length - MAX_CHIPS}
+                          </Text>
+                        ) : null}
                       </View>
                     );
                   })}
                 </View>
-
-                {rows.length === 0 ? (
-                  <View
-                    style={{ padding: theme.space[6], alignItems: "center" }}
-                  >
-                    <Text
-                      style={{
-                        ...theme.text.body,
-                        color: theme.colors.textMuted,
-                      }}
-                    >
-                      Sem plantões nesta semana.
-                    </Text>
-                  </View>
-                ) : (
-                  rows.map((row) => (
-                    <View
-                      key={row.key}
-                      style={{
-                        flexDirection: "row",
-                        borderBottomWidth: 1,
-                        borderBottomColor: theme.colors.border,
-                      }}
-                    >
-                      <View style={{ width: 220, padding: theme.space[3] }}>
-                        <Text
-                          numberOfLines={1}
-                          style={{
-                            ...theme.text.body,
-                            color: theme.colors.textPrimary,
-                            fontWeight: theme.weight.semibold,
-                          }}
-                        >
-                          {row.hospitalName}
-                        </Text>
-                        <Text
-                          numberOfLines={1}
-                          style={{
-                            ...theme.text.caption,
-                            color: theme.colors.textMuted,
-                            marginTop: theme.space[1],
-                          }}
-                        >
-                          {row.sectorName}
-                        </Text>
-                      </View>
-                      {week.days.map((day) => {
-                        const shifts = row.days[day.date] ?? [];
-                        return (
-                          <View
-                            key={day.date}
-                            style={{
-                              flex: 1,
-                              minWidth: 104,
-                              padding: theme.space[2],
-                              borderLeftWidth: 1,
-                              borderLeftColor: theme.colors.border,
-                              gap: theme.space[1],
-                            }}
-                          >
-                            {shifts.length === 0 ? (
-                              <Text
-                                style={{
-                                  ...theme.text.caption,
-                                  color: theme.colors.textDisabled,
-                                  textAlign: "center",
-                                }}
-                              >
-                                -
-                              </Text>
-                            ) : (
-                              shifts.slice(0, 3).map((shift) => (
-                                <TouchableOpacity
-                                  key={shift.id}
-                                  onPress={() => onShiftPress(shift.id)}
-                                  activeOpacity={0.75}
-                                  style={{
-                                    borderLeftWidth: 3,
-                                    borderLeftColor: shiftBorderColor(
-                                      shift.status,
-                                    ),
-                                    backgroundColor: shift.isMine
-                                      ? theme.colors.primarySoft
-                                      : theme.colors.surfaceAlt,
-                                    borderRadius: theme.radius.sm,
-                                    paddingHorizontal: theme.space[2],
-                                    paddingVertical: theme.space[1],
-                                  }}
-                                >
-                                  <Text
-                                    numberOfLines={1}
-                                    style={{
-                                      ...theme.text.caption,
-                                      color: theme.colors.textPrimary,
-                                      fontWeight: theme.weight.semibold,
-                                    }}
-                                  >
-                                    {formatTimeRange(
-                                      shift.startAt,
-                                      shift.endAt,
-                                    )}
-                                  </Text>
-                                  <Text
-                                    numberOfLines={1}
-                                    style={{
-                                      fontSize: 10,
-                                      lineHeight: 14,
-                                      color: theme.colors.textMuted,
-                                    }}
-                                  >
-                                    {shift.professionalNames[0] ?? shift.status}
-                                  </Text>
-                                </TouchableOpacity>
-                              ))
-                            )}
-                            {shifts.length > 3 ? (
-                              <Text
-                                style={{
-                                  ...theme.text.caption,
-                                  color: theme.colors.textMuted,
-                                }}
-                              >
-                                +{shifts.length - 3}
-                              </Text>
-                            ) : null}
-                          </View>
-                        );
-                      })}
-                    </View>
-                  ))
-                )}
-              </View>
-            );
-          })}
-        </View>
-      </ScrollView>
-
-      <View
-        style={{
-          width: 260,
-          borderWidth: 1,
-          borderColor: theme.colors.border,
-          borderRadius: theme.radius.lg,
-          backgroundColor: theme.colors.surface,
-          padding: theme.space[4],
-          gap: theme.space[3],
-        }}
-      >
-        <Text
-          style={{
-            ...theme.text.title,
-            fontWeight: theme.weight.bold,
-            color: theme.colors.textPrimary,
-          }}
-        >
-          Resumo do período
-        </Text>
-        <SummaryLine label="Plantões" value={summary.shifts} />
-        <SummaryLine label="Em aberto" value={summary.open} accent="warning" />
-        <SummaryLine
-          label="Pendentes"
-          value={summary.pending}
-          accent="warning"
-        />
-        <SummaryLine
-          label="Meus plantões"
-          value={summary.mine}
-          accent="primary"
-        />
-        <View
-          style={{
-            height: 1,
-            backgroundColor: theme.colors.border,
-            marginVertical: theme.space[1],
-          }}
-        />
-        <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
-          Use esta visão para localizar rapidamente hospitais e setores que
-          concentram demanda.
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-function MobilePanorama({
-  weeks,
-  todayKey,
-  refreshControl,
-  onShiftPress,
-}: {
-  weeks: AgendaWeek[];
-  todayKey: string;
-  refreshControl: ReactElement<RefreshControlProps>;
-  onShiftPress: (id: number) => void;
-}) {
-  const flatDays = useMemo(() => weeks.flatMap((week) => week.days), [weeks]);
-  const summary = useMemo(() => summarizeWeeks(weeks), [weeks]);
-
-  return (
-    <ScrollView
-      style={{ flex: 1 }}
-      refreshControl={refreshControl}
-      contentContainerStyle={{
-        paddingBottom: theme.space[10],
-        gap: theme.space[4],
-      }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View
-        style={{
-          borderWidth: 1,
-          borderColor: theme.colors.border,
-          borderRadius: theme.radius.lg,
-          backgroundColor: theme.colors.surface,
-          padding: theme.space[4],
-          gap: theme.space[3],
-        }}
-      >
-        <Text
-          style={{
-            ...theme.text.title,
-            fontWeight: theme.weight.bold,
-            color: theme.colors.textPrimary,
-          }}
-        >
-          Seu panorama
-        </Text>
-        <View
-          style={{
-            flexDirection: "row",
-            gap: theme.space[3],
-            flexWrap: "wrap",
-          }}
-        >
-          <SummaryPill label="Meus" value={summary.mine} />
-          <SummaryPill label="Abertos" value={summary.open} />
-          <SummaryPill label="Pendentes" value={summary.pending} />
-        </View>
-      </View>
-
-      {flatDays.map((day) => {
-        const isToday = day.date === todayKey;
-        const total = day.groups.reduce(
-          (acc, group) => acc + group.shifts.length,
-          0,
-        );
-        return (
-          <View
-            key={day.date}
-            style={{
-              borderWidth: 1,
-              borderColor: isToday ? theme.colors.primary : theme.colors.border,
-              borderRadius: theme.radius.lg,
-              backgroundColor: theme.colors.surface,
-              padding: theme.space[4],
-              gap: theme.space[3],
-            }}
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <Text
-                style={{
-                  ...theme.text.title,
-                  color: isToday
-                    ? theme.colors.primary
-                    : theme.colors.textPrimary,
-                  fontWeight: theme.weight.bold,
-                }}
-              >
-                {formatDayHeader(day.date, day.dow)}
-              </Text>
-              <Text
-                style={{ ...theme.text.caption, color: theme.colors.textMuted }}
-              >
-                {total} plantões
-              </Text>
-            </View>
-            {day.groups.length === 0 ? (
-              <Text
-                style={{ ...theme.text.body, color: theme.colors.textMuted }}
-              >
-                Nenhum plantão listado.
-              </Text>
-            ) : (
-              day.groups.map((group) => (
-                <View
-                  key={`${group.hospitalId}-${group.sectorId}`}
-                  style={{ gap: theme.space[2] }}
-                >
-                  <Text
-                    style={{
-                      ...theme.text.body,
-                      color: theme.colors.textPrimary,
-                      fontWeight: theme.weight.semibold,
-                    }}
-                  >
-                    {group.hospitalName} / {group.sectorName}
-                  </Text>
-                  {group.shifts.map((shift) => (
-                    <TouchableOpacity
-                      key={shift.id}
-                      onPress={() => onShiftPress(shift.id)}
-                      style={{
-                        borderLeftWidth: 3,
-                        borderLeftColor: shiftBorderColor(shift.status),
-                        backgroundColor: shift.isMine
-                          ? theme.colors.primarySoft
-                          : theme.colors.surfaceAlt,
-                        borderRadius: theme.radius.md,
-                        padding: theme.space[3],
-                      }}
-                    >
-                      <Text
-                        style={{
-                          ...theme.text.body,
-                          color: theme.colors.textPrimary,
-                          fontWeight: theme.weight.semibold,
-                        }}
-                      >
-                        {formatTimeRange(shift.startAt, shift.endAt)} -{" "}
-                        {shift.label}
-                      </Text>
-                      <Text
-                        style={{
-                          ...theme.text.caption,
-                          color: theme.colors.textMuted,
-                          marginTop: theme.space[1],
-                        }}
-                      >
-                        {shift.professionalNames.join(", ") || shift.status}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
               ))
             )}
-          </View>
+          </CalendarFrame>
         );
       })}
+    </View>
+  );
+
+  if (isDesktop) {
+    // Desktop rola a PÁGINA inteira (ScreenContainer scrollPage).
+    return <View style={{ paddingBottom: theme.space[10] }}>{sheets}</View>;
+  }
+  return (
+    <ScrollView style={{ flex: 1 }} refreshControl={refreshControl} contentContainerStyle={{ paddingBottom: theme.space[20] }} showsVerticalScrollIndicator={false}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: "flex-start", paddingTop: 2 }}>
+        {sheets}
+      </ScrollView>
     </ScrollView>
   );
 }
 
-function SummaryLine({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: number;
-  accent?: "primary" | "warning";
-}) {
-  const color =
-    accent === "primary"
-      ? theme.colors.primary
-      : accent === "warning"
-        ? theme.palette.warning[700]
-        : theme.colors.textPrimary;
+/** Chip de plantão na célula: barra de 4 px + hora tabular + nome. */
+function GridChip({ shift, onPress }: { shift: AgendaShift; onPress: () => void }) {
+  // O panorama geral é listagem: VAGO neutro. Quem quer agir abre o detalhe.
+  const v = shiftVisualFor(shift.status, { isMine: shift.isMine, context: "listing" });
+  const Icon = v.Icon;
+  const s = new Date(shift.startAt);
+  const e = new Date(shift.endAt);
+  const name = shift.isMine
+    ? "Você"
+    : shift.professionalNames[0] ?? (shift.status === "VAGO" ? "Sem escalado" : shift.status === "PENDENTE" ? "Sem confirmar" : v.label);
   return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-      }}
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${shift.label}, ${formatTimeRange(shift.startAt, shift.endAt)}, ${name}, ${v.label}`}
+      style={({ pressed }) => ({
+        gap: 1,
+        paddingVertical: 5,
+        paddingHorizontal: 7,
+        borderRadius: theme.radius.md - 2,
+        backgroundColor: v.bg,
+        borderWidth: 1,
+        borderColor: v.border,
+        borderLeftWidth: 4,
+        borderLeftColor: v.bar,
+        opacity: pressed ? 0.85 : 1,
+      })}
     >
-      <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-        {label}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+        <Icon size={11} color={v.iconFg} />
+        <Text style={{ ...numeral, fontSize: 11.5, lineHeight: 14, fontWeight: theme.weight.bold, letterSpacing: -0.2, color: v.timeFg }}>
+          {pad2(s.getHours())}:{pad2(s.getMinutes())}-{pad2(e.getHours())}:{pad2(e.getMinutes())}
+        </Text>
+      </View>
+      <Text numberOfLines={1} style={{ fontSize: 11, lineHeight: 14, fontWeight: v.nameWeight, color: v.nameFg }}>
+        {name}
       </Text>
-      <Text
-        style={{ ...theme.text.title, color, fontWeight: theme.weight.bold }}
-      >
-        {value}
-      </Text>
-    </View>
+    </Pressable>
   );
 }
 
-function SummaryPill({ label, value }: { label: string; value: number }) {
+function SummaryCell({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <View
-      style={{
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: theme.radius.full,
-        backgroundColor: theme.colors.surfaceAlt,
-        paddingHorizontal: theme.space[3],
-        paddingVertical: theme.space[2],
-      }}
-    >
-      <Text
-        style={{
-          ...theme.text.caption,
-          color: theme.colors.textSecondary,
-          fontWeight: theme.weight.semibold,
-        }}
-      >
-        {label}: {value}
+    <View style={{ alignItems: "flex-end", paddingHorizontal: theme.space[3] + 1, borderLeftWidth: 1, borderLeftColor: theme.colors.borderStrong }}>
+      <Text style={{ ...numeral, fontSize: 20, lineHeight: 24, fontWeight: theme.weight.bold, letterSpacing: -0.4, color }}>{pad2(value)}</Text>
+      <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, letterSpacing: 1.2, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.textSecondary }}>
+        {label}
       </Text>
     </View>
   );
