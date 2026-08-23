@@ -1,9 +1,9 @@
 import "@/global.css";
 import { theme } from "@/lib/theme";
-import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { Redirect, Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { ActivityIndicator, Platform, Text, TouchableOpacity, View } from "react-native";
@@ -25,6 +25,10 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NotificationListener } from "@/components/NotificationListener";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ToastProvider } from "@/components/ui/Toast";
+import { BootScreen } from "@/components/BootScreen";
+import { startQueryCachePersistence } from "@/lib/query-persist";
+import { emitSessionUnauthorized, isUnauthorizedError } from "@/lib/session-events";
+import Constants from "expo-constants";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -100,28 +104,21 @@ function PendingApprovalScreen() {
 
 /** Handles auth-gated navigation. Must be rendered inside providers. */
 function AuthGuard() {
-  const { user, isLoading } = useAuth();
+  const { user } = useAuth();
   const pathname = usePathname();
-  const queryClient = useQueryClient();
   const {
     activeInstitutionId,
     isHydrating: isHydratingTenant,
     setActiveInstitutionId,
+    clearInstitutionSelection,
   } = useTenantState();
 
-  // Invalidate all tRPC caches when user changes (login/logout).
-  // Without this, listMyInstitutions returns stale empty data after login
-  // because the query was attempted (and failed) before the cookie existed.
-  const [prevUserId, setPrevUserId] = useState<number | null>(null);
-  useEffect(() => {
-    const currentId = user?.id ?? null;
-    if (currentId !== prevUserId) {
-      setPrevUserId(currentId);
-      if (currentId !== null) {
-        queryClient.invalidateQueries();
-      }
-    }
-  }, [user?.id, prevUserId, queryClient]);
+  // O cache em memória é zerado no login e no logout (hooks/use-auth.ts).
+  // O invalidateQueries() que rodava aqui a cada mudança de usuário
+  // cancelava e reenviava o lote de abertura inteiro na hidratação do
+  // cache local — duas requisições idênticas a cada boot, as duas presas
+  // atrás do cold start do servidor (logs do Render, 23/08).
+  const hasCachedTenant = activeInstitutionId !== null;
 
   const {
     data: institutions,
@@ -143,16 +140,24 @@ function AuthGuard() {
     }
   }, [activeInstitutionId, institutions, institutionsLoading, setActiveInstitutionId, user]);
 
-  if (
-    isLoading ||
-    isHydratingTenant ||
-    (!!user && institutionsLoading)
-  ) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.palette.neutral[900] }}>
-        <ActivityIndicator size="large" color={theme.colors.primary} />
-      </View>
-    );
+  // Resposta REAL do servidor diz que a instituição em cache já não é do
+  // usuário (desvinculado, desativada): limpa a seleção e o guard abaixo
+  // manda para a escolha de instituição.
+  useEffect(() => {
+    if (!user || !institutions || activeInstitutionId === null) return;
+    if (!institutions.some((i) => i.id === activeInstitutionId)) {
+      void clearInstitutionSelection();
+    }
+  }, [activeInstitutionId, clearInstitutionSelection, institutions, user]);
+
+  // Com usuário E instituição em cache, a interface NÃO espera o servidor:
+  // a Agenda pinta com o último estado conhecido (cache persistido, ver
+  // lib/query-persist.ts) e revalida em segundo plano. Só bloqueia quem
+  // ainda não tem contexto (primeiro acesso, pós-logout, sem instituição).
+  // (`isLoading` do auth já é tratado em TenantScope: o guard só monta
+  // com o usuário conhecido.)
+  if (isHydratingTenant || (!!user && institutionsLoading && !hasCachedTenant)) {
+    return <BootScreen />;
   }
 
   if (!user) {
@@ -186,8 +191,9 @@ function AuthGuard() {
   // Falha de REDE ao listar instituições (ex.: staging hibernado
   // acordando) NÃO pode ser tratada como "sem instituições" — antes
   // disso, o guard expulsava o usuário logado pro login/seleção toda
-  // vez que o servidor demorava. Mostra reconexão com retry.
-  if (institutionsError) {
+  // vez que o servidor demorava. Sem instituição em cache, mostra
+  // reconexão com retry; com cache, o app segue e revalida depois.
+  if (institutionsError && !hasCachedTenant) {
     return (
       <View
         style={{
@@ -264,8 +270,53 @@ export const unstable_settings = {
  * (auditoria 22/08, parte 2).
  */
 function TenantScope({ children }: { children: React.ReactNode }) {
+  const { user, isLoading } = useAuth();
+  // Só monta a árvore (Stack, guard, listeners) quando já se sabe quem é
+  // o usuário. Antes, o provider nascia como "anon" e era REMONTADO meio
+  // segundo depois com o id vindo do cache local — o navigator inteiro
+  // montava duas vezes a cada abertura do app.
+  if (isLoading) return <BootScreen />;
+  return (
+    <TenantStateProvider key={user?.id ?? "anon"}>
+      <QueryCachePersistence />
+      {children}
+    </TenantStateProvider>
+  );
+}
+
+/**
+ * Liga o cache persistido do react-query ao par usuário + instituição
+ * ativos (chave própria no disco; trocar qualquer um dos dois desliga o
+ * anterior e restaura o certo). É o que faz a Agenda abrir na hora mesmo
+ * com o servidor dormindo.
+ */
+function QueryCachePersistence() {
   const { user } = useAuth();
-  return <TenantStateProvider key={user?.id ?? "anon"}>{children}</TenantStateProvider>;
+  const { activeInstitutionId } = useTenantState();
+  const queryClient = useQueryClient();
+  const userId = user?.id ?? null;
+  const prevContext = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (userId === null || activeInstitutionId === null) return;
+    const context = `${userId}:${activeInstitutionId}`;
+    if (prevContext.current !== null && prevContext.current !== context) {
+      // Trocou de instituição com as telas montadas: as consultas não
+      // levam o tenant na chave, então zera os dados da anterior e refaz
+      // as ativas — senão a Agenda mostrava a instituição antiga até o
+      // próximo refetch (e o cache dela seria gravado na chave da nova).
+      void queryClient.resetQueries();
+    }
+    prevContext.current = context;
+    return startQueryCachePersistence({
+      queryClient,
+      userId,
+      institutionId: activeInstitutionId,
+      buster: Constants.expoConfig?.version ?? "dev",
+    });
+  }, [activeInstitutionId, queryClient, userId]);
+
+  return null;
 }
 
 export default function RootLayout() {
@@ -295,6 +346,18 @@ export default function RootLayout() {
   const [queryClient] = useState(
     () =>
       new QueryClient({
+        // Sessão revogada não pode ficar escondida atrás do cache: qualquer
+        // UNAUTHORIZED dispara a revalidação em /api/auth/me (use-auth).
+        queryCache: new QueryCache({
+          onError: (error) => {
+            if (isUnauthorizedError(error)) emitSessionUnauthorized();
+          },
+        }),
+        mutationCache: new MutationCache({
+          onError: (error) => {
+            if (isUnauthorizedError(error)) emitSessionUnauthorized();
+          },
+        }),
         defaultOptions: {
           queries: {
             // Disable automatic refetching on window focus for mobile

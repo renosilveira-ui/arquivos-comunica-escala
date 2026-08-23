@@ -175,6 +175,21 @@ async function startServer() {
     );
   }
 
+  // Aquece o pool ANTES de aceitar tráfego. A primeira conexão ao MySQL
+  // gerenciado (outra região, TLS) custa de centenas de ms a alguns
+  // segundos numa instância free; sem isto quem pagava esse handshake era
+  // o primeiro pedido real do app — ou o health check do Render, que com
+  // 2 s de timeout respondia 503 e derrubava o deploy. Falha aqui não
+  // impede o listen: /api/health continua reportando o estado real.
+  // Segurar o bind por até 8 s é seguro: a janela de detecção de porta do
+  // Render é de minutos (03:05:38 listening → 03:19:47 timeout, 23/08).
+  const warm = await pingDb(8000);
+  if (warm.ok) {
+    logger.info({ latencyMs: warm.latencyMs }, "db pool warm");
+  } else {
+    logger.warn({ status: warm.status, detail: warm.detail }, "db warm-up failed; listening anyway");
+  }
+
   server.listen(port, "0.0.0.0", () => {
     logger.info({ port, env: process.env.NODE_ENV ?? "unset" }, "api server listening");
     startConfirmationCron();

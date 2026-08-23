@@ -15,11 +15,22 @@ services:
   - type: web
     name: escalas-staging
     runtime: node
+    # free = a instância DORME após 15 min sem tráfego e leva 30–60 s para
+    # acordar (o app abre do cache nesse meio-tempo, mas dados novos só
+    # chegam depois). Para o piloto não depender disso: `starter`
+    # (US$ 7/mês, sem spin-down). Decisão de custo do PO — ver
+    # docs/operations/cold-start.md.
     plan: free
     region: oregon
     branch: main
     buildCommand: pnpm install --frozen-lockfile && pnpm build:all
-    startCommand: pnpm start
+    # Node direto, sem passar pelo pnpm: numa instância free (0,1 CPU) o
+    # `pnpm start` levava ~20 s só para chegar ao `node` (logs do Render,
+    # 23/08 — "Running 'pnpm start'" 03:39:59 → script 03:40:19). O bundle
+    # é .mjs para o Node não reparsear o arquivo como ESM. NODE_ENV vem do
+    # envVars abaixo. Se o serviço NÃO for gerido por este Blueprint,
+    # espelhar no dashboard (Settings → Start Command).
+    startCommand: node dist/index.mjs
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
