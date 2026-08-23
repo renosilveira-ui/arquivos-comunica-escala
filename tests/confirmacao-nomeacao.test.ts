@@ -31,7 +31,7 @@ import {
 import { confirmationRouter } from "../server/confirmation-router";
 import { dispatchConfirmations, processRechecks } from "../server/cron/shift-confirmation-dispatcher";
 import { getDb } from "../server/db";
-import { yearMonthBrt } from "../server/local-time";
+import { addDaysToKey, dayKeyBrt, yearMonthBrt } from "../server/local-time";
 import * as pushService from "../server/notifications-service";
 
 vi.mock("../server/sso/auto-sso", () => ({ triggerAutoSso: vi.fn(async () => undefined) }));
@@ -51,12 +51,12 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   const proIds: number[] = [];
   let pushSpy: ReturnType<typeof vi.spyOn>;
 
-  // Plantão daqui a 2 dias, 13:00–19:00 (Tarde) no relógio do hospital.
-  const start = new Date();
-  start.setDate(start.getDate() + 2);
-  start.setHours(13, 0, 0, 0);
-  const end = new Date(start);
-  end.setHours(19, 0, 0, 0);
+  // Plantão daqui a 2 dias, 13:00–19:00 (Tarde) no relógio do HOSPITAL
+  // (-03:00 explícito: em CI o processo roda em UTC e setHours(13) seria
+  // 10h no Brasil — fora da janela do gatilho "Tarde").
+  const shiftDay = addDaysToKey(dayKeyBrt(new Date()), 2);
+  const start = new Date(`${shiftDay}T13:00:00-03:00`);
+  const end = new Date(`${shiftDay}T19:00:00-03:00`);
 
   const ctx = (userId: number) =>
     ({ user: { id: userId, role: "doctor", name: "T", email: `${userId}@t.local` }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
@@ -232,8 +232,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { assignmentId } = await shiftWithTitular();
     // Gatilho "Tarde" (11:00 → plantão 13:00 do mesmo dia), simulando 11:07 no dia do plantão.
     const trigger = { notifyHour: 11, notifyMinute: 0, shiftStartTime: "13:00", shiftEndTime: "19:00", label: "Tarde", shiftNextDay: false };
-    const at1107 = new Date(start);
-    at1107.setHours(11, 7, 0, 0);
+    const at1107 = new Date(`${shiftDay}T11:07:00-03:00`);
     await dispatchConfirmations(at1107, trigger);
     await dispatchConfirmations(new Date(at1107.getTime() + 60_000), trigger);
     const rows = await db.select({ id: dutyConfirmations.id }).from(dutyConfirmations).where(eq(dutyConfirmations.assignmentId, assignmentId));
