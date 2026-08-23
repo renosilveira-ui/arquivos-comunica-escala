@@ -21,6 +21,7 @@ const palette = {
     0: "#FFFFFF",
     50: "#F8FAFC",
     100: "#F1F5F9",
+    150: "#E4EAF1", // papel de mesa: o fundo do app (proposta de design 23/08)
     200: "#E2E8F0",
     300: "#CBD5E1",
     400: "#94A3B8",
@@ -38,6 +39,13 @@ const palette = {
     600: "#2563EB",
     700: "#1D4ED8",
     900: "#1E3A8A",
+  },
+  // Marca (amostrada de assets/images/icon.png e do wordmark ESCALA+): a
+  // tinta navy — cabeçalho do panorama, avatar, "meu plantão", sidebar.
+  brand: {
+    100: "#DBEAFE", // tint claro (reaproveita primary.100)
+    500: "#01304A",
+    600: "#012639", // pressed
   },
   success: {
     50: "#F0FDF4",
@@ -85,7 +93,8 @@ const text = {
   caption: { fontSize: 12, lineHeight: 16, letterSpacing: 0.1 },
   // Eyebrow: rótulo curto em caixa alta acima de um título ("PRÓXIMO
   // PLANTÃO", "SETOR"). Sempre com textTransform: "uppercase".
-  eyebrow: { fontSize: 11, lineHeight: 14, letterSpacing: 0.8 },
+  // Tracking larga do wordmark "E S C A L A +" entra na tipografia.
+  eyebrow: { fontSize: 11, lineHeight: 14, letterSpacing: 1.6 },
 } as const;
 
 const weight = {
@@ -162,7 +171,9 @@ export const theme = {
   // O app referencia estes. Os hex acima são fonte de verdade.
   colors: {
     // Surfaces
-    background: palette.neutral[50],
+    // Fundo "papel": neutral.50 diferia 1,2% do card branco e nenhuma borda
+    // de 1px sustentava o contorno — a correção desce o fundo (23/08).
+    background: palette.neutral[150],
     surface: palette.neutral[0],
     surfaceAlt: palette.neutral[100],
 
@@ -177,6 +188,10 @@ export const theme = {
     textDisabled: palette.neutral[400],
 
     // Brand
+    brand: palette.brand[500],
+    brandSoft: palette.brand[100],
+    /** A malha do ícone vira régua da grade do panorama. */
+    gridLine: "rgba(1, 48, 74, 0.14)",
     primary: palette.primary[600],
     primaryHover: palette.primary[500],
     primaryActive: palette.primary[700],
@@ -197,8 +212,13 @@ export const theme = {
     // usam theme.colors.textMuted ou theme.colors.border conforme contexto.
     statusPendente: palette.warning[500],
     statusOcupado: palette.success[500],
+    // Vago por contexto (lib/shift-status.ts já decide listing × actionable).
+    statusVagoListing: palette.neutral[400],
+    statusVagoActionable: palette.danger[600],
 
-    // Glass surfaces — overlay tints usados em TintedGlassCard.
+    // Glass surfaces — DEPRECADO (23/08): blur é iOS-only e Android cai no
+    // fallback opaco. Surface cobre todos os usos; remover junto com
+    // TintedGlassCard/GlassCard quando as telas antigas migrarem.
     // Não fazem parte da spec canônica de Card (§6.4) porque dependem
     // de blur + transparência que existem só em iOS via BlurView. Em
     // Android caímos para o fallback opaco (mesma cor sem blur).
@@ -215,7 +235,7 @@ export const theme = {
 
     // Sidebar (desktop). Cor escolhida pra contraste forte com o canvas
     // claro do app — mais frio/azulado que neutral.900. Spec §6.14.
-    sidebarBg: "#0B1F3A",
+    sidebarBg: palette.brand[500],
 
     // Modal/sheet scrim — neutral.900 com 50% (spec §5 modais).
     overlay: "rgba(15, 23, 42, 0.5)",
@@ -223,8 +243,9 @@ export const theme = {
     // ScreenGradient — pares de cores para o gradiente do canvas. O
     // claro segue paleta primary; o escuro segue sidebarBg + neutral.900.
     gradient: {
-      lightStart: palette.neutral[50],
-      lightEnd: palette.primary[50],
+      // Par claro = papel: o gradiente fica quase imperceptível de propósito.
+      lightStart: palette.neutral[150],
+      lightEnd: palette.neutral[100],
       darkStart: "#1E3A5F", // azul-noite mais claro que sidebarBg
       darkEnd: palette.neutral[900],
     },
@@ -256,13 +277,15 @@ export const theme = {
     card: {
       backgroundColor: palette.neutral[0],
       borderWidth: 1,
-      borderColor: palette.neutral[200],
+      borderColor: palette.neutral[300], // 200 não sustentava o contorno sobre o papel
       borderRadius: radius.lg,
       ...shadow.sm,
     },
     raised: {
       backgroundColor: palette.neutral[0],
-      borderWidth: 0,
+      // Sem borda, raised existia só pela sombra — que Android achata.
+      borderWidth: 1,
+      borderColor: palette.neutral[300],
       borderRadius: radius.xl,
       ...shadow.md,
     },

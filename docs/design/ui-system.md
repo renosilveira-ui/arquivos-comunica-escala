@@ -177,6 +177,27 @@ infoSoft      → primary.100  (mesmo do primarySoft no piloto)
 
 ---
 
+### 1.5 Fundo papel, cards delimitados e tinta de marca (23/08)
+
+Proposta de design (Claude Design, 23/08) aplicada aos tokens — o Perfil foi
+a primeira tela na nova linguagem:
+
+- `colors.background` = `neutral.150` (#E4EAF1, "papel de mesa"). O fundo
+  antigo (#F8FAFC) diferia 1,2 % do card branco; nenhuma borda de 1px
+  sustentava o contorno — a correção desce o fundo em vez de subir o card.
+- `surface.card` com borda `neutral.300`; `surface.raised` ganha borda
+  (Android achata sombra; print não mostra).
+- `palette.brand` (#01304A, navy do ícone/wordmark) → `colors.brand`,
+  `colors.brandSoft`, `colors.gridLine`; `sidebarBg` passa a ser a marca.
+- `text.eyebrow.letterSpacing` 1.6 (tracking do wordmark E S C A L A +).
+- `fontFamily.mono` obrigatório em TODO numeral de dado (hora, duração,
+  contagem, horas do mês).
+- `colors.statusVagoListing` / `statusVagoActionable` (o que
+  `lib/shift-status.ts` já decide por contexto).
+- `colors.glass.*`, `TintedGlassCard` e `GlassCard` ficam **deprecados**:
+  blur é iOS-only. Saem quando Admin, Solicitações, Criar/Editar plantão,
+  Confirmação, Indicar substituto e Oferecer troca migrarem para `Surface`.
+
 ## 2. Tipografia
 
 Princípios extraídos de [Phase 1 §4](./ui-research.md#4-tipografia-em-interfaces-densas):
@@ -623,6 +644,20 @@ visão panorâmica da escala.
 `app/ui-preview.tsx` (só em `__DEV__`, rota pública no AuthGuard) renderiza
 os componentes de base com dados de exemplo — verificação visual sem login
 em `http://localhost:8081/ui-preview`.
+
+### 6.20 ListRow
+
+`components/ui/ListRow.tsx`: a linha de lista tocável — ícone em tile,
+título, subtítulo e um terminador (chevron, `value` curto, `toggle` ou
+`trailing` livre). Não desenha superfície própria: vive dentro de
+`<Surface padded={false}>` e desenha só o divisor de topo (`divided`).
+Tons `default | brand | warning | success | danger`. Altura mínima 56 (a
+lista é operada com uma mão). Substitui os blocos "TouchableOpacity + View +
+2 Text + Abrir" do Perfil; serve Solicitações, Vagas e Admin.
+
+O Perfil (23/08) é a referência de uso: quatro grupos — Gestão (com a
+contagem de Solicitações vinda de `shiftAssignments.listPending`), Sua
+atividade, Notificações, Conta e app — mais a zona de risco.
 
 ## 7. Estados padronizados
 

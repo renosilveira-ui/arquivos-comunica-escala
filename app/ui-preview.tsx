@@ -15,6 +15,8 @@ import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
 import { AppButton } from "@/components/ui/AppButton";
 import { Badge } from "@/components/ui/Badge";
 import { NextShiftCard } from "@/components/agenda/NextShiftCard";
+import { ListRow } from "@/components/ui/ListRow";
+import { Inbox, KeyRound, LayoutDashboard, LogOut } from "lucide-react-native";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { theme } from "@/lib/theme";
 
@@ -64,6 +66,17 @@ function Gallery() {
             onConfirm={() => feedback.success("Plantão confirmado.")}
             onSwap={() => feedback.info("Abrir pedido de troca.")}
           />
+        </View>
+
+        <View style={{ gap: theme.space[3] }}>
+          <SectionHeader title="ListRow" subtitle="Linha de lista dentro de Surface padded={false}: ícone · título · subtítulo · terminador (chevron, valor, switch)" />
+          <Surface padded={false}>
+            <ListRow title="Painel" subtitle="Próximos 7 dias" Icon={LayoutDashboard} tone="brand" divided={false} onPress={() => feedback.info("Painel")} />
+            <ListRow title="Solicitações" subtitle="Aguardando sua aprovação" Icon={Inbox} tone="warning" value="7" onPress={() => feedback.info("Solicitações")} />
+            <ListRow title="Alterar senha" Icon={KeyRound} onPress={() => feedback.info("Senha")} />
+            <ListRow title="Lembrete de plantão" subtitle="30 minutos antes" Icon={KeyRound} toggle={{ value: true, onValueChange: () => feedback.info("toggle") }} />
+            <ListRow title="Sair da conta" Icon={LogOut} tone="danger" onPress={() => feedback.info("Sair")} />
+          </Surface>
         </View>
 
         <View style={{ gap: theme.space[3] }}>
