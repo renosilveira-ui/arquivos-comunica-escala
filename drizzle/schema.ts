@@ -32,6 +32,13 @@ export const users = mysqlTable("users", {
    */
   mustChangePassword: boolean("must_change_password").default(false).notNull(),
   /**
+   * Versão da sessão (2026-08-23). O JWT de sessão carrega `sv`; trocar ou
+   * redefinir a senha incrementa a versão e TODAS as sessões anteriores
+   * (outros aparelhos/abas) passam a ser rejeitadas — auditoria 22/08, B3.
+   * Migração manual: drizzle/migrations/manual/2026-08-23-users-session-version.sql
+   */
+  sessionVersion: int("session_version").notNull().default(1),
+  /**
    * Exclusão de conta pelo próprio usuário (Apple 5.1.1(v)). Soft-delete:
    * a linha permanece (FKs de audit/assignments) mas anonimizada; login e
    * sessões falham quando preenchido.

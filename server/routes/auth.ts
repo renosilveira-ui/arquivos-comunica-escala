@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { getDb, getUserByEmail } from "../db";
 import {
   users,
@@ -55,6 +55,20 @@ const DEFAULT_INSTITUTION = {
   legalName: "Hospital das Clínicas",
   tradeName: "Hospital das Clínicas",
 } as const;
+
+/**
+ * Revoga todas as sessões do usuário (outros aparelhos/abas): incrementa
+ * users.session_version. Devolve a nova versão para emitir a sessão do
+ * aparelho atual, quando for o caso.
+ */
+async function bumpSessionVersion(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  userId: number,
+): Promise<number> {
+  await db.update(users).set({ sessionVersion: sql`${users.sessionVersion} + 1` }).where(eq(users.id, userId));
+  const [row] = await db.select({ sessionVersion: users.sessionVersion }).from(users).where(eq(users.id, userId)).limit(1);
+  return row?.sessionVersion ?? 1;
+}
 
 function resolveProfessionalName(user: User): string {
   const explicitName = String(user.name ?? "").trim();
@@ -191,7 +205,7 @@ authRouter.post("/login", async (req: Request, res: Response): Promise<void> => 
     }
   }
 
-  const token = await sdk.createSessionToken(String(user.id), { name: user.name ?? "" });
+  const token = await sdk.createSessionToken(String(user.id), { name: user.name ?? "", sessionVersion: user.sessionVersion });
   res.cookie(COOKIE_NAME, token, resolveSetCookieOptions(req));
   res.json({
     user: {
@@ -282,6 +296,11 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
     .update(users)
     .set({ passwordHash: newHash, mustChangePassword: false })
     .where(eq(users.id, user.id));
+  // Outras sessões (outros aparelhos/abas) morrem; este aparelho recebe
+  // uma sessão nova com a versão atual (cookie + token no body p/ mobile).
+  const sessionVersion = await bumpSessionVersion(db, user.id);
+  const refreshedToken = await sdk.createSessionToken(String(user.id), { name: user.name ?? "", sessionVersion });
+  res.cookie(COOKIE_NAME, refreshedToken, resolveSetCookieOptions(req));
 
   // Audit trail — útil pra detectar abuso (alguém trocou senha alheia).
   await recordAudit({
@@ -295,7 +314,7 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
     institutionId: await primaryInstitutionOf(user.id),
   });
 
-  res.json({ ok: true });
+  res.json({ ok: true, token: refreshedToken });
 });
 
 // ---------------------------------------------------------------------------
@@ -485,6 +504,9 @@ authRouter.post("/reset-password", async (req: Request, res: Response): Promise<
     .update(users)
     .set({ passwordHash: newHash, mustChangePassword: false })
     .where(eq(users.id, user.id));
+  // "Esqueci minha senha" = possível comprometimento: todas as sessões
+  // anteriores morrem; o usuário entra de novo com a senha nova.
+  await bumpSessionVersion(db, user.id);
   await db
     .update(passwordResets)
     .set({ usedAt: new Date() })

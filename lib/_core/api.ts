@@ -183,7 +183,7 @@ export const authApi = {
     currentPassword: string,
     newPassword: string,
   ): Promise<{ ok: boolean; error?: string }> {
-    const res = await apiFetch<{ ok?: boolean; error?: string }>(
+    const res = await apiFetch<{ ok?: boolean; token?: string; error?: string }>(
       "/api/auth/change-password",
       {
         method: "POST",
@@ -191,7 +191,12 @@ export const authApi = {
         headers: { "Content-Type": "application/json" },
       },
     );
-    if (res.ok && res.data?.ok) return { ok: true };
+    if (res.ok && res.data?.ok) {
+      // A troca revoga as sessões antigas; o servidor devolve a sessão nova
+      // deste aparelho (cookie na web, token Bearer no nativo).
+      if (Platform.OS !== "web" && res.data.token) await Auth.setSessionToken(res.data.token);
+      return { ok: true };
+    }
     const errMsg =
       (res.data as any)?.error ?? res.error ?? "Erro ao alterar senha";
     return { ok: false, error: errMsg };
