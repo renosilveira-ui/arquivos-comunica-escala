@@ -17,12 +17,6 @@ import { confirmAction } from "@/lib/ui/confirm";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
 import { authApi } from "@/lib/_core/api";
 import { getLastCrash } from "@/components/AppErrorBoundary";
-import {
-  requestNotificationPermissions,
-  notifyNewShift,
-  notifyShiftChange,
-  notifyShiftCancellation
-} from "@/lib/notifications";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -656,64 +650,6 @@ export default function ProfileScreen() {
           </TintedGlassCard>
         </View>
 
-        {/* Teste de Notificações (Modo Demo) */}
-        <View className="gap-4">
-          <View className="flex-row items-center gap-2">
-            <Bell size={20} color={theme.colors.textPrimary} />
-            <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Testar Notificações</Text>
-          </View>
-          <TintedGlassCard variant="light">
-            <View className="gap-3">
-              <TouchableOpacity
-                onPress={async () => {
-                  const granted = await requestNotificationPermissions();
-                  if (granted) {
-                    await notifyNewShift("UTI", new Date(), "Manhã 7h-13h");
-                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  }
-                }}
-                className="rounded-xl p-4 items-center flex-row justify-between"
-                style={{ backgroundColor: theme.colors.successSoft, borderWidth: 1, borderColor: theme.colors.success }}
-                activeOpacity={0.7}
-              >
-                <Text className="text-base font-semibold" style={{ color: theme.palette.success[700] }}>🏥 Nova Escala</Text>
-                <Text style={{ color: theme.palette.success[700], fontWeight: "700" }}>Enviar</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={async () => {
-                  const granted = await requestNotificationPermissions();
-                  if (granted) {
-                    await notifyShiftChange("Emergência", new Date(), new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
-                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  }
-                }}
-                className="rounded-xl p-4 items-center flex-row justify-between"
-                style={{ backgroundColor: theme.colors.primarySoft, borderWidth: 1, borderColor: theme.colors.primary }}
-                activeOpacity={0.7}
-              >
-                <Text className="text-base font-semibold" style={{ color: theme.palette.primary[900] }}>🔄 Troca de Plantão</Text>
-                <Text style={{ color: theme.palette.primary[900], fontWeight: "700" }}>Enviar</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={async () => {
-                  const granted = await requestNotificationPermissions();
-                  if (granted) {
-                    await notifyShiftCancellation("Cirurgia", new Date(), "Falta de profissionais");
-                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  }
-                }}
-                className="rounded-xl p-4 items-center flex-row justify-between"
-                style={{ backgroundColor: theme.colors.dangerSoft, borderWidth: 1, borderColor: theme.colors.danger }}
-                activeOpacity={0.7}
-              >
-                <Text className="text-base font-semibold" style={{ color: theme.palette.danger[900] }}>❌ Cancelamento</Text>
-                <Text style={{ color: theme.palette.danger[900], fontWeight: "700" }}>Enviar</Text>
-              </TouchableOpacity>
-            </View>
-          </TintedGlassCard>
-        </View>
         {/* Conta — exclusão (Apple 5.1.1(v)) */}
         <View style={{ gap: theme.space[4] }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>

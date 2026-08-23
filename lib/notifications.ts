@@ -77,70 +77,6 @@ export async function scheduleNotification(
 }
 
 /**
- * Notificar sobre nova escala
- */
-export async function notifyNewShift(
-  sectorName: string,
-  shiftDate: Date,
-  shiftTime: string
-) {
-  const dateStr = shiftDate.toLocaleDateString('pt-BR', { 
-    day: '2-digit', 
-    month: 'long' 
-  });
-  
-  await sendLocalNotification(
-    '🏥 Nova Escala Disponível',
-    `${sectorName} - ${dateStr} (${shiftTime})`,
-    { type: 'new_shift', date: shiftDate.toISOString() }
-  );
-}
-
-/**
- * Notificar sobre troca de plantão
- */
-export async function notifyShiftChange(
-  sectorName: string,
-  oldDate: Date,
-  newDate: Date
-) {
-  const oldDateStr = oldDate.toLocaleDateString('pt-BR', { 
-    day: '2-digit', 
-    month: 'short' 
-  });
-  const newDateStr = newDate.toLocaleDateString('pt-BR', { 
-    day: '2-digit', 
-    month: 'short' 
-  });
-  
-  await sendLocalNotification(
-    '🔄 Troca de Plantão',
-    `${sectorName}: ${oldDateStr} → ${newDateStr}`,
-    { type: 'shift_change' }
-  );
-}
-
-/**
- * Notificar sobre cancelamento
- */
-export async function notifyShiftCancellation(
-  sectorName: string,
-  shiftDate: Date,
-  reason?: string
-) {
-  const dateStr = shiftDate.toLocaleDateString('pt-BR', { 
-    day: '2-digit', 
-    month: 'long' 
-  });
-  
-  await sendLocalNotification(
-    '❌ Plantão Cancelado',
-    `${sectorName} - ${dateStr}${reason ? `: ${reason}` : ''}`,
-    { type: 'cancellation' }
-  );
-}
-
-/**
  * Lembrete de plantão (30 minutos antes)
  */
 export async function scheduleShiftReminder(
@@ -153,11 +89,6 @@ export async function scheduleShiftReminder(
   
   // Não agendar se já passou
   if (reminderDate < new Date()) return;
-  
-  const dateStr = shiftDate.toLocaleDateString('pt-BR', { 
-    day: '2-digit', 
-    month: 'long' 
-  });
   
   await scheduleNotification(
     '⏰ Lembrete de Plantão',
