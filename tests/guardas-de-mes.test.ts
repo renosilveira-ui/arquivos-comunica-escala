@@ -42,13 +42,16 @@ describe("guardas de mês em todos os pontos de escrita", () => {
   let doctorProId: number;
   const stamp = Date.now();
 
-  // Dia de hoje 07:00 (mês corrente) e dia 10 do mês que vem 07:00.
-  const today = new Date();
-  const currentStart = new Date(today);
-  currentStart.setHours(7, 0, 0, 0);
-  const nextMonthStart = new Date(today.getFullYear(), today.getMonth() + 1, 10, 7, 0, 0, 0);
-  const currentYm = yearMonthBrt(currentStart);
-  const nextYm = yearMonthBrt(nextMonthStart);
+  // Hoje 07:00 e dia 10 do mês que vem 07:00 — no relógio do HOSPITAL
+  // (-03:00), não no fuso do processo (CI roda em UTC).
+  const todayKey = dayKeyBrt(new Date());
+  const currentStart = new Date(`${todayKey}T07:00:00-03:00`);
+  const currentYm = todayKey.slice(0, 7);
+  const nextYm = (() => {
+    const [y, m] = currentYm.split("-").map(Number);
+    return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+  })();
+  const nextMonthStart = new Date(`${nextYm}-10T07:00:00-03:00`);
 
   const ctxFor = (userId: number, role: "manager" | "doctor") =>
     ({ user: { id: userId, role, name: "T", email: `${userId}@test.local` }, institutionId, allowedInstitutionIds: [institutionId] }) as any;

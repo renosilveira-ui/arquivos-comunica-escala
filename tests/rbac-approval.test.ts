@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { afterAll, describe, it, expect, beforeAll } from "vitest";
 import { getDb } from "../server/db";
-import { professionals, shiftInstances, shiftAssignmentsV2, users, managerScope } from "../drizzle/schema";
-import { eq, and } from "drizzle-orm";
+import { professionals, sectors, shiftInstances, shiftAssignmentsV2 } from "../drizzle/schema";
+import { eq } from "drizzle-orm";
 
 /**
  * Testes RBAC para approveAssignment e rejectAssignment
@@ -20,6 +20,13 @@ describe("RBAC - Aprovação de Alocações", () => {
   let gestorPlusId: number;
   let pendingAssignmentId: number;
   let shiftInstanceId: number;
+  let outOfScopeFixture: { shiftId: number; sectorId: number } | null = null;
+
+  afterAll(async () => {
+    if (!db || !outOfScopeFixture) return;
+    await db.delete(shiftInstances).where(eq(shiftInstances.id, outOfScopeFixture.shiftId));
+    await db.delete(sectors).where(eq(sectors.id, outOfScopeFixture.sectorId));
+  });
 
   beforeAll(async () => {
     db = await getDb();
@@ -87,16 +94,20 @@ describe("RBAC - Aprovação de Alocações", () => {
   it("Teste 2: GESTOR_MEDICO fora do escopo tenta aprovar → 403 FORBIDDEN", async () => {
     if (!db) throw new Error("Database not available");
 
-    // Buscar turno de outro setor (não Centro Cirúrgico)
-    const [outOfScopeShift] = await db
-      .select()
-      .from(shiftInstances)
-      .where(eq(shiftInstances.label, "Plantão Manhã (hoje)"));
-
-    if (!outOfScopeShift) {
-      console.log("⚠️  Teste 2 PULADO: Turno fora do escopo não encontrado");
-      return;
-    }
+    // Fixture PRÓPRIA fora do escopo da Maria (setor novo no mesmo
+    // hospital): a versão antiga procurava um label que o seed não cria
+    // e retornava sem asserção — o teste "passava" sem testar nada.
+    const [scopedShift] = await db.select().from(shiftInstances).where(eq(shiftInstances.id, shiftInstanceId));
+    const [outSector] = await db
+      .insert(sectors)
+      .values({ institutionId: scopedShift.institutionId, hospitalId: scopedShift.hospitalId, name: `RBAC fora de escopo ${Date.now()}`, category: "cirurgico", color: "#999999" })
+      .$returningId();
+    const [outOfScope] = await db
+      .insert(shiftInstances)
+      .values({ institutionId: scopedShift.institutionId, hospitalId: scopedShift.hospitalId, sectorId: outSector.id, label: `RBAC fora de escopo ${Date.now()}`, startAt: scopedShift.startAt, endAt: scopedShift.endAt, status: "VAGO" })
+      .$returningId();
+    const outOfScopeShift = { id: outOfScope.id };
+    outOfScopeFixture = { shiftId: outOfScope.id, sectorId: outSector.id };
 
     const { canApproveAssignment } = await import("../server/rbac-validations");
 

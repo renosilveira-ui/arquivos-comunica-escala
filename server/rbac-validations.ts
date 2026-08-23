@@ -1,7 +1,7 @@
 import { professionals, managerScope, shiftInstances, professionalInstitutions } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { getDb } from "./db";
-import { yearMonthFromDate } from "../lib/date-utils";
+import { yearMonthBrt } from "./local-time";
 
 /**
  * Validações RBAC + Jurisdição + Janela Temporal
@@ -186,7 +186,7 @@ export async function checkEditWindow(
     return { canEdit: false, isRetroactive, reason: "Usuários não podem editar turnos retroativos" };
   }
 
-  if (yearMonthFromDate(shiftDate) !== yearMonthFromDate(new Date())) {
+  if (yearMonthBrt(shiftDate) !== yearMonthBrt(new Date())) {
     return {
       canEdit: false,
       isRetroactive,

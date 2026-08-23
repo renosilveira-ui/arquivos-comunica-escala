@@ -340,13 +340,12 @@ Precisa de novo build:
 
 ### "Bundle identifier already in use" durante `eas credentials -p ios`
 
-Significa que **outro app no mundo Apple** já está usando
-`app.escalas.staging`. Soluções:
-
-- Trocar para algo mais único: `br.com.escalas.staging` ou
-  `app.escalas.<seu-sobrenome>.staging`.
-- Editar `iosBundleId` e `androidPackage` em `app.config.ts`,
-  comitar, rodar `eas credentials -p ios` de novo.
+O bundle ID definitivo é `com.comunicamais.escalas` (app.config.ts),
+já registrado no App Store Connect (app 6802868138) e com builds no
+TestFlight. **Não trocar o bundle ID**: um ID novo cria outro app na
+Apple e perde o histórico de builds/testers. Se o erro aparecer, é
+conta/Team errado no `eas credentials` — confira o Apple Team ID e o
+login do EAS, não o identificador.
 
 > Antes da publicação pública (depois do piloto), trocaremos de
 > qualquer jeito para algo definitivo (`br.com.unimedfortaleza.escalas`

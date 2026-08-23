@@ -148,7 +148,12 @@ function parseDate(text: string): VoiceDate | ParseFailure | null {
 
 function parsePeriod(text: string): VoicePeriod | null {
   // "amanha" contém "manha" mas \b impede o falso positivo.
-  if (/\bmanha\b|\bcedo\b/.test(text)) return "manha";
+  // "cedo" é turno quando qualifica um dia/horário ("hoje cedo", "amanhã
+  // cedo", "bem cedo", "de manhã cedo"); no começo da frase ou antes de
+  // "o/meu/a/minha plantão" é o verbo ceder ("cedo meu plantão de hoje à
+  // noite" → turno da NOITE, não da manhã).
+  const cedoComoTurno = /\b(hoje|amanha|ontem|bem|de|mais|segunda|terca|quarta|quinta|sexta|sabado|domingo)\s+cedo\b/.test(text);
+  if (/\bmanha\b|\bcedinho\b/.test(text) || cedoComoTurno) return "manha";
   if (/\btarde\b/.test(text)) return "tarde";
   if (/\bnoite\b|\bmadrugada\b/.test(text)) return "noite";
   return null;
@@ -192,7 +197,13 @@ export function parseVoiceCommand(raw: string): ParsedCommand | ParseFailure {
 // ── Resolução ──────────────────────────────────────────────────────────
 
 // Início do turno em UTC (convenção do banco: BRT+3)
-const PERIOD_START_UTC: Record<VoicePeriod, number> = { manha: 10, tarde: 16, noite: 22 };
+/** Turno pelo horário de INÍCIO no relógio do hospital (-03:00): manhã 05–12h, tarde 12–18h, noite 18–05h. */
+function periodOfStart(startAt: Date): VoicePeriod {
+  const hourBrt = (startAt.getUTCHours() + 21) % 24;
+  if (hourBrt >= 5 && hourBrt < 12) return "manha";
+  if (hourBrt >= 12 && hourBrt < 18) return "tarde";
+  return "noite";
+}
 const PERIOD_LABEL: Record<VoicePeriod, string> = { manha: "Manhã", tarde: "Tarde", noite: "Noite" };
 const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
 
@@ -348,7 +359,7 @@ export async function resolveSwapCommand(
     const dayStartUtc = new Date(Date.UTC(target.y, target.m - 1, target.d, 3, 0, 0));
     const dayEndUtc = new Date(Date.UTC(target.y, target.m - 1, target.d + 1, 3, 0, 0));
 
-    const myShifts = await db
+    let myShifts = await db
       .select(myShiftFields)
       .from(shiftAssignmentsV2)
       .innerJoin(shiftInstances, eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id))
@@ -363,9 +374,17 @@ export async function resolveSwapCommand(
       return { ok: false, error: `Você não tem plantão ${whenSaid}.` };
     }
 
+    // Só plantões que ainda não começaram podem ser trocados: "hoje" às
+    // 15h não pode resolver para a Manhã que já passou.
+    const future = myShifts.filter((s) => new Date(s.startAt).getTime() > now.getTime());
+    if (future.length === 0) {
+      return { ok: false, error: `Seu plantão ${whenSaid} já começou — só é possível trocar plantões futuros.` };
+    }
+    myShifts = future;
+
     if (parsed.period) {
-      const wanted = PERIOD_START_UTC[parsed.period];
-      const match = myShifts.find((s) => new Date(s.startAt).getUTCHours() === wanted);
+      // Pelo horário de início (faixas), não por hora exata 07/13/19.
+      const match = myShifts.find((s) => periodOfStart(new Date(s.startAt)) === parsed.period);
       if (!match) {
         const available = myShifts.map((s) => s.label).join(", ");
         return {
@@ -478,3 +497,6 @@ function buildResolved(shift: MyShift, target: { id: number; name: string }): Re
     confirmationText: `Passar seu plantão de ${when} (${shift.label}, ${timeRange}) para ${target.name}. ${firstName} receberá a oferta para aceitar. Confirmar?`,
   };
 }
+
+// Expostos para testes unitários.
+export { parsePeriod, periodOfStart };
