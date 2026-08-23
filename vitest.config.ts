@@ -5,6 +5,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./"),
+      // lib/theme.ts usa Platform.select (fonte mono por plataforma); em
+      // Node não há react-native — um stub com só o que a lib toca.
+      "react-native": path.resolve(__dirname, "./tests/stubs/react-native.ts"),
+      "lucide-react-native": path.resolve(__dirname, "./tests/stubs/lucide-react-native.ts"),
     },
   },
   test: {

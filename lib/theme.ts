@@ -1,3 +1,5 @@
+import { Platform } from "react-native";
+
 /**
  * Design system tokens for Escalas Hospitalares.
  *
@@ -50,6 +52,7 @@ const palette = {
   success: {
     50: "#F0FDF4",
     100: "#DCFCE7",
+    200: "#BBF7D0",
     500: "#22C55E",
     700: "#15803D",
     900: "#14532D",
@@ -57,6 +60,7 @@ const palette = {
   warning: {
     50: "#FFFBEB",
     100: "#FEF3C7",
+    200: "#FDE68A",
     500: "#F59E0B",
     700: "#B45309",
     900: "#78350F",
@@ -64,6 +68,7 @@ const palette = {
   danger: {
     50: "#FEF2F2",
     100: "#FEE2E2",
+    200: "#FECACA",
     500: "#EF4444",
     600: "#DC2626",
     900: "#7F1D1D",
@@ -78,8 +83,14 @@ const palette = {
 const fontFamily = {
   sans:
     '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-  mono:
-    'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+  // Numeral tabular (hora, contagem, dia do mês). No nativo fontFamily é UM
+  // nome de fonte instalada — a pilha CSS só vale na web; em iOS/Android a
+  // pilha caía em silêncio na fonte do sistema (proporcional).
+  mono: Platform.select({
+    ios: "Menlo",
+    android: "monospace",
+    default: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+  }) as string,
 } as const;
 
 const text = {
@@ -192,6 +203,10 @@ export const theme = {
     brandSoft: palette.brand[100],
     /** A malha do ícone vira régua da grade do panorama. */
     gridLine: "rgba(1, 48, 74, 0.14)",
+    // "Papel rebaixado": fim de semana e dia selecionado na folha de
+    // calendário são o papel com um véu de navy — nunca um card pintado.
+    paperWeekend: "rgba(1, 48, 74, 0.045)",
+    paperSelected: "rgba(1, 48, 74, 0.06)",
     primary: palette.primary[600],
     primaryHover: palette.primary[500],
     primaryActive: palette.primary[700],
@@ -256,7 +271,10 @@ export const theme = {
     // e hovers; primarySoft é o azul translúcido para chips em dark.
     onDark: {
       text: "#FFFFFF",
+      textSoft: "rgba(255, 255, 255, 0.82)",
       textMuted: "rgba(255, 255, 255, 0.6)",
+      /** Anel do numeral de hoje sobre navy (folha de calendário). */
+      ring: "rgba(255, 255, 255, 0.9)",
       textDisabled: "rgba(255, 255, 255, 0.4)",
       textInactive: palette.primary[200], // ítem inativo da sidebar
       surface: "rgba(255, 255, 255, 0.12)", // fill translúcido (avatar)

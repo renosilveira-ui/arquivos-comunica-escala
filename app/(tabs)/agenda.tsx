@@ -7,7 +7,7 @@ import {
   Platform,
 } from "react-native";
 import { useState, useMemo, useEffect } from "react";
-import { ChevronLeft, ChevronRight, Plus, Building2, ChevronDown } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Plus, Building2, ChevronDown, CalendarDays, LayoutGrid, ListChecks, type LucideIcon } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { MonthAgenda, type DayOffer } from "@/components/agenda/MonthAgenda";
@@ -20,6 +20,8 @@ import { theme } from "@/lib/theme";
 import { ManagerActionsMenu } from "@/components/agenda/ManagerActionsMenu";
 import { MobileDayList } from "@/components/agenda/MobileDayList";
 import { NextShiftCard } from "@/components/agenda/NextShiftCard";
+import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
+import { DayNumeral, numeral } from "@/components/agenda/CalendarSheet";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { useTenantState } from "@/lib/tenant-state";
 import { useSsoHandoff } from "@/hooks/use-sso-handoff";
@@ -49,7 +51,10 @@ import { keepPreviousData } from "@tanstack/react-query";
  */
 
 type AgendaScope = "geral" | "minha";
-type AgendaViewMode = "calendario" | "panorama";
+// Lista = dia-a-dia; Calendário = folha de mês; Panorama = hospital × dia.
+// No celular a grade hospital × dia não cabe (47 pt por coluna), então o
+// Panorama mobile É a folha de mês e "Calendário" não é oferecido.
+type AgendaViewMode = "lista" | "calendario" | "panorama";
 
 const DAY_LABELS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"] as const;
 const MOBILE_BREAKPOINT = 1024;
@@ -75,12 +80,6 @@ function formatMonthTitle(monthKey: string): string {
   const [y, m] = monthKey.split("-").map(Number);
   const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
   return `${months[m - 1]} ${y}`;
-}
-
-function formatDayHeader(date: string, dow: number): string {
-  // "26 DOM"
-  const day = parseInt(date.slice(8, 10), 10);
-  return `${String(day).padStart(2, "0")} ${DAY_LABELS[dow]}`;
 }
 
 function formatTimeRange(startAt: Date | string, endAt: Date | string): string {
@@ -166,7 +165,7 @@ export default function AgendaScreen() {
   const isDesktop = Platform.OS === "web" && width >= MOBILE_BREAKPOINT;
 
   const [scope, setScope] = useState<AgendaScope>("geral");
-  const [viewMode, setViewMode] = useState<AgendaViewMode>("calendario");
+  const [viewMode, setViewMode] = useState<AgendaViewMode>("lista");
   const [refreshing, setRefreshing] = useState(false);
   const [anchorWeekStart, setAnchorWeekStart] = useState(() =>
     toDateKey(startOfWeekMon(new Date())),
@@ -176,13 +175,16 @@ export default function AgendaScreen() {
 
   // Panorama: âncora por MÊS (grade completa). Calendário: por semanas.
   const [anchorMonthKey, setAnchorMonthKey] = useState(() => monthKeyOf(new Date()));
-  const isPanorama = viewMode === "panorama";
+  // Folha de mês: "Calendário" no desktop, "Panorama" no celular.
+  const isMonthSheet = isDesktop ? viewMode === "calendario" : viewMode === "panorama";
+  // Grade hospital × dia (semanas): só no desktop.
+  const isHospitalGrid = isDesktop && viewMode === "panorama";
   const panoramaStart = useMemo(() => {
     const [y, m] = anchorMonthKey.split("-").map(Number);
     return toDateKey(startOfWeekMon(new Date(y, m - 1, 1)));
   }, [anchorMonthKey]);
-  const queryStartDate = isPanorama ? panoramaStart : anchorWeekStart;
-  const queryWeeks = isPanorama ? 6 : weeksCount;
+  const queryStartDate = isMonthSheet ? panoramaStart : anchorWeekStart;
+  const queryWeeks = isMonthSheet ? 6 : weeksCount;
 
   // Card "Próximo plantão": em andamento ou o próximo futuro.
   const { data: nextShift } = trpc.shifts.getNextShift.useQuery(undefined, {
@@ -226,7 +228,7 @@ export default function AgendaScreen() {
 
   const { data: availableSwaps } = trpc.swaps.listAvailable.useQuery(
     {},
-    { enabled: !!user?.id && isPanorama, staleTime: 60_000 },
+    { enabled: !!user?.id && isMonthSheet, staleTime: 60_000 },
   );
   const dayOffers = useMemo<DayOffer[]>(() => {
     return ((availableSwaps ?? []) as any[]).map((sw) => {
@@ -283,14 +285,14 @@ export default function AgendaScreen() {
   };
   const goPrev = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (isPanorama) return stepMonth(-1);
+    if (isMonthSheet) return stepMonth(-1);
     const d = new Date(`${anchorWeekStart}T00:00:00`);
     d.setDate(d.getDate() - weeksCount * 7);
     setAnchorWeekStart(toDateKey(d));
   };
   const goNext = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (isPanorama) return stepMonth(1);
+    if (isMonthSheet) return stepMonth(1);
     const d = new Date(`${anchorWeekStart}T00:00:00`);
     d.setDate(d.getDate() + weeksCount * 7);
     setAnchorWeekStart(toDateKey(d));
@@ -306,152 +308,96 @@ export default function AgendaScreen() {
       {/* Nativo/mobile: frame com rolagem interna (flex evita o colapso de
           altura zero no iOS). Desktop web: página inteira rolável. */}
       <ScreenContainer flex={!isDesktop} scrollPage={isDesktop}>
-        {/* Header: título + nav mês + toggle Geral/Minha */}
-        <View style={{ marginBottom: theme.space[4] }}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: theme.space[3],
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 28,
-                fontWeight: "800",
-                color: theme.colors.textPrimary,
-              }}
-            >
-              Agenda
-            </Text>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: theme.space[2],
-              }}
-            >
+        {/* Cabeçalho único das três vistas (proposta de design 23/08):
+            título + navegação de período, "Hoje" e voz; instituição +
+            Geral/Minha; trocador de vista de largura cheia; e, só para
+            gestor, a faixa com o status da escala e o botão Ações. */}
+        <View style={{ gap: theme.space[2] + 1, marginBottom: theme.space[3] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+            <Text style={{ ...theme.text.titleLg, fontSize: 22, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Agenda</Text>
+            <View style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 3 }}>
               <TouchableOpacity onPress={goPrev} style={navBtnStyle} hitSlop={8} accessibilityLabel="Período anterior">
-                <ChevronLeft size={20} color={theme.colors.textPrimary} />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={goToday} style={navTextBtnStyle}>
-                <Text
-                  style={{
-                    color: theme.colors.primary,
-                    fontWeight: "600",
-                    fontSize: 13,
-                  }}
-                >
-                  Hoje
-                </Text>
+                <ChevronLeft size={16} color={theme.colors.brand} />
               </TouchableOpacity>
               <Text
-                style={{
-                  fontSize: 15,
-                  fontWeight: "700",
-                  color: theme.colors.textPrimary,
-                  minWidth: 100,
-                  textAlign: "center",
-                }}
+                numberOfLines={1}
+                style={{ ...numeral, minWidth: 74, textAlign: "center", fontSize: 13.5, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}
               >
-                {isPanorama ? formatMonthTitle(anchorMonthKey) : formatMonthRange(anchorWeekStart, weeksCount)}
+                {isMonthSheet ? formatMonthTitle(anchorMonthKey) : formatMonthRange(anchorWeekStart, weeksCount)}
               </Text>
               <TouchableOpacity onPress={goNext} style={navBtnStyle} hitSlop={8} accessibilityLabel="Próximo período">
-                <ChevronRight size={20} color={theme.colors.textPrimary} />
+                <ChevronRight size={16} color={theme.colors.brand} />
               </TouchableOpacity>
+              <TouchableOpacity onPress={goToday} style={todayBtnStyle} hitSlop={6} accessibilityLabel="Ir para hoje">
+                <Text style={{ ...theme.text.caption, fontSize: 12.5, fontWeight: theme.weight.bold, color: theme.colors.onDark.text }}>Hoje</Text>
+              </TouchableOpacity>
+              {Platform.OS !== "web" ? (
+                <View style={{ marginLeft: 2 }}>
+                  <VoiceCommandButton variant="inline" />
+                </View>
+              ) : null}
             </View>
           </View>
 
-          {/* Instituição ativa — SEMPRE visível e tocável para trocar.
-              A agenda é por instituição; sem isso o usuário via a grade
-              vazia da instituição errada sem nenhuma pista do motivo.
-              À direita, as ações do gestor (replicar/publicar/bloquear). */}
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: theme.space[2],
-              marginBottom: theme.space[3],
-            }}
-          >
+          {/* Instituição ativa — SEMPRE visível e tocável para trocar: a
+              agenda é por instituição; sem isso o usuário via a grade vazia
+              da instituição errada sem nenhuma pista do motivo. */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] - 1 }}>
             <TouchableOpacity
               onPress={handleSwitchInstitution}
               activeOpacity={0.7}
+              accessibilityLabel={`Instituição ativa: ${activeInstitutionName ?? "nenhuma"}. Toque para trocar`}
               style={{
+                flex: 1,
+                minWidth: 0,
                 flexDirection: "row",
                 alignItems: "center",
-                flexShrink: 1,
-                minHeight: theme.space[10] + theme.space[1],
-                gap: 6,
-                backgroundColor: theme.colors.primarySoft,
-                borderRadius: theme.radius.md,
-                paddingHorizontal: theme.space[3],
-                paddingVertical: 6,
+                gap: theme.space[2] - 1,
+                height: 34,
+                paddingHorizontal: theme.space[2] + 2,
+                borderRadius: theme.radius.md + 1,
+                backgroundColor: theme.colors.surfaceAlt,
+                borderWidth: 1,
+                borderColor: theme.colors.borderStrong,
               }}
             >
-              <Building2 size={14} color={theme.colors.primary} />
-              <Text
-                style={{
-                  fontSize: 13,
-                  fontWeight: "600",
-                  color: theme.colors.primary,
-                  flexShrink: 1,
-                }}
-                numberOfLines={1}
-              >
+              <Building2 size={15} color={theme.colors.brand} />
+              <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
                 {activeInstitutionName ?? "Selecionar instituição"}
               </Text>
-              <ChevronDown size={14} color={theme.colors.primary} />
+              <ChevronDown size={13} color={theme.colors.textSecondary} />
             </TouchableOpacity>
-            {canCreateShift ? (
-              <ManagerActionsMenu
-                institutionId={activeInstitutionId ?? null}
-                period={
-                  isPanorama
-                    ? { kind: "month", monthKey: anchorMonthKey }
-                    : { kind: "week", weekStart: anchorWeekStart }
-                }
-                onChanged={() => {
-                  refetch();
-                }}
-              />
-            ) : null}
+            <Segmented>
+              <SegButton label="Geral" active={scope === "geral"} onPress={() => setScope("geral")} />
+              <SegButton label="Minha" active={scope === "minha"} onPress={() => setScope("minha")} />
+            </Segmented>
           </View>
 
-          <View
-            style={{
-              flexDirection: "row",
-              gap: theme.space[3],
-              flexWrap: "wrap",
-            }}
-          >
-            <SegmentedGroup>
-              <ScopePill
-                label="Geral"
-                active={scope === "geral"}
-                onPress={() => setScope("geral")}
-              />
-              <ScopePill
-                label="Minha"
-                active={scope === "minha"}
-                onPress={() => setScope("minha")}
-              />
-            </SegmentedGroup>
-            <SegmentedGroup>
-              <ScopePill
-                label="Calendário"
-                active={viewMode === "calendario"}
-                onPress={() => setViewMode("calendario")}
-              />
-              <ScopePill
-                label="Panorama"
-                active={viewMode === "panorama"}
-                onPress={() => setViewMode("panorama")}
-              />
-            </SegmentedGroup>
-          </View>
+          <Segmented stretch>
+            <SegButton label="Lista" Icon={ListChecks} active={viewMode === "lista"} onPress={() => setViewMode("lista")} stretch subtle />
+            {isDesktop ? (
+              <SegButton label="Calendário" Icon={CalendarDays} active={viewMode === "calendario"} onPress={() => setViewMode("calendario")} stretch subtle />
+            ) : null}
+            <SegButton
+              label="Panorama"
+              Icon={isDesktop ? LayoutGrid : CalendarDays}
+              active={viewMode === "panorama"}
+              onPress={() => setViewMode("panorama")}
+              stretch
+              subtle
+            />
+          </Segmented>
+
+          {canCreateShift ? (
+            <ManagerActionsMenu
+              variant="strip"
+              institutionId={activeInstitutionId ?? null}
+              period={isMonthSheet ? { kind: "month", monthKey: anchorMonthKey } : { kind: "week", weekStart: anchorWeekStart }}
+              onChanged={() => {
+                refetch();
+              }}
+            />
+          ) : null}
         </View>
 
         {/* Próximo plantão (ou em andamento) — faixa compacta: a pergunta
@@ -572,7 +518,7 @@ export default function AgendaScreen() {
                 : "Se a escala que você procura é de outra instituição, toque no nome da instituição acima para trocar."}
             </Text>
           </View>
-        ) : viewMode === "panorama" ? (
+        ) : isMonthSheet ? (
           <MonthAgenda
             weeks={weeksForRender}
             monthKey={anchorMonthKey}
@@ -593,6 +539,25 @@ export default function AgendaScreen() {
               })
             }
             onOfferPress={() => router.push("/(tabs)/pending" as any)}
+          />
+        ) : isHospitalGrid ? (
+          <PanoramicAgenda
+            weeks={weeksForRender}
+            todayKey={todayKey}
+            isDesktop={isDesktop}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={theme.colors.primary}
+              />
+            }
+            onShiftPress={(id) =>
+              router.push({
+                pathname: "/shift-details",
+                params: { id: String(id) },
+              })
+            }
           />
         ) : isDesktop ? (
           <DesktopGrid
@@ -626,11 +591,8 @@ export default function AgendaScreen() {
         )}
       </ScreenContainer>
 
-      {/* Comando de voz: mic flutuante (canto inferior esquerdo) */}
-      {Platform.OS !== "web" && <VoiceCommandButton />}
-
-
-      {/* FAB criar plantão */}
+      {/* FAB criar plantão: navy da marca, sobre o papel, acima da barra
+          de abas — a lista reserva 76pt no fim para nada ficar na pegada. */}
       {canCreateShift ? (
         <TouchableOpacity
           onPress={() => {
@@ -638,20 +600,21 @@ export default function AgendaScreen() {
             router.push("/create-shift");
           }}
           activeOpacity={0.85}
+          accessibilityLabel="Criar plantão"
           style={{
             position: "absolute",
-            bottom: 100,
-            right: 20,
-            width: 60,
-            height: 60,
-            borderRadius: 30,
-            backgroundColor: theme.colors.primary,
+            bottom: theme.space[20] + theme.space[2],
+            right: theme.space[4],
+            width: 52,
+            height: 52,
+            borderRadius: 26,
+            backgroundColor: theme.colors.brand,
             alignItems: "center",
             justifyContent: "center",
             ...theme.shadow.lg,
           }}
         >
-          <Plus size={28} color={theme.colors.surface} strokeWidth={3} />
+          <Plus size={26} color={theme.colors.onDark.text} strokeWidth={3} />
         </TouchableOpacity>
       ) : null}
     </ScreenGradient>
@@ -659,16 +622,19 @@ export default function AgendaScreen() {
 }
 
 // ─── Segmented control ───────────────────────────────────────────────
-function SegmentedGroup({ children }: { children: React.ReactNode }) {
+// Geral/Minha (ativo = navy sólido) e o trocador de vista (ativo = branco
+// com texto navy, "subtle"): o mesmo recipiente, dois pesos.
+function Segmented({ children, stretch = false }: { children: React.ReactNode; stretch?: boolean }) {
   return (
     <View
       style={{
         flexDirection: "row",
-        gap: 4,
-        padding: 4,
+        padding: 2,
         backgroundColor: theme.colors.surfaceAlt,
-        borderRadius: theme.radius.lg,
-        alignSelf: "flex-start",
+        borderWidth: 1,
+        borderColor: theme.colors.borderStrong,
+        borderRadius: theme.radius.md + 1,
+        alignSelf: stretch ? "stretch" : "flex-start",
       }}
     >
       {children}
@@ -676,33 +642,43 @@ function SegmentedGroup({ children }: { children: React.ReactNode }) {
   );
 }
 
-function ScopePill({
+function SegButton({
   label,
+  Icon,
   active,
   onPress,
+  stretch = false,
+  subtle = false,
 }: {
   label: string;
+  Icon?: LucideIcon;
   active: boolean;
   onPress: () => void;
+  stretch?: boolean;
+  subtle?: boolean;
 }) {
+  const bg = active ? (subtle ? theme.colors.surface : theme.colors.brand) : "transparent";
+  const fg = active ? (subtle ? theme.colors.brand : theme.colors.onDark.text) : subtle ? theme.colors.textMuted : theme.colors.textSecondary;
   return (
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.8}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
       style={{
-        paddingHorizontal: theme.space[4],
-        paddingVertical: theme.space[2],
-        borderRadius: theme.radius.md,
-        backgroundColor: active ? theme.colors.surface : "transparent",
+        flex: stretch ? 1 : undefined,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: theme.space[1] + 1,
+        minHeight: 30,
+        paddingHorizontal: theme.space[2] + 3,
+        borderRadius: theme.radius.md - 1,
+        backgroundColor: bg,
       }}
     >
-      <Text
-        style={{
-          color: active ? theme.colors.primary : theme.colors.textSecondary,
-          fontWeight: active ? "700" : "500",
-          fontSize: 14,
-        }}
-      >
+      {Icon ? <Icon size={15} color={fg} /> : null}
+      <Text style={{ ...theme.text.body, fontSize: 13, fontWeight: active ? theme.weight.bold : subtle ? theme.weight.medium : theme.weight.semibold, color: fg }}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -767,27 +743,19 @@ function DesktopGrid({
                     flex: 1,
                     paddingVertical: theme.space[2],
                     paddingHorizontal: theme.space[2],
-                    backgroundColor: isToday
-                      ? theme.colors.primarySoft
-                      : theme.colors.surfaceAlt,
-                    borderTopWidth: isToday ? 2 : 0,
-                    borderTopColor: theme.colors.primary,
+                    backgroundColor: isToday ? theme.colors.paperSelected : theme.colors.surfaceAlt,
+                    borderTopWidth: 2,
+                    borderTopColor: isToday ? theme.colors.brand : theme.colors.borderStrong,
                     borderRightWidth: 1,
                     borderRightColor: theme.colors.border,
                   }}
                 >
-                  <Text
-                    style={{
-                      fontSize: 12,
-                      fontWeight: "700",
-                      color: isToday
-                        ? theme.colors.primary
-                        : theme.colors.textSecondary,
-                      letterSpacing: 0.5,
-                    }}
-                  >
-                    {formatDayHeader(day.date, day.dow)}
-                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                    <DayNumeral day={parseInt(day.date.slice(8, 10), 10)} size={26} emphasis={isToday ? "today" : "default"} />
+                    <Text style={{ ...theme.text.eyebrow, fontWeight: theme.weight.bold, color: isToday ? theme.colors.brand : theme.colors.textSecondary }}>
+                      {DAY_LABELS[day.dow]}
+                    </Text>
+                  </View>
                 </View>
               );
             })}
@@ -927,21 +895,24 @@ function DesktopGroupBlock({
 }
 
 // ─── Estilos compartilhados ─────────────────────────────────────────
-// 44pt: alvo mínimo de toque (era 32 — difícil de acertar com uma mão).
 const navBtnStyle = {
-  width: 44,
-  height: 44,
-  borderRadius: 22,
+  width: 32,
+  height: 32,
+  borderRadius: theme.radius.md,
   backgroundColor: theme.colors.surface,
   borderWidth: 1,
-  borderColor: theme.colors.border,
+  borderColor: theme.colors.borderStrong,
   alignItems: "center" as const,
   justifyContent: "center" as const,
 };
 
-const navTextBtnStyle = {
-  paddingHorizontal: theme.space[3],
-  paddingVertical: theme.space[2],
+// "Hoje" é o único botão preenchido do cabeçalho: navy da marca.
+const todayBtnStyle = {
+  height: 32,
+  paddingHorizontal: theme.space[2] + 2,
+  marginLeft: 2,
   borderRadius: theme.radius.md,
-  backgroundColor: theme.colors.primarySoft,
+  backgroundColor: theme.colors.brand,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
 };
