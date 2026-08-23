@@ -1,5 +1,5 @@
 import { getDb } from "./db";
-import { pushTokens, notifications as notificationsTable, professionalInstitutions } from "../drizzle/schema";
+import { pushTokens, professionalInstitutions } from "../drizzle/schema";
 import { eq, and, desc } from "drizzle-orm";
 
 /**
@@ -68,6 +68,16 @@ export async function registerPushToken(
       .limit(1);
 
     if (existing.length > 0) {
+      // Mesmo aparelho, outro usuário (troca de conta): o token passa a
+      // ser deste usuário — senão o push do plantão ia para quem usou o
+      // aparelho primeiro (auditoria 22/08 parte 2).
+      if (existing[0].userId !== userId) {
+        await db
+          .update(pushTokens)
+          .set({ userId, institutionId: institutionId ?? existing[0].institutionId, platform })
+          .where(eq(pushTokens.token, token));
+        return { success: true, message: "Token reatribuído ao usuário atual" };
+      }
       return { success: true, message: "Token já registrado" };
     }
 
@@ -106,6 +116,14 @@ export async function registerPushToken(
       message: error instanceof Error ? error.message : "Erro desconhecido",
     };
   }
+}
+
+/** Remove o token do aparelho (logout / troca de conta). */
+export async function unregisterPushToken(userId: number, token: string): Promise<{ success: boolean }> {
+  const db = await getDb();
+  if (!db) return { success: false };
+  await db.delete(pushTokens).where(and(eq(pushTokens.token, token), eq(pushTokens.userId, userId)));
+  return { success: true };
 }
 
 /**

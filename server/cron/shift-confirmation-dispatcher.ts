@@ -52,7 +52,6 @@ const TRIGGERS: TriggerWindow[] = [
 const RECHECK_DELAY_MS = 30 * 60 * 1000; // 30 minutes
 const TIMEZONE = process.env.TZ_HOSPITAL || "America/Sao_Paulo";
 
-let lastRunMinute = -1;
 
 function getLocalTime(now: Date): { hours: number; minutes: number; dateStr: string } {
   const local = new Intl.DateTimeFormat("sv-SE", {
@@ -71,29 +70,38 @@ function getLocalTime(now: Date): { hours: number; minutes: number; dateStr: str
 
 // ── Main tick (called every ~60s) ───────────────────────────────────────────
 
-export async function tick() {
-  const now = new Date();
-  const local = getLocalTime(now);
-  const currentMinute = local.hours * 60 + local.minutes;
+/** Janela após o horário-gatilho em que o disparo ainda é feito (restart/drift). */
+const TRIGGER_WINDOW_MIN = 20;
+let running = false;
 
-  // Prevent double-execution in the same minute
-  if (currentMinute === lastRunMinute) return;
-  lastRunMinute = currentMinute;
+export async function tick(now: Date = new Date()) {
+  // Ticks concorrentes (tick longo + setInterval) processavam a mesma
+  // confirmação duas vezes.
+  if (running) return;
+  running = true;
+  try {
+    const local = getLocalTime(now);
+    const currentMinute = local.hours * 60 + local.minutes;
 
-  // 1. Check if current time matches any trigger
-  for (const trigger of TRIGGERS) {
-    const triggerMinute = trigger.notifyHour * 60 + trigger.notifyMinute;
-    if (currentMinute === triggerMinute) {
-      console.log(`[ConfirmationCron] Trigger: ${trigger.label} (${trigger.notifyHour}:${String(trigger.notifyMinute).padStart(2, "0")})`);
-      await dispatchConfirmations(now, trigger);
+    // 1. Gatilhos: dentro de uma JANELA após o horário, não só no minuto
+    // exato — deploy/restart ou drift do setInterval às 11:00/17:00/22:00
+    // pulava o disparo do dia. dispatchConfirmations é idempotente
+    // (uma confirmação por alocação), então repetir na janela é seguro.
+    for (const trigger of TRIGGERS) {
+      const triggerMinute = trigger.notifyHour * 60 + trigger.notifyMinute;
+      if (currentMinute >= triggerMinute && currentMinute < triggerMinute + TRIGGER_WINDOW_MIN) {
+        await dispatchConfirmations(now, trigger);
+      }
     }
+
+    // 2. Process rechecks (PENDING confirmations past their recheckAt)
+    await processRechecks(now);
+
+    // 3. Push de início de plantão (confirmados cujo plantão começou agora)
+    await processShiftStartPushes(now);
+  } finally {
+    running = false;
   }
-
-  // 2. Process rechecks (PENDING confirmations past their recheckAt)
-  await processRechecks(now);
-
-  // 3. Push de início de plantão (confirmados cujo plantão começou agora)
-  await processShiftStartPushes(now);
 }
 
 // ── Push de início de plantão ───────────────────────────────────────────────
@@ -168,7 +176,7 @@ async function processShiftStartPushes(now: Date) {
 
 // ── Dispatch confirmations for a trigger window ─────────────────────────────
 
-async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
+export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
   const db = await getDb();
   if (!db) return;
 
@@ -290,7 +298,7 @@ async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
 
 // ── Recheck: auto-confirm unresponsive doctors ──────────────────────────────
 
-async function processRechecks(now: Date) {
+export async function processRechecks(now: Date) {
   const db = await getDb();
   if (!db) return;
 
@@ -307,6 +315,8 @@ async function processRechecks(now: Date) {
       shiftInstanceId: dutyConfirmations.shiftInstanceId,
       assignmentId: dutyConfirmations.assignmentId,
       institutionId: dutyConfirmations.institutionId,
+      status: dutyConfirmations.status,
+      replacementUserId: dutyConfirmations.replacementUserId,
     })
     .from(dutyConfirmations)
     .where(
@@ -317,13 +327,39 @@ async function processRechecks(now: Date) {
     );
 
   for (const conf of expired) {
-    // Auto-confirm: whoever is currently assigned gets logged in
+    // Alocação já removida da escala (gestor trocou, cessão efetivada):
+    // não há quem confirmar — encerra a rechecagem sem SSO nem push.
+    const [assignment] = await db
+      .select({ isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, conf.assignmentId))
+      .limit(1);
+    if (!assignment || !assignment.isActive) {
+      await db.update(dutyConfirmations).set({ recheckAt: null, managerNotified: true }).where(eq(dutyConfirmations.id, conf.id));
+      console.log(`[ConfirmationCron] Confirmação ${conf.id} encerrada: alocação inativa`);
+      continue;
+    }
+
+    // NOMINATED sem aceite: a indicação expira e o TITULAR é quem fica
+    // confirmado — o substituto que nunca aceitou não recebe SSO,
+    // duty-sync nem push de plantão (auditoria 22/08 parte 2).
+    if (conf.status === "NOMINATED" && conf.replacementUserId) {
+      await sendPushNotification(conf.replacementUserId, {
+        title: "Indicação expirada",
+        body: "A indicação de substituição não foi aceita a tempo e foi cancelada.",
+        data: { type: "replacement_declined", shiftInstanceId: conf.shiftInstanceId },
+      }).catch(() => undefined);
+    }
+
+    // Auto-confirm: quem está alocado é quem fica logado
     await db
       .update(dutyConfirmations)
       .set({
         status: "AUTO_CONFIRMED",
         autoConfirmedAt: now,
         managerNotified: true,
+        replacementUserId: null,
+        replacementProfessionalId: null,
       })
       .where(eq(dutyConfirmations.id, conf.id));
 

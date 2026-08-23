@@ -4,6 +4,7 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { trpc } from '@/lib/trpc';
+import { setLastPushToken } from '@/lib/push-token';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -27,6 +28,7 @@ export function useNotifications() {
       .then((token) => {
         if (!token) return;
         setExpoPushToken(token);
+        setLastPushToken(token);
         const platform = Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
         registerMutation.mutate(
           { token, platform },

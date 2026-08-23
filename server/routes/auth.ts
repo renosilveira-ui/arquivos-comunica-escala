@@ -628,7 +628,18 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
 });
 
 // POST /api/auth/logout
-authRouter.post("/logout", (req: Request, res: Response): void => {
+authRouter.post("/logout", async (req: Request, res: Response): Promise<void> => {
+  // Token de push do aparelho sai junto com a sessão: senão o push do
+  // plantão continuava chegando no aparelho para o usuário anterior.
+  const pushToken = typeof req.body?.pushToken === "string" ? req.body.pushToken.slice(0, 512) : null;
+  if (pushToken) {
+    try {
+      const db = await getDb();
+      if (db) await db.delete(pushTokens).where(eq(pushTokens.token, pushToken));
+    } catch (err) {
+      console.warn("[Auth] Falha ao remover push token no logout:", JSON.stringify(String(err)));
+    }
+  }
   // Clear the cookie with current policy attributes.
   res.clearCookie(COOKIE_NAME, resolveClearCookieOptions({ req }));
   // Also clear with SameSite=None to invalidate cookies set before the
