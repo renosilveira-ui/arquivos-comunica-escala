@@ -4,7 +4,6 @@ import {
   professionals, 
   shiftInstances, 
   shiftAssignmentsV2,
-  managerScope,
 } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { 
@@ -13,6 +12,7 @@ import {
   canApproveAssignment 
 } from "../server/rbac-validations";
 import { validateAssignment } from "../server/shift-validations";
+import { yearMonthBrt } from "../server/local-time";
 
 /**
  * Testes do Workflow de Vagas
@@ -40,7 +40,6 @@ describe("Workflow de Vagas - Validações RBAC", () => {
   let shiftPendenteId: number;
   let shiftRetroativoId: number;
   let shiftUtiId: number;
-  let centroCirurgicoId: number;
 
   beforeAll(async () => {
     db = await getDb();
@@ -113,7 +112,6 @@ describe("Workflow de Vagas - Validações RBAC", () => {
     shiftPendenteId = shiftPendente.id;
     shiftRetroativoId = shiftRetroativo.id;
     shiftUtiId = shiftUti.id;
-    centroCirurgicoId = shiftVago.sectorId;
 
     console.log("✅ Setup concluído:");
     console.log(`  - João (GESTOR_PLUS): ${joaoId}`);
@@ -274,11 +272,18 @@ describe("Workflow de Vagas - Validações RBAC", () => {
   // ========================================
   // TESTE 8: markVacant retroativo - GESTOR_MEDICO edita dia anterior no mês corrente
   // ========================================
-  it("Teste 8: GESTOR_MEDICO edita turno retroativo dentro do mês corrente", async () => {
+  it("Teste 8: GESTOR_MEDICO edita turno retroativo só se ainda no mês corrente", async () => {
+    // O seed cria o turno 5 dias atrás: nos dias 1–5 ele cai no mês
+    // anterior e o gestor de hospital NÃO pode editar (mês no relógio do
+    // hospital, -03:00). A expectativa segue o calendário em vez de
+    // quebrar cinco dias por mês.
+    const [retro] = await db!.select({ startAt: shiftInstances.startAt }).from(shiftInstances).where(eq(shiftInstances.id, shiftRetroativoId));
+    const sameMonth = yearMonthBrt(retro.startAt) === yearMonthBrt(new Date());
     const result = await canEditShift(mariaId, shiftRetroativoId);
-    
-    expect(result.allowed).toBe(true);
-    expect(result.reason).toBeUndefined();
+
+    expect(result.allowed).toBe(sameMonth);
+    if (sameMonth) expect(result.reason).toBeUndefined();
+    else expect(result.reason).toContain("mês corrente");
   });
 
   // ========================================

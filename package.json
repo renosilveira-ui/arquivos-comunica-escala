@@ -23,7 +23,7 @@
     "test:e2e": "cross-env NODE_ENV=test vitest run tests/shift-workflow.test.ts",
     "e2e:workflow": "tsx scripts/run-e2e-workflow.ts",
     "gate": "pnpm test:e2e && pnpm e2e:workflow",
-    "db:push": "drizzle-kit generate && drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
     "seed:staging": "tsx scripts/seed-staging.ts",
     "import:professionals": "tsx scripts/bulk-import-professionals.ts",
     "android": "expo start --android",

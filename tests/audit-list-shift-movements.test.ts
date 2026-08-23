@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import { getDb } from "../server/db";
 import {
   auditTrail,
@@ -7,7 +7,6 @@ import {
   institutions,
   professionals,
   sectors,
-  shiftInstances,
 } from "../drizzle/schema";
 import { appRouter } from "../server/routers";
 
@@ -36,7 +35,6 @@ describe("audit.listShiftMovements", () => {
   let pedroProId: number;
   let anaUserId: number;
   let anaProId: number;
-  let mariaUserId: number;
 
   beforeAll(async () => {
     db = await getDb();
@@ -83,7 +81,6 @@ describe("audit.listShiftMovements", () => {
     pedroProId = pedro.id;
     anaUserId = ana.userId!;
     anaProId = ana.id;
-    mariaUserId = maria.userId!;
 
     await cleanupFixtures();
 
@@ -189,6 +186,7 @@ describe("audit.listShiftMovements", () => {
   it("GESTOR_PLUS (João) vê os 4 eventos da fixture", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     expect(testRows).toHaveLength(4);
@@ -197,6 +195,7 @@ describe("audit.listShiftMovements", () => {
   it("USER (Pedro) vê apenas eventos onde participou (3 dos 4)", async () => {
     const rows = await caller(pedroUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     // Os 3 eventos de cessão envolvem Pedro (ofereceu, aprovou, ou foi
@@ -212,6 +211,7 @@ describe("audit.listShiftMovements", () => {
   it("USER (Ana) vê apenas eventos onde participou (2 dos 4)", async () => {
     const rows = await caller(anaUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     // Ana foi actor no ACCEPTED, e to_user no APPROVED_BY_OWNER.
@@ -249,6 +249,7 @@ describe("audit.listShiftMovements", () => {
   it("ordena DESC por createdAt (mais recente primeiro)", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     // SHIFT_CREATED foi inserido por último → deve aparecer primeiro

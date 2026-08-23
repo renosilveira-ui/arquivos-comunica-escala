@@ -16,7 +16,9 @@ import {
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import {
+  parsePeriod,
   parseVoiceCommand,
+  periodOfStart,
   resolveSwapCommand,
   resolveVoiceDate,
   type ParsedCommand,
@@ -239,5 +241,29 @@ describe("resolveSwapCommand — contra plantões reais", () => {
     const r = await resolveSwapCommand(parse("trocar meu plantão de ontem com a Germana"), ctx());
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("já passou");
+  });
+});
+
+describe("parsePeriod — 'cedo' como turno × verbo ceder", () => {
+  it("'hoje cedo' / 'amanhã cedo' / 'bem cedo' são manhã", () => {
+    expect(parsePeriod("trocar hoje cedo com o joao")).toBe("manha");
+    expect(parsePeriod("trocar amanha cedo")).toBe("manha");
+    expect(parsePeriod("trocar bem cedo")).toBe("manha");
+  });
+  it("'cedo meu plantão de hoje à noite' é o verbo ceder: turno da noite", () => {
+    expect(parsePeriod("cedo meu plantao de hoje a noite")).toBe("noite");
+    expect(parsePeriod("cedo meu plantao de amanha")).toBeNull();
+    expect(parseVoiceCommand("cedo meu plantão de hoje à noite para o João")).toMatchObject({ kind: "TROCA", period: "noite", targetName: "joao" });
+  });
+});
+
+describe("periodOfStart — turno pelo horário de início no relógio do hospital", () => {
+  it("classifica por faixa, não por hora exata", () => {
+    expect(periodOfStart(new Date("2026-09-10T10:00:00.000Z"))).toBe("manha"); // 07:00 BRT
+    expect(periodOfStart(new Date("2026-09-10T11:30:00.000Z"))).toBe("manha"); // 08:30 BRT
+    expect(periodOfStart(new Date("2026-09-10T16:00:00.000Z"))).toBe("tarde"); // 13:00 BRT
+    expect(periodOfStart(new Date("2026-09-10T20:00:00.000Z"))).toBe("tarde"); // 17:00 BRT
+    expect(periodOfStart(new Date("2026-09-10T22:00:00.000Z"))).toBe("noite"); // 19:00 BRT
+    expect(periodOfStart(new Date("2026-09-11T01:00:00.000Z"))).toBe("noite"); // 22:00 BRT
   });
 });

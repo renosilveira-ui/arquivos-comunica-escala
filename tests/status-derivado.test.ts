@@ -21,6 +21,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { dayKeyBrt } from "../server/local-time";
 import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
@@ -144,12 +145,12 @@ describe("status do turno derivado das alocações", () => {
       await db.insert(professionalAccess).values({ institutionId, professionalId: p.id, hospitalId, sectorId, canAccess: true });
     }
 
-    // Turno no mês corrente (GESTOR_MEDICO só edita o mês corrente).
-    const startAt = new Date();
-    startAt.setDate(startAt.getDate() + 1);
-    startAt.setHours(7, 0, 0, 0);
-    const endAt = new Date(startAt);
-    endAt.setHours(13, 0, 0, 0);
+    // Turno HOJE 07:00–13:00 no relógio do hospital: "amanhã" cairia no
+    // mês seguinte no último dia do mês e a guarda de mês barraria o
+    // GESTOR_MEDICO (teste dependente do calendário).
+    const todayKey = dayKeyBrt(new Date());
+    const startAt = new Date(`${todayKey}T07:00:00-03:00`);
+    const endAt = new Date(`${todayKey}T13:00:00-03:00`);
     const [s] = await db
       .insert(shiftInstances)
       .values({ institutionId, hospitalId, sectorId, label: `Status Shift ${stamp}`, startAt, endAt, status: "VAGO" })
