@@ -12,6 +12,7 @@ import {
   hospitals,
   sectors,
   monthlyRosters,
+  professionalInstitutions,
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
@@ -23,6 +24,7 @@ import {
   assertManagerScopeAccess,
   getTenantActorFromContext,
 } from "./_core/policy";
+import { assertInstitutionHierarchy } from "./_core/tenant";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -237,6 +239,25 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
     });
   }
 
+  // Sem sectorId no filtro, a origem pode conter mais de um setor. Cada
+  // tupla é revalidada antes do planejamento para não replicar registros
+  // legados que satisfaçam as FKs isoladas, mas cruzem a hierarquia.
+  const sourceHierarchies = new Map(
+    sourceShifts.map((source) => [
+      `${source.institutionId}|${source.hospitalId}|${source.sectorId}`,
+      {
+        institutionId: source.institutionId,
+        hospitalId: source.hospitalId,
+        sectorId: source.sectorId,
+      },
+    ]),
+  );
+  await Promise.all(
+    Array.from(sourceHierarchies.values()).map((hierarchy) =>
+      assertInstitutionHierarchy(hierarchy, { db }),
+    ),
+  );
+
   // Candidatos deslocados; os que caem fora do destino (só no modo mês)
   // não entram.
   const candidates = sourceShifts.map((source) => ({
@@ -251,18 +272,6 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
 
   // Permissão por data: falha ANTES de qualquer escrita (sem cópia parcial).
   for (const c of inRange) assertCanEditScheduleDate(actor, c.startAt);
-  // Mês de destino PUBLISHED/LOCKED: só Gestor+ com motivo (um check por mês
-  // alvo; em dryRun não há escrita nem auditoria de override).
-  if (!input.dryRun) {
-    const checked = new Set<string>();
-    for (const c of inRange) {
-      const ym = yearMonthBrt(c.startAt);
-      if (checked.has(ym)) continue;
-      checked.add(ym);
-      await assertMonthEditable({ user: { id: ctx.user.id } }, ctx.institutionId, input.hospitalId, c.startAt, input.reason);
-    }
-  }
-
   // Idempotência pela chave natural (hospital, setor, início, fim, label).
   const existing = await db
     .select({
@@ -317,9 +326,43 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
           eq(shiftAssignmentsV2.isActive, true),
         ),
       );
+    const linkedProfessionals = sourceAssignments.length > 0
+      ? await db
+          .select({ professionalId: professionalInstitutions.professionalId })
+          .from(professionalInstitutions)
+          .innerJoin(
+            professionals,
+            and(
+              eq(professionals.id, professionalInstitutions.professionalId),
+              eq(professionals.userId, professionalInstitutions.userId),
+            ),
+          )
+          .where(
+            and(
+              eq(professionalInstitutions.institutionId, ctx.institutionId),
+              eq(professionalInstitutions.active, true),
+              inArray(
+                professionalInstitutions.professionalId,
+                Array.from(new Set(sourceAssignments.map((assignment) => assignment.professionalId))),
+              ),
+            ),
+          )
+      : [];
+    const linkedProfessionalIds = new Set(linkedProfessionals.map((row) => row.professionalId));
     for (const a of sourceAssignments) {
       const c = toCreate.find((x) => x.source.id === a.shiftInstanceId);
       if (!c) continue;
+      if (
+        a.institutionId !== c.source.institutionId ||
+        a.hospitalId !== c.source.hospitalId ||
+        a.sectorId !== c.source.sectorId ||
+        !linkedProfessionalIds.has(a.professionalId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Alocação de origem fora da hierarquia institucional",
+        });
+      }
       const conflict = await checkTimeConflictForProfessional(a.professionalId, c.startAt, c.endAt);
       if (conflict.hasConflict) {
         conflicts++;
@@ -342,6 +385,23 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
     },
   };
   if (input.dryRun || toCreate.length === 0) return summary;
+
+  // Só registra override depois de concluir todo o plano e validar as
+  // relações de origem. Assim, dado contaminado ou réplica sem mudanças
+  // não deixa uma auditoria positiva sem a escrita correspondente.
+  const checked = new Set<string>();
+  for (const c of toCreate) {
+    const ym = yearMonthBrt(c.startAt);
+    if (checked.has(ym)) continue;
+    checked.add(ym);
+    await assertMonthEditable(
+      { user: { id: ctx.user.id } },
+      ctx.institutionId,
+      input.hospitalId,
+      c.startAt,
+      input.reason,
+    );
+  }
 
   await db.transaction(async (tx) => {
     let firstCreatedId = 0;
@@ -447,12 +507,11 @@ export const shiftsRouter = router({
       if (template.institutionId !== ctx.institutionId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Template fora do tenant ativo" });
       }
-      await assertManagerScopeAccess(actor, template.hospitalId, template.sectorId ?? input.sectorId);
-
       const sectorId = input.sectorId ?? template.sectorId;
       if (!sectorId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "sectorId obrigatório (template não possui setor padrão)" });
       }
+      await assertManagerScopeAccess(actor, template.hospitalId, sectorId);
 
       assertModalityCoherent(input);
 
@@ -1174,6 +1233,10 @@ export const shiftsRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      await assertInstitutionHierarchy(
+        { institutionId: ctx.institutionId, hospitalId: input.hospitalId },
+        { db },
+      );
       const [roster] = await db
         .select({ status: monthlyRosters.status, publishedAt: monthlyRosters.publishedAt, lockedAt: monthlyRosters.lockedAt })
         .from(monthlyRosters)

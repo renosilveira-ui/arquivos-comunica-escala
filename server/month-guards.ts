@@ -5,6 +5,8 @@ import { yearMonthBrt } from "./local-time";
 import { sql, eq, and } from "drizzle-orm";
 import { monthlyRosters, professionalInstitutions, users } from "../drizzle/schema";
 import { notifyRosterPublished } from "./integrations/comunica-plus";
+import { assertInstitutionHierarchy } from "./_core/tenant";
+import { rowsFromExecute } from "./_core/db-results";
 
 /**
  * Guardrail de edição de mês (usado em TODA mutation de edição de turnos)
@@ -147,6 +149,47 @@ export async function assertMonthNotLocked(institutionId: number, hospitalId: nu
   }
 }
 
+/**
+ * Destinatários da publicação limitados ao par instituição/hospital.
+ * A consulta permanece separada para que a defesa em profundidade tenha um
+ * teste de regressão próprio, mesmo que uma futura chamada contorne o router.
+ */
+export async function getRosterPublicationEmails(
+  institutionId: number,
+  hospitalId: number,
+  yearMonth: string,
+): Promise<string[]> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const emailRows = await db.execute<any>(
+    sql`SELECT DISTINCT u.email
+        FROM shift_instances si
+        JOIN hospitals h ON h.id = si.hospital_id
+          AND h.institution_id = si.institution_id
+        JOIN sectors s ON s.id = si.sector_id
+          AND s.institution_id = si.institution_id
+          AND s.hospital_id = si.hospital_id
+        JOIN shift_assignments_v2 sa ON sa.shift_instance_id = si.id
+          AND sa.is_active = 1
+          AND sa.institution_id = si.institution_id
+          AND sa.hospital_id = si.hospital_id
+          AND sa.sector_id = si.sector_id
+        JOIN professionals p ON p.id = sa.professional_id
+        JOIN professional_institutions pi ON pi.professional_id = p.id
+          AND pi.user_id = p.user_id
+          AND pi.institution_id = si.institution_id
+          AND pi.active = 1
+        JOIN users u ON u.id = p.user_id
+        WHERE si.institution_id = ${institutionId}
+        AND si.hospital_id = ${hospitalId}
+        AND si.start_at >= ${yearMonth + '-01'}
+        AND si.start_at < DATE_ADD(${yearMonth + '-01'}, INTERVAL 1 MONTH)`,
+  );
+  const rows = rowsFromExecute<{ email: string | null }>(emailRows);
+  return Array.from(new Set(rows.map((row) => row.email).filter((email): email is string => Boolean(email))));
+}
+
 
 /**
  * Publica um mês DRAFT → PUBLISHED.
@@ -160,6 +203,7 @@ export async function publishMonth(
 ): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertInstitutionHierarchy({ institutionId, hospitalId }, { db });
 
   // Nenhum fluxo cria a linha de monthly_rosters antes daqui: sem este
   // passo, publicar um mês que nunca foi publicado falhava com "Mês não
@@ -223,20 +267,7 @@ export async function publishMonth(
   // Fire-and-forget: notify Comunica+ about published roster
   (async () => {
     try {
-      const emailRows = await db.execute<any>(
-        sql`SELECT DISTINCT u.email
-            FROM shift_instances si
-            JOIN shift_assignments_v2 sa ON sa.shift_instance_id = si.id AND sa.is_active = 1
-            JOIN professionals p ON p.id = sa.professional_id
-            JOIN users u ON u.id = p.user_id
-            WHERE si.hospital_id = ${hospitalId}
-            AND si.start_at >= ${yearMonth + '-01'}
-            AND si.start_at < DATE_ADD(${yearMonth + '-01'}, INTERVAL 1 MONTH)`,
-      );
-      const rows = (emailRows as any).rows || (emailRows as any[]);
-      const emails: string[] = Array.from(
-        new Set((rows || []).map((r: any) => r.email).filter(Boolean)),
-      ) as string[];
+      const emails = await getRosterPublicationEmails(institutionId, hospitalId, yearMonth);
       if (emails.length > 0) {
         await notifyRosterPublished({
           hospitalId,
@@ -264,6 +295,7 @@ export async function lockMonth(
 ): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertInstitutionHierarchy({ institutionId, hospitalId }, { db });
 
   const result = await db
     .update(monthlyRosters)

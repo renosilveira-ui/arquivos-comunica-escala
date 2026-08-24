@@ -21,8 +21,9 @@ import { eq } from "drizzle-orm";
 import { getPrivateKey, KID, ALG } from "./keys";
 import { getComunicaOrgId } from "./org-mapping";
 import { getDb } from "../db";
-import { dutyConfirmations, shiftInstances, users } from "../../drizzle/schema";
+import { users } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
+import { requireValidDutyConfirmation } from "../confirmation-integrity";
 
 const TOKEN_TTL_SEC = 90;
 
@@ -47,12 +48,20 @@ export async function syncDutyToComunica(
   const db = await getDb();
   if (!db) return { ok: false, error: "Database unavailable" };
 
-  const [conf] = await db
-    .select()
-    .from(dutyConfirmations)
-    .where(eq(dutyConfirmations.id, confirmationId))
-    .limit(1);
-  if (!conf) return { ok: false, error: "Confirmation not found" };
+  let valid;
+  try {
+    valid = await requireValidDutyConfirmation(db, confirmationId, {
+      allowedStatuses:
+        action === "CONFIRM"
+          ? ["CONFIRMED", "AUTO_CONFIRMED", "REPLACEMENT_CONFIRMED"]
+          : ["DECLINED"],
+      requireOriginalAssignmentActive: false,
+      requireEffectiveAssignment: true,
+    });
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
+  const conf = valid.confirmation;
 
   const organizationId = getComunicaOrgId(conf.institutionId);
   if (!organizationId) {
@@ -61,7 +70,7 @@ export async function syncDutyToComunica(
   }
 
   // Substituto confirmado assume o lugar do original no roster.
-  const targetUserId = conf.replacementUserId ?? conf.userId;
+  const targetUserId = valid.effective.userId;
   const [user] = await db
     .select({ email: users.email })
     .from(users)
@@ -69,17 +78,7 @@ export async function syncDutyToComunica(
     .limit(1);
   if (!user?.email) return { ok: false, error: "Usuário sem email" };
 
-  const [shift] = await db
-    .select({
-      startAt: shiftInstances.startAt,
-      endAt: shiftInstances.endAt,
-      modality: shiftInstances.modality,
-      specialty: shiftInstances.specialty,
-    })
-    .from(shiftInstances)
-    .where(eq(shiftInstances.id, conf.shiftInstanceId))
-    .limit(1);
-  if (!shift) return { ok: false, error: "Shift não encontrado" };
+  const shift = valid.shift;
 
   const now = Math.floor(Date.now() / 1000);
   const privateKey = await getPrivateKey();

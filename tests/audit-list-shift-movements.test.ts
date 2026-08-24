@@ -9,6 +9,7 @@ import {
   sectors,
 } from "../drizzle/schema";
 import { appRouter } from "../server/routers";
+import { addDaysToKey, dayKeyBrt } from "../server/local-time";
 
 /**
  * `audit.listShiftMovements` — backend que alimenta a tela de
@@ -35,6 +36,7 @@ describe("audit.listShiftMovements", () => {
   let pedroProId: number;
   let anaUserId: number;
   let anaProId: number;
+  let fixtureDay: string;
 
   beforeAll(async () => {
     db = await getDb();
@@ -89,8 +91,8 @@ describe("audit.listShiftMovements", () => {
     //   2. CESSAO_ACCEPTED por Ana (actor=Ana, from=Pedro, to=Ana)
     //   3. CESSAO_APPROVED_BY_OWNER por Pedro (actor=Pedro, from=Pedro, to=Ana)
     //   4. SHIFT_CREATED por João (actor=João, sem from/to)
-    const baseTime = new Date();
-    baseTime.setDate(baseTime.getDate() - 5);
+    fixtureDay = addDaysToKey(dayKeyBrt(new Date()), -5);
+    const baseTime = new Date(`${fixtureDay}T12:00:00-03:00`);
 
     await db.insert(auditTrail).values([
       {
@@ -186,7 +188,8 @@ describe("audit.listShiftMovements", () => {
   it("GESTOR_PLUS (João) vê os 4 eventos da fixture", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
-      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
+      fromDate: fixtureDay,
+      toDate: fixtureDay,
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     expect(testRows).toHaveLength(4);
@@ -195,7 +198,8 @@ describe("audit.listShiftMovements", () => {
   it("USER (Pedro) vê apenas eventos onde participou (3 dos 4)", async () => {
     const rows = await caller(pedroUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
-      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
+      fromDate: fixtureDay,
+      toDate: fixtureDay,
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     // Os 3 eventos de cessão envolvem Pedro (ofereceu, aprovou, ou foi
@@ -211,7 +215,8 @@ describe("audit.listShiftMovements", () => {
   it("USER (Ana) vê apenas eventos onde participou (2 dos 4)", async () => {
     const rows = await caller(anaUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
-      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
+      fromDate: fixtureDay,
+      toDate: fixtureDay,
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     // Ana foi actor no ACCEPTED, e to_user no APPROVED_BY_OWNER.
@@ -224,6 +229,8 @@ describe("audit.listShiftMovements", () => {
   it("filtro actions=['CESSAO_APPROVED_BY_OWNER'] retorna só aprovações", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
       actions: ["CESSAO_APPROVED_BY_OWNER"],
+      fromDate: fixtureDay,
+      toDate: fixtureDay,
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     expect(testRows).toHaveLength(1);
@@ -236,6 +243,8 @@ describe("audit.listShiftMovements", () => {
   it("retorna actionLabel PT-BR e nomes enriquecidos", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
       actions: ["CESSAO_APPROVED_BY_OWNER"],
+      fromDate: fixtureDay,
+      toDate: fixtureDay,
     });
     const row = rows.find((r) => r.description.startsWith("audit-test:"))!;
     expect(row.actionLabel).toBe("Cessão aprovada pelo dono");
@@ -249,7 +258,8 @@ describe("audit.listShiftMovements", () => {
   it("ordena DESC por createdAt (mais recente primeiro)", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
       actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
-      limit: 500, // banco local acumula eventos; a fixture tem 5 dias
+      fromDate: fixtureDay,
+      toDate: fixtureDay,
     });
     const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
     // SHIFT_CREATED foi inserido por último → deve aparecer primeiro
