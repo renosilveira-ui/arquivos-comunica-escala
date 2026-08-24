@@ -11,7 +11,7 @@
 //   4. Admin recusa: cadastro removido, login volta a 401, segunda recusa 404.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import express, { type Express } from "express";
@@ -28,6 +28,7 @@ describe("auto-cadastro público e aprovação", () => {
   let app: Express;
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   let institutionId: number;
+  let inactiveInstitutionId: number;
   let hospitalA: number;
   let hospitalB: number;
   let adminId: number;
@@ -57,6 +58,17 @@ describe("auto-cadastro público e aprovação", () => {
       .values({ name: `Signup Tenant ${STAMP}`, cnpj: `${STAMP}9`.slice(-14).padStart(14, "0"), legalName: `Signup ${STAMP}`, tradeName: `SG${STAMP}`.slice(0, 20), isActive: true })
       .$returningId();
     institutionId = inst.id;
+    const [inactive] = await db
+      .insert(institutions)
+      .values({
+        name: `Signup Inactive ${STAMP}`,
+        cnpj: `${STAMP}8`.slice(-14).padStart(14, "0"),
+        legalName: `Signup Inactive ${STAMP}`,
+        tradeName: `SGI${STAMP}`.slice(0, 20),
+        isActive: false,
+      })
+      .$returningId();
+    inactiveInstitutionId = inactive.id;
     const [ha] = await db.insert(hospitals).values({ institutionId, name: `Signup Hospital A ${STAMP}` }).$returningId();
     const [hb] = await db.insert(hospitals).values({ institutionId, name: `Signup Hospital B ${STAMP}` }).$returningId();
     hospitalA = ha.id;
@@ -85,6 +97,7 @@ describe("auto-cadastro público e aprovação", () => {
     if (ids.length) await db.delete(professionals).where(inArray(professionals.userId, ids));
     await db.delete(hospitals).where(inArray(hospitals.id, [hospitalA, hospitalB]));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
+    await db.delete(institutions).where(eq(institutions.id, inactiveInstitutionId));
     if (ids.length) await db.delete(users).where(inArray(users.id, ids));
   });
 
@@ -93,6 +106,50 @@ describe("auto-cadastro público e aprovação", () => {
     expect((await request(app).post("/api/auth/signup").send({ name: "X", email: emailA, password: "curta", institutionId })).status).toBe(400);
     expect((await request(app).post("/api/auth/signup").send({ name: "X", email: emailA, password: PASSWORD })).status).toBe(400);
     expect((await request(app).post("/api/auth/signup").send({ name: "X", email: emailA, password: PASSWORD, institutionId: 99999999 })).status).toBe(400);
+    const inactiveEmail = `signup-inactive-${STAMP}@test.local`;
+    expect(
+      (
+        await request(app)
+          .post("/api/auth/signup")
+          .send({
+            name: "Signup Inactive",
+            email: inactiveEmail,
+            password: PASSWORD,
+            institutionId: inactiveInstitutionId,
+          })
+      ).status,
+    ).toBe(400);
+    expect(await db.select({ id: users.id }).from(users).where(eq(users.email, inactiveEmail))).toHaveLength(0);
+  });
+
+  it("signup concorrente do mesmo e-mail produz uma conta completa, nunca órfã", async () => {
+    const email = `signup-race-${STAMP}@test.local`;
+    const payload = {
+      name: "Signup Race",
+      email,
+      password: PASSWORD,
+      institutionId,
+      specialty: "Anestesiologia",
+    };
+    const responses = await Promise.all([
+      request(app).post("/api/auth/signup").send(payload),
+      request(app).post("/api/auth/signup").send(payload),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+
+    const created = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
+    expect(created).toHaveLength(1);
+    expect(
+      await db
+        .select({ id: professionals.id })
+        .from(professionals)
+        .where(eq(professionals.userId, created[0].id)),
+    ).toHaveLength(1);
+    const memberships = await db
+      .select({ active: professionalInstitutions.active })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, created[0].id));
+    expect(memberships).toEqual([{ active: false }]);
   });
 
   it("cria conta PENDING com vínculo inativo; e-mail duplicado → 409", async () => {
@@ -108,6 +165,13 @@ describe("auto-cadastro público e aprovação", () => {
     expect(link.roleInInstitution).toBe("USER");
     const [pro] = await db.select({ specialty: professionals.specialty }).from(professionals).where(eq(professionals.userId, u.id));
     expect(pro.specialty).toBe("Anestesiologia");
+    const [audit] = await db
+      .select({ description: auditTrail.description, metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(and(eq(auditTrail.entityId, u.id), eq(auditTrail.action, "USER_CREATED")));
+    expect(audit).toBeTruthy();
+    expect(JSON.stringify(audit)).not.toContain(emailA);
+    expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
 
     const dup = await request(app).post("/api/auth/signup").send({ name: "Outro", email: emailA, password: PASSWORD, institutionId });
     expect(dup.status).toBe(409);
@@ -125,12 +189,25 @@ describe("auto-cadastro público e aprovação", () => {
 
   it("admin lista o pendente, aprova: vínculo ativo, acesso aos hospitais, login APPROVED com tenant", async () => {
     const [u] = await db.select({ id: users.id }).from(users).where(eq(users.email, emailA));
-    const list = await request(app).get("/api/admin/pending-signups").set("Cookie", adminCookie);
+    const list = await request(app)
+      .get("/api/admin/pending-signups")
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionId));
     expect(list.status).toBe(200);
     expect(list.body.pending.map((p: any) => p.id)).toContain(u.id);
 
-    const ok = await request(app).post(`/api/admin/pending-signups/${u.id}/approve`).set("Cookie", adminCookie);
+    const ok = await request(app)
+      .post(`/api/admin/pending-signups/${u.id}/approve`)
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionId));
     expect(ok.status).toBe(200);
+    const [approvalAudit] = await db
+      .select({ description: auditTrail.description, metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(and(eq(auditTrail.entityId, u.id), eq(auditTrail.action, "USER_UPDATED")));
+    expect(approvalAudit).toBeTruthy();
+    expect(JSON.stringify(approvalAudit)).not.toContain(emailA);
+    expect((approvalAudit.metadata as Record<string, unknown>).email).toBeUndefined();
     const [link] = await db.select().from(professionalInstitutions).where(eq(professionalInstitutions.userId, u.id));
     expect(link.active).toBe(true);
     const access = await db.select({ hospitalId: professionalAccess.hospitalId }).from(professionalAccess).where(eq(professionalAccess.professionalId, link.professionalId));
@@ -142,24 +219,58 @@ describe("auto-cadastro público e aprovação", () => {
     expect(tenant.institutionId).toBe(institutionId);
 
     // Aprovar de novo → 404 (já não é pendente)
-    expect((await request(app).post(`/api/admin/pending-signups/${u.id}/approve`).set("Cookie", adminCookie)).status).toBe(404);
+    expect(
+      (
+        await request(app)
+          .post(`/api/admin/pending-signups/${u.id}/approve`)
+          .set("Cookie", adminCookie)
+          .set("x-tenant-id", String(institutionId))
+      ).status,
+    ).toBe(404);
   });
 
   it("admin recusa: cadastro removido, login 401, segunda recusa 404", async () => {
     const res = await request(app).post("/api/auth/signup").send({ name: "Signup B", email: emailB, password: PASSWORD, institutionId });
     expect(res.status).toBe(201);
     const [u] = await db.select({ id: users.id }).from(users).where(eq(users.email, emailB));
-    const rej = await request(app).post(`/api/admin/pending-signups/${u.id}/reject`).set("Cookie", adminCookie);
+    // Exercita o fallback da descrição: mesmo sem nome, o audit não pode usar e-mail bruto.
+    await db.update(users).set({ name: null }).where(eq(users.id, u.id));
+    const rej = await request(app)
+      .post(`/api/admin/pending-signups/${u.id}/reject`)
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionId));
     expect(rej.status).toBe(200);
+    const [audit] = await db
+      .select({ description: auditTrail.description, metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(and(eq(auditTrail.entityId, u.id), eq(auditTrail.action, "USER_UPDATED")));
+    expect(audit).toBeTruthy();
+    expect(JSON.stringify(audit)).not.toContain(emailB);
+    expect(audit.description).toContain(`usuário #${u.id}`);
+    expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
     const gone = await db.select({ id: users.id, deletedAt: users.deletedAt }).from(users).where(eq(users.id, u.id));
     expect(gone.length === 0 || gone[0].deletedAt !== null).toBe(true);
     expect((await login(emailB, PASSWORD)).status).toBe(401);
-    expect((await request(app).post(`/api/admin/pending-signups/${u.id}/reject`).set("Cookie", adminCookie)).status).toBe(404);
+    expect(
+      (
+        await request(app)
+          .post(`/api/admin/pending-signups/${u.id}/reject`)
+          .set("Cookie", adminCookie)
+          .set("x-tenant-id", String(institutionId))
+      ).status,
+    ).toBe(404);
   });
 
   it("não-admin não acessa a fila de pendentes", async () => {
     const res = await login(emailA, PASSWORD);
     const cookie = cookieOf(res);
-    expect((await request(app).get("/api/admin/pending-signups").set("Cookie", cookie)).status).toBe(403);
+    expect(
+      (
+        await request(app)
+          .get("/api/admin/pending-signups")
+          .set("Cookie", cookie)
+          .set("x-tenant-id", String(institutionId))
+      ).status,
+    ).toBe(403);
   });
 });

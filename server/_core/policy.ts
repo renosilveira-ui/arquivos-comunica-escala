@@ -1,7 +1,13 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../db";
-import { managerScope, professionalInstitutions, professionals } from "../../drizzle/schema";
+import {
+  managerScope,
+  institutions,
+  professionalInstitutions,
+  professionals,
+  users,
+} from "../../drizzle/schema";
 import { yearMonthBrt } from "../local-time";
 import type { TrpcContext } from "./context";
 import { assertInstitutionHierarchy } from "./tenant";
@@ -24,6 +30,8 @@ export type TenantCapabilities = {
   canViewAdmin: boolean;
   canCreateShift: boolean;
   canEditShift: boolean;
+  canViewSwapHistory: boolean;
+  /** @deprecated Gestores não decidem trocas/cessões; mantido para compatibilidade tipada. */
   canApproveSwaps: boolean;
   canRequestSwap: boolean;
   canApproveAssignments: boolean;
@@ -48,6 +56,21 @@ export async function resolveTenantActor(
       and(
         eq(professionals.id, professionalInstitutions.professionalId),
         eq(professionals.userId, professionalInstitutions.userId),
+      ),
+    )
+    .innerJoin(
+      users,
+      and(
+        eq(users.id, professionalInstitutions.userId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
+    .innerJoin(
+      institutions,
+      and(
+        eq(institutions.id, professionalInstitutions.institutionId),
+        eq(institutions.isActive, true),
       ),
     )
     .where(
@@ -96,7 +119,8 @@ export function actorCapabilities(actor: TenantActor): TenantCapabilities {
       canViewAdmin: true,
       canCreateShift: true,
       canEditShift: true,
-      canApproveSwaps: true,
+      canViewSwapHistory: true,
+      canApproveSwaps: false,
       canRequestSwap: true,
       canApproveAssignments: true,
     };
@@ -111,7 +135,8 @@ export function actorCapabilities(actor: TenantActor): TenantCapabilities {
       canViewAdmin: false,
       canCreateShift: true,
       canEditShift: true,
-      canApproveSwaps: true,
+      canViewSwapHistory: true,
+      canApproveSwaps: false,
       canRequestSwap: true,
       canApproveAssignments: true,
     };
@@ -126,7 +151,8 @@ export function actorCapabilities(actor: TenantActor): TenantCapabilities {
       canViewAdmin: false,
       canCreateShift: true,
       canEditShift: true,
-      canApproveSwaps: true,
+      canViewSwapHistory: true,
+      canApproveSwaps: false,
       canRequestSwap: true,
       canApproveAssignments: true,
     };
@@ -140,6 +166,7 @@ export function actorCapabilities(actor: TenantActor): TenantCapabilities {
     canViewAdmin: false,
     canCreateShift: false,
     canEditShift: false,
+    canViewSwapHistory: false,
     canApproveSwaps: false,
     canRequestSwap: true,
     canApproveAssignments: false,
@@ -224,6 +251,156 @@ export async function assertManagerScopeAccess(
           : "Gestor sem jurisdição hospitalar",
     });
   }
+}
+
+type PolicyDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
+
+/**
+ * Revalida papel contextual e jurisdição dentro da transação que fará a
+ * escrita. A autorização carregada no início da request não sobrevive a uma
+ * revogação concorrente de vínculo, papel ou manager_scope.
+ */
+export async function assertManagerScopeAccessForUpdate(
+  tx: PolicyDb,
+  actor: TenantActor,
+  expectedActorSessionVersion: number,
+  hospitalId: number,
+  sectorId: number | undefined,
+  dates: readonly Date[] = [],
+): Promise<"GESTOR_MEDICO" | "GESTOR_PLUS"> {
+  await assertInstitutionHierarchy(
+    { institutionId: actor.institutionId, hospitalId, sectorId },
+    { db: tx, lockForShare: true },
+  );
+  if (!actor.professionalId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Profissional gestor não encontrado neste tenant",
+    });
+  }
+
+  const [membershipSnapshot] = await tx
+    .select({
+      id: professionalInstitutions.id,
+    })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.userId, actor.userId),
+        eq(professionalInstitutions.professionalId, actor.professionalId),
+        eq(professionalInstitutions.institutionId, actor.institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .limit(1);
+  const [currentUser] = await tx
+    .select({
+      id: users.id,
+      globalRole: users.role,
+      sessionVersion: users.sessionVersion,
+    })
+    .from(users)
+    .where(
+      and(
+        eq(users.id, actor.userId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (
+    currentUser &&
+    currentUser.sessionVersion !== expectedActorSessionVersion
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "A sessão gerencial foi revogada durante a operação. Entre novamente e repita.",
+    });
+  }
+  const [currentProfessional] = await tx
+    .select({ id: professionals.id })
+    .from(professionals)
+    .where(
+      and(
+        eq(professionals.id, actor.professionalId),
+        eq(professionals.userId, actor.userId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  const [membership] = membershipSnapshot
+    ? await tx
+        .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
+        .from(professionalInstitutions)
+        .where(
+          and(
+            eq(professionalInstitutions.id, membershipSnapshot.id),
+            eq(professionalInstitutions.userId, actor.userId),
+            eq(professionalInstitutions.professionalId, actor.professionalId),
+            eq(professionalInstitutions.institutionId, actor.institutionId),
+            eq(professionalInstitutions.active, true),
+          ),
+        )
+        .limit(1)
+        .for("update")
+    : [];
+  if (!currentUser || !currentProfessional || !membership) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Vínculo institucional ativo não encontrado",
+    });
+  }
+
+  const role: InstitutionRole =
+    actor.isGlobalAdmin && currentUser.globalRole === "admin"
+      ? "GESTOR_PLUS"
+      : membership.roleInInstitution;
+  if (role !== "GESTOR_MEDICO" && role !== "GESTOR_PLUS") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "O usuário não possui mais papel de gestor neste tenant",
+    });
+  }
+  for (const date of dates) {
+    if (role === "GESTOR_MEDICO" && !isSameCalendarMonth(date, new Date())) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Gestor de hospital só pode editar escala do mês corrente",
+      });
+    }
+  }
+  if (role === "GESTOR_PLUS") return role;
+
+  const scopeQuery = tx
+    .select({ id: managerScope.id })
+    .from(managerScope)
+    .where(
+      and(
+        eq(managerScope.institutionId, actor.institutionId),
+        eq(managerScope.managerProfessionalId, actor.professionalId),
+        eq(managerScope.hospitalId, hospitalId),
+        or(
+          isNull(managerScope.sectorId),
+          typeof sectorId === "number"
+            ? eq(managerScope.sectorId, sectorId)
+            : isNull(managerScope.sectorId),
+        ),
+        eq(managerScope.active, true),
+      ),
+    )
+    .limit(1);
+  const [scope] = await scopeQuery.for("update");
+  if (!scope) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        typeof sectorId === "number"
+          ? "Gestor sem jurisdição ativa para este setor"
+          : "Gestor sem jurisdição hospitalar ativa",
+    });
+  }
+  return role;
 }
 
 export async function getProfessionalIdForActor(actor: TenantActor): Promise<number | null> {

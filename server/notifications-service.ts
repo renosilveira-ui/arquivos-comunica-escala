@@ -1,6 +1,14 @@
 import { getDb } from "./db";
-import { pushTokens, professionalInstitutions } from "../drizzle/schema";
-import { eq, and, desc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/mysql2";
+import { createHash } from "node:crypto";
+import {
+  institutions,
+  professionals,
+  pushTokens,
+  professionalInstitutions,
+  users,
+} from "../drizzle/schema";
+import { eq, and, inArray, isNull, sql } from "drizzle-orm";
 
 /**
  * Serviço de Notificações Push
@@ -11,6 +19,73 @@ export interface PushNotificationPayload {
   title: string;
   body: string;
   data?: Record<string, any>;
+}
+
+type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+const PUSH_TOKEN_MUTATION_LOCK_TIMEOUT_SEC = 20;
+
+class PushTokenLockTimeoutError extends Error {}
+
+function namedLockResultEquals(result: unknown, field: "acquired" | "released"): boolean {
+  if (!Array.isArray(result)) return false;
+  const rows = result[0];
+  if (!Array.isArray(rows)) return false;
+  const first = rows[0];
+  if (typeof first !== "object" || first === null) return false;
+  return Number((first as Record<string, unknown>)[field]) === 1;
+}
+
+function pushTokenLockName(token: string): string {
+  const tokenHash = createHash("sha256").update(token).digest("hex").slice(0, 40);
+  return `escala-push:${tokenHash}`;
+}
+
+function logPushTokenMutationFailure(operation: "REGISTER" | "UNREGISTER"): void {
+  // Nunca anexar o erro: parâmetros do driver podem conter o token Expo.
+  console.error(`[Notifications] PUSH_TOKEN_${operation}_FAILED`);
+}
+
+/** Serializa ownership do token entre instâncias sem registrar o token em logs. */
+async function withPushTokenMutex<T>(
+  db: Db,
+  token: string,
+  callback: (connectionDb: Db) => Promise<T>,
+): Promise<T> {
+  const connection = await db.$client.promise().getConnection();
+  const connectionDb = drizzle(connection) as unknown as Db;
+  const lockName = pushTokenLockName(token);
+  let acquired = false;
+  let releaseSucceeded = true;
+  try {
+    const lockResult = await connectionDb.execute(sql`
+      SELECT GET_LOCK(${lockName}, ${PUSH_TOKEN_MUTATION_LOCK_TIMEOUT_SEC}) AS acquired
+    `);
+    if (!namedLockResultEquals(lockResult, "acquired")) {
+      throw new PushTokenLockTimeoutError("Timeout ao serializar ownership do push token");
+    }
+    acquired = true;
+    return await callback(connectionDb);
+  } finally {
+    if (acquired) {
+      try {
+        const releaseResult = await connectionDb.execute(sql`
+          SELECT RELEASE_LOCK(${lockName}) AS released
+        `);
+        if (!namedLockResultEquals(releaseResult, "released")) {
+          throw new Error("MySQL não confirmou a liberação do mutex do push token");
+        }
+      } catch {
+        releaseSucceeded = false;
+        console.error("[Notifications] Falha ao liberar mutex do push token");
+      }
+    }
+    if (releaseSucceeded) {
+      connection.release();
+    } else {
+      connection.destroy();
+    }
+  }
 }
 
 /**
@@ -54,67 +129,139 @@ export async function registerPushToken(
   userId: number,
   token: string,
   platform: "ios" | "android" | "web",
-  institutionId?: number | null
+  institutionId: number,
+  expectedSessionVersion: number,
 ): Promise<{ success: boolean; message: string }> {
   try {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
-    // Verificar se token já existe
-    const existing = await db
-      .select()
-      .from(pushTokens)
-      .where(eq(pushTokens.token, token))
-      .limit(1);
+    return await withPushTokenMutex(db, token, async (connectionDb) =>
+      connectionDb.transaction(async (tx) => {
+        // A pré-leitura resolve as chaves. Autoridade só nasce sob a ordem
+        // global users → professionals → PI → institution → push token.
+        const [identitySnapshot] = await tx
+          .select({
+            membershipId: professionalInstitutions.id,
+            professionalId: professionals.id,
+          })
+          .from(professionalInstitutions)
+          .innerJoin(
+            professionals,
+            and(
+              eq(professionals.id, professionalInstitutions.professionalId),
+              eq(professionals.userId, professionalInstitutions.userId),
+            ),
+          )
+          .where(
+            and(
+              eq(professionalInstitutions.userId, userId),
+              eq(professionalInstitutions.institutionId, institutionId),
+              eq(professionalInstitutions.active, true),
+            ),
+          )
+          .limit(1);
 
-    if (existing.length > 0) {
-      // Mesmo aparelho, outro usuário (troca de conta): o token passa a
-      // ser deste usuário — senão o push do plantão ia para quem usou o
-      // aparelho primeiro (auditoria 22/08 parte 2).
-      if (existing[0].userId !== userId) {
-        await db
-          .update(pushTokens)
-          .set({ userId, institutionId: institutionId ?? existing[0].institutionId, platform })
-          .where(eq(pushTokens.token, token));
-        return { success: true, message: "Token reatribuído ao usuário atual" };
-      }
-      return { success: true, message: "Token já registrado" };
-    }
+        const [currentUser] = await tx
+          .select({ id: users.id, sessionVersion: users.sessionVersion })
+          .from(users)
+          .where(
+            and(
+              eq(users.id, userId),
+              eq(users.approvalStatus, "APPROVED"),
+              isNull(users.deletedAt),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        const [currentProfessional] = identitySnapshot
+          ? await tx
+              .select({ id: professionals.id })
+              .from(professionals)
+              .where(
+                and(
+                  eq(professionals.id, identitySnapshot.professionalId),
+                  eq(professionals.userId, userId),
+                ),
+              )
+              .limit(1)
+              .for("update")
+          : [];
+        const [membership] = identitySnapshot
+          ? await tx
+              .select({ id: professionalInstitutions.id })
+              .from(professionalInstitutions)
+              .where(
+                and(
+                  eq(professionalInstitutions.id, identitySnapshot.membershipId),
+                  eq(professionalInstitutions.professionalId, identitySnapshot.professionalId),
+                  eq(professionalInstitutions.userId, userId),
+                  eq(professionalInstitutions.institutionId, institutionId),
+                  eq(professionalInstitutions.active, true),
+                ),
+              )
+              .limit(1)
+              .for("update")
+          : [];
+        const [activeInstitution] = membership
+          ? await tx
+              .select({ id: institutions.id })
+              .from(institutions)
+              .where(
+                and(
+                  eq(institutions.id, institutionId),
+                  eq(institutions.isActive, true),
+                ),
+              )
+              .limit(1)
+              .for("share")
+          : [];
 
-    // Tenant do token: o informado pelo caller (x-tenant-id) ou, na
-    // falta, o vínculo institucional ativo do usuário. O valor fixo 1
-    // anterior corrompia a coluna para todos os outros tenants.
-    let resolvedInstitutionId = institutionId ?? null;
-    if (!resolvedInstitutionId) {
-      const [link] = await db
-        .select({ institutionId: professionalInstitutions.institutionId })
-        .from(professionalInstitutions)
-        .where(
-          and(
-            eq(professionalInstitutions.userId, userId),
-            eq(professionalInstitutions.active, true),
-          ),
-        )
-        .orderBy(desc(professionalInstitutions.isPrimary))
-        .limit(1);
-      resolvedInstitutionId = link?.institutionId ?? 1;
-    }
+        if (
+          !currentUser ||
+          currentUser.sessionVersion !== expectedSessionVersion ||
+          !currentProfessional ||
+          !membership ||
+          !activeInstitution
+        ) {
+          if (currentUser && currentUser.sessionVersion !== expectedSessionVersion) {
+            return { success: false, message: "Sessão revogada" };
+          }
+          return { success: false, message: "Vínculo institucional ativo não encontrado" };
+        }
 
-    // Inserir novo token
-    await db.insert(pushTokens).values({
-      institutionId: resolvedInstitutionId,
-      userId,
-      token,
-      platform,
-    });
+        const existing = await tx
+          .select()
+          .from(pushTokens)
+          .where(eq(pushTokens.token, token))
+          .for("update");
+        if (existing.length > 0) {
+          const [keeper, ...duplicates] = existing.sort((left, right) => left.id - right.id);
+          await tx
+            .update(pushTokens)
+            .set({ userId, institutionId, platform })
+            .where(eq(pushTokens.id, keeper.id));
+          if (duplicates.length > 0) {
+            await tx
+              .delete(pushTokens)
+              .where(inArray(pushTokens.id, duplicates.map((row) => row.id)));
+          }
+          return {
+            success: true,
+            message:
+              keeper.userId === userId && keeper.institutionId === institutionId
+                ? "Token já registrado"
+                : "Token associado ao usuário e tenant atuais",
+          };
+        }
 
-    return { success: true, message: "Token registrado com sucesso" };
-  } catch (error) {
-    console.error("[Notifications] Erro ao registrar token:", error);
-    return {
-      success: false,
-      message: error instanceof Error ? error.message : "Erro desconhecido",
-    };
+        await tx.insert(pushTokens).values({ institutionId, userId, token, platform });
+        return { success: true, message: "Token registrado com sucesso" };
+      }),
+    );
+  } catch {
+    logPushTokenMutationFailure("REGISTER");
+    return { success: false, message: "Não foi possível registrar o token" };
   }
 }
 
@@ -122,8 +269,19 @@ export async function registerPushToken(
 export async function unregisterPushToken(userId: number, token: string): Promise<{ success: boolean }> {
   const db = await getDb();
   if (!db) return { success: false };
-  await db.delete(pushTokens).where(and(eq(pushTokens.token, token), eq(pushTokens.userId, userId)));
-  return { success: true };
+  try {
+    return await withPushTokenMutex(db, token, async (connectionDb) =>
+      connectionDb.transaction(async (tx) => {
+        await tx
+          .delete(pushTokens)
+          .where(and(eq(pushTokens.token, token), eq(pushTokens.userId, userId)));
+        return { success: true };
+      }),
+    );
+  } catch {
+    logPushTokenMutationFailure("UNREGISTER");
+    return { success: false };
+  }
 }
 
 /**

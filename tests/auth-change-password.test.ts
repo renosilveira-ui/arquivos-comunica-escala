@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import express, { type Express } from "express";
 import { authRouter } from "../server/routes/auth";
 import { getDb } from "../server/db";
-import { users, professionals } from "../drizzle/schema";
+import {
+  auditTrail,
+  institutions,
+  professionalInstitutions,
+  professionals,
+  pushTokens,
+  users,
+} from "../drizzle/schema";
 
 /**
  * Endpoint /api/auth/change-password.
@@ -27,6 +34,7 @@ describe("auth.changePassword endpoint", () => {
   let app: Express;
   let db: Awaited<ReturnType<typeof getDb>>;
   let testUserId: number;
+  let testInstitutionId: number;
 
   /**
    * O fluxo de login auto-cria um `professional` para o usuário (ver
@@ -41,6 +49,13 @@ describe("auth.changePassword endpoint", () => {
       .from(users)
       .where(eq(users.email, TEST_EMAIL));
     for (const row of existing) {
+      await db!.delete(pushTokens).where(eq(pushTokens.userId, row.id));
+      await db!
+        .delete(auditTrail)
+        .where(or(eq(auditTrail.actorUserId, row.id), eq(auditTrail.entityId, row.id)));
+      await db!
+        .delete(professionalInstitutions)
+        .where(eq(professionalInstitutions.userId, row.id));
       await db!.delete(professionals).where(eq(professionals.userId, row.id));
     }
     await db!.delete(users).where(eq(users.email, TEST_EMAIL));
@@ -55,6 +70,18 @@ describe("auth.changePassword endpoint", () => {
     app.use("/api/auth", authRouter);
 
     await cleanupTestUser();
+    const stamp = Date.now();
+    const [institution] = await db
+      .insert(institutions)
+      .values({
+        name: `Auth change password ${stamp}`,
+        cnpj: `${stamp}`.slice(-14).padStart(14, "0"),
+        legalName: `Auth change password ${stamp}`,
+        tradeName: `AUTHPWD${stamp}`.slice(0, 20),
+        isActive: true,
+      })
+      .$returningId();
+    testInstitutionId = institution.id;
     const hash = await bcrypt.hash(ORIGINAL_PASSWORD, 12);
     const [res] = await db.insert(users).values({
       email: TEST_EMAIL,
@@ -64,11 +91,29 @@ describe("auth.changePassword endpoint", () => {
       role: "doctor",
     });
     testUserId = (res as any).insertId as number;
+    const [professional] = await db
+      .insert(professionals)
+      .values({
+        userId: testUserId,
+        name: "Auth Change Password Test",
+        role: "Médico",
+        userRole: "USER",
+      })
+      .$returningId();
+    await db.insert(professionalInstitutions).values({
+      professionalId: professional.id,
+      userId: testUserId,
+      institutionId: testInstitutionId,
+      roleInInstitution: "USER",
+      isPrimary: true,
+      active: true,
+    });
   });
 
   afterAll(async () => {
     if (!db) return;
     await cleanupTestUser();
+    await db.delete(institutions).where(eq(institutions.id, testInstitutionId));
   });
 
   async function loginAndGetCookie(password: string): Promise<string | null> {
@@ -128,6 +173,20 @@ describe("auth.changePassword endpoint", () => {
   it("happy path: persiste novo hash + nova senha funciona + antiga não", async () => {
     const cookie = await loginAndGetCookie(ORIGINAL_PASSWORD);
     expect(cookie).toBeTruthy();
+    await db!.insert(pushTokens).values([
+      {
+        institutionId: testInstitutionId,
+        userId: testUserId,
+        token: `ExponentPushToken[change-password-a-${testUserId}]`,
+        platform: "ios",
+      },
+      {
+        institutionId: testInstitutionId,
+        userId: testUserId,
+        token: `ExponentPushToken[change-password-b-${testUserId}]`,
+        platform: "android",
+      },
+    ]);
 
     // 1. Change password
     const res = await request(app)
@@ -136,6 +195,22 @@ describe("auth.changePassword endpoint", () => {
       .send({ currentPassword: ORIGINAL_PASSWORD, newPassword: NEW_PASSWORD });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true }); // + token: sessão nova deste aparelho (B3)
+    expect(
+      await db!
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.userId, testUserId)),
+    ).toHaveLength(0);
+    const [audit] = await db!
+      .select({ metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, testUserId),
+          eq(auditTrail.description, "Senha alterada pelo próprio usuário"),
+        ),
+      );
+    expect(audit?.metadata).toMatchObject({ revokedPushTokenCount: 2 });
 
     // 2. Hash atualizado no banco
     const [updated] = await db!.select().from(users).where(eq(users.id, testUserId));

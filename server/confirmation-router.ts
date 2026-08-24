@@ -26,17 +26,33 @@ export const confirmationRouter = router({
    */
   registerPushToken: protectedProcedure
     .input(z.object({
-      token: z.string().min(1),
+      token: z.string().min(1).max(512),
       platform: z.enum(["ios", "android", "web"]),
+      institutionId: z.number().int().positive().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      if (
+        input.institutionId !== undefined &&
+        input.institutionId !== ctx.institutionId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Tenant do registro de push não corresponde ao tenant ativo",
+        });
+      }
       const { registerPushToken: register } = await import("./notifications-service");
-      return register(ctx.user.id, input.token, input.platform, ctx.institutionId);
+      return register(
+        ctx.user.id,
+        input.token,
+        input.platform,
+        ctx.institutionId,
+        ctx.user.sessionVersion,
+      );
     }),
 
   /** Logout / troca de conta: o aparelho deixa de receber push deste usuário. */
   unregisterPushToken: protectedProcedure
-    .input(z.object({ token: z.string().min(1) }))
+    .input(z.object({ token: z.string().min(1).max(512) }))
     .mutation(async ({ ctx, input }) => {
       const { unregisterPushToken: unregister } = await import("./notifications-service");
       return unregister(ctx.user.id, input.token);

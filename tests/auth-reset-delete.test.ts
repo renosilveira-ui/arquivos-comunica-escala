@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import express, { type Express } from "express";
@@ -48,6 +48,8 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   let app: Express;
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   const userIds: Record<keyof typeof EMAILS, number> = { doctor: 0, admin: 0, busy: 0, leaving: 0 };
+  const extraUserIds: number[] = [];
+  const extraInstitutionIds: number[] = [];
   const professionalIds: number[] = [];
   let institutionId: number;
   let hospitalId: number;
@@ -186,7 +188,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
   afterAll(async () => {
     vi.restoreAllMocks();
-    const ids = Object.values(userIds).filter((id) => id > 0);
+    const ids = [...Object.values(userIds), ...extraUserIds].filter((id) => id > 0);
     if (ids.length === 0) return;
 
     if (shiftInstanceId) {
@@ -203,12 +205,101 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     await db.delete(users).where(inArray(users.id, ids));
     if (sectorId) await db.delete(sectors).where(eq(sectors.id, sectorId));
     if (hospitalId) await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
+    if (extraInstitutionIds.length > 0) {
+      await db.delete(institutions).where(inArray(institutions.id, extraInstitutionIds));
+    }
     if (institutionId) await db.delete(institutions).where(eq(institutions.id, institutionId));
   });
 
   // -------------------------------------------------------------------------
   // Esqueci minha senha
   // -------------------------------------------------------------------------
+
+  it("produção falha fechada sem APP_PUBLIC_URL HTTPS válida e não cria token", async () => {
+    const beforeTokens = await db
+      .select({ id: passwordResets.id, usedAt: passwordResets.usedAt })
+      .from(passwordResets)
+      .where(eq(passwordResets.userId, userIds.leaving));
+    const beforeAudits = await db
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, userIds.leaving),
+          eq(auditTrail.description, "Pedido de redefinição de senha (esqueci minha senha)"),
+        ),
+      );
+    const sendSpy = vi
+      .spyOn(mailer, "sendMail")
+      .mockResolvedValue({ delivered: false, transport: "console" });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const configs = ["", "não-é-url", "http://inseguro.example"];
+      for (const appPublicUrl of configs) {
+        vi.stubEnv("APP_PUBLIC_URL", appPublicUrl);
+        const response = await request(app)
+          .post("/api/auth/forgot-password")
+          .set("Host", "atacante.example")
+          .set("X-Forwarded-Proto", "https")
+          .send({ email: EMAILS.leaving });
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual({ ok: true });
+      }
+
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(
+        await db
+          .select({ id: passwordResets.id, usedAt: passwordResets.usedAt })
+          .from(passwordResets)
+          .where(eq(passwordResets.userId, userIds.leaving)),
+      ).toEqual(beforeTokens);
+      expect(
+        await db
+          .select({ id: auditTrail.id })
+          .from(auditTrail)
+          .where(
+            and(
+              eq(auditTrail.entityId, userIds.leaving),
+              eq(
+                auditTrail.description,
+                "Pedido de redefinição de senha (esqueci minha senha)",
+              ),
+            ),
+          ),
+      ).toEqual(beforeAudits);
+    } finally {
+      vi.unstubAllEnvs();
+      sendSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("link de produção usa somente APP_PUBLIC_URL confiável, nunca Host/X-Forwarded-Proto", async () => {
+    const sendSpy = vi
+      .spyOn(mailer, "sendMail")
+      .mockResolvedValue({ delivered: false, transport: "console" });
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("APP_PUBLIC_URL", "https://confiavel.example/app/");
+
+    try {
+      const response = await request(app)
+        .post("/api/auth/forgot-password")
+        .set("Host", "atacante.example")
+        .set("X-Forwarded-Proto", "http")
+        .send({ email: EMAILS.busy });
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ ok: true });
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      const text = sendSpy.mock.calls[0][0].text;
+      expect(text).toContain("https://confiavel.example/app/reset-password?token=");
+      expect(text).not.toContain("atacante.example");
+    } finally {
+      vi.unstubAllEnvs();
+      sendSpy.mockRestore();
+    }
+  });
 
   it("forgot-password responde 200 neutro sem revelar se o e-mail existe", async () => {
     const spy = vi.spyOn(mailer, "sendMail").mockResolvedValue({ delivered: false, transport: "console" });
@@ -225,6 +316,19 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(known.body).toEqual({ ok: true });
     expect(spy).toHaveBeenCalledTimes(1);
 
+    const [audit] = await db
+      .select({ description: auditTrail.description, metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, userIds.doctor),
+          eq(auditTrail.description, "Pedido de redefinição de senha (esqueci minha senha)"),
+        ),
+      );
+    expect(audit).toBeTruthy();
+    expect(JSON.stringify(audit)).not.toContain(EMAILS.doctor);
+    expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
+
     spy.mockRestore();
   });
 
@@ -238,6 +342,20 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(match).toBeTruthy();
     const token = match![1];
     spy.mockRestore();
+    await db.insert(pushTokens).values([
+      {
+        institutionId,
+        userId: userIds.doctor,
+        token: `ExponentPushToken[reset-public-a-${STAMP}]`,
+        platform: "ios",
+      },
+      {
+        institutionId,
+        userId: userIds.doctor,
+        token: `ExponentPushToken[reset-public-b-${STAMP}]`,
+        platform: "android",
+      },
+    ]);
 
     // Senha curta → 400
     const short = await request(app).post("/api/auth/reset-password").send({ token, newPassword: "curta" });
@@ -246,6 +364,25 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     const ok = await request(app).post("/api/auth/reset-password").send({ token, newPassword: NEW_PASSWORD });
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ ok: true });
+    expect(
+      await db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.userId, userIds.doctor)),
+    ).toHaveLength(0);
+    const [resetAudit] = await db
+      .select({ metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, userIds.doctor),
+          eq(
+            auditTrail.description,
+            "Senha redefinida via link de 'esqueci minha senha'",
+          ),
+        ),
+      );
+    expect(resetAudit?.metadata).toMatchObject({ revokedPushTokenCount: 2 });
 
     const [reset] = await db.select().from(passwordResets).where(eq(passwordResets.userId, userIds.doctor));
     expect(reset).toBeTruthy();
@@ -296,13 +433,49 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     const doctorLogin = await login(EMAILS.doctor, NEW_PASSWORD);
     const forbidden = await request(app)
       .post(`/api/admin/users/${userIds.doctor}/reset-password`)
-      .set("Cookie", cookieOf(doctorLogin)!);
+      .set("Cookie", cookieOf(doctorLogin)!)
+      .set("x-tenant-id", String(institutionId));
     expect(forbidden.status).toBe(403);
+
+    await db.insert(pushTokens).values([
+      {
+        institutionId,
+        userId: userIds.doctor,
+        token: `ExponentPushToken[reset-admin-a-${STAMP}]`,
+        platform: "ios",
+      },
+      {
+        institutionId,
+        userId: userIds.doctor,
+        token: `ExponentPushToken[reset-admin-b-${STAMP}]`,
+        platform: "android",
+      },
+    ]);
 
     const reset = await request(app)
       .post(`/api/admin/users/${userIds.doctor}/reset-password`)
-      .set("Cookie", adminCookie);
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionId));
     expect(reset.status).toBe(200);
+    expect(
+      await db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.userId, userIds.doctor)),
+    ).toHaveLength(0);
+    const [adminResetAudit] = await db
+      .select({ metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, userIds.doctor),
+          eq(
+            auditTrail.description,
+            `Senha do usuário #${userIds.doctor} redefinida pelo usuário #${userIds.admin} (senha temporária, troca obrigatória no próximo login)`,
+          ),
+        ),
+      );
+    expect(adminResetAudit?.metadata).toMatchObject({ revokedPushTokenCount: 2 });
     const temp: string = reset.body.temporaryPassword;
     expect(temp).toMatch(/^[A-HJ-NP-Za-km-z2-9]{12}$/);
 
@@ -350,16 +523,162 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
   it("DELETE /me bloqueia com 409 quando há plantão futuro alocado", async () => {
     const res = await login(EMAILS.busy, PASSWORD);
+    const cookie = cookieOf(res)!;
     const del = await request(app)
       .delete("/api/auth/me")
-      .set("Cookie", cookieOf(res)!)
+      .set("Cookie", cookie)
       .send({ password: PASSWORD });
     expect(del.status).toBe(409);
     expect(del.body.error).toMatch(/plantões futuros alocados/i);
 
+    // Mutation-sensitive: trocar apenas startAt para o passado não pode
+    // transformar um plantão em andamento em elegível para exclusão.
+    await db
+      .update(shiftInstances)
+      .set({
+        startAt: new Date(Date.now() - 60 * 60 * 1000),
+        endAt: new Date(Date.now() + 60 * 60 * 1000),
+      })
+      .where(eq(shiftInstances.id, shiftInstanceId));
+    const ongoing = await request(app)
+      .delete("/api/auth/me")
+      .set("Cookie", cookie)
+      .send({ password: PASSWORD });
+    expect(ongoing.status).toBe(409);
+
     const [still] = await db.select().from(users).where(eq(users.id, userIds.busy));
     expect(still.deletedAt).toBeNull();
     expect(still.email).toBe(EMAILS.busy);
+  });
+
+  it("DELETE /me bloqueia o último admin HTTP global mesmo com PI contextual USER", async () => {
+    const res = await login(EMAILS.admin, PASSWORD);
+    const deletion = await request(app)
+      .delete("/api/auth/me")
+      .set("Cookie", cookieOf(res)!)
+      .send({ password: PASSWORD });
+    expect(deletion.status).toBe(409);
+    expect(deletion.body.error).toMatch(/administração global|administrador global/i);
+    const [admin] = await db.select().from(users).where(eq(users.id, userIds.admin));
+    expect(admin.deletedAt).toBeNull();
+    const [membership] = await db
+      .select({ role: professionalInstitutions.roleInInstitution })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, userIds.admin));
+    expect(membership.role).toBe("USER");
+  });
+
+  it("DELETE /me bloqueia o último GESTOR_PLUS contextual sem depender do papel global", async () => {
+    const res = await login(EMAILS.admin, PASSWORD);
+    // O papel global legado não é a fonte de autoridade institucional.
+    await db.update(users).set({ role: "doctor" }).where(eq(users.id, userIds.admin));
+    await db
+      .update(professionalInstitutions)
+      .set({ roleInInstitution: "GESTOR_PLUS" })
+      .where(eq(professionalInstitutions.userId, userIds.admin));
+    try {
+      const deletion = await request(app)
+        .delete("/api/auth/me")
+        .set("Cookie", cookieOf(res)!)
+        .send({ password: PASSWORD });
+      expect(deletion.status).toBe(409);
+      expect(deletion.body.error).toMatch(/transfira a administração/i);
+      const [admin] = await db.select().from(users).where(eq(users.id, userIds.admin));
+      expect(admin.deletedAt).toBeNull();
+    } finally {
+      await db.update(users).set({ role: "admin" }).where(eq(users.id, userIds.admin));
+      await db
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "USER" })
+        .where(eq(professionalInstitutions.userId, userIds.admin));
+    }
+  });
+
+  it("duas exclusões concorrentes de admins globais deixam exatamente um capaz no tenant", async () => {
+    const [tenant] = await db
+      .insert(institutions)
+      .values({
+        name: `A3 Admin Race ${STAMP}`,
+        cnpj: `${STAMP}77`.slice(-14).padStart(14, "0"),
+        legalName: `A3 Admin Race ${STAMP}`,
+        tradeName: `A3R${STAMP}`.slice(0, 20),
+        isActive: true,
+      })
+      .$returningId();
+    extraInstitutionIds.push(tenant.id);
+
+    const racerCookies: string[] = [];
+    for (const tag of ["a", "b"] as const) {
+      const email = `a3-admin-race-${tag}-${STAMP}@test.local`;
+      const [user] = await db
+        .insert(users)
+        .values({
+          name: `A3 Admin Race ${tag}`,
+          email,
+          passwordHash: await bcrypt.hash(PASSWORD, 4),
+          loginMethod: "email",
+          role: "admin",
+        })
+        .$returningId();
+      extraUserIds.push(user.id);
+      const [professional] = await db
+        .insert(professionals)
+        .values({
+          userId: user.id,
+          name: `A3 Admin Race ${tag}`,
+          role: "Administrador",
+          userRole: "USER",
+        })
+        .$returningId();
+      professionalIds.push(professional.id);
+      await db.insert(professionalInstitutions).values({
+        professionalId: professional.id,
+        userId: user.id,
+        institutionId: tenant.id,
+        roleInInstitution: "USER",
+        isPrimary: true,
+        active: true,
+      });
+      const session = await login(email, PASSWORD);
+      racerCookies.push(cookieOf(session)!);
+    }
+
+    const deletions = await Promise.all(
+      racerCookies.map((racerCookie) =>
+        request(app)
+          .delete("/api/auth/me")
+          .set("Cookie", racerCookie)
+          .send({ password: PASSWORD }),
+      ),
+    );
+    expect(deletions.map((response) => response.status).sort()).toEqual([200, 409]);
+
+    const capable = await db
+      .select({ userId: users.id })
+      .from(professionalInstitutions)
+      .innerJoin(
+        professionals,
+        and(
+          eq(professionals.id, professionalInstitutions.professionalId),
+          eq(professionals.userId, professionalInstitutions.userId),
+        ),
+      )
+      .innerJoin(
+        users,
+        and(
+          eq(users.id, professionalInstitutions.userId),
+          eq(users.role, "admin"),
+          eq(users.approvalStatus, "APPROVED"),
+          isNull(users.deletedAt),
+        ),
+      )
+      .where(
+        and(
+          eq(professionalInstitutions.institutionId, tenant.id),
+          eq(professionalInstitutions.active, true),
+        ),
+      );
+    expect(capable).toHaveLength(1);
   });
 
   it("DELETE /me ok: anonimiza, desativa vínculo, apaga push tokens, login e sessão falham", async () => {
@@ -374,6 +693,16 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(gone.deletedAt).not.toBeNull();
     expect(gone.name).toBe("Conta removida");
     expect(gone.email).toBe(`removido+${userIds.leaving}@anon.local`);
+    expect(gone.openId).toBeNull();
+    expect(gone.loginMethod).toBeNull();
+    expect(gone.passwordHash).toBeNull();
+
+    const professionalRows = await db
+      .select({ name: professionals.name })
+      .from(professionals)
+      .where(eq(professionals.userId, userIds.leaving));
+    expect(professionalRows.length).toBeGreaterThan(0);
+    expect(professionalRows.every((row) => row.name === "Conta removida")).toBe(true);
 
     const links = await db
       .select()
@@ -384,6 +713,19 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
     const tokens = await db.select().from(pushTokens).where(eq(pushTokens.userId, userIds.leaving));
     expect(tokens).toHaveLength(0);
+    const [deleteAudit] = await db
+      .select({ metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, userIds.leaving),
+          eq(
+            auditTrail.description,
+            "Conta excluída pelo próprio usuário (soft-delete, dados anonimizados)",
+          ),
+        ),
+      );
+    expect(deleteAudit?.metadata).toMatchObject({ revokedPushTokenCount: 1 });
 
     // Login pelo e-mail original e pelo anonimizado falham como credencial inválida.
     expect((await login(EMAILS.leaving, PASSWORD)).status).toBe(401);
