@@ -60,7 +60,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   const end = new Date(`${shiftDay}T19:00:00-03:00`);
 
   const ctx = (userId: number) =>
-    ({ user: { id: userId, role: "doctor", name: "T", email: `${userId}@t.local` }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
+    ({ user: { id: userId, role: "doctor", name: "T", email: `${userId}@t.local`, sessionVersion: 1 }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
 
   async function person(tag: string) {
     const [u] = await db.insert(users).values({ name: `CN ${tag} ${stamp}`, email: `cn-${tag}-${stamp}@test.local`, passwordHash: "test", role: "doctor" }).$returningId();

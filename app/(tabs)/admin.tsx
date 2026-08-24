@@ -25,12 +25,17 @@ import { confirmAction } from "@/lib/ui/confirm";
 // ---------------------------------------------------------------------------
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
+type ProfessionalRole = "doctor" | "nurse" | "tech";
+type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
 
 interface AdminUser {
   id: number;
   name: string | null;
   email: string | null;
+  /** Projeção legada mantida pelo servidor para builds anteriores. */
   role: UserRole;
+  globalRole: UserRole;
+  roleInInstitution: InstitutionRole;
   createdAt: string;
   professional: { id: number; userRole: string; specialty?: string | null } | null;
 }
@@ -52,23 +57,27 @@ interface PendingSignup {
 // Fetch REST com URL base, sessão e tenant do app (lib/_core/api.ts).
 const adminFetch = apiFetch;
 
-const ROLE_LABELS: Record<UserRole, string> = {
-  admin: "Administrador",
-  manager: "Gestor",
+const PROFESSIONAL_ROLE_LABELS: Record<ProfessionalRole, string> = {
   doctor: "Médico",
   nurse: "Enfermeiro(a)",
   tech: "Técnico(a)",
 };
 
-const ROLE_BADGE: Record<UserRole, BadgeVariant> = {
-  admin: "critical",
-  manager: "warning",
-  doctor: "info",
-  nurse: "success",
-  tech: "neutral",
+const PROFESSIONAL_ROLES: ProfessionalRole[] = ["doctor", "nurse", "tech"];
+
+const INSTITUTION_ROLE_LABELS: Record<InstitutionRole, string> = {
+  USER: "Usuário",
+  GESTOR_MEDICO: "Gestor médico",
+  GESTOR_PLUS: "Gestor+",
 };
 
-const ROLES: UserRole[] = ["admin", "manager", "doctor", "nurse", "tech"];
+const INSTITUTION_ROLE_BADGE: Record<InstitutionRole, BadgeVariant> = {
+  USER: "info",
+  GESTOR_MEDICO: "warning",
+  GESTOR_PLUS: "critical",
+};
+
+const INSTITUTION_ROLES: InstitutionRole[] = ["USER", "GESTOR_MEDICO", "GESTOR_PLUS"];
 
 // ---------------------------------------------------------------------------
 // CreateUserModal
@@ -86,7 +95,8 @@ function CreateUserModal({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<UserRole>("doctor");
+  const [professionalRole, setProfessionalRole] = useState<ProfessionalRole>("doctor");
+  const [roleInInstitution, setRoleInInstitution] = useState<InstitutionRole>("USER");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -94,13 +104,18 @@ function CreateUserModal({
     setName("");
     setEmail("");
     setPassword("");
-    setRole("doctor");
+    setProfessionalRole("doctor");
+    setRoleInInstitution("USER");
     setError("");
   };
 
   const handleCreate = async () => {
     if (!name.trim() || !email.trim() || !password.trim()) {
       setError("Preencha todos os campos");
+      return;
+    }
+    if (password.length < 8 || password.length > 128) {
+      setError("A senha deve ter entre 8 e 128 caracteres");
       return;
     }
     setLoading(true);
@@ -113,7 +128,8 @@ function CreateUserModal({
           name: name.trim(),
           email: email.trim().toLowerCase(),
           password,
-          role,
+          professionalRole,
+          roleInInstitution,
         }),
       },
     );
@@ -240,7 +256,7 @@ function CreateUserModal({
           <TextInput
             value={password}
             onChangeText={setPassword}
-            placeholder="Min. 6 caracteres"
+            placeholder="Mín. 8 caracteres"
             placeholderTextColor={theme.colors.textMuted}
             secureTextEntry
             style={{
@@ -253,7 +269,7 @@ function CreateUserModal({
             }}
           />
 
-          {/* Role selector */}
+          {/* Função profissional e autorização são eixos distintos. */}
           <Text
             style={{
               color: theme.colors.textSecondary,
@@ -261,7 +277,7 @@ function CreateUserModal({
               marginBottom: 6,
             }}
           >
-            Cargo
+            Função profissional
           </Text>
           <View
             style={{
@@ -271,13 +287,13 @@ function CreateUserModal({
               marginBottom: 20,
             }}
           >
-            {ROLES.map((r) => (
+            {PROFESSIONAL_ROLES.map((r) => (
               <TouchableOpacity
                 key={r}
-                onPress={() => setRole(r)}
+                onPress={() => setProfessionalRole(r)}
                 style={{
                   backgroundColor:
-                    role === r ? theme.colors.primary : theme.colors.surface,
+                    professionalRole === r ? theme.colors.primary : theme.colors.surface,
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 8,
@@ -286,12 +302,59 @@ function CreateUserModal({
                 <Text
                   style={{
                     color:
-                      role === r ? theme.colors.onDark.text : theme.colors.textSecondary,
+                      professionalRole === r
+                        ? theme.colors.onDark.text
+                        : theme.colors.textSecondary,
                     fontSize: 14,
                     fontWeight: "600",
                   }}
                 >
-                  {ROLE_LABELS[r]}
+                  {PROFESSIONAL_ROLE_LABELS[r]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text
+            style={{
+              color: theme.colors.textSecondary,
+              fontSize: 14,
+              marginBottom: 6,
+            }}
+          >
+            Papel nesta instituição
+          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: 8,
+              marginBottom: 20,
+            }}
+          >
+            {INSTITUTION_ROLES.map((r) => (
+              <TouchableOpacity
+                key={r}
+                onPress={() => setRoleInInstitution(r)}
+                style={{
+                  backgroundColor:
+                    roleInInstitution === r ? theme.colors.primary : theme.colors.surface,
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    color:
+                      roleInInstitution === r
+                        ? theme.colors.onDark.text
+                        : theme.colors.textSecondary,
+                    fontSize: 14,
+                    fontWeight: "600",
+                  }}
+                >
+                  {INSTITUTION_ROLE_LABELS[r]}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -353,7 +416,7 @@ function EditUserModal({
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<UserRole>("doctor");
+  const [roleInInstitution, setRoleInInstitution] = useState<InstitutionRole>("USER");
   const [specialty, setSpecialty] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -368,7 +431,7 @@ function EditUserModal({
       if (visible && editUser) {
         setName(editUser.name ?? "");
         setEmail(editUser.email ?? "");
-        setRole(editUser.role);
+        setRoleInInstitution(editUser.roleInInstitution);
         setSpecialty(editUser.professional?.specialty ?? "");
         setError("");
         setTempPassword(null);
@@ -432,7 +495,7 @@ function EditUserModal({
         body: JSON.stringify({
           name: name.trim(),
           email: email.trim().toLowerCase(),
-          role,
+          roleInInstitution,
           specialty: specialty.trim() || null,
         }),
       },
@@ -573,7 +636,7 @@ function EditUserModal({
             }}
           />
 
-          {/* Role selector */}
+          {/* Papel institucional — não altera o papel global da conta. */}
           <Text
             style={{
               color: theme.colors.textSecondary,
@@ -581,7 +644,7 @@ function EditUserModal({
               marginBottom: 6,
             }}
           >
-            Cargo
+            Papel nesta instituição
           </Text>
           <View
             style={{
@@ -591,13 +654,13 @@ function EditUserModal({
               marginBottom: 20,
             }}
           >
-            {ROLES.map((r) => (
+            {INSTITUTION_ROLES.map((r) => (
               <TouchableOpacity
                 key={r}
-                onPress={() => setRole(r)}
+                onPress={() => setRoleInInstitution(r)}
                 style={{
                   backgroundColor:
-                    role === r ? theme.colors.primary : theme.colors.surface,
+                    roleInInstitution === r ? theme.colors.primary : theme.colors.surface,
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 8,
@@ -606,12 +669,12 @@ function EditUserModal({
                 <Text
                   style={{
                     color:
-                      role === r ? theme.colors.onDark.text : theme.colors.textSecondary,
+                      roleInInstitution === r ? theme.colors.onDark.text : theme.colors.textSecondary,
                     fontSize: 14,
                     fontWeight: "600",
                   }}
                 >
-                  {ROLE_LABELS[r]}
+                  {INSTITUTION_ROLE_LABELS[r]}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -846,7 +909,9 @@ export default function AdminScreen() {
         (u) =>
           (u.name ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
           (u.email ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-          ROLE_LABELS[u.role].toLowerCase().includes(searchQuery.toLowerCase()),
+          INSTITUTION_ROLE_LABELS[u.roleInInstitution]
+            .toLowerCase()
+            .includes(searchQuery.toLowerCase()),
       )
     : users;
 
@@ -992,7 +1057,7 @@ export default function AdminScreen() {
               <Text
                 style={{ color: theme.colors.onDark.textMuted, fontSize: 13 }}
               >
-                Administradores
+                Gestores+
               </Text>
               <Text
                 style={{
@@ -1002,7 +1067,7 @@ export default function AdminScreen() {
                   marginTop: 4,
                 }}
               >
-                {users.filter((u) => u.role === "admin").length}
+                {users.filter((u) => u.roleInInstitution === "GESTOR_PLUS").length}
               </Text>
             </TintedGlassCard>
           </View>
@@ -1175,8 +1240,8 @@ export default function AdminScreen() {
                       gap: 10,
                     }}
                   >
-                    <Badge variant={ROLE_BADGE[u.role]}>
-                      {ROLE_LABELS[u.role]}
+                    <Badge variant={INSTITUTION_ROLE_BADGE[u.roleInInstitution]}>
+                      {INSTITUTION_ROLE_LABELS[u.roleInInstitution]}
                     </Badge>
                     <TouchableOpacity
                       onPress={() => setEditTarget(u)}

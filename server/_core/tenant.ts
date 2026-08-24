@@ -1,6 +1,13 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { hospitals, professionalInstitutions, professionals, sectors } from "../../drizzle/schema";
+import {
+  hospitals,
+  institutions,
+  professionalInstitutions,
+  professionals,
+  sectors,
+  users,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 
 type HierarchyDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
@@ -19,7 +26,7 @@ export async function assertInstitutionHierarchy(
     hospitalId: number;
     sectorId?: number | null;
   }>,
-  options: { db?: HierarchyDb } = {},
+  options: { db?: HierarchyDb; lockForShare?: boolean } = {},
 ): Promise<void> {
   const db = options.db ?? (await getDb());
   if (!db) throw new Error("Database not available");
@@ -31,9 +38,16 @@ export async function assertInstitutionHierarchy(
     });
 
   if (typeof input.sectorId === "number") {
-    const [row] = await db
+    const query = db
       .select({ hospitalId: hospitals.id, sectorId: sectors.id })
-      .from(hospitals)
+      .from(institutions)
+      .innerJoin(
+        hospitals,
+        and(
+          eq(hospitals.id, input.hospitalId),
+          eq(hospitals.institutionId, institutions.id),
+        ),
+      )
       .innerJoin(
         sectors,
         and(
@@ -44,26 +58,35 @@ export async function assertInstitutionHierarchy(
       )
       .where(
         and(
-          eq(hospitals.id, input.hospitalId),
-          eq(hospitals.institutionId, input.institutionId),
+          eq(institutions.id, input.institutionId),
+          eq(institutions.isActive, true),
         ),
       )
       .limit(1);
+    const [row] = options.lockForShare ? await query.for("share") : await query;
 
     if (!row) throw invalidHierarchy();
     return;
   }
 
-  const [hospital] = await db
+  const query = db
     .select({ id: hospitals.id })
-    .from(hospitals)
-    .where(
+    .from(institutions)
+    .innerJoin(
+      hospitals,
       and(
         eq(hospitals.id, input.hospitalId),
-        eq(hospitals.institutionId, input.institutionId),
+        eq(hospitals.institutionId, institutions.id),
+      ),
+    )
+    .where(
+      and(
+        eq(institutions.id, input.institutionId),
+        eq(institutions.isActive, true),
       ),
     )
     .limit(1);
+  const [hospital] = options.lockForShare ? await query.for("share") : await query;
 
   if (!hospital) throw invalidHierarchy();
 }
@@ -87,6 +110,21 @@ export async function listActiveInstitutionIdsForUser(userId: number): Promise<n
       and(
         eq(professionals.id, professionalInstitutions.professionalId),
         eq(professionals.userId, professionalInstitutions.userId),
+      ),
+    )
+    .innerJoin(
+      users,
+      and(
+        eq(users.id, professionalInstitutions.userId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
+    .innerJoin(
+      institutions,
+      and(
+        eq(institutions.id, professionalInstitutions.institutionId),
+        eq(institutions.isActive, true),
       ),
     )
     .where(
