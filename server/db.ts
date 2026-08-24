@@ -6,6 +6,19 @@ import { resolveSslConfig } from "./_core/db-ssl";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
+/**
+ * Encerra o pool atual e invalida o cache antes de aguardar o drain.
+ *
+ * O reset explícito é importante para workers de teste que reutilizam o
+ * mesmo processo entre arquivos: `_db` nunca pode continuar apontando para
+ * um pool já encerrado.
+ */
+export async function closeDb(): Promise<void> {
+  const db = _db;
+  _db = null;
+  if (db) await db.$client.end();
+}
+
 // Lazily create the drizzle instance so local tooling can run without a DB.
 //
 // When DATABASE_SSL is set we build an explicit mysql2 pool so we can pass

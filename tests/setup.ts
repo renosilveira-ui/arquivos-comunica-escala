@@ -1,9 +1,15 @@
 import { beforeAll, afterAll } from "vitest";
-import { getDb } from "../server/db";
+import { closeDb, getDb } from "../server/db";
 import { seedTestData } from "../server/seed-test-data";
+import { installAsyncRouteForwarding } from "../server/_core/error-handling";
 
 // Setup global para testes
 (global as any).__DEV__ = true;
+
+// Os testes HTTP montam apps Express mínimos, mas precisam preservar a mesma
+// fronteira de erro do servidor real: rejeições de handlers async devem virar
+// respostas 500, nunca conexões abruptamente resetadas.
+installAsyncRouteForwarding();
 
 // Mock AsyncStorage
 const storage: Record<string, string> = {};
@@ -61,8 +67,5 @@ beforeAll(async () => {
 // Fechar conexões após todos os testes
 afterAll(async () => {
   console.log("🧪 Finalizando ambiente de testes...");
-  const db = await getDb();
-  if (db) {
-    await db.$client.end();
-  }
+  await closeDb();
 });

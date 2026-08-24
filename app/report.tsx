@@ -12,7 +12,7 @@ import { ChevronLeft, FileText, Download, Calendar } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 import { format } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import { ptBR } from "date-fns/locale/pt-BR";
 import { toLocalISODateString } from "@/lib/datetime-utils";
 
 type UnifiedShift = {

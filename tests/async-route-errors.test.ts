@@ -2,14 +2,14 @@
 // não derruba o processo (regressão do incidente de 2026-08-22: login com
 // coluna inexistente reiniciava o servidor a cada tentativa).
 
-import { describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { createErrorHandler, installAsyncRouteForwarding } from "../server/_core/error-handling";
 
 describe("erros em rotas async", () => {
   it("handler async que rejeita responde 500 JSON em vez de matar o processo", async () => {
-    installAsyncRouteForwarding();
     const logged: string[] = [];
     const app = express();
     app.get("/boom", async () => {
@@ -40,5 +40,21 @@ describe("erros em rotas async", () => {
     app.use(createErrorHandler({ error: () => {} }));
     const res = await request(app).get("/sync");
     expect(res.status).toBe(500);
+  });
+
+  it("reinstalar após reset de módulos não empilha wrappers no Express", async () => {
+    const require = createRequire(import.meta.url);
+    const Layer = require("express/lib/router/layer") as {
+      prototype: { handle_request: unknown };
+    };
+    const installed = Layer.prototype.handle_request;
+
+    installAsyncRouteForwarding();
+    expect(Layer.prototype.handle_request).toBe(installed);
+
+    vi.resetModules();
+    const reloaded = await import("../server/_core/error-handling");
+    reloaded.installAsyncRouteForwarding();
+    expect(Layer.prototype.handle_request).toBe(installed);
   });
 });
