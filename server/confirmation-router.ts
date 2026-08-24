@@ -2,7 +2,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { assertMonthNotLocked } from "./month-guards";
+import { assertMonthNotLockedForUpdate } from "./month-guards";
 import { recomputeShiftStatus } from "./shift-status";
 import { eq, and, asc, isNull, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -484,13 +484,13 @@ export const confirmationRouter = router({
       // Realocação é a mesma operação de uma cessão: transação, alocação
       // de origem ainda ativa, mês não trancado e status do turno
       // derivado (auditoria 22/08 parte 2).
-      await assertMonthNotLocked(
-        valid.shift.institutionId,
-        valid.shift.hospitalId,
-        valid.shift.startAt,
-      );
-
       await db.transaction(async (tx) => {
+        await assertMonthNotLockedForUpdate(
+          tx,
+          valid.shift.institutionId,
+          valid.shift.hospitalId,
+          valid.shift.startAt,
+        );
         const [deactivated] = await tx
           .update(shiftAssignmentsV2)
           .set({ isActive: false })

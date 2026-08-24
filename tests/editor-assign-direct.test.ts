@@ -4,6 +4,7 @@ import {
   hospitals,
   institutions,
   managerScope,
+  monthlyRosters,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -198,6 +199,7 @@ describe("editor.assignDirect", () => {
       await db.delete(managerScope).where(inArray(managerScope.managerProfessionalId, professionalIds));
       await db.delete(professionals).where(inArray(professionals.id, professionalIds));
     }
+    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
@@ -214,6 +216,7 @@ describe("editor.assignDirect", () => {
         role: "manager",
         name: "Assign Direct Manager",
         email: "manager@test.local",
+        sessionVersion: 1,
       },
       institutionId,
       allowedInstitutionIds: [institutionId],
@@ -270,6 +273,7 @@ describe("editor.assignDirect", () => {
         role: "manager",
         name: "Assign Direct Manager",
         email: "manager@test.local",
+        sessionVersion: 1,
       },
       institutionId,
       allowedInstitutionIds: [institutionId],
@@ -297,6 +301,123 @@ describe("editor.assignDirect", () => {
     expect(assignments).toHaveLength(1);
   });
 
+  it("revalida conta aprovada e especialidade do profissional alvo", async () => {
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    try {
+      await db
+        .update(users)
+        .set({ approvalStatus: "PENDING" })
+        .where(eq(users.id, targetUserId));
+      await expect(
+        caller.assignDirect({
+          shiftInstanceId,
+          professionalId: targetProfessionalId,
+          assignmentType: "ON_DUTY",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      await db
+        .update(users)
+        .set({ approvalStatus: "APPROVED" })
+        .where(eq(users.id, targetUserId));
+      await db
+        .update(professionals)
+        .set({ specialty: "Cardiologia" })
+        .where(eq(professionals.id, targetProfessionalId));
+      await db
+        .update(shiftInstances)
+        .set({ specialty: "Anestesiologia" })
+        .where(eq(shiftInstances.id, shiftInstanceId));
+      await expect(
+        caller.assignDirect({
+          shiftInstanceId,
+          professionalId: targetProfessionalId,
+          assignmentType: "ON_DUTY",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      const assignments = await db
+        .select({ id: shiftAssignmentsV2.id })
+        .from(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId));
+      expect(assignments).toHaveLength(0);
+    } finally {
+      await db
+        .update(users)
+        .set({ approvalStatus: "APPROVED" })
+        .where(eq(users.id, targetUserId));
+      await db
+        .update(professionals)
+        .set({ specialty: null })
+        .where(eq(professionals.id, targetProfessionalId));
+      await db
+        .update(shiftInstances)
+        .set({ specialty: null })
+        .where(eq(shiftInstances.id, shiftInstanceId));
+    }
+  });
+
+  it("capacidade conta toda alocação ativa, inclusive PENDENTE", async () => {
+    await db.insert(shiftAssignmentsV2).values(
+      Array.from({ length: 20 }, () => ({
+        shiftInstanceId,
+        institutionId,
+        hospitalId,
+        sectorId,
+        professionalId: managerProfessionalId,
+        assignmentType: "ON_DUTY" as const,
+        status: "PENDENTE" as const,
+        isActive: true,
+        createdBy: managerUserId,
+      })),
+    );
+    await db
+      .update(shiftInstances)
+      .set({ status: "PENDENTE" })
+      .where(eq(shiftInstances.id, shiftInstanceId));
+
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+    await expect(
+      caller.assignDirect({
+        shiftInstanceId,
+        professionalId: targetProfessionalId,
+        assignmentType: "ON_DUTY",
+      }),
+    ).rejects.toThrow(/Limite de 20 profissionais/);
+
+    const active = await db
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    expect(active).toHaveLength(20);
+  });
+
   it("remove a última alocação e registra auditoria com instituição", async () => {
     const caller = editorRouter.createCaller({
       user: {
@@ -304,6 +425,7 @@ describe("editor.assignDirect", () => {
         role: "manager",
         name: "Assign Direct Manager",
         email: "manager@test.local",
+        sessionVersion: 1,
       },
       institutionId,
       allowedInstitutionIds: [institutionId],
@@ -360,5 +482,22 @@ describe("editor.assignDirect", () => {
       institutionId,
       shiftInstanceId,
     });
+
+    await expect(
+      caller.unassignDirect({
+        assignmentId: assignment.assignmentId,
+        reason: "Tela desatualizada",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const auditRowsAfterRetry = await db
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.action, "ASSIGNMENT_REMOVED"),
+          eq(auditTrail.entityId, assignment.assignmentId),
+        ),
+      );
+    expect(auditRowsAfterRetry).toHaveLength(1);
   });
 });

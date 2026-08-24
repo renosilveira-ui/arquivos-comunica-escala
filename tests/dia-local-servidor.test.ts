@@ -78,7 +78,7 @@ describe("consultas por dia usam o dia do hospital", () => {
   lateEnd.setUTCHours(lateEnd.getUTCHours() + 6);
 
   const ctx = (userId: number, role: "manager" | "doctor") =>
-    ({ user: { id: userId, role, name: "T", email: `${userId}@t.local` }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
+    ({ user: { id: userId, role, name: "T", email: `${userId}@t.local`, sessionVersion: 1 }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
 
   beforeAll(async () => {
     const conn = await getDb();

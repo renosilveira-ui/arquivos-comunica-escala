@@ -3,16 +3,18 @@ import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { dayKeyBrt, dayWindowBrt, monthWindowBrt } from "./local-time";
 import { dateFromExecute, rowsFromExecute } from "./_core/db-results";
-import { assertMonthEditable } from "./month-guards";
-import { ForbiddenError } from "../shared/_core/errors";
+import { assertMonthEditableForUpdate } from "./month-guards";
 import { yearMonthFromDate } from "../lib/date-utils";
-import { sql } from "drizzle-orm";
+import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { shiftInstances } from "../drizzle/schema";
+import { auditLog } from "./audit-log";
+import { recordAudit } from "./audit-trail";
 import {
   actorCapabilities,
   assertCanEditScheduleDate,
   assertManagerScopeAccess,
+  assertManagerScopeAccessForUpdate,
   getTenantActorFromContext,
   type TenantActor,
 } from "./_core/policy";
@@ -66,10 +68,11 @@ async function checkCalendarAccess(
   const rosterRows = rowsFromExecute<any>(rosterResult);
   const monthStatus = (rosterRows[0]?.status || "DRAFT") as "DRAFT" | "PUBLISHED" | "LOCKED";
 
-  // USER institucional só pode acessar calendário publicado
+  // USER institucional pode consultar estados finais publicados; LOCKED é
+  // somente uma restrição de escrita, não revoga a visibilidade da escala.
   if (!capabilities.canCreateShift) {
     return {
-      canAccess: monthStatus === "PUBLISHED",
+      canAccess: monthStatus === "PUBLISHED" || monthStatus === "LOCKED",
       canAutoCreateShifts: false,
       monthStatus,
     };
@@ -154,7 +157,10 @@ export const calendarRouter = router({
       );
 
       if (!canAccess) {
-        throw new ForbiddenError("Você não tem permissão para acessar este calendário");
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Você não tem permissão para acessar este calendário",
+        });
       }
 
       // 2. Calcular range do mês no relógio do hospital (-03:00), fim exclusivo.
@@ -242,7 +248,10 @@ export const calendarRouter = router({
       );
 
       if (!canAccess) {
-        throw new ForbiddenError("Você não tem permissão para acessar este dia");
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Você não tem permissão para acessar este dia",
+        });
       }
 
       // 3. Buscar shift_instances do dia
@@ -271,6 +280,9 @@ export const calendarRouter = router({
                   p.name as professionalName
                 FROM shift_assignments_v2 sa
                 JOIN professionals p ON sa.professional_id = p.id
+                JOIN users u ON u.id = p.user_id
+                  AND u.approval_status = 'APPROVED'
+                  AND u.deleted_at IS NULL
                 JOIN professional_institutions pi ON pi.professional_id = p.id
                   AND pi.user_id = p.user_id
                   AND pi.institution_id = ${institutionId}
@@ -320,12 +332,11 @@ export const calendarRouter = router({
       // editor: janela do mês corrente (GESTOR_MEDICO) e mês em DRAFT.
       // Abrir um dia de mês publicado/trancado ou fora da alçada numa
       // *query* gravava 3 turnos sem auditoria (auditoria 22/08, M1).
-      let mayAutoCreate = canAutoCreateShifts && shifts.length === 0;
+      let mayAutoCreate = canAutoCreateShifts && shifts.length === 0 && monthStatus === "DRAFT";
+      const dayStart = new Date(`${date}T00:00:00-03:00`);
       if (mayAutoCreate) {
         try {
-          const dayStart = new Date(`${date}T00:00:00-03:00`);
           assertCanEditScheduleDate(actor, dayStart);
-          await assertMonthEditable({ user: { id: ctx.user.id } }, institutionId, hospitalId, dayStart);
         } catch {
           mayAutoCreate = false;
         }
@@ -338,46 +349,120 @@ export const calendarRouter = router({
           { label: "Noite", startHour: 19, endHour: 7 },
         ];
 
-        for (const def of defaultShifts) {
-          // Horário de PAREDE do hospital (America/Sao_Paulo, UTC-3 fixo) —
-          // mesma convenção de shifts-crud.buildShiftTimestamps. Sem o
-          // offset, o servidor (TZ=UTC) gravava "Manhã 07:00" como 07:00Z
-          // (= 04:00 BRT), 3h antes dos turnos do editor, e o cron de
-          // confirmação nunca encontrava esses turnos.
-          const pad = (h: number) => String(h).padStart(2, "0");
-          const startAt = new Date(`${date}T${pad(def.startHour)}:00:00-03:00`);
-          let endAt = new Date(`${date}T${pad(def.endHour)}:00:00-03:00`);
-          if (endAt <= startAt) {
-            // Noite: termina no dia seguinte
-            endAt = new Date(endAt.getTime() + 24 * 60 * 60 * 1000);
-          }
-
-          // insertId do próprio INSERT: `SELECT LAST_INSERT_ID()` em outra
-          // chamada pode vir de outra conexão do pool.
-          const [inserted] = await db.insert(shiftInstances).values({
+        const createdShifts = await db.transaction(async (tx) => {
+          // A linha mensal é a trava de serialização: publicação/lock e outra
+          // auto-criação do mesmo mês precisam concluir antes desta decisão.
+          await assertMonthEditableForUpdate(
+            tx,
+            { user: { id: ctx.user.id } },
             institutionId,
             hospitalId,
-            sectorId,
-            label: def.label,
-            startAt,
-            endAt,
-            status: "VAGO",
-          });
-          const shiftInstanceId = Number(inserted.insertId);
+            dayStart,
+          );
 
-          shifts.push({
-            shiftInstanceId,
-            label: def.label,
-            startAt: startAt.toISOString(),
-            endAt: endAt.toISOString(),
-            status: "VAGO",
-            slots: [
-              { assignmentType: "ON_DUTY", status: "EMPTY" },
-              { assignmentType: "BACKUP", status: "EMPTY" },
-              { assignmentType: "ON_CALL", status: "EMPTY" },
-            ],
-          });
-        }
+          const existingQuery = tx
+            .select({ id: shiftInstances.id })
+            .from(shiftInstances)
+            .where(
+              and(
+                eq(shiftInstances.institutionId, institutionId),
+                eq(shiftInstances.hospitalId, hospitalId),
+                eq(shiftInstances.sectorId, sectorId),
+                gte(shiftInstances.startAt, startOfDay),
+                lt(shiftInstances.startAt, endOfDay),
+              ),
+            )
+            .limit(1);
+          const existing = await existingQuery.for("update");
+          if (existing.length > 0) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Os turnos deste dia foram criados por outra operação.",
+            });
+          }
+
+          const actorRole = await assertManagerScopeAccessForUpdate(
+            tx,
+            actor,
+            ctx.user.sessionVersion,
+            hospitalId,
+            sectorId,
+            [dayStart],
+          );
+          const created = [] as {
+            shiftInstanceId: number;
+            label: string;
+            startAt: string;
+            endAt: string;
+            status: string;
+            slots: { assignmentType: string; status: string }[];
+          }[];
+
+          for (const def of defaultShifts) {
+            // Horário de PAREDE do hospital (America/Sao_Paulo, UTC-3 fixo) —
+            // mesma convenção de shifts-crud.buildShiftTimestamps.
+            const pad = (hour: number) => String(hour).padStart(2, "0");
+            const startAt = new Date(`${date}T${pad(def.startHour)}:00:00-03:00`);
+            let endAt = new Date(`${date}T${pad(def.endHour)}:00:00-03:00`);
+            if (endAt <= startAt) endAt = new Date(endAt.getTime() + 24 * 60 * 60 * 1000);
+
+            const [inserted] = await tx.insert(shiftInstances).values({
+              institutionId,
+              hospitalId,
+              sectorId,
+              label: def.label,
+              startAt,
+              endAt,
+              status: "VAGO",
+              createdBy: ctx.user.id,
+            });
+            const shiftInstanceId = Number(inserted.insertId);
+
+            await auditLog(
+              {
+                event: "SHIFT_CREATED",
+                shiftInstanceId,
+                institutionId,
+                professionalId: actor.professionalId,
+                reason: "Criação automática ao abrir o dia",
+                metadata: { autoCreated: true, date, sectorId, label: def.label },
+              },
+              { db: tx },
+            );
+            await recordAudit(
+              {
+                actorUserId: ctx.user.id,
+                actorRole,
+                actorName: ctx.user.name ?? undefined,
+                action: "SHIFT_CREATED",
+                entityType: "SHIFT_INSTANCE",
+                entityId: shiftInstanceId,
+                description: `Turno ${def.label} criado automaticamente em ${date}`,
+                institutionId,
+                hospitalId,
+                sectorId,
+                shiftInstanceId,
+                metadata: { autoCreated: true },
+              },
+              { db: tx, strict: true },
+            );
+
+            created.push({
+              shiftInstanceId,
+              label: def.label,
+              startAt: startAt.toISOString(),
+              endAt: endAt.toISOString(),
+              status: "VAGO",
+              slots: [
+                { assignmentType: "ON_DUTY", status: "EMPTY" },
+                { assignmentType: "BACKUP", status: "EMPTY" },
+                { assignmentType: "ON_CALL", status: "EMPTY" },
+              ],
+            });
+          }
+          return created;
+        });
+        shifts.push(...createdShifts);
       }
 
       return {

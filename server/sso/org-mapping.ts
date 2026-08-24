@@ -10,20 +10,38 @@ import { ENV } from "../_core/env";
  * Keys are Escala institution IDs (as strings), values are Comunica+ org UUIDs.
  */
 let orgMap: Map<number, string> | null = null;
+let cachedRaw: string | null = null;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validInstitutionId(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
 
 function loadMap(): Map<number, string> {
-  if (orgMap) return orgMap;
+  // O ambiente e estavel em producao, mas comparar o valor bruto evita cache
+  // obsoleto em testes/hot reload sem jamais registrar o conteudo do mapa.
+  const raw = process.env.SSO_ORG_MAP ?? ENV.ssoOrgMap;
+  if (orgMap && cachedRaw === raw) return orgMap;
 
   orgMap = new Map();
-  const raw = ENV.ssoOrgMap;
+  cachedRaw = raw;
   if (!raw) return orgMap;
 
   try {
-    const parsed = JSON.parse(raw) as Record<string, string>;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new TypeError("SSO_ORG_MAP deve ser um objeto JSON");
+    }
     for (const [key, value] of Object.entries(parsed)) {
       const id = Number(key);
-      if (Number.isFinite(id) && typeof value === "string" && value.trim()) {
-        orgMap.set(id, value.trim());
+      const organizationId = typeof value === "string" ? value.trim() : "";
+      if (
+        validInstitutionId(id) &&
+        key === String(id) &&
+        UUID_PATTERN.test(organizationId)
+      ) {
+        orgMap.set(id, organizationId.toLowerCase());
       }
     }
   } catch (err) {
@@ -34,9 +52,11 @@ function loadMap(): Map<number, string> {
 }
 
 export function getComunicaOrgId(escalaInstitutionId: number): string | null {
+  if (!validInstitutionId(escalaInstitutionId)) return null;
   return loadMap().get(escalaInstitutionId) ?? null;
 }
 
 export function hasMappingFor(escalaInstitutionId: number): boolean {
+  if (!validInstitutionId(escalaInstitutionId)) return false;
   return loadMap().has(escalaInstitutionId);
 }

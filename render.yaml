@@ -75,6 +75,10 @@ services:
         value: ""
 
       # ---- Comunica+ integration ----
+      # Fail-closed na Beta. Não mudar para 1 até o contrato remoto aceitar
+      # idempotência por dedupKey e o gate operacional estar concluído.
+      - key: COMUNICA_PLUS_OUTBOUND_ENABLED
+        value: "0"
       - key: COMUNICA_PLUS_URL
         value: https://comunicamais-staging.onrender.com
       - key: COMUNICA_PLUS_SYSTEM_EMAIL
