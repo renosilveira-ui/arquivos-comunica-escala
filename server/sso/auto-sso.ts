@@ -16,6 +16,7 @@ import { dutyConfirmations } from "../../drizzle/schema";
 import { hasMappingFor } from "./org-mapping";
 import { ENV } from "../_core/env";
 import { sendPushNotification } from "../notifications-service";
+import { requireValidDutyConfirmation } from "../confirmation-integrity";
 
 interface AutoSsoResult {
   ok: boolean;
@@ -32,13 +33,17 @@ export async function triggerAutoSso(
   const db = await getDb();
   if (!db) return { ok: false, error: "Database unavailable" };
 
-  const [conf] = await db
-    .select()
-    .from(dutyConfirmations)
-    .where(eq(dutyConfirmations.id, confirmationId))
-    .limit(1);
-
-  if (!conf) return { ok: false, error: "Confirmation not found" };
+  let valid;
+  try {
+    valid = await requireValidDutyConfirmation(db, confirmationId, {
+      allowedStatuses: ["CONFIRMED", "AUTO_CONFIRMED", "REPLACEMENT_CONFIRMED"],
+      requireOriginalAssignmentActive: false,
+      requireEffectiveAssignment: true,
+    });
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
+  const conf = valid.confirmation;
 
   // Instituição sem mapeamento no Comunica+ → não há SSO possível;
   // não enviar push que levaria a um beco sem saída.
@@ -50,7 +55,7 @@ export async function triggerAutoSso(
   }
 
   // Substituto confirmado recebe o push no lugar do original.
-  const targetUserId = conf.replacementUserId ?? conf.userId;
+  const targetUserId = valid.effective.userId;
 
   await sendPushNotification(targetUserId, {
     title: "Plantão confirmado",
@@ -58,7 +63,7 @@ export async function triggerAutoSso(
     data: {
       type: "sso_ready",
       comunicaUrl: ENV.ssoTargetUrl, // fallback se o launch-code falhar
-      shiftInstanceId: conf.shiftInstanceId,
+      shiftInstanceId: valid.shift.id,
     },
   });
 

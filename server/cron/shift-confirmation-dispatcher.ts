@@ -13,19 +13,23 @@
 // marca AUTO_CONFIRMED, dispara SSO e notifica gestor.
 
 import { randomUUID } from "crypto";
-import { and, eq, gte, lte, inArray, isNull } from "drizzle-orm";
+import { and, eq, gte, lte, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   shiftInstances,
   shiftAssignmentsV2,
   professionals,
   dutyConfirmations,
+  hospitals,
   managerScope as managerScopeTable,
+  professionalAccess,
   professionalInstitutions,
+  sectors,
 } from "../../drizzle/schema";
 import { sendPushNotification } from "../notifications-service";
 import { triggerAutoSso } from "../sso/auto-sso";
 import { syncDutyToComunica } from "../sso/duty-sync";
+import { requireValidDutyConfirmation } from "../confirmation-integrity";
 
 // ── Trigger schedule ────────────────────────────────────────────────────────
 
@@ -118,7 +122,7 @@ export async function tick(now: Date = new Date()) {
 
 const START_PUSH_LOOKBACK_MS = 5 * 60 * 1000;
 
-async function processShiftStartPushes(now: Date) {
+export async function processShiftStartPushes(now: Date) {
   const db = await getDb();
   if (!db) return;
 
@@ -128,10 +132,6 @@ async function processShiftStartPushes(now: Date) {
   const started = await db
     .select({
       id: dutyConfirmations.id,
-      userId: dutyConfirmations.userId,
-      replacementUserId: dutyConfirmations.replacementUserId,
-      shiftInstanceId: dutyConfirmations.shiftInstanceId,
-      shiftLabel: shiftInstances.label,
     })
     .from(dutyConfirmations)
     .innerJoin(
@@ -148,7 +148,20 @@ async function processShiftStartPushes(now: Date) {
     );
 
   for (const conf of started) {
-    const targetUserId = conf.replacementUserId ?? conf.userId;
+    let valid;
+    try {
+      valid = await requireValidDutyConfirmation(db, conf.id, {
+        allowedStatuses: confirmedStatuses,
+        requireOriginalAssignmentActive: false,
+        requireEffectiveAssignment: true,
+      });
+    } catch (error) {
+      console.warn(
+        `[ConfirmationCron] Start push suprimido para confirmação inválida ${conf.id}: ${(error as Error).message}`,
+      );
+      continue;
+    }
+    const targetUserId = valid.effective.userId;
 
     // Marca ANTES de enviar: se o push falhar, preferimos perder um
     // aviso a re-notificar em loop a cada 60s.
@@ -159,17 +172,17 @@ async function processShiftStartPushes(now: Date) {
 
     await sendPushNotification(targetUserId, {
       title: "Seu plantão começou",
-      body: `${conf.shiftLabel}: toque para abrir o Comunica+ já logado.`,
+      body: `${valid.shift.label}: toque para abrir o Comunica+ já logado.`,
       data: {
         type: "sso_ready",
-        shiftInstanceId: conf.shiftInstanceId,
+        shiftInstanceId: valid.shift.id,
       },
     }).catch((err) =>
       console.error("[ConfirmationCron] Start push failed:", err),
     );
 
     console.log(
-      `[ConfirmationCron] Start push sent userId=${targetUserId} shift=${conf.shiftInstanceId}`,
+      `[ConfirmationCron] Start push sent userId=${targetUserId} shift=${valid.shift.id}`,
     );
   }
 }
@@ -211,7 +224,7 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
   const startHigh = new Date(shiftStartAt.getTime() + 30 * 60_000);
 
   const assignments = await db
-    .select({
+    .selectDistinct({
       assignmentId: shiftAssignmentsV2.id,
       shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
       professionalId: shiftAssignmentsV2.professionalId,
@@ -224,11 +237,57 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
       professionalName: professionals.name,
     })
     .from(shiftAssignmentsV2)
-    .innerJoin(shiftInstances, eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id))
+    .innerJoin(
+      shiftInstances,
+      and(
+        eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id),
+        eq(shiftAssignmentsV2.institutionId, shiftInstances.institutionId),
+        eq(shiftAssignmentsV2.hospitalId, shiftInstances.hospitalId),
+        eq(shiftAssignmentsV2.sectorId, shiftInstances.sectorId),
+      ),
+    )
+    .innerJoin(
+      hospitals,
+      and(
+        eq(hospitals.id, shiftInstances.hospitalId),
+        eq(hospitals.institutionId, shiftInstances.institutionId),
+      ),
+    )
+    .innerJoin(
+      sectors,
+      and(
+        eq(sectors.id, shiftInstances.sectorId),
+        eq(sectors.institutionId, shiftInstances.institutionId),
+        eq(sectors.hospitalId, shiftInstances.hospitalId),
+      ),
+    )
     .innerJoin(professionals, eq(shiftAssignmentsV2.professionalId, professionals.id))
+    .innerJoin(
+      professionalInstitutions,
+      and(
+        eq(professionalInstitutions.professionalId, professionals.id),
+        eq(professionalInstitutions.userId, professionals.userId),
+        eq(professionalInstitutions.institutionId, shiftInstances.institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .innerJoin(
+      professionalAccess,
+      and(
+        eq(professionalAccess.professionalId, professionals.id),
+        eq(professionalAccess.institutionId, shiftInstances.institutionId),
+        eq(professionalAccess.hospitalId, shiftInstances.hospitalId),
+        or(
+          isNull(professionalAccess.sectorId),
+          eq(professionalAccess.sectorId, shiftInstances.sectorId),
+        ),
+        eq(professionalAccess.canAccess, true),
+      ),
+    )
     .where(
       and(
         eq(shiftAssignmentsV2.isActive, true),
+        eq(shiftAssignmentsV2.status, "OCUPADO"),
         gte(shiftInstances.startAt, startLow),
         lte(shiftInstances.startAt, startHigh),
       ),
@@ -310,13 +369,7 @@ export async function processRechecks(now: Date) {
   const expired = await db
     .select({
       id: dutyConfirmations.id,
-      userId: dutyConfirmations.userId,
-      professionalId: dutyConfirmations.professionalId,
-      shiftInstanceId: dutyConfirmations.shiftInstanceId,
-      assignmentId: dutyConfirmations.assignmentId,
-      institutionId: dutyConfirmations.institutionId,
       status: dutyConfirmations.status,
-      replacementUserId: dutyConfirmations.replacementUserId,
     })
     .from(dutyConfirmations)
     .where(
@@ -329,26 +382,41 @@ export async function processRechecks(now: Date) {
   for (const conf of expired) {
     // Alocação já removida da escala (gestor trocou, cessão efetivada):
     // não há quem confirmar — encerra a rechecagem sem SSO nem push.
-    const [assignment] = await db
-      .select({ isActive: shiftAssignmentsV2.isActive })
-      .from(shiftAssignmentsV2)
-      .where(eq(shiftAssignmentsV2.id, conf.assignmentId))
-      .limit(1);
-    if (!assignment || !assignment.isActive) {
-      await db.update(dutyConfirmations).set({ recheckAt: null, managerNotified: true }).where(eq(dutyConfirmations.id, conf.id));
-      console.log(`[ConfirmationCron] Confirmação ${conf.id} encerrada: alocação inativa`);
+    let valid;
+    try {
+      valid = await requireValidDutyConfirmation(db, conf.id, {
+        allowedStatuses: [conf.status],
+      });
+    } catch (error) {
+      await db
+        .update(dutyConfirmations)
+        .set({ recheckAt: null })
+        .where(eq(dutyConfirmations.id, conf.id));
+      console.log(
+        `[ConfirmationCron] Confirmação ${conf.id} encerrada sem emissão: ${(error as Error).message}`,
+      );
       continue;
     }
 
     // NOMINATED sem aceite: a indicação expira e o TITULAR é quem fica
     // confirmado — o substituto que nunca aceitou não recebe SSO,
     // duty-sync nem push de plantão (auditoria 22/08 parte 2).
-    if (conf.status === "NOMINATED" && conf.replacementUserId) {
-      await sendPushNotification(conf.replacementUserId, {
-        title: "Indicação expirada",
-        body: "A indicação de substituição não foi aceita a tempo e foi cancelada.",
-        data: { type: "replacement_declined", shiftInstanceId: conf.shiftInstanceId },
-      }).catch(() => undefined);
+    if (conf.status === "NOMINATED") {
+      try {
+        const nominated = await requireValidDutyConfirmation(db, conf.id, {
+          allowedStatuses: ["NOMINATED"],
+          requireReplacementMembership: true,
+        });
+        await sendPushNotification(nominated.replacement!.userId, {
+          title: "Indicação expirada",
+          body: "A indicação de substituição não foi aceita a tempo e foi cancelada.",
+          data: { type: "replacement_declined", shiftInstanceId: nominated.shift.id },
+        }).catch(() => undefined);
+      } catch (error) {
+        console.warn(
+          `[ConfirmationCron] Push de indicação suprimido para confirmação ${conf.id}: ${(error as Error).message}`,
+        );
+      }
     }
 
     // Auto-confirm: quem está alocado é quem fica logado
@@ -364,12 +432,12 @@ export async function processRechecks(now: Date) {
       .where(eq(dutyConfirmations.id, conf.id));
 
     // Notify the doctor that they were auto-confirmed
-    await sendPushNotification(conf.userId, {
+    await sendPushNotification(valid.original.userId, {
       title: "Plantão confirmado automaticamente",
       body: "Você não respondeu a confirmação. Seu plantão foi confirmado e o login no Comunica+ será realizado.",
       data: {
         type: "duty_auto_confirmed",
-        shiftInstanceId: conf.shiftInstanceId,
+        shiftInstanceId: valid.shift.id,
       },
     });
 
@@ -383,73 +451,68 @@ export async function processRechecks(now: Date) {
     );
 
     // Notify managers responsible for this shift's hospital/sector
-    await notifyManagersAutoConfirm(conf).catch((err) =>
+    await notifyManagersAutoConfirm(conf.id).catch((err) =>
       console.error("[ConfirmationCron] Manager notification failed:", err),
     );
 
-    console.log(`[ConfirmationCron] Auto-confirmed userId=${conf.userId} for shift=${conf.shiftInstanceId}`);
+    console.log(`[ConfirmationCron] Auto-confirmed userId=${valid.original.userId} for shift=${valid.shift.id}`);
   }
 }
 
 // ── Notify managers about auto-confirmations ────────────────────────────────
 
-async function notifyManagersAutoConfirm(conf: {
-  shiftInstanceId: number;
-  institutionId: number;
-  userId: number;
-}) {
+export async function notifyManagersAutoConfirm(confirmationId: number) {
   const db = await getDb();
   if (!db) return;
-
-  // Get shift details for context
-  const [shift] = await db
-    .select({
-      hospitalId: shiftInstances.hospitalId,
-      sectorId: shiftInstances.sectorId,
-      label: shiftInstances.label,
-    })
-    .from(shiftInstances)
-    .where(eq(shiftInstances.id, conf.shiftInstanceId))
-    .limit(1);
-
-  if (!shift) return;
-
-  // Get doctor name
-  const [pro] = await db
-    .select({ name: professionals.name })
-    .from(professionals)
-    .where(eq(professionals.userId, conf.userId))
-    .limit(1);
+  const valid = await requireValidDutyConfirmation(db, confirmationId, {
+    allowedStatuses: ["AUTO_CONFIRMED"],
+    requireEffectiveAssignment: true,
+  });
+  const shift = valid.shift;
 
   // Find managers for this hospital/sector via manager_scope
   const managers = await db
     .select({
-      userId: professionalInstitutions.userId,
+      userId: professionals.userId,
     })
     .from(managerScopeTable)
     .innerJoin(
+      professionals,
+      eq(professionals.id, managerScopeTable.managerProfessionalId),
+    )
+    .innerJoin(
       professionalInstitutions,
       and(
-        eq(professionalInstitutions.professionalId, managerScopeTable.managerProfessionalId),
-        eq(professionalInstitutions.institutionId, conf.institutionId),
+        eq(professionalInstitutions.professionalId, professionals.id),
+        eq(professionalInstitutions.userId, professionals.userId),
+        eq(professionalInstitutions.institutionId, valid.shift.institutionId),
+        eq(professionalInstitutions.roleInInstitution, "GESTOR_MEDICO"),
         eq(professionalInstitutions.active, true),
       ),
     )
     .where(
       and(
-        eq(managerScopeTable.institutionId, conf.institutionId),
+        eq(managerScopeTable.institutionId, valid.shift.institutionId),
         eq(managerScopeTable.hospitalId, shift.hospitalId),
+        or(isNull(managerScopeTable.sectorId), eq(managerScopeTable.sectorId, shift.sectorId)),
         eq(managerScopeTable.active, true),
       ),
     );
 
   // Also find GESTOR_PLUS users (institution-wide managers)
   const gestoresPlus = await db
-    .select({ userId: professionalInstitutions.userId })
+    .select({ userId: professionals.userId })
     .from(professionalInstitutions)
+    .innerJoin(
+      professionals,
+      and(
+        eq(professionals.id, professionalInstitutions.professionalId),
+        eq(professionals.userId, professionalInstitutions.userId),
+      ),
+    )
     .where(
       and(
-        eq(professionalInstitutions.institutionId, conf.institutionId),
+        eq(professionalInstitutions.institutionId, valid.shift.institutionId),
         eq(professionalInstitutions.roleInInstitution, "GESTOR_PLUS"),
         eq(professionalInstitutions.active, true),
       ),
@@ -460,7 +523,7 @@ async function notifyManagersAutoConfirm(conf: {
     ...gestoresPlus.map((g) => g.userId),
   ]);
 
-  const doctorName = pro?.name ?? `Usuário #${conf.userId}`;
+  const doctorName = valid.original.name ?? `Usuário #${valid.original.userId}`;
 
   for (const managerUserId of managerUserIds) {
     await sendPushNotification(managerUserId, {
@@ -468,14 +531,14 @@ async function notifyManagersAutoConfirm(conf: {
       body: `${doctorName} não respondeu a confirmação do plantão ${shift.label}. O sistema confirmou automaticamente.`,
       data: {
         type: "manager_auto_confirm_alert",
-        shiftInstanceId: conf.shiftInstanceId,
-        userId: conf.userId,
+        shiftInstanceId: valid.shift.id,
+        userId: valid.original.userId,
       },
     });
   }
 
   if (managerUserIds.size > 0) {
-    console.log(`[ConfirmationCron] Notified ${managerUserIds.size} manager(s) about auto-confirm for shift=${conf.shiftInstanceId}`);
+    console.log(`[ConfirmationCron] Notified ${managerUserIds.size} manager(s) about auto-confirm for shift=${valid.shift.id}`);
   }
 }
 

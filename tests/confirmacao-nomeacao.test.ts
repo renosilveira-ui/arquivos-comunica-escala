@@ -33,6 +33,7 @@ import { dispatchConfirmations, processRechecks } from "../server/cron/shift-con
 import { getDb } from "../server/db";
 import { addDaysToKey, dayKeyBrt, yearMonthBrt } from "../server/local-time";
 import * as pushService from "../server/notifications-service";
+import { syncDutyToComunica } from "../server/sso/duty-sync";
 
 vi.mock("../server/sso/auto-sso", () => ({ triggerAutoSso: vi.fn(async () => undefined) }));
 vi.mock("../server/sso/duty-sync", () => ({ syncDutyToComunica: vi.fn(async () => undefined) }));
@@ -137,6 +138,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
     pushSpy.mockClear();
+    vi.mocked(syncDutyToComunica).mockClear();
   });
 
   afterAll(async () => {
@@ -194,6 +196,233 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await expect(sub.acceptNomination({ confirmationToken: conf2.confirmationToken })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("indicação com vínculo revogado falha antes de leitura, mutação ou push", async () => {
+    const { shiftId, assignmentId } = await shiftWithTitular();
+    const conf = await nominated(assignmentId, shiftId);
+    await db
+      .update(professionalInstitutions)
+      .set({ active: false })
+      .where(
+        and(
+          eq(professionalInstitutions.professionalId, subProId),
+          eq(professionalInstitutions.institutionId, institutionId),
+        ),
+      );
+    const sub = confirmationRouter.createCaller(ctx(subUserId));
+    try {
+      await expect(
+        sub.getNomination({ confirmationToken: conf.confirmationToken }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(
+        sub.acceptNomination({ confirmationToken: conf.confirmationToken }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(
+        sub.declineNomination({ confirmationToken: conf.confirmationToken }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      const [after] = await db
+        .select({ status: dutyConfirmations.status })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, conf.id));
+      expect(after.status).toBe("NOMINATED");
+      expect(pushSpy).not.toHaveBeenCalled();
+    } finally {
+      await db
+        .update(professionalInstitutions)
+        .set({ active: true })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, subProId),
+            eq(professionalInstitutions.institutionId, institutionId),
+          ),
+        );
+    }
+  });
+
+  it("decline e nominateReplacement validam o fluxo público e o vínculo atual do indicado", async () => {
+    const { shiftId, assignmentId } = await shiftWithTitular();
+    const token = crypto.randomUUID();
+    const [inserted] = await db
+      .insert(dutyConfirmations)
+      .values({
+        institutionId,
+        shiftInstanceId: shiftId,
+        assignmentId,
+        professionalId: titularProId,
+        userId: titularUserId,
+        status: "PENDING",
+        notifiedAt: new Date(),
+        confirmationToken: token,
+      })
+      .$returningId();
+    const titular = confirmationRouter.createCaller(ctx(titularUserId));
+
+    await expect(titular.decline({ confirmationToken: token, reason: "Indisponível" })).resolves.toMatchObject({
+      status: "DECLINED",
+    });
+    expect(vi.mocked(syncDutyToComunica)).toHaveBeenCalledWith(inserted.id, "WITHDRAW");
+
+    await db
+      .update(professionalInstitutions)
+      .set({ active: false })
+      .where(
+        and(
+          eq(professionalInstitutions.professionalId, subProId),
+          eq(professionalInstitutions.institutionId, institutionId),
+        ),
+      );
+    try {
+      await expect(
+        titular.nominateReplacement({
+          confirmationToken: token,
+          replacementProfessionalId: subProId,
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(pushSpy).not.toHaveBeenCalled();
+      const [unchanged] = await db
+        .select({ status: dutyConfirmations.status })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, inserted.id));
+      expect(unchanged.status).toBe("DECLINED");
+    } finally {
+      await db
+        .update(professionalInstitutions)
+        .set({ active: true })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, subProId),
+            eq(professionalInstitutions.institutionId, institutionId),
+          ),
+        );
+    }
+
+    await db
+      .update(professionalAccess)
+      .set({ canAccess: false })
+      .where(eq(professionalAccess.professionalId, subProId));
+    try {
+      await expect(
+        titular.nominateReplacement({
+          confirmationToken: token,
+          replacementProfessionalId: subProId,
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(pushSpy).not.toHaveBeenCalled();
+    } finally {
+      await db
+        .update(professionalAccess)
+        .set({ canAccess: true })
+        .where(eq(professionalAccess.professionalId, subProId));
+    }
+
+    const [poisonLinkUser] = await db
+      .insert(users)
+      .values({
+        name: `CN poison link ${stamp}`,
+        email: `cn-poison-link-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "doctor",
+      })
+      .$returningId();
+    userIds.push(poisonLinkUser.id);
+    await db
+      .update(professionalInstitutions)
+      .set({ userId: poisonLinkUser.id })
+      .where(
+        and(
+          eq(professionalInstitutions.professionalId, subProId),
+          eq(professionalInstitutions.institutionId, institutionId),
+        ),
+      );
+    try {
+      await expect(
+        titular.nominateReplacement({
+          confirmationToken: token,
+          replacementProfessionalId: subProId,
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(pushSpy).not.toHaveBeenCalled();
+    } finally {
+      await db
+        .update(professionalInstitutions)
+        .set({ userId: subUserId })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, subProId),
+            eq(professionalInstitutions.institutionId, institutionId),
+          ),
+        );
+    }
+
+    await expect(
+      titular.nominateReplacement({
+        confirmationToken: token,
+        replacementProfessionalId: subProId,
+      }),
+    ).resolves.toMatchObject({ status: "NOMINATED" });
+    expect(pushSpy).toHaveBeenCalledWith(
+      subUserId,
+      expect.objectContaining({ data: expect.objectContaining({ confirmationToken: token }) }),
+    );
+  });
+
+  it("decline e nominateReplacement recusam confirmação cuja identidade diverge da alocação", async () => {
+    const sub = confirmationRouter.createCaller(ctx(subUserId));
+
+    const first = await shiftWithTitular();
+    const declineToken = crypto.randomUUID();
+    const [declinePoisoned] = await db
+      .insert(dutyConfirmations)
+      .values({
+        institutionId,
+        shiftInstanceId: first.shiftId,
+        assignmentId: first.assignmentId,
+        professionalId: subProId,
+        userId: subUserId,
+        status: "PENDING",
+        notifiedAt: new Date(),
+        confirmationToken: declineToken,
+      })
+      .$returningId();
+    await expect(
+      sub.decline({ confirmationToken: declineToken, reason: "Não deveria alterar" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const second = await shiftWithTitular();
+    const nominateToken = crypto.randomUUID();
+    const [nominatePoisoned] = await db
+      .insert(dutyConfirmations)
+      .values({
+        institutionId,
+        shiftInstanceId: second.shiftId,
+        assignmentId: second.assignmentId,
+        professionalId: subProId,
+        userId: subUserId,
+        status: "DECLINED",
+        notifiedAt: new Date(),
+        confirmationToken: nominateToken,
+      })
+      .$returningId();
+    await expect(
+      sub.nominateReplacement({
+        confirmationToken: nominateToken,
+        replacementProfessionalId: titularProId,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const rows = await db
+      .select({ id: dutyConfirmations.id, status: dutyConfirmations.status })
+      .from(dutyConfirmations)
+      .where(inArray(dutyConfirmations.id, [declinePoisoned.id, nominatePoisoned.id]));
+    expect(new Map(rows.map((row) => [row.id, row.status]))).toEqual(
+      new Map([
+        [declinePoisoned.id, "PENDING"],
+        [nominatePoisoned.id, "DECLINED"],
+      ]),
+    );
+    expect(pushSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(syncDutyToComunica)).not.toHaveBeenCalled();
+  });
+
   it("rechecagem: NOMINATED sem aceite → titular auto-confirmado, indicação limpa, substituto avisado", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await nominated(assignmentId, shiftId);
@@ -226,6 +455,122 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(row.status).toBe("PENDING");
     expect(row.recheckAt).toBeNull();
     expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it("não confirma candidatura PENDENTE nem titular sem acesso ao setor", async () => {
+    const [shift] = await db
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        label: `CN gate ${stamp}`,
+        startAt: start,
+        endAt: end,
+        status: "PENDENTE",
+      })
+      .$returningId();
+    const [assignment] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        shiftInstanceId: shift.id,
+        institutionId,
+        hospitalId,
+        sectorId,
+        professionalId: titularProId,
+        assignmentType: "ON_DUTY",
+        status: "PENDENTE",
+        isActive: true,
+        createdBy: titularUserId,
+      })
+      .$returningId();
+    const trigger = {
+      notifyHour: 11,
+      notifyMinute: 0,
+      shiftStartTime: "13:00",
+      shiftEndTime: "19:00",
+      label: "Tarde",
+      shiftNextDay: false,
+    };
+    const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
+
+    await dispatchConfirmations(dispatchAt, trigger);
+    expect(
+      await db
+        .select({ id: dutyConfirmations.id })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.assignmentId, assignment.id)),
+    ).toHaveLength(0);
+    expect(pushSpy).not.toHaveBeenCalled();
+
+    const pendingToken = crypto.randomUUID();
+    const [pending] = await db
+      .insert(dutyConfirmations)
+      .values({
+        institutionId,
+        shiftInstanceId: shift.id,
+        assignmentId: assignment.id,
+        professionalId: titularProId,
+        userId: titularUserId,
+        status: "PENDING",
+        notifiedAt: new Date(),
+        confirmationToken: pendingToken,
+      })
+      .$returningId();
+    await expect(
+      confirmationRouter.createCaller(ctx(titularUserId)).confirm({ confirmationToken: pendingToken }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await db.delete(dutyConfirmations).where(eq(dutyConfirmations.id, pending.id));
+
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ status: "OCUPADO" })
+      .where(eq(shiftAssignmentsV2.id, assignment.id));
+    await db.update(shiftInstances).set({ status: "OCUPADO" }).where(eq(shiftInstances.id, shift.id));
+    await db
+      .update(professionalAccess)
+      .set({ canAccess: false })
+      .where(eq(professionalAccess.professionalId, titularProId));
+    try {
+      await dispatchConfirmations(dispatchAt, trigger);
+      expect(
+        await db
+          .select({ id: dutyConfirmations.id })
+          .from(dutyConfirmations)
+          .where(eq(dutyConfirmations.assignmentId, assignment.id)),
+      ).toHaveLength(0);
+
+      const noAccessToken = crypto.randomUUID();
+      const [noAccess] = await db
+        .insert(dutyConfirmations)
+        .values({
+          institutionId,
+          shiftInstanceId: shift.id,
+          assignmentId: assignment.id,
+          professionalId: titularProId,
+          userId: titularUserId,
+          status: "PENDING",
+          notifiedAt: new Date(),
+          confirmationToken: noAccessToken,
+        })
+        .$returningId();
+      await expect(
+        confirmationRouter.createCaller(ctx(titularUserId)).confirm({
+          confirmationToken: noAccessToken,
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      const [unchanged] = await db
+        .select({ status: dutyConfirmations.status })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, noAccess.id));
+      expect(unchanged.status).toBe("PENDING");
+      expect(pushSpy).not.toHaveBeenCalled();
+    } finally {
+      await db
+        .update(professionalAccess)
+        .set({ canAccess: true })
+        .where(eq(professionalAccess.professionalId, titularProId));
+    }
   });
 
   it("cron: disparo dentro da janela é idempotente (uma confirmação por alocação)", async () => {

@@ -16,6 +16,7 @@ import {
   getTenantActorFromContext,
   type TenantActor,
 } from "./_core/policy";
+import { assertInstitutionHierarchy } from "./_core/tenant";
 
 /**
  * Calendar Router
@@ -40,6 +41,20 @@ async function checkCalendarAccess(
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  const capabilities = actorCapabilities(actor);
+
+  // Valida a hierarquia para todos os papéis antes de consultar o roster.
+  // Gestores passam também pela sua jurisdição; Gestor+/admin continuam com
+  // escopo amplo apenas dentro do tenant ativo.
+  if (capabilities.canCreateShift) {
+    await assertManagerScopeAccess(actor, hospitalId, sectorId);
+  } else {
+    await assertInstitutionHierarchy(
+      { institutionId: actor.institutionId, hospitalId, sectorId },
+      { db },
+    );
+  }
+
   // 1. Buscar status do mês
   const rosterResult = await db.execute<any>(
     sql`SELECT status FROM monthly_rosters 
@@ -51,8 +66,6 @@ async function checkCalendarAccess(
   const rosterRows = rowsFromExecute<any>(rosterResult);
   const monthStatus = (rosterRows[0]?.status || "DRAFT") as "DRAFT" | "PUBLISHED" | "LOCKED";
 
-  const capabilities = actorCapabilities(actor);
-
   // USER institucional só pode acessar calendário publicado
   if (!capabilities.canCreateShift) {
     return {
@@ -62,16 +75,7 @@ async function checkCalendarAccess(
     };
   }
 
-  if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") {
-    return { canAccess: true, canAutoCreateShifts: true, monthStatus };
-  }
-
-  try {
-    await assertManagerScopeAccess(actor, hospitalId, sectorId);
-    return { canAccess: true, canAutoCreateShifts: true, monthStatus };
-  } catch {
-    return { canAccess: false, canAutoCreateShifts: false, monthStatus };
-  }
+  return { canAccess: true, canAutoCreateShifts: true, monthStatus };
 }
 
 // Helper: agrupa shifts por dia e label
@@ -266,8 +270,16 @@ export const calendarRouter = router({
                   sa.status,
                   p.name as professionalName
                 FROM shift_assignments_v2 sa
-                LEFT JOIN professionals p ON sa.professional_id = p.id
-                WHERE sa.shift_instance_id = ${shift.id} AND sa.is_active = true
+                JOIN professionals p ON sa.professional_id = p.id
+                JOIN professional_institutions pi ON pi.professional_id = p.id
+                  AND pi.user_id = p.user_id
+                  AND pi.institution_id = ${institutionId}
+                  AND pi.active = true
+                WHERE sa.shift_instance_id = ${shift.id}
+                  AND sa.institution_id = ${institutionId}
+                  AND sa.hospital_id = ${hospitalId}
+                  AND sa.sector_id = ${sectorId}
+                  AND sa.is_active = true
                 ORDER BY sa.assignment_type ASC`
           );
           const assignmentRows = rowsFromExecute<any>(assignmentResult);

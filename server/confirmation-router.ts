@@ -4,36 +4,21 @@ import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { assertMonthNotLocked } from "./month-guards";
 import { recomputeShiftStatus } from "./shift-status";
-import { eq, and } from "drizzle-orm";
+import { eq, and, asc, isNull, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   dutyConfirmations,
+  professionalAccess,
   professionals,
   professionalInstitutions,
-  shiftInstances,
   shiftAssignmentsV2,
-  sectors,
 } from "../drizzle/schema";
 import { sendPushNotification } from "./notifications-service";
 import { assertSpecialtyCompatible, specialtiesConflict } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import { triggerAutoSso } from "./sso/auto-sso";
 import { syncDutyToComunica } from "./sso/duty-sync";
-
-/** Confirmar/auto-confirmar só faz sentido se a alocação ainda está ativa. */
-export async function assertAssignmentStillActive(db: any, assignmentId: number): Promise<void> {
-  const [row] = await db
-    .select({ isActive: shiftAssignmentsV2.isActive })
-    .from(shiftAssignmentsV2)
-    .where(eq(shiftAssignmentsV2.id, assignmentId))
-    .limit(1);
-  if (!row || !row.isActive) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Esta alocação foi removida da escala — não há o que confirmar.",
-    });
-  }
-}
+import { requireValidDutyConfirmation } from "./confirmation-integrity";
 
 export const confirmationRouter = router({
   /**
@@ -66,31 +51,36 @@ export const confirmationRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const [row] = await db
-        .select({
-          id: dutyConfirmations.id,
-          status: dutyConfirmations.status,
-          confirmationToken: dutyConfirmations.confirmationToken,
-          shiftInstanceId: dutyConfirmations.shiftInstanceId,
-          shiftLabel: shiftInstances.label,
-          shiftStartAt: shiftInstances.startAt,
-          shiftEndAt: shiftInstances.endAt,
-          sectorName: sectors.name,
-          nominatedByName: professionals.name,
-        })
+      const [candidate] = await db
+        .select({ id: dutyConfirmations.id })
         .from(dutyConfirmations)
-        .innerJoin(shiftInstances, eq(dutyConfirmations.shiftInstanceId, shiftInstances.id))
-        .innerJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
-        .innerJoin(professionals, eq(dutyConfirmations.professionalId, professionals.id))
         .where(
           and(
             eq(dutyConfirmations.confirmationToken, input.confirmationToken),
             eq(dutyConfirmations.replacementUserId, ctx.user.id),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
             eq(dutyConfirmations.status, "NOMINATED"),
           ),
         )
         .limit(1);
-      return row ?? null;
+      if (!candidate) return null;
+      const valid = await requireValidDutyConfirmation(db, candidate.id, {
+        allowedStatuses: ["NOMINATED"],
+        expectedActor: { kind: "REPLACEMENT", userId: ctx.user.id },
+        expectedInstitutionId: ctx.institutionId,
+        requireReplacementMembership: true,
+      });
+      return {
+        id: valid.confirmation.id,
+        status: valid.confirmation.status,
+        confirmationToken: valid.confirmation.confirmationToken,
+        shiftInstanceId: valid.shift.id,
+        shiftLabel: valid.shift.label,
+        shiftStartAt: valid.shift.startAt,
+        shiftEndAt: valid.shift.endAt,
+        sectorName: valid.shift.sectorName,
+        nominatedByName: valid.original.name,
+      };
     }),
 
   /**
@@ -144,30 +134,41 @@ export const confirmationRouter = router({
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-    const pending = await db
-      .select({
-        id: dutyConfirmations.id,
-        status: dutyConfirmations.status,
-        confirmationToken: dutyConfirmations.confirmationToken,
-        shiftInstanceId: dutyConfirmations.shiftInstanceId,
-        notifiedAt: dutyConfirmations.notifiedAt,
-        shiftLabel: shiftInstances.label,
-        shiftStartAt: shiftInstances.startAt,
-        shiftEndAt: shiftInstances.endAt,
-        sectorName: sectors.name,
-      })
+    const candidates = await db
+      .select({ id: dutyConfirmations.id })
       .from(dutyConfirmations)
-      .innerJoin(shiftInstances, eq(dutyConfirmations.shiftInstanceId, shiftInstances.id))
-      .innerJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
       .where(
         and(
           eq(dutyConfirmations.userId, ctx.user.id),
+          eq(dutyConfirmations.institutionId, ctx.institutionId),
           eq(dutyConfirmations.status, "PENDING"),
         ),
       )
-      .limit(1);
-
-    return pending[0] ?? null;
+      .orderBy(asc(dutyConfirmations.id));
+    for (const candidate of candidates) {
+      try {
+        const valid = await requireValidDutyConfirmation(db, candidate.id, {
+          allowedStatuses: ["PENDING"],
+          expectedActor: { kind: "ORIGINAL", userId: ctx.user.id },
+          expectedInstitutionId: ctx.institutionId,
+        });
+        return {
+          id: valid.confirmation.id,
+          status: valid.confirmation.status,
+          confirmationToken: valid.confirmation.confirmationToken,
+          shiftInstanceId: valid.shift.id,
+          notifiedAt: valid.confirmation.notifiedAt,
+          shiftLabel: valid.shift.label,
+          shiftStartAt: valid.shift.startAt,
+          shiftEndAt: valid.shift.endAt,
+          sectorName: valid.shift.sectorName,
+        };
+      } catch {
+        // Linhas legadas inválidas não podem expor dados nem mascarar uma
+        // confirmação válida posterior para o mesmo usuário/tenant.
+      }
+    }
+    return null;
   }),
 
   /**
@@ -187,6 +188,7 @@ export const confirmationRouter = router({
           and(
             eq(dutyConfirmations.confirmationToken, input.confirmationToken),
             eq(dutyConfirmations.userId, ctx.user.id),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
           ),
         )
         .limit(1);
@@ -194,11 +196,11 @@ export const confirmationRouter = router({
       if (!conf) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Confirmação não encontrada" });
       }
-
-      if (conf.status !== "PENDING") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `Confirmação já processada (${conf.status})` });
-      }
-      await assertAssignmentStillActive(db, conf.assignmentId);
+      await requireValidDutyConfirmation(db, conf.id, {
+        allowedStatuses: ["PENDING"],
+        expectedActor: { kind: "ORIGINAL", userId: ctx.user.id },
+        expectedInstitutionId: ctx.institutionId,
+      });
 
       await db
         .update(dutyConfirmations)
@@ -251,6 +253,7 @@ export const confirmationRouter = router({
           and(
             eq(dutyConfirmations.confirmationToken, input.confirmationToken),
             eq(dutyConfirmations.userId, ctx.user.id),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
           ),
         )
         .limit(1);
@@ -258,10 +261,11 @@ export const confirmationRouter = router({
       if (!conf) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Confirmação não encontrada" });
       }
-
-      if (conf.status !== "PENDING") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `Confirmação já processada (${conf.status})` });
-      }
+      await requireValidDutyConfirmation(db, conf.id, {
+        allowedStatuses: ["PENDING"],
+        expectedActor: { kind: "ORIGINAL", userId: ctx.user.id },
+        expectedInstitutionId: ctx.institutionId,
+      });
 
       // Reset recheck timer: +30min from now for replacement flow
       const newRecheckAt = new Date(Date.now() + 30 * 60 * 1000);
@@ -317,6 +321,7 @@ export const confirmationRouter = router({
           and(
             eq(dutyConfirmations.confirmationToken, input.confirmationToken),
             eq(dutyConfirmations.userId, ctx.user.id),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
           ),
         )
         .limit(1);
@@ -324,10 +329,11 @@ export const confirmationRouter = router({
       if (!conf) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Confirmação não encontrada" });
       }
-
-      if (conf.status !== "DECLINED") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Só é possível indicar substituto após recusar o plantão" });
-      }
+      const valid = await requireValidDutyConfirmation(db, conf.id, {
+        allowedStatuses: ["DECLINED"],
+        expectedActor: { kind: "ORIGINAL", userId: ctx.user.id },
+        expectedInstitutionId: ctx.institutionId,
+      });
 
       // Find replacement professional — OBRIGATORIAMENTE com vínculo
       // ativo na instituição do plantão. Sem esse filtro, qualquer
@@ -341,8 +347,22 @@ export const confirmationRouter = router({
           professionalInstitutions,
           and(
             eq(professionalInstitutions.professionalId, professionals.id),
+            eq(professionalInstitutions.userId, professionals.userId),
             eq(professionalInstitutions.institutionId, conf.institutionId),
             eq(professionalInstitutions.active, true),
+          ),
+        )
+        .innerJoin(
+          professionalAccess,
+          and(
+            eq(professionalAccess.professionalId, professionals.id),
+            eq(professionalAccess.institutionId, valid.shift.institutionId),
+            eq(professionalAccess.hospitalId, valid.shift.hospitalId),
+            or(
+              isNull(professionalAccess.sectorId),
+              eq(professionalAccess.sectorId, valid.shift.sectorId),
+            ),
+            eq(professionalAccess.canAccess, true),
           ),
         )
         .where(eq(professionals.id, input.replacementProfessionalId))
@@ -353,12 +373,7 @@ export const confirmationRouter = router({
       }
 
       // Substituto deve ser do mesmo serviço do plantão.
-      const [shiftSpec] = await db
-        .select({ specialty: shiftInstances.specialty })
-        .from(shiftInstances)
-        .where(eq(shiftInstances.id, conf.shiftInstanceId))
-        .limit(1);
-      assertSpecialtyCompatible(shiftSpec?.specialty ?? null, replacement.specialty);
+      assertSpecialtyCompatible(valid.shift.specialty, replacement.specialty);
 
       // Reset recheck timer: +30min for replacement to respond
       const newRecheckAt = new Date(Date.now() + 30 * 60 * 1000);
@@ -374,21 +389,15 @@ export const confirmationRouter = router({
         .where(eq(dutyConfirmations.id, conf.id));
 
       // Get shift details for notification
-      const [shift] = await db
-        .select({ label: shiftInstances.label, startAt: shiftInstances.startAt, endAt: shiftInstances.endAt })
-        .from(shiftInstances)
-        .where(eq(shiftInstances.id, conf.shiftInstanceId))
-        .limit(1);
-
       // timeZone explícito: startAt é instante UTC e o servidor roda em UTC.
       const TZ = "America/Sao_Paulo";
-      const startTime = shift ? new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "";
-      const endTime = shift ? new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "";
+      const startTime = new Date(valid.shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+      const endTime = new Date(valid.shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
 
       // Push to replacement
       await sendPushNotification(replacement.userId, {
         title: "Plantão disponível para você",
-        body: `${ctx.user.name ?? "Um colega"} indicou você para o plantão ${shift?.label ?? ""} (${startTime}–${endTime}). Aceita?`,
+        body: `${ctx.user.name ?? "Um colega"} indicou você para o plantão ${valid.shift.label} (${startTime}–${endTime}). Aceita?`,
         data: {
           type: "duty_nomination",
           confirmationToken: conf.confirmationToken,
@@ -426,7 +435,12 @@ export const confirmationRouter = router({
       const [conf] = await db
         .select()
         .from(dutyConfirmations)
-        .where(eq(dutyConfirmations.confirmationToken, input.confirmationToken))
+        .where(
+          and(
+            eq(dutyConfirmations.confirmationToken, input.confirmationToken),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
+          ),
+        )
         .limit(1);
 
       if (!conf) {
@@ -436,50 +450,35 @@ export const confirmationRouter = router({
       if (conf.status !== "NOMINATED") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Esta indicação já foi processada" });
       }
-
-      if (conf.replacementUserId !== ctx.user.id) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Você não é o profissional indicado" });
-      }
-
-      // Find replacement professional record
-      const [replacementPro] = await db
-        .select({ id: professionals.id })
-        .from(professionals)
-        .where(eq(professionals.userId, ctx.user.id))
-        .limit(1);
-
-      if (!replacementPro) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Profissional não encontrado" });
-      }
-
-      // Realocação é a mesma operação de uma cessão: transação, alocação
-      // de origem ainda ativa, mês não trancado e status do turno
-      // derivado (auditoria 22/08 parte 2).
-      const [oldAssignment] = await db
-        .select()
-        .from(shiftAssignmentsV2)
-        .where(eq(shiftAssignmentsV2.id, conf.assignmentId))
-        .limit(1);
-      if (!oldAssignment || !oldAssignment.isActive) {
+      const valid = await requireValidDutyConfirmation(db, conf.id, {
+        allowedStatuses: ["NOMINATED"],
+        expectedActor: { kind: "REPLACEMENT", userId: ctx.user.id },
+        expectedInstitutionId: ctx.institutionId,
+        requireOriginalAssignmentActive: false,
+        requireReplacementMembership: true,
+      });
+      if (!valid.original.isActive) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "A alocação original já foi alterada — esta indicação não vale mais.",
         });
       }
-      const [shift] = await db
-        .select({ startAt: shiftInstances.startAt })
-        .from(shiftInstances)
-        .where(eq(shiftInstances.id, oldAssignment.shiftInstanceId))
-        .limit(1);
-      if (shift) {
-        await assertMonthNotLocked(oldAssignment.institutionId, oldAssignment.hospitalId, shift.startAt);
-      }
+      const replacementPro = valid.replacement!;
+
+      // Realocação é a mesma operação de uma cessão: transação, alocação
+      // de origem ainda ativa, mês não trancado e status do turno
+      // derivado (auditoria 22/08 parte 2).
+      await assertMonthNotLocked(
+        valid.shift.institutionId,
+        valid.shift.hospitalId,
+        valid.shift.startAt,
+      );
 
       await db.transaction(async (tx) => {
         const [deactivated] = await tx
           .update(shiftAssignmentsV2)
           .set({ isActive: false })
-          .where(and(eq(shiftAssignmentsV2.id, conf.assignmentId), eq(shiftAssignmentsV2.isActive, true)));
+          .where(and(eq(shiftAssignmentsV2.id, valid.original.assignmentId!), eq(shiftAssignmentsV2.isActive, true)));
         if (!deactivated.affectedRows) {
           throw new TRPCError({
             code: "CONFLICT",
@@ -487,17 +486,17 @@ export const confirmationRouter = router({
           });
         }
         await tx.insert(shiftAssignmentsV2).values({
-          shiftInstanceId: oldAssignment.shiftInstanceId,
-          institutionId: oldAssignment.institutionId,
-          hospitalId: oldAssignment.hospitalId,
-          sectorId: oldAssignment.sectorId,
-          professionalId: replacementPro.id,
-          assignmentType: oldAssignment.assignmentType,
+          shiftInstanceId: valid.shift.id,
+          institutionId: valid.shift.institutionId,
+          hospitalId: valid.shift.hospitalId,
+          sectorId: valid.shift.sectorId,
+          professionalId: replacementPro.professionalId,
+          assignmentType: valid.original.assignmentType,
           status: "OCUPADO",
           isActive: true,
           createdBy: ctx.user.id,
         });
-        await recomputeShiftStatus(tx, oldAssignment.shiftInstanceId);
+        await recomputeShiftStatus(tx, valid.shift.id);
         const [done] = await tx
           .update(dutyConfirmations)
           .set({ status: "REPLACEMENT_CONFIRMED", respondedAt: new Date() })
@@ -554,16 +553,23 @@ export const confirmationRouter = router({
       const [conf] = await db
         .select()
         .from(dutyConfirmations)
-        .where(eq(dutyConfirmations.confirmationToken, input.confirmationToken))
+        .where(
+          and(
+            eq(dutyConfirmations.confirmationToken, input.confirmationToken),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
+          ),
+        )
         .limit(1);
 
       if (!conf) {
         throw new TRPCError({ code: "NOT_FOUND" });
       }
-
-      if (conf.status !== "NOMINATED" || conf.replacementUserId !== ctx.user.id) {
-        throw new TRPCError({ code: "BAD_REQUEST" });
-      }
+      await requireValidDutyConfirmation(db, conf.id, {
+        allowedStatuses: ["NOMINATED"],
+        expectedActor: { kind: "REPLACEMENT", userId: ctx.user.id },
+        expectedInstitutionId: ctx.institutionId,
+        requireReplacementMembership: true,
+      });
 
       // Reset to DECLINED so original doctor can nominate someone else
       // Recheck timer: +30min

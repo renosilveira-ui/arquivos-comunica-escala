@@ -1,13 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../db";
-import {
-  managerScope,
-  professionalInstitutions,
-  professionals,
-} from "../../drizzle/schema";
+import { managerScope, professionalInstitutions, professionals } from "../../drizzle/schema";
 import { yearMonthBrt } from "../local-time";
 import type { TrpcContext } from "./context";
+import { assertInstitutionHierarchy } from "./tenant";
 
 export type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
 
@@ -46,6 +43,13 @@ export async function resolveTenantActor(
       roleInInstitution: professionalInstitutions.roleInInstitution,
     })
     .from(professionalInstitutions)
+    .innerJoin(
+      professionals,
+      and(
+        eq(professionals.id, professionalInstitutions.professionalId),
+        eq(professionals.userId, professionalInstitutions.userId),
+      ),
+    )
     .where(
       and(
         eq(professionalInstitutions.userId, userId),
@@ -172,6 +176,14 @@ export async function assertManagerScopeAccess(
   hospitalId: number,
   sectorId?: number,
 ): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await assertInstitutionHierarchy(
+    { institutionId: actor.institutionId, hospitalId, sectorId },
+    { db },
+  );
+
   if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") return;
   if (actor.roleInInstitution !== "GESTOR_MEDICO" || !actor.professionalId) {
     throw new TRPCError({
@@ -179,9 +191,6 @@ export async function assertManagerScopeAccess(
       message: "Usuário sem permissão de gestão neste tenant",
     });
   }
-
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
 
   const scopes = await db
     .select({ id: managerScope.id, sectorId: managerScope.sectorId })
