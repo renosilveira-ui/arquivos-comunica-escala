@@ -15,7 +15,7 @@
 
 import { useMemo, type ReactElement } from "react";
 import { ScrollView, Text, Pressable, View, type RefreshControlProps } from "react-native";
-import { Rows3 } from "lucide-react-native";
+import { CheckCircle2, CircleDashed, Clock, Rows3, UserCircle2 } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import { CalendarFrame, DayNumeral, numeral } from "./CalendarSheet";
@@ -172,6 +172,20 @@ export function PanoramicAgenda({
                   {eyebrow}
                 </Text>
                 <Text style={{ ...theme.text.title, fontSize: 21, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>{title}</Text>
+              </View>
+              {/* Legenda dos estados — no cabeçalho da folha, como no canvas */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] + 3, flexWrap: "wrap" }}>
+                {[
+                  { label: "Vago", Icon: CircleDashed, color: theme.colors.textSecondary },
+                  { label: "Pendente", Icon: Clock, color: theme.palette.warning[700] },
+                  { label: "Ocupado", Icon: CheckCircle2, color: theme.palette.success[700] },
+                  { label: "Meu", Icon: UserCircle2, color: theme.colors.brand },
+                ].map(({ label, Icon, color }) => (
+                  <View key={label} style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] + 2 }}>
+                    <Icon size={15} color={color} />
+                    <Text style={{ ...theme.text.caption, fontSize: 12.5, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}>{label}</Text>
+                  </View>
+                ))}
               </View>
               {index === 0 ? (
                 <View style={{ marginLeft: "auto", flexDirection: "row" }}>
