@@ -21,7 +21,7 @@ import {
 import { calendarRouter } from "../server/calendar";
 import {
   dispatchConfirmations,
-  notifyManagersAutoConfirm,
+  notifyManagersConfirmationEscalation,
   processRechecks,
   processShiftStartPushes,
 } from "../server/cron/shift-confirmation-dispatcher";
@@ -37,7 +37,6 @@ import {
   publishMonth,
 } from "../server/month-guards";
 import { enqueueComunicaRosterPublished } from "../server/integrations/comunica-plus";
-import * as pushService from "../server/notifications-service";
 import { triggerAutoSso } from "../server/sso/auto-sso";
 import { syncDutyToComunica } from "../server/sso/duty-sync";
 import { shiftsRouter } from "../server/shifts-crud";
@@ -46,8 +45,38 @@ vi.mock("../server/integrations/comunica-plus", () => ({
   enqueueComunicaRosterPublished: vi.fn(async () => 1),
   processPendingComunicaPlusOutbox: vi.fn(async () => 0),
 }));
-vi.mock("../server/sso/auto-sso", () => ({ triggerAutoSso: vi.fn(async () => undefined) }));
-vi.mock("../server/sso/duty-sync", () => ({ syncDutyToComunica: vi.fn(async () => undefined) }));
+vi.mock("../server/sso/auto-sso", () => ({
+  enqueueAutoSsoPush: vi.fn(async () => null),
+  triggerAutoSso: vi.fn(async () => undefined),
+}));
+vi.mock("../server/sso/duty-sync", () => ({
+  syncDutyToComunica: vi.fn(async () => undefined),
+  enqueueDutySync: vi.fn(async () => 1),
+  processPendingDutySyncs: vi.fn(async () => 0),
+}));
+const trackedPushMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    notificationId: 1,
+    status: "PENDING" as const,
+    phase: "TICKET_ACCEPTED" as const,
+    ticketAccepted: true,
+    providerAccepted: false,
+  })),
+);
+const queuedPushMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    notificationId: 1,
+    status: "PENDING" as const,
+    phase: "QUEUED" as const,
+    ticketAccepted: false,
+    providerAccepted: false,
+  })),
+);
+vi.mock("../server/push-delivery", () => ({
+  sendTrackedPushNotification: trackedPushMock,
+  enqueueTrackedPushNotification: queuedPushMock,
+  processPendingPushDeliveries: vi.fn(async () => 0),
+}));
 
 type ActorKind = "plus" | "admin";
 
@@ -67,6 +96,7 @@ describe("hierarquia institution → hospital → sector", () => {
   let recipientAUserId: number;
   let recipientA2UserId: number;
   let recipientBUserId: number;
+  let poisonLinkUserId: number;
   let exactManagerUserId: number;
   let hospitalManagerUserId: number;
   let hospitalManagerProfessionalId: number;
@@ -310,6 +340,7 @@ describe("hierarquia institution → hospital → sector", () => {
         role: "doctor",
       })
       .$returningId();
+    poisonLinkUserId = poisonLinkUser.id;
     userIds.push(poisonLinkUser.id);
     await db.insert(professionalInstitutions).values({
       professionalId: recipientBProfessionalId,
@@ -585,6 +616,60 @@ describe("hierarquia institution → hospital → sector", () => {
         code: "FORBIDDEN",
       });
     }
+  });
+
+  it("listMyInstitutions retorna só vínculo, profissional, usuário e instituição canônicos", async () => {
+    const listFor = (userId: number, role: "doctor" | "manager" = "doctor") =>
+      appAs(userId, role).professionals.listMyInstitutions();
+
+    const validBefore = await listFor(plusUserId, "manager");
+    expect(validBefore.map((row) => row.id)).toContain(institutionAId);
+
+    // PI aponta para o usuário poison, mas o profissional pertence a outro
+    // usuário. A paridade professional.userId ↔ PI.userId é obrigatória.
+    expect(await listFor(poisonLinkUserId)).toEqual([]);
+
+    try {
+      await db
+        .update(institutions)
+        .set({ isActive: false })
+        .where(eq(institutions.id, institutionAId));
+      expect(await listFor(plusUserId, "manager")).toEqual([]);
+    } finally {
+      await db
+        .update(institutions)
+        .set({ isActive: true })
+        .where(eq(institutions.id, institutionAId));
+    }
+
+    try {
+      await db
+        .update(users)
+        .set({ approvalStatus: "PENDING" })
+        .where(eq(users.id, plusUserId));
+      expect(await listFor(plusUserId, "manager")).toEqual([]);
+    } finally {
+      await db
+        .update(users)
+        .set({ approvalStatus: "APPROVED" })
+        .where(eq(users.id, plusUserId));
+    }
+
+    try {
+      await db
+        .update(users)
+        .set({ deletedAt: new Date() })
+        .where(eq(users.id, plusUserId));
+      expect(await listFor(plusUserId, "manager")).toEqual([]);
+    } finally {
+      await db
+        .update(users)
+        .set({ deletedAt: null })
+        .where(eq(users.id, plusUserId));
+    }
+
+    const validAfter = await listFor(plusUserId, "manager");
+    expect(validAfter.map((row) => row.id)).toContain(institutionAId);
   });
 
   for (const kind of ["plus", "admin"] as const) {
@@ -1098,12 +1183,28 @@ describe("hierarquia institution → hospital → sector", () => {
     );
   });
 
-  it("dispatcher e recheck recusam assignments incoerentes antes de push ou SSO", async () => {
-    const pushSpy = vi
-      .spyOn(pushService, "sendPushNotification")
-      .mockResolvedValue({ success: true, message: "mock" });
+  it("dispatcher recusa assignment incoerente e recheck preserva o handoff gerencial sem PI original", async () => {
+    await db
+      .insert(monthlyRosters)
+      .values([
+        {
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          yearMonth: publicationYearMonth,
+          status: "PUBLISHED",
+        },
+        {
+          institutionId: institutionBId,
+          hospitalId: hospitalBId,
+          yearMonth: publicationYearMonth,
+          status: "PUBLISHED",
+        },
+      ])
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     const autoSsoMock = vi.mocked(triggerAutoSso);
     const dutySyncMock = vi.mocked(syncDutyToComunica);
+    trackedPushMock.mockClear();
+    queuedPushMock.mockClear();
     autoSsoMock.mockClear();
     dutySyncMock.mockClear();
 
@@ -1126,16 +1227,18 @@ describe("hierarquia institution → hospital → sector", () => {
       expect(new Set(dispatched.map((row) => row.assignmentId))).toEqual(
         new Set([validAssignmentAId, validAssignmentBId]),
       );
-      expect(pushSpy).toHaveBeenCalledTimes(2);
-      expect(new Set(pushSpy.mock.calls.map(([userId]) => userId))).toEqual(
+      expect(trackedPushMock).toHaveBeenCalledTimes(2);
+      expect(queuedPushMock).toHaveBeenCalledTimes(2);
+      expect(new Set(trackedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
         new Set([recipientAUserId, recipientBUserId]),
       );
-      expect(pushSpy.mock.calls.some(([userId]) => userId === recipientA2UserId)).toBe(false);
+      expect(trackedPushMock.mock.calls.some(([input]) => input.userId === recipientA2UserId)).toBe(false);
 
       await db
         .delete(dutyConfirmations)
         .where(inArray(dutyConfirmations.assignmentId, topologyAssignmentIds));
-      pushSpy.mockClear();
+      trackedPushMock.mockClear();
+      queuedPushMock.mockClear();
 
       const recheckNow = new Date("2030-02-10T12:00:00-03:00");
       const poisonedToken = randomUUID();
@@ -1164,9 +1267,14 @@ describe("hierarquia institution → hospital → sector", () => {
         .from(dutyConfirmations)
         .where(eq(dutyConfirmations.id, poisoned.id));
       expect(after.status).toBe("PENDING");
-      expect(after.recheckAt).toBeNull();
+      expect(after.recheckAt?.toISOString()).toBe(
+        new Date(recheckNow.getTime() - 1_000).toISOString(),
+      );
       expect(after.managerNotified).toBe(false);
-      expect(pushSpy).not.toHaveBeenCalled();
+      expect(trackedPushMock).not.toHaveBeenCalled();
+      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
+        new Set([plusUserId, exactManagerUserId, hospitalManagerUserId, adminUserId]),
+      );
       expect(autoSsoMock).not.toHaveBeenCalled();
       expect(dutySyncMock).not.toHaveBeenCalled();
 
@@ -1197,6 +1305,15 @@ describe("hierarquia institution → hospital → sector", () => {
         }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
+      await db
+        .insert(monthlyRosters)
+        .values({
+          institutionId: institutionAId,
+          hospitalId: hospitalAId,
+          yearMonth: membershipSourceYearMonth,
+          status: "PUBLISHED",
+        })
+        .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
       const pendingPair = await db
         .insert(dutyConfirmations)
         .values([
@@ -1235,6 +1352,7 @@ describe("hierarquia institution → hospital → sector", () => {
       expect(pendingA2?.id).toBe(pendingPair[1].id);
 
       await db.delete(dutyConfirmations).where(eq(dutyConfirmations.id, poisoned.id));
+      queuedPushMock.mockClear();
       const [startPoisoned] = await db
         .insert(dutyConfirmations)
         .values({
@@ -1254,19 +1372,19 @@ describe("hierarquia institution → hospital → sector", () => {
         .from(dutyConfirmations)
         .where(eq(dutyConfirmations.id, startPoisoned.id));
       expect(startAfter.startPushSentAt).toBeNull();
-      expect(pushSpy).not.toHaveBeenCalled();
+      expect(trackedPushMock).not.toHaveBeenCalled();
+      expect(queuedPushMock).not.toHaveBeenCalled();
     } finally {
       await db
         .delete(dutyConfirmations)
         .where(inArray(dutyConfirmations.assignmentId, topologyAssignmentIds));
-      pushSpy.mockRestore();
+      trackedPushMock.mockClear();
     }
   });
 
   it("notifica apenas gestor do setor, gestor hospitalar e Gestor+ do tenant do turno", async () => {
-    const pushSpy = vi
-      .spyOn(pushService, "sendPushNotification")
-      .mockResolvedValue({ success: true, message: "mock" });
+    trackedPushMock.mockClear();
+    queuedPushMock.mockClear();
     const confirmationIds: number[] = [];
     try {
       const [validConfirmation] = await db
@@ -1277,18 +1395,20 @@ describe("hierarquia institution → hospital → sector", () => {
           assignmentId: validAssignmentAId,
           professionalId: recipientAProfessionalId,
           userId: recipientAUserId,
-          status: "AUTO_CONFIRMED",
+          status: "PENDING",
           notifiedAt: new Date(),
           confirmationToken: randomUUID(),
         })
         .$returningId();
       confirmationIds.push(validConfirmation.id);
 
-      await notifyManagersAutoConfirm(validConfirmation.id);
-      const notified = new Set(pushSpy.mock.calls.map(([userId]) => userId));
-      expect(notified).toEqual(new Set([plusUserId, exactManagerUserId, hospitalManagerUserId]));
+      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
+      const notified = new Set(queuedPushMock.mock.calls.map(([input]) => input.userId));
+      expect(notified).toEqual(
+        new Set([plusUserId, exactManagerUserId, hospitalManagerUserId, adminUserId]),
+      );
       expect(notified.has(otherSectorManagerUserId)).toBe(false);
-      expect(notified.has(adminUserId)).toBe(false);
+      expect(notified.has(adminUserId)).toBe(true);
 
       await db
         .update(professionalInstitutions)
@@ -1299,10 +1419,10 @@ describe("hierarquia institution → hospital → sector", () => {
             eq(professionalInstitutions.institutionId, institutionAId),
           ),
         );
-      pushSpy.mockClear();
-      await notifyManagersAutoConfirm(validConfirmation.id);
-      expect(new Set(pushSpy.mock.calls.map(([userId]) => userId))).toEqual(
-        new Set([plusUserId, hospitalManagerUserId]),
+      queuedPushMock.mockClear();
+      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
+      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
+        new Set([plusUserId, hospitalManagerUserId, adminUserId]),
       );
 
       await db
@@ -1329,12 +1449,12 @@ describe("hierarquia institution → hospital → sector", () => {
       await expect(
         resolveInstitutionForUser(recipientBUserId, institutionAId),
       ).rejects.toThrow("Tenant inválido para o usuário autenticado");
-      pushSpy.mockClear();
-      await notifyManagersAutoConfirm(validConfirmation.id);
-      expect(new Set(pushSpy.mock.calls.map(([userId]) => userId))).toEqual(
-        new Set([plusUserId, exactManagerUserId]),
+      queuedPushMock.mockClear();
+      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
+      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
+        new Set([plusUserId, exactManagerUserId, adminUserId]),
       );
-      expect(pushSpy.mock.calls.some(([userId]) => userId === recipientBUserId)).toBe(false);
+      expect(queuedPushMock.mock.calls.some(([input]) => input.userId === recipientBUserId)).toBe(false);
       await db
         .update(professionalInstitutions)
         .set({ userId: hospitalManagerUserId })
@@ -1354,12 +1474,12 @@ describe("hierarquia institution → hospital → sector", () => {
             eq(professionalInstitutions.institutionId, institutionAId),
           ),
         );
-      pushSpy.mockClear();
-      await notifyManagersAutoConfirm(validConfirmation.id);
-      expect(new Set(pushSpy.mock.calls.map(([userId]) => userId))).toEqual(
-        new Set([exactManagerUserId, hospitalManagerUserId]),
+      queuedPushMock.mockClear();
+      await notifyManagersConfirmationEscalation(validConfirmation.id, "NO_RESPONSE");
+      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
+        new Set([exactManagerUserId, hospitalManagerUserId, adminUserId]),
       );
-      expect(pushSpy.mock.calls.some(([userId]) => userId === recipientBUserId)).toBe(false);
+      expect(queuedPushMock.mock.calls.some(([input]) => input.userId === recipientBUserId)).toBe(false);
       await db
         .update(professionalInstitutions)
         .set({ userId: plusUserId })
@@ -1419,7 +1539,7 @@ describe("hierarquia institution → hospital → sector", () => {
           .insert(dutyConfirmations)
           .values({
             ...poisoned,
-            status: "AUTO_CONFIRMED",
+            status: "PENDING",
             notifiedAt: new Date(),
             confirmationToken: randomUUID(),
           })
@@ -1427,13 +1547,26 @@ describe("hierarquia institution → hospital → sector", () => {
         confirmationIds.push(inserted.id);
       }
 
-      pushSpy.mockClear();
-      for (const confirmationId of confirmationIds.slice(1)) {
-        await expect(notifyManagersAutoConfirm(confirmationId)).rejects.toMatchObject({
+      queuedPushMock.mockClear();
+      for (const confirmationId of confirmationIds.slice(1, -1)) {
+        await expect(
+          notifyManagersConfirmationEscalation(confirmationId, "NO_RESPONSE"),
+        ).rejects.toMatchObject({
           code: "FORBIDDEN",
         });
       }
-      expect(pushSpy).not.toHaveBeenCalled();
+      expect(queuedPushMock).not.toHaveBeenCalled();
+
+      const confirmationWithoutOriginalMembership = confirmationIds.at(-1)!;
+      await expect(
+        notifyManagersConfirmationEscalation(
+          confirmationWithoutOriginalMembership,
+          "NO_RESPONSE",
+        ),
+      ).resolves.toEqual({ managerCount: 4, intentCount: 4 });
+      expect(new Set(queuedPushMock.mock.calls.map(([input]) => input.userId))).toEqual(
+        new Set([plusUserId, exactManagerUserId, hospitalManagerUserId, adminUserId]),
+      );
     } finally {
       if (confirmationIds.length > 0) {
         await db.delete(dutyConfirmations).where(inArray(dutyConfirmations.id, confirmationIds));
@@ -1465,7 +1598,8 @@ describe("hierarquia institution → hospital → sector", () => {
             eq(professionalInstitutions.institutionId, institutionAId),
           ),
         );
-      pushSpy.mockRestore();
+      trackedPushMock.mockClear();
+      queuedPushMock.mockClear();
     }
   });
 });

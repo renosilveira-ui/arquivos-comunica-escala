@@ -35,6 +35,31 @@ function deferredVoid() {
   return { promise, resolve };
 }
 
+function expoTicketResponse(ticketId: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: vi.fn(async () => ({ data: { status: "ok", id: ticketId } })),
+  } as unknown as Response;
+}
+
+async function waitForPushLockWaiter(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  targetUserId: number,
+): Promise<void> {
+  const marker = `escala-push-user:${targetUserId}`;
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const [rows] = await db.execute("SHOW FULL PROCESSLIST");
+    const waiting = (rows as { Info?: unknown }[]).some(
+      (row) => typeof row.Info === "string" && row.Info.includes("GET_LOCK") && row.Info.includes(marker),
+    );
+    if (waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Waiter do mutex push não observado para userId=${targetUserId}`);
+}
+
 function setCookieHeaders(response: SupertestResponse): string[] {
   const header = response.headers["set-cookie"];
   return Array.isArray(header) ? header : header ? [header] : [];
@@ -521,10 +546,12 @@ describe("fence linearizável da sessão web", () => {
         sendPushNotification(
           userId,
           { title: "Sessão revogada", body: "não enviar" },
+          institutionId,
         ),
-      ).resolves.toEqual({
-        success: false,
-        message: "Nenhum token encontrado para o usuário",
+      ).resolves.toMatchObject({
+        status: "NO_REGISTERED_TOKENS",
+        acceptedCount: 0,
+        rejectedCount: 0,
       });
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
@@ -537,8 +564,85 @@ describe("fence linearizável da sessão web", () => {
     ).resolves.toMatchObject({ status: 401 });
   });
 
-  it("registro push falha fechado quando a instituição é desativada", async () => {
+  it("logout real aguarda fetch Expo em voo e revoga antes de qualquer novo envio", async () => {
+    const [before] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    const bearer = await sdk.signSession({
+      userId: String(userId),
+      name: "Session Fence User",
+      sessionVersion: before.sessionVersion,
+    });
+    const token = `ExponentPushToken[logout-fetch-race-${STAMP}]`;
+    await expect(
+      registerPushToken(userId, token, "ios", institutionId, before.sessionVersion),
+    ).resolves.toEqual({ success: true, message: "Token registrado com sucesso" });
+
+    const fetchEntered = deferredVoid();
+    const releaseFetch = deferredVoid();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        fetchEntered.resolve();
+        await releaseFetch.promise;
+        return expoTicketResponse("ticket-logout-race");
+      })
+      .mockResolvedValue(expoTicketResponse("ticket-unexpected-after-logout"));
+    vi.stubGlobal("fetch", fetchMock);
+    let logoutSettled = false;
+    let logoutPromise: Promise<SupertestResponse> | undefined;
+    try {
+      const sendPromise = sendPushNotification(
+        userId,
+        { title: "Mutex logout", body: "envio já autorizado" },
+        institutionId,
+      );
+      await fetchEntered.promise;
+      logoutPromise = request(app)
+        .post("/api/auth/logout")
+        .set("Authorization", `Bearer ${bearer}`)
+        .send({})
+        .then((response) => {
+          logoutSettled = true;
+          return response;
+        });
+
+      await waitForPushLockWaiter(db, userId);
+      expect(logoutSettled).toBe(false);
+      await expect(
+        db.select({ sessionVersion: users.sessionVersion }).from(users).where(eq(users.id, userId)),
+      ).resolves.toEqual([{ sessionVersion: before.sessionVersion }]);
+
+      releaseFetch.resolve();
+      await expect(sendPromise).resolves.toMatchObject({ status: "TICKETS_ACCEPTED" });
+      const logout = await logoutPromise;
+      expect(logout.status).toBe(200);
+      expect(logout.body).toMatchObject({ ok: true, sessionFenceRotated: true });
+      await expect(
+        db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.userId, userId)),
+      ).resolves.toHaveLength(0);
+
+      await expect(
+        sendPushNotification(
+          userId,
+          { title: "Depois do logout", body: "não enviar" },
+          institutionId,
+        ),
+      ).resolves.toMatchObject({ status: "NO_REGISTERED_TOKENS" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseFetch.resolve();
+      if (logoutPromise) await Promise.allSettled([logoutPromise]);
+      vi.unstubAllGlobals();
+      await db.delete(pushTokens).where(eq(pushTokens.token, token));
+    }
+  });
+
+  it("registro é account-scoped, mas entrega falha fechado com instituição desativada", async () => {
     const token = `ExponentPushToken[institution-disabled-${STAMP}]`;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
     const [currentUser] = await db
       .select({ sessionVersion: users.sessionVersion })
       .from(users)
@@ -557,17 +661,30 @@ describe("fence linearizável da sessão web", () => {
           institutionId,
           currentUser.sessionVersion,
         ),
-      ).resolves.toEqual({
-        success: false,
-        message: "Vínculo institucional ativo não encontrado",
-      });
+      ).resolves.toEqual({ success: true, message: "Token registrado com sucesso" });
       expect(
         await db
           .select({ id: pushTokens.id })
           .from(pushTokens)
           .where(eq(pushTokens.token, token)),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
+      await expect(
+        sendPushNotification(
+          userId,
+          { title: "Tenant inativo", body: "não enviar" },
+          institutionId,
+        ),
+      ).resolves.toMatchObject({
+        status: "ALL_TICKETS_REJECTED",
+        tickets: [{
+          state: "TICKET_REJECTED",
+          failureKind: "RECIPIENT_AUTHORITY_REVOKED",
+          retryability: "TERMINAL",
+        }],
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
     } finally {
+      vi.unstubAllGlobals();
       await db
         .update(institutions)
         .set({ isActive: true })
@@ -586,7 +703,7 @@ describe("fence linearizável da sessão web", () => {
       .from(users)
       .where(eq(users.id, userId));
     const transactionFailure = vi
-      .spyOn(db, "transaction")
+      .spyOn(pushRevocationService, "withPushAccountMutex")
       .mockRejectedValueOnce(new Error("forced logout database failure"));
 
     let failed: SupertestResponse;

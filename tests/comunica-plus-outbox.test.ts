@@ -17,6 +17,7 @@ import {
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import {
+  COMUNICA_PLUS_OUTBOX_TITLE,
   enqueueComunicaRosterPublished,
   enqueueComunicaSwapApproved,
   processPendingComunicaPlusOutbox,
@@ -24,6 +25,7 @@ import {
   resolveTrustedComunicaPlusBaseUrl,
 } from "../server/integrations/comunica-plus";
 import { getRosterPublicationEmails, publishMonth } from "../server/month-guards";
+import { processPendingPushDeliveries } from "../server/push-delivery";
 import { resolveTenantActor } from "../server/_core/policy";
 
 const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
@@ -558,14 +560,17 @@ describe("outbox durável Comunica+", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("sem opt-in preserva o intent e nunca exaure retry", async () => {
+  it("sem opt-in preserva o intent, não disputa com push e nunca exaure retry", async () => {
     const notificationId = await enqueue();
     vi.stubEnv("COMUNICA_PLUS_OUTBOUND_ENABLED", "");
     vi.stubEnv("COMUNICA_PLUS_SYSTEM_EMAIL", "must-not-be-read@example.test");
     vi.stubEnv("COMUNICA_PLUS_SYSTEM_PASSWORD", "must-not-be-read");
     vi.stubEnv("COMUNICA_PLUS_SYSTEM_PIN", "0000");
 
-    await processPendingComunicaPlusOutbox(NOW);
+    await Promise.all([
+      processPendingPushDeliveries(NOW),
+      processPendingComunicaPlusOutbox(NOW),
+    ]);
     let stored = await loadRow(notificationId);
     expect(stored.status).toBe("PENDING");
     expect(stateOf(stored)).toMatchObject({
@@ -741,4 +746,30 @@ describe("outbox durável Comunica+", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("row Comunica malformada é ignorada pelo push e terminalizada só no worker próprio", async () => {
+    const [inserted] = await db.insert(notifications).values({
+      institutionId,
+      userId,
+      title: COMUNICA_PLUS_OUTBOX_TITLE,
+      body: "ROSTER_PUBLISHED",
+      type: "GENERAL",
+      status: "PENDING",
+      dedupKey: `comunica:v1:malformed:${stamp}`,
+      providerReceipt: {},
+    }).$returningId();
+
+    await processPendingPushDeliveries(NOW);
+    let stored = await loadRow(inserted.id);
+    expect(stored.status).toBe("PENDING");
+    expect(stored.providerReceipt).toEqual({});
+
+    await processPendingComunicaPlusOutbox(NOW);
+    stored = await loadRow(inserted.id);
+    expect(stored.status).toBe("FAILED");
+    expect(stateOf(stored)).toMatchObject({
+      phase: "FAILED",
+      evidence: { code: "MALFORMED_COMUNICA_OUTBOX_STATE" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

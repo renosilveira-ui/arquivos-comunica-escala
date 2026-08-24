@@ -15,7 +15,7 @@
 //   4. Browser POSTa o token pro Comunica+ → cookie → /entry logado
 //
 // Segurança:
-//   - Código opaco de 64 hex chars (32 bytes CSPRNG) — não é o JWT
+//   - Código opaco de 64 hex chars: 8 de sessionVersion + 56 (28 bytes) CSPRNG
 //   - JWT nunca aparece em URL nem é persistido
 //   - One-time via UPDATE condicional (WHERE used_at IS NULL)
 //   - TTL 90s; códigos expirados são varridos oportunisticamente
@@ -23,14 +23,19 @@
 import { randomBytes } from "crypto";
 import { and, eq, isNull, lt, gt } from "drizzle-orm";
 import { getDb } from "../db";
-import { ssoLaunchCodes, professionalInstitutions, users } from "../../drizzle/schema";
-import { generateHandoffToken } from "./generate";
+import { ssoLaunchCodes } from "../../drizzle/schema";
+import {
+  generateHandoffToken,
+  resolveCanonicalSsoActor,
+  SsoAuthorityError,
+} from "./generate";
 
 const LAUNCH_CODE_TTL_MS = 90_000;
 
 export interface CreateLaunchCodeResult {
   ok: boolean;
   code?: string;
+  status?: number;
   error?: string;
 }
 
@@ -39,24 +44,64 @@ export async function createLaunchCode(
   userId: number,
   institutionId: number,
   clientNonce: string,
+  expectedSessionVersion: number,
 ): Promise<CreateLaunchCodeResult> {
-  const db = await getDb();
-  if (!db) return { ok: false, error: "Database unavailable" };
+  const normalizedClientNonce = clientNonce.trim();
+  if (!normalizedClientNonce || normalizedClientNonce.length > 191) {
+    return { ok: false, status: 400, error: "clientNonce invalido" };
+  }
+  if (
+    !Number.isSafeInteger(expectedSessionVersion) ||
+    expectedSessionVersion < 0 ||
+    expectedSessionVersion > 0xffff_ffff
+  ) {
+    return { ok: false, status: 403, error: "Sessao invalida" };
+  }
+
+  try {
+    await resolveCanonicalSsoActor(userId, institutionId, expectedSessionVersion);
+  } catch (error) {
+    if (error instanceof SsoAuthorityError) {
+      return { ok: false, status: 403, error: "Identidade institucional invalida" };
+    }
+    console.error("[SSO] LAUNCH_AUTHORITY_VALIDATION_FAILED");
+    return { ok: false, status: 500, error: "Falha ao criar codigo" };
+  }
+
+  let db: NonNullable<Awaited<ReturnType<typeof getDb>>> | null;
+  try {
+    db = await getDb();
+  } catch {
+    console.error("[SSO] LAUNCH_CODE_DATABASE_UNAVAILABLE");
+    return { ok: false, status: 500, error: "Falha ao criar codigo" };
+  }
+  if (!db) return { ok: false, status: 500, error: "Database unavailable" };
 
   // Oportunista: varre códigos expirados (mantém a tabela minúscula).
   await db
     .delete(ssoLaunchCodes)
     .where(lt(ssoLaunchCodes.expiresAt, new Date()))
-    .catch(() => {});
+    .catch(() => {
+      console.warn("[SSO] LAUNCH_CODE_CLEANUP_FAILED");
+    });
 
-  const code = randomBytes(32).toString("hex");
-  await db.insert(ssoLaunchCodes).values({
-    code,
-    userId,
-    institutionId,
-    clientNonce,
-    expiresAt: new Date(Date.now() + LAUNCH_CODE_TTL_MS),
-  });
+  // Os primeiros 8 hex carregam a versao de sessao autenticada. Os 56 hex
+  // restantes preservam 224 bits de entropia; nenhuma identidade fica
+  // exposta e um reset invalida o resgate mesmo antes do TTL de 90 s.
+  const versionPrefix = expectedSessionVersion.toString(16).padStart(8, "0");
+  const code = `${versionPrefix}${randomBytes(28).toString("hex")}`;
+  try {
+    await db.insert(ssoLaunchCodes).values({
+      code,
+      userId,
+      institutionId,
+      clientNonce: normalizedClientNonce,
+      expiresAt: new Date(Date.now() + LAUNCH_CODE_TTL_MS),
+    });
+  } catch {
+    console.error("[SSO] LAUNCH_CODE_PERSIST_FAILED");
+    return { ok: false, status: 500, error: "Falha ao criar codigo" };
+  }
 
   return { ok: true, code };
 }
@@ -73,27 +118,41 @@ export interface RedeemResult {
  * handoff token and returns the auto-submit HTML page.
  */
 export async function redeemLaunchCode(rawCode: string): Promise<RedeemResult> {
-  const db = await getDb();
+  let db: NonNullable<Awaited<ReturnType<typeof getDb>>> | null;
+  try {
+    db = await getDb();
+  } catch {
+    console.error("[SSO] LAUNCH_CODE_DATABASE_UNAVAILABLE");
+    return { ok: false, status: 500, error: "Banco indisponível" };
+  }
   if (!db) return { ok: false, status: 500, error: "Banco indisponível" };
 
   const code = rawCode.trim();
   if (!/^[a-f0-9]{64}$/.test(code)) {
     return { ok: false, status: 400, error: "Código inválido" };
   }
+  const encodedSessionVersion = Number.parseInt(code.slice(0, 8), 16);
 
   // Consumo atômico: só uma requisição consegue marcar used_at.
-  const [updateResult] = await db
-    .update(ssoLaunchCodes)
-    .set({ usedAt: new Date() })
-    .where(
-      and(
-        eq(ssoLaunchCodes.code, code),
-        isNull(ssoLaunchCodes.usedAt),
-        gt(ssoLaunchCodes.expiresAt, new Date()),
-      ),
-    );
+  let updateResult: { affectedRows?: number };
+  try {
+    const [result] = await db
+      .update(ssoLaunchCodes)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(ssoLaunchCodes.code, code),
+          isNull(ssoLaunchCodes.usedAt),
+          gt(ssoLaunchCodes.expiresAt, new Date()),
+        ),
+      );
+    updateResult = result as { affectedRows?: number };
+  } catch {
+    console.error("[SSO] LAUNCH_CODE_CONSUME_FAILED");
+    return { ok: false, status: 500, error: "Falha ao consumir codigo" };
+  }
 
-  if ((updateResult as { affectedRows?: number }).affectedRows !== 1) {
+  if (updateResult.affectedRows !== 1) {
     return {
       ok: false,
       status: 410,
@@ -101,44 +160,53 @@ export async function redeemLaunchCode(rawCode: string): Promise<RedeemResult> {
     };
   }
 
-  const [row] = await db
-    .select()
-    .from(ssoLaunchCodes)
-    .where(eq(ssoLaunchCodes.code, code))
-    .limit(1);
+  let row: typeof ssoLaunchCodes.$inferSelect | undefined;
+  try {
+    [row] = await db
+      .select()
+      .from(ssoLaunchCodes)
+      .where(eq(ssoLaunchCodes.code, code))
+      .limit(1);
+  } catch {
+    console.error("[SSO] LAUNCH_CODE_READ_FAILED");
+    return { ok: false, status: 500, error: "Falha ao validar codigo" };
+  }
   if (!row) return { ok: false, status: 410, error: "Código não encontrado" };
 
-  const [user] = await db
-    .select()
-    .from(users)
-    .where(eq(users.id, row.userId))
-    .limit(1);
-  if (!user) return { ok: false, status: 410, error: "Usuário não encontrado" };
-
-  // Role na instituição (mesma resolução do POST /api/sso/generate).
-  let roleInInstitution = "USER";
-  const [link] = await db
-    .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
-    .from(professionalInstitutions)
-    .where(
-      and(
-        eq(professionalInstitutions.userId, row.userId),
-        eq(professionalInstitutions.institutionId, row.institutionId),
-        eq(professionalInstitutions.active, true),
-      ),
-    )
-    .limit(1);
-  if (link) roleInInstitution = link.roleInInstitution;
+  let canonical;
+  try {
+    // O codigo ja foi consumido. A autoridade e a versao da sessao sao
+    // reconstruidas do estado vivo antes de qualquer assinatura/emissao.
+    canonical = await resolveCanonicalSsoActor(
+      row.userId,
+      row.institutionId,
+      encodedSessionVersion,
+    );
+  } catch (error) {
+    if (error instanceof SsoAuthorityError) {
+      return {
+        ok: false,
+        status: 410,
+        error: "Codigo revogado. Volte ao app Escala+ e tente novamente.",
+      };
+    }
+    console.error("[SSO] LAUNCH_CODE_REVALIDATION_FAILED");
+    return { ok: false, status: 500, error: "Falha ao validar codigo" };
+  }
 
   const result = await generateHandoffToken({
-    user,
+    user: canonical.user,
     institutionId: row.institutionId,
     clientNonce: row.clientNonce,
-    roleInInstitution,
   });
 
   if (!result.ok) {
-    return { ok: false, status: 502, error: result.message };
+    const status = result.code === "authority_invalid"
+      ? 410
+      : result.code === "internal_error"
+        ? 500
+        : 502;
+    return { ok: false, status, error: result.message };
   }
 
   return { ok: true, html: buildAutoSubmitHtml(result.targetUrl, {

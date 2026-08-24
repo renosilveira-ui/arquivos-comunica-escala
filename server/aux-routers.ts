@@ -3,10 +3,10 @@
  * Registered in appRouter to supply client screens that query these endpoints.
  */
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, protectedProcedure, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { dayWindowBrt } from "./local-time";
-import { eq, and, gte, sql, lt } from "drizzle-orm";
+import { eq, and, gte, isNull, sql, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   professionals,
@@ -14,6 +14,7 @@ import {
   sectors,
   institutions,
   professionalInstitutions,
+  users,
   managerScope as managerScopeTable,
   shiftInstances,
 } from "../drizzle/schema";
@@ -65,7 +66,10 @@ export const professionalsRouter = router({
       return pro?.professional ?? null;
     }),
 
-  listMyInstitutions: protectedProcedure.query(async ({ ctx }) => {
+  // Única leitura deliberadamente independente do tenant: o Listener usa a
+  // allowlist canônica para sair de um tenant revogado e só então navegar.
+  // A sessão continua obrigatória; nenhum recurso tenant-bound é exposto.
+  listMyInstitutions: sessionProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
@@ -78,7 +82,28 @@ export const professionalsRouter = router({
         active: professionalInstitutions.active,
       })
       .from(professionalInstitutions)
-      .innerJoin(institutions, eq(institutions.id, professionalInstitutions.institutionId))
+      .innerJoin(
+        professionals,
+        and(
+          eq(professionals.id, professionalInstitutions.professionalId),
+          eq(professionals.userId, professionalInstitutions.userId),
+        ),
+      )
+      .innerJoin(
+        users,
+        and(
+          eq(users.id, professionalInstitutions.userId),
+          eq(users.approvalStatus, "APPROVED"),
+          isNull(users.deletedAt),
+        ),
+      )
+      .innerJoin(
+        institutions,
+        and(
+          eq(institutions.id, professionalInstitutions.institutionId),
+          eq(institutions.isActive, true),
+        ),
+      )
       .where(
         and(
           eq(professionalInstitutions.userId, ctx.user.id),

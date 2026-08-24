@@ -33,6 +33,7 @@ function loadMap(): Map<number, string> {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new TypeError("SSO_ORG_MAP deve ser um objeto JSON");
     }
+    const mappedOrganizationIds = new Set<string>();
     for (const [key, value] of Object.entries(parsed)) {
       const id = Number(key);
       const organizationId = typeof value === "string" ? value.trim() : "";
@@ -41,11 +42,19 @@ function loadMap(): Map<number, string> {
         key === String(id) &&
         UUID_PATTERN.test(organizationId)
       ) {
-        orgMap.set(id, organizationId.toLowerCase());
+        const normalizedOrganizationId = organizationId.toLowerCase();
+        if (mappedOrganizationIds.has(normalizedOrganizationId)) {
+          // Dois tenants Escala nunca podem colapsar na mesma organização do
+          // Comunica+. A configuração inteira falha fechada.
+          throw new TypeError("SSO_ORG_MAP deve ser injetivo");
+        }
+        mappedOrganizationIds.add(normalizedOrganizationId);
+        orgMap.set(id, normalizedOrganizationId);
       }
     }
-  } catch (err) {
-    console.error("[SSO] Failed to parse SSO_ORG_MAP:", err);
+  } catch {
+    orgMap.clear();
+    console.error("[SSO] SSO_ORG_MAP_INVALID");
   }
 
   return orgMap;
