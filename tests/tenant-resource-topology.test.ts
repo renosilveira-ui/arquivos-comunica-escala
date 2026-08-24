@@ -26,23 +26,25 @@ import {
   processShiftStartPushes,
 } from "../server/cron/shift-confirmation-dispatcher";
 import { confirmationRouter } from "../server/confirmation-router";
+import { appRouter } from "../server/routers";
 import { assertInstitutionHierarchy, resolveInstitutionForUser } from "../server/_core/tenant";
 import { assertManagerScopeAccess, resolveTenantActor } from "../server/_core/policy";
 import { getDb } from "../server/db";
-import { dayKeyBrt } from "../server/local-time";
+import { dayKeyBrt, mondayOfKey } from "../server/local-time";
 import {
   getRosterPublicationEmails,
   lockMonth,
   publishMonth,
 } from "../server/month-guards";
-import { notifyRosterPublished } from "../server/integrations/comunica-plus";
+import { enqueueComunicaRosterPublished } from "../server/integrations/comunica-plus";
 import * as pushService from "../server/notifications-service";
 import { triggerAutoSso } from "../server/sso/auto-sso";
 import { syncDutyToComunica } from "../server/sso/duty-sync";
 import { shiftsRouter } from "../server/shifts-crud";
 
 vi.mock("../server/integrations/comunica-plus", () => ({
-  notifyRosterPublished: vi.fn(async () => undefined),
+  enqueueComunicaRosterPublished: vi.fn(async () => 1),
+  processPendingComunicaPlusOutbox: vi.fn(async () => 0),
 }));
 vi.mock("../server/sso/auto-sso", () => ({ triggerAutoSso: vi.fn(async () => undefined) }));
 vi.mock("../server/sso/duty-sync", () => ({ syncDutyToComunica: vi.fn(async () => undefined) }));
@@ -94,6 +96,8 @@ describe("hierarquia institution → hospital → sector", () => {
   const publishYearMonth = publicationYearMonth;
   const lockYearMonth = "2030-04";
   const deepPublishYearMonth = "2030-05";
+  const managerFuturePublishYearMonth = "2031-10";
+  const managerFutureLockYearMonth = "2031-11";
   const membershipSourceYearMonth = "2030-08";
   const membershipTargetYearMonth = "2030-09";
   const publicationStart = new Date(`${publicationYearMonth}-10T07:00:00-03:00`);
@@ -108,6 +112,7 @@ describe("hierarquia institution → hospital → sector", () => {
         role: isAdmin ? "admin" : "manager",
         name: isAdmin ? "Admin topology" : "Gestor+ topology",
         email: `${kind}-${runId}@test.local`,
+        sessionVersion: 1,
       },
       institutionId: institutionAId,
       allowedInstitutionIds: [institutionAId],
@@ -116,6 +121,29 @@ describe("hierarquia institution → hospital → sector", () => {
 
   const shiftsAs = (kind: ActorKind) => shiftsRouter.createCaller(ctxFor(kind));
   const calendarAs = (kind: ActorKind) => calendarRouter.createCaller(ctxFor(kind));
+  const appAs = (userId: number, role: "doctor" | "manager" | "admin" = "doctor") =>
+    appRouter.createCaller({
+      user: {
+        id: userId,
+        role,
+        name: `Topology reader ${userId}`,
+        email: `topology-reader-${userId}-${runId}@test.local`,
+        sessionVersion: 1,
+      },
+      institutionId: institutionAId,
+      allowedInstitutionIds: [institutionAId],
+    } as any);
+  const shiftsAsUser = (userId: number) => shiftsRouter.createCaller({
+    user: {
+      id: userId,
+      role: "doctor",
+      name: `Topology reader ${userId}`,
+      email: `topology-reader-${userId}-${runId}@test.local`,
+      sessionVersion: 1,
+    },
+    institutionId: institutionAId,
+    allowedInstitutionIds: [institutionAId],
+  } as any);
 
   async function createPerson(
     tag: string,
@@ -682,11 +710,13 @@ describe("hierarquia institution → hospital → sector", () => {
   }
 
   it("revalida a hierarquia nas fronteiras profundas de publish/lock", async () => {
+    const plusActor = await resolveTenantActor(plusUserId, institutionAId, false);
+    const adminActor = await resolveTenantActor(adminUserId, institutionAId, true);
     await expect(
-      publishMonth(institutionAId, hospitalBId, deepPublishYearMonth, plusUserId),
+      publishMonth(institutionAId, hospitalBId, deepPublishYearMonth, plusActor, 1),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
-      lockMonth(institutionAId, hospitalBId, lockYearMonth, adminUserId),
+      lockMonth(institutionAId, hospitalBId, lockYearMonth, adminActor, 1),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const directPublishRows = await db
@@ -700,6 +730,69 @@ describe("hierarquia institution → hospital → sector", () => {
         ),
       );
     expect(directPublishRows).toHaveLength(0);
+  });
+
+  it("impede GESTOR_MEDICO de publicar ou trancar mês fora da janela autorizada", async () => {
+    const managerActor = await resolveTenantActor(
+      hospitalManagerUserId,
+      institutionAId,
+      false,
+    );
+    const [futureRoster] = await db
+      .insert(monthlyRosters)
+      .values({
+        institutionId: institutionAId,
+        hospitalId: hospitalAId,
+        yearMonth: managerFutureLockYearMonth,
+        status: "PUBLISHED",
+      })
+      .$returningId();
+
+    await expect(
+      publishMonth(
+        institutionAId,
+        hospitalAId,
+        managerFuturePublishYearMonth,
+        managerActor,
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      lockMonth(
+        institutionAId,
+        hospitalAId,
+        managerFutureLockYearMonth,
+        managerActor,
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const publishRows = await db
+      .select({ id: monthlyRosters.id })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionAId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+          eq(monthlyRosters.yearMonth, managerFuturePublishYearMonth),
+        ),
+      );
+    const [lockedCandidate] = await db
+      .select({ status: monthlyRosters.status, lockedAt: monthlyRosters.lockedAt })
+      .from(monthlyRosters)
+      .where(eq(monthlyRosters.id, futureRoster.id));
+    const lockAudits = await db
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, futureRoster.id),
+          eq(auditTrail.action, "ROSTER_LOCKED"),
+        ),
+      );
+    expect(publishRows).toHaveLength(0);
+    expect(lockedCandidate).toMatchObject({ status: "PUBLISHED", lockedAt: null });
+    expect(lockAudits).toHaveLength(0);
   });
 
   it("não replica shift nem assignment de origem com topologia contaminada", async () => {
@@ -768,6 +861,187 @@ describe("hierarquia institution → hospital → sector", () => {
     expect(targetShifts).toHaveLength(0);
   });
 
+  it("não assume vaga de shift contaminado nem deixa writes ou auditoria", async () => {
+    const caller = appRouter.createCaller({
+      user: {
+        id: recipientAUserId,
+        role: "doctor",
+        name: "Topology recipient A",
+        email: `topology-recipient-a-${runId}@test.local`,
+        sessionVersion: 1,
+      },
+      institutionId: institutionAId,
+      allowedInstitutionIds: [institutionAId],
+    } as any);
+    const [shiftBefore] = await db
+      .select({ status: shiftInstances.status })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, corruptNotificationShiftId));
+    const assignmentsBefore = await db
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, corruptNotificationShiftId));
+    const auditsBefore = await db
+      .select({ id: shiftAuditLog.id })
+      .from(shiftAuditLog)
+      .where(eq(shiftAuditLog.shiftInstanceId, corruptNotificationShiftId));
+
+    await expect(
+      caller.shiftAssignments.assumeVacancy({ shiftInstanceId: corruptNotificationShiftId }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const [shiftAfter] = await db
+      .select({ status: shiftInstances.status })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, corruptNotificationShiftId));
+    const assignmentsAfter = await db
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, corruptNotificationShiftId));
+    const auditsAfter = await db
+      .select({ id: shiftAuditLog.id })
+      .from(shiftAuditLog)
+      .where(eq(shiftAuditLog.shiftInstanceId, corruptNotificationShiftId));
+    expect(shiftAfter).toEqual(shiftBefore);
+    expect(assignmentsAfter).toEqual(assignmentsBefore);
+    expect(auditsAfter).toEqual(auditsBefore);
+  });
+
+  it("listVacancies omite shift cuja instituição não corresponde ao hospital/setor exibido", async () => {
+    const rows = await appAs(recipientAUserId).shiftInstances.listVacancies({});
+    expect(rows.some((row) => row.shiftInstanceId === corruptNotificationShiftId)).toBe(false);
+  });
+
+  it("listMyVacancyRequests não atravessa assignment A para shift B", async () => {
+    const [poisoned] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        shiftInstanceId: publicationShiftBId,
+        institutionId: institutionAId,
+        hospitalId: hospitalBId,
+        sectorId: sectorBId,
+        professionalId: recipientAProfessionalId,
+        assignmentType: "ON_DUTY",
+        status: "PENDENTE",
+        isActive: true,
+        createdBy: recipientAUserId,
+      })
+      .$returningId();
+    try {
+      const rows = await appAs(recipientAUserId).shiftAssignments.listMyVacancyRequests();
+      expect(rows.some((row) => row.assignmentId === poisoned.id)).toBe(false);
+    } finally {
+      await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.id, poisoned.id));
+    }
+  });
+
+  it("listPending não expõe candidato quando assignment e shift divergem de tenant", async () => {
+    const [poisoned] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        shiftInstanceId: publicationShiftBId,
+        institutionId: institutionAId,
+        hospitalId: hospitalBId,
+        sectorId: sectorBId,
+        professionalId: recipientAProfessionalId,
+        assignmentType: "BACKUP",
+        status: "PENDENTE",
+        isActive: true,
+        createdBy: recipientAUserId,
+      })
+      .$returningId();
+    try {
+      const rows = await appAs(plusUserId, "manager").shiftAssignments.listPending({});
+      expect(rows.some((row) => row.assignmentId === poisoned.id)).toBe(false);
+    } finally {
+      await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.id, poisoned.id));
+    }
+  });
+
+  it("shifts.get recusa shift contaminado e retorna só assignments com tupla e PI canônicas", async () => {
+    await expect(
+      shiftsAs("plus").get({ id: corruptNotificationShiftId }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    const valid = await shiftsAs("plus").get({ id: publicationShiftAId });
+    expect(valid.assignments.map((assignment) => assignment.id)).toEqual([validAssignmentAId]);
+  });
+
+  it("shifts.listByPeriod omite shift contaminado e assignments sem tupla/PI canônicas", async () => {
+    const rows = await shiftsAs("plus").listByPeriod({
+      startDate: new Date(publicationStart.getTime() - 1).toISOString(),
+      endDate: new Date(publicationEnd.getTime() + 1).toISOString(),
+    });
+    expect(rows.map((row) => row.id)).toEqual([publicationShiftAId]);
+    expect(rows[0].assignments.map((assignment) => assignment.id)).toEqual([validAssignmentAId]);
+  });
+
+  it("shifts.listAgenda omite topologia contaminada nos grupos e nos nomes profissionais", async () => {
+    const result = await shiftsAs("plus").listAgenda({
+      startDate: mondayOfKey(`${publicationYearMonth}-10`),
+      weeks: 1,
+      scope: "geral",
+    });
+    const rows = result.weeks.flatMap((week) =>
+      week.days.flatMap((day) => day.groups.flatMap((group) => group.shifts)),
+    );
+    expect(rows.map((row) => row.id)).toEqual([publicationShiftAId]);
+    expect(rows[0].professionalNames).toEqual([`Topology recipient-a`]);
+
+    const mine = await shiftsAsUser(recipientAUserId).listAgenda({
+      startDate: mondayOfKey(`${publicationYearMonth}-10`),
+      weeks: 1,
+      scope: "minha",
+    });
+    const myRows = mine.weeks.flatMap((week) =>
+      week.days.flatMap((day) => day.groups.flatMap((group) => group.shifts)),
+    );
+    expect(myRows.map((row) => row.id)).toEqual([publicationShiftAId]);
+    expect(myRows[0]).toMatchObject({
+      professionalNames: [`Topology recipient-a`],
+      isMine: true,
+    });
+  });
+
+  it("getActiveShift/getNextShift não usam assignment ligado a shift de hierarquia contaminada", async () => {
+    const reader = await createPerson("read-current", institutionAId, "doctor", "USER");
+    const now = Date.now();
+    const [shift] = await db
+      .insert(shiftInstances)
+      .values({
+        institutionId: institutionAId,
+        hospitalId: hospitalAId,
+        sectorId: sectorBId,
+        label: `Topology active poison ${runId}`,
+        startAt: new Date(now - 60 * 60_000),
+        endAt: new Date(now + 60 * 60_000),
+        status: "OCUPADO",
+      })
+      .$returningId();
+    const [assignment] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        shiftInstanceId: shift.id,
+        institutionId: institutionAId,
+        hospitalId: hospitalAId,
+        sectorId: sectorBId,
+        professionalId: reader.professionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: true,
+        createdBy: reader.userId,
+      })
+      .$returningId();
+    try {
+      const caller = shiftsAsUser(reader.userId);
+      await expect(caller.getActiveShift()).resolves.toBeNull();
+      await expect(caller.getNextShift()).resolves.toBeNull();
+    } finally {
+      await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.id, assignment.id));
+      await db.delete(shiftInstances).where(eq(shiftInstances.id, shift.id));
+    }
+  });
+
   it("calendário válido não expõe assignments estrangeiras ligadas ao shift", async () => {
     const day = await calendarAs("plus").getDay({
       institutionId: institutionAId,
@@ -807,17 +1081,19 @@ describe("hierarquia institution → hospital → sector", () => {
     expect(crossTenantEmails).toEqual([]);
   });
 
-  it("publicação real envia ao conector somente a lista institucional filtrada", async () => {
-    const notifyMock = vi.mocked(notifyRosterPublished);
+  it("publicação persiste intent somente para o destinatário institucional filtrado", async () => {
+    const notifyMock = vi.mocked(enqueueComunicaRosterPublished);
     notifyMock.mockClear();
 
-    await publishMonth(institutionAId, hospitalAId, publicationYearMonth, plusUserId);
-    await vi.waitFor(() => expect(notifyMock).toHaveBeenCalledTimes(1));
+    const plusActor = await resolveTenantActor(plusUserId, institutionAId, false);
+    await publishMonth(institutionAId, hospitalAId, publicationYearMonth, plusActor, 1);
+    expect(notifyMock).toHaveBeenCalledTimes(1);
     expect(notifyMock).toHaveBeenCalledWith(
       expect.objectContaining({
         hospitalId: hospitalAId,
         yearMonth: publicationYearMonth,
-        professionalEmails: [`topology-recipient-a-${runId}@test.local`],
+        targetUserId: recipientAUserId,
+        targetEmail: `topology-recipient-a-${runId}@test.local`,
       }),
     );
   });

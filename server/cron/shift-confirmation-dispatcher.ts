@@ -30,6 +30,7 @@ import { sendPushNotification } from "../notifications-service";
 import { triggerAutoSso } from "../sso/auto-sso";
 import { syncDutyToComunica } from "../sso/duty-sync";
 import { requireValidDutyConfirmation } from "../confirmation-integrity";
+import { processPendingComunicaPlusOutbox } from "../integrations/comunica-plus";
 
 // ── Trigger schedule ────────────────────────────────────────────────────────
 
@@ -101,7 +102,10 @@ export async function tick(now: Date = new Date()) {
     // 2. Process rechecks (PENDING confirmations past their recheckAt)
     await processRechecks(now);
 
-    // 3. Push de início de plantão (confirmados cujo plantão começou agora)
+    // 3. Retenta integrações do Comunica+ após preservar as decisões locais.
+    await processPendingComunicaPlusOutbox(now);
+
+    // 4. Push de início de plantão (confirmados cujo plantão começou agora)
     await processShiftStartPushes(now);
   } finally {
     running = false;

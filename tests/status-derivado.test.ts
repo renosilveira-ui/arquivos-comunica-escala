@@ -11,6 +11,7 @@ import {
   hospitals,
   institutions,
   managerScope,
+  monthlyRosters,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -31,6 +32,7 @@ describe("status do turno derivado das alocações", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let poisonedSectorId: number;
   let managerUserId: number;
   let managerProfessionalId: number;
   const doctorUserIds: number[] = [];
@@ -39,7 +41,7 @@ describe("status do turno derivado das alocações", () => {
 
   const managerCtx = () =>
     ({
-      user: { id: managerUserId, role: "manager", name: "Gestor Status", email: "gestor-status@test.local" },
+      user: { id: managerUserId, role: "manager", name: "Gestor Status", email: "gestor-status@test.local", sessionVersion: 1 },
       institutionId,
       allowedInstitutionIds: [institutionId],
     }) as any;
@@ -102,6 +104,17 @@ describe("status do turno derivado das alocações", () => {
       .values({ institutionId, hospitalId, name: `Status Setor ${stamp}`, category: "cirurgico", color: "#2563EB" })
       .$returningId();
     sectorId = sec.id;
+    const [poisonedSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Status Setor Poison ${stamp}`,
+        category: "cirurgico",
+        color: "#DC2626",
+      })
+      .$returningId();
+    poisonedSectorId = poisonedSector.id;
 
     const [mu] = await db
       .insert(users)
@@ -175,7 +188,8 @@ describe("status do turno derivado das alocações", () => {
     await db.delete(managerScope).where(eq(managerScope.managerProfessionalId, managerProfessionalId));
     await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.professionalId, pros));
     await db.delete(professionals).where(inArray(professionals.id, pros));
-    await db.delete(sectors).where(eq(sectors.id, sectorId));
+    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
+    await db.delete(sectors).where(inArray(sectors.id, [sectorId, poisonedSectorId]));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     await db.delete(users).where(inArray(users.id, [managerUserId, ...doctorUserIds]));
@@ -226,6 +240,79 @@ describe("status do turno derivado das alocações", () => {
     expect(await shiftStatus()).toBe("VAGO");
   });
 
+  it("A4: rejeição faz rollback quando outra alocação ativa contamina a tupla", async () => {
+    const [x, y] = doctorProfessionalIds;
+    const pending = await insertAssignment(x, "PENDENTE");
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId,
+      institutionId,
+      hospitalId,
+      sectorId: poisonedSectorId,
+      professionalId: y,
+      assignmentType: "BACKUP",
+      status: "OCUPADO",
+      isActive: true,
+      createdBy: managerUserId,
+    });
+    await db.update(shiftInstances).set({ status: "OCUPADO" }).where(eq(shiftInstances.id, shiftInstanceId));
+
+    await expect(
+      app().shiftInstances.rejectAssignment({ assignmentId: pending, reason: "Sabotagem topológica" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const [target] = await db
+      .select({ status: shiftAssignmentsV2.status, isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, pending));
+    expect(target).toEqual({ status: "PENDENTE", isActive: true });
+    expect(await shiftStatus()).toBe("OCUPADO");
+    expect(
+      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId)),
+    ).toHaveLength(0);
+  });
+
+  it("A4: rejeitar assignment já aprovado falha fechado e preserva OCUPADO", async () => {
+    const [x] = doctorProfessionalIds;
+    const occupied = await insertAssignment(x, "OCUPADO");
+    await db.update(shiftInstances).set({ status: "OCUPADO" }).where(eq(shiftInstances.id, shiftInstanceId));
+
+    await expect(
+      app().shiftInstances.rejectAssignment({ assignmentId: occupied, reason: "Tela desatualizada" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const [assignment] = await db
+      .select({ status: shiftAssignmentsV2.status, isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, occupied));
+    expect(assignment).toEqual({ status: "OCUPADO", isActive: true });
+    expect(await shiftStatus()).toBe("OCUPADO");
+  });
+
+  it("A3/A4: approve × reject concorrentes têm exatamente um vencedor", async () => {
+    const [x] = doctorProfessionalIds;
+    const pending = await insertAssignment(x, "PENDENTE");
+    await db.update(shiftInstances).set({ status: "PENDENTE" }).where(eq(shiftInstances.id, shiftInstanceId));
+
+    const results = await Promise.allSettled([
+      app().shiftInstances.approveAssignment({ assignmentId: pending }),
+      app().shiftInstances.rejectAssignment({ assignmentId: pending, reason: "Decisão concorrente" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+
+    const [assignment] = await db
+      .select({ status: shiftAssignmentsV2.status, isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, pending));
+    if (assignment.status === "OCUPADO") {
+      expect(assignment.isActive).toBe(true);
+      expect(await shiftStatus()).toBe("OCUPADO");
+    } else {
+      expect(assignment).toEqual({ status: "REJEITADO", isActive: false });
+      expect(await shiftStatus()).toBe("VAGO");
+    }
+  });
+
   it("M4: remover X com Y PENDENTE ativa deixa o turno PENDENTE, não VAGO", async () => {
     const [x, y] = doctorProfessionalIds;
     const occupiedX = await insertAssignment(x, "OCUPADO");
@@ -236,6 +323,37 @@ describe("status do turno derivado das alocações", () => {
     expect(result.ok).toBe(true);
     expect(await shiftStatus()).toBe("PENDENTE");
     expect((await activeAssignments()).map((a) => a.professionalId)).toEqual([y]);
+  });
+
+  it("M4: remoção direta faz rollback quando outra alocação ativa contamina a tupla", async () => {
+    const [x, y] = doctorProfessionalIds;
+    const occupied = await insertAssignment(x, "OCUPADO");
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId,
+      institutionId,
+      hospitalId,
+      sectorId: poisonedSectorId,
+      professionalId: y,
+      assignmentType: "BACKUP",
+      status: "PENDENTE",
+      isActive: true,
+      createdBy: managerUserId,
+    });
+    await db.update(shiftInstances).set({ status: "OCUPADO" }).where(eq(shiftInstances.id, shiftInstanceId));
+
+    await expect(
+      editor().unassignDirect({ assignmentId: occupied, reason: "Sabotagem topológica" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const [target] = await db
+      .select({ isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, occupied));
+    expect(target.isActive).toBe(true);
+    expect(await shiftStatus()).toBe("OCUPADO");
+    expect(
+      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId)),
+    ).toHaveLength(0);
   });
 
   it("M2: shifts.update não aceita mais sobrescrever o status", async () => {

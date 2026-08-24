@@ -4,6 +4,7 @@ import { auditTrail } from "../drizzle/schema";
 type AuditDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "insert">;
 
 export interface AuditEntry {
+  institutionId: number;
   actorUserId: number;
   actorRole: string;
   actorName?: string;
@@ -57,7 +58,6 @@ export interface AuditEntry {
   toProfessionalId?: number;
   fromUserId?: number;
   toUserId?: number;
-  institutionId?: number;
   hospitalId?: number;
   sectorId?: number;
   shiftInstanceId?: number;
@@ -66,20 +66,20 @@ export interface AuditEntry {
 }
 
 /**
- * Grava uma entrada no audit trail. Por padrão preserva o comportamento
- * histórico de não bloquear a operação principal. Em fluxos transacionais,
- * `strict` propaga erro para permitir rollback.
+ * Grava uma entrada no audit trail. Auditoria é parte do contrato da mutação:
+ * qualquer falha é propagada para que o caller possa fazer rollback. `strict`
+ * aceita apenas `true` por compatibilidade explícita com os callsites
+ * transacionais; não existe modo best-effort.
  */
 export async function recordAudit(
   entry: AuditEntry,
-  options: { db?: AuditDb; strict?: boolean } = {},
+  options: { db?: AuditDb; strict?: true } = {},
 ): Promise<void> {
-  try {
-    const db = options.db ?? await getDb();
-    if (!db) return;
-    await db.insert(auditTrail).values(entry as any);
-  } catch (err) {
-    if (options.strict) throw err;
-    console.error("[AuditTrail] Failed to record:", err);
+  if (!Number.isInteger(entry.institutionId) || entry.institutionId <= 0) {
+    throw new TypeError("AuditEntry.institutionId deve ser um identificador positivo");
   }
+
+  const db = options.db ?? await getDb();
+  if (!db) throw new Error("Audit database unavailable");
+  await db.insert(auditTrail).values(entry);
 }

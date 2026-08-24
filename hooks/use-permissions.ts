@@ -11,7 +11,7 @@ export type Permission =
   | "view:weekly"
   | "create:shift"
   | "edit:shift"
-  | "approve:swaps"
+  | "view:swap-history"
   | "request:swap";
 
 const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
@@ -23,7 +23,6 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "view:weekly",
     "create:shift",
     "edit:shift",
-    "approve:swaps",
     "request:swap",
   ],
   manager: [
@@ -33,7 +32,6 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "view:weekly",
     "create:shift",
     "edit:shift",
-    "approve:swaps",
     "request:swap",
   ],
   doctor: ["view:vacancies", "request:swap"],
@@ -44,10 +42,11 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 export function usePermissions() {
   const { user, isLoading } = useAuth();
   const role = user?.role as Role | undefined;
-  const { data: capabilities } = trpc.professionals.getMyCapabilities.useQuery(undefined, {
+  const capabilitiesQuery = trpc.professionals.getMyCapabilities.useQuery(undefined, {
     enabled: !!user,
     staleTime: 60_000,
   });
+  const capabilities = capabilitiesQuery.data;
 
   const can = (permission: Permission): boolean => {
     if (capabilities) {
@@ -59,11 +58,14 @@ export function usePermissions() {
         "view:weekly": capabilities.canViewWeekly,
         "create:shift": capabilities.canCreateShift,
         "edit:shift": capabilities.canEditShift,
-        "approve:swaps": capabilities.canApproveSwaps,
+        "view:swap-history": capabilities.canViewSwapHistory,
         "request:swap": capabilities.canRequestSwap,
       };
       return map[permission];
     }
+    // Histórico gerencial é sempre contextual ao tenant. Nunca derive essa
+    // autoridade do users.role global enquanto a capability não foi resolvida.
+    if (permission === "view:swap-history") return false;
     if (!role) return false;
     return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
   };
@@ -73,5 +75,11 @@ export function usePermissions() {
     ? capabilities.canCreateShift || capabilities.canApproveAssignments
     : role === "admin" || role === "manager";
 
-  return { can, role, isAdmin, isManager, isLoading };
+  return {
+    can,
+    role,
+    isAdmin,
+    isManager,
+    isLoading: isLoading || (!!user && capabilitiesQuery.isLoading),
+  };
 }

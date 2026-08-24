@@ -19,6 +19,9 @@ const PLACEHOLDER_SECRETS: Record<string, readonly string[]> = {
 const REQUIRED_IN_PRODUCTION: readonly string[] = [
   "COOKIE_SECRET",
   "DATABASE_URL",
+];
+
+const COMUNICA_OUTBOUND_REQUIRED: readonly string[] = [
   "COMUNICA_PLUS_URL",
   "COMUNICA_PLUS_SYSTEM_EMAIL",
   "COMUNICA_PLUS_SYSTEM_PASSWORD",
@@ -49,8 +52,16 @@ export function collectProductionSecretIssues(
   if (env.NODE_ENV !== "production") return [];
 
   const issues: string[] = [];
+  const outboundFlag = (env.COMUNICA_PLUS_OUTBOUND_ENABLED ?? "").trim();
+  const outboundEnabled = outboundFlag === "1";
+  if (outboundFlag && outboundFlag !== "0" && outboundFlag !== "1") {
+    issues.push("COMUNICA_PLUS_OUTBOUND_ENABLED must be 0, 1, or unset");
+  }
 
-  for (const key of REQUIRED_IN_PRODUCTION) {
+  for (const key of [
+    ...REQUIRED_IN_PRODUCTION,
+    ...(outboundEnabled ? COMUNICA_OUTBOUND_REQUIRED : []),
+  ]) {
     const value = (env[key] ?? "").trim();
     if (!value) {
       issues.push(`${key} is required in production but is empty or unset`);
@@ -58,6 +69,7 @@ export function collectProductionSecretIssues(
   }
 
   for (const [key, placeholders] of Object.entries(PLACEHOLDER_SECRETS)) {
+    if (key.startsWith("COMUNICA_PLUS_") && !outboundEnabled) continue;
     const value = (env[key] ?? "").trim();
     if (!value) continue;
     if (placeholders.includes(value)) {
@@ -75,6 +87,7 @@ export function collectProductionSecretIssues(
   }
 
   for (const key of NO_LOCALHOST_URLS) {
+    if (key === "COMUNICA_PLUS_URL" && !outboundEnabled) continue;
     const value = (env[key] ?? "").trim();
     if (!value) continue;
     if (LOCALHOST_PATTERN.test(value)) {

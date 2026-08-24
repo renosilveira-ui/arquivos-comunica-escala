@@ -4,6 +4,7 @@ import { getDb } from "../server/db";
 import {
   hospitals,
   institutions,
+  professionalInstitutions,
   professionals,
   sectors,
   shiftAssignmentsV2,
@@ -81,6 +82,23 @@ describe("shiftAssignments.listMyVacancyRequests", () => {
       userRole: "USER",
     });
     otherProfessionalId = (otherProfessionalResult as any).insertId as number;
+
+    await db.insert(professionalInstitutions).values([
+      {
+        professionalId: requesterProfessionalId,
+        userId: requesterUserId,
+        institutionId,
+        roleInInstitution: "USER",
+        active: true,
+      },
+      {
+        professionalId: otherProfessionalId,
+        userId: otherUserId,
+        institutionId,
+        roleInInstitution: "USER",
+        active: true,
+      },
+    ]);
 
     await createRequestFixture({
       label: `${FIXTURE_PREFIX}pendente`,
@@ -196,6 +214,18 @@ describe("shiftAssignments.listMyVacancyRequests", () => {
 
     await db.delete(sectors).where(like(sectors.name, `${FIXTURE_PREFIX}%`));
     await db.delete(hospitals).where(like(hospitals.name, `${FIXTURE_PREFIX}%`));
+    const fixtureProfessionals = await db
+      .select({ id: professionals.id })
+      .from(professionals)
+      .where(like(professionals.name, `${FIXTURE_PREFIX}%`));
+    if (fixtureProfessionals.length > 0) {
+      await db
+        .delete(professionalInstitutions)
+        .where(inArray(
+          professionalInstitutions.professionalId,
+          fixtureProfessionals.map(({ id }) => id),
+        ));
+    }
     await db.delete(professionals).where(like(professionals.name, `${FIXTURE_PREFIX}%`));
     await db.delete(users).where(like(users.email, `${FIXTURE_PREFIX}%`));
     await db.delete(institutions).where(like(institutions.name, `${FIXTURE_PREFIX}%`));

@@ -6,18 +6,28 @@ import express, { type Express } from "express";
 import request from "supertest";
 import {
   auditTrail,
+  hospitals,
   institutions,
   passwordResets,
+  professionalAccess,
   professionalInstitutions,
   professionals,
   pushTokens,
+  sectors,
+  shiftAssignmentsV2,
+  shiftInstances,
   users,
 } from "../drizzle/schema";
 import { sdk } from "../server/_core/sdk";
+import * as auditService from "../server/audit-trail";
 import * as dbService from "../server/db";
 import { getDb } from "../server/db";
 import { mailer } from "../server/mailer";
 import { authRouter } from "../server/routes/auth";
+import {
+  ASSIGNMENT_WRITE_TRANSACTION_CONFIG,
+  assertAssignmentWritesAllowedForUpdate,
+} from "../server/shift-validations-v2";
 
 const STAMP = Date.now();
 const PASSWORD = "SenhaOriginal123";
@@ -30,8 +40,12 @@ describe("auth hardening adversarial", () => {
   let app: Express;
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   let institutionId: number;
+  let hospitalId: number;
+  let sectorId: number;
+  let deleteRaceShiftId: number;
   const userIds: number[] = [];
   const usersByKind = new Map<string, { id: number; email: string }>();
+  const professionalsByKind = new Map<string, number>();
 
   const cookieOf = (response: request.Response): string => {
     const raw = response.headers["set-cookie"];
@@ -71,6 +85,24 @@ describe("auth hardening adversarial", () => {
       .$returningId();
     institutionId = institution.id;
 
+    const [hospital] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `Auth hardening hospital ${STAMP}` })
+      .$returningId();
+    hospitalId = hospital.id;
+    const [sector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Auth hardening sector ${STAMP}`,
+        category: "cirurgico",
+        color: "#2255AA",
+        minStaffCount: 1,
+      })
+      .$returningId();
+    sectorId = sector.id;
+
     for (const kind of [
       "change",
       "change-reset",
@@ -79,6 +111,7 @@ describe("auth hardening adversarial", () => {
       "orphan",
       "forgot-race",
       "revoked-link",
+      "delete-race",
     ] as const) {
       const email = `auth-hardening-${kind}-${STAMP}@test.local`;
       const [user] = await db
@@ -104,6 +137,7 @@ describe("auth hardening adversarial", () => {
             userRole: "USER",
           })
           .$returningId();
+        professionalsByKind.set(kind, professional.id);
         await db.insert(professionalInstitutions).values({
           professionalId: professional.id,
           userId: user.id,
@@ -112,11 +146,39 @@ describe("auth hardening adversarial", () => {
           isPrimary: true,
           active: true,
         });
+        if (kind === "delete-race") {
+          await db.insert(professionalAccess).values({
+            institutionId,
+            professionalId: professional.id,
+            hospitalId,
+            sectorId,
+            canAccess: true,
+          });
+        }
       }
     }
+
+    const startAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    const [shift] = await db
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        label: `Auth delete race ${STAMP}`,
+        startAt,
+        endAt: new Date(startAt.getTime() + 12 * 60 * 60 * 1000),
+        status: "VAGO",
+      })
+      .$returningId();
+    deleteRaceShiftId = shift.id;
   });
 
   afterAll(async () => {
+    await db
+      .delete(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, deleteRaceShiftId));
+    await db.delete(shiftInstances).where(eq(shiftInstances.id, deleteRaceShiftId));
     await db.delete(passwordResets).where(inArray(passwordResets.userId, userIds));
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
     await db
@@ -128,10 +190,15 @@ describe("auth hardening adversarial", () => {
         ),
       );
     await db
+      .delete(professionalAccess)
+      .where(inArray(professionalAccess.professionalId, [...professionalsByKind.values()]));
+    await db
       .delete(professionalInstitutions)
       .where(inArray(professionalInstitutions.userId, userIds));
     await db.delete(professionals).where(inArray(professionals.userId, userIds));
     await db.delete(users).where(inArray(users.id, userIds));
+    await db.delete(sectors).where(eq(sectors.id, sectorId));
+    await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
   });
 
@@ -699,5 +766,143 @@ describe("auth hardening adversarial", () => {
           .set("Cookie", cookieOf(change))
       ).status,
     ).toBe(200);
+  });
+
+  it("serializa DELETE /me contra escritor de alocação sem deadlock nem usuário excluído escalado", async () => {
+    const target = usersByKind.get("delete-race")!;
+    const professionalId = professionalsByKind.get("delete-race")!;
+    const session = await login(target.email);
+    const cookie = cookieOf(session);
+    expect(session.status).toBe(200);
+
+    const [shift] = await db
+      .select({
+        id: shiftInstances.id,
+        institutionId: shiftInstances.institutionId,
+        hospitalId: shiftInstances.hospitalId,
+        sectorId: shiftInstances.sectorId,
+        specialty: shiftInstances.specialty,
+        startAt: shiftInstances.startAt,
+        endAt: shiftInstances.endAt,
+      })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, deleteRaceShiftId));
+    expect(shift).toBeDefined();
+
+    let signalShiftLocked!: () => void;
+    let releaseWriter!: () => void;
+    const shiftLocked = new Promise<void>((resolve) => {
+      signalShiftLocked = resolve;
+    });
+    const writerGate = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    let signalDeleteAtAudit!: () => void;
+    let releaseDelete!: () => void;
+    const deleteAtAudit = new Promise<void>((resolve) => {
+      signalDeleteAtAudit = resolve;
+    });
+    const deleteGate = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+
+    const originalRecordAudit = auditService.recordAudit;
+    const auditSpy = vi
+      .spyOn(auditService, "recordAudit")
+      .mockImplementationOnce((async (...args: Parameters<typeof auditService.recordAudit>) => {
+        signalDeleteAtAudit();
+        await deleteGate;
+        await originalRecordAudit(...args);
+      }) as typeof auditService.recordAudit);
+
+    let writerSettled = false;
+    const writer = db
+      .transaction(async (tx) => {
+        const [lockedShift] = await tx
+          .select({ id: shiftInstances.id })
+          .from(shiftInstances)
+          .where(eq(shiftInstances.id, shift.id))
+          .limit(1)
+          .for("update");
+        expect(lockedShift?.id).toBe(shift.id);
+        signalShiftLocked();
+        await writerGate;
+
+        await assertAssignmentWritesAllowedForUpdate(tx, [
+          {
+            professionalId,
+            expectedUserId: target.id,
+            institutionId: shift.institutionId,
+            hospitalId: shift.hospitalId,
+            sectorId: shift.sectorId,
+            startAt: shift.startAt,
+            endAt: shift.endAt,
+            requiredSpecialty: shift.specialty,
+          },
+        ]);
+        await tx.insert(shiftAssignmentsV2).values({
+          shiftInstanceId: shift.id,
+          institutionId: shift.institutionId,
+          hospitalId: shift.hospitalId,
+          sectorId: shift.sectorId,
+          professionalId,
+          assignmentType: "ON_DUTY",
+          status: "PENDENTE",
+          isActive: true,
+        });
+      }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG)
+      .finally(() => {
+        writerSettled = true;
+      });
+
+    try {
+      await shiftLocked;
+      const deletion = request(app)
+        .delete("/api/auth/me")
+        .set("Cookie", cookie)
+        .send({ password: PASSWORD })
+        .then((response) => response);
+      await deleteAtAudit;
+
+      releaseWriter();
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(writerSettled).toBe(false);
+
+      releaseDelete();
+      const [deleteResponse, writerResult] = await Promise.all([
+        deletion,
+        writer.then(
+          () => ({ status: "fulfilled" as const }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        ),
+      ]);
+      expect(deleteResponse.status).toBe(200);
+      expect(writerResult.status).toBe("rejected");
+      if (writerResult.status === "rejected") {
+        expect(String(writerResult.reason)).toMatch(/inativo|aprovado|inexistente/i);
+      }
+    } finally {
+      releaseWriter();
+      releaseDelete();
+      auditSpy.mockRestore();
+    }
+
+    const [deleted] = await db
+      .select({ deletedAt: users.deletedAt })
+      .from(users)
+      .where(eq(users.id, target.id));
+    expect(deleted.deletedAt).not.toBeNull();
+    expect(
+      await db
+        .select({ id: shiftAssignmentsV2.id })
+        .from(shiftAssignmentsV2)
+        .where(
+          and(
+            eq(shiftAssignmentsV2.shiftInstanceId, shift.id),
+            eq(shiftAssignmentsV2.professionalId, professionalId),
+            eq(shiftAssignmentsV2.isActive, true),
+          ),
+        ),
+    ).toHaveLength(0);
   });
 });

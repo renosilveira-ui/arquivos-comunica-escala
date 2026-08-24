@@ -173,7 +173,7 @@ describe("Modalidade estruturada (shift_instances)", () => {
 
   function caller() {
     return shiftsRouter.createCaller({
-      user: { id: userAId, role: "doctor", name: "Pedro", email: "pedro@test.local" },
+      user: { id: userAId, role: "doctor", name: "Pedro", email: "pedro@test.local", sessionVersion: 1 },
       institutionId,
       allowedInstitutionIds: [institutionId],
     } as any);

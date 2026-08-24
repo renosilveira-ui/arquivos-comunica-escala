@@ -5,7 +5,7 @@
 // alocações respeitando conflito de horário e permissão.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, gte, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import {
   auditTrail,
   hospitals,
@@ -32,6 +32,7 @@ describe("shifts.replicateRange", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let reverseSectorId: number;
   let managerUserId: number;
   let managerProfessionalId: number;
   let doctorUserId: number;
@@ -44,7 +45,7 @@ describe("shifts.replicateRange", () => {
 
   const callerFor = (userId: number, role: string) =>
     shiftsRouter.createCaller({
-      user: { id: userId, role, name: "Teste", email: "teste@test.local" },
+      user: { id: userId, role, name: "Teste", email: "teste@test.local", sessionVersion: 1 },
       institutionId,
       allowedInstitutionIds: [institutionId],
     } as any);
@@ -83,6 +84,17 @@ describe("shifts.replicateRange", () => {
       })
       .$returningId();
     sectorId = sector.id;
+    const [reverseSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Replicar Setor Inverso ${stamp}`,
+        category: "cirurgico",
+        color: "#7C3AED",
+      })
+      .$returningId();
+    reverseSectorId = reverseSector.id;
 
     const [managerUser] = await db
       .insert(users)
@@ -214,7 +226,7 @@ describe("shifts.replicateRange", () => {
     await db.delete(managerScope).where(eq(managerScope.institutionId, institutionId));
     await db.delete(professionalInstitutions).where(eq(professionalInstitutions.institutionId, institutionId));
     await db.delete(professionals).where(inArray(professionals.id, [managerProfessionalId, doctorProfessionalId]));
-    await db.delete(sectors).where(eq(sectors.id, sectorId));
+    await db.delete(sectors).where(inArray(sectors.id, [sectorId, reverseSectorId]));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     await db.delete(users).where(inArray(users.id, [managerUserId, doctorUserId]));
@@ -300,6 +312,302 @@ describe("shifts.replicateRange", () => {
     expect(await countTargetWeek()).toBe(3);
   });
 
+  it("espera lockMonth concorrente e não replica nem audita após LOCKED", async () => {
+    const targetStart = "2027-01-04";
+    const targetEnd = at("2027-01-11", "00:00:00");
+    const yearMonth = "2027-01";
+    await db!.delete(monthlyRosters).where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonth),
+      ),
+    );
+    await db!.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth,
+      status: "PUBLISHED",
+    });
+    const auditBefore = await db!
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(eq(auditTrail.institutionId, institutionId));
+
+    let releaseLock!: () => void;
+    let rowLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const locker = db!.transaction(async (tx) => {
+      await tx
+        .update(monthlyRosters)
+        .set({ status: "LOCKED" })
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+            eq(monthlyRosters.yearMonth, yearMonth),
+          ),
+        );
+      rowLocked();
+      await release;
+    });
+
+    await locked;
+    let settled = false;
+    const replication = callerFor(managerUserId, "manager").replicateRange({
+      hospitalId,
+      from: { start: FROM_WEEK, granularity: "week" },
+      to: { start: targetStart },
+    }).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ).finally(() => { settled = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(settled).toBe(false);
+    } finally {
+      releaseLock();
+    }
+    await locker;
+    const outcome = await replication;
+    expect(outcome).toMatchObject({ ok: false, error: { code: "BAD_REQUEST" } });
+
+    const copies = await db!
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, institutionId),
+          gte(shiftInstances.startAt, at(targetStart, "00:00:00")),
+          lt(shiftInstances.startAt, targetEnd),
+        ),
+      );
+    const auditAfter = await db!
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(eq(auditTrail.institutionId, institutionId));
+    expect(copies).toHaveLength(0);
+    expect(auditAfter).toEqual(auditBefore);
+  });
+
+  it("duas replicações concorrentes não duplicam turnos nem alocações", async () => {
+    const targetStart = "2027-02-01";
+    const targetEnd = at("2027-02-08", "00:00:00");
+    await db!.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: "2027-02",
+      status: "DRAFT",
+    });
+
+    let releaseLock!: () => void;
+    let rowLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const locker = db!.transaction(async (tx) => {
+      await tx
+        .update(monthlyRosters)
+        .set({ status: "DRAFT" })
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+            eq(monthlyRosters.yearMonth, "2027-02"),
+          ),
+        );
+      rowLocked();
+      await release;
+    });
+
+    await locked;
+    let settled = 0;
+    const caller = callerFor(managerUserId, "manager");
+    const requests = [
+      caller.replicateRange({
+        hospitalId,
+        from: { start: FROM_WEEK, granularity: "week" },
+        to: { start: targetStart },
+        includeAssignments: true,
+      }).finally(() => { settled += 1; }),
+      caller.replicateRange({
+        hospitalId,
+        from: { start: FROM_WEEK, granularity: "week" },
+        to: { start: targetStart },
+        includeAssignments: true,
+      }).finally(() => { settled += 1; }),
+    ];
+    const outcomesPromise = Promise.allSettled(requests);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(settled).toBe(0);
+    } finally {
+      releaseLock();
+    }
+    await locker;
+
+    const outcomes = await outcomesPromise;
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const failures = outcomes.filter((outcome) => outcome.status === "rejected") as PromiseRejectedResult[];
+    expect(failures).toHaveLength(1);
+    expect(failures[0].reason).toMatchObject({ code: "CONFLICT" });
+
+    const copies = await db!
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, institutionId),
+          gte(shiftInstances.startAt, at(targetStart, "00:00:00")),
+          lt(shiftInstances.startAt, targetEnd),
+        ),
+      );
+    expect(copies).toHaveLength(3);
+    const copiedAssignments = await db!
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(inArray(shiftAssignmentsV2.shiftInstanceId, copies.map((copy) => copy.id)));
+    expect(copiedAssignments).toHaveLength(1);
+  });
+
+  it("serializa replicações A→B e B→A sem deadlock", async () => {
+    const reverseSourceStart = at("2027-03-01", "08:00:00");
+    const reverseSourceEnd = at("2027-03-01", "14:00:00");
+    await db!.insert(shiftInstances).values({
+      institutionId,
+      hospitalId,
+      sectorId: reverseSectorId,
+      label: "Origem inversa",
+      specialty: "Anestesiologia",
+      startAt: reverseSourceStart,
+      endAt: reverseSourceEnd,
+      status: "VAGO",
+      createdBy: managerUserId,
+    });
+
+    await db!.delete(monthlyRosters).where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        inArray(monthlyRosters.yearMonth, ["2026-09", "2027-03"]),
+      ),
+    );
+    await db!.insert(monthlyRosters).values([
+      { institutionId, hospitalId, yearMonth: "2026-09", status: "DRAFT" },
+      { institutionId, hospitalId, yearMonth: "2027-03", status: "DRAFT" },
+    ]);
+
+    const holdRoster = (yearMonth: string) => {
+      let release!: () => void;
+      let markLocked!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const locked = new Promise<void>((resolve) => { markLocked = resolve; });
+      const transaction = db!.transaction(async (tx) => {
+        await tx
+          .update(monthlyRosters)
+          .set({ status: "DRAFT" })
+          .where(
+            and(
+              eq(monthlyRosters.institutionId, institutionId),
+              eq(monthlyRosters.hospitalId, hospitalId),
+              eq(monthlyRosters.yearMonth, yearMonth),
+            ),
+          );
+        markLocked();
+        await released;
+      });
+      return { release, locked, transaction };
+    };
+    const sourceMonthLock = holdRoster("2026-09");
+    const reverseMonthLock = holdRoster("2027-03");
+    await Promise.all([sourceMonthLock.locked, reverseMonthLock.locked]);
+
+    let settled = 0;
+    const caller = callerFor(managerUserId, "manager");
+    const requests = [
+      caller.replicateRange({
+        hospitalId,
+        sectorId,
+        from: { start: "2026-09-07", granularity: "week" },
+        to: { start: "2027-03-01" },
+      }).finally(() => { settled += 1; }),
+      caller.replicateRange({
+        hospitalId,
+        sectorId: reverseSectorId,
+        from: { start: "2027-03-01", granularity: "week" },
+        to: { start: "2026-09-07" },
+      }).finally(() => { settled += 1; }),
+    ];
+    const outcomesPromise = Promise.allSettled(requests);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(settled).toBe(0);
+    } finally {
+      sourceMonthLock.release();
+      reverseMonthLock.release();
+    }
+    await Promise.all([sourceMonthLock.transaction, reverseMonthLock.transaction]);
+
+    const outcomes = await outcomesPromise;
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(true);
+    const created = outcomes.map((outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.created : 0,
+    );
+    expect(created.sort((left, right) => left - right)).toEqual([1, 3]);
+    await db!.delete(shiftInstances).where(
+      and(
+        eq(shiftInstances.institutionId, institutionId),
+        eq(shiftInstances.label, "Origem inversa"),
+      ),
+    );
+  });
+
+  it("permite replicar de origem LOCKED e mantém o lock de origem", async () => {
+    await db!.insert(shiftInstances).values({
+      institutionId,
+      hospitalId,
+      sectorId: reverseSectorId,
+      label: "Origem bloqueada",
+      specialty: "Anestesiologia",
+      startAt: at("2027-05-03", "08:00:00"),
+      endAt: at("2027-05-03", "14:00:00"),
+      status: "VAGO",
+      createdBy: managerUserId,
+    });
+    await db!.delete(monthlyRosters).where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        inArray(monthlyRosters.yearMonth, ["2027-05", "2027-06"]),
+      ),
+    );
+    await db!.insert(monthlyRosters).values([
+      { institutionId, hospitalId, yearMonth: "2027-05", status: "LOCKED" },
+      { institutionId, hospitalId, yearMonth: "2027-06", status: "DRAFT" },
+    ]);
+
+    const result = await callerFor(managerUserId, "manager").replicateRange({
+      hospitalId,
+      sectorId: reverseSectorId,
+      from: { start: "2027-05-03", granularity: "week" },
+      to: { start: "2027-06-07" },
+    });
+    expect(result.created).toBe(1);
+
+    const [sourceRoster] = await db!
+      .select({ status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, "2027-05"),
+        ),
+      );
+    expect(sourceRoster.status).toBe("LOCKED");
+  });
+
   it("replicateWeek (compatibilidade) delega e devolve created", async () => {
     const caller = callerFor(managerUserId, "manager");
     const r = await caller.replicateWeek({
@@ -328,6 +636,7 @@ describe("shifts.replicateRange", () => {
         and(
           eq(shiftInstances.institutionId, institutionId),
           gte(shiftInstances.startAt, at("2026-10-01", "00:00:00")),
+          lt(shiftInstances.startAt, at("2026-11-01", "00:00:00")),
         ),
       );
     expect(october).toHaveLength(r.created);
@@ -428,6 +737,96 @@ describe("shifts.replicateRange", () => {
         to: { start: "2025-01-12" },
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("sessionVersion obsoleto reverte replicação, rosters e auditoria", async () => {
+    const sourceStart = at("2032-01-05", "08:00:00");
+    const sourceEnd = at("2032-01-05", "14:00:00");
+    const [source] = await db!
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        label: "Replicação com sessão obsoleta",
+        specialty: "Anestesiologia",
+        startAt: sourceStart,
+        endAt: sourceEnd,
+        status: "VAGO",
+        createdBy: managerUserId,
+      })
+      .$returningId();
+    createdShiftIds.push(source.id);
+    const rosterBefore = await db!
+      .select({ id: monthlyRosters.id, status: monthlyRosters.status, version: monthlyRosters.version })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          inArray(monthlyRosters.yearMonth, ["2032-01", "2032-02"]),
+        ),
+      );
+    const auditBefore = await db!
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(eq(auditTrail.institutionId, institutionId));
+
+    await db!
+      .update(users)
+      .set({ sessionVersion: 2 })
+      .where(eq(users.id, managerUserId));
+    try {
+      await expect(
+        callerFor(managerUserId, "manager").replicateRange({
+          hospitalId,
+          sectorId,
+          from: { start: "2032-01-05", granularity: "week" },
+          to: { start: "2032-02-02" },
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFLICT",
+        message: expect.stringMatching(/sessão.*revogada/i),
+      });
+    } finally {
+      await db!
+        .update(users)
+        .set({ sessionVersion: 1 })
+        .where(eq(users.id, managerUserId));
+    }
+
+    const target = await db!
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, institutionId),
+          eq(shiftInstances.hospitalId, hospitalId),
+          eq(shiftInstances.sectorId, sectorId),
+          eq(shiftInstances.label, "Replicação com sessão obsoleta"),
+          gte(shiftInstances.startAt, at("2032-02-02", "00:00:00")),
+          lt(shiftInstances.startAt, at("2032-02-09", "00:00:00")),
+        ),
+      );
+    expect(target).toHaveLength(0);
+    expect(
+      await db!
+        .select({ id: monthlyRosters.id, status: monthlyRosters.status, version: monthlyRosters.version })
+        .from(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+            inArray(monthlyRosters.yearMonth, ["2032-01", "2032-02"]),
+          ),
+        ),
+    ).toEqual(rosterBefore);
+    expect(
+      await db!
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.institutionId, institutionId)),
+    ).toEqual(auditBefore);
   });
 
   it("rosterStatus: DRAFT sem registro → PUBLISHED após publicar → LOCKED após bloquear", async () => {

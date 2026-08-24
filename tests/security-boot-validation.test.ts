@@ -9,6 +9,7 @@ const VALID_PRODUCTION_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: "production",
   COOKIE_SECRET: "z".repeat(48),
   DATABASE_URL: "mysql://app:realpass@db.prod.internal:3306/escalas",
+  COMUNICA_PLUS_OUTBOUND_ENABLED: "1",
   COMUNICA_PLUS_URL: "https://comunicamais.example.com",
   COMUNICA_PLUS_SYSTEM_EMAIL: "system.escalas@hospital.example",
   COMUNICA_PLUS_SYSTEM_PASSWORD: "a-real-strong-password",
@@ -61,6 +62,34 @@ describe("Frente 2.1 - production boot validation", () => {
       expect(() =>
         assertProductionSecrets({ env: VALID_PRODUCTION_ENV }),
       ).not.toThrow();
+    });
+
+    it("boots with outbound disabled without requiring or validating Comunica+ credentials", () => {
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            NODE_ENV: "production",
+            COOKIE_SECRET: "z".repeat(48),
+            DATABASE_URL: "mysql://app:realpass@db.prod.internal:3306/escalas",
+            COMUNICA_PLUS_URL: "http://localhost:3001",
+            COMUNICA_PLUS_SYSTEM_PASSWORD: "system123",
+            COMUNICA_PLUS_SYSTEM_PIN: "9999",
+          },
+        }),
+      ).toEqual([]);
+    });
+
+    it("rejects an ambiguous outbound flag instead of enabling it implicitly", () => {
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            NODE_ENV: "production",
+            COOKIE_SECRET: "z".repeat(48),
+            DATABASE_URL: "mysql://app:realpass@db.prod.internal:3306/escalas",
+            COMUNICA_PLUS_OUTBOUND_ENABLED: "true",
+          },
+        }),
+      ).toContain("COMUNICA_PLUS_OUTBOUND_ENABLED must be 0, 1, or unset");
     });
   });
 
