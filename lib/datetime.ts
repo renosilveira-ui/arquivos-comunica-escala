@@ -4,7 +4,7 @@
  */
 
 import { format, parse } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import { ptBR } from "date-fns/locale/pt-BR";
 
 /**
  * Formata data para exibição em formato brasileiro DD/MM/AAAA

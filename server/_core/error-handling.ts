@@ -19,16 +19,23 @@ import type { ErrorRequestHandler, NextFunction, Request, Response } from "expre
 
 type Logger = { error: (obj: Record<string, unknown>, msg: string) => void };
 
-let forwardingInstalled = false;
+const ASYNC_FORWARDING_MARKER = Symbol.for("escalas.async-route-forwarding.installed");
 
 export function installAsyncRouteForwarding(): void {
-  if (forwardingInstalled) return;
-  forwardingInstalled = true;
   const require = createRequire(import.meta.url);
   // Camada interna do Express 4 que invoca cada handler de rota/middleware.
   const Layer = require("express/lib/router/layer") as {
-    prototype: { handle_request: (req: Request, res: Response, next: NextFunction) => void; handle: unknown };
+    prototype: {
+      handle_request: (req: Request, res: Response, next: NextFunction) => void;
+      handle: unknown;
+      [ASYNC_FORWARDING_MARKER]?: boolean;
+    };
   };
+  // Vitest isola os módulos da aplicação por arquivo, mas o módulo CommonJS
+  // interno do Express pode continuar compartilhado no worker. Marcar o
+  // próprio prototype evita empilhar wrappers quando o setup é reinstalado.
+  if (Layer.prototype[ASYNC_FORWARDING_MARKER]) return;
+  Layer.prototype[ASYNC_FORWARDING_MARKER] = true;
   const original = Layer.prototype.handle_request;
   Layer.prototype.handle_request = function (this: { handle: unknown }, req, res, next) {
     const fn = this.handle as ((...args: unknown[]) => unknown) & { length: number };
