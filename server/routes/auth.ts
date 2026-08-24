@@ -29,7 +29,11 @@ import {
 } from "../_core/cookie-policy";
 import { parseTenantIdHeader } from "../_core/tenant";
 import { resolveTrustedPublicBaseUrl } from "../_core/public-url";
-import { revokeUserPushRegistrations } from "../push-registration-revocation";
+import {
+  PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+  revokeUserPushRegistrations,
+  withPushAccountMutex,
+} from "../push-registration-revocation";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -257,7 +261,11 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
   const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
 
   try {
-    const committed = await db.transaction(async (tx) => {
+    const committed = await withPushAccountMutex(
+      db,
+      authUser.id,
+      PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+      (connectionDb) => connectionDb.transaction(async (tx) => {
       const [lockedUser] = await tx
         .select()
         .from(users)
@@ -336,7 +344,8 @@ authRouter.post("/change-password", async (req: Request, res: Response): Promise
         name: lockedUser.name,
         sessionVersion: nextSessionVersion,
       };
-    });
+      }),
+    );
 
     const refreshedToken = await sdk.createSessionToken(String(committed.id), {
       name: committed.name ?? "",
@@ -706,7 +715,11 @@ authRouter.post("/reset-password", async (req: Request, res: Response): Promise<
   const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
 
   try {
-    await db.transaction(async (tx) => {
+    await withPushAccountMutex(
+      db,
+      resetCandidate.userId,
+      PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+      (connectionDb) => connectionDb.transaction(async (tx) => {
       // User first, token second: same total lock order as forgot/admin reset.
       const [lockedUser] = await tx
         .select()
@@ -811,7 +824,8 @@ authRouter.post("/reset-password", async (req: Request, res: Response): Promise<
         },
         { db: tx, strict: true },
       );
-    });
+      }),
+    );
     res.json({ ok: true });
   } catch (error) {
     if (error instanceof AuthMutationError) {
@@ -991,8 +1005,12 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
   ];
 
   try {
-    await db.transaction(
-      async (tx) => {
+    await withPushAccountMutex(
+      db,
+      authUser.id,
+      PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+      (connectionDb) => connectionDb.transaction(
+        async (tx) => {
         // Global identity order: every relevant user by id, then every
         // professional by id, then every membership by id. Locking the whole
         // canonical admin set also serializes concurrent last-admin deletes.
@@ -1354,7 +1372,8 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
           { db: tx, strict: true },
         );
       },
-      { isolationLevel: "read committed" },
+        { isolationLevel: "read committed" },
+      ),
     );
 
     res.clearCookie(COOKIE_NAME, resolveClearCookieOptions({ req }));
@@ -1419,8 +1438,12 @@ authRouter.post("/logout", async (req: Request, res: Response): Promise<void> =>
     const db = await getDb();
     if (!db) throw new Error("Banco indisponível durante revogação de sessão");
 
-    const revocation = await db.transaction(
-      async (tx): Promise<{
+    const revocation = await withPushAccountMutex(
+      db,
+      sessionUserId!,
+      PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+      (connectionDb) => connectionDb.transaction(
+        async (tx): Promise<{
         userId: number;
         sessionVersionBefore: number;
         sessionVersionAfter: number;
@@ -1507,7 +1530,8 @@ authRouter.post("/logout", async (req: Request, res: Response): Promise<void> =>
           revokedPushTokenCount,
         };
       },
-      { isolationLevel: "read committed" },
+        { isolationLevel: "read committed" },
+      ),
     );
 
     if (revocation && revocation.auditInstitutionId === null) {

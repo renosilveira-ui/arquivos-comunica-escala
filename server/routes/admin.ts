@@ -19,7 +19,11 @@ import {
 import { sdk } from "../_core/sdk";
 import { recordAudit } from "../audit-trail";
 import { parseTenantIdHeader } from "../_core/tenant";
-import { revokeUserPushRegistrations } from "../push-registration-revocation";
+import {
+  PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+  revokeUserPushRegistrations,
+  withPushAccountMutex,
+} from "../push-registration-revocation";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -1101,7 +1105,11 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
       ? await readEmailDutyConfirmationSnapshots(db, userId)
       : [];
 
-    const result = await db.transaction(async (tx) => {
+    const result = await withPushAccountMutex(
+      db,
+      userId,
+      PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+      (connectionDb) => connectionDb.transaction(async (tx) => {
       if (emailActuallyChanges) {
         await lockAndAssertEmailChangeAllowedForUpdate(tx, userId, emailDutySnapshots);
       }
@@ -1220,7 +1228,8 @@ adminRouter.put("/users/:id", async (req: Request, res: Response): Promise<void>
       const [updatedUser] = await tx.select().from(users).where(eq(users.id, userId)).limit(1);
       if (!updatedUser) throw new AdminTenantError(404, "Usuário não encontrado");
       return { updatedUser, nextRole };
-    }, { isolationLevel: "read committed" });
+      }, { isolationLevel: "read committed" }),
+    );
     updated = result.updatedUser;
     resultingInstitutionRole = result.nextRole;
   } catch (error) {
@@ -1313,7 +1322,11 @@ adminRouter.post("/users/:id/reset-password", async (req: Request, res: Response
   const temporaryPassword = generateTemporaryPassword();
   const passwordHash = await bcrypt.hash(temporaryPassword, 12);
   try {
-    await db.transaction(async (tx) => {
+    await withPushAccountMutex(
+      db,
+      userId,
+      PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+      (connectionDb) => connectionDb.transaction(async (tx) => {
       const locked = await lockAndRevalidateAdminMutationAuthorities(tx, {
         institutionId,
         caller: callerSnapshot,
@@ -1369,7 +1382,8 @@ adminRouter.post("/users/:id/reset-password", async (req: Request, res: Response
         },
         { db: tx, strict: true },
       );
-    });
+      }),
+    );
   } catch (error) {
     if (sendAdminTenantError(res, error)) return;
     throw error;

@@ -1,5 +1,16 @@
-import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index, decimal, foreignKey } from "drizzle-orm/mysql-core";
-import { relations } from "drizzle-orm";
+import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index, decimal, foreignKey, customType, check } from "drizzle-orm/mysql-core";
+import { relations, sql } from "drizzle-orm";
+
+const binaryVarchar = customType<{
+  data: string;
+  driverData: string;
+  config: { length: number };
+  configRequired: true;
+}>({
+  dataType(config) {
+    return `varchar(${config.length}) COLLATE utf8mb4_bin`;
+  },
+});
 
 /**
  * Core user table backing auth flow.
@@ -404,13 +415,23 @@ export const pushTokens = mysqlTable(
   "push_tokens",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    // Proveniência do tenant ativo no registro, nunca autoridade de entrega.
+    // O token pertence à conta/dispositivo e pode nascer antes da hidratação
+    // do tenant; o destino é sempre revalidado no intent de push.
+    institutionId: int("institution_id").references(() => institutions.id),
     userId: int("user_id").notNull().references(() => users.id),
-    token: varchar("token", { length: 512 }).notNull(),
+    // Expo tokens são opacos e case-sensitive. A mesma igualdade binária
+    // governa UNIQUE, queries e o SHA-256 usado pelo mutex distribuído.
+    token: binaryVarchar("token", { length: 512 }).notNull(),
     platform: varchar("platform", { length: 20 }).notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
+    uniqPushToken: unique("uniq_push_token").on(table.token),
+    chkPushTokenNoWhitespace: check(
+      "chk_push_token_no_whitespace",
+      sql`${table.token} NOT REGEXP '[[:space:]]'`,
+    ),
     idxPushTokenInstitutionId: index("idx_push_tokens_institution_id").on(table.institutionId, table.id),
   }),
 );
@@ -676,12 +697,12 @@ export const swapRequests = mysqlTable("swap_requests", {
  *   CRON (11h/17h/22h) → Push "Confirma plantão?" → PENDING
  *     → SIM: CONFIRMED (auto-SSO no Comunica+)
  *     → NÃO: DECLINED (abre tela indicar substituto)
- *     → sem resposta +30min: AUTO_CONFIRMED (loga e notifica gestor)
+ *     → sem resposta +30min: mantém estado e escala para decisão humana
  *
  * Substituição:
  *   Médico original DECLINED → indica substituto → NOMINATED
  *   Substituto aceita → REPLACEMENT_CONFIRMED
- *   Substituto recusa/ignora → fallback para AUTO_CONFIRMED
+ *   Substituto recusa/ignora → alerta gerencial, sem confirmação automática
  */
 export const dutyConfirmations = mysqlTable(
   "duty_confirmations",
@@ -702,7 +723,7 @@ export const dutyConfirmations = mysqlTable(
       "NOMINATED",              // Substituto indicado, aguardando aceite
       "REPLACEMENT_CONFIRMED",  // Substituto aceitou
       "REPLACEMENT_DECLINED",   // Substituto recusou
-      "AUTO_CONFIRMED",         // Sem resposta → logado automaticamente
+      "AUTO_CONFIRMED",         // Legado somente leitura; não é mais produzido
     ]).notNull().default("PENDING"),
 
     // Substituto (preenchido quando NOMINATED).
@@ -718,8 +739,8 @@ export const dutyConfirmations = mysqlTable(
     notifiedAt: timestamp("notified_at"),               // Quando o push foi enviado
     respondedAt: timestamp("responded_at"),              // Quando médico respondeu
     recheckAt: timestamp("recheck_at"),                  // Quando rodar rechecagem (+30min)
-    autoConfirmedAt: timestamp("auto_confirmed_at"),     // Se auto-confirmado
-    ssoTriggeredAt: timestamp("sso_triggered_at"),       // Quando SSO foi executado
+    autoConfirmedAt: timestamp("auto_confirmed_at"),     // Legado histórico
+    ssoTriggeredAt: timestamp("sso_triggered_at"),       // Ticket Expo do SSO aceito
 
     // Token único para deep link de confirmação
     confirmationToken: varchar("confirmation_token", { length: 191 }).notNull().unique(),

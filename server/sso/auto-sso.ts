@@ -11,69 +11,169 @@
 // e envia o push que dispara esse fluxo no toque.
 
 import { getDb } from "../db";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { dutyConfirmations } from "../../drizzle/schema";
 import { hasMappingFor } from "./org-mapping";
-import { ENV } from "../_core/env";
-import { sendPushNotification } from "../notifications-service";
-import { requireValidDutyConfirmation } from "../confirmation-integrity";
+import { resolveTrustedSsoTargetUrl } from "./url-policy";
+import {
+  enqueueTrackedPushNotification,
+  sendTrackedPushNotification,
+  type TrackedPushInput,
+} from "../push-delivery";
+import {
+  dutyShiftSnapshot,
+  requireValidDutyConfirmation,
+} from "../confirmation-integrity";
 
 interface AutoSsoResult {
   ok: boolean;
   error?: string;
 }
 
+type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+type AutoSsoOutboxDb = Pick<Db, "insert" | "select" | "update">;
+
+/**
+ * Persiste o sso_ready no mesmo commit da confirmação. `null` significa que
+ * a instituição não possui integração configurada; qualquer outra falha é
+ * estrutural e deve abortar a transação chamadora.
+ */
+export async function enqueueAutoSsoPush(
+  confirmationId: number,
+  now = new Date(),
+  dbOverride?: AutoSsoOutboxDb,
+): Promise<TrackedPushInput | null> {
+  const db = dbOverride ?? await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const valid = await requireValidDutyConfirmation(db, confirmationId, {
+    allowedStatuses: ["CONFIRMED", "REPLACEMENT_CONFIRMED"],
+    requireOriginalAssignmentActive: false,
+    requireEffectiveAssignment: true,
+    // Chamadores transacionais já seguem shift → assignment → confirmation;
+    // a releitura corrente impede que o outbox herde label/horários/identidade
+    // de um snapshot RR anterior. O caminho avulso será revalidado pelo worker.
+    lockForUpdate: dbOverride !== undefined,
+  });
+  if (!hasMappingFor(valid.confirmation.institutionId)) {
+    console.warn(
+      `[AutoSSO] institution ${valid.confirmation.institutionId} sem SSO_ORG_MAP — push suprimido`,
+    );
+    return null;
+  }
+  if (!resolveTrustedSsoTargetUrl()) {
+    console.warn(
+      `[AutoSSO] institution ${valid.confirmation.institutionId} com SSO_TARGET_URL inválida — push suprimido`,
+    );
+    return null;
+  }
+
+  const targetUserId = valid.effective.userId;
+  const intent: TrackedPushInput = {
+    institutionId: valid.shift.institutionId,
+    userId: targetUserId,
+    shiftInstanceId: valid.shift.id,
+    dedupKey: `duty-confirmation:${confirmationId}:sso-ready:${targetUserId}`,
+    payload: {
+      title: "Plantão confirmado",
+      body: "Toque para abrir o Comunica+ já logado no seu plantão.",
+      data: {
+        type: "sso_ready",
+        confirmationId,
+        institutionId: valid.shift.institutionId,
+        shiftInstanceId: valid.shift.id,
+      },
+    },
+    authority: {
+      kind: "DUTY_CONFIRMATION",
+      purpose: "SSO_READY",
+      confirmationId,
+      allowedStatuses: ["CONFIRMED", "REPLACEMENT_CONFIRMED"],
+      recipientKind: "EFFECTIVE",
+      expectedUserId: targetUserId,
+      shiftSnapshot: dutyShiftSnapshot(valid.shift),
+    },
+  };
+  await enqueueTrackedPushNotification(intent, now, db);
+  return intent;
+}
+
 /**
  * Sends the "open Comunica+ logged in" push for a confirmed duty.
- * Called after confirm/auto-confirm/replacement-accept.
+ * Called only after an explicit confirmation or replacement acceptance.
  */
 export async function triggerAutoSso(
   confirmationId: number,
 ): Promise<AutoSsoResult> {
-  const db = await getDb();
+  let db: NonNullable<Awaited<ReturnType<typeof getDb>>> | null;
+  try {
+    db = await getDb();
+  } catch {
+    return { ok: false, error: "Serviço SSO temporariamente indisponível" };
+  }
   if (!db) return { ok: false, error: "Database unavailable" };
 
-  let valid;
+  let intent: TrackedPushInput | null;
   try {
-    valid = await requireValidDutyConfirmation(db, confirmationId, {
-      allowedStatuses: ["CONFIRMED", "AUTO_CONFIRMED", "REPLACEMENT_CONFIRMED"],
-      requireOriginalAssignmentActive: false,
-      requireEffectiveAssignment: true,
-    });
-  } catch (error) {
-    return { ok: false, error: (error as Error).message };
+    intent = await enqueueAutoSsoPush(confirmationId, new Date());
+  } catch {
+    return { ok: false, error: "Não foi possível preparar o login automático" };
   }
-  const conf = valid.confirmation;
+  if (!intent) {
+    return { ok: false, error: "Integração SSO indisponível para esta instituição" };
+  }
 
-  // Instituição sem mapeamento no Comunica+ → não há SSO possível;
-  // não enviar push que levaria a um beco sem saída.
-  if (!hasMappingFor(conf.institutionId)) {
-    console.warn(
-      `[AutoSSO] institution ${conf.institutionId} sem SSO_ORG_MAP — push suprimido`,
+  const now = new Date();
+  let tracked;
+  try {
+    tracked = await sendTrackedPushNotification(
+      intent,
+      now,
     );
-    return { ok: false, error: "Instituição sem mapeamento SSO" };
+  } catch {
+    return { ok: false, error: "Push SSO persistido para retry" };
   }
 
-  // Substituto confirmado recebe o push no lugar do original.
-  const targetUserId = valid.effective.userId;
+  if (!tracked.ticketAccepted) {
+    return {
+      ok: false,
+      error: "Push SSO persistido para retry; ticket ainda não aceito pelo Expo",
+    };
+  }
 
-  await sendPushNotification(targetUserId, {
-    title: "Plantão confirmado",
-    body: "Toque para abrir o Comunica+ já logado no seu plantão.",
-    data: {
-      type: "sso_ready",
-      comunicaUrl: ENV.ssoTargetUrl, // fallback se o launch-code falhar
-      shiftInstanceId: valid.shift.id,
-    },
-  });
+  let updated: { affectedRows: number };
+  try {
+    [updated] = await db
+      .update(dutyConfirmations)
+      .set({ ssoTriggeredAt: now })
+      .where(
+        and(
+          eq(dutyConfirmations.id, confirmationId),
+          inArray(dutyConfirmations.status, ["CONFIRMED", "REPLACEMENT_CONFIRMED"]),
+          isNull(dutyConfirmations.ssoTriggeredAt),
+        ),
+      );
+  } catch {
+    return { ok: false, error: "Não foi possível registrar o login automático" };
+  }
 
-  await db
-    .update(dutyConfirmations)
-    .set({ ssoTriggeredAt: new Date() })
-    .where(eq(dutyConfirmations.id, confirmationId));
+  if (updated.affectedRows !== 1) {
+    let current: { ssoTriggeredAt: Date | null } | undefined;
+    try {
+      [current] = await db
+        .select({ ssoTriggeredAt: dutyConfirmations.ssoTriggeredAt })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, confirmationId))
+        .limit(1);
+    } catch {
+      return { ok: false, error: "Não foi possível validar o login automático" };
+    }
+    if (!current?.ssoTriggeredAt) {
+      return { ok: false, error: "Confirmação mudou antes do registro do push SSO" };
+    }
+  }
 
   console.log(
-    `[AutoSSO] Push sso_ready enviado para userId=${targetUserId}, confirmation=${confirmationId}`,
+    `[AutoSSO] Expo ticket aceito para sso_ready userId=${intent.userId}, confirmation=${confirmationId}`,
   );
   return { ok: true };
 }

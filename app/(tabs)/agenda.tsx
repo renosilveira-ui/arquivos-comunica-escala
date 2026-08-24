@@ -195,7 +195,8 @@ export default function AgendaScreen() {
     enabled: !!user?.id,
   });
   // Erro do SSO vira toast (o card não tem área de erro própria).
-  const { launch: ssoLaunch, error: ssoError, clearError: clearSsoError } = useSsoHandoff();
+  const { launch: ssoLaunch, error: ssoError, clearError: clearSsoError } =
+    useSsoHandoff(activeInstitutionId);
   const feedback = useActionFeedback();
   useEffect(() => {
     if (!ssoError) return;
@@ -421,10 +422,10 @@ export default function AgendaScreen() {
                 : undefined
             }
             onOpenComunica={
-              nextShift?.inProgress
+              nextShift?.inProgress && activeInstitutionId !== null
                 ? () => {
                     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    ssoLaunch(activeInstitutionId ?? undefined);
+                    ssoLaunch();
                   }
                 : undefined
             }

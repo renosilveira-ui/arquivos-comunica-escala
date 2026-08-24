@@ -23,6 +23,30 @@ const t = initTRPC.context<TrpcContext>().create({
 export const router = t.router;
 export const publicProcedure = t.procedure;
 
+/**
+ * Fronteira estreita para recuperação da allowlist institucional.
+ *
+ * A sessão já foi validada pelo SDK (inclusive sessionVersion), mas este
+ * middleware deliberadamente não lê, resolve nem aceita tenant. Usá-lo em
+ * recursos tenant-bound criaria bypass. Seus únicos usos são a allowlist de
+ * recuperação e o ownership conta/dispositivo do token push; nenhum deles
+ * lê ou muta recurso institucional.
+ */
+const requireSession = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+
+  return next({
+    ctx: {
+      ...ctx,
+      user: ctx.user,
+    },
+  });
+});
+
+export const sessionProcedure = t.procedure.use(requireSession);
+
 const requireUser = t.middleware(async (opts) => {
   const { ctx, next } = opts;
 

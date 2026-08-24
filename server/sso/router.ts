@@ -5,12 +5,23 @@ import { sdk } from "../_core/sdk";
 import { getJwks } from "./keys";
 import { generateHandoffToken } from "./generate";
 import { createLaunchCode, redeemLaunchCode, buildErrorHtml } from "./launch";
-import { resolveInstitutionForUser } from "../_core/tenant";
-import { getDb } from "../db";
-import { eq, and } from "drizzle-orm";
-import { professionalInstitutions } from "../../drizzle/schema";
+import { listActiveInstitutionIdsForUser, parseTenantIdHeader } from "../_core/tenant";
+import { resolveTrustedPublicBaseUrl } from "../_core/public-url";
 
 export const ssoRouter = Router();
+
+class SsoInstitutionAccessError extends Error {}
+
+async function resolveSsoInstitution(userId: number, institutionId: number): Promise<number> {
+  const allowedInstitutionIds = await listActiveInstitutionIdsForUser(userId);
+  if (
+    allowedInstitutionIds.length === 0 ||
+    !allowedInstitutionIds.includes(institutionId)
+  ) {
+    throw new SsoInstitutionAccessError();
+  }
+  return institutionId;
+}
 
 // GET /.well-known/jwks.json — Public key for Comunica+ to verify tokens
 ssoRouter.get("/jwks.json", async (_req: Request, res: Response): Promise<void> => {
@@ -18,8 +29,8 @@ ssoRouter.get("/jwks.json", async (_req: Request, res: Response): Promise<void> 
     const jwks = await getJwks();
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.json(jwks);
-  } catch (err) {
-    console.error("[SSO] JWKS generation failed:", err);
+  } catch {
+    console.error("[SSO] JWKS_GENERATION_FAILED");
     res.status(500).json({ error: "Falha ao gerar JWKS" });
   }
 });
@@ -37,57 +48,37 @@ ssoRouter.post("/generate", async (req: Request, res: Response): Promise<void> =
 
   // 2. Validate input
   const { clientNonce } = req.body as { clientNonce?: unknown };
-  if (typeof clientNonce !== "string" || !clientNonce.trim()) {
-    res.status(400).json({ error: "clientNonce é obrigatório" });
+  const normalizedClientNonce = typeof clientNonce === "string" ? clientNonce.trim() : "";
+  if (!normalizedClientNonce || normalizedClientNonce.length > 191) {
+    res.status(400).json({ error: "clientNonce deve ter entre 1 e 191 caracteres" });
     return;
   }
 
   // 3. Resolve tenant
-  const tenantHeader = req.headers["x-tenant-id"];
-  const parsedTenantId = typeof tenantHeader === "string" ? Number(tenantHeader) : null;
-  let tenant;
-  try {
-    tenant = await resolveInstitutionForUser(user.id, Number.isFinite(parsedTenantId) ? parsedTenantId : null);
-  } catch (err) {
-    // Sem vínculo ativo / tenant inválido lança — virava 500 genérico e o
-    // 403 abaixo era inalcançável (auditoria 22/08 parte 2).
-    res.status(403).json({ error: err instanceof Error ? err.message : "Sem vínculo institucional ativo" });
+  const parsedTenantId = parseTenantIdHeader(req.headers["x-tenant-id"]);
+  if (parsedTenantId === null) {
+    res.status(400).json({ error: "x-tenant-id explicito e valido e obrigatorio" });
     return;
   }
-
-  if (!tenant.institutionId) {
-    res.status(403).json({ error: "Sem vínculo institucional ativo" });
-    return;
-  }
-
-  // 4. Resolve role in institution
-  let roleInInstitution = "USER";
+  let institutionId: number;
   try {
-    const db = await getDb();
-    if (db) {
-      const [link] = await db
-        .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
-        .from(professionalInstitutions)
-        .where(
-          and(
-            eq(professionalInstitutions.userId, user.id),
-            eq(professionalInstitutions.institutionId, tenant.institutionId),
-            eq(professionalInstitutions.active, true),
-          ),
-        )
-        .limit(1);
-      if (link) roleInInstitution = link.roleInInstitution;
+    institutionId = await resolveSsoInstitution(user.id, parsedTenantId);
+  } catch (error) {
+    if (error instanceof SsoInstitutionAccessError) {
+      res.status(403).json({ error: "Sem vínculo institucional ativo" });
+      return;
     }
-  } catch {
-    // Fall back to USER
+    console.error("[SSO] GENERATE_TENANT_RESOLUTION_FAILED");
+    res.status(500).json({ error: "Falha ao validar vínculo institucional" });
+    return;
   }
 
-  // 5. Generate token
+  // 4. Generate token. Role and identity are rebuilt canonically inside the
+  // generator; no caller-provided or fallback role can enter the JWT.
   const result = await generateHandoffToken({
     user,
-    institutionId: tenant.institutionId,
-    clientNonce: clientNonce.trim(),
-    roleInInstitution,
+    institutionId,
+    clientNonce: normalizedClientNonce,
   });
 
   if (!result.ok) {
@@ -95,6 +86,8 @@ ssoRouter.post("/generate", async (req: Request, res: Response): Promise<void> =
       no_active_duty: 422,
       context_conflict: 409,
       org_not_mapped: 503,
+      invalid_input: 400,
+      authority_invalid: 403,
       internal_error: 500,
     } as const;
 
@@ -129,43 +122,61 @@ ssoRouter.post("/launch-code", async (req: Request, res: Response): Promise<void
     return;
   }
 
-  const tenantHeader = req.headers["x-tenant-id"];
-  const parsedTenantId = typeof tenantHeader === "string" ? Number(tenantHeader) : null;
-  let tenant;
+  const parsedTenantId = parseTenantIdHeader(req.headers["x-tenant-id"]);
+  if (parsedTenantId === null) {
+    res.status(400).json({ error: "x-tenant-id explicito e valido e obrigatorio" });
+    return;
+  }
+  let institutionId: number;
   try {
-    tenant = await resolveInstitutionForUser(user.id, Number.isFinite(parsedTenantId) ? parsedTenantId : null);
-  } catch (err) {
-    // Sem vínculo ativo / tenant inválido lança — virava 500 genérico e o
-    // 403 abaixo era inalcançável (auditoria 22/08 parte 2).
-    res.status(403).json({ error: err instanceof Error ? err.message : "Sem vínculo institucional ativo" });
+    institutionId = await resolveSsoInstitution(user.id, parsedTenantId);
+  } catch (error) {
+    if (error instanceof SsoInstitutionAccessError) {
+      res.status(403).json({ error: "Sem vínculo institucional ativo" });
+      return;
+    }
+    console.error("[SSO] LAUNCH_TENANT_RESOLUTION_FAILED");
+    res.status(500).json({ error: "Falha ao validar vínculo institucional" });
     return;
   }
 
-  if (!tenant.institutionId) {
-    res.status(403).json({ error: "Sem vínculo institucional ativo" });
+  const rawClientNonce = (req.body as { clientNonce?: unknown })?.clientNonce;
+  if (rawClientNonce !== undefined && typeof rawClientNonce !== "string") {
+    res.status(400).json({ error: "clientNonce invalido" });
+    return;
+  }
+  const clientNonce = typeof rawClientNonce === "string"
+    ? rawClientNonce.trim()
+    : randomUUID();
+  if (!clientNonce || clientNonce.length > 191) {
+    res.status(400).json({ error: "clientNonce deve ter entre 1 e 191 caracteres" });
     return;
   }
 
-  const clientNonce =
-    typeof (req.body as { clientNonce?: unknown })?.clientNonce === "string"
-      ? String((req.body as { clientNonce: string }).clientNonce).trim()
-      : randomUUID();
+  const publicBaseUrl = resolveTrustedPublicBaseUrl();
+  if (!publicBaseUrl) {
+    console.error("[SSO] APP_PUBLIC_URL ausente ou invalida; launch-code bloqueado");
+    res.status(503).json({ error: "Login automatico indisponivel" });
+    return;
+  }
 
-  const result = await createLaunchCode(user.id, tenant.institutionId, clientNonce);
+  const result = await createLaunchCode(
+    user.id,
+    institutionId,
+    clientNonce,
+    user.sessionVersion,
+  );
   if (!result.ok || !result.code) {
-    res.status(500).json({ error: result.error ?? "Falha ao criar código" });
+    res.status(result.status ?? 500).json({ error: result.error ?? "Falha ao criar código" });
     return;
   }
 
-  // URL absoluta do próprio servidor (mesmo host desta requisição).
-  const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "https";
-  const host = req.headers["x-forwarded-host"] || req.headers.host;
-  res.json({ launchUrl: `${proto}://${host}/api/sso/launch?code=${result.code}` });
+  res.json({ launchUrl: `${publicBaseUrl}/api/sso/launch?code=${result.code}` });
 });
 
 // GET /api/sso/launch?code= — Consume code, return auto-submit HTML.
 // Aberto sem autenticação (roda no browser externo, sem cookies do app);
-// a segurança vem do código one-time de 32 bytes CSPRNG com TTL 90s.
+// a segurança vem de 28 bytes CSPRNG + sessionVersion, one-time e TTL 90s.
 ssoRouter.get("/launch", async (req: Request, res: Response): Promise<void> => {
   const code = typeof req.query.code === "string" ? req.query.code : "";
   const result = await redeemLaunchCode(code);

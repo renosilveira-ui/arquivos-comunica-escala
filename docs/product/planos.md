@@ -37,8 +37,8 @@ recebe o aviso de limite e de vencimento, e troca de plano. Os
 profissionais nunca veem preço de grupo — só o do plano individual.
 
 A instituição compra o que é *da escala* (publicar mês, painel, vagas,
-auditoria…). O profissional compra o que é *dele* (ver próximo plantão,
-confirmar presença, comando de voz…) quando a instituição não cobre.
+auditoria e confirmação institucional). O profissional compra o que é
+*dele* (ver próximo plantão, comando de voz…) quando a instituição não cobre.
 Detalhe em §4 e §6.
 
 ## 2. Os planos da instituição (4ª rodada)
@@ -105,7 +105,7 @@ Tudo do Grátis, mais:
 | Profissional comum | Gestor |
 |---|---|
 | Faixa **Próximo plantão** (com Confirmar / Comunica+ quando aplicável) | **Replicar** semana/mês, **publicar** e **bloquear** mês — faixa "Agosto · rascunho" + Ações |
-| **Confirmação de presença**: push pré-plantão, "Sim confirmo / Não poderei", indicar substituto, aceitar indicação | Recebe o aviso de auto-confirmação e de recusa sem substituto |
+| **Confirmação de presença**: push pré-plantão, "Sim confirmo / Não poderei", indicar substituto, aceitar indicação | Recebe alerta de pendência ou recusa para verificar a cobertura; silêncio nunca confirma presença |
 | Histórico das próprias confirmações no detalhe do plantão | Editar mês publicado exige motivo (guardas de mês) |
 
 ### Lite+ / Pro / Pacote Intelligence (bloco escrito na 1ª rodada como "Intelligent")
@@ -142,7 +142,7 @@ o que os planos pagos dão *a ele*. O plano individual (nome de trabalho:
 | Recurso pessoal | Grátis (sem Pro) | Com Pro |
 |---|---|---|
 | Faixa Próximo plantão | — | ✓ |
-| Confirmação de presença | — | ✓ **se** a instituição tiver Lite+ (o fluxo envolve o gestor e o cron da instituição) — senão, só "confirmação pessoal" sem gestor (ver §10) |
+| Confirmação de presença | — | — — é um fluxo institucional, liberado para todos os vinculados quando a instituição tem **Lite ou superior**; o plano individual não cria uma confirmação paralela sem gestor |
 | Comando de voz | — | ✓ |
 | Comunica+ (abrir logado) | — | ✓ **se** a instituição tiver o Pacote Intelligence |
 | Ver várias instituições/hospitais onde está vinculado | ✓ (já existe) | ✓ |
@@ -176,7 +176,9 @@ servidor confirmou.
 
 1. O **plano da instituição** vale para todos os vínculos ativos dela.
 2. O **plano individual** vale para a conta do profissional em qualquer
-   instituição, só para recursos pessoais (§4).
+   instituição, só para recursos pessoais (§4). **Confirmação de
+   presença é institucional**: exige Lite ou superior na instituição e
+   nunca é liberada pelo plano individual.
 3. Um usuário com várias instituições vê, em cada uma, o plano daquela
    instituição — o app já troca de instituição ativa; o plano acompanha.
 4. Gestor **não** tem plano individual de gestão: quem paga a governança é
@@ -241,7 +243,7 @@ export type Feature =
 
 export const FEATURES: Record<Feature, { scope: "personal" | "institution"; minPlan: InstitutionPlan; pro?: boolean }> = {
   next_shift:          { scope: "personal",    minPlan: "LITE", pro: true },
-  duty_confirmation:   { scope: "personal",    minPlan: "LITE", pro: true },
+  duty_confirmation:   { scope: "institution", minPlan: "LITE" },
   voice:               { scope: "personal",    minPlan: "LITE_PLUS" /* ou "PRO"/addon — repartir conforme §2 */, pro: true },
   export_my_hours:     { scope: "personal",    minPlan: "LITE_PLUS" /* ou "PRO"/addon — repartir conforme §2 */, pro: true },
   comunica_sso:        { scope: "institution", minPlan: "LITE_PLUS" /* ou "PRO"/addon — repartir conforme §2 */ },
@@ -261,7 +263,8 @@ export const HOSPITAL_LIMIT: Record<InstitutionPlan, number | null> = { FREE: 1,
 `hasFeature(feature, { institutionPlan, individualPlan })`: `personal` →
 plano da instituição ≥ `minPlan` **ou** (`pro` e indivíduo PRO);
 `institution` → só plano da instituição. Plano vencido conta como FREE /
-NONE.
+NONE. Portanto, `duty_confirmation` nunca consulta nem combina o plano
+individual.
 
 ### Servidor
 
@@ -393,11 +396,10 @@ importação por PDF/foto.
 
 1. ~~Grafia~~ — 4ª rodada renomeou os planos: Grátis / Lite / Lite+ / Pro / Pro Intelligence.
 2. **Nome do plano individual**: "Escala+ Pro"?
-3. **Confirmação de presença no Pro quando a instituição é Grátis**: o fluxo
-   real envolve gestor (substituto, auto-confirmação, aviso). Opções:
-   (a) Pro só libera a faixa Próximo plantão e a voz; confirmação continua
-   exigindo Lite da instituição (**recomendo** — simples e honesto);
-   (b) "confirmação pessoal" sem gestor (só registra presença).
+3. ~~Confirmação de presença no plano individual quando a instituição é
+   Grátis~~ — decidido: confirmação é um fluxo institucional e exige
+   **Lite ou superior** da instituição. O plano individual não cria uma
+   modalidade paralela sem gestor.
 4. **Vagas no Grátis/Lite**: a aba some (proposta acima) ou fica visível
    só como lista "plantões em aberto" sem candidatura?
 5. **Trial**: Lite por 30 dias em toda instituição nova (recomendado em §8.1)? Pro por 14 dias?

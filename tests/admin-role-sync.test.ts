@@ -3,11 +3,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import bcrypt from "bcryptjs";
-import request from "supertest";
+import request, { type Response as SupertestResponse } from "supertest";
 import express, { type Express } from "express";
 import { authRouter } from "../server/routes/auth";
 import { adminRouter } from "../server/routes/admin";
 import { actorCapabilities, resolveTenantActor } from "../server/_core/policy";
+import { requireValidDutyConfirmation } from "../server/confirmation-integrity";
 import { getDb } from "../server/db";
 import {
   auditTrail,
@@ -27,9 +28,46 @@ import {
 } from "../drizzle/schema";
 import { yearMonthBrt } from "../server/local-time";
 import { sdk } from "../server/_core/sdk";
+import {
+  registerPushToken,
+  sendPushNotification,
+} from "../server/notifications-service";
 
 const STAMP = Date.now();
 const PASSWORD = "SenhaAdmin123";
+
+function deferredVoid() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function expoTicketResponse(ticketId: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: vi.fn(async () => ({ data: { status: "ok", id: ticketId } })),
+  } as unknown as Response;
+}
+
+async function waitForPushLockWaiter(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  targetUserId: number,
+): Promise<void> {
+  const marker = `escala-push-user:${targetUserId}`;
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const [rows] = await db.execute("SHOW FULL PROCESSLIST");
+    const waiting = (rows as { Info?: unknown }[]).some(
+      (row) => typeof row.Info === "string" && row.Info.includes("GET_LOCK") && row.Info.includes(marker),
+    );
+    if (waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Waiter do mutex push não observado para userId=${targetUserId}`);
+}
 
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
 
@@ -225,6 +263,42 @@ describe("admin: papel institucional isolado por tenant", () => {
           : undefined,
       endAt,
       status,
+    });
+  }
+
+  async function confirmDutyInTransaction(
+    confirmationId: number,
+    userId: number,
+    afterLocks?: () => Promise<void>,
+  ): Promise<void> {
+    const [actor] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!actor) throw new Error("confirmation actor missing");
+    await db.transaction(async (tx) => {
+      const current = await requireValidDutyConfirmation(tx, confirmationId, {
+        allowedStatuses: ["PENDING"],
+        expectedActor: {
+          kind: "ORIGINAL",
+          userId,
+          sessionVersion: actor.sessionVersion,
+        },
+        expectedInstitutionId: institutionAId,
+        lockForUpdate: true,
+      });
+      await afterLocks?.();
+      const [updated] = await tx
+        .update(dutyConfirmations)
+        .set({ status: "CONFIRMED", respondedAt: new Date() })
+        .where(
+          and(
+            eq(dutyConfirmations.id, current.confirmation.id),
+            eq(dutyConfirmations.status, "PENDING"),
+          ),
+        );
+      if (updated.affectedRows !== 1) throw new Error("confirmation CAS lost");
     });
   }
 
@@ -684,6 +758,87 @@ describe("admin: papel institucional isolado por tenant", () => {
     });
   });
 
+  it("reset admin real aguarda fetch Expo em voo e revoga antes de novo envio", async () => {
+    const [before] = await db
+      .select({
+        sessionVersion: users.sessionVersion,
+        passwordHash: users.passwordHash,
+        mustChangePassword: users.mustChangePassword,
+      })
+      .from(users)
+      .where(eq(users.id, targetId));
+    const token = `ExponentPushToken[admin-reset-fetch-${STAMP}]`;
+    await expect(
+      registerPushToken(targetId, token, "ios", institutionAId, before.sessionVersion),
+    ).resolves.toEqual({ success: true, message: "Token registrado com sucesso" });
+
+    const fetchEntered = deferredVoid();
+    const releaseFetch = deferredVoid();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        fetchEntered.resolve();
+        await releaseFetch.promise;
+        return expoTicketResponse("ticket-admin-reset-race");
+      })
+      .mockResolvedValue(expoTicketResponse("ticket-unexpected-after-reset"));
+    vi.stubGlobal("fetch", fetchMock);
+    let resetSettled = false;
+    let resetPromise: Promise<SupertestResponse> | undefined;
+    try {
+      const sendPromise = sendPushNotification(
+        targetId,
+        { title: "Mutex reset", body: "envio já autorizado" },
+        institutionAId,
+      );
+      await fetchEntered.promise;
+      resetPromise = request(app)
+        .post(`/api/admin/users/${targetId}/reset-password`)
+        .set("Cookie", cookie)
+        .set("x-tenant-id", String(institutionAId))
+        .then((response) => {
+          resetSettled = true;
+          return response;
+        });
+
+      await waitForPushLockWaiter(db, targetId);
+      expect(resetSettled).toBe(false);
+      await expect(
+        db.select({ sessionVersion: users.sessionVersion }).from(users).where(eq(users.id, targetId)),
+      ).resolves.toEqual([{ sessionVersion: before.sessionVersion }]);
+
+      releaseFetch.resolve();
+      await expect(sendPromise).resolves.toMatchObject({ status: "TICKETS_ACCEPTED" });
+      const reset = await resetPromise;
+      expect(reset.status).toBe(200);
+      expect(reset.body).toMatchObject({ ok: true, temporaryPassword: expect.any(String) });
+      await expect(
+        db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.userId, targetId)),
+      ).resolves.toHaveLength(0);
+      await expect(
+        sendPushNotification(
+          targetId,
+          { title: "Depois do reset", body: "não enviar" },
+          institutionAId,
+        ),
+      ).resolves.toMatchObject({ status: "NO_REGISTERED_TOKENS" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseFetch.resolve();
+      if (resetPromise) await Promise.allSettled([resetPromise]);
+      vi.unstubAllGlobals();
+      await db.delete(pushTokens).where(eq(pushTokens.token, token));
+      await db
+        .update(users)
+        .set({
+          sessionVersion: before.sessionVersion,
+          passwordHash: before.passwordHash,
+          mustChangePassword: before.mustChangePassword,
+        })
+        .where(eq(users.id, targetId));
+    }
+  }, 30_000);
+
   it("roleInInstitution novo rebaixa somente o tenant selecionado", async () => {
     const response = await request(app)
       .put(`/api/admin/users/${targetId}`)
@@ -1126,6 +1281,123 @@ describe("admin: papel institucional isolado por tenant", () => {
       await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, adminId)),
     ).toHaveLength(0);
   });
+
+  it("corrida confirmação × e-mail em 12 ordens não deadlocka nem altera identidade ativa", async () => {
+    for (let round = 0; round < 12; round++) {
+      const confirmationId = await createDutyLinkedToTarget(
+        "original",
+        new Date(Date.now() + (round + 1) * 60 * 60 * 1000),
+        "PENDING",
+      );
+      const emailUpdate = request(app)
+        .put(`/api/admin/users/${targetId}`)
+        .set("Cookie", cookie)
+        .set("x-tenant-id", String(institutionAId))
+        .send({ email: `rolesync-race-email-${round}-${STAMP}@test.local` })
+        .then((response) => response);
+      const confirmation = confirmDutyInTransaction(confirmationId, targetId);
+      const operations = round % 2 === 0
+        ? [confirmation, emailUpdate]
+        : [emailUpdate, confirmation];
+      const results = await Promise.allSettled(operations);
+
+      expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+      const response = await emailUpdate;
+      expect(response.status).toBe(409);
+      const [state] = await db
+        .select({ status: dutyConfirmations.status })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, confirmationId));
+      expect(state.status).toBe("CONFIRMED");
+      const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, targetId));
+      expect(user.email).toBe(targetEmail);
+    }
+    expect(
+      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+    ).toHaveLength(0);
+  }, 30_000);
+
+  it("corrida inversa com confirmação já lockada não cria ciclo shift↔confirmation", async () => {
+    for (let round = 0; round < 6; round++) {
+      const confirmationId = await createDutyLinkedToTarget(
+        "original",
+        new Date(Date.now() + (round + 1) * 60 * 60 * 1000),
+        "PENDING",
+      );
+      let reportLocksHeld!: () => void;
+      const locksHeld = new Promise<void>((resolve) => {
+        reportLocksHeld = resolve;
+      });
+      let releaseConfirmation!: () => void;
+      const holdConfirmation = new Promise<void>((resolve) => {
+        releaseConfirmation = resolve;
+      });
+      const confirmation = confirmDutyInTransaction(confirmationId, targetId, async () => {
+        reportLocksHeld();
+        await holdConfirmation;
+      });
+      await locksHeld;
+
+      const emailUpdate = request(app)
+        .put(`/api/admin/users/${targetId}`)
+        .set("Cookie", cookie)
+        .set("x-tenant-id", String(institutionAId))
+        .send({ email: `rolesync-inverse-race-${round}-${STAMP}@test.local` })
+        .then((response) => response);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      releaseConfirmation();
+
+      const [confirmationResult, emailResult] = await Promise.allSettled([
+        confirmation,
+        emailUpdate,
+      ]);
+      expect(confirmationResult.status).toBe("fulfilled");
+      expect(emailResult.status).toBe("fulfilled");
+      if (emailResult.status === "fulfilled") expect(emailResult.value.status).toBe(409);
+      const [state] = await db
+        .select({ status: dutyConfirmations.status })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, confirmationId));
+      expect(state.status).toBe("CONFIRMED");
+    }
+    const [target] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, targetId));
+    expect(target.email).toBe(targetEmail);
+  }, 30_000);
+
+  it("corrida confirmação × papel serializa sem deadlock e preserva ambos os commits", async () => {
+    for (let round = 0; round < 12; round++) {
+      const confirmationId = await createDutyLinkedToTarget(
+        "original",
+        new Date(Date.now() + (round + 1) * 60 * 60 * 1000),
+        "PENDING",
+      );
+      const nextRole: InstitutionRole = round % 2 === 0 ? "GESTOR_MEDICO" : "USER";
+      const roleUpdate = request(app)
+        .put(`/api/admin/users/${targetId}`)
+        .set("Cookie", cookie)
+        .set("x-tenant-id", String(institutionAId))
+        .send({ roleInInstitution: nextRole })
+        .then((response) => response);
+      const confirmation = confirmDutyInTransaction(confirmationId, targetId);
+      const operations = round % 2 === 0
+        ? [confirmation, roleUpdate]
+        : [roleUpdate, confirmation];
+      const results = await Promise.allSettled(operations);
+
+      expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+      const response = await roleUpdate;
+      expect(response.status).toBe(200);
+      expect(response.body.user.roleInInstitution).toBe(nextRole);
+      const [state] = await db
+        .select({ status: dutyConfirmations.status })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, confirmationId));
+      expect(state.status).toBe("CONFIRMED");
+    }
+  }, 30_000);
 
   it("dois admins editando um ao outro usam ordem total sem deadlock", async () => {
     for (let round = 0; round < 10; round++) {

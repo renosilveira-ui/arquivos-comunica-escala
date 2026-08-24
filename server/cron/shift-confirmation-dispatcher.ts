@@ -9,10 +9,11 @@
 //   17:00 → plantão Noite  (19:00–07:00)
 //   22:00 → plantão Manhã  (07:00–13:00 do dia seguinte)
 //
-// Também executa a rechecagem +30min: se o médico não respondeu,
-// marca AUTO_CONFIRMED, dispara SSO e notifica gestor.
+// Também executa a rechecagem +30min. Silêncio nunca confirma presença:
+// prazo vencido mantém a escala intacta e abre alerta para decisão humana.
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
+import { TRPCError } from "@trpc/server";
 import { and, eq, gte, lte, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "../db";
 import {
@@ -25,11 +26,24 @@ import {
   professionalAccess,
   professionalInstitutions,
   sectors,
+  users,
 } from "../../drizzle/schema";
-import { sendPushNotification } from "../notifications-service";
-import { triggerAutoSso } from "../sso/auto-sso";
-import { syncDutyToComunica } from "../sso/duty-sync";
-import { requireValidDutyConfirmation } from "../confirmation-integrity";
+import {
+  dutyShiftSnapshot,
+  isCanonicalDutyConfirmationRejection,
+  requireValidDutyConfirmation,
+} from "../confirmation-integrity";
+import {
+  clearDutyConfirmationRecheckIfCurrent,
+  dutyConfirmationCasIdentity,
+} from "../confirmation-state";
+import {
+  enqueueTrackedPushNotification,
+  processPendingPushDeliveries,
+  sendTrackedPushNotification,
+} from "../push-delivery";
+import { processPendingDutySyncs } from "../sso/duty-sync";
+import { resolveTrustedSsoTargetUrl } from "../sso/url-policy";
 import { processPendingComunicaPlusOutbox } from "../integrations/comunica-plus";
 
 // ── Trigger schedule ────────────────────────────────────────────────────────
@@ -73,6 +87,12 @@ function getLocalTime(now: Date): { hours: number; minutes: number; dateStr: str
   };
 }
 
+function isDuplicateEntry(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if ("code" in error && (error as { code?: unknown }).code === "ER_DUP_ENTRY") return true;
+  return "cause" in error && isDuplicateEntry((error as { cause?: unknown }).cause);
+}
+
 // ── Main tick (called every ~60s) ───────────────────────────────────────────
 
 /** Janela após o horário-gatilho em que o disparo ainda é feito (restart/drift). */
@@ -99,11 +119,19 @@ export async function tick(now: Date = new Date()) {
       }
     }
 
-    // 2. Process rechecks (PENDING confirmations past their recheckAt)
+    // 2. Persiste e conquista por CAS as escalações vencidas. O worker roda
+    // depois: se o CAS perder para uma decisão humana, a autoridade de status
+    // do outbox suprime o alerta obsoleto antes da rede.
     await processRechecks(now);
 
-    // 3. Retenta integrações do Comunica+ após preservar as decisões locais.
-    await processPendingComunicaPlusOutbox(now);
+    // 3. Retenta pushes/receipts e integrações externas em paralelo. Cada
+    // worker usa lease/CAS próprio; indisponibilidade externa não pode atrasar
+    // a escalação local de confirmações.
+    await Promise.all([
+      processPendingPushDeliveries(now),
+      processPendingDutySyncs(now),
+      processPendingComunicaPlusOutbox(now),
+    ]);
 
     // 4. Push de início de plantão (confirmados cujo plantão começou agora)
     await processShiftStartPushes(now);
@@ -119,7 +147,8 @@ export async function tick(now: Date = new Date()) {
 // Complementa o push da confirmação: cobre o médico que confirmou cedo
 // (11h/17h/22h) e no início do turno já não tem o push antigo à mão.
 //
-// Dedupe: coluna duty_confirmations.start_push_sent_at (NULL = pendente).
+// Dedupe: dedupKey UNIQUE + CAS do outbox. start_push_sent_at é somente
+// evidência posterior de ticket aceito; nunca funciona como pré-claim.
 // Janela de captura: startAt em [now - 5min, now] — o cron roda a cada
 // 60s; a folga de 5min cobre restarts curtos do processo sem re-enviar
 // (o dedupe é persistente) nem notificar plantões antigos.
@@ -130,7 +159,7 @@ export async function processShiftStartPushes(now: Date) {
   const db = await getDb();
   if (!db) return;
 
-  const confirmedStatuses = ["CONFIRMED", "AUTO_CONFIRMED", "REPLACEMENT_CONFIRMED"] as const;
+  const confirmedStatuses = ["CONFIRMED", "REPLACEMENT_CONFIRMED"] as const;
   const windowStart = new Date(now.getTime() - START_PUSH_LOOKBACK_MS);
 
   const started = await db
@@ -159,34 +188,58 @@ export async function processShiftStartPushes(now: Date) {
         requireOriginalAssignmentActive: false,
         requireEffectiveAssignment: true,
       });
-    } catch (error) {
-      console.warn(
-        `[ConfirmationCron] Start push suprimido para confirmação inválida ${conf.id}: ${(error as Error).message}`,
-      );
+    } catch {
+      console.warn(`[ConfirmationCron] START_PUSH_VALIDATION_FAILED confirmation=${conf.id}`);
       continue;
     }
     const targetUserId = valid.effective.userId;
+    if (!resolveTrustedSsoTargetUrl()) {
+      console.warn(
+        `[ConfirmationCron] Start push suprimido: SSO_TARGET_URL inválida para institution=${valid.shift.institutionId}`,
+      );
+      continue;
+    }
 
-    // Marca ANTES de enviar: se o push falhar, preferimos perder um
-    // aviso a re-notificar em loop a cada 60s.
-    await db
-      .update(dutyConfirmations)
-      .set({ startPushSentAt: now })
-      .where(eq(dutyConfirmations.id, conf.id));
-
-    await sendPushNotification(targetUserId, {
-      title: "Seu plantão começou",
-      body: `${valid.shift.label}: toque para abrir o Comunica+ já logado.`,
-      data: {
-        type: "sso_ready",
-        shiftInstanceId: valid.shift.id,
-      },
-    }).catch((err) =>
-      console.error("[ConfirmationCron] Start push failed:", err),
-    );
+    let ticketAccepted = false;
+    try {
+      const tracked = await sendTrackedPushNotification(
+        {
+          institutionId: valid.shift.institutionId,
+          userId: targetUserId,
+          shiftInstanceId: valid.shift.id,
+          dedupKey: `duty-confirmation:${conf.id}:shift-start:${targetUserId}`,
+          payload: {
+            title: "Seu plantão começou",
+            body: `${valid.shift.label}: toque para abrir o Comunica+ já logado.`,
+            data: {
+              type: "sso_ready",
+              confirmationId: conf.id,
+              institutionId: valid.shift.institutionId,
+              shiftInstanceId: valid.shift.id,
+            },
+          },
+          authority: {
+            kind: "DUTY_CONFIRMATION",
+            purpose: "SSO_READY",
+            confirmationId: conf.id,
+            allowedStatuses: [...confirmedStatuses],
+            recipientKind: "EFFECTIVE",
+            expectedUserId: targetUserId,
+            shiftSnapshot: dutyShiftSnapshot(valid.shift),
+          },
+        },
+        now,
+      );
+      ticketAccepted = tracked.ticketAccepted;
+    } catch {
+      console.error(`[ConfirmationCron] START_PUSH_TRACKING_FAILED confirmation=${conf.id}`);
+      continue;
+    }
 
     console.log(
-      `[ConfirmationCron] Start push sent userId=${targetUserId} shift=${valid.shift.id}`,
+      ticketAccepted
+        ? `[ConfirmationCron] Expo ticket accepted for start push userId=${targetUserId} shift=${valid.shift.id}`
+        : `[ConfirmationCron] Start push queued for retry userId=${targetUserId} shift=${valid.shift.id}`,
     );
   }
 }
@@ -233,12 +286,12 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
       shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
       professionalId: shiftAssignmentsV2.professionalId,
       institutionId: shiftAssignmentsV2.institutionId,
+      hospitalId: shiftAssignmentsV2.hospitalId,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       label: shiftInstances.label,
       sectorId: shiftInstances.sectorId,
       userId: professionals.userId,
-      professionalName: professionals.name,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -266,6 +319,14 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
       ),
     )
     .innerJoin(professionals, eq(shiftAssignmentsV2.professionalId, professionals.id))
+    .innerJoin(
+      users,
+      and(
+        eq(users.id, professionals.userId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
     .innerJoin(
       professionalInstitutions,
       and(
@@ -304,173 +365,304 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
 
   console.log(`[ConfirmationCron] Found ${assignments.length} assignments for ${trigger.label} ${dateStr}`);
 
+  const createdIntents: {
+    confirmationId: number;
+    intent: Parameters<typeof sendTrackedPushNotification>[0];
+  }[] = [];
+
   for (const assignment of assignments) {
-    // Skip if confirmation already exists for this assignment
-    const [existing] = await db
-      .select({ id: dutyConfirmations.id })
-      .from(dutyConfirmations)
-      .where(eq(dutyConfirmations.assignmentId, assignment.assignmentId))
-      .limit(1);
-
-    if (existing) continue;
-
     const confirmationToken = randomUUID();
     const recheckAt = new Date(now.getTime() + RECHECK_DELAY_MS);
 
-    // Create confirmation record
-    await db.insert(dutyConfirmations).values({
-      institutionId: assignment.institutionId,
-      shiftInstanceId: assignment.shiftInstanceId,
-      assignmentId: assignment.assignmentId,
-      professionalId: assignment.professionalId,
-      userId: assignment.userId,
-      status: "PENDING",
-      notifiedAt: now,
-      recheckAt,
-      confirmationToken,
-    });
-
-    // Send push notification. timeZone explícito: startAt é instante UTC
-    // e o servidor roda em UTC — sem isso o push exibia "16:00–22:00"
-    // para o plantão da Tarde (13:00–19:00 BRT).
-    const startTime = new Date(assignment.startAt).toLocaleTimeString("pt-BR", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: TIMEZONE,
-    });
-    const endTime = new Date(assignment.endAt).toLocaleTimeString("pt-BR", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: TIMEZONE,
-    });
-
-    await sendPushNotification(assignment.userId, {
-      title: "Confirmação de plantão",
-      body: `Você confirma seu plantão ${assignment.label} (${startTime}–${endTime})?`,
-      data: {
-        type: "duty_confirmation",
-        confirmationToken,
-        shiftInstanceId: assignment.shiftInstanceId,
-        assignmentId: assignment.assignmentId,
-      },
-    });
-
-    console.log(`[ConfirmationCron] Sent confirmation to ${assignment.professionalName} (userId=${assignment.userId})`);
+    // Confirmação e intenção de transporte nascem na mesma transação. A
+    // pré-seleção acima é apenas descoberta: shift, assignment, identidade,
+    // vínculo, ACL, roster e texto do plantão são todos reconstruídos sob lock
+    // antes de qualquer INSERT. A unique(assignment_id) fecha o segundo worker.
+    let created: typeof createdIntents[number] | null;
+    try {
+      created = await db.transaction(async (tx) => {
+        const [lockedShift] = await tx
+          .select({
+            id: shiftInstances.id,
+            institutionId: shiftInstances.institutionId,
+            hospitalId: shiftInstances.hospitalId,
+            sectorId: shiftInstances.sectorId,
+          })
+          .from(shiftInstances)
+          .where(
+            and(
+              eq(shiftInstances.id, assignment.shiftInstanceId),
+              eq(shiftInstances.institutionId, assignment.institutionId),
+              eq(shiftInstances.hospitalId, assignment.hospitalId),
+              eq(shiftInstances.sectorId, assignment.sectorId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!lockedShift) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "O plantão mudou durante a criação da confirmação",
+          });
+        }
+        const [lockedAssignment] = await tx
+          .select({ id: shiftAssignmentsV2.id })
+          .from(shiftAssignmentsV2)
+          .where(
+            and(
+              eq(shiftAssignmentsV2.id, assignment.assignmentId),
+              eq(shiftAssignmentsV2.shiftInstanceId, lockedShift.id),
+              eq(shiftAssignmentsV2.institutionId, lockedShift.institutionId),
+              eq(shiftAssignmentsV2.hospitalId, lockedShift.hospitalId),
+              eq(shiftAssignmentsV2.sectorId, lockedShift.sectorId),
+              eq(shiftAssignmentsV2.professionalId, assignment.professionalId),
+              eq(shiftAssignmentsV2.status, "OCUPADO"),
+              eq(shiftAssignmentsV2.isActive, true),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!lockedAssignment) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A alocação mudou durante a criação da confirmação",
+          });
+        }
+        const [inserted] = await tx
+          .insert(dutyConfirmations)
+          .values({
+            institutionId: assignment.institutionId,
+            shiftInstanceId: assignment.shiftInstanceId,
+            assignmentId: assignment.assignmentId,
+            professionalId: assignment.professionalId,
+            userId: assignment.userId,
+            status: "PENDING",
+            notifiedAt: null,
+            recheckAt,
+            confirmationToken,
+          })
+          .$returningId();
+        const current = await requireValidDutyConfirmation(tx, inserted.id, {
+          allowedStatuses: ["PENDING"],
+          expectedInstitutionId: lockedShift.institutionId,
+          lockForUpdate: true,
+        });
+        const startTime = current.shift.startAt.toLocaleTimeString("pt-BR", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: TIMEZONE,
+        });
+        const endTime = current.shift.endAt.toLocaleTimeString("pt-BR", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: TIMEZONE,
+        });
+        const intent: Parameters<typeof sendTrackedPushNotification>[0] = {
+          institutionId: current.shift.institutionId,
+          userId: current.original.userId,
+          shiftInstanceId: current.shift.id,
+          dedupKey: `duty-confirmation:${inserted.id}:request:${current.original.userId}`,
+          payload: {
+            title: "Confirmação de plantão",
+            body: `Você confirma seu plantão ${current.shift.label} (${startTime}–${endTime})?`,
+            data: {
+              type: "duty_confirmation",
+              confirmationId: inserted.id,
+              confirmationToken,
+              institutionId: current.shift.institutionId,
+              shiftInstanceId: current.shift.id,
+              assignmentId: current.original.assignmentId,
+            },
+          },
+          authority: {
+            kind: "DUTY_CONFIRMATION",
+            purpose: "CONFIRMATION_REQUEST",
+            confirmationId: inserted.id,
+            allowedStatuses: ["PENDING"],
+            recipientKind: "ORIGINAL",
+            expectedUserId: current.original.userId,
+            shiftSnapshot: dutyShiftSnapshot(current.shift),
+          },
+        };
+        await enqueueTrackedPushNotification(intent, now, tx);
+        return {
+          confirmationId: inserted.id,
+          intent,
+        };
+      });
+    } catch (error) {
+      if (isDuplicateEntry(error)) continue;
+      if (error instanceof TRPCError && error.code === "FORBIDDEN") {
+        console.log(
+          `[ConfirmationCron] Assignment ${assignment.assignmentId} ignorada: escala ainda não publicada`,
+        );
+        continue;
+      }
+      throw error;
+    }
+    if (created) createdIntents.push(created);
   }
+
+  // Nenhuma chamada de rede ocorre enquanto ainda existem confirmações da
+  // janela por materializar. Depois, um pool pequeno evita monopolizar o DB e
+  // o Expo quando um gatilho contém muitos profissionais.
+  let cursor = 0;
+  await Promise.all(
+    Array.from(
+      { length: Math.min(5, createdIntents.length) },
+      async () => {
+        while (cursor < createdIntents.length) {
+          const created = createdIntents[cursor++];
+          if (!created) return;
+          const { confirmationId, intent } = created;
+          try {
+            const tracked = await sendTrackedPushNotification(intent, now);
+            if (tracked.ticketAccepted) {
+              console.log(
+                `[ConfirmationCron] Expo ticket accepted for confirmation=${confirmationId} userId=${intent.userId}`,
+              );
+              continue;
+            }
+          } catch {
+            console.error(
+              `[ConfirmationCron] CONFIRMATION_PUSH_SUBMISSION_FAILED confirmation=${confirmationId}`,
+            );
+          }
+          await notifyManagersConfirmationEscalation(
+            confirmationId,
+            "PUSH_UNCONFIRMED",
+          ).catch(() =>
+            console.error(
+              `[ConfirmationCron] MANAGER_ESCALATION_FAILED confirmation=${confirmationId}`,
+            ),
+          );
+        }
+      },
+    ),
+  );
 }
 
-// ── Recheck: auto-confirm unresponsive doctors ──────────────────────────────
+// ── Recheck: escala silêncio para decisão humana ───────────────────────────
+
+const OPEN_CONFIRMATION_STATUSES = [
+  "PENDING",
+  "NOMINATED",
+  "DECLINED",
+  "REPLACEMENT_DECLINED",
+] as const;
+type OpenConfirmationStatus = (typeof OPEN_CONFIRMATION_STATUSES)[number];
 
 export async function processRechecks(now: Date) {
   const db = await getDb();
   if (!db) return;
 
-  // Find confirmations past their recheck time that need auto-resolution.
-  // PENDING: doctor never responded
-  // NOMINATED: replacement indicated but hasn't accepted
-  // DECLINED: doctor declined but never indicated replacement
-  // REPLACEMENT_DECLINED: substitute refused, no new nomination
+  // O prazo só autoriza encerrar esta rechecagem e alertar gestores. Não
+  // autoriza mudar a presença, a escala, o SSO ou o roster do Comunica+.
   const expired = await db
     .select({
       id: dutyConfirmations.id,
       status: dutyConfirmations.status,
+      institutionId: dutyConfirmations.institutionId,
+      shiftInstanceId: dutyConfirmations.shiftInstanceId,
+      assignmentId: dutyConfirmations.assignmentId,
+      professionalId: dutyConfirmations.professionalId,
+      userId: dutyConfirmations.userId,
+      recheckAt: dutyConfirmations.recheckAt,
     })
     .from(dutyConfirmations)
     .where(
       and(
-        inArray(dutyConfirmations.status, ["PENDING", "NOMINATED", "DECLINED", "REPLACEMENT_DECLINED"]),
+        inArray(dutyConfirmations.status, OPEN_CONFIRMATION_STATUSES),
         lte(dutyConfirmations.recheckAt, now),
       ),
     );
 
   for (const conf of expired) {
-    // Alocação já removida da escala (gestor trocou, cessão efetivada):
-    // não há quem confirmar — encerra a rechecagem sem SSO nem push.
-    let valid;
-    try {
-      valid = await requireValidDutyConfirmation(db, conf.id, {
-        allowedStatuses: [conf.status],
-      });
-    } catch (error) {
-      await db
-        .update(dutyConfirmations)
-        .set({ recheckAt: null })
-        .where(eq(dutyConfirmations.id, conf.id));
-      console.log(
-        `[ConfirmationCron] Confirmação ${conf.id} encerrada sem emissão: ${(error as Error).message}`,
-      );
+    if (!conf.recheckAt || !OPEN_CONFIRMATION_STATUSES.includes(conf.status as OpenConfirmationStatus)) {
       continue;
     }
 
-    // NOMINATED sem aceite: a indicação expira e o TITULAR é quem fica
-    // confirmado — o substituto que nunca aceitou não recebe SSO,
-    // duty-sync nem push de plantão (auditoria 22/08 parte 2).
-    if (conf.status === "NOMINATED") {
-      try {
-        const nominated = await requireValidDutyConfirmation(db, conf.id, {
-          allowedStatuses: ["NOMINATED"],
-          requireReplacementMembership: true,
-        });
-        await sendPushNotification(nominated.replacement!.userId, {
-          title: "Indicação expirada",
-          body: "A indicação de substituição não foi aceita a tempo e foi cancelada.",
-          data: { type: "replacement_declined", shiftInstanceId: nominated.shift.id },
-        }).catch(() => undefined);
-      } catch (error) {
-        console.warn(
-          `[ConfirmationCron] Push de indicação suprimido para confirmação ${conf.id}: ${(error as Error).message}`,
-        );
-      }
+    // A validação e o clear canônico compartilham a mesma transação/locks.
+    // Falha de infraestrutura escapa, faz rollback e preserva o timer.
+    let canonicallyRejected = false;
+    try {
+      canonicallyRejected = await db.transaction(async (tx) => {
+        try {
+          await requireValidDutyConfirmation(tx, conf.id, {
+            allowedStatuses: [conf.status],
+            requireOriginalMembership: false,
+            allowMissingOriginalMembership: true,
+            allowInvalidOriginalUser: true,
+            requireOriginalAccess: false,
+            lockForUpdate: true,
+          });
+          return false;
+        } catch (error) {
+          if (!isCanonicalDutyConfirmationRejection(error)) throw error;
+          await clearDutyConfirmationRecheckIfCurrent(tx, {
+            ...dutyConfirmationCasIdentity(conf),
+            expectedStatus: conf.status as OpenConfirmationStatus,
+            expectedRecheckAt: conf.recheckAt!,
+            now,
+          });
+          return true;
+        }
+      });
+    } catch {
+      console.error(`[ConfirmationCron] RECHECK_VALIDATION_RETRY confirmation=${conf.id}`);
+      continue;
+    }
+    if (canonicallyRejected) {
+      console.log(`[ConfirmationCron] RECHECK_CANONICALLY_REJECTED confirmation=${conf.id}`);
+      continue;
     }
 
-    // Auto-confirm: quem está alocado é quem fica logado
-    await db
-      .update(dutyConfirmations)
-      .set({
-        status: "AUTO_CONFIRMED",
-        autoConfirmedAt: now,
-        managerNotified: true,
-        replacementUserId: null,
-        replacementProfessionalId: null,
-      })
-      .where(eq(dutyConfirmations.id, conf.id));
-
-    // Notify the doctor that they were auto-confirmed
-    await sendPushNotification(valid.original.userId, {
-      title: "Plantão confirmado automaticamente",
-      body: "Você não respondeu a confirmação. Seu plantão foi confirmado e o login no Comunica+ será realizado.",
-      data: {
-        type: "duty_auto_confirmed",
-        shiftInstanceId: valid.shift.id,
-      },
-    });
-
-    // Auto-SSO for the assigned doctor
-    // Duty-sync: auto-confirmado também vira plantonista declarado
-    syncDutyToComunica(conf.id, "CONFIRM").catch((err) =>
-      console.error("[ConfirmationCron] Duty-sync failed:", err),
+    // Primeiro persiste todas as intencoes gerenciais. So depois o CAS pode
+    // consumir o timer. Se banco/escopo falhar, o prazo permanece devido e o
+    // proximo tick tenta de novo.
+    let escalation;
+    try {
+      escalation = await notifyManagersConfirmationEscalation(conf.id, "NO_RESPONSE");
+    } catch {
+      console.error(`[ConfirmationCron] MANAGER_ESCALATION_ENQUEUE_FAILED confirmation=${conf.id}`);
+      continue;
+    }
+    if (escalation.managerCount === 0 || escalation.intentCount !== escalation.managerCount) {
+      console.error(
+        `[ConfirmationCron] Confirmação ${conf.id} mantém recheck: ${escalation.intentCount}/${escalation.managerCount} alertas persistidos`,
+      );
+      continue;
+    }
+    console.log(
+      `[ConfirmationCron] Confirmação ${conf.id} aguarda receipt gerencial; presença permanece ${conf.status}`,
     );
-    triggerAutoSso(conf.id).catch((err) =>
-      console.error("[ConfirmationCron] Auto-SSO failed:", err),
-    );
-
-    // Notify managers responsible for this shift's hospital/sector
-    await notifyManagersAutoConfirm(conf.id).catch((err) =>
-      console.error("[ConfirmationCron] Manager notification failed:", err),
-    );
-
-    console.log(`[ConfirmationCron] Auto-confirmed userId=${valid.original.userId} for shift=${valid.shift.id}`);
   }
 }
 
-// ── Notify managers about auto-confirmations ────────────────────────────────
+// ── Escalação gerencial sem confirmação automática ─────────────────────────
 
-export async function notifyManagersAutoConfirm(confirmationId: number) {
+export type ConfirmationEscalationReason = "PUSH_UNCONFIRMED" | "NO_RESPONSE";
+
+export async function notifyManagersConfirmationEscalation(
+  confirmationId: number,
+  reason: ConfirmationEscalationReason,
+) {
   const db = await getDb();
-  if (!db) return;
+  if (!db) return { managerCount: 0, intentCount: 0 };
+  const [snapshot] = await db
+    .select({ status: dutyConfirmations.status })
+    .from(dutyConfirmations)
+    .where(eq(dutyConfirmations.id, confirmationId))
+    .limit(1);
+  if (!snapshot || !OPEN_CONFIRMATION_STATUSES.includes(snapshot.status as OpenConfirmationStatus)) {
+    return { managerCount: 0, intentCount: 0 };
+  }
   const valid = await requireValidDutyConfirmation(db, confirmationId, {
-    allowedStatuses: ["AUTO_CONFIRMED"],
-    requireEffectiveAssignment: true,
+    allowedStatuses: [snapshot.status],
+    requireOriginalMembership: false,
+    allowMissingOriginalMembership: true,
+    allowInvalidOriginalUser: true,
+    requireOriginalAccess: false,
   });
   const shift = valid.shift;
 
@@ -494,6 +686,14 @@ export async function notifyManagersAutoConfirm(confirmationId: number) {
         eq(professionalInstitutions.active, true),
       ),
     )
+    .innerJoin(
+      users,
+      and(
+        eq(users.id, professionals.userId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
     .where(
       and(
         eq(managerScopeTable.institutionId, valid.shift.institutionId),
@@ -514,6 +714,14 @@ export async function notifyManagersAutoConfirm(confirmationId: number) {
         eq(professionals.userId, professionalInstitutions.userId),
       ),
     )
+    .innerJoin(
+      users,
+      and(
+        eq(users.id, professionals.userId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
     .where(
       and(
         eq(professionalInstitutions.institutionId, valid.shift.institutionId),
@@ -522,28 +730,101 @@ export async function notifyManagersAutoConfirm(confirmationId: number) {
       ),
     );
 
+  // Admin global só recebe alerta dentro de tenant onde ainda possui
+  // professional↔PI ativa. Isso espelha a autoridade canônica de policy.ts:
+  // o papel global não contorna a admissão institucional.
+  const globalAdmins = await db
+    .select({ userId: professionals.userId })
+    .from(professionalInstitutions)
+    .innerJoin(
+      professionals,
+      and(
+        eq(professionals.id, professionalInstitutions.professionalId),
+        eq(professionals.userId, professionalInstitutions.userId),
+      ),
+    )
+    .innerJoin(
+      users,
+      and(
+        eq(users.id, professionals.userId),
+        eq(users.role, "admin"),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
+    .where(
+      and(
+        eq(professionalInstitutions.institutionId, valid.shift.institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    );
+
   const managerUserIds = new Set([
     ...managers.map((m) => m.userId),
     ...gestoresPlus.map((g) => g.userId),
+    ...globalAdmins.map((admin) => admin.userId),
   ]);
 
   const doctorName = valid.original.name ?? `Usuário #${valid.original.userId}`;
+  const shiftRevision = createHash("sha256")
+    .update(JSON.stringify(dutyShiftSnapshot(valid.shift)))
+    .digest("hex")
+    .slice(0, 12);
+  const recheckRevision = valid.confirmation.recheckAt?.getTime() ?? 0;
 
+  let intentCount = 0;
   for (const managerUserId of managerUserIds) {
-    await sendPushNotification(managerUserId, {
-      title: "Plantão confirmado automaticamente",
-      body: `${doctorName} não respondeu a confirmação do plantão ${shift.label}. O sistema confirmou automaticamente.`,
-      data: {
-        type: "manager_auto_confirm_alert",
+    const push =
+      reason === "PUSH_UNCONFIRMED"
+        ? {
+            title: "Falha ao notificar confirmação",
+            body: `Não foi possível comprovar o envio da confirmação de ${doctorName} para o plantão ${shift.label}. Verifique manualmente no Escala+.`,
+          }
+        : {
+            title: "Confirmação de plantão pendente",
+            body: `${doctorName} não respondeu no prazo do plantão ${shift.label}. O sistema não confirmou automaticamente; verifique a presença.`,
+          };
+    try {
+      await enqueueTrackedPushNotification({
+        institutionId: valid.shift.institutionId,
+        userId: managerUserId,
         shiftInstanceId: valid.shift.id,
-        userId: valid.original.userId,
-      },
-    });
+        dedupKey: `duty-confirmation:${confirmationId}:manager:${reason}:${snapshot.status}:${recheckRevision}:${shiftRevision}:${managerUserId}`,
+        payload: {
+          ...push,
+          data: {
+            type: "manager_confirmation_escalation",
+            reason,
+            confirmationId,
+            institutionId: valid.shift.institutionId,
+            shiftInstanceId: valid.shift.id,
+            userId: valid.original.userId,
+          },
+        },
+        authority: {
+          kind: "DUTY_CONFIRMATION",
+          purpose: "MANAGER_ESCALATION",
+          confirmationId,
+          allowedStatuses: [snapshot.status],
+          recipientKind: "MANAGER",
+          expectedUserId: managerUserId,
+          shiftSnapshot: dutyShiftSnapshot(valid.shift),
+        },
+      });
+      intentCount += 1;
+    } catch {
+      // Um destinatário sem outbox disponível não pode impedir os demais
+      // gestores de receberem o alerta.
+      console.error(
+        `[ConfirmationCron] MANAGER_ALERT_TRACKING_FAILED userId=${managerUserId}`,
+      );
+    }
   }
 
-  if (managerUserIds.size > 0) {
-    console.log(`[ConfirmationCron] Notified ${managerUserIds.size} manager(s) about auto-confirm for shift=${valid.shift.id}`);
-  }
+  console.log(
+    `[ConfirmationCron] Escalation ${reason}: ${intentCount}/${managerUserIds.size} intent(s) persisted`,
+  );
+  return { managerCount: managerUserIds.size, intentCount };
 }
 
 // ── Start the cron interval ─────────────────────────────────────────────────
@@ -554,10 +835,10 @@ export function startConfirmationCron() {
   if (intervalId) return;
   console.log("[ConfirmationCron] Started (checks every 60s)");
   // Run immediately on start
-  tick().catch((err) => console.error("[ConfirmationCron] tick error:", err));
+  tick().catch(() => console.error("[ConfirmationCron] TICK_FAILED"));
   // Then every 60 seconds
   intervalId = setInterval(() => {
-    tick().catch((err) => console.error("[ConfirmationCron] tick error:", err));
+    tick().catch(() => console.error("[ConfirmationCron] TICK_FAILED"));
   }, 60_000);
 }
 

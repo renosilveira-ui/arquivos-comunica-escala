@@ -31,6 +31,55 @@ const TENANT_KEY = "activeInstitutionId";
  */
 let inMemoryTenantId: number | null = null;
 let hydratedFromStorage = false;
+let inMemoryTenantRevision = 0;
+
+export type ActiveTenantSnapshot = Readonly<{
+  institutionId: number | null;
+  revision: number;
+}>;
+
+/**
+ * Snapshot síncrono usado imediatamente antes de efeitos de navegação.
+ * A revisão também detecta ABA (A → B → A) durante uma operação assíncrona.
+ */
+export function getActiveTenantSnapshot(): ActiveTenantSnapshot {
+  return {
+    institutionId: inMemoryTenantId,
+    revision: inMemoryTenantRevision,
+  };
+}
+
+async function persistTenantSnapshot(snapshot: ActiveTenantSnapshot): Promise<void> {
+  try {
+    if (Platform.OS === "web") {
+      if (snapshot.institutionId === null) {
+        globalThis.localStorage?.removeItem(TENANT_KEY);
+      } else {
+        globalThis.localStorage?.setItem(TENANT_KEY, String(snapshot.institutionId));
+      }
+    } else if (snapshot.institutionId === null) {
+      await AsyncStorage.removeItem(TENANT_KEY);
+    } else {
+      await AsyncStorage.setItem(TENANT_KEY, String(snapshot.institutionId));
+    }
+  } catch {
+    // Uma escrita antiga pode ter sido aplicada antes de rejeitar. Se já ficou
+    // stale, regrava o snapshot vivo; falha do snapshot atual é best-effort.
+    const current = getActiveTenantSnapshot();
+    if (current.revision !== snapshot.revision) {
+      await persistTenantSnapshot(current);
+    }
+    return;
+  }
+
+  // AsyncStorage não oferece CAS. Uma escrita A pode terminar depois de B ou
+  // clear e sobrescrever a persistência mais nova. A revisão transforma esse
+  // término tardio em uma reconciliação, sem bloquear memória, React ou rota.
+  const current = getActiveTenantSnapshot();
+  if (current.revision !== snapshot.revision) {
+    await persistTenantSnapshot(current);
+  }
+}
 
 function parseStored(raw: string | null | undefined): number | null {
   const value = raw ? Number(raw) : NaN;
@@ -52,7 +101,13 @@ export async function getActiveInstitutionId(): Promise<number | null> {
   if (inMemoryTenantId !== null) return inMemoryTenantId;
   if (!hydratedFromStorage) {
     hydratedFromStorage = true;
-    inMemoryTenantId = await readFromStorage();
+    const revisionBeforeRead = inMemoryTenantRevision;
+    const storedTenantId = await readFromStorage();
+    // Uma escolha/limpeza concorrente é mais nova que o storage lido.
+    if (inMemoryTenantRevision === revisionBeforeRead) {
+      inMemoryTenantId = storedTenantId;
+      inMemoryTenantRevision += 1;
+    }
   }
   return inMemoryTenantId;
 }
@@ -61,29 +116,15 @@ export async function setActiveInstitutionId(id: number): Promise<void> {
   // Memória primeiro: a troca vale AGORA, independente da persistência.
   inMemoryTenantId = id;
   hydratedFromStorage = true;
-  try {
-    if (Platform.OS === "web") {
-      globalThis.localStorage?.setItem(TENANT_KEY, String(id));
-    } else {
-      await AsyncStorage.setItem(TENANT_KEY, String(id));
-    }
-  } catch {
-    // Persistência é best-effort; a sessão atual já está correta.
-  }
+  inMemoryTenantRevision += 1;
+  await persistTenantSnapshot(getActiveTenantSnapshot());
 }
 
 export async function clearActiveInstitutionId(): Promise<void> {
   inMemoryTenantId = null;
   hydratedFromStorage = true;
-  try {
-    if (Platform.OS === "web") {
-      globalThis.localStorage?.removeItem(TENANT_KEY);
-    } else {
-      await AsyncStorage.removeItem(TENANT_KEY);
-    }
-  } catch {
-    // best-effort
-  }
+  inMemoryTenantRevision += 1;
+  await persistTenantSnapshot(getActiveTenantSnapshot());
 }
 
 type TenantStateValue = {
@@ -114,13 +155,17 @@ export function TenantStateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setActiveInstitutionIdFn = useCallback(async (id: number) => {
-    await setActiveInstitutionId(id);
+    // A aplicação da escolha (memória + revisão + React) é síncrona. Storage é
+    // só persistência best-effort e nunca mantém navegação ou fila em espera.
+    const persistence = setActiveInstitutionId(id);
     setActiveInstitutionIdState(id);
+    void persistence.catch(() => undefined);
   }, []);
 
   const clearInstitutionSelection = useCallback(async () => {
-    await clearActiveInstitutionId();
+    const persistence = clearActiveInstitutionId();
     setActiveInstitutionIdState(null);
+    void persistence.catch(() => undefined);
   }, []);
 
   const value = useMemo<TenantStateValue>(
