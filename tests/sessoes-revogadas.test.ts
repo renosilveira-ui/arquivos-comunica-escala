@@ -29,6 +29,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { sdk } from "../server/_core/sdk";
+import { sessionInstanceProof } from "../server/_core/session-instance";
 import { getDb } from "../server/db";
 import { mailer } from "../server/mailer";
 import { adminRouter } from "../server/routes/admin";
@@ -62,6 +63,11 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     request(server).get("/api/auth/me").set("Cookie", cookie);
   const meBearer = (token: string) =>
     request(server).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+  const sessionInstanceForCookie = (cookie: string): string => {
+    const token = cookie.match(/(?:^|;\s*)session=([^;]+)/)?.[1];
+    if (!token) throw new Error("Cookie de sessão ausente no teste");
+    return sessionInstanceProof(token);
+  };
 
   beforeAll(async () => {
     const conn = await getDb();
@@ -194,12 +200,14 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     const tokenB = deviceB.body.token as string;
     const currentSession = await me(cookieA);
     expect(currentSession.status).toBe(200);
+    const currentSessionInstance = sessionInstanceForCookie(cookieA);
+    expect(currentSession.body.sessionInstance).toBe(currentSessionInstance);
     expect((await meBearer(tokenB)).status).toBe(200);
 
     const change = await request(server)
       .post("/api/auth/change-password")
       .set("Cookie", cookieA)
-      .set("x-client-session-instance", currentSession.body.sessionInstance)
+      .set("x-client-session-instance", currentSessionInstance)
       .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
     expect(change.status).toBe(200);
     expect(typeof change.body.token).toBe("string");

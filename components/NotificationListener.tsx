@@ -4,6 +4,7 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
+import { Platform } from "react-native";
 import { useRouter } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { useAuth } from "@/hooks/use-auth";
@@ -71,9 +72,10 @@ export type NotificationRoutingDependencies = Readonly<{
   navigateToConfirmation: (confirmationToken: string) => void;
   navigateToAgenda: () => void;
   openComunica: (
-    data: NotificationData,
+    institutionId: number,
     canNavigate: () => boolean,
-  ) => Promise<{ ok: boolean }>;
+    signal: AbortSignal,
+  ) => Promise<{ ok: boolean; cancelled?: true }>;
 }>;
 
 type RoutingFence = () => boolean;
@@ -165,6 +167,7 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
     beginScope() {
       const scopeGeneration = ++generation;
       const isCurrent = () => generation === scopeGeneration;
+      const itemControllers = new Set<AbortController>();
       // Uma sessão nova nunca herda awaits pendentes da anterior. A geração
       // continua cercando as tasks antigas, mas cada scope tem sua própria
       // fila serial para os taps que pertencem à mesma sessão.
@@ -173,8 +176,11 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
       return {
         enqueue(data, dependencies) {
           let itemActive = true;
+          const itemController = new AbortController();
+          itemControllers.add(itemController);
           const isItemCurrent = () =>
             itemActive &&
+            !itemController.signal.aborted &&
             isCurrent() &&
             dependencies.isSessionAuthorizationCurrent();
           const run = async (): Promise<boolean> => {
@@ -184,6 +190,7 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
                 data,
                 dependencies,
                 isItemCurrent,
+                itemController.signal,
               );
             } catch {
               if (isItemCurrent()) {
@@ -200,12 +207,14 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
                 // O fence cai antes de liberar a tail: qualquer continuação
                 // antiga observa stale e não alcança outro efeito.
                 itemActive = false;
+                itemController.abort();
                 console.warn("[NotificationListener] ROUTING_TIMEOUT");
                 resolve(false);
               }, NOTIFICATION_ROUTING_ITEM_TIMEOUT_MS);
             });
             return Promise.race([run(), timedOut]).finally(() => {
               if (deadline !== undefined) clearTimeout(deadline);
+              itemControllers.delete(itemController);
             });
           };
           const result = tail.then(executeWithDeadline, executeWithDeadline);
@@ -217,6 +226,8 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
         },
         invalidate() {
           if (isCurrent()) generation += 1;
+          for (const controller of itemControllers) controller.abort();
+          itemControllers.clear();
         },
       };
     },
@@ -227,6 +238,7 @@ export async function routeNotificationData(
   data: NotificationData,
   dependencies: NotificationRoutingDependencies,
   isCurrent: RoutingFence = () => true,
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<boolean> {
   if (!isCurrent() || typeof data.type !== "string") return false;
 
@@ -269,9 +281,13 @@ export async function routeNotificationData(
       }
       const canNavigate = () =>
         isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent);
-      const result = await dependencies.openComunica(data, canNavigate);
+      const result = await dependencies.openComunica(
+        alignedSnapshot.institutionId!,
+        canNavigate,
+        signal,
+      );
       if (!canNavigate()) return false;
-      if (!result.ok) dependencies.navigateToAgenda();
+      if (!result.ok && !result.cancelled) dependencies.navigateToAgenda();
       return result.ok;
     }
 
@@ -395,11 +411,23 @@ export function NotificationListener() {
         });
       },
       navigateToAgenda: () => router.push("/(tabs)/agenda" as any),
-      openComunica: async (notificationData, canNavigate) => {
-        const { openComunicaFromNotification } =
-          await import("@/lib/sso-launch");
+      openComunica: async (institutionId, canNavigate, signal) => {
         if (!canNavigate()) return { ok: false };
-        return openComunicaFromNotification(notificationData, { canNavigate });
+        if (Platform.OS === "web") {
+          const { runWebSsoHandoff } = await import("@/hooks/use-sso-handoff");
+          if (!canNavigate()) return { ok: false };
+          const result = await runWebSsoHandoff(institutionId, {
+            signal,
+            isCurrent: canNavigate,
+          });
+          return "cancelled" in result ? result : { ok: result.ok };
+        }
+        const { openComunica } = await import("@/lib/sso-launch");
+        if (!canNavigate()) return { ok: false };
+        return openComunica(institutionId, {
+          canNavigate,
+          signal,
+        });
       },
     };
     const clearLastResponseIfMatching = (key: string | null) => {

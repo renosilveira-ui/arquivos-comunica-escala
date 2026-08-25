@@ -260,7 +260,8 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         password: "SenhaNova123",
         role: "doctor",
       });
-    expect(register.status).toBe(401);
+    expect(register.status).toBe(409);
+    expect(register.body).toMatchObject({ code: "EXPECTED_USER_MISMATCH" });
     expect(
       await db
         .select({ id: users.id })
@@ -287,7 +288,8 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .set("x-tenant-id", String(instB))
       .set("x-client-expected-user-id", String(adminId + 1))
       .send({ name: "NOME QUE NÃO PODE SER GRAVADO" });
-    expect(update.status).toBe(401);
+    expect(update.status).toBe(409);
+    expect(update.body).toMatchObject({ code: "EXPECTED_USER_MISMATCH" });
 
     const [targetAfter] = await db
       .select({ id: users.id, name: users.name })
@@ -305,6 +307,71 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
           ),
         ),
     ).toEqual(auditsBefore);
+  });
+
+  it("expected-user malformado é 400, ausência de credencial é 401 e ambos fazem zero writes", async () => {
+    const malformedEmail = `aac-expected-malformed-${STAMP}@test.local`;
+    const unauthenticatedEmail = `aac-expected-unauth-${STAMP}@test.local`;
+    const [adminBefore] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, adminId));
+
+    const malformedRegister = await request(app)
+      .post("/api/auth/register")
+      .set("Cookie", cookie)
+      .set("x-tenant-id", String(instA))
+      .set("x-client-expected-user-id", `0${adminId}`)
+      .send({
+        name: "AAC Malformed",
+        email: malformedEmail,
+        password: "SenhaNova123",
+        role: "doctor",
+      });
+    expect(malformedRegister.status).toBe(400);
+    expect(malformedRegister.body).toMatchObject({
+      code: "MALFORMED_EXPECTED_USER_ID",
+    });
+
+    const malformedAdmin = await request(app)
+      .put(`/api/admin/users/${adminId}`)
+      .set("Cookie", cookie)
+      .set("x-tenant-id", String(instA))
+      .set("x-client-expected-user-id", `0${adminId}`)
+      .send({ name: "NÃO GRAVAR MALFORMED" });
+    expect(malformedAdmin.status).toBe(400);
+    expect(malformedAdmin.body).toMatchObject({
+      code: "MALFORMED_EXPECTED_USER_ID",
+    });
+
+    const unauthenticatedRegister = await request(app)
+      .post("/api/auth/register")
+      .set("x-tenant-id", String(instA))
+      .send({
+        name: "AAC Unauthenticated",
+        email: unauthenticatedEmail,
+        password: "SenhaNova123",
+        role: "doctor",
+      });
+    expect(unauthenticatedRegister.status).toBe(401);
+
+    const unauthenticatedAdmin = await request(app)
+      .put(`/api/admin/users/${adminId}`)
+      .set("x-tenant-id", String(instA))
+      .send({ name: "NÃO GRAVAR UNAUTH" });
+    expect(unauthenticatedAdmin.status).toBe(401);
+
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(inArray(users.email, [malformedEmail, unauthenticatedEmail])),
+    ).toEqual([]);
+    const [adminAfter] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, adminId));
+    expect(adminAfter).toEqual(adminBefore);
   });
 
   it("register: body só pode repetir o tenant explícito", async () => {

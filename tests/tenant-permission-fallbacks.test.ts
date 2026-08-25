@@ -1,5 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import {
+  canLoadEditShift,
+  resolveEditShiftPermissionState,
+  resolvePendingContentState,
+} from "../lib/permission-screen-state";
 
 const ALL_PERMISSIONS = [
   "view:dashboard",
@@ -145,4 +150,92 @@ describe("autoridade visual exclusivamente institucional", () => {
     expect(profile).toContain("enabled: !!user?.id && canApproveAssignments");
     expect(tabsLayout).toContain("showManagementTabs && canApproveAssignments");
   });
+  it("mantém pendências em loading até a capability institucional terminar", () => {
+    expect(
+      resolvePendingContentState({
+        pendingLoading: false,
+        permissionsLoading: true,
+        professionalLoading: false,
+        myShiftsLoading: false,
+        hasProfessional: false,
+        canApproveAssignments: false,
+      }),
+    ).toBe("LOADING");
+    expect(
+      resolvePendingContentState({
+        pendingLoading: false,
+        permissionsLoading: false,
+        professionalLoading: false,
+        myShiftsLoading: false,
+        hasProfessional: false,
+        canApproveAssignments: false,
+      }),
+    ).toBe("MISSING_PROFESSIONAL");
+
+    const pending = readFileSync("app/(tabs)/pending.tsx", "utf8");
+    expect(pending.indexOf('pendingContentState === "LOADING"')).toBeLessThan(
+      pending.indexOf('pendingContentState === "MISSING_PROFESSIONAL"'),
+    );
+  });
+
+  it("edit-shift não volta nem libera o formulário durante loading/refetch", () => {
+    expect(
+      resolveEditShiftPermissionState({
+        authLoading: false,
+        hasUser: true,
+        permissionsLoading: true,
+        canEditShift: false,
+      }),
+    ).toBe("LOADING");
+    expect(
+      resolveEditShiftPermissionState({
+        authLoading: false,
+        hasUser: true,
+        permissionsLoading: false,
+        canEditShift: false,
+      }),
+    ).toBe("DENIED");
+    expect(
+      resolveEditShiftPermissionState({
+        authLoading: false,
+        hasUser: true,
+        permissionsLoading: false,
+        canEditShift: true,
+      }),
+    ).toBe("ALLOWED");
+    expect(
+      resolveEditShiftPermissionState({
+        authLoading: true,
+        hasUser: false,
+        permissionsLoading: false,
+        canEditShift: false,
+      }),
+    ).toBe("LOADING");
+    expect(
+      resolveEditShiftPermissionState({
+        authLoading: false,
+        hasUser: false,
+        permissionsLoading: false,
+        canEditShift: false,
+      }),
+    ).toBe("UNAUTHENTICATED");
+    expect(canLoadEditShift("UNAUTHENTICATED", true)).toBe(false);
+    expect(canLoadEditShift("LOADING", true)).toBe(false);
+    expect(canLoadEditShift("DENIED", true)).toBe(false);
+    expect(canLoadEditShift("ALLOWED", false)).toBe(false);
+    expect(canLoadEditShift("ALLOWED", true)).toBe(true);
+
+    const editShift = readFileSync("app/edit-shift.tsx", "utf8");
+    expect(editShift).toContain('permissionState === "DENIED"');
+    expect(editShift).toContain('permissionState === "LOADING"');
+    expect(editShift).toContain('permissionState === "UNAUTHENTICATED"');
+    expect(editShift).toContain(
+      "enabled: canLoadEditShift(permissionState, !!shiftId)",
+    );
+    expect(editShift).toMatch(
+      /enabled:\s*permissionState === "ALLOWED",/,
+    );
+    expect(editShift).not.toContain("if (!canEditShift) router.back()");
+  });
+
 });

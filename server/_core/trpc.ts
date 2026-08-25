@@ -5,6 +5,7 @@ import type { TrpcContext } from "./context";
 import { parseTenantIdHeader, resolveInstitutionForUser } from "./tenant";
 import { SessionInstanceConstraintError } from "./session-instance";
 import { AuthenticationInfrastructureError } from "./sdk";
+import { ExpectedUserConstraintError } from "./expected-user";
 
 /** Mensagem de erro que vaza detalhes do driver (SQL, códigos MySQL) não vai para o cliente. */
 export function isDriverErrorMessage(message: string): boolean {
@@ -46,6 +47,14 @@ export function sessionInstanceConstraintHttpStatus(
         cause instanceof AuthenticationInfrastructureError,
     );
   if (authenticationInfrastructureFailure) return 503;
+  const expectedUserConstraintFailure = errors
+    .map((error) => error.cause)
+    .find(
+      (cause): cause is ExpectedUserConstraintError =>
+        cause instanceof ExpectedUserConstraintError,
+    );
+  if (expectedUserConstraintFailure)
+    return expectedUserConstraintFailure.status;
   return errors
     .map((error) => error.cause)
     .find(
@@ -78,6 +87,17 @@ function throwSessionInstanceConstraint(
   throw new TRPCError({ code, message: error.message, cause: error });
 }
 
+function throwExpectedUserConstraint(
+  error: ExpectedUserConstraintError | null | undefined,
+): void {
+  if (!error) return;
+  throw new TRPCError({
+    code: error.status === 400 ? "BAD_REQUEST" : "CONFLICT",
+    message: error.message,
+    cause: error,
+  });
+}
+
 /**
  * Fronteira estreita para recuperação da allowlist institucional.
  *
@@ -89,6 +109,7 @@ function throwSessionInstanceConstraint(
  */
 const requireSession = t.middleware(async ({ ctx, next }) => {
   throwAuthenticationInfrastructure(ctx.authenticationInfrastructureError);
+  throwExpectedUserConstraint(ctx.expectedUserConstraintError);
   throwSessionInstanceConstraint(ctx.sessionInstanceConstraintError);
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
@@ -108,6 +129,7 @@ const requireUser = t.middleware(async (opts) => {
   const { ctx, next } = opts;
 
   throwAuthenticationInfrastructure(ctx.authenticationInfrastructureError);
+  throwExpectedUserConstraint(ctx.expectedUserConstraintError);
   throwSessionInstanceConstraint(ctx.sessionInstanceConstraintError);
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
@@ -160,8 +182,12 @@ export const adminProcedure = t.procedure.use(
     const { ctx, next } = opts;
 
     throwAuthenticationInfrastructure(ctx.authenticationInfrastructureError);
+    throwExpectedUserConstraint(ctx.expectedUserConstraintError);
     throwSessionInstanceConstraint(ctx.sessionInstanceConstraintError);
-    if (!ctx.user || ctx.user.role !== "admin") {
+    if (!ctx.user) {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    }
+    if (ctx.user.role !== "admin") {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 

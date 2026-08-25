@@ -3,6 +3,7 @@ import type { User } from "../../drizzle/schema";
 import { AuthenticationInfrastructureError, sdk } from "./sdk";
 import { parseTenantIdHeader } from "./tenant";
 import { SessionInstanceConstraintError } from "./session-instance";
+import { ExpectedUserConstraintError } from "./expected-user";
 
 export type TenantResolutionErrorCode =
   | "MALFORMED_TENANT_HEADER"
@@ -19,6 +20,7 @@ export type TrpcContext = {
   tenantProfessionalId?: number | null;
   tenantResolutionError?: TenantResolutionErrorCode | null;
   sessionInstanceConstraintError?: SessionInstanceConstraintError | null;
+  expectedUserConstraintError?: ExpectedUserConstraintError | null;
   authenticationInfrastructureError?: AuthenticationInfrastructureError | null;
 };
 
@@ -32,6 +34,7 @@ export async function createContext(
   let tenantResolutionError: TenantResolutionErrorCode | null = null;
   let sessionInstanceConstraintError: SessionInstanceConstraintError | null =
     null;
+  let expectedUserConstraintError: ExpectedUserConstraintError | null = null;
   let authenticationInfrastructureError: AuthenticationInfrastructureError | null =
     null;
 
@@ -46,19 +49,28 @@ export async function createContext(
     if (rawTenantHeader !== undefined && requestedTenantId === null) {
       tenantResolutionError = "MALFORMED_TENANT_HEADER";
     } else {
-      const membershipsByInstitution = new Map<number, Set<number>>();
+      const membershipsByInstitution = new Map<
+        number,
+        { professionalIds: Set<number>; isPrimary: boolean }
+      >();
       for (const membership of authenticated.activeMemberships) {
-        const professionalsForInstitution =
-          membershipsByInstitution.get(membership.institutionId) ??
-          new Set<number>();
-        professionalsForInstitution.add(membership.professionalId);
-        membershipsByInstitution.set(
+        const current = membershipsByInstitution.get(
           membership.institutionId,
-          professionalsForInstitution,
-        );
+        ) ?? { professionalIds: new Set<number>(), isPrimary: false };
+        current.professionalIds.add(membership.professionalId);
+        current.isPrimary ||= membership.isPrimary;
+        membershipsByInstitution.set(membership.institutionId, current);
       }
 
-      const activeInstitutionIds = Array.from(membershipsByInstitution.keys());
+      const activeInstitutionIds = Array.from(
+        membershipsByInstitution.entries(),
+      )
+        .sort(
+          ([leftId, left], [rightId, right]) =>
+            Number(right.isPrimary) - Number(left.isPrimary) ||
+            leftId - rightId,
+        )
+        .map(([institutionId]) => institutionId);
       if (activeInstitutionIds.length === 0) {
         tenantResolutionError = "NO_ACTIVE_MEMBERSHIP";
       } else if (
@@ -71,7 +83,7 @@ export async function createContext(
           requestedTenantId ?? activeInstitutionIds[0];
         const professionalIds = membershipsByInstitution.get(
           selectedInstitutionId,
-        )!;
+        )!.professionalIds;
         if (professionalIds.size !== 1) {
           tenantResolutionError = "AMBIGUOUS_PROFESSIONAL";
         } else {
@@ -87,6 +99,8 @@ export async function createContext(
     tenantResolutionError = null;
     sessionInstanceConstraintError =
       error instanceof SessionInstanceConstraintError ? error : null;
+    expectedUserConstraintError =
+      error instanceof ExpectedUserConstraintError ? error : null;
     authenticationInfrastructureError =
       error instanceof AuthenticationInfrastructureError ? error : null;
   }
@@ -100,6 +114,7 @@ export async function createContext(
     tenantProfessionalId,
     tenantResolutionError,
     sessionInstanceConstraintError,
+    expectedUserConstraintError,
     authenticationInfrastructureError,
   };
 }

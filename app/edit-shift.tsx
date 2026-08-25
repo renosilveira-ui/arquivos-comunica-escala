@@ -24,6 +24,10 @@ import { ChevronLeft, Save, Calendar, Clock } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
 import { fromLocalISODateString, normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
+import {
+  canLoadEditShift,
+  resolveEditShiftPermissionState,
+} from "@/lib/permission-screen-state";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -59,8 +63,8 @@ const PRODUCTIVITY_CAP_REGEX = /^\d+(\.\d{1,2})?$/;
  * Suporte a modo demo
  */
 export default function EditShiftScreen() {
-  const { user } = useAuth();
-  const { can } = usePermissions();
+  const { user, isLoading: authLoading } = useAuth();
+  const { can, isLoading: permissionsLoading } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const shiftId = Number(params.id);
@@ -68,9 +72,15 @@ export default function EditShiftScreen() {
   // Guard: somente admin/manager podem editar escalas. `can` muda de
   // identidade a cada render; o efeito depende do RESULTADO, não da função.
   const canEditShift = can("edit:shift");
+  const permissionState = resolveEditShiftPermissionState({
+    authLoading,
+    hasUser: user !== null && user !== undefined,
+    permissionsLoading,
+    canEditShift,
+  });
   useEffect(() => {
-    if (!canEditShift) router.back();
-  }, [canEditShift, router]);
+    if (permissionState === "DENIED") router.back();
+  }, [permissionState, router]);
 
   // Estados do formulário
   const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>();
@@ -97,13 +107,15 @@ export default function EditShiftScreen() {
   const [tempEndDate, setTempEndDate] = useState<Date | null>(null);
 
   // Buscar setores
-  const { data: sectors } = trpc.sectors.list.useQuery();
+  const { data: sectors } = trpc.sectors.list.useQuery(undefined, {
+    enabled: permissionState === "ALLOWED",
+  });
   const availableSectors = sectors || [];
 
   // Buscar detalhes da escala
   const { data: shiftData, isLoading: loadingShift } = trpc.shifts.get.useQuery(
     { id: shiftId },
-    { enabled: !!shiftId }
+    { enabled: canLoadEditShift(permissionState, !!shiftId) }
   );
   const utils = trpc.useUtils();
 
@@ -292,7 +304,20 @@ export default function EditShiftScreen() {
     });
   };
 
-  if (!user) {
+  if (permissionState === "LOADING") {
+    return (
+      <ScreenGradient>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text style={{ fontSize: 16, color: theme.colors.textMuted, marginTop: 16 }}>
+            Carregando...
+          </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (permissionState === "UNAUTHENTICATED") {
     return (
       <ScreenGradient>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
@@ -311,6 +336,18 @@ export default function EditShiftScreen() {
           <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text style={{ fontSize: 16, color: theme.colors.textMuted, marginTop: 16 }}>
             Carregando...
+          </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (permissionState === "DENIED") {
+    return (
+      <ScreenGradient>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
+          <Text style={{ fontSize: 16, color: theme.colors.textMuted }}>
+            Acesso não autorizado
           </Text>
         </View>
       </ScreenGradient>

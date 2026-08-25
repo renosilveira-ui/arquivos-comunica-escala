@@ -867,55 +867,60 @@ export const authApi = {
         error: "Credencial de transição da sessão indisponível",
       };
     }
-    await consumeSessionBindingCapabilityReceipt(
-      "delete-account",
-      capabilityReceipt,
-    );
-    if (Platform.OS === "web") {
-      if (!reversibleWebRevocation) {
-        return {
-          ok: false,
-          status: 0,
-          error: "Capability reversível do DELETE web indisponível",
-        };
-      }
-      Auth.consumeReversibleWebSessionRevocationForRequest(
-        reversibleWebRevocation,
+    // O receipt exact-v1 e a capability reversível são one-shot. Consumir
+    // qualquer um fora da mesma fila do DELETE permitiria que login/logout
+    // atravessasse entre a perda local da prova e o efeito HTTP irreversível.
+    return serializeSessionMutation(async () => {
+      await consumeSessionBindingCapabilityReceipt(
+        "delete-account",
+        capabilityReceipt,
       );
-    }
-    const res = await apiFetchInternal<{
-      ok?: boolean;
-      error?: string;
-      code?: string;
-      sessionFenceRotated?: boolean;
-    }>(
-      "/api/auth/me",
-      {
-        method: "DELETE",
-        body: JSON.stringify({ password }),
-      },
-      undefined,
-      "auth-transition",
-      undefined,
-      credential,
-    );
-    if (
-      res.ok &&
-      res.data?.ok &&
-      (Platform.OS !== "web" || res.data.sessionFenceRotated === true)
-    ) {
-      return { ok: true, status: res.status };
-    }
-    return {
-      ok: false,
-      status: res.status,
-      code: authMutationErrorCode(res.data?.code),
-      error:
-        (res.data as any)?.error ??
-        res.error ??
-        (Platform.OS === "web" && res.ok
-          ? "O servidor não confirmou o encerramento da sessão"
-          : "Erro ao excluir conta"),
-    };
+      if (Platform.OS === "web") {
+        if (!reversibleWebRevocation) {
+          return {
+            ok: false,
+            status: 0,
+            error: "Capability reversível do DELETE web indisponível",
+          };
+        }
+        Auth.consumeReversibleWebSessionRevocationForRequest(
+          reversibleWebRevocation,
+        );
+      }
+      const res = await apiFetchInternal<{
+        ok?: boolean;
+        error?: string;
+        code?: string;
+        sessionFenceRotated?: boolean;
+      }>(
+        "/api/auth/me",
+        {
+          method: "DELETE",
+          body: JSON.stringify({ password }),
+        },
+        undefined,
+        "auth-transition",
+        undefined,
+        credential,
+      );
+      if (
+        res.ok &&
+        res.data?.ok &&
+        (Platform.OS !== "web" || res.data.sessionFenceRotated === true)
+      ) {
+        return { ok: true, status: res.status };
+      }
+      return {
+        ok: false,
+        status: res.status,
+        code: authMutationErrorCode(res.data?.code),
+        error:
+          (res.data as any)?.error ??
+          res.error ??
+          (Platform.OS === "web" && res.ok
+            ? "O servidor não confirmou o encerramento da sessão"
+            : "Erro ao excluir conta"),
+      };
+    });
   },
 };

@@ -214,6 +214,41 @@ describe("fence linearizável da sessão web", () => {
     );
   });
 
+  it("mantém jti e proof distintos com claims exact-v1 idênticas", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    let first: string;
+    let second: string;
+    try {
+      [first, second] = await Promise.all([
+        sdk.signSession({
+          userId: String(userId),
+          name: "Session Fence User",
+          sessionVersion: 1,
+          sessionBindingVersion: 1,
+        }),
+        sdk.signSession({
+          userId: String(userId),
+          name: "Session Fence User",
+          sessionVersion: 1,
+          sessionBindingVersion: 1,
+        }),
+      ]);
+    } finally {
+      clock.mockRestore();
+    }
+
+    expect(first!).not.toBe(second!);
+    expect(sessionInstanceProof(first!)).not.toBe(
+      sessionInstanceProof(second!),
+    );
+    await expect(sdk.verifySession(first!)).resolves.toMatchObject({
+      sessionBindingVersion: 1,
+    });
+    await expect(sdk.verifySession(second!)).resolves.toMatchObject({
+      sessionBindingVersion: 1,
+    });
+  });
+
   it("rejeita versão de binding desconhecida na emissão e na verificação", async () => {
     await expect(
       sdk.signSession({

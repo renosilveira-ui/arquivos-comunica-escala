@@ -3997,11 +3997,15 @@ describe("cache do token de sessão", () => {
       const expired = auth.runExclusiveWebSessionMutation(async () => {
         expiredEffect();
       });
-      const expiredResult = expect(expired).rejects.toThrow(
-        "Workflow de sessão web excedeu o prazo seguro",
-      );
+      const expiredResult = expired.catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(auth.WEB_SESSION_MUTATION_DEADLINE_MS);
-      await expiredResult;
+      const expiredError = await expiredResult;
+      expect(expiredError).toBeInstanceOf(
+        auth.WebSessionMutationCancelledError,
+      );
+      expect(expiredError).toMatchObject({
+        message: "Workflow de sessão web excedeu o prazo seguro",
+      });
       expect(expiredEffect).not.toHaveBeenCalled();
 
       releaseHolder.resolve();

@@ -11,19 +11,29 @@ import {
 } from "../drizzle/schema";
 import { createContext } from "../server/_core/context";
 import {
+  adminProcedure,
   protectedProcedure,
   publicProcedure,
   router,
+  sessionProcedure,
   sessionInstanceConstraintHttpStatus,
 } from "../server/_core/trpc";
 import { sdk } from "../server/_core/sdk";
 import { sessionInstanceProof } from "../server/_core/session-instance";
+import {
+  listActiveInstitutionIdsForUser,
+  resolveInstitutionForUser,
+} from "../server/_core/tenant";
+import { professionalsRouter } from "../server/aux-routers";
 import { getDb } from "../server/db";
+import * as dbService from "../server/db";
 
 const STAMP = Date.now();
 const probeRouter = router({
   publicPing: publicProcedure.query(() => "pong"),
+  sessionPing: sessionProcedure.query(() => "session"),
   protectedPing: protectedProcedure.query(({ ctx }) => ctx.institutionId),
+  adminPing: adminProcedure.query(() => "admin"),
 });
 
 type FixtureUser = {
@@ -49,6 +59,7 @@ describe("contexto autenticado em uma ida ao banco", () => {
       mustChangePassword?: boolean;
       deletedAt?: Date;
       institutionIds?: number[];
+      primaryInstitutionIds?: number[];
       activeMembership?: boolean;
     } = {},
   ): Promise<FixtureUser> {
@@ -85,7 +96,9 @@ describe("contexto autenticado em uma ida ao banco", () => {
           professionalId: professionalId!,
           institutionId,
           roleInInstitution: "USER" as const,
-          isPrimary: index === 0,
+          isPrimary:
+            options.primaryInstitutionIds?.includes(institutionId) ??
+            index === 0,
           active: options.activeMembership ?? true,
         })),
       );
@@ -146,6 +159,18 @@ describe("contexto autenticado em uma ida ao banco", () => {
 
     await createUser("active", {
       institutionIds: [institutionA, institutionB],
+    });
+    await createUser("primary-b", {
+      institutionIds: [institutionA, institutionB],
+      primaryInstitutionIds: [institutionB],
+    });
+    await createUser("multiple-primary", {
+      institutionIds: [institutionB, institutionA],
+      primaryInstitutionIds: [institutionB, institutionA],
+    });
+    await createUser("no-primary", {
+      institutionIds: [institutionB, institutionA],
+      primaryInstitutionIds: [],
     });
     await createUser("orphan");
     await createUser("pending", {
@@ -259,12 +284,25 @@ describe("contexto autenticado em uma ida ao banco", () => {
       expect(divergent.user).toBeNull();
       expect(divergent.institutionId).toBeNull();
       expect(divergent.allowedInstitutionIds).toEqual([]);
+      expect(divergent.expectedUserConstraintError).toMatchObject({
+        code: "EXPECTED_USER_MISMATCH",
+        status: 409,
+      });
       expect(selectSpy).toHaveBeenCalledTimes(1);
+      await expect(
+        probeRouter.createCaller(divergent).publicPing(),
+      ).resolves.toBe("pong");
       await expect(
         probeRouter.createCaller(divergent).protectedPing(),
       ).rejects.toMatchObject({
-        code: "UNAUTHORIZED",
+        code: "CONFLICT",
       });
+      await expect(
+        probeRouter.createCaller(divergent).sessionPing(),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(
+        probeRouter.createCaller(divergent).adminPing(),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
 
       for (const malformed of [
         "0",
@@ -285,10 +323,380 @@ describe("contexto autenticado em uma ida ao banco", () => {
         });
         expect(malformedContext.user).toBeNull();
         expect(malformedContext.institutionId).toBeNull();
+        expect(malformedContext.expectedUserConstraintError).toMatchObject({
+          code: "MALFORMED_EXPECTED_USER_ID",
+          status: 400,
+        });
         expect(selectSpy).toHaveBeenCalledTimes(1);
+        await expect(
+          probeRouter.createCaller(malformedContext).protectedPing(),
+        ).rejects.toMatchObject({ code: "BAD_REQUEST" });
       }
     } finally {
       selectSpy.mockRestore();
+    }
+  });
+
+  it("seleciona tenant padrão por primary e menor id em todos os resolvers", async () => {
+    const cases = [
+      { kind: "primary-b", expected: institutionB },
+      {
+        kind: "multiple-primary",
+        expected: Math.min(institutionA, institutionB),
+      },
+      { kind: "no-primary", expected: Math.min(institutionA, institutionB) },
+    ] as const;
+
+    for (const testCase of cases) {
+      const current = fixture.get(testCase.kind)!;
+      const token = await sessionToken(testCase.kind);
+      const context = await createContext({
+        req: requestWith({ authorization: `Bearer ${token}` }),
+        res: {} as any,
+      });
+      expect(context.institutionId).toBe(testCase.expected);
+      expect(context.allowedInstitutionIds[0]).toBe(testCase.expected);
+      await expect(
+        listActiveInstitutionIdsForUser(current.id),
+      ).resolves.toEqual(context.allowedInstitutionIds);
+      await expect(
+        resolveInstitutionForUser(current.id, null),
+      ).resolves.toMatchObject({ institutionId: testCase.expected });
+
+      const institutionsForUser = await professionalsRouter
+        .createCaller(context)
+        .listMyInstitutions();
+      expect(institutionsForUser.map((membership) => membership.id)).toEqual(
+        context.allowedInstitutionIds,
+      );
+
+      const explicit = await createContext({
+        req: requestWith({
+          authorization: `Bearer ${token}`,
+          "x-tenant-id": String(institutionA),
+        }),
+        res: {} as any,
+      });
+      expect(explicit.institutionId).toBe(institutionA);
+    }
+  });
+
+  it("SDK ordena memberships antes de entregá-las ao contexto", async () => {
+    for (const [kind, expected] of [
+      ["primary-b", [institutionB, institutionA]],
+      ["multiple-primary", [Math.min(institutionA, institutionB), Math.max(institutionA, institutionB)]],
+      ["no-primary", [Math.min(institutionA, institutionB), Math.max(institutionA, institutionB)]],
+    ] as const) {
+      const token = await sessionToken(kind);
+      const authenticated = await sdk.authenticateRequestWithActiveMemberships(
+        requestWith({ authorization: `Bearer ${token}` }),
+      );
+      expect(
+        authenticated.activeMemberships.map(({ institutionId }) => institutionId),
+      ).toEqual(expected);
+    }
+
+    const current = fixture.get("no-primary")!;
+    const isolatedToken = await sessionToken("no-primary");
+    const authenticated = await sdk.authenticateRequestWithActiveMemberships(
+      requestWith({ authorization: `Bearer ${isolatedToken}` }),
+    );
+    const smallerInstitutionId = Math.min(institutionA, institutionB);
+    const largerInstitutionId = Math.max(institutionA, institutionB);
+    const queryCases = [
+      {
+        rows: [
+          {
+            user: authenticated.user,
+            professionalId: current.professionalId!,
+            membershipInstitutionId: largerInstitutionId,
+            membershipIsPrimary: false,
+            activeInstitutionId: largerInstitutionId,
+          },
+          {
+            user: authenticated.user,
+            professionalId: current.professionalId!,
+            membershipInstitutionId: smallerInstitutionId,
+            membershipIsPrimary: false,
+            activeInstitutionId: smallerInstitutionId,
+          },
+        ],
+        expected: [smallerInstitutionId, largerInstitutionId],
+      },
+      {
+        rows: [
+          {
+            user: authenticated.user,
+            professionalId: current.professionalId!,
+            membershipInstitutionId: institutionA,
+            membershipIsPrimary: false,
+            activeInstitutionId: institutionA,
+          },
+          {
+            user: authenticated.user,
+            professionalId: current.professionalId!,
+            membershipInstitutionId: institutionB,
+            membershipIsPrimary: true,
+            activeInstitutionId: institutionB,
+          },
+        ],
+        expected: [institutionB, institutionA],
+      },
+    ];
+    const runAuthenticationQuery = vi
+      .spyOn(sdk as any, "runAuthenticationQuery")
+      .mockResolvedValueOnce(queryCases[0].rows)
+      .mockResolvedValueOnce(queryCases[1].rows);
+    try {
+      for (const { expected } of queryCases) {
+        const isolated = await sdk.authenticateRequestWithActiveMemberships(
+          requestWith({ authorization: `Bearer ${isolatedToken}` }),
+        );
+        expect(
+          isolated.activeMemberships.map(({ institutionId }) => institutionId),
+        ).toEqual(expected);
+      }
+    } finally {
+      runAuthenticationQuery.mockRestore();
+    }
+  });
+
+  it("contexto reordena memberships adversariais sem confiar na ordem do SDK", async () => {
+    const token = await sessionToken("no-primary");
+    const authenticated = await sdk.authenticateRequestWithActiveMemberships(
+      requestWith({ authorization: `Bearer ${token}` }),
+    );
+    const professionalId = fixture.get("no-primary")!.professionalId!;
+    const authenticate = vi
+      .spyOn(sdk, "authenticateRequestWithActiveMemberships")
+      .mockResolvedValue({
+        user: authenticated.user,
+        activeMemberships: [
+          { institutionId: institutionA, professionalId, isPrimary: false },
+          { institutionId: institutionB, professionalId, isPrimary: true },
+        ],
+      });
+    try {
+      const context = await createContext({
+        req: requestWith({ authorization: `Bearer ${token}` }),
+        res: {} as any,
+      });
+      expect(context.allowedInstitutionIds).toEqual([
+        institutionB,
+        institutionA,
+      ]);
+      expect(context.institutionId).toBe(institutionB);
+    } finally {
+      authenticate.mockRestore();
+    }
+  });
+
+  it("contexto desempata memberships de mesma prioridade pelo menor institutionId", async () => {
+    const token = await sessionToken("no-primary");
+    const authenticated = await sdk.authenticateRequestWithActiveMemberships(
+      requestWith({ authorization: `Bearer ${token}` }),
+    );
+    const professionalId = fixture.get("no-primary")!.professionalId!;
+    const smallerInstitutionId = Math.min(institutionA, institutionB);
+    const largerInstitutionId = Math.max(institutionA, institutionB);
+    const authenticate = vi
+      .spyOn(sdk, "authenticateRequestWithActiveMemberships")
+      .mockResolvedValue({
+        user: authenticated.user,
+        activeMemberships: [
+          {
+            institutionId: largerInstitutionId,
+            professionalId,
+            isPrimary: false,
+          },
+          {
+            institutionId: smallerInstitutionId,
+            professionalId,
+            isPrimary: false,
+          },
+        ],
+      });
+    try {
+      const context = await createContext({
+        req: requestWith({ authorization: `Bearer ${token}` }),
+        res: {} as any,
+      });
+      expect(context.allowedInstitutionIds).toEqual([
+        smallerInstitutionId,
+        largerInstitutionId,
+      ]);
+      expect(context.institutionId).toBe(smallerInstitutionId);
+    } finally {
+      authenticate.mockRestore();
+    }
+  });
+
+  it("tenant resolver ordena rows adversariais independentemente do banco", async () => {
+    const smallerInstitutionId = Math.min(institutionA, institutionB);
+    const largerInstitutionId = Math.max(institutionA, institutionB);
+    const queryCases = [
+      {
+        rows: [
+          { institutionId: largerInstitutionId, isPrimary: false },
+          { institutionId: smallerInstitutionId, isPrimary: false },
+        ],
+        expected: [smallerInstitutionId, largerInstitutionId],
+      },
+      {
+        rows: [
+          { institutionId: institutionA, isPrimary: false },
+          { institutionId: institutionB, isPrimary: true },
+        ],
+        expected: [institutionB, institutionA],
+      },
+    ];
+    let queryIndex = 0;
+    const query: any = {};
+    query.from = vi.fn(() => query);
+    query.innerJoin = vi.fn(() => query);
+    query.where = vi.fn(async () => queryCases[queryIndex++].rows);
+    const getDbSpy = vi.spyOn(dbService, "getDb").mockResolvedValue({
+      select: vi.fn(() => query),
+    } as any);
+    try {
+      for (const { expected } of queryCases) {
+        await expect(
+          listActiveInstitutionIdsForUser(fixture.get("no-primary")!.id),
+        ).resolves.toEqual(expected);
+      }
+    } finally {
+      getDbSpy.mockRestore();
+    }
+  });
+
+  it("aux-router ordena allowlist adversarial por primary e institutionId", async () => {
+    const token = await sessionToken("no-primary");
+    const context = await createContext({
+      req: requestWith({ authorization: `Bearer ${token}` }),
+      res: {} as any,
+    });
+    const smallerInstitutionId = Math.min(institutionA, institutionB);
+    const largerInstitutionId = Math.max(institutionA, institutionB);
+    const row = (institutionId: number, isPrimary: boolean) => ({
+      institutionId,
+      institutionName: String(institutionId),
+      roleInInstitution: "USER" as const,
+      isPrimary,
+      active: true,
+    });
+    const queryCases = [
+      {
+        rows: [row(largerInstitutionId, false), row(smallerInstitutionId, false)],
+        expected: [smallerInstitutionId, largerInstitutionId],
+      },
+      {
+        rows: [row(institutionA, false), row(institutionB, true)],
+        expected: [institutionB, institutionA],
+      },
+    ];
+    let queryIndex = 0;
+    const query: any = {};
+    query.from = vi.fn(() => query);
+    query.innerJoin = vi.fn(() => query);
+    query.where = vi.fn(async () => queryCases[queryIndex++].rows);
+    const getDbSpy = vi.spyOn(dbService, "getDb").mockResolvedValue({
+      select: vi.fn(() => query),
+    } as any);
+    try {
+      for (const { expected } of queryCases) {
+        const result = await professionalsRouter
+          .createCaller(context)
+          .listMyInstitutions();
+        expect(result.map(({ id }) => id)).toEqual(expected);
+      }
+    } finally {
+      getDbSpy.mockRestore();
+    }
+  });
+
+  it("expected-user preserva HTTP 400/409 e credencial inválida real continua 401", async () => {
+    const active = fixture.get("active")!;
+    const foreign = fixture.get("foreign-professional")!;
+    const token = await sessionToken("active");
+    const httpApp = express();
+    httpApp.use(
+      "/trpc",
+      createExpressMiddleware({
+        router: probeRouter,
+        createContext,
+        responseMeta({ errors }) {
+          const status = sessionInstanceConstraintHttpStatus(errors);
+          return status ? { status } : {};
+        },
+      }),
+    );
+
+    const conflict = await request(httpApp)
+      .get("/trpc/protectedPing")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-tenant-id", String(institutionA))
+      .set("x-client-expected-user-id", String(foreign.id));
+    expect(conflict.status).toBe(409);
+
+    const adminConflict = await request(httpApp)
+      .get("/trpc/adminPing")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-tenant-id", String(institutionA))
+      .set("x-client-expected-user-id", String(foreign.id));
+    expect(adminConflict.status).toBe(409);
+
+    const malformed = await request(httpApp)
+      .get("/trpc/protectedPing")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-tenant-id", String(institutionA))
+      .set("x-client-expected-user-id", `0${active.id}`);
+    expect(malformed.status).toBe(400);
+
+    const adminMalformed = await request(httpApp)
+      .get("/trpc/adminPing")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-tenant-id", String(institutionA))
+      .set("x-client-expected-user-id", `0${active.id}`);
+    expect(adminMalformed.status).toBe(400);
+
+    const unauthorized = await request(httpApp)
+      .get("/trpc/protectedPing")
+      .set("Authorization", "Bearer invalid");
+    expect(unauthorized.status).toBe(401);
+
+    const adminUnauthorized = await request(httpApp)
+      .get("/trpc/adminPing")
+      .set("Authorization", "Bearer invalid");
+    expect(adminUnauthorized.status).toBe(401);
+
+    const adminForbidden = await request(httpApp)
+      .get("/trpc/adminPing")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-tenant-id", String(institutionA));
+    expect(adminForbidden.status).toBe(403);
+
+    const publicOnly = await request(httpApp)
+      .get("/trpc/publicPing")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-client-expected-user-id", String(foreign.id));
+    expect(publicOnly.status).toBe(200);
+    expect(publicOnly.body).toMatchObject({ result: { data: { json: "pong" } } });
+
+    for (const [expectedHeader, expectedStatus] of [
+      [String(foreign.id), 409],
+      [`0${active.id}`, 400],
+    ] as const) {
+      const batch = await request(httpApp)
+        .get("/trpc/publicPing,protectedPing")
+        .query({ batch: "1" })
+        .set("Authorization", `Bearer ${token}`)
+        .set("x-tenant-id", String(institutionA))
+        .set("x-client-expected-user-id", expectedHeader);
+      expect(batch.status).toBe(expectedStatus);
+      expect(batch.body[0]).toMatchObject({
+        result: { data: { json: "pong" } },
+      });
+      expect(batch.body[1]).toHaveProperty("error");
     }
   });
 

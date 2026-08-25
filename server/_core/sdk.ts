@@ -99,6 +99,7 @@ export type AuthenticateRequestOptions = {
 export type ActiveInstitutionMembership = {
   institutionId: number;
   professionalId: number;
+  isPrimary: boolean;
 };
 
 export type VerifiedSession = {
@@ -571,6 +572,7 @@ class SDKServer {
           user: users,
           professionalId: professionals.id,
           membershipInstitutionId: professionalInstitutions.institutionId,
+          membershipIsPrimary: professionalInstitutions.isPrimary,
           activeInstitutionId: institutions.id,
         })
         .from(users)
@@ -660,9 +662,15 @@ class SDKServer {
                   {
                     institutionId: row.membershipInstitutionId!,
                     professionalId: row.professionalId!,
+                    isPrimary: row.membershipIsPrimary === true,
                   },
                 ]),
             ).values(),
+          ).sort(
+            (left, right) =>
+              Number(right.isPrimary) - Number(left.isPrimary) ||
+              left.institutionId - right.institutionId ||
+              left.professionalId - right.professionalId,
           )
         : [];
 

@@ -20,8 +20,17 @@ const clientMocks = vi.hoisted(() => ({
   captureSessionTransportTicket: vi.fn(() => 7 as number | null),
   isSessionTransportTicketCurrent: vi.fn((ticket: number) => ticket === 7),
   runExclusiveWebSessionMutation: vi.fn(
-    async (operation: () => Promise<unknown>) => operation(),
+    async (operation: (signal: AbortSignal) => Promise<unknown>) =>
+      operation(new AbortController().signal),
   ),
+  WebSessionMutationCancelledError: class extends Error {
+    readonly code = "WEB_SESSION_MUTATION_CANCELLED";
+
+    constructor() {
+      super("Workflow de sessão web excedeu o prazo seguro");
+      this.name = "WebSessionMutationCancelledError";
+    }
+  },
   apiFetch: vi.fn(),
   platform: { OS: "web" },
 }));
@@ -214,8 +223,14 @@ async function renderRealNotificationListener(options: {
   allowedInstitutionIds?: number[];
   lastResponse?: ReturnType<typeof notificationResponse> | null;
   refetch?: () => Promise<{ isError: boolean; data: { id: number }[] }>;
+  platform?: "ios" | "web";
+  runWebSsoHandoff?: (
+    tenantId: number,
+    request: { signal: AbortSignal; isCurrent: () => boolean },
+  ) => Promise<{ ok: boolean; cancelled?: true }>;
 }) {
   vi.resetModules();
+  clientMocks.platform.OS = options.platform ?? "ios";
   const effects: (() => void | (() => void))[] = [];
   const routerPush = vi.fn();
   const removeSubscription = vi.fn();
@@ -228,6 +243,9 @@ async function renderRealNotificationListener(options: {
   });
   const getLastNotificationResponse = vi.fn(() => lastResponse);
   const openComunicaFromNotification = vi.fn(async () => ({ ok: true }));
+  const notificationWebHandoff = vi.fn(
+    options.runWebSsoHandoff ?? (async () => ({ ok: true })),
+  );
   let responseListener:
     ((response: ReturnType<typeof notificationResponse>) => void) | undefined;
   let user = options.user === undefined ? { id: 7 } : options.user;
@@ -293,7 +311,15 @@ async function renderRealNotificationListener(options: {
     }),
   }));
   vi.doMock("@/hooks/use-notifications", () => ({ useNotifications: vi.fn() }));
-  vi.doMock("@/lib/sso-launch", () => ({ openComunicaFromNotification }));
+  vi.doMock("@/lib/sso-launch", () => ({
+    openComunica: openComunicaFromNotification,
+  }));
+  vi.doUnmock("@/hooks/use-sso-handoff");
+  if (options.platform === "web") {
+    vi.doMock("@/hooks/use-sso-handoff", () => ({
+      runWebSsoHandoff: notificationWebHandoff,
+    }));
+  }
   vi.doMock("@/lib/tenant-state", () => ({
     getActiveTenantSnapshot: () => activeTenant,
     useTenantState: () => ({ setActiveInstitutionId }),
@@ -329,6 +355,7 @@ async function renderRealNotificationListener(options: {
     invalidateQueries,
     setActiveInstitutionId,
     openComunicaFromNotification,
+    notificationWebHandoff,
     isSessionAuthorizationCurrent,
     sessionValidationIsCurrent,
     getLastNotificationResponse,
@@ -587,6 +614,8 @@ vi.mock("@/lib/_core/auth", () => ({
   captureSessionTransportTicket: clientMocks.captureSessionTransportTicket,
   isSessionTransportTicketCurrent: clientMocks.isSessionTransportTicketCurrent,
   runExclusiveWebSessionMutation: clientMocks.runExclusiveWebSessionMutation,
+  WebSessionMutationCancelledError:
+    clientMocks.WebSessionMutationCancelledError,
 }));
 
 vi.mock("@/lib/_core/api", () => ({
@@ -626,7 +655,8 @@ describe("SSO client tenant boundaries", () => {
       (ticket: number) => ticket === 7,
     );
     clientMocks.runExclusiveWebSessionMutation.mockImplementation(
-      async (operation: () => Promise<unknown>) => operation(),
+      async (operation: (signal: AbortSignal) => Promise<unknown>) =>
+        operation(new AbortController().signal),
     );
     vi.stubGlobal("fetch", fetchMock);
     clientMocks.apiFetch.mockImplementation(
@@ -1078,6 +1108,41 @@ describe("SSO client tenant boundaries", () => {
     expect(navigateToConfirmation).toHaveBeenCalledWith("confirmation-a");
   });
 
+  it("sso_ready usa o tenant normalizado do snapshot alinhado e propaga o signal do item", async () => {
+    const controller = new AbortController();
+    let activeTenant = { institutionId: 22, revision: 1 };
+    const openComunica = vi.fn(async () => ({ ok: true }));
+
+    await expect(
+      routeNotificationData(
+        { type: "sso_ready", institutionId: "11" },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => [11, 22],
+          setActiveInstitutionId: async (institutionId) => {
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => undefined,
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: vi.fn(),
+          openComunica,
+        },
+        () => true,
+        controller.signal,
+      ),
+    ).resolves.toBe(true);
+
+    expect(openComunica).toHaveBeenCalledWith(
+      11,
+      expect.any(Function),
+      controller.signal,
+    );
+  });
+
   it.each([
     { label: "ausente", institutionId: undefined, allowed: [11, 22] },
     { label: "zero", institutionId: 0, allowed: [11, 22] },
@@ -1382,6 +1447,7 @@ describe("SSO client tenant boundaries", () => {
       const firstNavigation = vi.fn();
       const firstOpenEffect = vi.fn();
       const nextNavigation = vi.fn();
+      let openSignal: AbortSignal | undefined;
       let activeTenant = { institutionId: 22, revision: 1 };
 
       try {
@@ -1418,7 +1484,8 @@ describe("SSO client tenant boundaries", () => {
             },
             navigateToConfirmation: firstNavigation,
             navigateToAgenda: firstNavigation,
-            openComunica: async (_data, canNavigate) => {
+            openComunica: async (_institutionId, canNavigate, signal) => {
+              openSignal = signal;
               pendingReached.resolve();
               await releasePending.promise;
               if (canNavigate()) firstOpenEffect();
@@ -1455,6 +1522,9 @@ describe("SSO client tenant boundaries", () => {
         await expect(first).resolves.toBe(false);
         await expect(next).resolves.toBe(true);
         expect(nextNavigation).toHaveBeenCalledWith("next-token");
+        if (pendingStep === "openComunica") {
+          expect(openSignal?.aborted).toBe(true);
+        }
 
         if (pendingStep === "allowlist") {
           releasePending.reject(new Error("RAW_LATE_ROUTING_SENTINEL"));
@@ -1482,6 +1552,337 @@ describe("SSO client tenant boundaries", () => {
       }
     },
   );
+
+  it("timeout aborta o generate web real, libera o Web Lock e impede form/fallback tardio", async () => {
+    vi.useFakeTimers();
+    clientMocks.platform.OS = "web";
+    const coordinator = createNotificationRoutingCoordinator();
+    const scope = coordinator.beginScope();
+    const generateStarted = deferred<AbortSignal>();
+    const submit = vi.fn(() => true);
+    const navigateToAgenda = vi.fn();
+    let activeTenant = { institutionId: 11, revision: 1 };
+
+    clientMocks.apiFetch.mockImplementationOnce(
+      async (_path: string, options?: RequestInit) => {
+        const signal = options?.signal;
+        if (!signal) throw new Error("signal do routing item ausente");
+        generateStarted.resolve(signal);
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {
+          ok: false,
+          status: 0,
+          data: null,
+          credentialPresented: true,
+        };
+      },
+    );
+
+    try {
+      const routed = scope.enqueue(
+        { type: "sso_ready", institutionId: "11" },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: async (institutionId) => {
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => undefined,
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda,
+          openComunica: (institutionId, canNavigate, signal) =>
+            runWebSsoHandoff(
+              institutionId,
+              { signal, isCurrent: canNavigate },
+              submit,
+            ),
+        },
+      );
+      const signal = await generateStarted.promise;
+
+      await vi.advanceTimersByTimeAsync(NOTIFICATION_ROUTING_ITEM_TIMEOUT_MS);
+      await expect(routed).resolves.toBe(false);
+      expect(signal.aborted).toBe(true);
+      expect(submit).not.toHaveBeenCalled();
+      expect(navigateToAgenda).not.toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(
+          clientMocks.runExclusiveWebSessionMutation.mock.results[0]?.value,
+        ).resolves.toMatchObject({ ok: false }),
+      );
+    } finally {
+      scope.invalidate();
+      vi.useRealTimers();
+    }
+  });
+
+  it("deadline de 15 s do workflow preserva cancelled antes do item de 20 s e libera o próximo Web Lock", async () => {
+    vi.useFakeTimers();
+    clientMocks.platform.OS = "web";
+    const coordinator = createNotificationRoutingCoordinator();
+    const scope = coordinator.beginScope();
+    const workflowController = new AbortController();
+    const generateStarted = deferred<AbortSignal>();
+    const submit = vi.fn(() => true);
+    const navigateToAgenda = vi.fn();
+    let activeTenant = { institutionId: 11, revision: 1 };
+
+    clientMocks.runExclusiveWebSessionMutation.mockImplementationOnce(
+      async (operation: (signal: AbortSignal) => Promise<unknown>) => {
+        const deadline = setTimeout(() => workflowController.abort(), 15_000);
+        try {
+          return await operation(workflowController.signal);
+        } finally {
+          clearTimeout(deadline);
+        }
+      },
+    );
+    clientMocks.apiFetch
+      .mockImplementationOnce(async (_path: string, options?: RequestInit) => {
+        const itemSignal = options?.signal;
+        if (!itemSignal) throw new Error("signal do routing item ausente");
+        generateStarted.resolve(itemSignal);
+        await new Promise<void>((resolve) => {
+          workflowController.signal.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+        throw new DOMException("workflow abortado", "AbortError");
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: {
+          targetUrl: "https://comunica.example/sso",
+          handoffToken: "next-lock-token",
+        },
+        credentialPresented: true,
+      });
+
+    try {
+      const routed = scope.enqueue(
+        { type: "sso_ready", institutionId: "11" },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: async (institutionId) => {
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => undefined,
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda,
+          openComunica: async (institutionId, canNavigate, signal) => {
+            const result = await runWebSsoHandoff(
+              institutionId,
+              { signal, isCurrent: canNavigate },
+              submit,
+            );
+            return "cancelled" in result ? result : { ok: result.ok };
+          },
+        },
+      );
+      const itemSignal = await generateStarted.promise;
+
+      expect(15_000).toBeLessThan(NOTIFICATION_ROUTING_ITEM_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(routed).resolves.toBe(false);
+      expect(itemSignal.aborted).toBe(false);
+      expect(navigateToAgenda).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+
+      const nextRequest = new AbortController();
+      await expect(
+        runWebSsoHandoff(
+          11,
+          { signal: nextRequest.signal, isCurrent: () => true },
+          submit,
+        ),
+      ).resolves.toEqual({ ok: true });
+      expect(submit).toHaveBeenCalledTimes(1);
+    } finally {
+      scope.invalidate();
+      vi.useRealTimers();
+    }
+  });
+
+  it("timeout esperando o Web Lock cancela sem iniciar callback nem cair na Agenda", async () => {
+    vi.useFakeTimers();
+    clientMocks.platform.OS = "web";
+    const coordinator = createNotificationRoutingCoordinator();
+    const scope = coordinator.beginScope();
+    const submit = vi.fn(() => true);
+    const navigateToAgenda = vi.fn();
+    let itemSignal: AbortSignal | undefined;
+    const lockTimeout = new clientMocks.WebSessionMutationCancelledError();
+    clientMocks.runExclusiveWebSessionMutation.mockImplementationOnce(
+      async () =>
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(lockTimeout), 15_000);
+        }),
+    );
+    clientMocks.apiFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      data: {
+        targetUrl: "https://comunica.example/sso",
+        handoffToken: "after-lock-timeout",
+      },
+      credentialPresented: true,
+    });
+
+    try {
+      const routed = scope.enqueue(
+        { type: "sso_ready", institutionId: "11" },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => ({ institutionId: 11, revision: 1 }),
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: async () => undefined,
+          invalidateQueries: async () => undefined,
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda,
+          openComunica: async (institutionId, canNavigate, signal) => {
+            itemSignal = signal;
+            const result = await runWebSsoHandoff(
+              institutionId,
+              { signal, isCurrent: canNavigate },
+              submit,
+            );
+            return "cancelled" in result ? result : { ok: result.ok };
+          },
+        },
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await expect(routed).resolves.toBe(false);
+      expect(itemSignal?.aborted).toBe(false);
+      expect(clientMocks.apiFetch).not.toHaveBeenCalled();
+      expect(navigateToAgenda).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+
+      const nextRequest = new AbortController();
+      await expect(
+        runWebSsoHandoff(
+          11,
+          { signal: nextRequest.signal, isCurrent: () => true },
+          submit,
+        ),
+      ).resolves.toEqual({ ok: true });
+      expect(clientMocks.apiFetch).toHaveBeenCalledTimes(1);
+      expect(submit).toHaveBeenCalledTimes(1);
+    } finally {
+      scope.invalidate();
+      vi.useRealTimers();
+    }
+  });
+
+  it("não trata um objeto impostor com o mesmo code como cancelamento do Web Lock", async () => {
+    clientMocks.platform.OS = "web";
+    clientMocks.runExclusiveWebSessionMutation.mockRejectedValueOnce({
+      code: "WEB_SESSION_MUTATION_CANCELLED",
+    });
+
+    const request = new AbortController();
+    await expect(
+      runWebSsoHandoff(11, {
+        signal: request.signal,
+        isCurrent: () => true,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "Não foi possível conectar ao Comunica+. Tente novamente.",
+      errorCode: null,
+    });
+    expect(clientMocks.apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("invalidate aborta generate imediatamente, não cai na Agenda e libera o próximo Web Lock", async () => {
+    clientMocks.platform.OS = "web";
+    const coordinator = createNotificationRoutingCoordinator();
+    const scope = coordinator.beginScope();
+    const generateStarted = deferred<AbortSignal>();
+    const submit = vi.fn(() => true);
+    const navigateToAgenda = vi.fn();
+    let activeTenant = { institutionId: 11, revision: 1 };
+
+    clientMocks.apiFetch
+      .mockImplementationOnce(async (_path: string, options?: RequestInit) => {
+        const signal = options?.signal;
+        if (!signal) throw new Error("signal do routing item ausente");
+        generateStarted.resolve(signal);
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {
+          ok: false,
+          status: 0,
+          data: null,
+          credentialPresented: true,
+        };
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: {
+          targetUrl: "https://comunica.example/sso",
+          handoffToken: "post-invalidate-token",
+        },
+        credentialPresented: true,
+      });
+
+    const routed = scope.enqueue(
+      { type: "sso_ready", institutionId: "11" },
+      {
+        isSessionAuthorizationCurrent: () => true,
+        getActiveTenantSnapshot: () => activeTenant,
+        loadAllowedInstitutionIds: async () => [11],
+        setActiveInstitutionId: async (institutionId) => {
+          activeTenant = {
+            institutionId,
+            revision: activeTenant.revision + 1,
+          };
+        },
+        invalidateQueries: async () => undefined,
+        navigateToConfirmation: vi.fn(),
+        navigateToAgenda,
+        openComunica: async (institutionId, canNavigate, signal) => {
+          const result = await runWebSsoHandoff(
+            institutionId,
+            { signal, isCurrent: canNavigate },
+            submit,
+          );
+          return "cancelled" in result ? result : { ok: result.ok };
+        },
+      },
+    );
+    const signal = await generateStarted.promise;
+    scope.invalidate();
+
+    expect(signal.aborted).toBe(true);
+    await expect(routed).resolves.toBe(false);
+    expect(navigateToAgenda).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+
+    const nextRequest = new AbortController();
+    await expect(
+      runWebSsoHandoff(
+        11,
+        { signal: nextRequest.signal, isCurrent: () => true },
+        submit,
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
 
   it("cleanup real do Listener invalida a fila no unmount/logout e impede rota tardia", async () => {
     vi.resetModules();
@@ -1698,6 +2099,70 @@ describe("SSO client tenant boundaries", () => {
 
     (cleanup as (() => void) | undefined)?.();
     expect(harness.removeSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("Listener real usa o handoff web cercado e mantém o launch-code apenas no mobile", async () => {
+    const notificationWebHandoff = vi.fn(async () => ({ ok: true }));
+    const harness = await renderRealNotificationListener({
+      platform: "web",
+      sessionVerified: true,
+      activeTenant: { institutionId: 22, revision: 1 },
+      allowedInstitutionIds: [11, 22],
+      runWebSsoHandoff: notificationWebHandoff,
+    });
+
+    expect(harness.render()).not.toBeNull();
+    const cleanup = harness.runLatestEffect();
+    harness.emit(
+      notificationResponse("web-sso-ready", {
+        type: "sso_ready",
+        institutionId: "11",
+      }),
+    );
+
+    await vi.waitFor(() =>
+      expect(harness.notificationWebHandoff).toHaveBeenCalledTimes(1),
+    );
+    expect(harness.notificationWebHandoff).toHaveBeenCalledWith(
+      11,
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        isCurrent: expect.any(Function),
+      }),
+    );
+    expect(harness.openComunicaFromNotification).not.toHaveBeenCalled();
+    expect(harness.routerPush).not.toHaveBeenCalled();
+
+    cleanup?.();
+    vi.doUnmock("@/hooks/use-sso-handoff");
+  });
+
+  it("Listener real preserva cancelled do handoff web e não faz fallback tardio para Agenda", async () => {
+    const harness = await renderRealNotificationListener({
+      platform: "web",
+      sessionVerified: true,
+      activeTenant: { institutionId: 11, revision: 1 },
+      allowedInstitutionIds: [11],
+      runWebSsoHandoff: async () => ({ ok: false, cancelled: true }),
+    });
+
+    expect(harness.render()).not.toBeNull();
+    const cleanup = harness.runLatestEffect();
+    harness.emit(
+      notificationResponse("web-sso-cancelled", {
+        type: "sso_ready",
+        institutionId: "11",
+      }),
+    );
+
+    await vi.waitFor(() =>
+      expect(harness.notificationWebHandoff).toHaveBeenCalledTimes(1),
+    );
+    expect(harness.routerPush).not.toHaveBeenCalled();
+    expect(harness.openComunicaFromNotification).not.toHaveBeenCalled();
+
+    cleanup?.();
+    vi.doUnmock("@/hooks/use-sso-handoff");
   });
 
   it("Listener real consome cold-start A sob tenant B, limpa antes do await e navega uma vez", async () => {

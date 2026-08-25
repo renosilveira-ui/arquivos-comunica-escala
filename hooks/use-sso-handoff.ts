@@ -49,7 +49,7 @@ const SSO_CONNECTION_FAILED_MESSAGE =
 const SSO_INVALID_RESPONSE_MESSAGE =
   "O Comunica+ devolveu uma resposta inválida. Tente novamente.";
 
-type SsoRequest = Readonly<{
+export type SsoRequest = Readonly<{
   signal: AbortSignal;
   isCurrent: () => boolean;
 }>;
@@ -88,6 +88,10 @@ type WebSsoResult =
   | { ok: true }
   | { ok: false; cancelled: true }
   | { ok: false; error: string; errorCode: string | null };
+
+function isWebSessionMutationCancellation(error: unknown): boolean {
+  return error instanceof Auth.WebSessionMutationCancelledError;
+}
 
 function parseSsoErrorCode(value: unknown): SsoErrorResponse["code"] {
   if (
@@ -146,12 +150,21 @@ export async function runWebSsoHandoff(
   request: SsoRequest,
   submit: typeof submitFormPost = submitFormPost,
 ): Promise<WebSsoResult> {
+  let workflowAborted = false;
   try {
     // O form POST é um efeito irreversível sob o cookie do navegador. O mesmo
     // Web Lock que cerca login/logout precisa abranger ticket → generate →
     // submit, impedindo que outra aba troque a identidade entre a resposta e a
     // navegação.
     return await Auth.runExclusiveWebSessionMutation(async (workflowSignal) => {
+      workflowAborted = workflowSignal?.aborted === true;
+      workflowSignal?.addEventListener(
+        "abort",
+        () => {
+          workflowAborted = true;
+        },
+        { once: true },
+      );
       const transportTicket = Auth.captureSessionTransportTicket();
       const isCurrent = () =>
         workflowSignal?.aborted !== true &&
@@ -212,10 +225,14 @@ export async function runWebSsoHandoff(
       );
       return submitted ? { ok: true } : { ok: false, cancelled: true };
     });
-  } catch {
-    return request.isCurrent()
-      ? { ok: false, error: SSO_CONNECTION_FAILED_MESSAGE, errorCode: null }
-      : { ok: false, cancelled: true };
+  } catch (error) {
+    return (
+      !request.isCurrent() ||
+      workflowAborted ||
+      isWebSessionMutationCancellation(error)
+    )
+      ? { ok: false, cancelled: true }
+      : { ok: false, error: SSO_CONNECTION_FAILED_MESSAGE, errorCode: null };
   }
 }
 

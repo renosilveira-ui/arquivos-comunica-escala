@@ -19,6 +19,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { sdk } from "../server/_core/sdk";
+import { sessionInstanceProof } from "../server/_core/session-instance";
 import * as auditService from "../server/audit-trail";
 import * as dbService from "../server/db";
 import { getDb } from "../server/db";
@@ -58,6 +59,12 @@ describe("auth hardening adversarial", () => {
 
   const login = (email: string, password = PASSWORD) =>
     request(app).post("/api/auth/login").send({ email, password });
+
+  const sessionInstanceForCookie = (cookie: string): string => {
+    const token = cookie.match(/(?:^|;\s*)session=([^;]+)/)?.[1];
+    if (!token) throw new Error("Cookie de sessão ausente no teste");
+    return sessionInstanceProof(token);
+  };
 
   const sessionInstanceOf = async (cookie: string): Promise<string> => {
     const response = await request(app)
@@ -796,6 +803,8 @@ describe("auth hardening adversarial", () => {
     const me = await request(app).get("/api/auth/me").set("Cookie", cookie);
     expect(me.status).toBe(200);
     expect(me.body.user.mustChangePassword).toBe(true);
+    const exactSessionInstance = sessionInstanceForCookie(cookie);
+    expect(me.body.sessionInstance).toBe(exactSessionInstance);
     expect(
       (await request(app).get("/api/operational-probe").set("Cookie", cookie))
         .status,
@@ -805,7 +814,7 @@ describe("auth hardening adversarial", () => {
         await request(app)
           .delete("/api/auth/me")
           .set("Cookie", cookie)
-          .set("x-client-session-instance", me.body.sessionInstance)
+          .set("x-client-session-instance", exactSessionInstance)
           .send({ password: PASSWORD })
       ).status,
     ).toBe(401);

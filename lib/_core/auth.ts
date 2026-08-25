@@ -32,6 +32,15 @@ const WEB_SESSION_WORKFLOW_REVISION_KEY = "web_session_workflow_revision_v1";
 const WEB_SESSION_WORKFLOW_REVISION_PREFIX = "workflow:v1";
 const SESSION_INSTANCE_PATTERN = /^v1\.[A-Za-z0-9_-]{43}$/;
 export const WEB_SESSION_MUTATION_DEADLINE_MS = 15_000;
+
+export class WebSessionMutationCancelledError extends Error {
+  readonly code = "WEB_SESSION_MUTATION_CANCELLED";
+
+  constructor() {
+    super("Workflow de sessão web excedeu o prazo seguro");
+    this.name = "WebSessionMutationCancelledError";
+  }
+}
 const WEB_SESSION_QUARANTINE_PREFIX = "pending-revocation:v2";
 const WEB_SESSION_BOUND_QUARANTINE_PREFIX = "pending-revocation:v3";
 const WEB_SESSION_EXACT_QUARANTINE_PREFIX = "pending-revocation:v4";
@@ -3759,9 +3768,7 @@ export async function runExclusiveWebSessionMutation<T>(
   }
   const controller = new AbortController();
   const deadline = setTimeout(() => {
-    controller.abort(
-      new Error("Workflow de sessão web excedeu o prazo seguro"),
-    );
+    controller.abort(new WebSessionMutationCancelledError());
   }, WEB_SESSION_MUTATION_DEADLINE_MS);
   try {
     return await locks.request(
@@ -3779,6 +3786,13 @@ export async function runExclusiveWebSessionMutation<T>(
         }
       },
     );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw controller.signal.reason instanceof Error
+        ? controller.signal.reason
+        : new WebSessionMutationCancelledError();
+    }
+    throw error;
   } finally {
     clearTimeout(deadline);
   }

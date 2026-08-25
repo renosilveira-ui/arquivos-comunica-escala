@@ -271,6 +271,306 @@ describe("admissão do token no login nativo", () => {
     );
   });
 
+  it("serializa preflight/receipts e DELETE com login/logout concorrentes sem deadlock", async () => {
+    const previousActive =
+      process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE;
+    process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE = "1";
+    const transitionCredential = Object.freeze({});
+    const reversibleWebRevocation = Object.freeze({});
+    const webLogin = Object.freeze({});
+    const releaseLogin = deferredVoid();
+    const releaseDelete = deferredVoid();
+    const events: string[] = [];
+    const consumeReversibleWebSessionRevocationForRequest = vi.fn(() => {
+      events.push("delete:consume-reversible");
+    });
+
+    vi.doMock("react-native", () => ({ Platform: { OS: "web" } }));
+    vi.doMock("../lib/_core/auth", () => ({
+      consumeSessionTransitionCredentialForRequest: vi.fn(() => ({
+        expectedUserId: 31,
+        sessionInstance: SESSION_INSTANCE,
+      })),
+      consumeReversibleWebSessionRevocationForRequest,
+      consumeWebLoginInProgressForRequest: vi.fn(),
+    }));
+    vi.doMock("../lib/tenant-state", () => ({
+      getActiveInstitutionId: vi.fn(async () => null),
+    }));
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, options?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/auth/session-binding-capability")) {
+          events.push("capability");
+          return new Response(
+            JSON.stringify({ capability: "exact-v1", supported: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/auth/login")) {
+          events.push("login:start");
+          await releaseLogin.promise;
+          events.push("login:end");
+          return new Response(
+            JSON.stringify({
+              user: {
+                id: 31,
+                name: "Conta A",
+                email: "a@example.com",
+                role: "doctor",
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/auth/me") && options?.method === "DELETE") {
+          events.push("delete:start");
+          await releaseDelete.promise;
+          events.push("delete:end");
+          return new Response(
+            JSON.stringify({ ok: true, sessionFenceRotated: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/auth/logout")) {
+          events.push("logout:start");
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              sessionFenceRotated: true,
+              revocation: "ROTATED",
+              revocationUserId: 31,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`request inesperado: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { authApi } = await import("../lib/_core/api");
+      const loginReceipt = await authApi.prepareSessionBindingMutation("login");
+      events.length = 0;
+
+      const login = authApi.login(
+        "a@example.com",
+        "segredo",
+        loginReceipt,
+        webLogin as never,
+      );
+      await vi.waitFor(() => expect(events).toEqual(["login:start"]));
+
+      const deletion = authApi.deleteAccount(
+        "segredo",
+        transitionCredential as never,
+        undefined,
+        reversibleWebRevocation as never,
+      );
+      const logout = authApi.logout(undefined, 31, SESSION_INSTANCE);
+      await Promise.resolve();
+      expect(events).toEqual(["login:start"]);
+      expect(
+        consumeReversibleWebSessionRevocationForRequest,
+      ).not.toHaveBeenCalled();
+
+      releaseLogin.resolve();
+      await vi.waitFor(() =>
+        expect(events).toEqual([
+          "login:start",
+          "login:end",
+          "capability",
+          "delete:consume-reversible",
+          "delete:start",
+        ]),
+      );
+      expect(events).not.toContain("logout:start");
+
+      releaseDelete.resolve();
+      await expect(Promise.all([login, deletion, logout])).resolves.toEqual([
+        expect.objectContaining({
+          ok: true,
+          user: expect.objectContaining({ id: 31 }),
+        }),
+        { ok: true, status: 200 },
+        { status: "ROTATED", revocationUserId: 31 },
+      ]);
+      expect(events).toEqual([
+        "login:start",
+        "login:end",
+        "capability",
+        "delete:consume-reversible",
+        "delete:start",
+        "delete:end",
+        "logout:start",
+      ]);
+      expect(
+        consumeReversibleWebSessionRevocationForRequest,
+      ).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousActive === undefined)
+        delete process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE;
+      else
+        process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE =
+          previousActive;
+    }
+  });
+
+  it("compõe Web Lock antes da fila HTTP de DELETE/login/logout sem direção inversa", async () => {
+    const previousActive =
+      process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE;
+    process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE = "0";
+    const transitionCredential = Object.freeze({});
+    const reversibleWebRevocation = Object.freeze({});
+    const webLogin = Object.freeze({});
+    const releaseDelete = deferredVoid();
+    const events: string[] = [];
+
+    vi.doMock("react-native", () => ({ Platform: { OS: "web" } }));
+    vi.doMock("../lib/_core/auth", () => ({
+      consumeSessionTransitionCredentialForRequest: vi.fn(() => ({
+        expectedUserId: 31,
+        sessionInstance: SESSION_INSTANCE,
+      })),
+      consumeReversibleWebSessionRevocationForRequest: vi.fn(() => {
+        events.push("delete:consume");
+      }),
+      consumeWebLoginInProgressForRequest: vi.fn(() => {
+        events.push("login:consume");
+      }),
+    }));
+    vi.doMock("../lib/tenant-state", () => ({
+      getActiveInstitutionId: vi.fn(async () => null),
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/auth/me") && options?.method === "DELETE") {
+          events.push("delete:http:start");
+          await releaseDelete.promise;
+          events.push("delete:http:end");
+          return new Response(
+            JSON.stringify({ ok: true, sessionFenceRotated: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/auth/login")) {
+          events.push("login:http");
+          return new Response(
+            JSON.stringify({
+              user: {
+                id: 31,
+                name: "Conta A",
+                email: "a@example.com",
+                role: "doctor",
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/auth/logout")) {
+          events.push("logout:http");
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              sessionFenceRotated: true,
+              revocation: "ROTATED",
+              revocationUserId: 31,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`request inesperado: ${url}`);
+      }),
+    );
+
+    let lockTail = Promise.resolve();
+    const runWebLock = <T>(label: string, operation: () => Promise<T>) => {
+      const result = lockTail.then(async () => {
+        events.push(`lock:${label}:start`);
+        try {
+          return await operation();
+        } finally {
+          events.push(`lock:${label}:end`);
+        }
+      });
+      lockTail = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    };
+
+    try {
+      const { authApi } = await import("../lib/_core/api");
+      const deletion = runWebLock("delete", () =>
+        authApi.deleteAccount(
+          "segredo",
+          transitionCredential as never,
+          undefined,
+          reversibleWebRevocation as never,
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(events).toEqual([
+          "lock:delete:start",
+          "delete:consume",
+          "delete:http:start",
+        ]),
+      );
+
+      const login = runWebLock("login", () =>
+        authApi.login(
+          "a@example.com",
+          "segredo",
+          undefined,
+          webLogin as never,
+        ),
+      );
+      const logout = runWebLock("logout", () =>
+        authApi.logout(undefined, 31, SESSION_INSTANCE),
+      );
+      await Promise.resolve();
+      expect(events).toEqual([
+        "lock:delete:start",
+        "delete:consume",
+        "delete:http:start",
+      ]);
+
+      releaseDelete.resolve();
+      await expect(Promise.all([deletion, login, logout])).resolves.toEqual([
+        { ok: true, status: 200 },
+        expect.objectContaining({
+          ok: true,
+          user: expect.objectContaining({ id: 31 }),
+        }),
+        { status: "ROTATED", revocationUserId: 31 },
+      ]);
+      expect(events).toEqual([
+        "lock:delete:start",
+        "delete:consume",
+        "delete:http:start",
+        "delete:http:end",
+        "lock:delete:end",
+        "lock:login:start",
+        "login:consume",
+        "login:http",
+        "lock:login:end",
+        "lock:logout:start",
+        "logout:http",
+        "lock:logout:end",
+      ]);
+    } finally {
+      if (previousActive === undefined)
+        delete process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE;
+      else
+        process.env.EXPO_PUBLIC_SESSION_EXACT_BINDING_CLIENT_ACTIVE =
+          previousActive;
+    }
+  });
+
   it("não confirma logout web sem 2xx e prova explícita do fence", async () => {
     vi.doMock("react-native", () => ({ Platform: { OS: "web" } }));
     vi.doMock("../lib/_core/auth", () => ({

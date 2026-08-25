@@ -36,6 +36,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { AvailableSwapsList } from "@/components/swaps/AvailableSwapsList";
+import { resolvePendingContentState } from "@/lib/permission-screen-state";
 
 // ---------------------------------------------------------------------------
 // Helpers for Available Swaps section
@@ -279,7 +280,32 @@ export default function PendingScreen() {
     );
   }
 
-  if (!professionalLoading && user && !professional && !canApproveAssignments) {
+  const pendingContentState = resolvePendingContentState({
+    pendingLoading: isLoading,
+    permissionsLoading,
+    professionalLoading,
+    myShiftsLoading: loadingMyShifts,
+    hasProfessional: professional !== undefined && professional !== null,
+    canApproveAssignments,
+  });
+
+  if (pendingContentState === "LOADING") {
+    return (
+      <ScreenGradient>
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text
+            className="mt-4 text-base"
+            style={{ color: theme.colors.textMuted }}
+          >
+            Carregando pendências...
+          </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (pendingContentState === "MISSING_PROFESSIONAL") {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
@@ -295,22 +321,6 @@ export default function PendingScreen() {
             style={{ color: theme.colors.textMuted }}
           >
             Seu usuário não está associado a um profissional
-          </Text>
-        </View>
-      </ScreenGradient>
-    );
-  }
-
-  if (isLoading || authLoading || permissionsLoading || professionalLoading || loadingMyShifts) {
-    return (
-      <ScreenGradient>
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text
-            className="mt-4 text-base"
-            style={{ color: theme.colors.textMuted }}
-          >
-            Carregando pendências...
           </Text>
         </View>
       </ScreenGradient>

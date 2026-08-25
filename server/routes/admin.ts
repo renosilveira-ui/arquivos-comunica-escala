@@ -18,6 +18,7 @@ import {
 } from "../../drizzle/schema";
 import { AuthenticationInfrastructureError, sdk } from "../_core/sdk";
 import { SessionInstanceConstraintError } from "../_core/session-instance";
+import { ExpectedUserConstraintError } from "../_core/expected-user";
 import { recordAudit } from "../audit-trail";
 import { parseTenantIdHeader } from "../_core/tenant";
 import {
@@ -989,6 +990,10 @@ async function requireAdmin(req: Request, res: Response, next: () => void) {
       return;
     }
     if (error instanceof SessionInstanceConstraintError) {
+      res.status(error.status).json({ error: error.message, code: error.code });
+      return;
+    }
+    if (error instanceof ExpectedUserConstraintError) {
       res.status(error.status).json({ error: error.message, code: error.code });
       return;
     }

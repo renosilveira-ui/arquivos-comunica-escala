@@ -2378,6 +2378,12 @@ authRouter.post(
           .json({ error: error.message, code: error.code });
         return;
       }
+      if (error instanceof ExpectedUserConstraintError) {
+        res
+          .status(error.status)
+          .json({ error: error.message, code: error.code });
+        return;
+      }
       res.status(401).json({ error: "Não autenticado" });
       return;
     }

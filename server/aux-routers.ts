@@ -116,7 +116,11 @@ export const professionalsRouter = router({
       );
 
     return rows
-      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
+      .sort(
+        (a, b) =>
+          Number(b.isPrimary) - Number(a.isPrimary) ||
+          a.institutionId - b.institutionId,
+      )
       .map((r) => ({
         id: r.institutionId,
         name: r.institutionName,
