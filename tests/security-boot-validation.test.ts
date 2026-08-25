@@ -91,6 +91,17 @@ describe("Frente 2.1 - production boot validation", () => {
         }),
       ).toContain("COMUNICA_PLUS_OUTBOUND_ENABLED must be 0, 1, or unset");
     });
+
+    it("rejects an ambiguous exact-v1 rollout flag", () => {
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            SESSION_EXACT_BINDING_SUPPORTED: "true",
+          },
+        }),
+      ).toContain("SESSION_EXACT_BINDING_SUPPORTED must be 0, 1, or unset");
+    });
   });
 
   describe("production environment - missing secrets", () => {
@@ -164,7 +175,10 @@ describe("Frente 2.1 - production boot validation", () => {
 
     it("rejects the system123 Comunica+ password", () => {
       const issues = collectProductionSecretIssues({
-        env: { ...VALID_PRODUCTION_ENV, COMUNICA_PLUS_SYSTEM_PASSWORD: "system123" },
+        env: {
+          ...VALID_PRODUCTION_ENV,
+          COMUNICA_PLUS_SYSTEM_PASSWORD: "system123",
+        },
       });
       expect(issues).toContain(
         "COMUNICA_PLUS_SYSTEM_PASSWORD must not be the development placeholder value (set a real secret)",
@@ -264,7 +278,8 @@ describe("Frente 2.1 - production boot validation", () => {
       const issues = collectProductionSecretIssues({
         env: {
           ...VALID_PRODUCTION_ENV,
-          DATABASE_URL: "mysql://app:pass@notlocalhostsuffix.example.com:3306/escalas",
+          DATABASE_URL:
+            "mysql://app:pass@notlocalhostsuffix.example.com:3306/escalas",
         },
       });
       expect(issues).not.toContain(

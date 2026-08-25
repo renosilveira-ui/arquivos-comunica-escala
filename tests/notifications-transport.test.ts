@@ -13,6 +13,7 @@ import {
 import {
   PushOwnershipLockTimeoutError,
   withPushAccountAndTokenMutex,
+  withPushAccountAndTokenMutexes,
 } from "../server/push-registration-revocation";
 
 const dbModule = vi.hoisted(() => ({
@@ -232,6 +233,49 @@ describe("transporte tipado de push Expo", () => {
     ]);
     expect(release).toHaveBeenCalledTimes(1);
     expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("replacement ordena e deduplica os dois token-locks na mesma conexão", async () => {
+    const tokens = [
+      "ExponentPushToken[z-previous]",
+      "ExponentPushToken[a-current]",
+      "ExponentPushToken[z-previous]",
+    ];
+    const expectedTokenLocks = [...new Set(tokens.map((token) => (
+      `escala-push-token:${createHash("sha256")
+        .update(token)
+        .digest("hex")
+        .slice(0, 40)}`
+    )))].sort();
+    const release = vi.fn();
+    const execute = vi.fn(async (statement: unknown) => {
+      const isRelease = JSON.stringify(statement).includes("RELEASE_LOCK");
+      return [[isRelease ? { released: 1 } : { acquired: 1 }], []];
+    });
+    const connectionDb: any = { execute };
+    const db: any = {
+      $client: {
+        promise: () => ({
+          getConnection: async () => ({
+            database: connectionDb,
+            release,
+            destroy: vi.fn(),
+          }),
+        }),
+      },
+    };
+
+    await expect(
+      withPushAccountAndTokenMutexes(db, 7, tokens, 3, async () => "ok"),
+    ).resolves.toBe("ok");
+
+    expect(execute.mock.calls.map(([statement]) => sqlBoundValues(statement)[0])).toEqual([
+      "escala-push-user:7",
+      ...expectedTokenLocks,
+      ...[...expectedTokenLocks].reverse(),
+      "escala-push-user:7",
+    ]);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("trata ticket ok com receipt id apenas como TICKET_ACCEPTED", async () => {
@@ -472,6 +516,7 @@ describe("transporte tipado de push Expo", () => {
 
   it("sanitiza DrizzleQueryError no registro sem logar nem devolver o token", async () => {
     const token = "ExponentPushToken[REGISTER_SECRET_SENTINEL]";
+    const previousToken = "ExponentPushToken[PREVIOUS_SECRET_SENTINEL]";
     const { db } = database();
     db.transaction.mockRejectedValueOnce(
       new DrizzleQueryError(
@@ -482,23 +527,28 @@ describe("transporte tipado de push Expo", () => {
     );
     dbModule.getDb.mockResolvedValue(db);
 
-    await expect(registerPushToken(7, token, "ios", 99, 1)).resolves.toEqual({
+    await expect(registerPushToken(7, token, "ios", 99, 1, previousToken)).resolves.toEqual({
       success: false,
       message: "Não foi possível registrar o token",
     });
 
     expect(console.error).toHaveBeenCalledWith("[Notifications] PUSH_TOKEN_REGISTER_FAILED");
     expect(serializedErrorLogs()).not.toContain(token);
+    expect(serializedErrorLogs()).not.toContain(previousToken);
   });
 
   it("serviço rejeita whitespace antes de consultar DB ou adquirir mutex", async () => {
     const token = "ExponentPushToken[whitespace] ";
+    const validToken = "ExponentPushToken[current]";
 
     await expect(registerPushToken(7, token, "ios", null, 1)).resolves.toEqual({
       success: false,
       message: "Push token inválido",
     });
     await expect(unregisterPushToken(7, token, 1)).resolves.toEqual({ success: false });
+    await expect(
+      registerPushToken(7, validToken, "ios", null, 1, token),
+    ).resolves.toEqual({ success: false, message: "Push token inválido" });
 
     expect(dbModule.getDb).not.toHaveBeenCalled();
   });

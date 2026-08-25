@@ -39,7 +39,8 @@ const NO_LOCALHOST_URLS: readonly string[] = [
   "EXPO_PUBLIC_API_URL",
 ];
 
-const LOCALHOST_PATTERN = /(^|\/\/|@)(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/i;
+const LOCALHOST_PATTERN =
+  /(^|\/\/|@)(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/i;
 
 export interface EnvValidationOptions {
   env?: NodeJS.ProcessEnv;
@@ -52,6 +53,14 @@ export function collectProductionSecretIssues(
   if (env.NODE_ENV !== "production") return [];
 
   const issues: string[] = [];
+  const sessionBindingFlag = (env.SESSION_EXACT_BINDING_SUPPORTED ?? "").trim();
+  if (
+    sessionBindingFlag &&
+    sessionBindingFlag !== "0" &&
+    sessionBindingFlag !== "1"
+  ) {
+    issues.push("SESSION_EXACT_BINDING_SUPPORTED must be 0, 1, or unset");
+  }
   const outboundFlag = (env.COMUNICA_PLUS_OUTBOUND_ENABLED ?? "").trim();
   const outboundEnabled = outboundFlag === "1";
   if (outboundFlag && outboundFlag !== "0" && outboundFlag !== "1") {

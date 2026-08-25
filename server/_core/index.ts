@@ -13,6 +13,8 @@ import { privacyRouter } from "../routes/privacy";
 import { ssoRouter } from "../sso/router";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { sessionInstanceConstraintHttpStatus } from "./trpc";
+import { setStaticCacheHeaders } from "./static-cache";
 import { assertProductionSecrets } from "./env-validation";
 import { logger } from "./logger";
 import {
@@ -88,8 +90,13 @@ async function startServer() {
   const trustedHosts = new Set<string>([
     `localhost:${listenPort}`,
     `127.0.0.1:${listenPort}`,
-    ...(process.env.RENDER_EXTERNAL_HOSTNAME ? [process.env.RENDER_EXTERNAL_HOSTNAME] : []),
-    ...(process.env.TRUSTED_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean),
+    ...(process.env.RENDER_EXTERNAL_HOSTNAME
+      ? [process.env.RENDER_EXTERNAL_HOSTNAME]
+      : []),
+    ...(process.env.TRUSTED_HOSTS ?? "")
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean),
   ]);
 
   app.use(createHelmetMiddleware());
@@ -108,7 +115,11 @@ async function startServer() {
   app.get("/api/health", async (_req, res) => {
     const db = await pingDb();
     if (db.ok) {
-      res.json({ ok: true, db: { ok: true, latencyMs: db.latencyMs }, timestamp: Date.now() });
+      res.json({
+        ok: true,
+        db: { ok: true, latencyMs: db.latencyMs },
+        timestamp: Date.now(),
+      });
       return;
     }
     logger.warn(
@@ -117,7 +128,11 @@ async function startServer() {
     );
     res
       .status(503)
-      .json({ ok: false, db: { ok: false, status: db.status }, timestamp: Date.now() });
+      .json({
+        ok: false,
+        db: { ok: false, status: db.status },
+        timestamp: Date.now(),
+      });
   });
 
   app.use(createGlobalRateLimit());
@@ -130,7 +145,12 @@ async function startServer() {
   // roda a cada abertura do app — 20/15min por IP bloqueava clínicas
   // inteiras atrás de NAT (auditoria 22/08 parte 2).
   const authRateLimit = createAuthRateLimit();
-  app.use("/api/auth", (req, res, next) => (req.method === "GET" ? next() : authRateLimit(req, res, next)), authRouter);
+  app.use(
+    "/api/auth",
+    (req, res, next) =>
+      req.method === "GET" ? next() : authRateLimit(req, res, next),
+    authRouter,
+  );
   app.use("/api/admin", adminRouter);
   // Página pública da Política de Privacidade (App Store + LGPD)
   app.use(privacyRouter);
@@ -142,6 +162,10 @@ async function startServer() {
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      responseMeta({ errors }) {
+        const status = sessionInstanceConstraintHttpStatus(errors);
+        return status ? { status } : {};
+      },
     }),
   );
 
@@ -153,13 +177,23 @@ async function startServer() {
   // Router's client-side routing works (deep links, refresh on /agenda, etc.).
   const webBuildPath = join(process.cwd(), "web-build");
   if (existsSync(webBuildPath)) {
-    app.use(express.static(webBuildPath, { maxAge: "1h", index: false }));
+    app.use(
+      express.static(webBuildPath, {
+        index: false,
+        setHeaders: setStaticCacheHeaders,
+      }),
+    );
     app.get("*", (req, res, next) => {
       // Don't intercept API or tRPC routes
-      if (req.path.startsWith("/api/") || req.path.startsWith("/.well-known/")) {
+      if (
+        req.path.startsWith("/api/") ||
+        req.path.startsWith("/.well-known/")
+      ) {
         return next();
       }
-      res.sendFile(join(webBuildPath, "index.html"));
+      res.sendFile(join(webBuildPath, "index.html"), {
+        headers: { "Cache-Control": "no-cache" },
+      });
     });
     logger.info({ path: webBuildPath }, "serving web build from same origin");
   }
@@ -187,11 +221,17 @@ async function startServer() {
   if (warm.ok) {
     logger.info({ latencyMs: warm.latencyMs }, "db pool warm");
   } else {
-    logger.warn({ status: warm.status, detail: warm.detail }, "db warm-up failed; listening anyway");
+    logger.warn(
+      { status: warm.status, detail: warm.detail },
+      "db warm-up failed; listening anyway",
+    );
   }
 
   server.listen(port, "0.0.0.0", () => {
-    logger.info({ port, env: process.env.NODE_ENV ?? "unset" }, "api server listening");
+    logger.info(
+      { port, env: process.env.NODE_ENV ?? "unset" },
+      "api server listening",
+    );
     startConfirmationCron();
   });
 

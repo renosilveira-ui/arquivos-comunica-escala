@@ -93,12 +93,35 @@ export async function withPushAccountAndTokenMutex<T>(
   acquisitionTimeoutSeconds: number,
   callback: (connectionDb: Db) => Promise<T>,
 ): Promise<T> {
-  if (!Number.isSafeInteger(userId) || userId <= 0 || !token) {
+  return withPushAccountAndTokenMutexes(
+    db,
+    userId,
+    [token],
+    acquisitionTimeoutSeconds,
+    callback,
+  );
+}
+
+/** Ordem global entre a conta e um conjunto de tokens físicos. */
+export async function withPushAccountAndTokenMutexes<T>(
+  db: Db,
+  userId: number,
+  tokens: readonly string[],
+  acquisitionTimeoutSeconds: number,
+  callback: (connectionDb: Db) => Promise<T>,
+): Promise<T> {
+  if (
+    !Number.isSafeInteger(userId) ||
+    userId <= 0 ||
+    tokens.length === 0 ||
+    tokens.some((token) => !token)
+  ) {
     throw new TypeError("Ownership push inválido");
   }
+  const tokenLocks = [...new Set(tokens.map(tokenLockName))].sort();
   return withPushNamedLocks(
     db,
-    [accountLockName(userId), tokenLockName(token)],
+    [accountLockName(userId), ...tokenLocks],
     acquisitionTimeoutSeconds,
     callback,
   );

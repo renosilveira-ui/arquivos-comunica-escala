@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { fenceQueryCachePersistence } from "./query-persist";
 import {
   createElement,
   createContext,
@@ -113,6 +114,8 @@ export async function getActiveInstitutionId(): Promise<number | null> {
 }
 
 export async function setActiveInstitutionId(id: number): Promise<void> {
+  // Fecha restore/subscribe do tenant anterior antes de publicar a troca.
+  fenceQueryCachePersistence();
   // Memória primeiro: a troca vale AGORA, independente da persistência.
   inMemoryTenantId = id;
   hydratedFromStorage = true;
@@ -121,6 +124,7 @@ export async function setActiveInstitutionId(id: number): Promise<void> {
 }
 
 export async function clearActiveInstitutionId(): Promise<void> {
+  fenceQueryCachePersistence();
   inMemoryTenantId = null;
   hydratedFromStorage = true;
   inMemoryTenantRevision += 1;
@@ -129,6 +133,7 @@ export async function clearActiveInstitutionId(): Promise<void> {
 
 type TenantStateValue = {
   activeInstitutionId: number | null;
+  tenantRevision: number;
   isHydrating: boolean;
   setActiveInstitutionId: (id: number) => Promise<void>;
   clearInstitutionSelection: () => Promise<void>;
@@ -136,15 +141,29 @@ type TenantStateValue = {
 
 const TenantStateContext = createContext<TenantStateValue | null>(null);
 
-export function TenantStateProvider({ children }: { children: ReactNode }) {
-  const [activeInstitutionIdState, setActiveInstitutionIdState] = useState<number | null>(null);
+export function TenantStateProvider({
+  children,
+  onBeforeTenantChange,
+}: {
+  children: ReactNode;
+  onBeforeTenantChange?: () => void;
+}) {
+  const initialSnapshot = getActiveTenantSnapshot();
+  const [activeInstitutionIdState, setActiveInstitutionIdState] = useState<number | null>(
+    initialSnapshot.institutionId,
+  );
+  const [tenantRevisionState, setTenantRevisionState] = useState(initialSnapshot.revision);
   const [isHydrating, setIsHydrating] = useState(true);
 
   useEffect(() => {
     let mounted = true;
     getActiveInstitutionId()
-      .then((id) => {
-        if (mounted) setActiveInstitutionIdState(id);
+      .then(() => {
+        if (mounted) {
+          const hydrated = getActiveTenantSnapshot();
+          setActiveInstitutionIdState(hydrated.institutionId);
+          setTenantRevisionState(hydrated.revision);
+        }
       })
       .finally(() => {
         if (mounted) setIsHydrating(false);
@@ -154,28 +173,49 @@ export function TenantStateProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const prepareTenantPublication = useCallback(() => {
+    // Primeiro encerra toda autoridade de restore/write e apaga o cache
+    // tenant-bound compartilhado. Se a limpeza síncrona falhar, a transição
+    // nem publica o novo tenant no módulo nem no React.
+    fenceQueryCachePersistence();
+    onBeforeTenantChange?.();
+  }, [onBeforeTenantChange]);
+
   const setActiveInstitutionIdFn = useCallback(async (id: number) => {
     // A aplicação da escolha (memória + revisão + React) é síncrona. Storage é
     // só persistência best-effort e nunca mantém navegação ou fila em espera.
+    prepareTenantPublication();
     const persistence = setActiveInstitutionId(id);
-    setActiveInstitutionIdState(id);
+    const current = getActiveTenantSnapshot();
+    setActiveInstitutionIdState(current.institutionId);
+    setTenantRevisionState(current.revision);
     void persistence.catch(() => undefined);
-  }, []);
+  }, [prepareTenantPublication]);
 
   const clearInstitutionSelection = useCallback(async () => {
+    prepareTenantPublication();
     const persistence = clearActiveInstitutionId();
-    setActiveInstitutionIdState(null);
+    const current = getActiveTenantSnapshot();
+    setActiveInstitutionIdState(current.institutionId);
+    setTenantRevisionState(current.revision);
     void persistence.catch(() => undefined);
-  }, []);
+  }, [prepareTenantPublication]);
 
   const value = useMemo<TenantStateValue>(
     () => ({
       activeInstitutionId: activeInstitutionIdState,
+      tenantRevision: tenantRevisionState,
       isHydrating,
       setActiveInstitutionId: setActiveInstitutionIdFn,
       clearInstitutionSelection,
     }),
-    [activeInstitutionIdState, clearInstitutionSelection, isHydrating, setActiveInstitutionIdFn],
+    [
+      activeInstitutionIdState,
+      clearInstitutionSelection,
+      isHydrating,
+      setActiveInstitutionIdFn,
+      tenantRevisionState,
+    ],
   );
 
   return createElement(TenantStateContext.Provider, { value }, children);

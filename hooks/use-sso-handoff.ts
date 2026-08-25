@@ -1,4 +1,5 @@
-import { getApiBaseUrl } from "@/lib/_core/api";
+import { apiFetch } from "@/lib/_core/api";
+import * as Auth from "@/lib/_core/auth";
 import { getActiveTenantSnapshot } from "@/lib/tenant-state";
 // hooks/use-sso-handoff.ts — SSO handoff flow: Escala → Comunica+
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -32,7 +33,6 @@ interface SsoState {
   error: string | null;
   errorCode: string | null;
 }
-
 
 interface NonceCryptoSource {
   randomUUID?: () => string;
@@ -90,6 +90,15 @@ type WebSsoResult =
   | { ok: false; error: string; errorCode: string | null };
 
 function parseSsoErrorCode(value: unknown): SsoErrorResponse["code"] {
+  if (
+    value === "EXPECTED_USER_MISMATCH" ||
+    value === "MALFORMED_EXPECTED_USER_ID" ||
+    value === "SESSION_INSTANCE_MISMATCH" ||
+    value === "SESSION_INSTANCE_REQUIRED" ||
+    value === "MALFORMED_SESSION_INSTANCE"
+  ) {
+    return "authority_invalid";
+  }
   return value === "no_active_duty" ||
     value === "context_conflict" ||
     value === "org_not_mapped" ||
@@ -127,7 +136,9 @@ export function generateSsoClientNonce(
     throw new Error("Gerador criptográfico indisponível para iniciar o SSO");
   }
   const bytes = source.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 export async function runWebSsoHandoff(
@@ -136,54 +147,71 @@ export async function runWebSsoHandoff(
   submit: typeof submitFormPost = submitFormPost,
 ): Promise<WebSsoResult> {
   try {
-    const clientNonce = generateSsoClientNonce();
-    const res = await fetch(`${getApiBaseUrl()}/api/sso/generate`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-tenant-id": String(tenantId),
-      },
-      credentials: "include",
-      body: JSON.stringify({ clientNonce }),
-      signal: request.signal,
+    // O form POST é um efeito irreversível sob o cookie do navegador. O mesmo
+    // Web Lock que cerca login/logout precisa abranger ticket → generate →
+    // submit, impedindo que outra aba troque a identidade entre a resposta e a
+    // navegação.
+    return await Auth.runExclusiveWebSessionMutation(async (workflowSignal) => {
+      const transportTicket = Auth.captureSessionTransportTicket();
+      const isCurrent = () =>
+        workflowSignal?.aborted !== true &&
+        transportTicket !== null &&
+        request.isCurrent() &&
+        Auth.isSessionTransportTicketCurrent(transportTicket);
+      if (!isCurrent()) return { ok: false, cancelled: true };
+
+      const clientNonce = generateSsoClientNonce();
+      const res = await apiFetch<
+        Partial<SsoGenerateResponse> & SsoErrorResponse
+      >("/api/sso/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-tenant-id": String(tenantId),
+        },
+        body: JSON.stringify({ clientNonce }),
+        signal: request.signal,
+      });
+
+      if (!isCurrent()) return { ok: false, cancelled: true };
+      if (!res.ok) {
+        const errorCode = parseSsoErrorCode(res.data?.code);
+        return {
+          ok: false,
+          error: controlledSsoError(errorCode),
+          errorCode: errorCode ?? null,
+        };
+      }
+
+      const data = res.data;
+      if (!isCurrent()) return { ok: false, cancelled: true };
+      if (
+        typeof data?.targetUrl !== "string" ||
+        !data.targetUrl ||
+        typeof data.handoffToken !== "string" ||
+        !data.handoffToken
+      ) {
+        return {
+          ok: false,
+          error: SSO_INVALID_RESPONSE_MESSAGE,
+          errorCode: null,
+        };
+      }
+
+      const submitted = submit(
+        data.targetUrl,
+        {
+          handoffToken: data.handoffToken,
+          handoffMethod: "REDIRECT_CODE",
+          clientNonce,
+          sourceApp: "ESCALAS_WEB",
+          responseMode: "redirect",
+          redirectTo: "/entry",
+        },
+        isCurrent,
+      );
+      return submitted ? { ok: true } : { ok: false, cancelled: true };
     });
-
-    if (!request.isCurrent()) return { ok: false, cancelled: true };
-    if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as SsoErrorResponse | null;
-      if (!request.isCurrent()) return { ok: false, cancelled: true };
-      const errorCode = parseSsoErrorCode(body?.code);
-      return {
-        ok: false,
-        error: controlledSsoError(errorCode),
-        errorCode: errorCode ?? null,
-      };
-    }
-
-    const data = (await res.json()) as Partial<SsoGenerateResponse>;
-    if (!request.isCurrent()) return { ok: false, cancelled: true };
-    if (
-      typeof data.targetUrl !== "string" ||
-      !data.targetUrl ||
-      typeof data.handoffToken !== "string" ||
-      !data.handoffToken
-    ) {
-      return { ok: false, error: SSO_INVALID_RESPONSE_MESSAGE, errorCode: null };
-    }
-
-    const submitted = submit(
-      data.targetUrl,
-      {
-        handoffToken: data.handoffToken,
-        handoffMethod: "REDIRECT_CODE",
-        clientNonce,
-        sourceApp: "ESCALAS_WEB",
-        responseMode: "redirect",
-        redirectTo: "/entry",
-      },
-      request.isCurrent,
-    );
-    return submitted ? { ok: true } : { ok: false, cancelled: true };
   } catch {
     return request.isCurrent()
       ? { ok: false, error: SSO_CONNECTION_FAILED_MESSAGE, errorCode: null }
@@ -215,8 +243,10 @@ export function useSsoHandoff(activeTenantId: number | null | undefined) {
           return false;
         }
         const liveTenant = getActiveTenantSnapshot();
-        return liveTenant.institutionId === tenantSnapshot.institutionId &&
-          liveTenant.revision === tenantSnapshot.revision;
+        return (
+          liveTenant.institutionId === tenantSnapshot.institutionId &&
+          liveTenant.revision === tenantSnapshot.revision
+        );
       },
     };
 

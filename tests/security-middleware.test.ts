@@ -79,7 +79,9 @@ describe("Frente 2.2 - CORS hardening", () => {
       .set("Host", "api.example.com")
       .set("X-Forwarded-Proto", "https")
       .set("Origin", "https://api.example.com");
-    expect(res.headers["access-control-allow-origin"]).toBe("https://api.example.com");
+    expect(res.headers["access-control-allow-origin"]).toBe(
+      "https://api.example.com",
+    );
     expect(res.headers["access-control-allow-credentials"]).toBe("true");
   });
 
@@ -120,6 +122,15 @@ describe("Frente 2.2 - CORS hardening", () => {
     expect(res.headers["access-control-allow-origin"]).toBe(
       "https://app.example.com",
     );
+    expect(
+      res.headers["access-control-allow-headers"]?.toLowerCase(),
+    ).toContain("x-client-expected-user-id");
+    expect(
+      res.headers["access-control-allow-headers"]?.toLowerCase(),
+    ).toContain("x-client-session-instance");
+    expect(
+      res.headers["access-control-allow-headers"]?.toLowerCase(),
+    ).toContain("x-client-session-protocol");
   });
 
   it("REJECTS OPTIONS preflight with 403 from a disallowed origin", async () => {

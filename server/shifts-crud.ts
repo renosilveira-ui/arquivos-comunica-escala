@@ -3,6 +3,7 @@ import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { addDaysToKey, dayKeyBrt, dayWindowBrt, mondayOfKey, weekdayOfKey, yearMonthBrt } from "./local-time";
 import { eq, and, gte, lte, lt, inArray, isNull, ne, or } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { TRPCError } from "@trpc/server";
 import {
   shiftInstances,
@@ -10,6 +11,7 @@ import {
   shiftAssignmentsV2,
   professionals,
   hospitals,
+  institutions,
   sectors,
   monthlyRosters,
   professionalAccess,
@@ -1400,14 +1402,20 @@ export const shiftsRouter = router({
       const start = dayWindowBrt(input.startDate).start;
       const end = dayWindowBrt(addDaysToKey(input.startDate, input.weeks * 7)).start;
 
-      // O ator é resolvido pelo vínculo canônico do tenant, não pelo primeiro
-      // professional global encontrado para o usuário.
-      const actor = await getTenantActorFromContext(ctx);
-      const myProfessionalId = actor.professionalId;
+      const assignedProfessionals = alias(professionals, "agenda_assigned_professionals");
+      const assignedMemberships = alias(
+        professionalInstitutions,
+        "agenda_assigned_memberships",
+      );
+      const assignedUsers = alias(users, "agenda_assigned_users");
 
-      // 1. Shifts cuja tupla instituição/hospital/setor é íntegra.
-      const rows = await db
+      // Uma única query revalida o ator e traz shifts + assignments. O ator
+      // é a tabela raiz para ainda haver uma linha sentinela quando o período
+      // está vazio; vínculo revogado ou instituição inativa continuam
+      // distinguíveis de uma agenda legitimamente vazia.
+      const joinedRows = await db
         .select({
+          actorProfessionalId: professionalInstitutions.professionalId,
           id: shiftInstances.id,
           hospitalId: shiftInstances.hospitalId,
           sectorId: shiftInstances.sectorId,
@@ -1419,16 +1427,52 @@ export const shiftsRouter = router({
           coverageType: shiftInstances.coverageType,
           hospitalName: hospitals.name,
           sectorName: sectors.name,
+          assignmentId: shiftAssignmentsV2.id,
+          assignmentProfessionalId: assignedMemberships.professionalId,
+          professionalName: assignedProfessionals.name,
+          assignmentUserId: assignedUsers.id,
         })
-        .from(shiftInstances)
+        .from(professionalInstitutions)
         .innerJoin(
+          professionals,
+          and(
+            eq(professionals.id, professionalInstitutions.professionalId),
+            eq(professionals.userId, professionalInstitutions.userId),
+          ),
+        )
+        .innerJoin(
+          users,
+          and(
+            eq(users.id, professionalInstitutions.userId),
+            eq(users.id, ctx.user.id),
+            eq(users.approvalStatus, "APPROVED"),
+            isNull(users.deletedAt),
+          ),
+        )
+        .innerJoin(
+          institutions,
+          and(
+            eq(institutions.id, professionalInstitutions.institutionId),
+            eq(institutions.id, ctx.institutionId),
+            eq(institutions.isActive, true),
+          ),
+        )
+        .leftJoin(
+          shiftInstances,
+          and(
+            eq(shiftInstances.institutionId, institutions.id),
+            gte(shiftInstances.startAt, start),
+            lt(shiftInstances.startAt, end),
+          ),
+        )
+        .leftJoin(
           hospitals,
           and(
             eq(hospitals.id, shiftInstances.hospitalId),
             eq(hospitals.institutionId, shiftInstances.institutionId),
           ),
         )
-        .innerJoin(
+        .leftJoin(
           sectors,
           and(
             eq(sectors.id, shiftInstances.sectorId),
@@ -1436,81 +1480,128 @@ export const shiftsRouter = router({
             eq(sectors.hospitalId, shiftInstances.hospitalId),
           ),
         )
+        .leftJoin(
+          shiftAssignmentsV2,
+          and(
+            eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id),
+            eq(shiftAssignmentsV2.institutionId, shiftInstances.institutionId),
+            eq(shiftAssignmentsV2.hospitalId, shiftInstances.hospitalId),
+            eq(shiftAssignmentsV2.sectorId, shiftInstances.sectorId),
+            eq(shiftAssignmentsV2.isActive, true),
+          ),
+        )
+        .leftJoin(
+          assignedProfessionals,
+          eq(assignedProfessionals.id, shiftAssignmentsV2.professionalId),
+        )
+        .leftJoin(
+          assignedMemberships,
+          and(
+            eq(assignedMemberships.professionalId, assignedProfessionals.id),
+            eq(assignedMemberships.userId, assignedProfessionals.userId),
+            eq(assignedMemberships.institutionId, shiftAssignmentsV2.institutionId),
+            eq(assignedMemberships.active, true),
+          ),
+        )
+        .leftJoin(
+          assignedUsers,
+          and(
+            eq(assignedUsers.id, assignedProfessionals.userId),
+            eq(assignedUsers.approvalStatus, "APPROVED"),
+            isNull(assignedUsers.deletedAt),
+          ),
+        )
         .where(
           and(
-            eq(shiftInstances.institutionId, ctx.institutionId),
-            gte(shiftInstances.startAt, start),
-            lt(shiftInstances.startAt, end),
+            eq(professionalInstitutions.userId, ctx.user.id),
+            eq(professionalInstitutions.institutionId, ctx.institutionId),
+            eq(professionalInstitutions.active, true),
           ),
         );
 
-      // 2. Assignments ativos cuja tupla e vínculo profissional permanecem
-      // canônicos no mesmo tenant.
-      const ids = rows.map((row) => row.id);
-      const assignments = ids.length > 0
-        ? await db
-            .select({
-              assignmentId: shiftAssignmentsV2.id,
-              shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
-              professionalId: shiftAssignmentsV2.professionalId,
-              professionalName: professionals.name,
-            })
-            .from(shiftAssignmentsV2)
-            .innerJoin(
-              shiftInstances,
-              and(
-                eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId),
-                eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
-                eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
-                eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
-              ),
-            )
-            .innerJoin(
-              professionals,
-              eq(professionals.id, shiftAssignmentsV2.professionalId),
-            )
-            .innerJoin(
-              professionalInstitutions,
-              and(
-                eq(professionalInstitutions.professionalId, professionals.id),
-                eq(professionalInstitutions.userId, professionals.userId),
-                eq(professionalInstitutions.institutionId, shiftAssignmentsV2.institutionId),
-                eq(professionalInstitutions.active, true),
-              ),
-            )
-            .innerJoin(
-              users,
-              and(
-                eq(users.id, professionals.userId),
-                eq(users.approvalStatus, "APPROVED"),
-                isNull(users.deletedAt),
-              ),
-            )
-            .where(
-              and(
-                eq(shiftAssignmentsV2.isActive, true),
-                eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
-                eq(shiftInstances.institutionId, ctx.institutionId),
-                inArray(shiftInstances.id, ids),
-              ),
-            )
-        : [];
+      if (joinedRows.length === 0) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Usuário sem vínculo ativo para a instituição",
+        });
+      }
+
+      const myProfessionalId = joinedRows[0].actorProfessionalId;
+      if (
+        ctx.tenantProfessionalId !== undefined &&
+        ctx.tenantProfessionalId !== myProfessionalId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Vínculo profissional mudou durante a consulta",
+        });
+      }
+
+      type AgendaRow = {
+        id: number;
+        hospitalId: number;
+        sectorId: number;
+        label: string;
+        startAt: Date;
+        endAt: Date;
+        status: typeof shiftInstances.$inferSelect.status;
+        modality: typeof shiftInstances.$inferSelect.modality;
+        coverageType: typeof shiftInstances.$inferSelect.coverageType;
+        hospitalName: string;
+        sectorName: string;
+      };
+      const rowsById = new Map<number, AgendaRow>();
+      for (const row of joinedRows) {
+        if (
+          row.id === null ||
+          row.hospitalId === null ||
+          row.sectorId === null ||
+          row.hospitalName === null ||
+          row.sectorName === null
+        ) {
+          continue;
+        }
+        if (!rowsById.has(row.id)) {
+          rowsById.set(row.id, {
+            id: row.id,
+            hospitalId: row.hospitalId,
+            sectorId: row.sectorId,
+            label: row.label!,
+            startAt: row.startAt!,
+            endAt: row.endAt!,
+            status: row.status!,
+            modality: row.modality!,
+            coverageType: row.coverageType,
+            hospitalName: row.hospitalName,
+            sectorName: row.sectorName,
+          });
+        }
+      }
+      const rows = Array.from(rowsById.values());
 
       const assignByShift = new Map<
         number,
         { assignmentId: number; professionalId: number; professionalName: string | null }[]
       >();
-      for (const assignment of assignments) {
-        const list = assignByShift.get(assignment.shiftInstanceId) ?? [];
+      for (const row of joinedRows) {
+        if (
+          row.id === null ||
+          row.assignmentId === null ||
+          row.assignmentProfessionalId === null ||
+          row.assignmentUserId === null
+        ) {
+          continue;
+        }
+        const list = assignByShift.get(row.id) ?? [];
         list.push({
-          assignmentId: assignment.assignmentId,
-          professionalId: assignment.professionalId,
-          professionalName: assignment.professionalName,
+          assignmentId: row.assignmentId,
+          professionalId: row.assignmentProfessionalId,
+          professionalName: row.professionalName,
         });
-        assignByShift.set(assignment.shiftInstanceId, list);
+        assignByShift.set(row.id, list);
       }
-      for (const currentAssignments of assignByShift.values()) {
-        currentAssignments.sort((left, right) => left.assignmentId - right.assignmentId);
+      for (const assignments of assignByShift.values()) {
+        assignments.sort((left, right) => left.assignmentId - right.assignmentId);
       }
 
       // 3. Filtra por escopo se "minha".

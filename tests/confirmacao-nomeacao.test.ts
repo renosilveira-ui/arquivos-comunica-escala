@@ -2557,8 +2557,116 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     }
   });
 
+  it("push token: replacement nunca apaga previousToken de outro usuário", async () => {
+    const previousToken = `ExponentPushToken[cn-wrong-owner-previous-${stamp}]`;
+    const currentToken = `ExponentPushToken[cn-wrong-owner-current-${stamp}]`;
+    try {
+      await confirmationRouter.createCaller(ctx(subUserId)).registerPushToken({
+        token: previousToken,
+        platform: "android",
+        expectedUserId: subUserId,
+      });
+      await expect(
+        confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+          token: currentToken,
+          previousToken,
+          platform: "ios",
+          expectedUserId: titularUserId,
+        }),
+      ).resolves.toMatchObject({ success: true });
+
+      const rows = await db
+        .select({ token: pushTokens.token, userId: pushTokens.userId })
+        .from(pushTokens)
+        .where(inArray(pushTokens.token, [previousToken, currentToken]));
+      expect(rows).toEqual(expect.arrayContaining([
+        { token: previousToken, userId: subUserId },
+        { token: currentToken, userId: titularUserId },
+      ]));
+      expect(rows).toHaveLength(2);
+    } finally {
+      await db.delete(pushTokens).where(inArray(pushTokens.token, [previousToken, currentToken]));
+    }
+  });
+
+  it("push token: previousToken desconhecido não remove outro aparelho da conta", async () => {
+    const unknownPrevious = `ExponentPushToken[cn-unknown-previous-${stamp}]`;
+    const otherDevice = `ExponentPushToken[cn-other-device-${stamp}]`;
+    const currentToken = `ExponentPushToken[cn-unknown-current-${stamp}]`;
+    try {
+      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+        token: otherDevice,
+        platform: "android",
+        expectedUserId: titularUserId,
+      });
+      await expect(
+        confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+          token: currentToken,
+          previousToken: unknownPrevious,
+          platform: "ios",
+          expectedUserId: titularUserId,
+        }),
+      ).resolves.toMatchObject({ success: true });
+
+      const rows = await db
+        .select({ token: pushTokens.token })
+        .from(pushTokens)
+        .where(inArray(pushTokens.token, [unknownPrevious, otherDevice, currentToken]));
+      expect(rows.map((row) => row.token).sort()).toEqual([currentToken, otherDevice].sort());
+    } finally {
+      await db
+        .delete(pushTokens)
+        .where(inArray(pushTokens.token, [unknownPrevious, otherDevice, currentToken]));
+    }
+  });
+
+  it("push token: dois rollovers substituem só a cadeia citada e preservam multi-device", async () => {
+    const tokenT1 = `ExponentPushToken[cn-rollover-t1-${stamp}]`;
+    const tokenT2 = `ExponentPushToken[cn-rollover-t2-${stamp}]`;
+    const tokenT3 = `ExponentPushToken[cn-rollover-t3-${stamp}]`;
+    const otherDevice = `ExponentPushToken[cn-rollover-other-${stamp}]`;
+    const tokens = [tokenT1, tokenT2, tokenT3, otherDevice];
+    try {
+      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+        token: tokenT1,
+        platform: "ios",
+        expectedUserId: titularUserId,
+      });
+      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+        token: otherDevice,
+        platform: "android",
+        expectedUserId: titularUserId,
+      });
+      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+        token: tokenT2,
+        previousToken: tokenT1,
+        platform: "ios",
+        expectedUserId: titularUserId,
+      });
+      await confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+        token: tokenT3,
+        previousToken: tokenT2,
+        platform: "ios",
+        expectedUserId: titularUserId,
+      });
+
+      const rows = await db
+        .select({ token: pushTokens.token, userId: pushTokens.userId })
+        .from(pushTokens)
+        .where(inArray(pushTokens.token, tokens));
+      expect(rows).toEqual(expect.arrayContaining([
+        { token: tokenT3, userId: titularUserId },
+        { token: otherDevice, userId: titularUserId },
+      ]));
+      expect(rows).toHaveLength(2);
+    } finally {
+      await db.delete(pushTokens).where(inArray(pushTokens.token, tokens));
+    }
+  });
+
   it("push token: schema rejeita 513 caracteres antes de serviço, DB ou mutex", async () => {
     const token = "x".repeat(513);
+    const validToken = `ExponentPushToken[cn-valid-${stamp}]`;
     const registerSpy = vi.spyOn(pushService, "registerPushToken");
     const unregisterSpy = vi.spyOn(pushService, "unregisterPushToken");
     try {
@@ -2572,6 +2680,14 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       await expect(
         confirmationRouter.createCaller(ctx(titularUserId)).unregisterPushToken({
           token,
+          expectedUserId: titularUserId,
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      await expect(
+        confirmationRouter.createCaller(ctx(titularUserId)).registerPushToken({
+          token: validToken,
+          previousToken: token,
+          platform: "ios",
           expectedUserId: titularUserId,
         }),
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });

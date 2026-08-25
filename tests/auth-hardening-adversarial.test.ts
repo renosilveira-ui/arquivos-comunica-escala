@@ -49,12 +49,24 @@ describe("auth hardening adversarial", () => {
 
   const cookieOf = (response: request.Response): string => {
     const raw = response.headers["set-cookie"];
-    return (Array.isArray(raw) ? raw : [raw])
-      .find((value: string) => value?.startsWith("session=")) ?? "";
+    return (
+      (Array.isArray(raw) ? raw : [raw]).find((value: string) =>
+        value?.startsWith("session="),
+      ) ?? ""
+    );
   };
 
   const login = (email: string, password = PASSWORD) =>
     request(app).post("/api/auth/login").send({ email, password });
+
+  const sessionInstanceOf = async (cookie: string): Promise<string> => {
+    const response = await request(app)
+      .get("/api/auth/me")
+      .set("Cookie", cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.sessionInstance).toMatch(/^v1\.[A-Za-z0-9_-]{43}$/);
+    return response.body.sessionInstance as string;
+  };
 
   beforeAll(async () => {
     const connection = await getDb();
@@ -178,8 +190,12 @@ describe("auth hardening adversarial", () => {
     await db
       .delete(shiftAssignmentsV2)
       .where(eq(shiftAssignmentsV2.shiftInstanceId, deleteRaceShiftId));
-    await db.delete(shiftInstances).where(eq(shiftInstances.id, deleteRaceShiftId));
-    await db.delete(passwordResets).where(inArray(passwordResets.userId, userIds));
+    await db
+      .delete(shiftInstances)
+      .where(eq(shiftInstances.id, deleteRaceShiftId));
+    await db
+      .delete(passwordResets)
+      .where(inArray(passwordResets.userId, userIds));
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
     await db
       .delete(auditTrail)
@@ -191,11 +207,17 @@ describe("auth hardening adversarial", () => {
       );
     await db
       .delete(professionalAccess)
-      .where(inArray(professionalAccess.professionalId, [...professionalsByKind.values()]));
+      .where(
+        inArray(professionalAccess.professionalId, [
+          ...professionalsByKind.values(),
+        ]),
+      );
     await db
       .delete(professionalInstitutions)
       .where(inArray(professionalInstitutions.userId, userIds));
-    await db.delete(professionals).where(inArray(professionals.userId, userIds));
+    await db
+      .delete(professionals)
+      .where(inArray(professionals.userId, userIds));
     await db.delete(users).where(inArray(users.id, userIds));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
@@ -351,18 +373,25 @@ describe("auth hardening adversarial", () => {
     };
 
     try {
+      const sessionInstance = await sessionInstanceOf(cookie);
       const change = await request(app)
         .post("/api/auth/change-password")
         .set("Cookie", cookie)
+        .set("x-client-session-instance", sessionInstance)
         .send({ currentPassword: PASSWORD, newPassword: "SenhaOrfaNegada123" });
       expect(change.status).toBe(409);
       const deletion = await request(app)
         .delete("/api/auth/me")
         .set("Cookie", cookie)
+        .set("x-client-session-instance", sessionInstance)
         .send({ password: PASSWORD });
       expect(deletion.status).toBe(409);
       expect(
-        (await request(app).post("/api/auth/forgot-password").send({ email: orphan.email })).body,
+        (
+          await request(app)
+            .post("/api/auth/forgot-password")
+            .send({ email: orphan.email })
+        ).body,
       ).toEqual({ ok: true });
       expect(sendSpy).not.toHaveBeenCalled();
 
@@ -374,7 +403,10 @@ describe("auth hardening adversarial", () => {
       });
       const orphanReset = await request(app)
         .post("/api/auth/reset-password")
-        .send({ token: orphanResetToken, newPassword: "SenhaOrfaResetNegada123" });
+        .send({
+          token: orphanResetToken,
+          newPassword: "SenhaOrfaResetNegada123",
+        });
       expect(orphanReset.status).toBe(400);
       expect(
         await db
@@ -382,7 +414,9 @@ describe("auth hardening adversarial", () => {
           .from(passwordResets)
           .where(eq(passwordResets.userId, orphan.id)),
       ).toEqual([{ usedAt: null }]);
-      await db.delete(passwordResets).where(eq(passwordResets.userId, orphan.id));
+      await db
+        .delete(passwordResets)
+        .where(eq(passwordResets.userId, orphan.id));
       await assertNoCredentialWrite();
 
       const [poisonedProfessional] = await db
@@ -406,10 +440,18 @@ describe("auth hardening adversarial", () => {
       const poisonedChange = await request(app)
         .post("/api/auth/change-password")
         .set("Cookie", cookie)
-        .send({ currentPassword: PASSWORD, newPassword: "SenhaPIFalsaNegada123" });
+        .set("x-client-session-instance", sessionInstance)
+        .send({
+          currentPassword: PASSWORD,
+          newPassword: "SenhaPIFalsaNegada123",
+        });
       expect(poisonedChange.status).toBe(409);
       expect(
-        (await request(app).post("/api/auth/forgot-password").send({ email: orphan.email })).body,
+        (
+          await request(app)
+            .post("/api/auth/forgot-password")
+            .send({ email: orphan.email })
+        ).body,
       ).toEqual({ ok: true });
       expect(sendSpy).not.toHaveBeenCalled();
       await assertNoCredentialWrite();
@@ -419,7 +461,9 @@ describe("auth hardening adversarial", () => {
         .delete(professionalInstitutions)
         .where(eq(professionalInstitutions.userId, orphan.id));
       if (poisonedProfessionalId !== null) {
-        await db.delete(professionals).where(eq(professionals.id, poisonedProfessionalId));
+        await db
+          .delete(professionals)
+          .where(eq(professionals.id, poisonedProfessionalId));
       }
     }
   });
@@ -428,8 +472,12 @@ describe("auth hardening adversarial", () => {
     const target = usersByKind.get("revoked-link")!;
     const session = await login(target.email);
     expect(session.status).toBe(200);
+    const sessionInstance = await sessionInstanceOf(cookieOf(session));
     const [before] = await db
-      .select({ passwordHash: users.passwordHash, sessionVersion: users.sessionVersion })
+      .select({
+        passwordHash: users.passwordHash,
+        sessionVersion: users.sessionVersion,
+      })
       .from(users)
       .where(eq(users.id, target.id));
     const newPassword = "SenhaComPIRevogada123";
@@ -457,6 +505,7 @@ describe("auth hardening adversarial", () => {
       const change = request(app)
         .post("/api/auth/change-password")
         .set("Cookie", cookieOf(session))
+        .set("x-client-session-instance", sessionInstance)
         .send({ currentPassword: PASSWORD, newPassword })
         .then((response) => response);
       await hashStarted;
@@ -470,7 +519,10 @@ describe("auth hardening adversarial", () => {
       expect(response.status).toBe(409);
       expect(
         await db
-          .select({ passwordHash: users.passwordHash, sessionVersion: users.sessionVersion })
+          .select({
+            passwordHash: users.passwordHash,
+            sessionVersion: users.sessionVersion,
+          })
           .from(users)
           .where(eq(users.id, target.id)),
       ).toEqual([before]);
@@ -500,6 +552,7 @@ describe("auth hardening adversarial", () => {
     const target = usersByKind.get("forgot-race")!;
     const session = await login(target.email);
     expect(session.status).toBe(200);
+    const sessionInstance = await sessionInstanceOf(cookieOf(session));
     const newPassword = "SenhaVencedoraForgotRace123";
     const originalGetUserByEmail = dbService.getUserByEmail;
     let signalSnapshotRead!: () => void;
@@ -535,6 +588,7 @@ describe("auth hardening adversarial", () => {
       const change = await request(app)
         .post("/api/auth/change-password")
         .set("Cookie", cookieOf(session))
+        .set("x-client-session-instance", sessionInstance)
         .send({ currentPassword: PASSWORD, newPassword });
       expect(change.status).toBe(200);
       releaseForgot();
@@ -575,6 +629,7 @@ describe("auth hardening adversarial", () => {
     const target = usersByKind.get("change")!;
     const session = await login(target.email);
     const cookie = cookieOf(session);
+    const sessionInstance = await sessionInstanceOf(cookie);
     const candidateA = "SenhaConcorrenteA123";
     const candidateB = "SenhaConcorrenteB123";
 
@@ -582,18 +637,25 @@ describe("auth hardening adversarial", () => {
       request(app)
         .post("/api/auth/change-password")
         .set("Cookie", cookie)
+        .set("x-client-session-instance", sessionInstance)
         .send({ currentPassword: PASSWORD, newPassword: candidateA }),
       request(app)
         .post("/api/auth/change-password")
         .set("Cookie", cookie)
+        .set("x-client-session-instance", sessionInstance)
         .send({ currentPassword: PASSWORD, newPassword: candidateB }),
     ]);
     const statuses = responses.map((response) => response.status);
     expect(statuses.filter((status) => status === 200)).toHaveLength(1);
-    expect(statuses.filter((status) => status === 401 || status === 409)).toHaveLength(1);
+    expect(
+      statuses.filter((status) => status === 401 || status === 409),
+    ).toHaveLength(1);
 
     const [current] = await db
-      .select({ passwordHash: users.passwordHash, sessionVersion: users.sessionVersion })
+      .select({
+        passwordHash: users.passwordHash,
+        sessionVersion: users.sessionVersion,
+      })
       .from(users)
       .where(eq(users.id, target.id));
     const validCandidates = await Promise.all([
@@ -621,10 +683,12 @@ describe("auth hardening adversarial", () => {
 
     const session = await login(target.email);
     expect(session.status).toBe(200);
+    const sessionInstance = await sessionInstanceOf(cookieOf(session));
     const newPassword = "SenhaTrocaInvalidaReset123";
     const change = await request(app)
       .post("/api/auth/change-password")
       .set("Cookie", cookieOf(session))
+      .set("x-client-session-instance", sessionInstance)
       .send({ currentPassword: PASSWORD, newPassword });
     expect(change.status).toBe(200);
 
@@ -676,7 +740,9 @@ describe("auth hardening adversarial", () => {
         .post("/api/auth/reset-password")
         .send({ token, newPassword: candidateB }),
     ]);
-    expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 400,
+    ]);
 
     const siblingAttempt = await request(app)
       .post("/api/auth/reset-password")
@@ -690,7 +756,10 @@ describe("auth hardening adversarial", () => {
     expect(resets).toHaveLength(2);
     expect(resets.every((row) => row.usedAt !== null)).toBe(true);
     const [current] = await db
-      .select({ passwordHash: users.passwordHash, sessionVersion: users.sessionVersion })
+      .select({
+        passwordHash: users.passwordHash,
+        sessionVersion: users.sessionVersion,
+      })
       .from(users)
       .where(eq(users.id, target.id));
     const validCandidates = await Promise.all([
@@ -704,7 +773,10 @@ describe("auth hardening adversarial", () => {
   it("mustChangePassword libera só me/change/logout e logout respeita o dono do token", async () => {
     const target = usersByKind.get("must")!;
     const foreign = usersByKind.get("change")!;
-    await db.update(users).set({ mustChangePassword: true }).where(eq(users.id, target.id));
+    await db
+      .update(users)
+      .set({ mustChangePassword: true })
+      .where(eq(users.id, target.id));
     const session = await login(target.email);
     const cookie = cookieOf(session);
     expect(session.body.user.mustChangePassword).toBe(true);
@@ -713,32 +785,44 @@ describe("auth hardening adversarial", () => {
     const foreignToken = `ExponentPushToken[foreign-${STAMP}]`;
     await db.insert(pushTokens).values([
       { institutionId, userId: target.id, token: ownToken, platform: "ios" },
-      { institutionId, userId: foreign.id, token: foreignToken, platform: "ios" },
+      {
+        institutionId,
+        userId: foreign.id,
+        token: foreignToken,
+        platform: "ios",
+      },
     ]);
 
     const me = await request(app).get("/api/auth/me").set("Cookie", cookie);
     expect(me.status).toBe(200);
     expect(me.body.user.mustChangePassword).toBe(true);
     expect(
-      (await request(app).get("/api/operational-probe").set("Cookie", cookie)).status,
+      (await request(app).get("/api/operational-probe").set("Cookie", cookie))
+        .status,
     ).toBe(403);
     expect(
       (
         await request(app)
           .delete("/api/auth/me")
           .set("Cookie", cookie)
+          .set("x-client-session-instance", me.body.sessionInstance)
           .send({ password: PASSWORD })
       ).status,
     ).toBe(401);
 
-    await request(app).post("/api/auth/logout").send({ pushToken: foreignToken });
+    await request(app)
+      .post("/api/auth/logout")
+      .send({ pushToken: foreignToken });
     const foreignCleanupAttempt = await request(app)
       .post("/api/auth/logout")
       .set("Cookie", cookie)
       .send({ pushToken: foreignToken });
     expect(foreignCleanupAttempt.status).toBe(200);
     expect(
-      await db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.token, foreignToken)),
+      await db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.token, foreignToken)),
     ).toHaveLength(1);
 
     // O primeiro logout revogou a sessão inteira. Uma autenticação nova é
@@ -750,14 +834,23 @@ describe("auth hardening adversarial", () => {
       .send({ pushToken: ownToken });
     expect(ownCleanup.status).toBe(200);
     expect(
-      await db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.token, ownToken)),
+      await db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.token, ownToken)),
     ).toHaveLength(0);
 
     const changeSession = await login(target.email);
+    const changeSessionCookie = cookieOf(changeSession);
+    const changeSessionInstance = await sessionInstanceOf(changeSessionCookie);
     const change = await request(app)
       .post("/api/auth/change-password")
-      .set("Cookie", cookieOf(changeSession))
-      .send({ currentPassword: PASSWORD, newPassword: "SenhaObrigatoriaNova123" });
+      .set("Cookie", changeSessionCookie)
+      .set("x-client-session-instance", changeSessionInstance)
+      .send({
+        currentPassword: PASSWORD,
+        newPassword: "SenhaObrigatoriaNova123",
+      });
     expect(change.status).toBe(200);
     expect(
       (
@@ -774,6 +867,7 @@ describe("auth hardening adversarial", () => {
     const session = await login(target.email);
     const cookie = cookieOf(session);
     expect(session.status).toBe(200);
+    const sessionInstance = await sessionInstanceOf(cookie);
 
     const [shift] = await db
       .select({
@@ -809,7 +903,9 @@ describe("auth hardening adversarial", () => {
     const originalRecordAudit = auditService.recordAudit;
     const auditSpy = vi
       .spyOn(auditService, "recordAudit")
-      .mockImplementationOnce((async (...args: Parameters<typeof auditService.recordAudit>) => {
+      .mockImplementationOnce((async (
+        ...args: Parameters<typeof auditService.recordAudit>
+      ) => {
         signalDeleteAtAudit();
         await deleteGate;
         await originalRecordAudit(...args);
@@ -860,6 +956,7 @@ describe("auth hardening adversarial", () => {
       const deletion = request(app)
         .delete("/api/auth/me")
         .set("Cookie", cookie)
+        .set("x-client-session-instance", sessionInstance)
         .send({ password: PASSWORD })
         .then((response) => response);
       await deleteAtAudit;
@@ -879,7 +976,9 @@ describe("auth hardening adversarial", () => {
       expect(deleteResponse.status).toBe(200);
       expect(writerResult.status).toBe("rejected");
       if (writerResult.status === "rejected") {
-        expect(String(writerResult.reason)).toMatch(/inativo|aprovado|inexistente/i);
+        expect(String(writerResult.reason)).toMatch(
+          /inativo|aprovado|inexistente/i,
+        );
       }
     } finally {
       releaseWriter();
