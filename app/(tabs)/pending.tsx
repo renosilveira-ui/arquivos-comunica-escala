@@ -26,7 +26,6 @@ import {
   User,
   Briefcase,
   ClipboardCheck,
-  Lock,
   Search,
   Plus,
 } from "lucide-react-native";
@@ -760,26 +759,6 @@ export default function PendingScreen() {
                     </View>
                   </View>
 
-                  {/* Botões de ação ou mensagem de permissão */}
-                  {!canApproveAssignments ? (
-                    // 🔒 Usuário comum: mostrar mensagem de permissão
-                    <View
-                      className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4"
-                      style={{
-                        backgroundColor: theme.colors.background,
-                        borderColor: theme.colors.border,
-                      }}
-                    >
-                      <Lock size={18} color={theme.colors.textMuted} />
-                      <Text
-                        className="text-sm font-medium"
-                        style={{ color: theme.colors.textSecondary }}
-                      >
-                        Somente gestores podem aprovar pendências
-                      </Text>
-                    </View>
-                  ) : (
-                    // ✅ Gestor: mostrar botões de aprovação/rejeição
                     <View className="flex-row gap-3">
                       <TouchableOpacity
                         onPress={() =>
@@ -855,7 +834,6 @@ export default function PendingScreen() {
                         </Text>
                       </TouchableOpacity>
                     </View>
-                  )}
                 </View>
               );
             })}

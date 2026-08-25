@@ -173,9 +173,13 @@ describe("autoridade visual exclusivamente institucional", () => {
     ).toBe("MISSING_PROFESSIONAL");
 
     const pending = readFileSync("app/(tabs)/pending.tsx", "utf8");
-    expect(pending.indexOf('pendingContentState === "LOADING"')).toBeLessThan(
-      pending.indexOf('pendingContentState === "MISSING_PROFESSIONAL"'),
+    const loadingIndex = pending.indexOf('pendingContentState === "LOADING"');
+    const missingIndex = pending.indexOf(
+      'pendingContentState === "MISSING_PROFESSIONAL"',
     );
+    expect(loadingIndex).toBeGreaterThanOrEqual(0);
+    expect(missingIndex).toBeGreaterThanOrEqual(0);
+    expect(loadingIndex).toBeLessThan(missingIndex);
   });
 
   it("edit-shift não volta nem libera o formulário durante loading/refetch", () => {
