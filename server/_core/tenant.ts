@@ -103,7 +103,10 @@ export async function listActiveInstitutionIdsForUser(userId: number): Promise<n
   if (!db) throw new Error("Database not available");
 
   const rows = await db
-    .select({ institutionId: professionalInstitutions.institutionId })
+    .select({
+      institutionId: professionalInstitutions.institutionId,
+      isPrimary: professionalInstitutions.isPrimary,
+    })
     .from(professionalInstitutions)
     .innerJoin(
       professionals,
@@ -134,7 +137,19 @@ export async function listActiveInstitutionIdsForUser(userId: number): Promise<n
       ),
     );
 
-  return Array.from(new Set(rows.map((r) => r.institutionId)));
+  const byInstitution = new Map<number, boolean>();
+  for (const row of rows) {
+    byInstitution.set(
+      row.institutionId,
+      (byInstitution.get(row.institutionId) ?? false) || row.isPrimary,
+    );
+  }
+  return Array.from(byInstitution.entries())
+    .sort(
+      ([leftId, leftPrimary], [rightId, rightPrimary]) =>
+        Number(rightPrimary) - Number(leftPrimary) || leftId - rightId,
+    )
+    .map(([institutionId]) => institutionId);
 }
 
 export async function resolveInstitutionForUser(

@@ -93,6 +93,10 @@ export const professionalsRouter = router({
         users,
         and(
           eq(users.id, professionalInstitutions.userId),
+          // A allowlist vira prova de autorização no boot. Ela só pode ser
+          // emitida pela mesma versão de sessão autenticada no contexto:
+          // reset/logout concorrente invalida o snapshot inteiro.
+          eq(users.sessionVersion, ctx.user.sessionVersion),
           eq(users.approvalStatus, "APPROVED"),
           isNull(users.deletedAt),
         ),
@@ -112,7 +116,11 @@ export const professionalsRouter = router({
       );
 
     return rows
-      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
+      .sort(
+        (a, b) =>
+          Number(b.isPrimary) - Number(a.isPrimary) ||
+          a.institutionId - b.institutionId,
+      )
       .map((r) => ({
         id: r.institutionId,
         name: r.institutionName,

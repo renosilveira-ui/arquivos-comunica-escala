@@ -12,9 +12,17 @@ import { and, eq, inArray, like } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import express, { type Express } from "express";
-import { auditTrail, institutions, professionalAccess, professionalInstitutions, professionals, users } from "../drizzle/schema";
+import {
+  auditTrail,
+  institutions,
+  professionalAccess,
+  professionalInstitutions,
+  professionals,
+  users,
+} from "../drizzle/schema";
 import { createAuthRateLimit } from "../server/_core/security";
 import { isDriverErrorMessage } from "../server/_core/trpc";
+import { sdk } from "../server/_core/sdk";
 import { getDb } from "../server/db";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
@@ -40,13 +48,26 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
     app = express();
     app.use(express.json());
     const limiter = createAuthRateLimit({ max: 50, windowMs: 60_000 });
-    app.use("/api/auth", (req, res, next) => (req.method === "GET" ? next() : limiter(req, res, next)), authRouter);
+    app.use(
+      "/api/auth",
+      (req, res, next) =>
+        req.method === "GET" ? next() : limiter(req, res, next),
+      authRouter,
+    );
     app.use("/api/admin", adminRouter);
 
     const mk = async (tag: string) => {
       const [i] = await db
         .insert(institutions)
-        .values({ name: `AAC ${tag} ${STAMP}`, cnpj: `${STAMP}${tag === "A" ? 7 : tag === "B" ? 8 : 9}`.slice(-14).padStart(14, "0"), legalName: `AAC ${tag}`, tradeName: `AAC${tag}${STAMP}`.slice(0, 20), isActive: true })
+        .values({
+          name: `AAC ${tag} ${STAMP}`,
+          cnpj: `${STAMP}${tag === "A" ? 7 : tag === "B" ? 8 : 9}`
+            .slice(-14)
+            .padStart(14, "0"),
+          legalName: `AAC ${tag}`,
+          tradeName: `AAC${tag}${STAMP}`.slice(0, 20),
+          isActive: true,
+        })
         .$returningId();
       return i.id;
     };
@@ -56,57 +77,301 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
 
     const [admin] = await db
       .insert(users)
-      .values({ name: "AAC Admin", email: `aac-admin-${STAMP}@test.local`, passwordHash: await bcrypt.hash(PASSWORD, 4), loginMethod: "email", role: "admin" })
+      .values({
+        name: "AAC Admin",
+        email: `aac-admin-${STAMP}@test.local`,
+        passwordHash: await bcrypt.hash(PASSWORD, 4),
+        loginMethod: "email",
+        role: "admin",
+      })
       .$returningId();
     adminId = admin.id;
     createdUserIds.push(adminId);
-    const [pro] = await db.insert(professionals).values({ userId: adminId, name: "AAC Admin", role: "Gestor", userRole: "GESTOR_PLUS" }).$returningId();
+    const [pro] = await db
+      .insert(professionals)
+      .values({
+        userId: adminId,
+        name: "AAC Admin",
+        role: "Gestor",
+        userRole: "GESTOR_PLUS",
+      })
+      .$returningId();
     await db.insert(professionalInstitutions).values([
-      { professionalId: pro.id, userId: adminId, institutionId: instA, roleInInstitution: "GESTOR_PLUS", isPrimary: true, active: true },
-      { professionalId: pro.id, userId: adminId, institutionId: instB, roleInInstitution: "GESTOR_PLUS", isPrimary: false, active: true },
+      {
+        professionalId: pro.id,
+        userId: adminId,
+        institutionId: instA,
+        roleInInstitution: "GESTOR_PLUS",
+        isPrimary: true,
+        active: true,
+      },
+      {
+        professionalId: pro.id,
+        userId: adminId,
+        institutionId: instB,
+        roleInInstitution: "GESTOR_PLUS",
+        isPrimary: false,
+        active: true,
+      },
     ]);
 
-    const login = await request(app).post("/api/auth/login").send({ email: `aac-admin-${STAMP}@test.local`, password: PASSWORD });
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: `aac-admin-${STAMP}@test.local`, password: PASSWORD });
     expect(login.status).toBe(200);
     const sc = login.headers["set-cookie"];
-    cookie = (Array.isArray(sc) ? sc : [sc]).find((c: string) => c.startsWith("session=")) ?? "";
+    cookie =
+      (Array.isArray(sc) ? sc : [sc]).find((c: string) =>
+        c.startsWith("session="),
+      ) ?? "";
     expect(cookie).not.toBe("");
   });
 
   afterAll(async () => {
-    const mine = await db.select({ id: users.id }).from(users).where(like(users.email, `aac-%-${STAMP}@test.local`));
+    const mine = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(like(users.email, `aac-%-${STAMP}@test.local`));
     const ids = [...new Set([...createdUserIds, ...mine.map((u) => u.id)])];
-    await db.delete(auditTrail).where(inArray(auditTrail.institutionId, [instA, instB, instC]));
+    await db
+      .delete(auditTrail)
+      .where(inArray(auditTrail.institutionId, [instA, instB, instC]));
     await db.delete(auditTrail).where(inArray(auditTrail.entityId, ids));
-    await db.delete(professionalAccess).where(inArray(professionalAccess.institutionId, [instA, instB, instC]));
-    await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.userId, ids));
+    await db
+      .delete(professionalAccess)
+      .where(inArray(professionalAccess.institutionId, [instA, instB, instC]));
+    await db
+      .delete(professionalInstitutions)
+      .where(inArray(professionalInstitutions.userId, ids));
     await db.delete(professionals).where(inArray(professionals.userId, ids));
-    await db.delete(institutions).where(inArray(institutions.id, [instA, instB, instC]));
+    await db
+      .delete(institutions)
+      .where(inArray(institutions.id, [instA, instB, instC]));
     await db.delete(users).where(inArray(users.id, ids));
   });
 
+  it("JWT exact-v1 sem proof mantém 428 nas superfícies REST admin e register", async () => {
+    const [admin] = await db
+      .select({
+        name: users.name,
+        sessionVersion: users.sessionVersion,
+      })
+      .from(users)
+      .where(eq(users.id, adminId));
+    const token = await sdk.signSession({
+      userId: String(adminId),
+      name: admin.name ?? "AAC Admin",
+      sessionVersion: admin.sessionVersion,
+      sessionBindingVersion: 1,
+    });
+
+    const adminResponse = await request(app)
+      .get("/api/admin/users")
+      .set("Cookie", `session=${token}`)
+      .set("x-tenant-id", String(instA));
+    expect(adminResponse.status).toBe(428);
+    expect(adminResponse.body).toMatchObject({
+      code: "SESSION_INSTANCE_REQUIRED",
+    });
+
+    const deniedEmail = `aac-exact-missing-${STAMP}@test.local`;
+    const registerResponse = await request(app)
+      .post("/api/auth/register")
+      .set("Cookie", `session=${token}`)
+      .set("x-tenant-id", String(instA))
+      .send({
+        name: "AAC Exact Missing",
+        email: deniedEmail,
+        password: "SenhaNova123",
+        role: "doctor",
+      });
+    expect(registerResponse.status).toBe(428);
+    expect(registerResponse.body).toMatchObject({
+      code: "SESSION_INSTANCE_REQUIRED",
+    });
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, deniedEmail)),
+    ).toEqual([]);
+  });
+
   it("register: usa a instituição ativa do admin (x-tenant-id) e não toca na instituição 1", async () => {
-    const [before] = await db.select({ name: institutions.name, cnpj: institutions.cnpj }).from(institutions).where(eq(institutions.id, 1));
+    const [before] = await db
+      .select({ name: institutions.name, cnpj: institutions.cnpj })
+      .from(institutions)
+      .where(eq(institutions.id, 1));
     const targetEmail = `aac-novo-b-${STAMP}@test.local`;
     const res = await request(app)
       .post("/api/auth/register")
       .set("Cookie", cookie)
       .set("x-tenant-id", String(instB))
-      .send({ name: "AAC Novo B", email: targetEmail, password: "SenhaNova123", role: "doctor" });
+      .set("x-client-expected-user-id", String(adminId))
+      .send({
+        name: "AAC Novo B",
+        email: targetEmail,
+        password: "SenhaNova123",
+        role: "doctor",
+      });
     expect(res.status).toBe(201);
-    const [u] = await db.select({ id: users.id }).from(users).where(eq(users.email, targetEmail));
+    const [u] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, targetEmail));
     createdUserIds.push(u.id);
-    const links = await db.select({ institutionId: professionalInstitutions.institutionId }).from(professionalInstitutions).where(eq(professionalInstitutions.userId, u.id));
+    const links = await db
+      .select({ institutionId: professionalInstitutions.institutionId })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, u.id));
     expect(links.map((l) => l.institutionId)).toEqual([instB]);
     const [audit] = await db
-      .select({ description: auditTrail.description, metadata: auditTrail.metadata })
+      .select({
+        description: auditTrail.description,
+        metadata: auditTrail.metadata,
+      })
       .from(auditTrail)
-      .where(and(eq(auditTrail.entityId, u.id), eq(auditTrail.action, "USER_CREATED")));
+      .where(
+        and(
+          eq(auditTrail.entityId, u.id),
+          eq(auditTrail.action, "USER_CREATED"),
+        ),
+      );
     expect(audit).toBeTruthy();
     expect(JSON.stringify(audit)).not.toContain(targetEmail);
     expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
-    const [after] = await db.select({ name: institutions.name, cnpj: institutions.cnpj }).from(institutions).where(eq(institutions.id, 1));
+    const [after] = await db
+      .select({ name: institutions.name, cnpj: institutions.cnpj })
+      .from(institutions)
+      .where(eq(institutions.id, 1));
     expect(after).toEqual(before);
+  });
+
+  it("expected-user divergente bloqueia register e mutação admin antes de writes", async () => {
+    const deniedEmail = `aac-expected-user-denied-${STAMP}@test.local`;
+    const register = await request(app)
+      .post("/api/auth/register")
+      .set("Cookie", cookie)
+      .set("x-tenant-id", String(instA))
+      .set("x-client-expected-user-id", String(adminId + 1))
+      .send({
+        name: "AAC Expected Denied",
+        email: deniedEmail,
+        password: "SenhaNova123",
+        role: "doctor",
+      });
+    expect(register.status).toBe(409);
+    expect(register.body).toMatchObject({ code: "EXPECTED_USER_MISMATCH" });
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, deniedEmail)),
+    ).toHaveLength(0);
+
+    const [targetBefore] = await db
+      .select({ id: users.id, name: users.name })
+      .from(users)
+      .where(eq(users.email, `aac-novo-b-${STAMP}@test.local`));
+    const auditsBefore = await db
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, targetBefore.id),
+          eq(auditTrail.action, "USER_UPDATED"),
+        ),
+      );
+    const update = await request(app)
+      .put(`/api/admin/users/${targetBefore.id}`)
+      .set("Cookie", cookie)
+      .set("x-tenant-id", String(instB))
+      .set("x-client-expected-user-id", String(adminId + 1))
+      .send({ name: "NOME QUE NÃO PODE SER GRAVADO" });
+    expect(update.status).toBe(409);
+    expect(update.body).toMatchObject({ code: "EXPECTED_USER_MISMATCH" });
+
+    const [targetAfter] = await db
+      .select({ id: users.id, name: users.name })
+      .from(users)
+      .where(eq(users.id, targetBefore.id));
+    expect(targetAfter).toEqual(targetBefore);
+    expect(
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(
+          and(
+            eq(auditTrail.entityId, targetBefore.id),
+            eq(auditTrail.action, "USER_UPDATED"),
+          ),
+        ),
+    ).toEqual(auditsBefore);
+  });
+
+  it("expected-user malformado é 400, ausência de credencial é 401 e ambos fazem zero writes", async () => {
+    const malformedEmail = `aac-expected-malformed-${STAMP}@test.local`;
+    const unauthenticatedEmail = `aac-expected-unauth-${STAMP}@test.local`;
+    const [adminBefore] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, adminId));
+
+    const malformedRegister = await request(app)
+      .post("/api/auth/register")
+      .set("Cookie", cookie)
+      .set("x-tenant-id", String(instA))
+      .set("x-client-expected-user-id", `0${adminId}`)
+      .send({
+        name: "AAC Malformed",
+        email: malformedEmail,
+        password: "SenhaNova123",
+        role: "doctor",
+      });
+    expect(malformedRegister.status).toBe(400);
+    expect(malformedRegister.body).toMatchObject({
+      code: "MALFORMED_EXPECTED_USER_ID",
+    });
+
+    const malformedAdmin = await request(app)
+      .put(`/api/admin/users/${adminId}`)
+      .set("Cookie", cookie)
+      .set("x-tenant-id", String(instA))
+      .set("x-client-expected-user-id", `0${adminId}`)
+      .send({ name: "NÃO GRAVAR MALFORMED" });
+    expect(malformedAdmin.status).toBe(400);
+    expect(malformedAdmin.body).toMatchObject({
+      code: "MALFORMED_EXPECTED_USER_ID",
+    });
+
+    const unauthenticatedRegister = await request(app)
+      .post("/api/auth/register")
+      .set("x-tenant-id", String(instA))
+      .send({
+        name: "AAC Unauthenticated",
+        email: unauthenticatedEmail,
+        password: "SenhaNova123",
+        role: "doctor",
+      });
+    expect(unauthenticatedRegister.status).toBe(401);
+
+    const unauthenticatedAdmin = await request(app)
+      .put(`/api/admin/users/${adminId}`)
+      .set("x-tenant-id", String(instA))
+      .send({ name: "NÃO GRAVAR UNAUTH" });
+    expect(unauthenticatedAdmin.status).toBe(401);
+
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(inArray(users.email, [malformedEmail, unauthenticatedEmail])),
+    ).toEqual([]);
+    const [adminAfter] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, adminId));
+    expect(adminAfter).toEqual(adminBefore);
   });
 
   it("register: body só pode repetir o tenant explícito", async () => {
@@ -114,18 +379,35 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/register")
       .set("Cookie", cookie)
       .set("x-tenant-id", String(instA))
-      .send({ name: "AAC Novo A", email: `aac-novo-a-${STAMP}@test.local`, password: "SenhaNova123", role: "doctor", institutionId: instA });
+      .send({
+        name: "AAC Novo A",
+        email: `aac-novo-a-${STAMP}@test.local`,
+        password: "SenhaNova123",
+        role: "doctor",
+        institutionId: instA,
+      });
     expect(res.status).toBe(201);
-    const [u] = await db.select({ id: users.id }).from(users).where(eq(users.email, `aac-novo-a-${STAMP}@test.local`));
+    const [u] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, `aac-novo-a-${STAMP}@test.local`));
     createdUserIds.push(u.id);
-    const links = await db.select({ institutionId: professionalInstitutions.institutionId }).from(professionalInstitutions).where(eq(professionalInstitutions.userId, u.id));
+    const links = await db
+      .select({ institutionId: professionalInstitutions.institutionId })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, u.id));
     expect(links.map((l) => l.institutionId)).toEqual([instA]);
 
     const bad = await request(app)
       .post("/api/auth/register")
       .set("Cookie", cookie)
       .set("x-tenant-id", String(instA))
-      .send({ name: "AAC X", email: `aac-x-${STAMP}@test.local`, password: "SenhaNova123", institutionId: 99999999 });
+      .send({
+        name: "AAC X",
+        email: `aac-x-${STAMP}@test.local`,
+        password: "SenhaNova123",
+        institutionId: 99999999,
+      });
     expect(bad.status).toBe(400);
   });
 
@@ -136,7 +418,11 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         await request(app)
           .post("/api/auth/register")
           .set("Cookie", cookie)
-          .send({ name: "AAC Sem Tenant", email: email("missing"), password: "SenhaNova123" })
+          .send({
+            name: "AAC Sem Tenant",
+            email: email("missing"),
+            password: "SenhaNova123",
+          })
       ).status,
     ).toBe(400);
     expect(
@@ -145,7 +431,12 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
           .post("/api/auth/register")
           .set("Cookie", cookie)
           .set("x-tenant-id", String(instA))
-          .send({ name: "AAC Divergente", email: email("mismatch"), password: "SenhaNova123", institutionId: instB })
+          .send({
+            name: "AAC Divergente",
+            email: email("mismatch"),
+            password: "SenhaNova123",
+            institutionId: instB,
+          })
       ).status,
     ).toBe(400);
     expect(
@@ -154,12 +445,19 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
           .post("/api/auth/register")
           .set("Cookie", cookie)
           .set("x-tenant-id", String(instC))
-          .send({ name: "AAC Tenant C", email: email("foreign"), password: "SenhaNova123" })
+          .send({
+            name: "AAC Tenant C",
+            email: email("foreign"),
+            password: "SenhaNova123",
+          })
       ).status,
     ).toBe(403);
     for (const tag of ["missing", "mismatch", "foreign"]) {
       expect(
-        await db.select({ id: users.id }).from(users).where(eq(users.email, email(tag))),
+        await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.email, email(tag))),
       ).toHaveLength(0);
     }
   });
@@ -182,7 +480,10 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       },
       {
         tag: "new-nurse-plus",
-        payload: { professionalRole: "nurse", roleInInstitution: "GESTOR_PLUS" },
+        payload: {
+          professionalRole: "nurse",
+          roleInInstitution: "GESTOR_PLUS",
+        },
         globalRole: "nurse",
         institutionRole: "GESTOR_PLUS",
         professionalLabel: "Enfermeiro",
@@ -195,13 +496,24 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         .post("/api/auth/register")
         .set("Cookie", cookie)
         .set("x-tenant-id", String(instA))
-        .send({ name: `AAC ${item.tag}`, email, password: "SenhaNova123", ...item.payload });
+        .send({
+          name: `AAC ${item.tag}`,
+          email,
+          password: "SenhaNova123",
+          ...item.payload,
+        });
       expect(response.status).toBe(201);
-      const [created] = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.email, email));
+      const [created] = await db
+        .select({ id: users.id, role: users.role })
+        .from(users)
+        .where(eq(users.email, email));
       createdUserIds.push(created.id);
       expect(created.role).toBe(item.globalRole);
       const [professional] = await db
-        .select({ label: professionals.role, legacyRole: professionals.userRole })
+        .select({
+          label: professionals.role,
+          legacyRole: professionals.userRole,
+        })
         .from(professionals)
         .where(eq(professionals.userId, created.id));
       expect(professional).toEqual({
@@ -228,7 +540,12 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         roleInInstitution: "USER",
       });
     expect(conflict.status).toBe(400);
-    expect(await db.select({ id: users.id }).from(users).where(eq(users.email, conflictEmail))).toHaveLength(0);
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, conflictEmail)),
+    ).toHaveLength(0);
   });
 
   it("register autoriza pelo GESTOR_PLUS contextual, não pelo papel global legado", async () => {
@@ -256,8 +573,10 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/login")
       .send({ email: actorEmail, password: "SenhaNova123" });
     const actorSetCookie = actorLogin.headers["set-cookie"];
-    const actorCookie = (Array.isArray(actorSetCookie) ? actorSetCookie : [actorSetCookie])
-      .find((item: string) => item?.startsWith("session=")) ?? "";
+    const actorCookie =
+      (Array.isArray(actorSetCookie) ? actorSetCookie : [actorSetCookie]).find(
+        (item: string) => item?.startsWith("session="),
+      ) ?? "";
     expect(actorCookie).not.toBe("");
 
     const childEmail = `aac-contextual-child-${STAMP}@test.local`;
@@ -265,7 +584,11 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/register")
       .set("Cookie", actorCookie)
       .set("x-tenant-id", String(instA))
-      .send({ name: "AAC Contextual Child", email: childEmail, password: "SenhaNova123" });
+      .send({
+        name: "AAC Contextual Child",
+        email: childEmail,
+        password: "SenhaNova123",
+      });
     expect(child.status).toBe(201);
     const [childUser] = await db
       .select({ id: users.id })
@@ -287,10 +610,17 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/register")
       .set("Cookie", actorCookie)
       .set("x-tenant-id", String(instA))
-      .send({ name: "AAC Contextual Denied", email: deniedEmail, password: "SenhaNova123" });
+      .send({
+        name: "AAC Contextual Denied",
+        email: deniedEmail,
+        password: "SenhaNova123",
+      });
     expect(denied.status).toBe(403);
     expect(
-      await db.select({ id: users.id }).from(users).where(eq(users.email, deniedEmail)),
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, deniedEmail)),
     ).toHaveLength(0);
   });
 
@@ -342,7 +672,10 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       const response = await pending;
       expect(response.status).toBe(403);
       expect(
-        await db.select({ id: users.id }).from(users).where(eq(users.email, targetEmail)),
+        await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.email, targetEmail)),
       ).toHaveLength(0);
     } finally {
       releaseHash();
@@ -372,7 +705,12 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .$returningId();
     const [decoyProfessional] = await db
       .insert(professionals)
-      .values({ userId: decoyUser.id, name: "AAC Decoy", role: "Médico", userRole: "USER" })
+      .values({
+        userId: decoyUser.id,
+        name: "AAC Decoy",
+        role: "Médico",
+        userRole: "USER",
+      })
       .$returningId();
     const poisonedEmail = `aac-poisoned-admin-${STAMP}@test.local`;
     const [poisonedAdmin] = await db
@@ -397,16 +735,28 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/login")
       .send({ email: poisonedEmail, password: PASSWORD });
     const poisonedSetCookie = poisonedLogin.headers["set-cookie"];
-    const poisonedCookie = (Array.isArray(poisonedSetCookie) ? poisonedSetCookie : [poisonedSetCookie])
-      .find((item: string) => item?.startsWith("session=")) ?? "";
+    const poisonedCookie =
+      (Array.isArray(poisonedSetCookie)
+        ? poisonedSetCookie
+        : [poisonedSetCookie]
+      ).find((item: string) => item?.startsWith("session=")) ?? "";
     const deniedEmail = `aac-poisoned-target-${STAMP}@test.local`;
     const denied = await request(app)
       .post("/api/auth/register")
       .set("Cookie", poisonedCookie)
       .set("x-tenant-id", String(instA))
-      .send({ name: "AAC Poisoned Target", email: deniedEmail, password: "SenhaNova123" });
+      .send({
+        name: "AAC Poisoned Target",
+        email: deniedEmail,
+        password: "SenhaNova123",
+      });
     expect(denied.status).toBe(403);
-    expect(await db.select({ id: users.id }).from(users).where(eq(users.email, deniedEmail))).toHaveLength(0);
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, deniedEmail)),
+    ).toHaveLength(0);
 
     const rollbackEmail = `aac-rollback-${STAMP}@test.local`;
     const auditFailure = vi
@@ -425,9 +775,17 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       });
     auditFailure.mockRestore();
     expect(failed.status).toBe(500);
-    expect(await db.select({ id: users.id }).from(users).where(eq(users.email, rollbackEmail))).toHaveLength(0);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.description, "forced strict audit failure")),
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, rollbackEmail)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.description, "forced strict audit failure")),
     ).toHaveLength(0);
   });
 
@@ -448,9 +806,14 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .send({ email: orphanEmail, password: PASSWORD });
     expect(login.status).toBe(200);
     const setCookie = login.headers["set-cookie"];
-    const orphanCookie = (Array.isArray(setCookie) ? setCookie : [setCookie])
-      .find((item: string) => item?.startsWith("session=")) ?? "";
-    expect((await request(app).get("/api/auth/me").set("Cookie", orphanCookie)).status).toBe(200);
+    const orphanCookie =
+      (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
+        (item: string) => item?.startsWith("session="),
+      ) ?? "";
+    expect(
+      (await request(app).get("/api/auth/me").set("Cookie", orphanCookie))
+        .status,
+    ).toBe(200);
     expect(
       await db
         .select({ id: professionalInstitutions.id })
@@ -458,7 +821,10 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         .where(eq(professionalInstitutions.userId, orphan.id)),
     ).toHaveLength(0);
     expect(
-      await db.select({ id: professionals.id }).from(professionals).where(eq(professionals.userId, orphan.id)),
+      await db
+        .select({ id: professionals.id })
+        .from(professionals)
+        .where(eq(professionals.userId, orphan.id)),
     ).toHaveLength(0);
 
     const deniedEmail = `aac-orphan-target-${STAMP}@test.local`;
@@ -466,23 +832,44 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/register")
       .set("Cookie", orphanCookie)
       .set("x-tenant-id", String(instA))
-      .send({ name: "AAC Orphan Target", email: deniedEmail, password: "SenhaNova123" });
+      .send({
+        name: "AAC Orphan Target",
+        email: deniedEmail,
+        password: "SenhaNova123",
+      });
     expect(denied.status).toBe(403);
-    expect(await db.select({ id: users.id }).from(users).where(eq(users.email, deniedEmail))).toHaveLength(0);
+    expect(
+      await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, deniedEmail)),
+    ).toHaveLength(0);
   });
 
   it("admin PUT /users/:id grava auditoria com institution_id", async () => {
-    const [u] = await db.select({ id: users.id }).from(users).where(eq(users.email, `aac-novo-a-${STAMP}@test.local`));
+    const [u] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, `aac-novo-a-${STAMP}@test.local`));
     const res = await request(app)
       .put(`/api/admin/users/${u.id}`)
       .set("Cookie", cookie)
       .set("x-tenant-id", String(instA))
+      .set("x-client-expected-user-id", String(adminId))
       .send({ name: "AAC Novo A2" });
     expect(res.status).toBe(200);
     const rows = await db
-      .select({ institutionId: auditTrail.institutionId, action: auditTrail.action })
+      .select({
+        institutionId: auditTrail.institutionId,
+        action: auditTrail.action,
+      })
       .from(auditTrail)
-      .where(and(eq(auditTrail.entityId, u.id), eq(auditTrail.action, "USER_UPDATED")));
+      .where(
+        and(
+          eq(auditTrail.entityId, u.id),
+          eq(auditTrail.action, "USER_UPDATED"),
+        ),
+      );
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0].institutionId).toBe(instA);
   });
@@ -491,11 +878,14 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
     for (let i = 0; i < 6; i++) {
       const r = await request(app).get("/api/auth/me").set("Cookie", cookie);
       expect(r.status).toBe(200);
+      expect(r.headers["cache-control"]).toBe("no-store");
     }
   });
 
   it("mensagens de erro do driver são reconhecidas para mascarar", () => {
-    expect(isDriverErrorMessage("Failed query: insert into `x` ...")).toBe(true);
+    expect(isDriverErrorMessage("Failed query: insert into `x` ...")).toBe(
+      true,
+    );
     expect(isDriverErrorMessage("ER_DUP_ENTRY: Duplicate entry")).toBe(true);
     expect(isDriverErrorMessage("Turno não encontrado")).toBe(false);
     expect(isDriverErrorMessage("Apenas Gestor+ pode editar.")).toBe(false);
@@ -552,7 +942,10 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       expect(response.status).toBe(409);
       expect(response.body.error).toMatch(/sessão.*revogada/i);
       expect(
-        await db.select({ id: users.id }).from(users).where(eq(users.email, targetEmail)),
+        await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.email, targetEmail)),
       ).toHaveLength(0);
       const afterAudits = await db
         .select({

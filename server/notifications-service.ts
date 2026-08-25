@@ -7,12 +7,13 @@ import {
   professionalInstitutions,
   users,
 } from "../drizzle/schema";
-import { eq, and, isNull, sql } from "drizzle-orm";
+import { eq, and, asc, inArray, isNull, sql } from "drizzle-orm";
 import { isCanonicalDutyConfirmationRejection } from "./confirmation-integrity";
 import {
   PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
   PushOwnershipLockTimeoutError,
   withPushAccountAndTokenMutex,
+  withPushAccountAndTokenMutexes,
   withPushAccountMutex,
 } from "./push-registration-revocation";
 
@@ -723,18 +724,23 @@ export async function registerPushToken(
   platform: "ios" | "android" | "web",
   provenanceInstitutionId: number | null,
   expectedSessionVersion: number,
+  previousToken?: string,
 ): Promise<{ success: boolean; message: string }> {
-  if (!isCanonicalExpoPushToken(token)) {
+  if (
+    !isCanonicalExpoPushToken(token) ||
+    (previousToken !== undefined && !isCanonicalExpoPushToken(previousToken))
+  ) {
     return { success: false, message: "Push token inválido" };
   }
+  const replaceablePreviousToken = previousToken !== token ? previousToken : undefined;
   try {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
-    return await withPushAccountAndTokenMutex(
+    return await withPushAccountAndTokenMutexes(
       db,
       userId,
-      token,
+      replaceablePreviousToken ? [token, replaceablePreviousToken] : [token],
       PUSH_TOKEN_MUTATION_LOCK_TIMEOUT_SEC,
       async (connectionDb) =>
         connectionDb.transaction(async (tx) => {
@@ -763,17 +769,23 @@ export async function registerPushToken(
         return { success: false, message: "Conta ativa não encontrada" };
       }
 
-      const existingQuery = tx
+      const lockedTokens = await tx
         .select()
         .from(pushTokens)
-        .where(eq(pushTokens.token, token));
-      const existing = await existingQuery.for("update");
+        .where(inArray(
+          pushTokens.token,
+          replaceablePreviousToken ? [token, replaceablePreviousToken] : [token],
+        ))
+        .orderBy(asc(pushTokens.token), asc(pushTokens.id))
+        .for("update");
+      const existing = lockedTokens.filter((row) => row.token === token);
       if (existing.length > 1) {
         // Estado pré-UNIQUE é ambíguo: nunca escolher silenciosamente um
         // owner. Remove todas as cópias e exige um novo registro autenticado.
         await tx.delete(pushTokens).where(eq(pushTokens.token, token));
         return { success: false, message: "Token duplicado removido; registre novamente" };
       }
+      let message: string;
       if (existing.length === 1) {
         const keeper = existing[0];
         await tx
@@ -784,21 +796,35 @@ export async function registerPushToken(
           keeper.userId === userId &&
           keeper.institutionId === provenanceInstitutionId &&
           keeper.platform === platform;
-        return {
-          success: true,
-          message: unchanged
-            ? "Token já registrado"
-            : "Token associado à conta atual",
-        };
+        message = unchanged
+          ? "Token já registrado"
+          : "Token associado à conta atual";
+      } else {
+        await tx.insert(pushTokens).values({
+          institutionId: provenanceInstitutionId,
+          userId,
+          token,
+          platform,
+        });
+        message = "Token registrado com sucesso";
       }
 
-      await tx.insert(pushTokens).values({
-        institutionId: provenanceInstitutionId,
-        userId,
-        token,
-        platform,
-      });
-      return { success: true, message: "Token registrado com sucesso" };
+      if (replaceablePreviousToken) {
+        const previousRows = lockedTokens.filter(
+          (row) => row.token === replaceablePreviousToken,
+        );
+        if (previousRows.length === 1 && previousRows[0].userId === userId) {
+          await tx
+            .delete(pushTokens)
+            .where(and(
+              eq(pushTokens.id, previousRows[0].id),
+              eq(pushTokens.userId, userId),
+              eq(pushTokens.token, replaceablePreviousToken),
+            ));
+        }
+      }
+
+      return { success: true, message };
       }),
     );
   } catch {

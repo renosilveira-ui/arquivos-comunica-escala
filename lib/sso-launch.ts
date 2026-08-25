@@ -11,9 +11,9 @@
 //   - NotificationListener (toque no push type=sso_ready)
 //   - useSsoHandoff (botão manual "Abrir Comunica+", branch mobile)
 
-import { Linking } from "react-native";
+import { Linking, Platform } from "react-native";
 import * as Auth from "@/lib/_core/auth";
-import { getApiBaseUrl } from "@/lib/_core/api";
+import { apiFetch } from "@/lib/_core/api";
 
 export interface SsoLaunchResult {
   ok: boolean;
@@ -35,6 +35,16 @@ const SSO_CANCELLED_MESSAGE = "A abertura do Comunica+ foi cancelada.";
 
 function isCancelled(options: SsoLaunchOptions): boolean {
   return options.signal?.aborted === true || options.canNavigate?.() === false;
+}
+
+function isLaunchCurrent(
+  transportTicket: number,
+  options: SsoLaunchOptions,
+): boolean {
+  return (
+    !isCancelled(options) &&
+    Auth.isSessionTransportTicketCurrent(transportTicket)
+  );
 }
 
 export function isValidSsoTenantId(value: unknown): value is number {
@@ -67,37 +77,47 @@ export async function openComunicaViaLaunchCode(
   if (!isValidSsoTenantId(tenantId)) {
     return { ok: false, error: SSO_INVALID_TENANT_MESSAGE };
   }
+  // O launch-code abre URL externa e não pode carregar o cookie web entre
+  // abas. No navegador, o único fluxo autorizado é o form POST cercado pelo
+  // Web Lock em runWebSsoHandoff.
+  if (Platform.OS === "web") {
+    return { ok: false, error: SSO_CANCELLED_MESSAGE };
+  }
   try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "x-tenant-id": String(tenantId),
-    };
+    const transportTicket = Auth.captureSessionTransportTicket();
+    if (transportTicket === null || !isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
 
-    const token = await Auth.getSessionToken();
-    if (isCancelled(options)) return { ok: false, error: SSO_CANCELLED_MESSAGE };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    const res = await fetch(`${getApiBaseUrl()}/api/sso/launch-code`, {
+    const res = await apiFetch<{ launchUrl?: string }>("/api/sso/launch-code", {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+        "x-tenant-id": String(tenantId),
+      },
       body: JSON.stringify({}),
       signal: options.signal,
     });
 
-    if (isCancelled(options)) return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    if (!isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
     if (!res.ok) {
-      await res.json().catch(() => null);
       return { ok: false, error: SSO_PREPARATION_FAILED_MESSAGE };
     }
 
-    const data = (await res.json()) as { launchUrl?: string };
-    if (isCancelled(options)) return { ok: false, error: SSO_CANCELLED_MESSAGE };
-    if (typeof data.launchUrl !== "string" || !data.launchUrl) {
+    const data = res.data;
+    if (!isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
+    if (typeof data?.launchUrl !== "string" || !data.launchUrl) {
       return { ok: false, error: SSO_PREPARATION_FAILED_MESSAGE };
     }
 
     // Último fence antes do único efeito irreversível do fluxo mobile.
-    if (isCancelled(options)) return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    if (!isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
     await Linking.openURL(data.launchUrl);
     return { ok: true };
   } catch {

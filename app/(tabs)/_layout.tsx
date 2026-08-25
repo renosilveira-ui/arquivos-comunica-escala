@@ -201,7 +201,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
 }
 
 export default function TabLayout() {
-  const { can, isManager } = usePermissions();
+  const { can, isManager, canApproveAssignments } = usePermissions();
   const { user } = useAuth();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
@@ -303,7 +303,7 @@ export default function TabLayout() {
           // cessão (não pendências de plantão). Decisão em
           // docs/product/escala-ux.md §3.
           title: "Solicitações",
-          href: showManagementTabs && isManager ? undefined : null,
+          href: showManagementTabs && canApproveAssignments ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
         }}
       />

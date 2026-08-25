@@ -83,6 +83,7 @@ export const confirmationRouter = router({
   registerPushToken: sessionProcedure
     .input(z.object({
       token: expoPushTokenInput,
+      previousToken: expoPushTokenInput.optional(),
       platform: z.enum(["ios", "android", "web"]),
       expectedUserId: z.number().int().positive(),
     }))
@@ -102,6 +103,7 @@ export const confirmationRouter = router({
         // presente, este ID é apenas proveniência auditável da associação.
         ctx.institutionId,
         ctx.user.sessionVersion,
+        input.previousToken,
       );
     }),
 

@@ -9,7 +9,7 @@
 
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import expressRateLimit from "express-rate-limit";
 
 // Maximum body size accepted by express.json / express.urlencoded.
 // Sized for typical tRPC payloads (a few KB) plus generous headroom.
@@ -24,6 +24,9 @@ const ALLOWED_HEADERS = [
   "Accept",
   "Authorization",
   "x-tenant-id",
+  "x-client-expected-user-id",
+  "x-client-session-instance",
+  "x-client-session-protocol",
   "x-test-user-id",
 ] as const;
 
@@ -50,7 +53,6 @@ function hostOf(origin: string): string | null {
   }
 }
 
-
 /**
  * CORS middleware that:
  * - only echoes Access-Control-Allow-Origin / Allow-Credentials when the
@@ -76,9 +78,11 @@ export function createCorsMiddleware(options: CorsOptions): RequestHandler {
     // Only trust it when the Host header is one of OUR hosts — Host is
     // client-controlled, so it cannot be the sole source of truth.
     const host = String(req.headers.host ?? "").toLowerCase();
-    const proto = req.protocol === "https" ||
+    const proto =
+      req.protocol === "https" ||
       String(req.headers["x-forwarded-proto"]).includes("https")
-        ? "https" : "http";
+        ? "https"
+        : "http";
 
     // Allow-list EFETIVA desta requisição: origens configuradas + a
     // própria origem do servidor (só quando o Host é confiável). O eco em
@@ -86,8 +90,11 @@ export function createCorsMiddleware(options: CorsOptions): RequestHandler {
     // `.has()` dessa allow-list — forma que a análise estática (CodeQL
     // js/cors-misconfiguration-for-credentials) reconhece como validação.
     const selfOrigin = trustedHosts.has(host) ? `${proto}://${host}` : null;
-    const effectiveAllowed = selfOrigin ? new Set([...allowedOrigins, selfOrigin]) : allowedOrigins;
-    const isAllowed = typeof origin === "string" && effectiveAllowed.has(origin);
+    const effectiveAllowed = selfOrigin
+      ? new Set([...allowedOrigins, selfOrigin])
+      : allowedOrigins;
+    const isAllowed =
+      typeof origin === "string" && effectiveAllowed.has(origin);
 
     if (typeof origin === "string" && effectiveAllowed.has(origin)) {
       res.header("Access-Control-Allow-Origin", origin);
@@ -127,7 +134,11 @@ export function createHelmetMiddleware(): RequestHandler {
       directives: {
         "default-src": ["'self'"],
         "script-src": ["'self'", "'unsafe-inline'"],
-        "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        "style-src": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://fonts.googleapis.com",
+        ],
         "font-src": ["'self'", "data:", "https://fonts.gstatic.com"],
         "img-src": ["'self'", "data:", "blob:", "https:"],
         "connect-src": ["'self'", "https:", "wss:"],
@@ -158,9 +169,11 @@ export interface RateLimitOptions {
  *
  * Default: 20 attempts per 15 minutes per IP.
  */
-export function createAuthRateLimit(options: RateLimitOptions = {}): RequestHandler {
+export function createAuthRateLimit(
+  options: RateLimitOptions = {},
+): RequestHandler {
   if (options.disabled) return (_req, _res, next) => next();
-  return rateLimit({
+  return expressRateLimit({
     windowMs: options.windowMs ?? 15 * 60 * 1000,
     max: options.max ?? 20,
     standardHeaders: true,
@@ -177,9 +190,11 @@ export function createAuthRateLimit(options: RateLimitOptions = {}): RequestHand
  *
  * Default: 200 requests per minute per IP.
  */
-export function createGlobalRateLimit(options: RateLimitOptions = {}): RequestHandler {
+export function createGlobalRateLimit(
+  options: RateLimitOptions = {},
+): RequestHandler {
   if (options.disabled) return (_req, _res, next) => next();
-  return rateLimit({
+  return expressRateLimit({
     windowMs: options.windowMs ?? 60 * 1000,
     max: options.max ?? 200,
     standardHeaders: true,

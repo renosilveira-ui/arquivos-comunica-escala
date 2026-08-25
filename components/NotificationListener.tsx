@@ -4,6 +4,7 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
+import { Platform } from "react-native";
 import { useRouter } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { useAuth } from "@/hooks/use-auth";
@@ -38,7 +39,10 @@ function notificationResponseKey(
 }
 
 function claimNotificationResponse(key: string): boolean {
-  if (handledNotificationResponses.has(key) || inFlightNotificationResponses.has(key)) {
+  if (
+    handledNotificationResponses.has(key) ||
+    inFlightNotificationResponses.has(key)
+  ) {
     return false;
   }
   inFlightNotificationResponses.add(key);
@@ -60,6 +64,7 @@ function markTerminalNotificationResponse(key: string): void {
 }
 
 export type NotificationRoutingDependencies = Readonly<{
+  isSessionAuthorizationCurrent: RoutingFence;
   getActiveTenantSnapshot: () => ActiveTenantSnapshot;
   loadAllowedInstitutionIds: () => Promise<readonly number[] | null>;
   setActiveInstitutionId: (institutionId: number) => Promise<void>;
@@ -67,9 +72,10 @@ export type NotificationRoutingDependencies = Readonly<{
   navigateToConfirmation: (confirmationToken: string) => void;
   navigateToAgenda: () => void;
   openComunica: (
-    data: NotificationData,
+    institutionId: number,
     canNavigate: () => boolean,
-  ) => Promise<{ ok: boolean }>;
+    signal: AbortSignal,
+  ) => Promise<{ ok: boolean; cancelled?: true }>;
 }>;
 
 type RoutingFence = () => boolean;
@@ -106,15 +112,20 @@ async function alignNotificationTenant(
   isCurrent: RoutingFence,
 ): Promise<ActiveTenantSnapshot | null> {
   if (!isCurrent()) return null;
-  const targetInstitutionId = parseNotificationInstitutionId(data.institutionId);
+  const targetInstitutionId = parseNotificationInstitutionId(
+    data.institutionId,
+  );
   if (targetInstitutionId === null) return null;
 
   const allowedInstitutionIds = await dependencies.loadAllowedInstitutionIds();
-  if (!isCurrent() || !allowedInstitutionIds?.includes(targetInstitutionId)) return null;
+  if (!isCurrent() || !allowedInstitutionIds?.includes(targetInstitutionId))
+    return null;
 
   // Memória tenant-bound primeiro, caches depois, rota por último. Assim a
   // tela aberta pelo push A nunca dispara sua consulta ainda sob o tenant B.
-  if (dependencies.getActiveTenantSnapshot().institutionId !== targetInstitutionId) {
+  if (
+    dependencies.getActiveTenantSnapshot().institutionId !== targetInstitutionId
+  ) {
     await dependencies.setActiveInstitutionId(targetInstitutionId);
     if (!isCurrent()) return null;
   }
@@ -139,8 +150,10 @@ function isRouteStillCurrent(
 ): boolean {
   if (!isCurrent()) return false;
   const current = dependencies.getActiveTenantSnapshot();
-  return current.institutionId === expected.institutionId &&
-    current.revision === expected.revision;
+  return (
+    current.institutionId === expected.institutionId &&
+    current.revision === expected.revision
+  );
 }
 
 /**
@@ -154,6 +167,7 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
     beginScope() {
       const scopeGeneration = ++generation;
       const isCurrent = () => generation === scopeGeneration;
+      const itemControllers = new Set<AbortController>();
       // Uma sessão nova nunca herda awaits pendentes da anterior. A geração
       // continua cercando as tasks antigas, mas cada scope tem sua própria
       // fila serial para os taps que pertencem à mesma sessão.
@@ -162,7 +176,13 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
       return {
         enqueue(data, dependencies) {
           let itemActive = true;
-          const isItemCurrent = () => itemActive && isCurrent();
+          const itemController = new AbortController();
+          itemControllers.add(itemController);
+          const isItemCurrent = () =>
+            itemActive &&
+            !itemController.signal.aborted &&
+            isCurrent() &&
+            dependencies.isSessionAuthorizationCurrent();
           const run = async (): Promise<boolean> => {
             if (!isItemCurrent()) return false;
             try {
@@ -170,6 +190,7 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
                 data,
                 dependencies,
                 isItemCurrent,
+                itemController.signal,
               );
             } catch {
               if (isItemCurrent()) {
@@ -186,12 +207,14 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
                 // O fence cai antes de liberar a tail: qualquer continuação
                 // antiga observa stale e não alcança outro efeito.
                 itemActive = false;
+                itemController.abort();
                 console.warn("[NotificationListener] ROUTING_TIMEOUT");
                 resolve(false);
               }, NOTIFICATION_ROUTING_ITEM_TIMEOUT_MS);
             });
             return Promise.race([run(), timedOut]).finally(() => {
               if (deadline !== undefined) clearTimeout(deadline);
+              itemControllers.delete(itemController);
             });
           };
           const result = tail.then(executeWithDeadline, executeWithDeadline);
@@ -203,6 +226,8 @@ export function createNotificationRoutingCoordinator(): NotificationRoutingCoord
         },
         invalidate() {
           if (isCurrent()) generation += 1;
+          for (const controller of itemControllers) controller.abort();
+          itemControllers.clear();
         },
       };
     },
@@ -213,17 +238,28 @@ export async function routeNotificationData(
   data: NotificationData,
   dependencies: NotificationRoutingDependencies,
   isCurrent: RoutingFence = () => true,
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<boolean> {
   if (!isCurrent() || typeof data.type !== "string") return false;
 
   switch (data.type) {
     case "duty_confirmation":
     case "duty_nomination": {
-      if (typeof data.confirmationToken !== "string" || !data.confirmationToken) {
+      if (
+        typeof data.confirmationToken !== "string" ||
+        !data.confirmationToken
+      ) {
         return false;
       }
-      const alignedSnapshot = await alignNotificationTenant(data, dependencies, isCurrent);
-      if (!alignedSnapshot || !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)) {
+      const alignedSnapshot = await alignNotificationTenant(
+        data,
+        dependencies,
+        isCurrent,
+      );
+      if (
+        !alignedSnapshot ||
+        !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)
+      ) {
         return false;
       }
       // Sem await entre o último snapshot/fence e o efeito de navegação.
@@ -232,15 +268,26 @@ export async function routeNotificationData(
     }
 
     case "sso_ready": {
-      const alignedSnapshot = await alignNotificationTenant(data, dependencies, isCurrent);
-      if (!alignedSnapshot || !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)) {
+      const alignedSnapshot = await alignNotificationTenant(
+        data,
+        dependencies,
+        isCurrent,
+      );
+      if (
+        !alignedSnapshot ||
+        !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)
+      ) {
         return false;
       }
       const canNavigate = () =>
         isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent);
-      const result = await dependencies.openComunica(data, canNavigate);
+      const result = await dependencies.openComunica(
+        alignedSnapshot.institutionId!,
+        canNavigate,
+        signal,
+      );
       if (!canNavigate()) return false;
-      if (!result.ok) dependencies.navigateToAgenda();
+      if (!result.ok && !result.cancelled) dependencies.navigateToAgenda();
       return result.ok;
     }
 
@@ -248,8 +295,15 @@ export async function routeNotificationData(
     case "manager_confirmation_escalation":
     case "replacement_accepted":
     case "replacement_declined": {
-      const alignedSnapshot = await alignNotificationTenant(data, dependencies, isCurrent);
-      if (!alignedSnapshot || !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)) {
+      const alignedSnapshot = await alignNotificationTenant(
+        data,
+        dependencies,
+        isCurrent,
+      );
+      if (
+        !alignedSnapshot ||
+        !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)
+      ) {
         return false;
       }
       dependencies.navigateToAgenda();
@@ -283,16 +337,28 @@ function PushTokenRegistrar({ userId }: { userId: number }) {
 
 export function NotificationListener() {
   const router = useRouter();
-  const { user } = useAuth();
+  const {
+    user,
+    isAuthenticated,
+    isSessionAuthorizationCurrent,
+    pushRegistrationRevision,
+  } = useAuth();
+  const authorizedUser = isAuthenticated ? user : null;
+  const authorizedUserId = authorizedUser?.id ?? null;
   const { setActiveInstitutionId } = useTenantState();
   const utils = trpc.useUtils();
-  const routingCoordinatorRef = useRef<NotificationRoutingCoordinator | null>(null);
+  const routingCoordinatorRef = useRef<NotificationRoutingCoordinator | null>(
+    null,
+  );
   if (routingCoordinatorRef.current === null) {
     routingCoordinatorRef.current = createNotificationRoutingCoordinator();
   }
-  const institutionsQuery = trpc.professionals.listMyInstitutions.useQuery(undefined, {
-    enabled: !!user,
-  });
+  const institutionsQuery = trpc.professionals.listMyInstitutions.useQuery(
+    undefined,
+    {
+      enabled: !!authorizedUser,
+    },
+  );
   const refetchInstitutions = institutionsQuery.refetch;
   const loadAllowedInstitutionIds = useCallback(async () => {
     try {
@@ -304,33 +370,65 @@ export function NotificationListener() {
     }
   }, [refetchInstitutions]);
 
+  const responseConsumerRef = useRef<
+    (
+      response: Notifications.NotificationResponse,
+      source: "LIVE" | "LAST",
+    ) => void
+  >(() => undefined);
+
+  // O listener device-global permanece montado durante CHECKING e durante o
+  // handshake tenant A→B. Só o consumer account-scoped é trocado/fenceado;
+  // assim um push que iniciou a troca de tenant não desmonta o próprio canal.
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener(
+      (response) => responseConsumerRef.current(response, "LIVE"),
+    );
+    return () => subscription.remove();
+  }, []);
+
   useEffect(() => {
     const routingScope = routingCoordinatorRef.current!.beginScope();
-    if (!user) {
+    if (authorizedUserId === null) {
+      responseConsumerRef.current = () => undefined;
       return () => routingScope.invalidate();
     }
 
     let scopeActive = true;
     const pendingResponseKeys = new Set<string>();
     const routingDependencies: NotificationRoutingDependencies = {
-        getActiveTenantSnapshot,
-        loadAllowedInstitutionIds,
-        setActiveInstitutionId,
-        invalidateQueries: async () => {
-          await utils.invalidate();
-        },
-        navigateToConfirmation: (confirmationToken) => {
-          router.push({
-            pathname: "/confirm-duty" as any,
-            params: { token: confirmationToken },
-          });
-        },
-        navigateToAgenda: () => router.push("/(tabs)/agenda" as any),
-        openComunica: async (notificationData, canNavigate) => {
-          const { openComunicaFromNotification } = await import("@/lib/sso-launch");
+      isSessionAuthorizationCurrent,
+      getActiveTenantSnapshot,
+      loadAllowedInstitutionIds,
+      setActiveInstitutionId,
+      invalidateQueries: async () => {
+        await utils.invalidate();
+      },
+      navigateToConfirmation: (confirmationToken) => {
+        router.push({
+          pathname: "/confirm-duty" as any,
+          params: { token: confirmationToken },
+        });
+      },
+      navigateToAgenda: () => router.push("/(tabs)/agenda" as any),
+      openComunica: async (institutionId, canNavigate, signal) => {
+        if (!canNavigate()) return { ok: false };
+        if (Platform.OS === "web") {
+          const { runWebSsoHandoff } = await import("@/hooks/use-sso-handoff");
           if (!canNavigate()) return { ok: false };
-          return openComunicaFromNotification(notificationData, { canNavigate });
-        },
+          const result = await runWebSsoHandoff(institutionId, {
+            signal,
+            isCurrent: canNavigate,
+          });
+          return "cancelled" in result ? result : { ok: result.ok };
+        }
+        const { openComunica } = await import("@/lib/sso-launch");
+        if (!canNavigate()) return { ok: false };
+        return openComunica(institutionId, {
+          canNavigate,
+          signal,
+        });
+      },
     };
     const clearLastResponseIfMatching = (key: string | null) => {
       try {
@@ -353,9 +451,19 @@ export function NotificationListener() {
         if (source === "LAST") clearLastResponseIfMatching(null);
         return;
       }
-      if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) {
+      if (
+        response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER
+      ) {
         // Ações customizadas têm semântica própria. Tratá-las como tap padrão
         // poderia trocar tenant e abrir uma tela não solicitada.
+        markTerminalNotificationResponse(key);
+        clearLastResponseIfMatching(key);
+        return;
+      }
+      if (!isSessionAuthorizationCurrent()) {
+        // O BEGIN de login/logout/rotação invalida a proof antes do rerender.
+        // Descarta terminalmente o tap observado sob A para ele nunca reaparecer
+        // como LAST nem ganhar autoridade quando B montar o próximo consumer.
         markTerminalNotificationResponse(key);
         clearLastResponseIfMatching(key);
         return;
@@ -387,10 +495,7 @@ export function NotificationListener() {
         },
       );
     };
-
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      consumeResponse(response, "LIVE");
-    });
+    responseConsumerRef.current = consumeResponse;
     try {
       const lastResponse = Notifications.getLastNotificationResponse();
       if (lastResponse) consumeResponse(lastResponse, "LAST");
@@ -400,8 +505,10 @@ export function NotificationListener() {
 
     return () => {
       scopeActive = false;
+      if (responseConsumerRef.current === consumeResponse) {
+        responseConsumerRef.current = () => undefined;
+      }
       routingScope.invalidate();
-      subscription.remove();
       // Cleanup é a decisão fail-closed para itens ainda pendentes: limpa
       // somente se a resposta global ainda for exatamente a observada.
       for (const key of pendingResponseKeys) {
@@ -415,8 +522,14 @@ export function NotificationListener() {
     router,
     setActiveInstitutionId,
     utils,
-    user,
+    authorizedUserId,
+    isSessionAuthorizationCurrent,
   ]);
 
-  return user ? <PushTokenRegistrar userId={user.id} /> : null;
+  return authorizedUserId !== null ? (
+    <PushTokenRegistrar
+      key={`${authorizedUserId}:${pushRegistrationRevision}`}
+      userId={authorizedUserId}
+    />
+  ) : null;
 }

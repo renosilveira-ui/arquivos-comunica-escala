@@ -1,6 +1,15 @@
 // tests/admin-role-sync.test.ts — papel administrativo contextual por tenant.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request, { type Response as SupertestResponse } from "supertest";
@@ -61,12 +70,17 @@ async function waitForPushLockWaiter(
   while (Date.now() < deadline) {
     const [rows] = await db.execute("SHOW FULL PROCESSLIST");
     const waiting = (rows as { Info?: unknown }[]).some(
-      (row) => typeof row.Info === "string" && row.Info.includes("GET_LOCK") && row.Info.includes(marker),
+      (row) =>
+        typeof row.Info === "string" &&
+        row.Info.includes("GET_LOCK") &&
+        row.Info.includes(marker),
     );
     if (waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`Waiter do mutex push não observado para userId=${targetUserId}`);
+  throw new Error(
+    `Waiter do mutex push não observado para userId=${targetUserId}`,
+  );
 }
 
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -96,6 +110,15 @@ describe("admin: papel institucional isolado por tenant", () => {
   const transientAssignmentIds: number[] = [];
   const transientShiftIds: number[] = [];
   const targetEmail = `rolesync-target-${STAMP}@test.local`;
+
+  async function sessionInstanceOf(sessionCookie: string): Promise<string> {
+    const response = await request(app)
+      .get("/api/auth/me")
+      .set("Cookie", sessionCookie);
+    expect(response.status).toBe(200);
+    expect(response.body.sessionInstance).toMatch(/^v1\.[A-Za-z0-9_-]{43}$/);
+    return response.body.sessionInstance as string;
+  }
 
   async function createPerson(
     tag: string,
@@ -168,7 +191,9 @@ describe("admin: papel institucional isolado por tenant", () => {
       })
       .from(professionalInstitutions)
       .where(eq(professionalInstitutions.userId, targetId));
-    return new Map(rows.map((row) => [row.institutionId, row.roleInInstitution]));
+    return new Map(
+      rows.map((row) => [row.institutionId, row.roleInInstitution]),
+    );
   }
 
   async function globalProjections() {
@@ -177,7 +202,10 @@ describe("admin: papel institucional isolado por tenant", () => {
       .from(users)
       .where(eq(users.id, targetId));
     const [professional] = await db
-      .select({ userRole: professionals.userRole, specialty: professionals.specialty })
+      .select({
+        userRole: professionals.userRole,
+        specialty: professionals.specialty,
+      })
       .from(professionals)
       .where(eq(professionals.id, targetProfessionalId));
     return { user, professional };
@@ -237,7 +265,8 @@ describe("admin: papel institucional isolado por tenant", () => {
         assignmentId: assignment.id,
         professionalId: original.professionalId,
         userId: original.userId,
-        status: input.status ?? (replacement ? "REPLACEMENT_CONFIRMED" : "CONFIRMED"),
+        status:
+          input.status ?? (replacement ? "REPLACEMENT_CONFIRMED" : "CONFIRMED"),
         replacementProfessionalId: replacement?.professionalId ?? null,
         replacementUserId: replacement?.userId ?? null,
         confirmationToken: `rolesync-duty-${STAMP}-${shift.id}`,
@@ -340,20 +369,22 @@ describe("admin: papel institucional isolado por tenant", () => {
     const originalAuthenticate = sdk.authenticateRequest.bind(sdk);
     const authenticateSpy = vi
       .spyOn(sdk, "authenticateRequest")
-      .mockImplementationOnce(async (...args: Parameters<typeof sdk.authenticateRequest>) => {
-        const staleUser = await originalAuthenticate(...args);
-        expect(staleUser.id).toBe(adminId);
-        await db
-          .update(users)
-          .set({ sessionVersion: staleUser.sessionVersion + 1 })
-          .where(
-            and(
-              eq(users.id, staleUser.id),
-              eq(users.sessionVersion, staleUser.sessionVersion),
-            ),
-          );
-        return staleUser;
-      });
+      .mockImplementationOnce(
+        async (...args: Parameters<typeof sdk.authenticateRequest>) => {
+          const staleUser = await originalAuthenticate(...args);
+          expect(staleUser.id).toBe(adminId);
+          await db
+            .update(users)
+            .set({ sessionVersion: staleUser.sessionVersion + 1 })
+            .where(
+              and(
+                eq(users.id, staleUser.id),
+                eq(users.sessionVersion, staleUser.sessionVersion),
+              ),
+            );
+          return staleUser;
+        },
+      );
 
     let response: request.Response;
     try {
@@ -364,12 +395,16 @@ describe("admin: papel institucional isolado por tenant", () => {
 
     const refreshed = await request(app)
       .post("/api/auth/login")
-      .send({ email: `rolesync-admin-${STAMP}@test.local`, password: PASSWORD });
+      .send({
+        email: `rolesync-admin-${STAMP}@test.local`,
+        password: PASSWORD,
+      });
     expect(refreshed.status).toBe(200);
     const setCookie = refreshed.headers["set-cookie"];
-    cookie = (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
-      (entry: string) => entry?.startsWith("session="),
-    ) ?? "";
+    cookie =
+      (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
+        (entry: string) => entry?.startsWith("session="),
+      ) ?? "";
     expect(cookie).not.toBe("");
     return response!;
   }
@@ -403,7 +438,10 @@ describe("admin: papel institucional isolado por tenant", () => {
 
     const [hospitalA] = await db
       .insert(hospitals)
-      .values({ institutionId: institutionAId, name: `RoleSync Hospital A ${STAMP}` })
+      .values({
+        institutionId: institutionAId,
+        name: `RoleSync Hospital A ${STAMP}`,
+      })
       .$returningId();
     hospitalAId = hospitalA.id;
     const [sectorA] = await db
@@ -494,7 +532,10 @@ describe("admin: papel institucional isolado por tenant", () => {
 
     const login = await request(app)
       .post("/api/auth/login")
-      .send({ email: `rolesync-admin-${STAMP}@test.local`, password: PASSWORD });
+      .send({
+        email: `rolesync-admin-${STAMP}@test.local`,
+        password: PASSWORD,
+      });
     expect(login.status).toBe(200);
     const setCookie = login.headers["set-cookie"];
     const arr = Array.isArray(setCookie) ? setCookie : [setCookie];
@@ -503,10 +544,15 @@ describe("admin: papel institucional isolado por tenant", () => {
 
     const secondLogin = await request(app)
       .post("/api/auth/login")
-      .send({ email: `rolesync-admin-2-${STAMP}@test.local`, password: PASSWORD });
+      .send({
+        email: `rolesync-admin-2-${STAMP}@test.local`,
+        password: PASSWORD,
+      });
     expect(secondLogin.status).toBe(200);
     const secondSetCookie = secondLogin.headers["set-cookie"];
-    const secondCookies = Array.isArray(secondSetCookie) ? secondSetCookie : [secondSetCookie];
+    const secondCookies = Array.isArray(secondSetCookie)
+      ? secondSetCookie
+      : [secondSetCookie];
     secondAdminCookie =
       secondCookies.find((entry: string) => entry.startsWith("session=")) ?? "";
     expect(secondAdminCookie).not.toBe("");
@@ -517,7 +563,9 @@ describe("admin: papel institucional isolado por tenant", () => {
     await db.delete(pushTokens).where(eq(pushTokens.userId, targetId));
     await db
       .delete(passwordResets)
-      .where(inArray(passwordResets.userId, [adminId, secondAdminId, targetId]));
+      .where(
+        inArray(passwordResets.userId, [adminId, secondAdminId, targetId]),
+      );
     await db
       .update(users)
       .set({ approvalStatus: "APPROVED", deletedAt: null })
@@ -571,7 +619,9 @@ describe("admin: papel institucional isolado por tenant", () => {
         .where(inArray(shiftAssignmentsV2.id, transientAssignmentIds));
     }
     if (transientShiftIds.length > 0) {
-      await db.delete(shiftInstances).where(inArray(shiftInstances.id, transientShiftIds));
+      await db
+        .delete(shiftInstances)
+        .where(inArray(shiftInstances.id, transientShiftIds));
     }
     transientConfirmationIds.length = 0;
     transientAssignmentIds.length = 0;
@@ -580,17 +630,33 @@ describe("admin: papel institucional isolado por tenant", () => {
 
   afterAll(async () => {
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
-    await db.delete(passwordResets).where(inArray(passwordResets.userId, userIds));
+    await db
+      .delete(passwordResets)
+      .where(inArray(passwordResets.userId, userIds));
     await db.delete(auditTrail).where(inArray(auditTrail.entityId, userIds));
-    await db.delete(professionalAccess).where(inArray(professionalAccess.professionalId, professionalIds));
-    await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.userId, userIds));
-    await db.delete(professionals).where(inArray(professionals.id, professionalIds));
-    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionAId));
+    await db
+      .delete(professionalAccess)
+      .where(inArray(professionalAccess.professionalId, professionalIds));
+    await db
+      .delete(professionalInstitutions)
+      .where(inArray(professionalInstitutions.userId, userIds));
+    await db
+      .delete(professionals)
+      .where(inArray(professionals.id, professionalIds));
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionAId));
     await db.delete(sectors).where(eq(sectors.id, sectorAId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalAId));
     await db
       .delete(institutions)
-      .where(inArray(institutions.id, [institutionAId, institutionBId, institutionCId]));
+      .where(
+        inArray(institutions.id, [
+          institutionAId,
+          institutionBId,
+          institutionCId,
+        ]),
+      );
     await db.delete(users).where(inArray(users.id, userIds));
   });
 
@@ -600,34 +666,60 @@ describe("admin: papel institucional isolado por tenant", () => {
       .set("Cookie", cookie)
       .set("x-tenant-id", String(institutionAId));
     expect(responseA.status).toBe(200);
-    const targetA = responseA.body.users.find((user: { id: number }) => user.id === targetId);
+    const targetA = responseA.body.users.find(
+      (user: { id: number }) => user.id === targetId,
+    );
     expect(targetA).toMatchObject({
       role: "doctor",
       globalRole: "doctor",
       roleInInstitution: "USER",
     });
-    expect(responseA.body.users.some((user: { id: number }) => user.id === onlyBUserId)).toBe(false);
-    expect(responseA.body.users.some((user: { id: number }) => user.id === inactiveUserId)).toBe(false);
-    expect(responseA.body.users.some((user: { id: number }) => user.id === poisonedUserId)).toBe(false);
+    expect(
+      responseA.body.users.some(
+        (user: { id: number }) => user.id === onlyBUserId,
+      ),
+    ).toBe(false);
+    expect(
+      responseA.body.users.some(
+        (user: { id: number }) => user.id === inactiveUserId,
+      ),
+    ).toBe(false);
+    expect(
+      responseA.body.users.some(
+        (user: { id: number }) => user.id === poisonedUserId,
+      ),
+    ).toBe(false);
 
     const responseB = await request(app)
       .get("/api/admin/users")
       .set("Cookie", cookie)
       .set("x-tenant-id", String(institutionBId));
     expect(responseB.status).toBe(200);
-    expect(responseB.body.users.find((user: { id: number }) => user.id === targetId)).toMatchObject({
+    expect(
+      responseB.body.users.find((user: { id: number }) => user.id === targetId),
+    ).toMatchObject({
       role: "admin",
       globalRole: "doctor",
       roleInInstitution: "GESTOR_PLUS",
     });
-    expect(responseB.body.users.some((user: { id: number }) => user.id === onlyBUserId)).toBe(true);
+    expect(
+      responseB.body.users.some(
+        (user: { id: number }) => user.id === onlyBUserId,
+      ),
+    ).toBe(true);
   });
 
   it("exige tenant explícito e vínculo canônico ativo do próprio admin", async () => {
-    expect((await request(app).get("/api/admin/users").set("Cookie", cookie)).status).toBe(400);
     expect(
-      (await request(app).get("/api/admin/users").set("Cookie", cookie).set("x-tenant-id", "abc"))
-        .status,
+      (await request(app).get("/api/admin/users").set("Cookie", cookie)).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(app)
+          .get("/api/admin/users")
+          .set("Cookie", cookie)
+          .set("x-tenant-id", "abc")
+      ).status,
     ).toBe(400);
     expect(
       (
@@ -740,8 +832,15 @@ describe("admin: papel institucional isolado por tenant", () => {
       user: { role: "doctor" },
       professional: { userRole: "USER" },
     });
-    expect(actorCapabilities(await resolveTenantActor(targetId, institutionAId, false)).canCreateShift).toBe(true);
-    expect((await resolveTenantActor(targetId, institutionBId, false)).roleInInstitution).toBe("GESTOR_PLUS");
+    expect(
+      actorCapabilities(
+        await resolveTenantActor(targetId, institutionAId, false),
+      ).canCreateShift,
+    ).toBe(true);
+    expect(
+      (await resolveTenantActor(targetId, institutionBId, false))
+        .roleInInstitution,
+    ).toBe("GESTOR_PLUS");
 
     const [audit] = await db
       .select({
@@ -750,8 +849,16 @@ describe("admin: papel institucional isolado por tenant", () => {
         metadata: auditTrail.metadata,
       })
       .from(auditTrail)
-      .where(and(eq(auditTrail.entityId, targetId), eq(auditTrail.action, "USER_ROLE_CHANGED")));
-    expect(audit).toMatchObject({ institutionId: institutionAId, action: "USER_ROLE_CHANGED" });
+      .where(
+        and(
+          eq(auditTrail.entityId, targetId),
+          eq(auditTrail.action, "USER_ROLE_CHANGED"),
+        ),
+      );
+    expect(audit).toMatchObject({
+      institutionId: institutionAId,
+      action: "USER_ROLE_CHANGED",
+    });
     expect(audit.metadata).toMatchObject({
       previousRoleInInstitution: "USER",
       newRoleInInstitution: "GESTOR_MEDICO",
@@ -769,8 +876,17 @@ describe("admin: papel institucional isolado por tenant", () => {
       .where(eq(users.id, targetId));
     const token = `ExponentPushToken[admin-reset-fetch-${STAMP}]`;
     await expect(
-      registerPushToken(targetId, token, "ios", institutionAId, before.sessionVersion),
-    ).resolves.toEqual({ success: true, message: "Token registrado com sucesso" });
+      registerPushToken(
+        targetId,
+        token,
+        "ios",
+        institutionAId,
+        before.sessionVersion,
+      ),
+    ).resolves.toEqual({
+      success: true,
+      message: "Token registrado com sucesso",
+    });
 
     const fetchEntered = deferredVoid();
     const releaseFetch = deferredVoid();
@@ -804,16 +920,27 @@ describe("admin: papel institucional isolado por tenant", () => {
       await waitForPushLockWaiter(db, targetId);
       expect(resetSettled).toBe(false);
       await expect(
-        db.select({ sessionVersion: users.sessionVersion }).from(users).where(eq(users.id, targetId)),
+        db
+          .select({ sessionVersion: users.sessionVersion })
+          .from(users)
+          .where(eq(users.id, targetId)),
       ).resolves.toEqual([{ sessionVersion: before.sessionVersion }]);
 
       releaseFetch.resolve();
-      await expect(sendPromise).resolves.toMatchObject({ status: "TICKETS_ACCEPTED" });
+      await expect(sendPromise).resolves.toMatchObject({
+        status: "TICKETS_ACCEPTED",
+      });
       const reset = await resetPromise;
       expect(reset.status).toBe(200);
-      expect(reset.body).toMatchObject({ ok: true, temporaryPassword: expect.any(String) });
+      expect(reset.body).toMatchObject({
+        ok: true,
+        temporaryPassword: expect.any(String),
+      });
       await expect(
-        db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.userId, targetId)),
+        db
+          .select({ id: pushTokens.id })
+          .from(pushTokens)
+          .where(eq(pushTokens.userId, targetId)),
       ).resolves.toHaveLength(0);
       await expect(
         sendPushNotification(
@@ -904,13 +1031,20 @@ describe("admin: papel institucional isolado por tenant", () => {
     expect(invalidLegacyRole.status).toBe(400);
     expect(await rolesForTarget()).toEqual(before);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(0);
   });
 
   it("rejeita strings acima do schema antes de qualquer escrita ou auditoria", async () => {
     const [beforeUser] = await db
-      .select({ name: users.name, email: users.email, sessionVersion: users.sessionVersion })
+      .select({
+        name: users.name,
+        email: users.email,
+        sessionVersion: users.sessionVersion,
+      })
       .from(users)
       .where(eq(users.id, targetId));
     const [beforeProfessional] = await db
@@ -933,7 +1067,11 @@ describe("admin: papel institucional isolado por tenant", () => {
     }
 
     const [afterUser] = await db
-      .select({ name: users.name, email: users.email, sessionVersion: users.sessionVersion })
+      .select({
+        name: users.name,
+        email: users.email,
+        sessionVersion: users.sessionVersion,
+      })
       .from(users)
       .where(eq(users.id, targetId));
     const [afterProfessional] = await db
@@ -944,7 +1082,10 @@ describe("admin: papel institucional isolado por tenant", () => {
     expect(afterProfessional).toEqual(beforeProfessional);
     expect(await rolesForTarget()).toEqual(beforeRoles);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(0);
   });
 
@@ -959,7 +1100,10 @@ describe("admin: papel institucional isolado por tenant", () => {
     }
 
     const [inactive] = await db
-      .select({ active: professionalInstitutions.active, role: professionalInstitutions.roleInInstitution })
+      .select({
+        active: professionalInstitutions.active,
+        role: professionalInstitutions.roleInInstitution,
+      })
       .from(professionalInstitutions)
       .where(
         and(
@@ -989,14 +1133,28 @@ describe("admin: papel institucional isolado por tenant", () => {
       professional: { userRole: "USER", specialty: "Anestesiologia" },
     });
     const [audit] = await db
-      .select({ institutionId: auditTrail.institutionId, action: auditTrail.action })
+      .select({
+        institutionId: auditTrail.institutionId,
+        action: auditTrail.action,
+      })
       .from(auditTrail)
-      .where(and(eq(auditTrail.entityId, targetId), eq(auditTrail.action, "USER_UPDATED")));
-    expect(audit).toEqual({ institutionId: institutionAId, action: "USER_UPDATED" });
+      .where(
+        and(
+          eq(auditTrail.entityId, targetId),
+          eq(auditTrail.action, "USER_UPDATED"),
+        ),
+      );
+    expect(audit).toEqual({
+      institutionId: institutionAId,
+      action: "USER_UPDATED",
+    });
   });
 
   it("nega mudança de e-mail do titular original enquanto o plantão não terminou", async () => {
-    await createDutyLinkedToTarget("original", new Date(Date.now() + 60 * 60 * 1000));
+    await createDutyLinkedToTarget(
+      "original",
+      new Date(Date.now() + 60 * 60 * 1000),
+    );
 
     const response = await request(app)
       .put(`/api/admin/users/${targetId}`)
@@ -1005,16 +1163,27 @@ describe("admin: papel institucional isolado por tenant", () => {
       .send({ email: `rolesync-original-blocked-${STAMP}@test.local` });
 
     expect(response.status).toBe(409);
-    expect(response.body.error).toMatch(/plantão vinculado ainda não encerrado/i);
-    const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, targetId));
+    expect(response.body.error).toMatch(
+      /plantão vinculado ainda não encerrado/i,
+    );
+    const [user] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, targetId));
     expect(user.email).toBe(targetEmail);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(0);
   });
 
   it("nega mudança de e-mail do substituto enquanto o plantão não terminou", async () => {
-    await createDutyLinkedToTarget("replacement", new Date(Date.now() + 60 * 60 * 1000));
+    await createDutyLinkedToTarget(
+      "replacement",
+      new Date(Date.now() + 60 * 60 * 1000),
+    );
 
     const response = await request(app)
       .put(`/api/admin/users/${targetId}`)
@@ -1023,15 +1192,24 @@ describe("admin: papel institucional isolado por tenant", () => {
       .send({ email: `rolesync-replacement-blocked-${STAMP}@test.local` });
 
     expect(response.status).toBe(409);
-    const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, targetId));
+    const [user] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, targetId));
     expect(user.email).toBe(targetEmail);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(0);
   });
 
   it("permite mudança de e-mail quando todos os plantões ligados já terminaram", async () => {
-    await createDutyLinkedToTarget("original", new Date(Date.now() - 60 * 1000));
+    await createDutyLinkedToTarget(
+      "original",
+      new Date(Date.now() - 60 * 1000),
+    );
     const nextEmail = `rolesync-ended-duty-${STAMP}@test.local`;
 
     const response = await request(app)
@@ -1042,7 +1220,10 @@ describe("admin: papel institucional isolado por tenant", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.user.email).toBe(nextEmail);
-    const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, targetId));
+    const [user] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, targetId));
     expect(user.email).toBe(nextEmail);
     const audits = await db
       .select({ action: auditTrail.action })
@@ -1057,7 +1238,9 @@ describe("admin: papel institucional isolado por tenant", () => {
       .send({ email: targetEmail, password: PASSWORD });
     expect(targetLogin.status).toBe(200);
     const targetSetCookie = targetLogin.headers["set-cookie"];
-    const targetCookies = Array.isArray(targetSetCookie) ? targetSetCookie : [targetSetCookie];
+    const targetCookies = Array.isArray(targetSetCookie)
+      ? targetSetCookie
+      : [targetSetCookie];
     const targetCookie =
       targetCookies.find((entry: string) => entry.startsWith("session=")) ?? "";
     expect(targetCookie).not.toBe("");
@@ -1106,7 +1289,10 @@ describe("admin: papel institucional isolado por tenant", () => {
       .select({ email: users.email, sessionVersion: users.sessionVersion })
       .from(users)
       .where(eq(users.id, targetId));
-    expect(after).toEqual({ email: nextEmail, sessionVersion: before.sessionVersion + 1 });
+    expect(after).toEqual({
+      email: nextEmail,
+      sessionVersion: before.sessionVersion + 1,
+    });
     expect(
       await db
         .select({ id: passwordResets.id })
@@ -1120,10 +1306,14 @@ describe("admin: papel institucional isolado por tenant", () => {
         .where(eq(pushTokens.userId, targetId)),
     ).toHaveLength(0);
     expect(
-      (await request(app).get("/api/auth/me").set("Cookie", targetCookie)).status,
+      (await request(app).get("/api/auth/me").set("Cookie", targetCookie))
+        .status,
     ).toBe(401);
     const [audit] = await db
-      .select({ description: auditTrail.description, metadata: auditTrail.metadata })
+      .select({
+        description: auditTrail.description,
+        metadata: auditTrail.metadata,
+      })
       .from(auditTrail)
       .where(eq(auditTrail.entityId, targetId));
     expect(audit.metadata).toMatchObject({
@@ -1266,7 +1456,10 @@ describe("admin: papel institucional isolado por tenant", () => {
       endAt: new Date(Date.now() + 60 * 60 * 1000),
       status: "CONFIRMED",
     });
-    const [before] = await db.select({ email: users.email }).from(users).where(eq(users.id, adminId));
+    const [before] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, adminId));
 
     const response = await request(app)
       .put(`/api/admin/users/${adminId}`)
@@ -1275,10 +1468,16 @@ describe("admin: papel institucional isolado por tenant", () => {
       .send({ email: `rolesync-admin-self-blocked-${STAMP}@test.local` });
 
     expect(response.status).toBe(409);
-    const [after] = await db.select({ email: users.email }).from(users).where(eq(users.id, adminId));
+    const [after] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, adminId));
     expect(after.email).toBe(before.email);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, adminId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, adminId)),
     ).toHaveLength(0);
   });
 
@@ -1296,12 +1495,15 @@ describe("admin: papel institucional isolado por tenant", () => {
         .send({ email: `rolesync-race-email-${round}-${STAMP}@test.local` })
         .then((response) => response);
       const confirmation = confirmDutyInTransaction(confirmationId, targetId);
-      const operations = round % 2 === 0
-        ? [confirmation, emailUpdate]
-        : [emailUpdate, confirmation];
+      const operations =
+        round % 2 === 0
+          ? [confirmation, emailUpdate]
+          : [emailUpdate, confirmation];
       const results = await Promise.allSettled(operations);
 
-      expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+      expect(results.every((result) => result.status === "fulfilled")).toBe(
+        true,
+      );
       const response = await emailUpdate;
       expect(response.status).toBe(409);
       const [state] = await db
@@ -1309,11 +1511,17 @@ describe("admin: papel institucional isolado por tenant", () => {
         .from(dutyConfirmations)
         .where(eq(dutyConfirmations.id, confirmationId));
       expect(state.status).toBe("CONFIRMED");
-      const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, targetId));
+      const [user] = await db
+        .select({ email: users.email })
+        .from(users)
+        .where(eq(users.id, targetId));
       expect(user.email).toBe(targetEmail);
     }
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(0);
   }, 30_000);
 
@@ -1332,10 +1540,14 @@ describe("admin: papel institucional isolado por tenant", () => {
       const holdConfirmation = new Promise<void>((resolve) => {
         releaseConfirmation = resolve;
       });
-      const confirmation = confirmDutyInTransaction(confirmationId, targetId, async () => {
-        reportLocksHeld();
-        await holdConfirmation;
-      });
+      const confirmation = confirmDutyInTransaction(
+        confirmationId,
+        targetId,
+        async () => {
+          reportLocksHeld();
+          await holdConfirmation;
+        },
+      );
       await locksHeld;
 
       const emailUpdate = request(app)
@@ -1353,7 +1565,8 @@ describe("admin: papel institucional isolado por tenant", () => {
       ]);
       expect(confirmationResult.status).toBe("fulfilled");
       expect(emailResult.status).toBe("fulfilled");
-      if (emailResult.status === "fulfilled") expect(emailResult.value.status).toBe(409);
+      if (emailResult.status === "fulfilled")
+        expect(emailResult.value.status).toBe(409);
       const [state] = await db
         .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)
@@ -1374,7 +1587,8 @@ describe("admin: papel institucional isolado por tenant", () => {
         new Date(Date.now() + (round + 1) * 60 * 60 * 1000),
         "PENDING",
       );
-      const nextRole: InstitutionRole = round % 2 === 0 ? "GESTOR_MEDICO" : "USER";
+      const nextRole: InstitutionRole =
+        round % 2 === 0 ? "GESTOR_MEDICO" : "USER";
       const roleUpdate = request(app)
         .put(`/api/admin/users/${targetId}`)
         .set("Cookie", cookie)
@@ -1382,12 +1596,15 @@ describe("admin: papel institucional isolado por tenant", () => {
         .send({ roleInInstitution: nextRole })
         .then((response) => response);
       const confirmation = confirmDutyInTransaction(confirmationId, targetId);
-      const operations = round % 2 === 0
-        ? [confirmation, roleUpdate]
-        : [roleUpdate, confirmation];
+      const operations =
+        round % 2 === 0
+          ? [confirmation, roleUpdate]
+          : [roleUpdate, confirmation];
       const results = await Promise.allSettled(operations);
 
-      expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+      expect(results.every((result) => result.status === "fulfilled")).toBe(
+        true,
+      );
       const response = await roleUpdate;
       expect(response.status).toBe(200);
       expect(response.body.user.roleInInstitution).toBe(nextRole);
@@ -1413,18 +1630,34 @@ describe("admin: papel institucional isolado por tenant", () => {
         .set("Cookie", secondAdminCookie)
         .set("x-tenant-id", String(institutionAId))
         .send({ name: secondName });
-      const responses = await Promise.all(round % 2 === 0 ? [first, second] : [second, first]);
-      expect(responses.every((response) => response.status === 200 || response.status === 409)).toBe(true);
+      const responses = await Promise.all(
+        round % 2 === 0 ? [first, second] : [second, first],
+      );
+      expect(
+        responses.every(
+          (response) => response.status === 200 || response.status === 409,
+        ),
+      ).toBe(true);
       expect(responses.some((response) => response.status === 200)).toBe(true);
 
       const [firstAdmin, secondAdmin] = await Promise.all([
-        db.select({ name: users.name }).from(users).where(eq(users.id, adminId)).then((rows) => rows[0]),
-        db.select({ name: users.name }).from(users).where(eq(users.id, secondAdminId)).then((rows) => rows[0]),
+        db
+          .select({ name: users.name })
+          .from(users)
+          .where(eq(users.id, adminId))
+          .then((rows) => rows[0]),
+        db
+          .select({ name: users.name })
+          .from(users)
+          .where(eq(users.id, secondAdminId))
+          .then((rows) => rows[0]),
       ]);
       const firstResponse = round % 2 === 0 ? responses[0] : responses[1];
       const secondResponse = round % 2 === 0 ? responses[1] : responses[0];
-      if (firstResponse.status === 200) expect(secondAdmin.name).toBe(firstName);
-      if (secondResponse.status === 200) expect(firstAdmin.name).toBe(secondName);
+      if (firstResponse.status === 200)
+        expect(secondAdmin.name).toBe(firstName);
+      if (secondResponse.status === 200)
+        expect(firstAdmin.name).toBe(secondName);
     }
   }, 30_000);
 
@@ -1439,24 +1672,38 @@ describe("admin: papel institucional isolado por tenant", () => {
       (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
         (entry: string) => entry?.startsWith("session="),
       ) ?? "";
+    const pendingSessionInstance = await sessionInstanceOf(pendingCookie);
 
-    const [approve, deletion] = await raceHttpAfterUserLockGate(pending.userId, () => [
-      request(app)
-        .post(`/api/admin/pending-signups/${pending.userId}/approve`)
-        .set("Cookie", cookie)
-        .set("x-tenant-id", String(institutionAId))
-        .then((response) => response),
-      request(app)
-        .delete("/api/auth/me")
-        .set("Cookie", pendingCookie)
-        .send({ password: PASSWORD })
-        .then((response) => response),
-    ]);
+    const [approve, deletion] = await raceHttpAfterUserLockGate(
+      pending.userId,
+      () => [
+        request(app)
+          .post(`/api/admin/pending-signups/${pending.userId}/approve`)
+          .set("Cookie", cookie)
+          .set("x-tenant-id", String(institutionAId))
+          .then((response) => response),
+        request(app)
+          .delete("/api/auth/me")
+          .set("Cookie", pendingCookie)
+          .set("x-client-session-instance", pendingSessionInstance)
+          .send({ password: PASSWORD })
+          .then((response) => response),
+      ],
+    );
 
-    expect([approve.status, deletion.status].filter((status) => status === 200)).toHaveLength(1);
-    expect([approve.status, deletion.status].every((status) => [200, 401, 409].includes(status))).toBe(true);
+    expect(
+      [approve.status, deletion.status].filter((status) => status === 200),
+    ).toHaveLength(1);
+    expect(
+      [approve.status, deletion.status].every((status) =>
+        [200, 401, 409].includes(status),
+      ),
+    ).toBe(true);
     const [user] = await db
-      .select({ approvalStatus: users.approvalStatus, deletedAt: users.deletedAt })
+      .select({
+        approvalStatus: users.approvalStatus,
+        deletedAt: users.deletedAt,
+      })
       .from(users)
       .where(eq(users.id, pending.userId));
     const [membership] = await db
@@ -1464,7 +1711,10 @@ describe("admin: papel institucional isolado por tenant", () => {
       .from(professionalInstitutions)
       .where(eq(professionalInstitutions.userId, pending.userId));
     if (approve.status === 200) {
-      expect(user).toMatchObject({ approvalStatus: "APPROVED", deletedAt: null });
+      expect(user).toMatchObject({
+        approvalStatus: "APPROVED",
+        deletedAt: null,
+      });
       expect(membership.active).toBe(true);
     } else {
       expect(deletion.status).toBe(200);
@@ -1484,22 +1734,33 @@ describe("admin: papel institucional isolado por tenant", () => {
       (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
         (entry: string) => entry?.startsWith("session="),
       ) ?? "";
+    const pendingSessionInstance = await sessionInstanceOf(pendingCookie);
 
-    const [rejection, deletion] = await raceHttpAfterUserLockGate(pending.userId, () => [
-      request(app)
-        .post(`/api/admin/pending-signups/${pending.userId}/reject`)
-        .set("Cookie", cookie)
-        .set("x-tenant-id", String(institutionAId))
-        .then((response) => response),
-      request(app)
-        .delete("/api/auth/me")
-        .set("Cookie", pendingCookie)
-        .send({ password: PASSWORD })
-        .then((response) => response),
-    ]);
+    const [rejection, deletion] = await raceHttpAfterUserLockGate(
+      pending.userId,
+      () => [
+        request(app)
+          .post(`/api/admin/pending-signups/${pending.userId}/reject`)
+          .set("Cookie", cookie)
+          .set("x-tenant-id", String(institutionAId))
+          .then((response) => response),
+        request(app)
+          .delete("/api/auth/me")
+          .set("Cookie", pendingCookie)
+          .set("x-client-session-instance", pendingSessionInstance)
+          .send({ password: PASSWORD })
+          .then((response) => response),
+      ],
+    );
 
-    expect([rejection.status, deletion.status].filter((status) => status === 200)).toHaveLength(1);
-    expect([rejection.status, deletion.status].every((status) => [200, 401, 404, 409].includes(status))).toBe(true);
+    expect(
+      [rejection.status, deletion.status].filter((status) => status === 200),
+    ).toHaveLength(1);
+    expect(
+      [rejection.status, deletion.status].every((status) =>
+        [200, 401, 404, 409].includes(status),
+      ),
+    ).toBe(true);
     const remainingUsers = await db
       .select({ deletedAt: users.deletedAt })
       .from(users)
@@ -1546,7 +1807,10 @@ describe("admin: papel institucional isolado por tenant", () => {
         )
         .limit(1)
         .for("update");
-      await tx.update(users).set({ role: "doctor" }).where(eq(users.id, adminId));
+      await tx
+        .update(users)
+        .set({ role: "doctor" })
+        .where(eq(users.id, adminId));
       await tx
         .update(professionalInstitutions)
         .set({ active: false })
@@ -1589,7 +1853,10 @@ describe("admin: papel institucional isolado por tenant", () => {
           .where(eq(auditTrail.entityId, pending.userId)),
       ).toHaveLength(0);
     } finally {
-      await db.update(users).set({ role: "admin" }).where(eq(users.id, adminId));
+      await db
+        .update(users)
+        .set({ role: "admin" })
+        .where(eq(users.id, adminId));
       await db
         .update(professionalInstitutions)
         .set({ active: true })
@@ -1617,10 +1884,16 @@ describe("admin: papel institucional isolado por tenant", () => {
     expect(put.status).toBe(409);
     expect(put.body.error).toMatch(/sessão.*revogada/i);
     expect(
-      await db.select({ name: users.name }).from(users).where(eq(users.id, targetId)),
+      await db
+        .select({ name: users.name })
+        .from(users)
+        .where(eq(users.id, targetId)),
     ).toEqual([targetBeforePut]);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(0);
 
     const [targetBeforeReset] = await db
@@ -1661,27 +1934,37 @@ describe("admin: papel institucional isolado por tenant", () => {
         .where(eq(passwordResets.userId, targetId)),
     ).toHaveLength(1);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(0);
 
     for (const operation of ["approve", "reject"] as const) {
       const pending = await createPendingPerson(`pending-stale-${operation}`);
-      const response = await runWithCallerRevokedAfterMiddleware((staleCookie) =>
-        request(app)
-          .post(`/api/admin/pending-signups/${pending.userId}/${operation}`)
-          .set("Cookie", staleCookie)
-          .set("x-tenant-id", String(institutionAId)),
+      const response = await runWithCallerRevokedAfterMiddleware(
+        (staleCookie) =>
+          request(app)
+            .post(`/api/admin/pending-signups/${pending.userId}/${operation}`)
+            .set("Cookie", staleCookie)
+            .set("x-tenant-id", String(institutionAId)),
       );
       expect(response.status).toBe(409);
       const [pendingUser] = await db
-        .select({ approvalStatus: users.approvalStatus, deletedAt: users.deletedAt })
+        .select({
+          approvalStatus: users.approvalStatus,
+          deletedAt: users.deletedAt,
+        })
         .from(users)
         .where(eq(users.id, pending.userId));
       const [pendingMembership] = await db
         .select({ active: professionalInstitutions.active })
         .from(professionalInstitutions)
         .where(eq(professionalInstitutions.userId, pending.userId));
-      expect(pendingUser).toEqual({ approvalStatus: "PENDING", deletedAt: null });
+      expect(pendingUser).toEqual({
+        approvalStatus: "PENDING",
+        deletedAt: null,
+      });
       expect(pendingMembership.active).toBe(false);
       expect(
         await db
@@ -1714,7 +1997,9 @@ describe("admin: papel institucional isolado por tenant", () => {
         .set("x-tenant-id", String(institutionAId)),
     ]);
 
-    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 409,
+    ]);
     const success = responses.find((response) => response.status === 200)!;
     const conflict = responses.find((response) => response.status === 409)!;
     expect(success.body.temporaryPassword).toHaveLength(12);
@@ -1728,7 +2013,12 @@ describe("admin: papel institucional isolado por tenant", () => {
       })
       .from(users)
       .where(eq(users.id, targetId));
-    expect(await bcrypt.compare(success.body.temporaryPassword, target.passwordHash!)).toBe(true);
+    expect(
+      await bcrypt.compare(
+        success.body.temporaryPassword,
+        target.passwordHash!,
+      ),
+    ).toBe(true);
     expect(target.mustChangePassword).toBe(true);
     expect(target.sessionVersion).toBe(before.sessionVersion + 1);
     expect(
@@ -1738,7 +2028,10 @@ describe("admin: papel institucional isolado por tenant", () => {
         .where(eq(passwordResets.userId, targetId)),
     ).toHaveLength(0);
     expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(eq(auditTrail.entityId, targetId)),
+      await db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(eq(auditTrail.entityId, targetId)),
     ).toHaveLength(1);
   }, 30_000);
 
@@ -1768,9 +2061,10 @@ describe("admin: papel institucional isolado por tenant", () => {
     ]);
 
     expect([first.status, second.status].sort()).toEqual([200, 409]);
-    const winner = first.status === 200
-      ? { response: first, targetId: secondAdminId }
-      : { response: second, targetId: adminId };
+    const winner =
+      first.status === 200
+        ? { response: first, targetId: secondAdminId }
+        : { response: second, targetId: adminId };
     const loserTargetId = winner.targetId === adminId ? secondAdminId : adminId;
     const afterRows = await db
       .select({

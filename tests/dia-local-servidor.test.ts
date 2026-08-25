@@ -7,7 +7,7 @@
 // `toISOString()` jogavam esse plantão para o dia seguinte (e, no
 // calendário, abriam espaço para turnos duplicados).
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
   hospitals,
@@ -156,7 +156,16 @@ describe("consultas por dia usam o dia do hospital", () => {
   it("listAgenda coloca o plantão no dia D, com a semana iniciando na segunda", async () => {
     const shifts = shiftsRouter.createCaller(ctx(doctorUserId, "doctor"));
     const monday = mondayOfKey(D);
-    const res = await shifts.listAgenda({ startDate: monday, weeks: 1, scope: "geral" });
+    const selectSpy = vi.spyOn(db, "select");
+    const res = await (async () => {
+      try {
+        const result = await shifts.listAgenda({ startDate: monday, weeks: 1, scope: "geral" });
+        expect(selectSpy).toHaveBeenCalledTimes(1);
+        return result;
+      } finally {
+        selectSpy.mockRestore();
+      }
+    })();
     expect(res.weeks).toHaveLength(1);
     expect(res.weeks[0].weekStart).toBe(monday);
     const day = res.weeks[0].days.find((d) => d.date === D)!;

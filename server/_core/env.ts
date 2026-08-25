@@ -4,14 +4,20 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
 }
 
 export const ENV = {
-  cookieSecret: getEnvOrDefault("COOKIE_SECRET", "dev-secret-change-in-production"),
+  cookieSecret: getEnvOrDefault(
+    "COOKIE_SECRET",
+    "dev-secret-change-in-production",
+  ),
   databaseUrl: getEnvOrDefault("DATABASE_URL", ""),
   nodeEnv: getEnvOrDefault("NODE_ENV", "development"),
   comunicaJwksUri: getEnvOrDefault("COMUNICA_JWKS_URI", ""),
   comunicaIssuer: getEnvOrDefault("COMUNICA_ISSUER", ""),
   comunicaAudience: getEnvOrDefault("COMUNICA_AUDIENCE", ""),
   comunicaTenantMap: getEnvOrDefault("COMUNICA_TENANT_MAP", ""),
-  shiftRadarDeepLinkBaseUrl: getEnvOrDefault("SHIFT_RADAR_DEEPLINK_BASE_URL", "exp://localhost:8081/--"),
+  shiftRadarDeepLinkBaseUrl: getEnvOrDefault(
+    "SHIFT_RADAR_DEEPLINK_BASE_URL",
+    "exp://localhost:8081/--",
+  ),
   shiftRadarPollMs: Number(getEnvOrDefault("SHIFT_RADAR_POLL_MS", "60000")),
   shiftRadarEnabled: getEnvOrDefault("SHIFT_RADAR_ENABLED", "false") === "true",
   // SSO Escala → Comunica+
@@ -21,6 +27,14 @@ export const ENV = {
   ssoKeystorePath: getEnvOrDefault("SSO_KEYSTORE_PATH", ""),
   ssoTargetUrl: getEnvOrDefault("SSO_TARGET_URL", "http://localhost:3001"),
   ssoOrgMap: getEnvOrDefault("SSO_ORG_MAP", ""),
+  /**
+   * Rollout gate for exact JWT-instance binding. This is intentionally a
+   * dynamic getter so a replica cannot accidentally inherit a truthy value
+   * such as "true"; only the literal `1` enables issuance.
+   */
+  get sessionExactBindingSupported() {
+    return getEnvOrDefault("SESSION_EXACT_BINDING_SUPPORTED", "0") === "1";
+  },
   get isDev() {
     return this.nodeEnv === "development";
   },
