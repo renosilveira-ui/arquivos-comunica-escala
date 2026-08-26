@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -34,6 +34,15 @@ import { protectedProcedure, router } from "./_core/trpc";
 
 const NAMED_TTL_MS = 24 * 60 * 60 * 1000;
 const NAMED_MAX_REDEMPTIONS = 1;
+
+/** Busca por nome: sem acento e sem maiúscula, para o gestor achar "José" com "jose". */
+export function foldCandidateSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
 
 export class ScheduleInviteError extends Error {
   constructor(
@@ -403,6 +412,7 @@ export const scheduleInvitesRouter = router({
       z.object({
         hospitalId: z.number().int().positive(),
         sectorId: z.number().int().positive(),
+        name: z.string().trim().max(120).optional(),
         email: z.string().trim().max(320).optional(),
       }),
     )
@@ -422,16 +432,20 @@ export const scheduleInvitesRouter = router({
         });
       }
 
-      const email = input.email?.toLowerCase().trim() ?? "";
+      const candidateColumns = {
+        userId: users.id,
+        name: users.name,
+        email: users.email,
+        medicalSpecialtyId: professionals.medicalSpecialtyId,
+        operationalProfileCode: professionals.operationalProfileCode,
+        specialtyLabel: professionals.specialty,
+      };
+
+      // Casa: já vinculados a ESTE hospital. Sala de espera: conta
+      // aprovada sem vínculo ativo em lugar nenhum (conta primeiro,
+      // escala depois). Não entra plantel ativo de outro hospital.
       const houseMembers = await db
-        .select({
-          userId: users.id,
-          name: users.name,
-          email: users.email,
-          medicalSpecialtyId: professionals.medicalSpecialtyId,
-          operationalProfileCode: professionals.operationalProfileCode,
-          specialtyLabel: professionals.specialty,
-        })
+        .select(candidateColumns)
         .from(users)
         .innerJoin(professionals, eq(professionals.userId, users.id))
         .innerJoin(
@@ -444,30 +458,30 @@ export const scheduleInvitesRouter = router({
         )
         .where(and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)));
 
-      const searched = email
-        ? await db
-            .select({
-              userId: users.id,
-              name: users.name,
-              email: users.email,
-              medicalSpecialtyId: professionals.medicalSpecialtyId,
-              operationalProfileCode: professionals.operationalProfileCode,
-              specialtyLabel: professionals.specialty,
-            })
-            .from(users)
-            .innerJoin(professionals, eq(professionals.userId, users.id))
-            .where(
-              and(
-                eq(users.email, email),
-                eq(users.approvalStatus, "APPROVED"),
-                isNull(users.deletedAt),
-              ),
-            )
-            .limit(1)
-        : [];
+      const waitingRoom = await db
+        .select(candidateColumns)
+        .from(users)
+        .innerJoin(professionals, eq(professionals.userId, users.id))
+        .where(
+          and(
+            eq(users.approvalStatus, "APPROVED"),
+            isNull(users.deletedAt),
+            notExists(
+              db
+                .select({ id: professionalInstitutions.id })
+                .from(professionalInstitutions)
+                .where(
+                  and(
+                    eq(professionalInstitutions.userId, users.id),
+                    eq(professionalInstitutions.active, true),
+                  ),
+                ),
+            ),
+          ),
+        );
 
       const byId = new Map<number, (typeof houseMembers)[number]>();
-      for (const row of [...houseMembers, ...searched]) {
+      for (const row of [...houseMembers, ...waitingRoom]) {
         byId.set(row.userId, row);
       }
 
@@ -501,33 +515,52 @@ export const scheduleInvitesRouter = router({
           .map((row) => row.professionalUserId),
       );
 
-      const otherHouses = email
-        ? await db
-            .select({
-              userId: professionalInstitutions.userId,
-              institutionId: professionalInstitutions.institutionId,
-            })
-            .from(professionalInstitutions)
-            .where(
-              and(
-                eq(professionalInstitutions.active, true),
-                inArray(
-                  professionalInstitutions.userId,
-                  searched.map((row) => row.userId),
-                ),
-              ),
-            )
-        : [];
-      const lockedToOtherHouse = new Set(
-        otherHouses
-          .filter((row) => row.institutionId !== actor.institutionId)
+      const memberships = await db
+        .select({
+          userId: professionalInstitutions.userId,
+          institutionId: professionalInstitutions.institutionId,
+        })
+        .from(professionalInstitutions)
+        .where(
+          and(
+            eq(professionalInstitutions.active, true),
+            inArray(
+              professionalInstitutions.userId,
+              candidates.map((row) => row.userId),
+            ),
+          ),
+        );
+      const inThisHouse = new Set(
+        memberships
+          .filter((row) => row.institutionId === actor.institutionId)
           .map((row) => row.userId),
       );
+      const lockedToOtherHouse = new Set(
+        memberships
+          .filter(
+            (row) =>
+              row.institutionId !== actor.institutionId &&
+              !inThisHouse.has(row.userId),
+          )
+          .map((row) => row.userId),
+      );
+
+      const nameNeedle = foldCandidateSearch(input.name ?? "");
+      const emailNeedle = input.email?.toLowerCase().trim() ?? "";
 
       return candidates
         .filter((row) => {
           if (alreadyInScale.has(row.userId)) return false;
           if (lockedToOtherHouse.has(row.userId)) return false;
+          if (
+            nameNeedle &&
+            !foldCandidateSearch(row.name ?? "").includes(nameNeedle)
+          ) {
+            return false;
+          }
+          if (emailNeedle && (row.email ?? "").toLowerCase() !== emailNeedle) {
+            return false;
+          }
           return contexts.some((context) =>
             qualificationMatches(
               {
