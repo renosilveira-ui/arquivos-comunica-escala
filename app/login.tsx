@@ -35,7 +35,7 @@ export default function LoginScreen() {
     setSubmitting(true);
     try {
       const result = await login(email.trim(), password);
-      if (result.ok) {
+      if (result.ok || result.admissionPending) {
         router.replace("/(tabs)");
       } else {
         setErrorMsg(result.error ?? "E-mail ou senha incorretos.");
