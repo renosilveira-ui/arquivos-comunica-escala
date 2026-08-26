@@ -7,28 +7,18 @@ import { Platform, Pressable, Text, View, useWindowDimensions, type ViewStyle } 
 import Constants from "expo-constants";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
-
-function roleLabel(role: string | null | undefined): string {
-  switch (role) {
-    case "admin":
-      return "Administrador";
-    case "manager":
-      return "Gestor";
-    case "doctor":
-      return "Médico";
-    case "nurse":
-      return "Enfermagem";
-    case "tech":
-      return "Técnico";
-    default:
-      return "";
-  }
-}
+import { profileRoleBadgeLabel } from "@/lib/institution-roles";
 
 function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const { user } = useAuth();
+  const { isGlobalAdmin, roleInInstitution } = usePermissions();
   const appVersion = Constants.expoConfig?.version;
   const userInitial = (user?.name?.trim()?.charAt(0) || user?.email?.trim()?.charAt(0) || "?").toUpperCase();
+  const sidebarRoleLabel = profileRoleBadgeLabel({
+    isGlobalAdmin,
+    roleInInstitution,
+    legacyGlobalRole: user?.role,
+  });
   const hiddenRoutes = new Set(["index", "calendar", "weekly"]);
 
   return (
@@ -171,12 +161,12 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
             >
               {user.name ?? user.email ?? "Usuário"}
             </Text>
-            {roleLabel(user.role) ? (
+            {sidebarRoleLabel ? (
               <Text
                 numberOfLines={1}
                 style={{ color: theme.colors.onDark.textMuted, fontSize: 11, marginTop: 2 }}
               >
-                {roleLabel(user.role)}
+                {sidebarRoleLabel}
               </Text>
             ) : null}
           </View>
