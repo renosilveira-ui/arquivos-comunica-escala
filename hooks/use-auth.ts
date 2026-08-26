@@ -63,7 +63,7 @@ type AuthContextValue = {
   login: (
     email: string,
     password: string,
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<{ ok: boolean; error?: string; admissionPending?: true }>;
   rotateSession: (
     operation: (
       credential: Auth.SessionTransitionCredential,
@@ -87,7 +87,11 @@ type AuthContextValue = {
 };
 
 export type SessionValidationState =
-  | Readonly<{ status: "CHECKING" | "UNAVAILABLE"; sequence: number }>
+  | Readonly<{
+      status: "CHECKING" | "UNAVAILABLE";
+      sequence: number;
+      durableSession?: true;
+    }>
   | Readonly<{
       status: "VERIFIED";
       sequence: number;
@@ -95,6 +99,16 @@ export type SessionValidationState =
       ticket: SessionEpochTicket;
       isCurrent: () => boolean;
     }>;
+
+function unprovenSessionValidation(
+  status: "CHECKING" | "UNAVAILABLE",
+  sequence: number,
+  durableSession: boolean,
+): SessionValidationState {
+  return durableSession
+    ? { status, sequence, durableSession: true }
+    : { status, sequence };
+}
 
 type RefetchOutcome = "VERIFIED" | "INVALID" | "UNAVAILABLE" | "STALE";
 
@@ -591,7 +605,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // fechados até a mesma identidade ser novamente provada.
       Auth.closeSessionTokenTransportAdmission();
       const requestSequence = ++latestAuthRefetchSequence;
-      setSessionValidation({ status: "CHECKING", sequence: requestSequence });
+      let durableSession = expectedUserId !== undefined;
+      setSessionValidation(
+        unprovenSessionValidation("CHECKING", requestSequence, durableSession),
+      );
       const isLatestRequest = () =>
         workflowSignal?.aborted !== true &&
         requestSequence === latestAuthRefetchSequence &&
@@ -613,10 +630,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         if (!revocation.confirmed) {
           if (isLatestRequest()) {
-            setSessionValidation({
-              status: "UNAVAILABLE",
-              sequence: requestSequence,
-            });
+            setSessionValidation(
+              unprovenSessionValidation(
+                "UNAVAILABLE",
+                requestSequence,
+                durableSession || mismatchExpectedUserId !== undefined,
+              ),
+            );
           }
           console.error(
             "[Auth] Transporte divergente mantido em quarentena; revogação não confirmada",
@@ -685,10 +705,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const revocation = await revokeQuarantinedNativeSession(requestEpoch);
           if (!revocation.confirmed) {
             if (isLatestRequest()) {
-              setSessionValidation({
-                status: "UNAVAILABLE",
-                sequence: requestSequence,
-              });
+              setSessionValidation(
+                unprovenSessionValidation(
+                  "UNAVAILABLE",
+                  requestSequence,
+                  true,
+                ),
+              );
             }
             console.error(
               "[Auth] Quarentena nativa mantida; revogação remota não confirmada",
@@ -718,6 +741,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               ? webGate.expectedUserId
               : null
             : await Auth.getAdmittedSessionUserId();
+        const persistedUserId = await Auth.getPersistedUserId();
+        if (
+          durableExpectedUserId !== null ||
+          (Platform.OS === "web" && persistedUserId !== null)
+        ) {
+          durableSession = true;
+          if (isLatestRequest()) {
+            setSessionValidation(
+              unprovenSessionValidation("CHECKING", requestSequence, true),
+            );
+          }
+        }
         if (
           Platform.OS !== "web" &&
           durableExpectedUserId === null &&
@@ -789,10 +824,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             revocationUserId <= 0
           ) {
             if (isLatestRequest()) {
-              setSessionValidation({
-                status: "UNAVAILABLE",
-                sequence: requestSequence,
-              });
+              setSessionValidation(
+                unprovenSessionValidation(
+                  "UNAVAILABLE",
+                  requestSequence,
+                  durableSession,
+                ),
+              );
             }
             return "UNAVAILABLE";
           }
@@ -811,10 +849,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 );
           if (!revocation.confirmed) {
             if (isLatestRequest()) {
-              setSessionValidation({
-                status: "UNAVAILABLE",
-                sequence: requestSequence,
-              });
+              setSessionValidation(
+                unprovenSessionValidation(
+                  "UNAVAILABLE",
+                  requestSequence,
+                  true,
+                ),
+              );
             }
             console.error(
               "[Auth] Sessão legacy mantida em revoke-only; revogação não confirmada",
@@ -858,10 +899,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const validationReceipt = result.validationReceipt;
           if (!validationReceipt) {
             if (isLatestRequest()) {
-              setSessionValidation({
-                status: "UNAVAILABLE",
-                sequence: requestSequence,
-              });
+              setSessionValidation(
+                unprovenSessionValidation(
+                  "UNAVAILABLE",
+                  requestSequence,
+                  true,
+                ),
+              );
             }
             return "UNAVAILABLE";
           }
@@ -919,10 +963,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             "[Auth] me() falhou por rede/servidor — sessão não revalidada",
           );
           if (isLatestRequest()) {
-            setSessionValidation({
-              status: "UNAVAILABLE",
-              sequence: requestSequence,
-            });
+            setSessionValidation(
+              unprovenSessionValidation(
+                "UNAVAILABLE",
+                requestSequence,
+                durableSession,
+              ),
+            );
           }
           return "UNAVAILABLE";
         }
@@ -932,10 +979,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // start, continua sem autenticar até uma validação servidor bem-sucedida.
         console.warn("[Auth] me() lançou erro — sessão não revalidada");
         if (isLatestRequest()) {
-          setSessionValidation({
-            status: "UNAVAILABLE",
-            sequence: requestSequence,
-          });
+          setSessionValidation(
+            unprovenSessionValidation(
+              "UNAVAILABLE",
+              requestSequence,
+              durableSession,
+            ),
+          );
         }
         return "UNAVAILABLE";
       } finally {
@@ -989,8 +1039,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (
       expectedUserId: number,
       blockedError: string,
-    ): SessionMutationCompletion<{ ok: boolean; error?: string }> => {
-      const value: { ok: boolean; error?: string } = {
+    ): SessionMutationCompletion<{
+      ok: boolean;
+      error?: string;
+      admissionPending?: true;
+    }> => {
+      const value: {
+        ok: boolean;
+        error?: string;
+        admissionPending?: true;
+      } = {
         ok: false,
         error: blockedError,
       };
@@ -1005,10 +1063,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (outcome === "VERIFIED") {
             value.ok = true;
             delete value.error;
+            delete value.admissionPending;
             return;
           }
           if (outcome === "INVALID") {
             value.error = "A sessão ambígua foi encerrada com segurança.";
+            delete value.admissionPending;
+            return;
+          }
+          if (outcome === "UNAVAILABLE") {
+            value.admissionPending = true;
           }
         },
       };
@@ -1213,7 +1277,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (
       email: string,
       password: string,
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; admissionPending?: true }> => {
       const previousTransportTicket =
         Platform.OS === "web" ? Auth.captureSessionTransportTicket() : null;
       const previousExpectedUserId =
@@ -1229,6 +1293,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return runSessionMutation<{
         ok: boolean;
         error?: string;
+        admissionPending?: true;
       }>(
         async (lease) => {
           let capabilityReceipt: SessionBindingCapabilityReceipt | undefined;
@@ -1524,8 +1589,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             };
           }
 
-          // BEGIN/END cercam o transporte. A própria operação só conclui com
-          // sucesso depois de um /me pós-END do mesmo usuário.
+          // Cookie/token já estão no aparelho. Se o /me falhar por cold start,
+          // a UI deve pedir nova prova — não devolver o formulário vazio.
+          setSessionValidation(
+            unprovenSessionValidation("CHECKING", lease.sequence, true),
+          );
           return completeCanonicalSessionAdmission(
             authenticatedUser.id,
             "O login foi recebido, mas a sessão ainda não pôde ser revalidada.",

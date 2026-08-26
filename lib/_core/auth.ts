@@ -4621,6 +4621,27 @@ export async function setUserInfo(user: User): Promise<void> {
   await waitForActiveWebSessionWorkflow(mutation);
 }
 
+/**
+ * Identidade local persistida — não é prova de sessão. Serve só para o
+ * boot/login saber que já existe um cookie/token comprometido quando o
+ * `/me` está indisponível (cold start), em vez de devolver o formulário vazio.
+ */
+export async function getPersistedUserId(): Promise<number | null> {
+  try {
+    await userInfoMutationTail;
+    const raw = await AsyncStorage.getItem(USER_INFO_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { id?: unknown };
+    return typeof parsed.id === "number" &&
+      Number.isSafeInteger(parsed.id) &&
+      parsed.id > 0
+      ? parsed.id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function clearUserInfo(): Promise<void> {
   const mutation = userInfoMutationTail.then(() =>
     AsyncStorage.removeItem(USER_INFO_KEY),

@@ -20,7 +20,7 @@ type CapturedAuthValue = {
   login: (
     email: string,
     password: string,
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<{ ok: boolean; error?: string; admissionPending?: true }>;
   rotateSession: (
     operation: (
       credential: object,
@@ -319,9 +319,12 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
     stagedExpectedUserId = null;
     stagedSessionTokenValue = null;
   });
+  let persistedUserId: number | null = null;
   const clearUserInfo = vi.fn(async () => {
+    persistedUserId = null;
     sequence.push("clear-user-info");
   });
+  const getPersistedUserId = vi.fn(async () => persistedUserId);
   const closeSessionTokenTransportAdmission = vi.fn(() => {
     if (options.trackWebLock) sequence.push("close-transport");
   });
@@ -344,6 +347,7 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
   const captureSessionTransitionCredential = vi.fn(() => transitionCredential);
   const discardSessionTransitionCredential = vi.fn();
   const setUserInfo = vi.fn(async (user: { id: number }) => {
+    persistedUserId = user.id;
     sequence.push(`set-user-info:${user.id}`);
     await options.persistUser?.(user);
   });
@@ -803,6 +807,7 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
         ? null
         : admittedSessionUserId,
     ),
+    getPersistedUserId,
     getWebSessionGateState,
     isWebSessionQuarantined,
     isSessionTokenQuarantined: vi.fn(
@@ -2769,9 +2774,16 @@ describe("persistência local do logout web", () => {
       ok: false,
       error:
         "O login foi recebido, mas a sessão ainda não pôde ser revalidada.",
+      admissionPending: true,
     });
     expect(gateState).toEqual({ state: "ADMISSION", expectedUserId: userB.id });
     expect(firstProcess.setUser).not.toHaveBeenCalledWith(userB);
+    expect(firstProcess.setSessionValidation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "UNAVAILABLE",
+        durableSession: true,
+      }),
+    );
 
     vi.resetModules();
     const mismatchReload = await renderAuthHarness({
@@ -2932,6 +2944,7 @@ describe("persistência local do logout web", () => {
       ok: false,
       error:
         "O login foi recebido, mas a sessão ainda não pôde ser revalidada.",
+      admissionPending: true,
     });
     expect(firstProcess.meDetailedApi).toHaveBeenCalledTimes(1);
     expect(firstProcess.setUser).not.toHaveBeenCalledWith(userB);
@@ -2953,6 +2966,60 @@ describe("persistência local do logout web", () => {
     expect(reload.meDetailedApi).toHaveBeenCalledTimes(1);
     expect(reload.logoutApi).not.toHaveBeenCalled();
     expect(reload.setUser).toHaveBeenCalledWith(userB);
+  });
+
+  it("reload web com user_info e /me indisponível mantém admissão pendente até a prova", async () => {
+    const userB = {
+      id: 32,
+      name: "Usuário B",
+      email: "b@example.com",
+      role: "doctor" as const,
+    };
+    const webGate: PersistentWebSessionGate = {
+      beginLoginInProgress: async () => undefined,
+      beginRevocation: async () => undefined,
+      prepareAdmission: async () => undefined,
+      read: async () => ({ state: "CLEAR" }),
+      clear: async () => undefined,
+    };
+
+    const firstReload = await renderAuthHarness({
+      platform: "web",
+      webSessionGate: webGate,
+      meRequest: async () => ({
+        user: null,
+        sessionInvalid: false,
+        networkOrServerError: true,
+      }),
+    });
+    await firstReload.setUserInfo(userB);
+    await firstReload.auth.refetch();
+
+    expect(firstReload.setUser).not.toHaveBeenCalledWith(userB);
+    expect(firstReload.setSessionValidation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "UNAVAILABLE",
+        durableSession: true,
+      }),
+    );
+
+    vi.resetModules();
+    const secondReload = await renderAuthHarness({
+      platform: "web",
+      webSessionGate: webGate,
+      meRequest: async () => ({
+        user: userB,
+        sessionInvalid: false,
+        networkOrServerError: false,
+      }),
+    });
+    await secondReload.setUserInfo(userB);
+    await secondReload.auth.refetch();
+
+    expect(secondReload.setUser).toHaveBeenCalledWith(userB);
+    expect(secondReload.setSessionValidation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "VERIFIED", userId: userB.id }),
+    );
   });
 
   it("login web revoga o cookie no servidor antes de liberar a quarentena após falha local", async () => {
