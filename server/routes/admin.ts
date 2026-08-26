@@ -1,7 +1,18 @@
 import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { randomInt } from "node:crypto";
-import { eq, asc, desc, and, or, gte, lte, sql, isNull } from "drizzle-orm";
+import {
+  eq,
+  asc,
+  desc,
+  and,
+  or,
+  gte,
+  lte,
+  sql,
+  isNull,
+  notExists,
+} from "drizzle-orm";
 import { getDb } from "../db";
 import {
   users,
@@ -1129,7 +1140,7 @@ adminRouter.get(
           isNull(users.deletedAt),
         ),
       )
-      .orderBy(asc(users.name));
+      .orderBy(desc(users.createdAt), asc(users.name));
 
     const activeContexts = await listAdministrativeScheduleContexts(
       institutionId,
@@ -1916,6 +1927,220 @@ adminRouter.delete(
 // ---------------------------------------------------------------------------
 // Cadastros pendentes (auto-cadastro público — feat/self-signup)
 // ---------------------------------------------------------------------------
+
+// GET /api/admin/recent-registrations — cadastros recentes que o admin precisa ver
+// (pendentes no tenant, aprovados sem escala e novos ativos no tenant).
+adminRouter.get(
+  "/recent-registrations",
+  async (req: Request, res: Response): Promise<void> => {
+    const db = await getDb();
+    if (!db) {
+      res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+
+    let institutionId: number;
+    try {
+      institutionId = await requireExplicitAdminTenant(db, req);
+    } catch (error) {
+      if (sendAdminTenantError(res, error)) return;
+      throw error;
+    }
+
+    const rawDays = Number((req.query as { days?: string }).days);
+    const days =
+      Number.isInteger(rawDays) && rawDays > 0 && rawDays <= 90 ? rawDays : 30;
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const pendingRows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        createdAt: users.createdAt,
+        institutionId: professionalInstitutions.institutionId,
+        institutionName: institutions.name,
+        medicalSpecialtyId: professionals.medicalSpecialtyId,
+        medicalSpecialtyCode: medicalSpecialties.code,
+        operationalProfileCode: professionals.operationalProfileCode,
+      })
+      .from(professionalInstitutions)
+      .innerJoin(
+        professionals,
+        and(
+          eq(professionals.id, professionalInstitutions.professionalId),
+          eq(professionals.userId, professionalInstitutions.userId),
+        ),
+      )
+      .innerJoin(users, eq(users.id, professionalInstitutions.userId))
+      .leftJoin(
+        medicalSpecialties,
+        eq(medicalSpecialties.id, professionals.medicalSpecialtyId),
+      )
+      .innerJoin(
+        institutions,
+        eq(institutions.id, professionalInstitutions.institutionId),
+      )
+      .where(
+        and(
+          eq(users.approvalStatus, "PENDING"),
+          eq(professionalInstitutions.institutionId, institutionId),
+          eq(professionalInstitutions.active, false),
+          gte(users.createdAt, cutoff),
+          isNull(users.deletedAt),
+        ),
+      );
+
+    const awaitingScaleRows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        createdAt: users.createdAt,
+        medicalSpecialtyId: professionals.medicalSpecialtyId,
+        medicalSpecialtyCode: medicalSpecialties.code,
+        operationalProfileCode: professionals.operationalProfileCode,
+      })
+      .from(users)
+      .innerJoin(professionals, eq(professionals.userId, users.id))
+      .leftJoin(
+        medicalSpecialties,
+        eq(medicalSpecialties.id, professionals.medicalSpecialtyId),
+      )
+      .where(
+        and(
+          eq(users.approvalStatus, "APPROVED"),
+          gte(users.createdAt, cutoff),
+          isNull(users.deletedAt),
+          notExists(
+            db
+              .select({ id: professionalInstitutions.id })
+              .from(professionalInstitutions)
+              .where(
+                and(
+                  eq(professionalInstitutions.userId, users.id),
+                  eq(professionalInstitutions.active, true),
+                ),
+              ),
+          ),
+        ),
+      );
+
+    const activeRecentRows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        createdAt: users.createdAt,
+        institutionId: professionalInstitutions.institutionId,
+        institutionName: institutions.name,
+        medicalSpecialtyId: professionals.medicalSpecialtyId,
+        medicalSpecialtyCode: medicalSpecialties.code,
+        operationalProfileCode: professionals.operationalProfileCode,
+      })
+      .from(professionalInstitutions)
+      .innerJoin(
+        professionals,
+        and(
+          eq(professionals.id, professionalInstitutions.professionalId),
+          eq(professionals.userId, professionalInstitutions.userId),
+        ),
+      )
+      .innerJoin(users, eq(users.id, professionalInstitutions.userId))
+      .leftJoin(
+        medicalSpecialties,
+        eq(medicalSpecialties.id, professionals.medicalSpecialtyId),
+      )
+      .innerJoin(
+        institutions,
+        eq(institutions.id, professionalInstitutions.institutionId),
+      )
+      .where(
+        and(
+          eq(professionalInstitutions.institutionId, institutionId),
+          eq(professionalInstitutions.active, true),
+          eq(users.approvalStatus, "APPROVED"),
+          gte(users.createdAt, cutoff),
+          isNull(users.deletedAt),
+        ),
+      );
+
+    const byId = new Map<
+      number,
+      {
+        id: number;
+        name: string | null;
+        email: string | null;
+        createdAt: Date;
+        status: "PENDING_APPROVAL" | "AWAITING_SCALE" | "ACTIVE";
+        institutionId: number | null;
+        institutionName: string | null;
+        medicalSpecialtyId: number | null;
+        medicalSpecialtyCode: string | null;
+        operationalProfileCode: string | null;
+      }
+    >();
+
+    for (const row of pendingRows) {
+      byId.set(row.id, {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        createdAt: row.createdAt,
+        status: "PENDING_APPROVAL",
+        institutionId: row.institutionId,
+        institutionName: row.institutionName,
+        medicalSpecialtyId: row.medicalSpecialtyId,
+        medicalSpecialtyCode: row.medicalSpecialtyCode,
+        operationalProfileCode: row.operationalProfileCode,
+      });
+    }
+    for (const row of awaitingScaleRows) {
+      if (byId.has(row.id)) continue;
+      byId.set(row.id, {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        createdAt: row.createdAt,
+        status: "AWAITING_SCALE",
+        institutionId: null,
+        institutionName: null,
+        medicalSpecialtyId: row.medicalSpecialtyId,
+        medicalSpecialtyCode: row.medicalSpecialtyCode,
+        operationalProfileCode: row.operationalProfileCode,
+      });
+    }
+    for (const row of activeRecentRows) {
+      if (byId.has(row.id)) continue;
+      byId.set(row.id, {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        createdAt: row.createdAt,
+        status: "ACTIVE",
+        institutionId: row.institutionId,
+        institutionName: row.institutionName,
+        medicalSpecialtyId: row.medicalSpecialtyId,
+        medicalSpecialtyCode: row.medicalSpecialtyCode,
+        operationalProfileCode: row.operationalProfileCode,
+      });
+    }
+
+    const registrations = [...byId.values()]
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() ||
+          (left.name ?? "").localeCompare(right.name ?? "", "pt-BR"),
+      )
+      .slice(0, 100)
+      .map((row) => ({
+        ...row,
+        createdAt: row.createdAt.toISOString(),
+      }));
+
+    res.json({ registrations, days });
+  },
+);
 
 // GET /api/admin/pending-signups — contas aguardando aprovação no tenant ativo
 adminRouter.get(

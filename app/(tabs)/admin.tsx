@@ -10,6 +10,7 @@ import {
   RefreshControl,
   KeyboardAvoidingView,
 } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
@@ -27,7 +28,6 @@ import {
   Copy,
 } from "lucide-react-native";
 import { theme } from "@/lib/theme";
-import { useFocusEffect } from "expo-router";
 import { confirmAction } from "@/lib/ui/confirm";
 import {
   ProfessionalQualificationPicker,
@@ -43,6 +43,7 @@ import {
   compatibleScheduleContextIds,
   type ScheduleContextAccessOption,
 } from "@/components/ScheduleContextAccessPicker";
+import { formatDateTimeBR } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +85,36 @@ interface PendingSignup {
   medicalSpecialtyCode: string | null;
   operationalProfileCode: string | null;
 }
+
+type RecentRegistrationStatus =
+  | "PENDING_APPROVAL"
+  | "AWAITING_SCALE"
+  | "ACTIVE";
+
+interface RecentRegistration {
+  id: number;
+  name: string | null;
+  email: string | null;
+  createdAt: string;
+  status: RecentRegistrationStatus;
+  institutionId: number | null;
+  institutionName: string | null;
+  medicalSpecialtyId: number | null;
+  medicalSpecialtyCode: string | null;
+  operationalProfileCode: string | null;
+}
+
+const RECENT_STATUS_LABELS: Record<RecentRegistrationStatus, string> = {
+  PENDING_APPROVAL: "Aguardando aprovação",
+  AWAITING_SCALE: "Aguardando escala",
+  ACTIVE: "Ativo",
+};
+
+const RECENT_STATUS_BADGE: Record<RecentRegistrationStatus, BadgeVariant> = {
+  PENDING_APPROVAL: "warning",
+  AWAITING_SCALE: "info",
+  ACTIVE: "success",
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1002,7 +1033,11 @@ function EditUserModal({
 
 export default function AdminScreen() {
   const { user } = useAuth();
+  const router = useRouter();
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [recentRegistrations, setRecentRegistrations] = useState<
+    RecentRegistration[]
+  >([]);
   const [scheduleContexts, setScheduleContexts] = useState<
     ScheduleContextAccessOption[]
   >([]);
@@ -1055,6 +1090,19 @@ export default function AdminScreen() {
       }
     } catch (err) {
       console.error("[AdminScreen] fetchScheduleContexts error:", err);
+    }
+  }, []);
+
+  const fetchRecentRegistrations = useCallback(async () => {
+    try {
+      const res = await adminFetch<{ registrations: RecentRegistration[] }>(
+        "/api/admin/recent-registrations",
+      );
+      if (res.ok && res.data?.registrations) {
+        setRecentRegistrations(res.data.registrations);
+      }
+    } catch (err) {
+      console.error("[AdminScreen] fetchRecentRegistrations error:", err);
     }
   }, []);
 
@@ -1148,7 +1196,13 @@ export default function AdminScreen() {
       fetchUsers();
       fetchScheduleContexts();
       fetchPendingSignups();
-    }, [fetchUsers, fetchScheduleContexts, fetchPendingSignups]),
+      fetchRecentRegistrations();
+    }, [
+      fetchUsers,
+      fetchScheduleContexts,
+      fetchPendingSignups,
+      fetchRecentRegistrations,
+    ]),
   );
 
   const handleRefresh = () => {
@@ -1156,19 +1210,37 @@ export default function AdminScreen() {
     fetchUsers();
     fetchScheduleContexts();
     fetchPendingSignups();
+    fetchRecentRegistrations();
   };
 
+  const matchesSearch = useCallback(
+    (name: string | null, email: string | null) => {
+      const query = searchQuery.trim().toLowerCase();
+      if (!query) return true;
+      return (
+        (name ?? "").toLowerCase().includes(query) ||
+        (email ?? "").toLowerCase().includes(query)
+      );
+    },
+    [searchQuery],
+  );
+
   // Filter users by search
-  const filtered = searchQuery.trim()
-    ? users.filter(
-        (u) =>
-          (u.name ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-          (u.email ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-          INSTITUTION_ROLE_LABELS[u.roleInInstitution]
-            .toLowerCase()
-            .includes(searchQuery.toLowerCase()),
-      )
-    : users;
+  const filtered = users.filter((u) => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return true;
+    return (
+      (u.name ?? "").toLowerCase().includes(query) ||
+      (u.email ?? "").toLowerCase().includes(query) ||
+      INSTITUTION_ROLE_LABELS[u.roleInInstitution]
+        .toLowerCase()
+        .includes(query)
+    );
+  });
+
+  const filteredRecent = recentRegistrations.filter((registration) =>
+    matchesSearch(registration.name, registration.email),
+  );
 
   // Guards
   if (!user) {
@@ -1318,7 +1390,7 @@ export default function AdminScreen() {
               <Text
                 style={{ color: theme.colors.onDark.textMuted, fontSize: 13 }}
               >
-                Gestores+
+                Cadastros recentes
               </Text>
               <Text
                 style={{
@@ -1328,13 +1400,123 @@ export default function AdminScreen() {
                   marginTop: 4,
                 }}
               >
-                {
-                  users.filter((u) => u.roleInInstitution === "GESTOR_PLUS")
-                    .length
-                }
+                {recentRegistrations.length}
               </Text>
             </TintedGlassCard>
           </View>
+        </View>
+
+        {/* Cadastros recentes — inclui quem criou conta e ainda aguarda escala */}
+        <View style={{ gap: 10 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <UserPlus size={20} color={theme.colors.primary} />
+            <Text
+              style={{
+                color: theme.colors.onDark.text,
+                fontSize: 18,
+                fontWeight: "700",
+              }}
+            >
+              Cadastros recentes
+            </Text>
+            <Badge variant="info">{String(filteredRecent.length)}</Badge>
+          </View>
+          <Text
+            style={{
+              color: theme.colors.onDark.textMuted,
+              fontSize: 13,
+              lineHeight: 18,
+            }}
+          >
+            Últimos 30 dias. Quem se cadastrou pelo app e ainda não entrou em
+            nenhuma escala aparece aqui como &quot;Aguardando escala&quot;.
+          </Text>
+          {filteredRecent.length === 0 ? (
+            <TintedGlassCard>
+              <Text
+                style={{
+                  color: theme.colors.onDark.textMuted,
+                  fontSize: 14,
+                  textAlign: "center",
+                  paddingVertical: 12,
+                }}
+              >
+                {searchQuery.trim()
+                  ? "Nenhum cadastro recente encontrado"
+                  : "Nenhum cadastro recente nos últimos 30 dias"}
+              </Text>
+            </TintedGlassCard>
+          ) : (
+            filteredRecent.map((registration) => (
+              <TintedGlassCard key={`recent-${registration.id}`}>
+                <View style={{ gap: 8 }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
+                      gap: 12,
+                    }}
+                  >
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <Text
+                        style={{
+                          color: theme.colors.onDark.text,
+                          fontSize: 17,
+                          fontWeight: "700",
+                        }}
+                      >
+                        {registration.name ?? "Sem nome"}
+                      </Text>
+                      <Text
+                        style={{
+                          color: theme.colors.onDark.textMuted,
+                          fontSize: 14,
+                        }}
+                      >
+                        {registration.email ?? "—"}
+                      </Text>
+                      <Text
+                        style={{
+                          color: theme.colors.onDark.textDisabled,
+                          fontSize: 12,
+                        }}
+                      >
+                        Cadastrou em{" "}
+                        {formatDateTimeBR(registration.createdAt) || "—"}
+                      </Text>
+                    </View>
+                    <Badge variant={RECENT_STATUS_BADGE[registration.status]}>
+                      {RECENT_STATUS_LABELS[registration.status]}
+                    </Badge>
+                  </View>
+                  {registration.status === "AWAITING_SCALE" ? (
+                    <TouchableOpacity
+                      onPress={() => router.push("/schedule-invites")}
+                      activeOpacity={0.8}
+                      style={{
+                        alignSelf: "flex-start",
+                        backgroundColor: theme.colors.primary,
+                        paddingHorizontal: 12,
+                        paddingVertical: 8,
+                        borderRadius: theme.borderRadius.button,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: theme.colors.onDark.text,
+                          fontSize: 13,
+                          fontWeight: "700",
+                        }}
+                      >
+                        Enviar convite da escala
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              </TintedGlassCard>
+            ))
+          )}
         </View>
 
         {/* Cadastros pendentes (auto-cadastro público) */}
@@ -1564,6 +1746,16 @@ export default function AdminScreen() {
                     >
                       {u.email ?? "\u2014"}
                     </Text>
+                    {u.createdAt ? (
+                      <Text
+                        style={{
+                          color: theme.colors.onDark.textDisabled,
+                          fontSize: 12,
+                        }}
+                      >
+                        Cadastrou em {formatDateTimeBR(u.createdAt)}
+                      </Text>
+                    ) : null}
                   </View>
                   <View
                     style={{
