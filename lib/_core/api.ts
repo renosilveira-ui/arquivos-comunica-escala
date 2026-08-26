@@ -719,19 +719,24 @@ export const authApi = {
     return res.ok ? (res.data?.institutions ?? []) : [];
   },
 
-  /** Auto-cadastro público. Com convite, a escala já nasce liberada. */
+  /** Auto-cadastro público. Sem instituição nasce aprovado, sem escala. */
   async signup(input: {
     name: string;
     email: string;
     password: string;
     institutionId?: number;
-    inviteCode?: string;
     medicalSpecialtyCode: MedicalSpecialtyCode | null;
     operationalProfileCode: OperationalProfileCode | null;
-  }): Promise<{ ok: boolean; pending?: boolean; error?: string }> {
+  }): Promise<{
+    ok: boolean;
+    pending?: boolean;
+    awaitingScale?: boolean;
+    error?: string;
+  }> {
     const res = await apiFetchInternal<{
       ok?: boolean;
       pending?: boolean;
+      awaitingScale?: boolean;
       error?: string;
     }>(
       "/api/auth/signup",
@@ -743,7 +748,11 @@ export const authApi = {
       "public",
     );
     if (res.ok && res.data?.ok) {
-      return { ok: true, pending: res.data.pending !== false };
+      return {
+        ok: true,
+        pending: res.data.pending === true,
+        awaitingScale: res.data.awaitingScale === true,
+      };
     }
     return {
       ok: false,
@@ -755,12 +764,14 @@ export const authApi = {
     inviteCode: string,
   ): Promise<{
     ok: boolean;
+    institutionId?: number;
     hospitalName?: string;
     sectorName?: string;
     error?: string;
   }> {
     const res = await apiFetchInternal<{
       ok?: boolean;
+      institutionId?: number;
       hospitalName?: string;
       sectorName?: string;
       error?: string;
@@ -771,6 +782,7 @@ export const authApi = {
     if (res.ok && res.data?.ok) {
       return {
         ok: true,
+        institutionId: res.data.institutionId,
         hospitalName: res.data.hospitalName,
         sectorName: res.data.sectorName,
       };

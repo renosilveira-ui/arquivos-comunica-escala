@@ -1,14 +1,17 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
   hospitals,
   professionalAccess,
   professionalInstitutions,
+  professionals,
   scheduleInvites,
   sectors,
   users,
 } from "../drizzle/schema";
+import { mailer } from "./mailer";
+import { buildScheduleInviteMail } from "./schedule-invite-mail";
 import {
   formatScheduleInviteCode,
   generateScheduleInviteCode,
@@ -29,8 +32,8 @@ import {
 } from "./schedule-contexts";
 import { protectedProcedure, router } from "./_core/trpc";
 
-const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const DEFAULT_MAX_REDEMPTIONS = 40;
+const NAMED_TTL_MS = 24 * 60 * 60 * 1000;
+const NAMED_MAX_REDEMPTIONS = 1;
 
 export class ScheduleInviteError extends Error {
   constructor(
@@ -137,6 +140,12 @@ export async function redeemScheduleInviteInTransaction(
   ) {
     throw new ScheduleInviteError(400, "Convite inválido ou expirado");
   }
+  if (!invite.invitedUserId || invite.invitedUserId !== input.userId) {
+    throw new ScheduleInviteError(
+      403,
+      "Este convite não foi emitido para a sua conta",
+    );
+  }
 
   const [sector] = await tx
     .select({
@@ -186,27 +195,28 @@ export async function redeemScheduleInviteInTransaction(
     );
   }
 
-  const [membership] = await tx
+  const memberships = await tx
     .select({
       id: professionalInstitutions.id,
+      institutionId: professionalInstitutions.institutionId,
       active: professionalInstitutions.active,
     })
     .from(professionalInstitutions)
-    .where(
-      and(
-        eq(professionalInstitutions.userId, input.userId),
-        eq(professionalInstitutions.institutionId, invite.institutionId),
-      ),
-    )
-    .limit(1)
+    .where(eq(professionalInstitutions.userId, input.userId))
     .for("update");
+  const membership = memberships.find(
+    (row) => row.institutionId === invite.institutionId,
+  );
+  const hasOtherActiveHouse = memberships.some(
+    (row) => row.active && row.institutionId !== invite.institutionId,
+  );
   if (!membership) {
     await tx.insert(professionalInstitutions).values({
       professionalId: input.professionalId,
       userId: input.userId,
       institutionId: invite.institutionId,
       roleInInstitution: "USER",
-      isPrimary: true,
+      isPrimary: !hasOtherActiveHouse,
       active: true,
     });
   } else if (!membership.active) {
@@ -353,6 +363,8 @@ export const scheduleInvitesRouter = router({
         sectorId: scheduleInvites.sectorId,
         hospitalName: hospitals.name,
         sectorName: sectors.name,
+        invitedUserId: scheduleInvites.invitedUserId,
+        invitedName: users.name,
         maxRedemptions: scheduleInvites.maxRedemptions,
         redeemedCount: scheduleInvites.redeemedCount,
         expiresAt: scheduleInvites.expiresAt,
@@ -374,6 +386,7 @@ export const scheduleInvitesRouter = router({
           eq(sectors.hospitalId, scheduleInvites.hospitalId),
         ),
       )
+      .leftJoin(users, eq(users.id, scheduleInvites.invitedUserId))
       .where(
         and(
           eq(scheduleInvites.institutionId, actor.institutionId),
@@ -385,11 +398,163 @@ export const scheduleInvitesRouter = router({
     );
   }),
 
+  listCandidates: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int().positive(),
+        sectorId: z.number().int().positive(),
+        email: z.string().trim().max(320).optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      await assertCanManageSector(actor, input.hospitalId, input.sectorId);
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const contexts = await selectActiveScheduleContexts(db, actor.institutionId, {
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+      });
+      if (contexts.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Esta escala ainda não está aberta",
+        });
+      }
+
+      const email = input.email?.toLowerCase().trim() ?? "";
+      const houseMembers = await db
+        .select({
+          userId: users.id,
+          name: users.name,
+          email: users.email,
+          medicalSpecialtyId: professionals.medicalSpecialtyId,
+          operationalProfileCode: professionals.operationalProfileCode,
+          specialtyLabel: professionals.specialty,
+        })
+        .from(users)
+        .innerJoin(professionals, eq(professionals.userId, users.id))
+        .innerJoin(
+          professionalInstitutions,
+          and(
+            eq(professionalInstitutions.userId, users.id),
+            eq(professionalInstitutions.institutionId, actor.institutionId),
+            eq(professionalInstitutions.active, true),
+          ),
+        )
+        .where(and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)));
+
+      const searched = email
+        ? await db
+            .select({
+              userId: users.id,
+              name: users.name,
+              email: users.email,
+              medicalSpecialtyId: professionals.medicalSpecialtyId,
+              operationalProfileCode: professionals.operationalProfileCode,
+              specialtyLabel: professionals.specialty,
+            })
+            .from(users)
+            .innerJoin(professionals, eq(professionals.userId, users.id))
+            .where(
+              and(
+                eq(users.email, email),
+                eq(users.approvalStatus, "APPROVED"),
+                isNull(users.deletedAt),
+              ),
+            )
+            .limit(1)
+        : [];
+
+      const byId = new Map<number, (typeof houseMembers)[number]>();
+      for (const row of [...houseMembers, ...searched]) {
+        byId.set(row.userId, row);
+      }
+
+      const candidates = [...byId.values()];
+      if (candidates.length === 0) return [];
+
+      const access = await db
+        .select({
+          professionalUserId: professionals.userId,
+          canAccess: professionalAccess.canAccess,
+        })
+        .from(professionalAccess)
+        .innerJoin(
+          professionals,
+          eq(professionals.id, professionalAccess.professionalId),
+        )
+        .where(
+          and(
+            eq(professionalAccess.institutionId, actor.institutionId),
+            eq(professionalAccess.hospitalId, input.hospitalId),
+            eq(professionalAccess.sectorId, input.sectorId),
+            inArray(
+              professionals.userId,
+              candidates.map((row) => row.userId),
+            ),
+          ),
+        );
+      const alreadyInScale = new Set(
+        access
+          .filter((row) => row.canAccess)
+          .map((row) => row.professionalUserId),
+      );
+
+      const otherHouses = email
+        ? await db
+            .select({
+              userId: professionalInstitutions.userId,
+              institutionId: professionalInstitutions.institutionId,
+            })
+            .from(professionalInstitutions)
+            .where(
+              and(
+                eq(professionalInstitutions.active, true),
+                inArray(
+                  professionalInstitutions.userId,
+                  searched.map((row) => row.userId),
+                ),
+              ),
+            )
+        : [];
+      const lockedToOtherHouse = new Set(
+        otherHouses
+          .filter((row) => row.institutionId !== actor.institutionId)
+          .map((row) => row.userId),
+      );
+
+      return candidates
+        .filter((row) => {
+          if (alreadyInScale.has(row.userId)) return false;
+          if (lockedToOtherHouse.has(row.userId)) return false;
+          return contexts.some((context) =>
+            qualificationMatches(
+              {
+                medicalSpecialtyId: row.medicalSpecialtyId,
+                operationalProfileCode: row.operationalProfileCode,
+              },
+              context,
+            ),
+          );
+        })
+        .sort((left, right) =>
+          (left.name ?? "").localeCompare(right.name ?? "", "pt-BR"),
+        )
+        .slice(0, 100)
+        .map((row) => ({
+          userId: row.userId,
+          name: row.name,
+          specialtyLabel: row.specialtyLabel,
+        }));
+    }),
+
   create: protectedProcedure
     .input(
       z.object({
         hospitalId: z.number().int().positive(),
         sectorId: z.number().int().positive(),
+        userIds: z.array(z.number().int().positive()).min(1).max(40),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -409,46 +574,170 @@ export const scheduleInvitesRouter = router({
         });
       }
 
-      const plaintext = generateScheduleInviteCode();
-      const normalized = normalizeScheduleInviteCode(plaintext);
-      const codeHash = hashScheduleInviteCode(normalized);
-      const expiresAt = new Date(Date.now() + DEFAULT_TTL_MS);
+      const uniqueUserIds = [...new Set(input.userIds)];
+      const sent: { userId: number; name: string | null }[] = [];
+      const failed: { userId: number; error: string }[] = [];
 
-      const [inserted] = await db.insert(scheduleInvites).values({
-        institutionId: actor.institutionId,
-        hospitalId: input.hospitalId,
-        sectorId: input.sectorId,
-        codeHash,
-        createdByUserId: actor.userId,
-        maxRedemptions: DEFAULT_MAX_REDEMPTIONS,
-        expiresAt,
-      }).$returningId();
+      for (const userId of uniqueUserIds) {
+        const [invitee] = await db
+          .select({
+            userId: users.id,
+            name: users.name,
+            email: users.email,
+            deletedAt: users.deletedAt,
+            approvalStatus: users.approvalStatus,
+            medicalSpecialtyId: professionals.medicalSpecialtyId,
+            operationalProfileCode: professionals.operationalProfileCode,
+          })
+          .from(users)
+          .innerJoin(professionals, eq(professionals.userId, users.id))
+          .where(eq(users.id, userId))
+          .limit(1);
+        if (
+          !invitee ||
+          invitee.deletedAt ||
+          invitee.approvalStatus !== "APPROVED" ||
+          !invitee.email
+        ) {
+          failed.push({ userId, error: "Médico não encontrado" });
+          continue;
+        }
+        const compatible = contexts.some((context) =>
+          qualificationMatches(
+            {
+              medicalSpecialtyId: invitee.medicalSpecialtyId,
+              operationalProfileCode: invitee.operationalProfileCode,
+            },
+            context,
+          ),
+        );
+        if (!compatible) {
+          failed.push({
+            userId,
+            error: "A especialidade não é aceita nesta escala",
+          });
+          continue;
+        }
 
-      await recordAudit(
-        {
+        const houses = await db
+          .select({
+            institutionId: professionalInstitutions.institutionId,
+            active: professionalInstitutions.active,
+          })
+          .from(professionalInstitutions)
+          .where(eq(professionalInstitutions.userId, userId));
+        const inThisHouse = houses.some(
+          (row) => row.active && row.institutionId === actor.institutionId,
+        );
+        const inOtherHouse = houses.some(
+          (row) => row.active && row.institutionId !== actor.institutionId,
+        );
+        if (inOtherHouse && !inThisHouse) {
+          failed.push({ userId, error: "Médico não encontrado" });
+          continue;
+        }
+
+        const plaintext = generateScheduleInviteCode();
+        const normalized = normalizeScheduleInviteCode(plaintext);
+        const codeHash = hashScheduleInviteCode(normalized);
+        const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
+        const formatted = formatScheduleInviteCode(normalized);
+
+        const [inserted] = await db.insert(scheduleInvites).values({
           institutionId: actor.institutionId,
-          action: "USER_UPDATED",
-          entityType: "USER",
-          entityId: actor.userId,
-          actorUserId: actor.userId,
-          actorRole: actor.roleInInstitution,
-          description: `Convite gerado para ${contexts[0].hospitalName} / ${contexts[0].sectorName}`,
-          metadata: {
-            scheduleInviteId: inserted.id,
+          hospitalId: input.hospitalId,
+          sectorId: input.sectorId,
+          codeHash,
+          createdByUserId: actor.userId,
+          invitedUserId: invitee.userId,
+          invitedEmail: invitee.email,
+          maxRedemptions: NAMED_MAX_REDEMPTIONS,
+          expiresAt,
+        }).$returningId();
+
+        await db
+          .update(scheduleInvites)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(scheduleInvites.institutionId, actor.institutionId),
+              eq(scheduleInvites.hospitalId, input.hospitalId),
+              eq(scheduleInvites.sectorId, input.sectorId),
+              eq(scheduleInvites.invitedUserId, invitee.userId),
+              isNull(scheduleInvites.revokedAt),
+              sql`${scheduleInvites.id} <> ${inserted.id}`,
+              sql`${scheduleInvites.redeemedCount} = 0`,
+            ),
+          );
+
+        const mail = buildScheduleInviteMail({
+          to: invitee.email,
+          hospitalName: contexts[0].hospitalName,
+          sectorName: contexts[0].sectorName,
+          code: formatted,
+          expiresAt,
+        });
+        if (!mail) {
+          await db
+            .update(scheduleInvites)
+            .set({ revokedAt: new Date() })
+            .where(eq(scheduleInvites.id, inserted.id));
+          failed.push({
+            userId,
+            error: "Não foi possível montar o e-mail de convite",
+          });
+          continue;
+        }
+
+        const delivery = await mailer.sendMail(mail);
+        if (delivery.transport === "resend" && !delivery.delivered) {
+          await db
+            .update(scheduleInvites)
+            .set({ revokedAt: new Date() })
+            .where(eq(scheduleInvites.id, inserted.id));
+          failed.push({
+            userId,
+            error: "O e-mail de convite não saiu. Tente novamente.",
+          });
+          continue;
+        }
+
+        await recordAudit(
+          {
+            institutionId: actor.institutionId,
+            action: "USER_UPDATED",
+            entityType: "USER",
+            entityId: invitee.userId,
+            actorUserId: actor.userId,
+            actorRole: actor.roleInInstitution,
+            description: `Convite nominal enviado para a escala ${contexts[0].hospitalName} / ${contexts[0].sectorName}`,
+            metadata: {
+              scheduleInviteId: inserted.id,
+              invitedUserId: invitee.userId,
+              hospitalId: input.hospitalId,
+              sectorId: input.sectorId,
+            },
             hospitalId: input.hospitalId,
             sectorId: input.sectorId,
           },
-          hospitalId: input.hospitalId,
-          sectorId: input.sectorId,
-        },
-        { strict: true },
-      );
+          { strict: true },
+        );
+
+        sent.push({ userId: invitee.userId, name: invitee.name });
+      }
+
+      if (sent.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            failed[0]?.error ??
+            "Nenhum convite foi enviado. Verifique os médicos selecionados.",
+        });
+      }
 
       return {
-        id: inserted.id,
-        code: formatScheduleInviteCode(normalized),
-        expiresAt,
-        maxRedemptions: DEFAULT_MAX_REDEMPTIONS,
+        sent,
+        failed,
         hospitalName: contexts[0].hospitalName,
         sectorName: contexts[0].sectorName,
       };

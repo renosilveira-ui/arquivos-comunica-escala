@@ -9,6 +9,8 @@ describe("schema de convites de escala", () => {
     expect(scheduleInvites.sectorId.notNull).toBe(true);
     expect(scheduleInvites.codeHash.notNull).toBe(true);
     expect(scheduleInvites.createdByUserId.notNull).toBe(true);
+    expect(scheduleInvites.invitedUserId.notNull).toBe(false);
+    expect(scheduleInvites.invitedEmail.notNull).toBe(false);
     expect(scheduleInvites.maxRedemptions.notNull).toBe(true);
     expect(scheduleInvites.redeemedCount.notNull).toBe(true);
     expect(scheduleInvites.expiresAt.notNull).toBe(true);
@@ -36,6 +38,7 @@ describe("schema de convites de escala", () => {
         ["hospital_id"],
         ["sector_id"],
         ["created_by_user_id"],
+        ["invited_user_id"],
         ["institution_id", "hospital_id"],
         ["institution_id", "hospital_id", "sector_id"],
       ]),

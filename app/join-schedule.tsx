@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ActivityIndicator, Text, TextInput, View } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { AppButton } from "@/components/ui/AppButton";
@@ -8,36 +8,45 @@ import { theme } from "@/lib/theme";
 import { authApi } from "@/lib/_core/api";
 import { trpc } from "@/lib/trpc";
 import { uiAlert } from "@/lib/ui/alert";
+import { useTenantState } from "@/lib/tenant-state";
 
 export default function JoinScheduleScreen() {
   const router = useRouter();
   const utils = trpc.useUtils();
-  const [code, setCode] = useState("");
+  const { setActiveInstitutionId } = useTenantState();
+  const params = useLocalSearchParams<{ invite?: string }>();
+  const initialInvite =
+    typeof params.invite === "string" ? params.invite : "";
+  const [code, setCode] = useState(initialInvite);
   const [submitting, setSubmitting] = useState(false);
 
-  const handleJoin = async () => {
-    if (!code.trim()) {
-      uiAlert("Convite", "Cole o código que o gestor enviou.");
+  const handleJoin = async (raw = code) => {
+    if (!raw.trim()) {
+      uiAlert("Convite", "Cole o convite que chegou no seu e-mail.");
       return;
     }
     setSubmitting(true);
     try {
-      const result = await authApi.redeemInvite(code.trim());
+      const result = await authApi.redeemInvite(raw.trim());
       if (!result.ok) {
         uiAlert("Não foi possível entrar", result.error ?? "Convite inválido");
         return;
       }
       await Promise.all([
+        utils.professionals.listMyInstitutions.invalidate(),
         utils.scheduleContexts.listMine.invalidate(),
         utils.professionals.getMyCapabilities.invalidate(),
       ]);
+      if (result.institutionId) {
+        await setActiveInstitutionId(result.institutionId);
+      }
       uiAlert(
         "Escala liberada",
         result.hospitalName && result.sectorName
           ? `Você entrou em ${result.hospitalName} — ${result.sectorName}.`
           : "O convite foi aceito.",
       );
-      router.back();
+      router.replace("/(tabs)");
     } finally {
       setSubmitting(false);
     }
@@ -54,7 +63,7 @@ export default function JoinScheduleScreen() {
             marginBottom: theme.space[2],
           }}
         >
-          Entrar em outra escala
+          Entrar na escala
         </Text>
         <Text
           style={{
@@ -63,8 +72,8 @@ export default function JoinScheduleScreen() {
             marginBottom: theme.space[5],
           }}
         >
-          Se você também cobre outro setor, peça o convite daquele setor ao
-          gestor e cole aqui. A especialidade precisa ser aceita na escala.
+          Use o link ou o código do e-mail que o gestor enviou. O convite vale
+          24 horas e só funciona na sua conta.
         </Text>
         <Text
           style={{
@@ -99,7 +108,9 @@ export default function JoinScheduleScreen() {
         />
         <AppButton
           title={submitting ? "Entrando..." : "Entrar na escala"}
-          onPress={handleJoin}
+          onPress={() => {
+            void handleJoin();
+          }}
           disabled={submitting}
           fullWidth
         />
