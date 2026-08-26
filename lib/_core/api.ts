@@ -15,6 +15,7 @@ import {
   type SessionBindingState,
 } from "./session-binding-protocol";
 import { getActiveWebSessionWorkflowSignal } from "./web-session-workflow";
+import { withRequestDeadline } from "../request-deadline";
 import { getActiveInstitutionId } from "../tenant-state";
 import type {
   MedicalSpecialtyCode,
@@ -342,7 +343,8 @@ async function apiFetchInternal<T>(
   }
 
   const workflowSignal = getActiveWebSessionWorkflowSignal();
-  const requestAbort = mergeAbortSignals(options?.signal, workflowSignal);
+  const mergedAbort = mergeAbortSignals(options?.signal, workflowSignal);
+  const requestAbort = withRequestDeadline(mergedAbort.signal);
   try {
     const res = await fetch(url, {
       ...options,
@@ -383,6 +385,7 @@ async function apiFetchInternal<T>(
     };
   } finally {
     requestAbort.cleanup();
+    mergedAbort.cleanup();
   }
 }
 

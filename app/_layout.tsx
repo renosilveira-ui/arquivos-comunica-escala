@@ -47,6 +47,10 @@ import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ToastProvider } from "@/components/ui/Toast";
 import { BootScreen } from "@/components/BootScreen";
 import {
+  AUTHORIZATION_GATE_STALL_MS,
+  isNetInfoOnline,
+} from "@/lib/request-deadline";
+import {
   fenceQueryCachePersistence,
   startQueryCachePersistence,
 } from "@/lib/query-persist";
@@ -317,14 +321,17 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     });
     const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
       updateActivity({
-        online: state.isConnected === true && state.isInternetReachable !== false,
+        online: isNetInfoOnline(state),
       });
     });
     void NetInfo.fetch().then((state) => {
       updateActivity({
-        online: state.isConnected === true && state.isInternetReachable !== false,
+        online: isNetInfoOnline(state),
       });
-    }).catch(() => updateActivity({ online: false }));
+    }).catch(() => {
+      // Probe falhou: não declarar offline. No iOS o reachability costuma
+      // falhar no primeiro segundo e o app ficava preso no BootScreen.
+    });
 
     const handleVisibility = () => {
       updateActivity({ visible: document.visibilityState !== "hidden" });
@@ -359,7 +366,9 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     ) {
       coordinator.invalidate();
       fenceQueryCachePersistence();
-      queryClient.clear();
+      if (!user) {
+        queryClient.clear();
+      }
       setGateState({
         status: user && sessionValidation.status === "UNAVAILABLE"
           ? "UNAVAILABLE"
@@ -466,6 +475,18 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     utils,
   ]);
 
+  useEffect(() => {
+    if (gateState.status !== "CHECKING") return;
+    const timer = setTimeout(() => {
+      setGateState((current) =>
+        current.status === "CHECKING" && current.subjectKey === subjectKey
+          ? { status: "UNAVAILABLE", subjectKey }
+          : current,
+      );
+    }, AUTHORIZATION_GATE_STALL_MS);
+    return () => clearTimeout(timer);
+  }, [gateState.status, subjectKey]);
+
   if (user && !currentSessionProof) {
     if (sessionValidation.status === "UNAVAILABLE") {
       return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
@@ -481,6 +502,9 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     );
   }
 
+  if (gateState.status === "UNAVAILABLE") {
+    return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
+  }
   if (
     isHydrating ||
     !activity.visible ||
@@ -489,9 +513,6 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     gateState.status === "CHECKING"
   ) {
     return <BootScreen />;
-  }
-  if (gateState.status === "UNAVAILABLE") {
-    return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
   }
   if (!gateState.attestation.isCurrent()) return <BootScreen />;
 
