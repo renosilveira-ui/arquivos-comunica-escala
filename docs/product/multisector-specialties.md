@@ -16,15 +16,15 @@ nas escalas do piloto.
 
 ## Direcionamento do usuário
 
-O acesso a uma escala **não** passa por autorização manual de cada médico.
-O modelo é o de convite de workspace (Slack / WhatsApp Business):
+O acesso a uma escala é **nominal**. Não existe código compartilhado:
 
 1. O coordenador **abre a escala** pedida (setor + política de admissão).
 2. Cadastra o **gestor daquela escala** uma vez (Admin / papel + escopo).
-3. O gestor gera um **convite** (código `XXXX-XXXX`, 14 dias, até 40 usos).
-4. O médico se cadastra e cola o convite — ou, já logado, cola em
-   `Entrar em outra escala`.
-5. O servidor libera só aquele setor, depois de revalidar a especialidade.
+3. O médico cria a conta (nome, e-mail, senha, especialidade) **sem escala**.
+4. O gestor seleciona os médicos cadastrados e clica em **Enviar convite**.
+5. Cada um recebe um link de **24 horas, uso único**, no e-mail da conta.
+6. O médico entra logado e resgata. O servidor libera só aquele setor,
+   depois de revalidar a especialidade.
 
 Um médico que planta no TRR e na Emergência recebe **dois convites**, em
 momentos diferentes. Cada resgate soma uma escala. A Agenda:
@@ -37,10 +37,11 @@ momentos diferentes. Cada resgate soma uma escala. A Agenda:
 Visão simultânea das duas escalas fica para depois. O urgente é entrar na
 escala certa.
 
-O convite aponta para instituição + hospital + setor — não para uma
-especialidade. Quem não é aceito na política do setor é recusado
-(fail-closed). Sem convite, a API de cadastro ainda cria conta PENDING
-(legado). O administrador continua podendo cadastrar o gestor à mão.
+O convite aponta para instituição + hospital + setor **e para um usuário**.
+Quem não é aceito na política do setor é recusado (fail-closed). Terceiro
+não resgata convite alheio. A API de cadastro com `institutionId` ainda
+cria conta PENDING (legado). O administrador continua podendo cadastrar
+o gestor à mão.
 
 Exemplo no mesmo hospital:
 
@@ -72,16 +73,18 @@ Ordem operacional:
    `drizzle/migrations/manual/2026-08-25-schedule-contexts-medical-specialties.sql`.
 3. Aplicar
    `drizzle/migrations/manual/2026-08-26-schedule-invites.sql`.
-4. Rodar o provisionamento em dry-run.
-5. Aplicar com `HSC_PROVISION_CONFIRM=SAO_CARLOS_MULTISETOR` e `--apply`.
-6. No Admin, cadastrar o **gestor** na Sala de Recuperação (e Traumatologia,
-   se for o grupo de ortopedia). Não cadastrar médico por médico.
-7. O gestor gera o convite em Perfil → Convites da escala e envia aos
-   testadores.
-8. Confirmar template de horário aplicável.
-9. Rodar `pnpm provision:sao-carlos -- --check-ready`.
-10. Rodar `pnpm check:schedule-readiness` e exigir contadores em zero.
-11. Publicar o backend e só então gerar o binário móvel.
+4. Aplicar
+   `drizzle/migrations/manual/2026-08-26-schedule-invites-named.sql`.
+5. Rodar o provisionamento em dry-run.
+6. Aplicar com `HSC_PROVISION_CONFIRM=SAO_CARLOS_MULTISETOR` e `--apply`.
+7. No Admin, cadastrar o **gestor** na Sala de Recuperação (e Traumatologia,
+   se for o grupo de ortopedia).
+8. Os médicos criam conta sem escala. O gestor seleciona e envia o e-mail
+   em Perfil → Convites da escala.
+9. Confirmar template de horário aplicável.
+10. Rodar `pnpm provision:sao-carlos -- --check-ready`.
+11. Rodar `pnpm check:schedule-readiness` e exigir contadores em zero.
+12. Publicar o backend e só então gerar o binário móvel.
 
 Nenhum script escreve por padrão. O importador CSV antigo permanece bloqueado
 nesta versão.

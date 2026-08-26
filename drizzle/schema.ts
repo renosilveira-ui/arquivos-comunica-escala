@@ -554,9 +554,9 @@ export type ScheduleContext = typeof scheduleContexts.$inferSelect;
 export type InsertScheduleContext = typeof scheduleContexts.$inferInsert;
 
 /**
- * Convite de uma escala (instituição + hospital + setor). O código em claro
- * só aparece na criação; o banco guarda o hash. Um médico usa um convite
- * por setor; outro convite no mesmo hospital libera o segundo setor.
+ * Convite nominal de uma escala (instituição + hospital + setor).
+ * O código em claro só vai no e-mail do convidado; o banco guarda o hash.
+ * Uso único, 24 h, amarrado a um usuário já cadastrado.
  */
 export const scheduleInvites = mysqlTable(
   "schedule_invites",
@@ -575,7 +575,9 @@ export const scheduleInvites = mysqlTable(
     createdByUserId: int("created_by_user_id")
       .notNull()
       .references(() => users.id),
-    maxRedemptions: int("max_redemptions").notNull().default(40),
+    invitedUserId: int("invited_user_id").references(() => users.id),
+    invitedEmail: varchar("invited_email", { length: 320 }),
+    maxRedemptions: int("max_redemptions").notNull().default(1),
     redeemedCount: int("redeemed_count").notNull().default(0),
     expiresAt: timestamp("expires_at").notNull(),
     revokedAt: timestamp("revoked_at"),
@@ -589,6 +591,12 @@ export const scheduleInvites = mysqlTable(
       table.institutionId,
       table.hospitalId,
       table.sectorId,
+    ),
+    idxScheduleInviteNamed: index("idx_schedule_invite_named").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.invitedUserId,
     ),
     fkScheduleInviteHospitalTopology: foreignKey({
       columns: [table.institutionId, table.hospitalId],

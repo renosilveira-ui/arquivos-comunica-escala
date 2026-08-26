@@ -67,7 +67,6 @@ import {
 } from "../schedule-contexts";
 import {
   parseInviteCode,
-  peekScheduleInviteInstitution,
   redeemScheduleInviteInTransaction,
   ScheduleInviteError,
 } from "../schedule-invites";
@@ -2781,26 +2780,25 @@ authRouter.post(
       medicalSpecialtyCode,
       operationalProfileCode,
       legacySpecialty: specialty,
-      // Compatibilidade de uma versão: a build anterior permitia omitir o
-      // campo. A conta fica PENDING e não ganha contexto até ser classificada.
-      allowMissing: true,
+      // Sem instituição: a especialidade é obrigatória para o gestor
+      // filtrar quem pode receber o convite da escala.
+      allowMissing: Boolean(
+        institutionId !== undefined &&
+          institutionId !== null &&
+          institutionId !== "",
+      ),
     });
     if (!parsedQualification.ok) {
       res.status(400).json({ error: parsedQualification.error });
       return;
     }
 
-    let parsedInvite: string | null = null;
     if (inviteCode !== undefined && inviteCode !== null && inviteCode !== "") {
-      try {
-        parsedInvite = parseInviteCode(inviteCode);
-      } catch (error) {
-        if (error instanceof ScheduleInviteError) {
-          res.status(error.status).json({ error: error.message });
-          return;
-        }
-        throw error;
-      }
+      res.status(400).json({
+        error:
+          "O cadastro não usa código de convite. Crie a conta e aguarde o e-mail do gestor.",
+      });
+      return;
     }
 
     const db = await getDb();
@@ -2809,34 +2807,23 @@ authRouter.post(
       return;
     }
 
-    let instId = Number(institutionId);
-    if (parsedInvite) {
-      try {
-        const peeked = await peekScheduleInviteInstitution(db, parsedInvite);
-        if (Number.isInteger(instId) && instId > 0 && instId !== peeked.institutionId) {
-          res.status(409).json({ error: "Convite não pertence à instituição selecionada" });
-          return;
-        }
-        instId = peeked.institutionId;
-      } catch (error) {
-        if (error instanceof ScheduleInviteError) {
-          res.status(error.status).json({ error: error.message });
-          return;
-        }
-        throw error;
-      }
-    }
-    if (!Number.isInteger(instId) || instId <= 0) {
-      res.status(400).json({ error: "Informe o convite da escala ou a instituição" });
+    const wantsInstitution =
+      institutionId !== undefined && institutionId !== null && institutionId !== "";
+    const instId = Number(institutionId);
+    const hasInstitution = wantsInstitution && Number.isInteger(instId) && instId > 0;
+    if (wantsInstitution && !hasInstitution) {
+      res.status(400).json({ error: "Instituição inválida" });
       return;
     }
 
-    const [institution] = await db
-      .select({ id: institutions.id })
-      .from(institutions)
-      .where(and(eq(institutions.id, instId), eq(institutions.isActive, true)))
-      .limit(1);
-    if (!institution) {
+    const [institution] = hasInstitution
+      ? await db
+          .select({ id: institutions.id })
+          .from(institutions)
+          .where(and(eq(institutions.id, instId), eq(institutions.isActive, true)))
+          .limit(1)
+      : [];
+    if (hasInstitution && !institution) {
       res.status(400).json({ error: "Instituição não encontrada ou inativa" });
       return;
     }
@@ -2854,18 +2841,22 @@ authRouter.post(
 
     try {
       await db.transaction(async (tx) => {
-        const [lockedInstitution] = await tx
-          .select({ id: institutions.id })
-          .from(institutions)
-          .where(
-            and(
-              eq(institutions.id, institution.id),
-              eq(institutions.isActive, true),
-            ),
-          )
-          .limit(1)
-          .for("share");
-        if (!lockedInstitution) {
+        const lockedInstitution = institution
+          ? (
+              await tx
+                .select({ id: institutions.id })
+                .from(institutions)
+                .where(
+                  and(
+                    eq(institutions.id, institution.id),
+                    eq(institutions.isActive, true),
+                  ),
+                )
+                .limit(1)
+                .for("share")
+            )[0]
+          : null;
+        if (hasInstitution && !lockedInstitution) {
           throw new AuthMutationError(
             400,
             "Instituição não encontrada ou inativa",
@@ -2905,7 +2896,7 @@ authRouter.post(
             passwordHash,
             role: "doctor",
             loginMethod: "email",
-            approvalStatus: parsedInvite ? "APPROVED" : "PENDING",
+            approvalStatus: lockedInstitution ? "PENDING" : "APPROVED",
           })
           .$returningId();
         const [newProfessional] = await tx
@@ -2921,18 +2912,7 @@ authRouter.post(
           })
           .$returningId();
 
-        if (parsedInvite) {
-          await redeemScheduleInviteInTransaction(tx, {
-            code: parsedInvite,
-            userId: newUser.id,
-            professionalId: newProfessional.id,
-            qualification: {
-              medicalSpecialtyId: medicalSpecialtyId ?? null,
-              operationalProfileCode: qualification.operationalProfileCode,
-            },
-          });
-        } else {
-          // Sem convite: vínculo INATIVO até a aprovação do admin.
+        if (lockedInstitution) {
           await tx.insert(professionalInstitutions).values({
             professionalId: newProfessional.id,
             userId: newUser.id,
@@ -2941,27 +2921,25 @@ authRouter.post(
             isPrimary: true,
             active: false,
           });
-        }
-        await recordAudit(
-          {
-            institutionId: lockedInstitution.id,
-            action: "USER_CREATED",
-            entityType: "USER",
-            entityId: newUser.id,
-            actorUserId: newUser.id,
-            actorRole: "doctor",
-            actorName: auditActorName(trimmedName),
-            description: parsedInvite
-              ? `Auto-cadastro com convite de escala — usuário #${newUser.id}`
-              : `Auto-cadastro do usuário #${newUser.id} na instituição #${lockedInstitution.id} — aguardando aprovação`,
-            metadata: {
+          await recordAudit(
+            {
               institutionId: lockedInstitution.id,
-              selfSignup: true,
-              viaInvite: Boolean(parsedInvite),
+              action: "USER_CREATED",
+              entityType: "USER",
+              entityId: newUser.id,
+              actorUserId: newUser.id,
+              actorRole: "doctor",
+              actorName: auditActorName(trimmedName),
+              description: `Auto-cadastro do usuário #${newUser.id} na instituição #${lockedInstitution.id} — aguardando aprovação`,
+              metadata: {
+                institutionId: lockedInstitution.id,
+                selfSignup: true,
+                viaInvite: false,
+              },
             },
-          },
-          { db: tx, strict: true },
-        );
+            { db: tx, strict: true },
+          );
+        }
       });
     } catch (error) {
       if (error instanceof AuthMutationError) {
@@ -2994,7 +2972,8 @@ authRouter.post(
 
     res.status(201).json({
       ok: true,
-      pending: !parsedInvite,
+      pending: hasInstitution,
+      awaitingScale: !hasInstitution,
     });
   },
 );
@@ -3057,6 +3036,7 @@ authRouter.post(
       });
       res.json({
         ok: true,
+        institutionId: joined.institutionId,
         hospitalName: joined.hospitalName,
         sectorName: joined.sectorName,
       });

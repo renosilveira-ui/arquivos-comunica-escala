@@ -69,7 +69,11 @@ describe("scheduleInvites no appRouter", () => {
     ]);
 
     await expect(
-      caller().scheduleInvites.create({ hospitalId: 10, sectorId: 20 }),
+      caller().scheduleInvites.create({
+        hospitalId: 10,
+        sectorId: 20,
+        userIds: [51],
+      }),
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
     } satisfies Partial<TRPCError>);
@@ -88,7 +92,11 @@ describe("scheduleInvites no appRouter", () => {
     mocks.selectActiveScheduleContexts.mockResolvedValue([]);
 
     await expect(
-      caller().scheduleInvites.create({ hospitalId: 10, sectorId: 20 }),
+      caller().scheduleInvites.create({
+        hospitalId: 10,
+        sectorId: 20,
+        userIds: [51],
+      }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
     } satisfies Partial<TRPCError>);

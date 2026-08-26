@@ -583,7 +583,7 @@ export default function ProfileScreen() {
               ) : null}
               <ListRow
                 title="Entrar em outra escala"
-                subtitle="Cole o convite de outro setor — TRR, Emergência, etc."
+                subtitle="Use o convite de 24 horas que o gestor enviou por e-mail."
                 Icon={KeyRound}
                 divided={isDesktopWeb && isManager}
                 onPress={go("/join-schedule")}

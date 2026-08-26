@@ -37,6 +37,8 @@ export default defineConfig({
       "tests/schedule-invites-migration.test.ts",
       "tests/schedule-invites-router.test.ts",
       "tests/schedule-invites-source.test.ts",
+      "tests/schedule-invites-named-migration.test.ts",
+      "tests/schedule-invite-mail.test.ts",
       "tests/request-deadline.test.ts",
     ],
   },

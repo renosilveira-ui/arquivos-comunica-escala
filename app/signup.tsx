@@ -1,8 +1,7 @@
 // app/signup.tsx — auto-cadastro público.
 //
-// O médico cola o convite da escala. A instituição sai do convite; a conta
-// nasce APPROVED naquele setor. Sem convite, a API ainda aceita instituição
-// e deixa PENDING (legado / testes).
+// O médico cria a conta (nome, e-mail, senha, especialidade) sem escala.
+// O gestor escolhe quem entra e o sistema envia um convite nominal de 24 h.
 
 import { useState } from "react";
 import {
@@ -51,20 +50,19 @@ const INPUT_FOCUSED_STYLE = {
   borderColor: theme.colors.primary,
 };
 
-type Field = "name" | "email" | "password" | "confirm" | "invite";
+type Field = "name" | "email" | "password" | "confirm";
 
 export default function SignupScreen() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [inviteCode, setInviteCode] = useState("");
   const [qualification, setQualification] =
     useState<ProfessionalQualificationSelection | null>(null);
   const [focusedField, setFocusedField] = useState<Field | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [done, setDone] = useState<"joined" | "pending" | null>(null);
+  const [done, setDone] = useState<"awaiting" | "pending" | null>(null);
 
   const router = useRouter();
 
@@ -81,10 +79,6 @@ export default function SignupScreen() {
       setErrorMsg("As senhas não coincidem.");
       return;
     }
-    if (!inviteCode.trim()) {
-      setErrorMsg("Informe o convite que o gestor da escala enviou.");
-      return;
-    }
     if (!qualification) {
       setErrorMsg(
         "Selecione sua especialidade ou o perfil operacional aceito.",
@@ -98,11 +92,10 @@ export default function SignupScreen() {
         name: name.trim(),
         email: email.trim(),
         password,
-        inviteCode: inviteCode.trim(),
         ...qualificationPayload(qualification),
       });
       if (result.ok) {
-        setDone(result.pending === false ? "joined" : "pending");
+        setDone(result.pending ? "pending" : "awaiting");
       } else {
         setErrorMsg(result.error ?? "Erro ao criar cadastro.");
       }
@@ -137,7 +130,7 @@ export default function SignupScreen() {
                 textAlign: "center",
               }}
             >
-              {done === "joined" ? "Escala liberada" : "Cadastro enviado"}
+              {done === "pending" ? "Cadastro enviado" : "Conta criada"}
             </Text>
             <Text
               style={{
@@ -147,9 +140,9 @@ export default function SignupScreen() {
                 lineHeight: 20,
               }}
             >
-              {done === "joined"
-                ? "Sua conta já está na escala do convite. Entre com o e-mail e a senha que acabou de criar."
-                : "Sua conta foi criada e aguarda aprovação do gestor da instituição."}
+              {done === "pending"
+                ? "Sua conta foi criada e aguarda aprovação do gestor da instituição."
+                : "Entre com o e-mail e a senha. O gestor da sua escala vai enviar um convite de 24 horas, só seu."}
             </Text>
             <TouchableOpacity
               onPress={() => router.replace("/login")}
@@ -213,7 +206,7 @@ export default function SignupScreen() {
                 marginTop: 6,
               }}
             >
-              Use o convite que o gestor da sua escala enviou
+              Crie a conta. O gestor envia o convite da escala depois.
             </Text>
           </View>
 
@@ -308,23 +301,6 @@ export default function SignupScreen() {
                 onChange={setQualification}
                 required
                 tone="dark"
-              />
-            </View>
-
-            <View>
-              <Text style={LABEL_STYLE}>Convite da escala</Text>
-              <TextInput
-                value={inviteCode}
-                onChangeText={setInviteCode}
-                autoCapitalize="characters"
-                autoCorrect={false}
-                onFocus={() => setFocusedField("invite")}
-                onBlur={() => setFocusedField(null)}
-                placeholderTextColor={theme.colors.onDark.textMuted}
-                placeholder="ABCD-EFGH"
-                style={
-                  focusedField === "invite" ? INPUT_FOCUSED_STYLE : INPUT_STYLE
-                }
               />
             </View>
 

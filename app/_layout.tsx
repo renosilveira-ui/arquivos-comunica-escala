@@ -1,7 +1,7 @@
 import "@/global.css";
 import { theme } from "@/lib/theme";
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { Redirect, Stack, usePathname } from "expo-router";
+import { Redirect, Stack, usePathname, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import {
   createContext,
@@ -142,6 +142,80 @@ function PendingApprovalScreen() {
                 "Você saiu da conta, mas parte dos dados locais não pôde ser removida.",
               );
             }
+          });
+        }}
+        activeOpacity={0.7}
+      >
+        <Text
+          style={{
+            color: theme.colors.textMuted,
+            fontSize: 13,
+            textDecorationLine: "underline",
+          }}
+        >
+          Sair
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function WaitingForScheduleScreen() {
+  const { logout } = useAuth();
+  const router = useRouter();
+
+  return (
+    <View
+      style={{
+        flex: 1,
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: theme.colors.background,
+        padding: theme.space[6],
+        gap: theme.space[4],
+      }}
+    >
+      <Text
+        style={{
+          color: theme.colors.textPrimary,
+          fontSize: 20,
+          fontWeight: "700",
+          textAlign: "center",
+        }}
+      >
+        Aguardando convite da escala
+      </Text>
+      <Text
+        style={{
+          color: theme.colors.textSecondary,
+          fontSize: 14,
+          textAlign: "center",
+          lineHeight: 20,
+        }}
+      >
+        Sua conta está criada. O gestor vai enviar um convite de 24 horas,
+        só seu, para o e-mail do cadastro.
+      </Text>
+      <TouchableOpacity
+        onPress={() => router.push("/join-schedule")}
+        activeOpacity={0.8}
+        style={{
+          paddingHorizontal: theme.space[5],
+          paddingVertical: theme.space[3],
+          borderRadius: theme.radius.md,
+          backgroundColor: theme.colors.primary,
+          minHeight: 44,
+          justifyContent: "center",
+        }}
+      >
+        <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>
+          Já tenho o convite
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        onPress={() => {
+          void logout().catch((error) => {
+            console.warn("[Auth] logout failed", error);
           });
         }}
         activeOpacity={0.7}
@@ -566,7 +640,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (!attestation || !attestation.isCurrent()) return <BootScreen />;
-  if (institutions?.length === 0) return <Redirect href="/login" />;
+  if (institutions?.length === 0) {
+    if (pathname === "/join-schedule") return <>{children}</>;
+    return <WaitingForScheduleScreen />;
+  }
 
   if (activeInstitutionId === null && pathname !== "/select-institution") {
     return <Redirect href={"/select-institution" as any} />;
