@@ -6,6 +6,7 @@ import superjson from "superjson";
 import { Platform } from "react-native";
 import * as Auth from "@/lib/_core/auth";
 import { getApiBaseUrl } from "@/lib/_core/api";
+import { withRequestDeadline } from "@/lib/request-deadline";
 import { getActiveInstitutionId } from "@/lib/tenant-state";
 import type { AppRouter } from "@/server/routers";
 
@@ -169,11 +170,13 @@ export function createTRPCClient() {
               new Error("Sessão mudou antes do envio do request"),
             );
           }
+          const deadline = withRequestDeadline(options?.signal);
           return fetch(url, {
             ...options,
             headers,
+            signal: deadline.signal,
             credentials: Platform.OS === "web" ? "include" : undefined,
-          });
+          }).finally(() => deadline.cleanup());
         },
       }),
     ],
