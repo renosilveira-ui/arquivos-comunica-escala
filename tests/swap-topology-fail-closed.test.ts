@@ -9,12 +9,17 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
   swapRequests,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { swapRouter } from "../server/swap-router";
 import { enqueueComunicaSwapApproved } from "../server/integrations/comunica-plus";
 import { actorCapabilities, resolveTenantActor } from "../server/_core/policy";
@@ -64,6 +69,10 @@ describe("swaps: topologia e identidade fail-closed", () => {
   let foreignInstitutionId: number;
   let foreignHospitalId: number;
   let foreignSectorId: number;
+  let anesthesiaId: number;
+  let homeScheduleContextId: number;
+  let alternateScheduleContextId: number;
+  let foreignScheduleContextId: number;
   let source: Identity;
   let otherSource: Identity;
   let recipient: Identity;
@@ -171,6 +180,9 @@ describe("swaps: topologia e identidade fail-closed", () => {
         ),
       );
     if (baseExtraSectors.length > 0) {
+      await db
+        .delete(scheduleContexts)
+        .where(inArray(scheduleContexts.sectorId, baseExtraSectors.map(({ id }) => id)));
       await db.delete(sectors).where(inArray(sectors.id, baseExtraSectors.map(({ id }) => id)));
     }
 
@@ -185,6 +197,13 @@ describe("swaps: topologia e identidade fail-closed", () => {
         .from(hospitals)
         .where(eq(hospitals.institutionId, foreignInstitution.id));
       const foreignHospitalIds = foreignHospitals.map(({ id }) => id);
+      await db.delete(scheduleContexts).where(eq(scheduleContexts.institutionId, foreignInstitution.id));
+      await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, foreignInstitution.id));
+      if (foreignHospitalIds.length > 0) {
+        await db
+          .delete(monthlyRosters)
+          .where(inArray(monthlyRosters.hospitalId, foreignHospitalIds));
+      }
       await db.delete(sectors).where(eq(sectors.institutionId, foreignInstitution.id));
       if (foreignHospitalIds.length > 0) {
         await db.delete(hospitals).where(inArray(hospitals.id, foreignHospitalIds));
@@ -229,6 +248,7 @@ describe("swaps: topologia e identidade fail-closed", () => {
         name: `${PREFIX}${label}`,
         role: "Médico",
         specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaId,
         userRole: "USER",
       })
       .$returningId();
@@ -296,6 +316,20 @@ describe("swaps: topologia e identidade fail-closed", () => {
         institutionId: shiftInstitutionId,
         hospitalId: shiftHospitalId,
         sectorId: shiftSectorId,
+        scheduleContextId:
+          shiftInstitutionId === institutionId &&
+          shiftHospitalId === hospitalId &&
+          shiftSectorId === sectorId
+            ? homeScheduleContextId
+            : shiftInstitutionId === institutionId &&
+                shiftHospitalId === hospitalId &&
+                shiftSectorId === alternateSectorId
+              ? alternateScheduleContextId
+              : shiftInstitutionId === foreignInstitutionId &&
+                  shiftHospitalId === foreignHospitalId &&
+                  shiftSectorId === foreignSectorId
+                ? foreignScheduleContextId
+                : null,
         label: `${PREFIX}${options.label ?? options.dayOffset}`,
         specialty: "Anestesiologia",
         startAt,
@@ -461,6 +495,22 @@ describe("swaps: topologia e identidade fail-closed", () => {
       })
       .$returningId();
     foreignSectorId = foreignSector.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    homeScheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
+    alternateScheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId: alternateSectorId,
+    });
+    foreignScheduleContextId = await openTestScale(db, {
+      institutionId: foreignInstitutionId,
+      hospitalId: foreignHospitalId,
+      sectorId: foreignSectorId,
+    });
 
     source = await createIdentity("source");
     otherSource = await createIdentity("other-source");
@@ -477,6 +527,7 @@ describe("swaps: topologia e identidade fail-closed", () => {
         name: `${PREFIX}malformed-target`,
         role: "Médico",
         specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaId,
         userRole: "USER",
       })
       .$returningId();

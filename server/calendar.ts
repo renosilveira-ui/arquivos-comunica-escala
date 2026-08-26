@@ -8,6 +8,7 @@ import { sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
 import {
+  assertTenantHospitalSector,
   listAuthorizedScheduleContexts,
   requireSingleLegacyScheduleContext,
   type AuthorizedScheduleContext,
@@ -37,6 +38,7 @@ async function resolveCalendarAccess(
 }> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertTenantHospitalSector(db, institutionId, hospitalId, sectorId);
   const candidates = (await listAuthorizedScheduleContexts(actor, db)).filter(
     (context) =>
       context.institutionId === institutionId &&

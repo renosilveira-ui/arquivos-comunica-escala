@@ -241,6 +241,17 @@ export const professionalsRouter = router({
           WHERE sa.id IS NULL
             AND (
               (
+                sc.admission_policy = 'ALL_CFM_SPECIALTIES'
+                AND p.medical_specialty_id IS NOT NULL
+              )
+              OR
+              (
+                sc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
+                AND p.medical_specialty_id IS NOT NULL
+                AND p.operational_profile_code IS NULL
+              )
+              OR
+              (
                 sc.medical_specialty_id IS NOT NULL
                 AND ms.id IS NOT NULL
                 AND p.medical_specialty_id = sc.medical_specialty_id

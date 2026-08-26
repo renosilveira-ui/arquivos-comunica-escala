@@ -15,11 +15,16 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { getDb } from "../server/db";
 import { shiftsRouter } from "../server/shifts-crud";
 
@@ -33,6 +38,9 @@ describe("shifts.replicateRange", () => {
   let hospitalId: number;
   let sectorId: number;
   let reverseSectorId: number;
+  let scheduleContextId: number;
+  let reverseScheduleContextId: number;
+  let anesthesiaId: number;
   let managerUserId: number;
   let managerProfessionalId: number;
   let doctorUserId: number;
@@ -94,7 +102,18 @@ describe("shifts.replicateRange", () => {
         color: "#7C3AED",
       })
       .$returningId();
-    reverseSectorId = reverseSector.id;
+      reverseSectorId = reverseSector.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
+    reverseScheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId: reverseSectorId,
+    });
 
     const [managerUser] = await db
       .insert(users)
@@ -124,7 +143,7 @@ describe("shifts.replicateRange", () => {
     doctorUserId = doctorUser.id;
     const [doctorProfessional] = await db
       .insert(professionals)
-      .values({ userId: doctorUserId, name: `Replicar Médico ${stamp}`, role: "Médico", userRole: "USER" })
+      .values({ userId: doctorUserId, name: `Replicar Médico ${stamp}`, role: "Médico", userRole: "USER", medicalSpecialtyId: anesthesiaId, specialty: "Anestesiologia" })
       .$returningId();
     doctorProfessionalId = doctorProfessional.id;
 
@@ -177,6 +196,7 @@ describe("shifts.replicateRange", () => {
           institutionId,
           hospitalId,
           sectorId,
+          scheduleContextId,
           label: s.label,
           specialty: "Anestesiologia",
           startAt,
@@ -226,6 +246,7 @@ describe("shifts.replicateRange", () => {
     await db.delete(managerScope).where(eq(managerScope.institutionId, institutionId));
     await db.delete(professionalInstitutions).where(eq(professionalInstitutions.institutionId, institutionId));
     await db.delete(professionals).where(inArray(professionals.id, [managerProfessionalId, doctorProfessionalId]));
+    await db.delete(scheduleContexts).where(inArray(scheduleContexts.id, [scheduleContextId, reverseScheduleContextId]));
     await db.delete(sectors).where(inArray(sectors.id, [sectorId, reverseSectorId]));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
@@ -477,6 +498,7 @@ describe("shifts.replicateRange", () => {
       institutionId,
       hospitalId,
       sectorId: reverseSectorId,
+      scheduleContextId: reverseScheduleContextId,
       label: "Origem inversa",
       specialty: "Anestesiologia",
       startAt: reverseSourceStart,
@@ -568,6 +590,7 @@ describe("shifts.replicateRange", () => {
       institutionId,
       hospitalId,
       sectorId: reverseSectorId,
+      scheduleContextId: reverseScheduleContextId,
       label: "Origem bloqueada",
       specialty: "Anestesiologia",
       startAt: at("2027-05-03", "08:00:00"),
@@ -661,6 +684,7 @@ describe("shifts.replicateRange", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: "Outro plantão",
         startAt: blockerStart,
         endAt: blockerEnd,
@@ -748,6 +772,7 @@ describe("shifts.replicateRange", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: "Replicação com sessão obsoleta",
         specialty: "Anestesiologia",
         startAt: sourceStart,

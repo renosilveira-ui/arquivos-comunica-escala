@@ -11,6 +11,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAuditLog,
   shiftAssignmentsV2,
@@ -18,6 +19,10 @@ import {
   shiftTemplates,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { calendarRouter } from "../server/calendar";
 import {
   dispatchConfirmations,
@@ -89,6 +94,10 @@ describe("hierarquia institution → hospital → sector", () => {
   let sectorAId: number;
   let sectorA2Id: number;
   let sectorBId: number;
+  let scheduleContextAId: number;
+  let scheduleContextA2Id: number;
+  let scheduleContextBId: number;
+  let anesthesiaId: number;
   let templateAId: number;
   let plusUserId: number;
   let plusProfessionalId: number;
@@ -193,6 +202,8 @@ describe("hierarquia institution → hospital → sector", () => {
         name: `Topology ${tag}`,
         role: "Médico",
         userRole: roleInInstitution,
+        medicalSpecialtyId: anesthesiaId,
+        specialty: "Anestesiologia",
       })
       .$returningId();
     await db.insert(professionalInstitutions).values({
@@ -280,6 +291,22 @@ describe("hierarquia institution → hospital → sector", () => {
       })
       .$returningId();
     sectorBId = sectorB.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextAId = await openTestScale(db, {
+      institutionId: institutionAId,
+      hospitalId: hospitalAId,
+      sectorId: sectorAId,
+    });
+    scheduleContextA2Id = await openTestScale(db, {
+      institutionId: institutionAId,
+      hospitalId: hospitalAId,
+      sectorId: sectorA2Id,
+    });
+    scheduleContextBId = await openTestScale(db, {
+      institutionId: institutionBId,
+      hospitalId: hospitalBId,
+      sectorId: sectorBId,
+    });
 
     const [templateA] = await db
       .insert(shiftTemplates)
@@ -388,6 +415,7 @@ describe("hierarquia institution → hospital → sector", () => {
         institutionId: institutionAId,
         hospitalId: hospitalAId,
         sectorId: sectorAId,
+        scheduleContextId: scheduleContextAId,
         label: "Topology publication A",
         startAt: publicationStart,
         endAt: publicationEnd,
@@ -401,6 +429,7 @@ describe("hierarquia institution → hospital → sector", () => {
         institutionId: institutionBId,
         hospitalId: hospitalBId,
         sectorId: sectorBId,
+        scheduleContextId: scheduleContextBId,
         label: "Topology publication B",
         startAt: publicationStart,
         endAt: publicationEnd,
@@ -427,6 +456,7 @@ describe("hierarquia institution → hospital → sector", () => {
         institutionId: institutionAId,
         hospitalId: hospitalAId,
         sectorId: sectorAId,
+        scheduleContextId: scheduleContextAId,
         label: "Topology membership source",
         startAt: new Date(`${membershipSourceYearMonth}-10T07:00:00-03:00`),
         endAt: new Date(`${membershipSourceYearMonth}-10T13:00:00-03:00`),
@@ -587,6 +617,7 @@ describe("hierarquia institution → hospital → sector", () => {
       .delete(professionalInstitutions)
       .where(inArray(professionalInstitutions.institutionId, [institutionAId, institutionBId]));
     await db.delete(professionals).where(inArray(professionals.id, professionalIds));
+    await db.delete(scheduleContexts).where(inArray(scheduleContexts.id, [scheduleContextAId, scheduleContextA2Id, scheduleContextBId]));
     await db.delete(sectors).where(inArray(sectors.id, [sectorAId, sectorA2Id, sectorBId]));
     await db.delete(hospitals).where(inArray(hospitals.id, [hospitalAId, hospitalBId]));
     await db.delete(institutions).where(inArray(institutions.id, [institutionAId, institutionBId]));

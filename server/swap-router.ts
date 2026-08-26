@@ -2792,7 +2792,25 @@ export const swapRouter = router({
               AND source_access.can_access = 1
               AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
           )
+          AND fsi.schedule_context_id IN (${sql.join(
+            assumableContextIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
           AND (
+            (
+              fsc.admission_policy = 'ALL_CFM_SPECIALTIES'
+              AND ap.medical_specialty_id IS NOT NULL
+              AND fp.medical_specialty_id IS NOT NULL
+            )
+            OR
+            (
+              fsc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
+              AND ap.medical_specialty_id IS NOT NULL
+              AND fp.medical_specialty_id IS NOT NULL
+              AND ap.operational_profile_code IS NULL
+              AND fp.operational_profile_code IS NULL
+            )
+            OR
             (
               fsc.medical_specialty_id IS NOT NULL
               AND fms.id IS NOT NULL

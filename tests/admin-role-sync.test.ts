@@ -30,11 +30,16 @@ import {
   professionalInstitutions,
   professionals,
   pushTokens,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { yearMonthBrt } from "../server/local-time";
 import { sdk } from "../server/_core/sdk";
 import {
@@ -93,6 +98,8 @@ describe("admin: papel institucional isolado por tenant", () => {
   let institutionCId: number;
   let hospitalAId: number;
   let sectorAId: number;
+  let scheduleContextAId: number;
+  let anesthesiaId: number;
   let adminId: number;
   let adminProfessionalId: number;
   let secondAdminId: number;
@@ -143,6 +150,8 @@ describe("admin: papel institucional isolado por tenant", () => {
         // Projeção legada deliberadamente USER: o teste prova que o PUT
         // contextual não a usa nem a sobrescreve.
         userRole: "USER",
+        medicalSpecialtyId: globalRole === "doctor" ? anesthesiaId : null,
+        specialty: globalRole === "doctor" ? "Anestesiologia" : null,
       })
       .$returningId();
     userIds.push(user.id);
@@ -234,6 +243,7 @@ describe("admin: papel institucional isolado por tenant", () => {
         institutionId: institutionAId,
         hospitalId: hospitalAId,
         sectorId: sectorAId,
+        scheduleContextId: scheduleContextAId,
         label: `RoleSync duty ${transientShiftIds.length}`,
         startAt,
         endAt,
@@ -455,6 +465,12 @@ describe("admin: papel institucional isolado por tenant", () => {
       })
       .$returningId();
     sectorAId = sectorA.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextAId = await openTestScale(db, {
+      institutionId: institutionAId,
+      hospitalId: hospitalAId,
+      sectorId: sectorAId,
+    });
 
     const admin = await createPerson("admin", "admin");
     adminId = admin.userId;
@@ -646,6 +662,7 @@ describe("admin: papel institucional isolado por tenant", () => {
     await db
       .delete(monthlyRosters)
       .where(eq(monthlyRosters.institutionId, institutionAId));
+    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextAId));
     await db.delete(sectors).where(eq(sectors.id, sectorAId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalAId));
     await db

@@ -8,12 +8,17 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
   swapRequests,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { getDb } from "../server/db";
 import { swapRouter } from "../server/swap-router";
 import { yearMonthBrt } from "../server/local-time";
@@ -32,6 +37,8 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
+  let anesthesiaId: number;
   let actor: Identity;
   let source: Identity;
   let noAccessSource: Identity;
@@ -71,6 +78,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
         name,
         role: "Médico",
         specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaId,
         userRole: "USER",
       })
       .$returningId();
@@ -121,6 +129,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `swap-batch-${stamp}-shift-${dayOffset}-${owner.professionalId}`,
         specialty: "Anestesiologia",
         startAt,
@@ -263,6 +272,8 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
       })
       .$returningId();
     sectorId = sector.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextId = await openTestScale(db, { institutionId, hospitalId, sectorId });
     actor = await createIdentity("actor");
     source = await createIdentity("source");
     noAccessSource = await createIdentity("no-access-source", false);
@@ -332,6 +343,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
     await db
       .delete(monthlyRosters)
       .where(eq(monthlyRosters.institutionId, institutionId));
+    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
@@ -353,7 +365,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
       caller().listAvailable({ type: "CESSAO" }),
     );
     expect(five.value).toHaveLength(5);
-    expect({ one: one.count, five: five.count }).toEqual({ one: 3, five: 3 });
+    expect({ one: one.count, five: five.count }).toEqual({ one: 6, five: 6 });
   });
 
   it("preserva o output e omite em lote tuplas, identidades, ACLs e conflitos envenenados", async () => {

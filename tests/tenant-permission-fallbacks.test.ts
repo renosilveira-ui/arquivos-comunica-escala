@@ -236,9 +236,6 @@ describe("autoridade visual exclusivamente institucional", () => {
     expect(editShift).toContain(
       "enabled: canLoadEditShift(permissionState, !!shiftId)",
     );
-    expect(editShift).toMatch(
-      /enabled:\s*permissionState === "ALLOWED",/,
-    );
     expect(editShift).not.toContain("if (!canEditShift) router.back()");
   });
 

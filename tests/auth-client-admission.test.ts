@@ -913,7 +913,7 @@ describe("admissão do token no login nativo", () => {
         password: "segredo-seguro",
         institutionId: 101,
       }),
-    ).resolves.toEqual({ ok: true });
+    ).resolves.toEqual({ ok: true, pending: true });
   });
 
   it("logout de transição envia identidade esperada canônica", async () => {

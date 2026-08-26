@@ -19,10 +19,15 @@ import {
   sectors,
   shiftAssignmentsV2,
   shiftAuditLog,
+  scheduleContexts,
   shiftInstances,
   swapRequests,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
@@ -43,6 +48,8 @@ describe("integridade transacional", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
+  let anesthesiaId: number;
   let manager: Person;
   let alice: Person;
   let bruno: Person;
@@ -72,7 +79,14 @@ describe("integridade transacional", () => {
       .$returningId();
     const [p] = await db!
       .insert(professionals)
-      .values({ userId: u.id, name: `Tx ${tag} ${stamp}`, role: "Médico", userRole: userRole as any })
+      .values({
+        userId: u.id,
+        name: `Tx ${tag} ${stamp}`,
+        role: "Médico",
+        userRole: userRole as any,
+        medicalSpecialtyId: anesthesiaId,
+        specialty: "Anestesiologia",
+      })
       .$returningId();
     await db!.insert(professionalInstitutions).values({
       professionalId: p.id,
@@ -91,7 +105,17 @@ describe("integridade transacional", () => {
     if (endAt <= startAt) endAt.setUTCDate(endAt.getUTCDate() + 1);
     const [row] = await db!
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, label, startAt, endAt, status, createdBy: manager.userId })
+        .values({
+          institutionId,
+          hospitalId,
+          sectorId,
+          scheduleContextId,
+          label,
+          startAt,
+          endAt,
+          status,
+          createdBy: manager.userId,
+        })
       .$returningId();
     return row.id;
   }
@@ -122,6 +146,12 @@ describe("integridade transacional", () => {
       .values({ institutionId, hospitalId, name: `Tx Setor ${stamp}`, category: "cirurgico", color: "#2563EB" })
       .$returningId();
     sectorId = sector.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
 
     manager = await createPerson(stamp, "gestor", "manager", "GESTOR_PLUS");
     alice = await createPerson(stamp, "alice", "doctor", "USER");
@@ -207,6 +237,7 @@ describe("integridade transacional", () => {
     const people = [manager, alice, bruno, carla].filter(Boolean);
     await db.delete(professionals).where(inArray(professionals.id, people.map((p) => p.professionalId)));
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
+    await db.delete(scheduleContexts).where(eq(scheduleContexts.institutionId, institutionId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));

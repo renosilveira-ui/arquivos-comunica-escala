@@ -246,7 +246,7 @@ export const operationalProfileCodeEnum = mysqlEnum(
 );
 
 export const scheduleContextAdmissionPolicyEnum = mysqlEnum(
-  "schedule_context_admission_policy",
+  "admission_policy",
   [
     "PINNED_QUALIFICATION",
     "ALL_CFM_SPECIALTIES",

@@ -931,6 +931,34 @@ export async function assertActiveScheduleContextTopology(input: {
   return context;
 }
 
+export async function assertTenantHospitalSector(
+  db: ContextDb,
+  institutionId: number,
+  hospitalId: number,
+  sectorId: number,
+): Promise<void> {
+  const [row] = await db
+    .select({ id: sectors.id })
+    .from(sectors)
+    .innerJoin(hospitals, eq(hospitals.id, sectors.hospitalId))
+    .where(
+      and(
+        eq(sectors.id, sectorId),
+        eq(sectors.institutionId, institutionId),
+        eq(sectors.hospitalId, hospitalId),
+        eq(hospitals.id, hospitalId),
+        eq(hospitals.institutionId, institutionId),
+      ),
+    )
+    .limit(1);
+  if (!row) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Hospital ou setor fora do tenant ativo.",
+    });
+  }
+}
+
 export async function resolveScheduleContextForShiftCreation(input: {
   institutionId: number;
   scheduleContextId?: number;
@@ -941,6 +969,14 @@ export async function resolveScheduleContextForShiftCreation(input: {
 }): Promise<AuthorizedScheduleContext> {
   const database = input.db ?? (await getDb());
   if (!database) throw new Error("Database not available");
+  if (input.sectorId !== undefined) {
+    await assertTenantHospitalSector(
+      database,
+      input.institutionId,
+      input.hospitalId,
+      input.sectorId,
+    );
+  }
   const candidates = await selectActiveScheduleContexts(
     database,
     input.institutionId,

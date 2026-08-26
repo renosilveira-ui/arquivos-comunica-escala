@@ -1235,10 +1235,12 @@ adminRouter.put(
     const normalizedName = typeof name === "string" ? name.trim() : undefined;
     const normalizedEmail =
       typeof email === "string" ? email.toLowerCase().trim() : undefined;
+    const hasMeaningfulQualificationField = (value: unknown) =>
+      value !== undefined && value !== null && value !== "";
     const qualificationUpdateRequested =
-      Object.prototype.hasOwnProperty.call(req.body, "specialty") ||
-      Object.prototype.hasOwnProperty.call(req.body, "medicalSpecialtyCode") ||
-      Object.prototype.hasOwnProperty.call(req.body, "operationalProfileCode");
+      hasMeaningfulQualificationField(specialty) ||
+      hasMeaningfulQualificationField(medicalSpecialtyCode) ||
+      hasMeaningfulQualificationField(operationalProfileCode);
     let qualification: CanonicalMedicalQualification | undefined;
 
     if (name !== undefined) {
@@ -1456,18 +1458,21 @@ adminRouter.put(
                   qualification.operationalProfileCode;
               }
 
-              const selectedScheduleContexts =
-                target.globalRole === "doctor"
-                  ? await resolveScheduleContextAclSelection({
-                      db: tx,
-                      institutionId,
-                      qualification: {
-                        medicalSpecialtyId: effectiveMedicalSpecialtyId,
-                        operationalProfileCode: effectiveOperationalProfileCode,
-                      },
-                      requestedScheduleContextIds,
-                    })
-                  : [];
+              const shouldRewriteScheduleAccess =
+                target.globalRole === "doctor" &&
+                (requestedScheduleContextIds !== undefined ||
+                  qualificationUpdateRequested);
+              const selectedScheduleContexts = shouldRewriteScheduleAccess
+                ? await resolveScheduleContextAclSelection({
+                    db: tx,
+                    institutionId,
+                    qualification: {
+                      medicalSpecialtyId: effectiveMedicalSpecialtyId,
+                      operationalProfileCode: effectiveOperationalProfileCode,
+                    },
+                    requestedScheduleContextIds,
+                  })
+                : [];
               if (
                 target.globalRole !== "doctor" &&
                 (effectiveMedicalSpecialtyId !== null ||
@@ -1532,7 +1537,7 @@ adminRouter.put(
                   .where(eq(professionals.id, target.professionalId));
               }
 
-              if (target.globalRole === "doctor") {
+              if (shouldRewriteScheduleAccess) {
                 await tx
                   .delete(professionalAccess)
                   .where(
@@ -1587,7 +1592,7 @@ adminRouter.put(
                   : []),
                 ...(emailActuallyChanges ? ["email"] : []),
                 ...(qualificationUpdateRequested ? ["qualification"] : []),
-                ...(target.globalRole === "doctor" ? ["scheduleContexts"] : []),
+                ...(shouldRewriteScheduleAccess ? ["scheduleContexts"] : []),
                 ...(roleChanged ? ["roleInInstitution"] : []),
               ];
 

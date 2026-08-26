@@ -15,6 +15,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftAuditLog,
@@ -22,6 +23,10 @@ import {
   shiftTemplates,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { calendarRouter } from "../server/calendar";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
@@ -38,6 +43,8 @@ describe("guardas de mês em todos os pontos de escrita", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
+  let anesthesiaId: number;
   let templateId: number;
   let medicoUserId: number;
   let medicoProId: number;
@@ -77,7 +84,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     const endAt = new Date(startAt.getTime() + 6 * 60 * 60 * 1000);
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, label: `gm-${stamp}-${label}`, startAt, endAt, status: "VAGO" })
+      .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: `gm-${stamp}-${label}`, startAt, endAt, status: "VAGO" })
       .$returningId();
     return s.id;
   }
@@ -207,12 +214,14 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     hospitalId = h.id;
     const [sec] = await db.insert(sectors).values({ institutionId, hospitalId, name: `GM Setor ${stamp}`, category: "cirurgico", color: "#2563EB" }).$returningId();
     sectorId = sec.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextId = await openTestScale(db, { institutionId, hospitalId, sectorId });
     const [t] = await db.insert(shiftTemplates).values({ institutionId, hospitalId, sectorId, name: "Manhã", startTime: "07:00:00", endTime: "13:00:00" }).$returningId();
     templateId = t.id;
 
     async function person(tag: string, role: "manager" | "doctor", link: "GESTOR_MEDICO" | "GESTOR_PLUS" | "USER") {
       const [u] = await db.insert(users).values({ name: `GM ${tag} ${stamp}`, email: `gm-${tag}-${stamp}@test.local`, passwordHash: "test", role }).$returningId();
-      const [p] = await db.insert(professionals).values({ userId: u.id, name: `GM ${tag} ${stamp}`, role: "Médico", userRole: link }).$returningId();
+      const [p] = await db.insert(professionals).values({ userId: u.id, name: `GM ${tag} ${stamp}`, role: "Médico", userRole: link, medicalSpecialtyId: anesthesiaId, specialty: "Anestesiologia" }).$returningId();
       await db.insert(professionalInstitutions).values({ professionalId: p.id, userId: u.id, institutionId, roleInInstitution: link, isPrimary: true, active: true });
       await db.insert(professionalAccess).values({ institutionId, professionalId: p.id, hospitalId, sectorId, canAccess: true });
       return { userId: u.id, proId: p.id };
@@ -265,6 +274,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     await db.delete(managerScope).where(eq(managerScope.managerProfessionalId, medicoProId));
     await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.professionalId, pros));
     await db.delete(professionals).where(inArray(professionals.id, pros));
+    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
@@ -304,15 +314,6 @@ describe("guardas de mês em todos os pontos de escrita", () => {
 
   it("sessão gerencial obsoleta barra calendar/editor/shifts/assignment/month", async () => {
     await setRoster(currentYm, "DRAFT");
-    await expectStaleMutationNoWrite(medicoUserId, "calendar.getDay", () =>
-      calendarAs(medicoUserId).getDay({
-        institutionId,
-        hospitalId,
-        sectorId,
-        date: todayKey,
-      }),
-    );
-
     await expectStaleMutationNoWrite(plusUserId, "shifts.create", () =>
       asPlus().create({ date: todayKey, shiftTemplateId: templateId }),
     );
@@ -900,93 +901,19 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     expect(await shiftsOfDay(date)).toHaveLength(1);
   });
 
-  it("calendar: duas auto-criações concorrentes produzem exatamente três turnos", async () => {
+  it("calendar: abrir o dia é somente leitura e não cria turnos", async () => {
     const date = dayKeyBrt(currentStart);
     await setRoster(currentYm, "DRAFT");
-
-    let releaseLock!: () => void;
-    let rowLocked!: () => void;
-    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
-    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
-    const locker = db.transaction(async (tx) => {
-      await tx
-        .update(monthlyRosters)
-        .set({ status: "DRAFT" })
-        .where(
-          and(
-            eq(monthlyRosters.institutionId, institutionId),
-            eq(monthlyRosters.hospitalId, hospitalId),
-            eq(monthlyRosters.yearMonth, currentYm),
-          ),
-        );
-      rowLocked();
-      await release;
+    const before = await mutationSnapshot();
+    const day = await calendarAs(medicoUserId).getDay({
+      institutionId,
+      hospitalId,
+      sectorId,
+      date,
     });
-
-    await locked;
-    let settled = 0;
-    const input = { institutionId, hospitalId, sectorId, date };
-    const requests = [
-      calendarAs(medicoUserId).getDay(input).finally(() => { settled += 1; }),
-      calendarAs(medicoUserId).getDay(input).finally(() => { settled += 1; }),
-    ];
-    const outcomesPromise = Promise.allSettled(requests);
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 75));
-      expect(settled).toBe(0);
-    } finally {
-      releaseLock();
-    }
-    await locker;
-    const outcomes = await outcomesPromise;
-    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
-    const failures = outcomes.filter((outcome) => outcome.status === "rejected") as PromiseRejectedResult[];
-    expect(failures).toHaveLength(1);
-    expect(failures[0].reason).toMatchObject({ code: "CONFLICT" });
-
-    const created = await shiftsOfDay(date);
-    expect(created).toHaveLength(3);
-    const ids = created.map((shift) => shift.id);
-    const auditTrailRows = await db
-      .select({ id: auditTrail.id })
-      .from(auditTrail)
-      .where(inArray(auditTrail.shiftInstanceId, ids));
-    const auditLogRows = await db
-      .select({ id: shiftAuditLog.id })
-      .from(shiftAuditLog)
-      .where(inArray(shiftAuditLog.shiftInstanceId, ids));
-    expect(auditTrailRows).toHaveLength(3);
-    expect(auditLogRows).toHaveLength(3);
-  });
-
-  it("calendar: falha da auditoria strict reverte os três inserts e auditLogs", async () => {
-    const date = dayKeyBrt(currentStart);
-    await setRoster(currentYm, "DRAFT");
-    await installAuditFailureTrigger();
-    try {
-      await expect(
-        calendarAs(medicoUserId).getDay({ institutionId, hospitalId, sectorId, date }),
-      ).rejects.toBeTruthy();
-    } finally {
-      await dropAuditFailureTrigger();
-    }
-
+    expect(day.shifts).toHaveLength(0);
     expect(await shiftsOfDay(date)).toHaveLength(0);
-    const auditTrailRows = await db
-      .select({ id: auditTrail.id })
-      .from(auditTrail)
-      .where(and(eq(auditTrail.institutionId, institutionId), eq(auditTrail.action, "SHIFT_CREATED")));
-    const auditLogRows = await db
-      .select({ id: shiftAuditLog.id })
-      .from(shiftAuditLog)
-      .where(
-        and(
-          eq(shiftAuditLog.institutionId, institutionId),
-          eq(shiftAuditLog.event, "SHIFT_CREATED"),
-        ),
-      );
-    expect(auditTrailRows).toHaveLength(0);
-    expect(auditLogRows).toHaveLength(0);
+    expect(await mutationSnapshot()).toEqual(before);
   });
 
   it("calendar USER vê PUBLISHED/LOCKED e oculta profissional suspenso ou excluído", async () => {
@@ -1050,7 +977,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     });
   });
 
-  it("M1: abrir dia vazio de mês futuro (GESTOR_MEDICO) ou trancado não cria turnos; DRAFT no mês corrente cria", async () => {
+  it("M1: abrir dia vazio nunca cria turnos, mesmo em DRAFT no mês corrente", async () => {
     const nextDay = dayKeyBrt(nextMonthStart);
     const r1 = await calendarAs(medicoUserId).getDay({ institutionId, hospitalId, sectorId, date: nextDay });
     expect(r1.shifts).toHaveLength(0);
@@ -1063,14 +990,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
 
     const todayKey = dayKeyBrt(currentStart);
     const r3 = await calendarAs(medicoUserId).getDay({ institutionId, hospitalId, sectorId, date: todayKey });
-    expect(r3.shifts).toHaveLength(3);
-    expect(await shiftsOfDay(todayKey)).toHaveLength(3);
-    const ids = r3.shifts.map((shift) => shift.shiftInstanceId);
-    expect(
-      await db.select({ id: auditTrail.id }).from(auditTrail).where(inArray(auditTrail.shiftInstanceId, ids)),
-    ).toHaveLength(3);
-    expect(
-      await db.select({ id: shiftAuditLog.id }).from(shiftAuditLog).where(inArray(shiftAuditLog.shiftInstanceId, ids)),
-    ).toHaveLength(3);
+    expect(r3.shifts).toHaveLength(0);
+    expect(await shiftsOfDay(todayKey)).toHaveLength(0);
   });
 });

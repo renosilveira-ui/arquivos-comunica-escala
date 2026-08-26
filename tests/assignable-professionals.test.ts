@@ -14,6 +14,10 @@ import {
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { appRouter } from "../server/routers";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 
 describe("professionals.listAssignableForShift", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
@@ -26,6 +30,8 @@ describe("professionals.listAssignableForShift", () => {
   let assignedProfessionalId: number;
   let noAccessProfessionalId: number;
   let shiftInstanceId: number;
+  let scheduleContextId: number;
+  let anesthesiaId: number;
 
   async function createUserProfessional(stamp: number, label: string, roleInInstitution = "USER") {
     const [user] = await db
@@ -35,6 +41,7 @@ describe("professionals.listAssignableForShift", () => {
         email: `assignable-${label}-${stamp}@test.local`,
         passwordHash: "test",
         role: roleInInstitution === "GESTOR_MEDICO" ? "manager" : "doctor",
+        approvalStatus: "APPROVED",
       })
       .$returningId();
 
@@ -45,6 +52,8 @@ describe("professionals.listAssignableForShift", () => {
         name: `Assignable ${label} ${stamp}`,
         role: "Médico",
         userRole: roleInInstitution as "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS",
+        medicalSpecialtyId: anesthesiaId,
+        specialty: "Anestesiologia",
       })
       .$returningId();
 
@@ -94,6 +103,12 @@ describe("professionals.listAssignableForShift", () => {
       })
       .$returningId();
     sectorId = sector.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
 
     const manager = await createUserProfessional(stamp, "Manager", "GESTOR_MEDICO");
     managerUserId = manager.userId;
@@ -127,6 +142,7 @@ describe("professionals.listAssignableForShift", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: "Plantão teste alocáveis",
         startAt: new Date(),
         endAt: new Date(Date.now() + 6 * 60 * 60 * 1000),

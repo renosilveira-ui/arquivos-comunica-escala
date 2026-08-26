@@ -12,8 +12,14 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
+  sectors,
   users,
 } from "../drizzle/schema";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 import { getDb } from "../server/db";
@@ -28,6 +34,9 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
   let institutionBId: number;
   let hospitalAId: number;
   let hospitalBId: number;
+  let sectorAId: number;
+  let scheduleContextAId: number;
+  let anesthesiaId: number;
   let adminId: number;
   let activeAId: number;
   let activeBId: number;
@@ -63,6 +72,9 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
         name: `ATB ${input.tag}`,
         role: "Médico",
         userRole: input.globalRole === "admin" ? "GESTOR_PLUS" : "USER",
+        medicalSpecialtyId:
+          input.globalRole === "admin" ? null : anesthesiaId,
+        specialty: input.globalRole === "admin" ? null : "Anestesiologia",
       })
       .$returningId();
     await db.insert(professionalInstitutions).values({
@@ -112,6 +124,23 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
       .$returningId();
     hospitalAId = hospitalA.id;
     hospitalBId = hospitalB.id;
+    const [sectorA] = await db
+      .insert(sectors)
+      .values({
+        institutionId: institutionAId,
+        hospitalId: hospitalAId,
+        name: `ATB Setor A ${STAMP}`,
+        category: "cirurgico",
+        color: "#2563EB",
+      })
+      .$returningId();
+    sectorAId = sectorA.id;
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    scheduleContextAId = await openTestScale(db, {
+      institutionId: institutionAId,
+      hospitalId: hospitalAId,
+      sectorId: sectorAId,
+    });
 
     adminId = (await person({ tag: "admin", institutionId: institutionAId, globalRole: "admin" })).userId;
     activeAId = (await person({ tag: "active-a", institutionId: institutionAId })).userId;
@@ -185,6 +214,8 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
     await db.delete(professionalAccess).where(inArray(professionalAccess.institutionId, [institutionAId, institutionBId]));
     await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.userId, userIds));
     await db.delete(professionals).where(inArray(professionals.id, professionalIds));
+    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextAId));
+    await db.delete(sectors).where(eq(sectors.id, sectorAId));
     await db.delete(hospitals).where(inArray(hospitals.id, [hospitalAId, hospitalBId]));
     await db.delete(institutions).where(inArray(institutions.id, [institutionAId, institutionBId]));
     await db.delete(users).where(inArray(users.id, userIds));

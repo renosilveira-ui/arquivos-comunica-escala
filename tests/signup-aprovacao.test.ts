@@ -156,13 +156,22 @@ describe("auto-cadastro público e aprovação", () => {
     emergencySectorId = emergency.id;
     await db
       .insert(medicalSpecialties)
-      .values({
-        code: "ANESTESIOLOGIA",
-        name: "Anestesiologia",
-        sourceVersion: "CFM_2380_2024",
-        active: true,
-        sortOrder: 2,
-      })
+      .values([
+        {
+          code: "ANESTESIOLOGIA",
+          name: "Anestesiologia",
+          sourceVersion: "CFM_2380_2024",
+          active: true,
+          sortOrder: 3,
+        },
+        {
+          code: "CLINICA_MEDICA",
+          name: "Clínica médica",
+          sourceVersion: "CFM_2380_2024",
+          active: true,
+          sortOrder: 16,
+        },
+      ])
       .onDuplicateKeyUpdate({ set: { active: true } });
     const [anesthesia] = await db
       .select({ id: medicalSpecialties.id })
@@ -482,15 +491,13 @@ describe("auto-cadastro público e aprovação", () => {
     expect(dup.status).toBe(409);
   });
 
-  it("classifica Clínica Geral como perfil generalista, nunca Clínica médica", async () => {
-    const email = `signup-generalist-${STAMP}@test.local`;
+  it("classifica Clínica Geral como Clínica médica, nunca como generalista", async () => {
+    const email = `signup-clinica-geral-${STAMP}@test.local`;
     const res = await request(app).post("/api/auth/signup").send({
-      name: "Signup Generalista",
+      name: "Signup Clinica Geral",
       email,
       password: PASSWORD,
       institutionId,
-      // Compatibilidade da build anterior: texto só é aceito quando resolve
-      // inequivocamente para um item conhecido.
       specialty: "Clínica Geral",
     });
     expect(res.status).toBe(201);
@@ -499,22 +506,38 @@ describe("auto-cadastro público e aprovação", () => {
         medicalSpecialtyId: professionals.medicalSpecialtyId,
         operationalProfileCode: professionals.operationalProfileCode,
         legacyLabel: professionals.specialty,
+        medicalSpecialtyCode: medicalSpecialties.code,
       })
       .from(professionals)
       .innerJoin(users, eq(users.id, professionals.userId))
+      .leftJoin(
+        medicalSpecialties,
+        eq(medicalSpecialties.id, professionals.medicalSpecialtyId),
+      )
       .where(eq(users.email, email));
-    expect(professional).toEqual({
-      medicalSpecialtyId: null,
-      operationalProfileCode: "MEDICO_GENERALISTA",
-      legacyLabel: "Médico generalista",
+    expect(professional).toMatchObject({
+      operationalProfileCode: null,
+      legacyLabel: "Clínica médica",
+      medicalSpecialtyCode: "CLINICA_MEDICA",
     });
+    expect(professional.medicalSpecialtyId).toBeTypeOf("number");
   });
 
   it("cadastro direto separa dois generalistas por setor e rejeita ambiguidade/incompatibilidade sem escrever", async () => {
+    const email = `signup-generalist-${STAMP}@test.local`;
+    const generalistSignup = await request(app).post("/api/auth/signup").send({
+      name: "Signup Generalista",
+      email,
+      password: PASSWORD,
+      institutionId,
+      operationalProfileCode: "MEDICO_GENERALISTA",
+      medicalSpecialtyCode: null,
+    });
+    expect(generalistSignup.status).toBe(201);
     const [pendingGeneralist] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.email, `signup-generalist-${STAMP}@test.local`));
+      .where(eq(users.email, email));
     const ambiguousApproval = await request(app)
       .post(`/api/admin/pending-signups/${pendingGeneralist.id}/approve`)
       .set("Cookie", adminCookie)
