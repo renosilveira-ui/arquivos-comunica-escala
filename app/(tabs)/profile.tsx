@@ -65,7 +65,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { AppButton } from "@/components/ui/AppButton";
 import { getLastCrash } from "@/components/AppErrorBoundary";
-import { useAuth, type User as AuthUser } from "@/hooks/use-auth";
+import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
@@ -73,26 +73,10 @@ import { useTenantState } from "@/lib/tenant-state";
 import { confirmAction } from "@/lib/ui/confirm";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
 import { isSessionTerminationNotDurableError } from "@/lib/session-cleanup";
+import { profileRoleBadgeLabel } from "@/lib/institution-roles";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-function roleLabel(role: AuthUser["role"] | null | undefined): string {
-  switch (role) {
-    case "admin":
-      return "Administrador";
-    case "manager":
-      return "Gestor";
-    case "doctor":
-      return "Médico";
-    case "nurse":
-      return "Enfermagem";
-    case "tech":
-      return "Técnico";
-    default:
-      return "";
-  }
 }
 
 const MONTH_LABELS = [
@@ -105,9 +89,16 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { clearInstitutionSelection } = useTenantState();
   const utils = trpc.useUtils();
-  const { can, isManager, canApproveAssignments } = usePermissions();
+  const { can, isManager, canApproveAssignments, isGlobalAdmin, roleInInstitution } =
+    usePermissions();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
+
+  const profileRoleLabel = profileRoleBadgeLabel({
+    isGlobalAdmin,
+    roleInInstitution,
+    legacyGlobalRole: user?.role,
+  });
 
   const managementLinks = useMemo(
     () =>
@@ -393,9 +384,9 @@ export default function ProfileScreen() {
                     {user.email}
                   </Text>
                 ) : null}
-                {roleLabel(user.role) ? (
+                {profileRoleLabel ? (
                   <View style={{ alignSelf: "flex-start", marginTop: theme.space[1] }}>
-                    <Badge variant="info" label={roleLabel(user.role)} />
+                    <Badge variant="info" label={profileRoleLabel} />
                   </View>
                 ) : null}
               </View>

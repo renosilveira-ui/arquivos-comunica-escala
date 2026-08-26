@@ -88,8 +88,11 @@ jobs:
       - name: Typecheck app
         run: pnpm typecheck:app
 
-      - name: Build
+      - name: Build server
         run: pnpm build
+
+      - name: Build web
+        run: pnpm build:web
 
       - name: Test
         run: pnpm test

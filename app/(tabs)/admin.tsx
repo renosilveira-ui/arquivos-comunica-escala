@@ -15,6 +15,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { apiFetch } from "@/lib/_core/api";
 import {
   Lock,
@@ -44,6 +45,10 @@ import {
   type ScheduleContextAccessOption,
 } from "@/components/ScheduleContextAccessPicker";
 import { formatDateTimeBR } from "@/lib/datetime";
+import {
+  INSTITUTION_ROLE_LABELS,
+  type InstitutionRole,
+} from "@/lib/institution-roles";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,7 +56,6 @@ import { formatDateTimeBR } from "@/lib/datetime";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
-type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
 
 interface AdminUser {
   id: number;
@@ -130,12 +134,6 @@ const PROFESSIONAL_ROLE_LABELS: Record<ProfessionalRole, string> = {
 };
 
 const PROFESSIONAL_ROLES: ProfessionalRole[] = ["doctor", "nurse", "tech"];
-
-const INSTITUTION_ROLE_LABELS: Record<InstitutionRole, string> = {
-  USER: "Usuário",
-  GESTOR_MEDICO: "Gestor médico",
-  GESTOR_PLUS: "Gestor+",
-};
 
 const INSTITUTION_ROLE_BADGE: Record<InstitutionRole, BadgeVariant> = {
   USER: "info",
@@ -1033,6 +1031,7 @@ function EditUserModal({
 
 export default function AdminScreen() {
   const { user } = useAuth();
+  const { isGlobalAdmin, isLoading: permissionsLoading } = usePermissions();
   const router = useRouter();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [recentRegistrations, setRecentRegistrations] = useState<
@@ -1257,7 +1256,19 @@ export default function AdminScreen() {
     );
   }
 
-  if (user.role !== "admin") {
+  if (permissionsLoading) {
+    return (
+      <ScreenGradient variant="dark" scrollable={false}>
+        <View
+          style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
+        >
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (!isGlobalAdmin) {
     return (
       <ScreenGradient variant="dark" scrollable={false}>
         <View
