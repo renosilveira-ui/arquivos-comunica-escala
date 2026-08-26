@@ -24,19 +24,14 @@ import { authApi } from "@/lib/_core/api";
  *   1. Usuário digita senha atual + nova + confirmação
  *   2. Validação client-side (≥8 chars, confirma bate, distinta da atual)
  *   3. POST /api/auth/change-password
- *   4. Sucesso: feedback + volta pro perfil. Sessão atual permanece
- *      válida (server não invalida cookie no change-password — assim o
- *      usuário não é deslogado bruscamente).
- *
- * Limitação conhecida: outras sessões em outros dispositivos NÃO são
- * invalidadas. Se o usuário trocou a senha por desconfiar de
- * comprometimento, ainda precisa fazer logout manual nos outros
- * dispositivos. Frente futura: revogação de sessões antigas.
+ *   4. Sucesso: o servidor gira sessionVersion e revoga as demais sessões
+ *      e destinos push; este aparelho recebe a nova sessão, refaz somente o
+ *      próprio registro push e então mostra o feedback antes de voltar.
  */
 
 export default function ChangePasswordScreen() {
   const router = useRouter();
-  const { user, isLoading: authLoading, refetch } = useAuth();
+  const { user, isLoading: authLoading, rotateSession } = useAuth();
   // Senha temporária do admin: o AuthGuard manda pra cá e só libera o
   // app quando a flag cai (após refetch do /me).
   const forced = Boolean(user?.mustChangePassword);
@@ -47,7 +42,9 @@ export default function ChangePasswordScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [focusedField, setFocusedField] = useState<"current" | "new" | "confirm" | null>(null);
+  const [focusedField, setFocusedField] = useState<
+    "current" | "new" | "confirm" | null
+  >(null);
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -58,6 +55,10 @@ export default function ChangePasswordScreen() {
     setErrorMsg(null);
     setSuccessMsg(null);
 
+    if (!user) {
+      setErrorMsg("Sessão indisponível. Entre novamente para alterar a senha.");
+      return;
+    }
     if (!currentPassword || !newPassword || !confirmPassword) {
       setErrorMsg("Preencha todos os campos.");
       return;
@@ -77,7 +78,14 @@ export default function ChangePasswordScreen() {
 
     setSubmitting(true);
     try {
-      const result = await authApi.changePassword(currentPassword, newPassword);
+      const result = await rotateSession((credential, capabilityReceipt) =>
+        authApi.changePassword(
+          currentPassword,
+          newPassword,
+          credential,
+          capabilityReceipt,
+        ),
+      );
       if (!result.ok) {
         setErrorMsg(result.error ?? "Erro ao alterar senha.");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -90,8 +98,7 @@ export default function ChangePasswordScreen() {
       setNewPassword("");
       setConfirmPassword("");
       if (forced) {
-        // Atualiza o user (mustChangePassword=false) e entra no app.
-        await refetch();
+        // rotateSession já concluiu o /me canônico da nova sessão.
         router.replace("/(tabs)");
         return;
       }
@@ -120,7 +127,10 @@ export default function ChangePasswordScreen() {
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
           <AlertCircle size={48} color={theme.colors.textMuted} />
-          <Text className="mt-4 text-lg" style={{ color: theme.colors.textMuted }}>
+          <Text
+            className="mt-4 text-lg"
+            style={{ color: theme.colors.textMuted }}
+          >
             Faça login para alterar a senha
           </Text>
         </View>
@@ -134,7 +144,13 @@ export default function ChangePasswordScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 }}>
+        <ScrollView
+          contentContainerStyle={{
+            paddingHorizontal: 20,
+            paddingTop: 20,
+            paddingBottom: 40,
+          }}
+        >
           {/* Header */}
           <View className="flex-row items-center gap-3 mb-2">
             {!forced ? (
@@ -147,14 +163,20 @@ export default function ChangePasswordScreen() {
                 <ChevronLeft size={28} color={theme.colors.textPrimary} />
               </TouchableOpacity>
             ) : null}
-            <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>
+            <Text
+              className="text-3xl font-bold"
+              style={{ color: theme.colors.textPrimary }}
+            >
               {forced ? "Defina sua nova senha" : "Alterar senha"}
             </Text>
           </View>
-          <Text className="text-sm mb-6" style={{ color: theme.colors.textMuted }}>
+          <Text
+            className="text-sm mb-6"
+            style={{ color: theme.colors.textMuted }}
+          >
             {forced
               ? "Você entrou com uma senha temporária. Escolha uma senha nova (mínimo 8 caracteres) para continuar."
-              : "Mínimo 8 caracteres. Se esquecer, use \"Esqueci minha senha\" na tela de login."}
+              : 'Mínimo 8 caracteres. Se esquecer, use "Esqueci minha senha" na tela de login.'}
           </Text>
 
           <View
@@ -167,7 +189,10 @@ export default function ChangePasswordScreen() {
           >
             {/* Senha atual */}
             <View>
-              <Text className="text-sm mb-2" style={{ color: theme.colors.textSecondary, fontWeight: "500" }}>
+              <Text
+                className="text-sm mb-2"
+                style={{ color: theme.colors.textSecondary, fontWeight: "500" }}
+              >
                 Senha atual
               </Text>
               <TextInput
@@ -179,13 +204,19 @@ export default function ChangePasswordScreen() {
                 onFocus={() => setFocusedField("current")}
                 onBlur={() => setFocusedField(null)}
                 placeholderTextColor={theme.colors.textMuted}
-                placeholder={forced ? "A senha temporária que você recebeu" : "Sua senha atual"}
+                placeholder={
+                  forced
+                    ? "A senha temporária que você recebeu"
+                    : "Sua senha atual"
+                }
                 style={{
                   backgroundColor: theme.colors.surface,
                   borderRadius: 8,
                   borderWidth: 1.5,
                   borderColor:
-                    focusedField === "current" ? theme.colors.primary : theme.colors.border,
+                    focusedField === "current"
+                      ? theme.colors.primary
+                      : theme.colors.border,
                   paddingHorizontal: 14,
                   paddingVertical: 12,
                   fontSize: 15,
@@ -196,7 +227,10 @@ export default function ChangePasswordScreen() {
 
             {/* Nova senha */}
             <View>
-              <Text className="text-sm mb-2" style={{ color: theme.colors.textSecondary, fontWeight: "500" }}>
+              <Text
+                className="text-sm mb-2"
+                style={{ color: theme.colors.textSecondary, fontWeight: "500" }}
+              >
                 Nova senha
               </Text>
               <TextInput
@@ -214,7 +248,9 @@ export default function ChangePasswordScreen() {
                   borderRadius: 8,
                   borderWidth: 1.5,
                   borderColor:
-                    focusedField === "new" ? theme.colors.primary : theme.colors.border,
+                    focusedField === "new"
+                      ? theme.colors.primary
+                      : theme.colors.border,
                   paddingHorizontal: 14,
                   paddingVertical: 12,
                   fontSize: 15,
@@ -225,7 +261,10 @@ export default function ChangePasswordScreen() {
 
             {/* Confirmação */}
             <View>
-              <Text className="text-sm mb-2" style={{ color: theme.colors.textSecondary, fontWeight: "500" }}>
+              <Text
+                className="text-sm mb-2"
+                style={{ color: theme.colors.textSecondary, fontWeight: "500" }}
+              >
                 Confirmar nova senha
               </Text>
               <TextInput
@@ -244,7 +283,9 @@ export default function ChangePasswordScreen() {
                   borderRadius: 8,
                   borderWidth: 1.5,
                   borderColor:
-                    focusedField === "confirm" ? theme.colors.primary : theme.colors.border,
+                    focusedField === "confirm"
+                      ? theme.colors.primary
+                      : theme.colors.border,
                   paddingHorizontal: 14,
                   paddingVertical: 12,
                   fontSize: 15,
@@ -266,7 +307,13 @@ export default function ChangePasswordScreen() {
                 }}
               >
                 <AlertCircle size={18} color={theme.palette.danger[600]} />
-                <Text style={{ color: theme.palette.danger[600], fontSize: 14, flex: 1 }}>
+                <Text
+                  style={{
+                    color: theme.palette.danger[600],
+                    fontSize: 14,
+                    flex: 1,
+                  }}
+                >
                   {errorMsg}
                 </Text>
               </View>
@@ -285,7 +332,13 @@ export default function ChangePasswordScreen() {
                 }}
               >
                 <Check size={18} color={theme.palette.success[700]} />
-                <Text style={{ color: theme.palette.success[700], fontSize: 14, flex: 1 }}>
+                <Text
+                  style={{
+                    color: theme.palette.success[700],
+                    fontSize: 14,
+                    flex: 1,
+                  }}
+                >
                   {successMsg}
                 </Text>
               </View>
@@ -315,7 +368,13 @@ export default function ChangePasswordScreen() {
               ) : (
                 <>
                   <KeyRound size={18} color={theme.colors.surface} />
-                  <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>
+                  <Text
+                    style={{
+                      color: theme.colors.surface,
+                      fontSize: 16,
+                      fontWeight: "600",
+                    }}
+                  >
                     Alterar senha
                   </Text>
                 </>

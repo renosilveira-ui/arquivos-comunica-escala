@@ -67,12 +67,12 @@ import { AppButton } from "@/components/ui/AppButton";
 import { getLastCrash } from "@/components/AppErrorBoundary";
 import { useAuth, type User as AuthUser } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
-import { authApi } from "@/lib/_core/api";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { useTenantState } from "@/lib/tenant-state";
 import { confirmAction } from "@/lib/ui/confirm";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
+import { isSessionTerminationNotDurableError } from "@/lib/session-cleanup";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -101,11 +101,11 @@ const MONTH_LABELS = [
 ];
 
 export default function ProfileScreen() {
-  const { user, logout } = useAuth();
+  const { user, logout, deleteAccount } = useAuth();
   const router = useRouter();
   const { clearInstitutionSelection } = useTenantState();
   const utils = trpc.useUtils();
-  const { can, isManager } = usePermissions();
+  const { can, isManager, canApproveAssignments } = usePermissions();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
 
@@ -122,7 +122,7 @@ export default function ProfileScreen() {
               href: "/(tabs)/dashboard",
             }
           : null,
-        isManager
+        canApproveAssignments
           ? {
               key: "pending",
               title: "Solicitações",
@@ -142,23 +142,35 @@ export default function ProfileScreen() {
               href: "/(tabs)/admin",
             }
           : null,
+        isManager
+          ? {
+              key: "invites",
+              title: "Convites da escala",
+              subtitle: "Gere o código e envie aos médicos do seu setor",
+              Icon: Link2,
+              tone: "default" as const,
+              href: "/schedule-invites",
+            }
+          : null,
       ].filter((l): l is NonNullable<typeof l> => l !== null),
-    // `can` é recriada a cada render do hook; o que muda de fato é o papel.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isManager, user?.role],
+    [can, canApproveAssignments, isManager],
   );
   const showManagement = !isDesktopWeb && managementLinks.length > 0;
 
   // Fila de aprovação do gestor — mesma procedure da tela Solicitações.
   // `listPending` já aplica papel e jurisdição no servidor (gestor de hospital
-  // vê só o próprio manager_scope). `enabled: isManager` é obrigatório: para
-  // USER a query responde FORBIDDEN e viraria toast de erro. No desktop web o
+  // vê só o próprio manager_scope). A admissão é a capability granular da
+  // própria ação; um sinal amplo de "gestor" não substitui essa prova.
+  // Para USER a query responde FORBIDDEN e viraria toast de erro. No desktop web o
   // grupo Gestão não existe (vai para a sidebar), então nem consulta. NÃO usar
   // filters.summaryCounts.pendingByHospital — aquele é filtrado por "hoje" e
   // não representa a fila inteira.
   const { data: pendingAssignments } = trpc.shiftAssignments.listPending.useQuery(
     {},
-    { enabled: !!user?.id && isManager && !isDesktopWeb, staleTime: 60_000 },
+    {
+      enabled: !!user?.id && canApproveAssignments && !isDesktopWeb,
+      staleTime: 60_000,
+    },
   );
   const pendingCount = pendingAssignments?.length ?? 0;
 
@@ -182,11 +194,8 @@ export default function ProfileScreen() {
     const empty = { totalHours: 0, totalShifts: 0, manha: 0, tarde: 0, noite: 0 };
     if (!monthQuery.data) return empty;
 
-    const viewerIsManager =
-      professional?.userRole === "GESTOR_MEDICO" || professional?.userRole === "GESTOR_PLUS";
-
     const relevant = (monthQuery.data as any[]).filter((shift) => {
-      if (viewerIsManager) return true;
+      if (isManager) return true;
       return (shift.assignments as any[]).some(
         (a: any) => a.professionalId === professional?.id && a.isActive,
       );
@@ -208,7 +217,7 @@ export default function ProfileScreen() {
     }
 
     return { totalHours: Math.round(totalHours), totalShifts: relevant.length, manha, tarde, noite };
-  }, [monthQuery.data, professional]);
+  }, [isManager, monthQuery.data, professional]);
 
   // ── Notificações ───────────────────────────────────────────────────────
   // TODO: sem API ainda — valores iniciais fixos, sem efeito de sincronização.
@@ -242,6 +251,17 @@ export default function ProfileScreen() {
       await logout();
     } catch (err) {
       console.warn("[Profile] logout failed", err);
+      if (isSessionTerminationNotDurableError(err)) {
+        uiAlert(
+          "Não foi possível sair com segurança",
+          "A sessão continua aberta neste aparelho. Tente novamente; se o erro persistir, feche o app e procure o suporte.",
+        );
+      } else {
+        uiAlert(
+          "Sessão encerrada com limpeza incompleta",
+          "Você saiu da conta, mas parte dos dados locais não pôde ser removida. Feche o app antes de entregá-lo a outra pessoa.",
+        );
+      }
     }
   };
 
@@ -294,7 +314,7 @@ export default function ProfileScreen() {
     setDeleting(true);
     setDeleteError(null);
     try {
-      const result = await authApi.deleteAccount(deletePassword);
+      const result = await deleteAccount(deletePassword);
       if (!result.ok) {
         setDeleteError(result.error ?? "Não foi possível excluir a conta.");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -303,7 +323,6 @@ export default function ProfileScreen() {
       setDeleteModalVisible(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       uiAlert("Conta excluída", "Sua conta foi removida. Sentiremos sua falta.");
-      await logout();
     } catch (err) {
       console.warn("[Profile] deleteAccount failed", err);
       setDeleteError("Falha de conexão. Tente novamente.");
@@ -552,13 +571,30 @@ export default function ProfileScreen() {
           <View style={{ gap: theme.space[2] }}>
             <SectionHeader title="Conta e app" eyebrow="Preferências" />
             <Surface padded={false}>
+              {isDesktopWeb && isManager ? (
+                <ListRow
+                  title="Convites da escala"
+                  subtitle="Gere o código e envie aos médicos do seu setor"
+                  Icon={Link2}
+                  divided={false}
+                  onPress={go("/schedule-invites")}
+                  accessibilityLabel="Gerar convites da escala"
+                />
+              ) : null}
+              <ListRow
+                title="Entrar em outra escala"
+                subtitle="Cole o convite de outro setor — TRR, Emergência, etc."
+                Icon={KeyRound}
+                divided={isDesktopWeb && isManager}
+                onPress={go("/join-schedule")}
+                accessibilityLabel="Entrar em outra escala com um convite"
+              />
               <ListRow
                 title="Instituição ativa"
                 subtitle="Trocar a instituição em uso neste aparelho"
                 Icon={Building2}
                 value="Alterar"
                 valueTone="action"
-                divided={false}
                 onPress={handleSwitchInstitution}
                 accessibilityLabel="Trocar instituição ativa"
               />

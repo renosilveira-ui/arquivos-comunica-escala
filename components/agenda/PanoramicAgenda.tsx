@@ -14,8 +14,20 @@
 // horizontal como último recurso.
 
 import { useMemo, type ReactElement } from "react";
-import { ScrollView, Text, Pressable, View, type RefreshControlProps } from "react-native";
-import { CheckCircle2, CircleDashed, Clock, Rows3, UserCircle2 } from "lucide-react-native";
+import {
+  ScrollView,
+  Text,
+  Pressable,
+  View,
+  type RefreshControlProps,
+} from "react-native";
+import {
+  CheckCircle2,
+  CircleDashed,
+  Clock,
+  Rows3,
+  UserCircle2,
+} from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import { CalendarFrame, DayNumeral, numeral } from "./CalendarSheet";
@@ -38,6 +50,8 @@ type AgendaGroupRow = {
   hospitalName: string;
   sectorId: number;
   sectorName: string;
+  scheduleContextId?: number | null;
+  qualificationName?: string;
   shifts: AgendaShift[];
 };
 
@@ -56,6 +70,7 @@ type PanoramaRow = {
   key: string;
   hospitalName: string;
   sectorName: string;
+  qualificationName: string;
   /** Primeira linha do hospital: o nome aparece aqui, só aqui. */
   firstOfHospital: boolean;
   days: Record<string, AgendaShift[]>;
@@ -63,8 +78,18 @@ type PanoramaRow = {
 
 const DAY_LABELS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"] as const;
 const MONTHS_PT = [
-  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
-  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+  "janeiro",
+  "fevereiro",
+  "março",
+  "abril",
+  "maio",
+  "junho",
+  "julho",
+  "agosto",
+  "setembro",
+  "outubro",
+  "novembro",
+  "dezembro",
 ] as const;
 const LABEL_COL = 214;
 const MAX_CHIPS = 3;
@@ -73,11 +98,12 @@ function buildPanoramaRows(week: AgendaWeek): PanoramaRow[] {
   const rows = new Map<string, PanoramaRow>();
   for (const day of week.days) {
     for (const group of day.groups) {
-      const key = `${group.hospitalId}-${group.sectorId}`;
+      const key = `${group.hospitalId}-${group.sectorId}-${group.scheduleContextId ?? "legacy"}`;
       const row = rows.get(key) ?? {
         key,
         hospitalName: group.hospitalName,
         sectorName: group.sectorName,
+        qualificationName: group.qualificationName ?? "Escala não classificada",
         firstOfHospital: false,
         days: {},
       };
@@ -88,7 +114,9 @@ function buildPanoramaRows(week: AgendaWeek): PanoramaRow[] {
   const sorted = Array.from(rows.values()).sort((a, b) => {
     const hospital = a.hospitalName.localeCompare(b.hospitalName, "pt-BR");
     if (hospital !== 0) return hospital;
-    return a.sectorName.localeCompare(b.sectorName, "pt-BR");
+    const sector = a.sectorName.localeCompare(b.sectorName, "pt-BR");
+    if (sector !== 0) return sector;
+    return a.qualificationName.localeCompare(b.qualificationName, "pt-BR");
   });
   let last: string | null = null;
   for (const row of sorted) {
@@ -120,7 +148,9 @@ function summarizeWeeks(weeks: AgendaWeek[]) {
 
 function weekTitle(week: AgendaWeek): { eyebrow: string; title: string } {
   const first = new Date(`${week.days[0]?.date ?? week.weekStart}T12:00:00`);
-  const last = new Date(`${week.days[week.days.length - 1]?.date ?? week.weekStart}T12:00:00`);
+  const last = new Date(
+    `${week.days[week.days.length - 1]?.date ?? week.weekStart}T12:00:00`,
+  );
   const month = MONTHS_PT[first.getMonth()];
   const eyebrow = `${month.charAt(0).toUpperCase()}${month.slice(1)} ${first.getFullYear()}`;
   const title =
@@ -148,7 +178,9 @@ export function PanoramicAgenda({
   const summary = useMemo(() => summarizeWeeks(weeks), [weeks]);
 
   const sheets = (
-    <View style={{ gap: theme.space[6], minWidth: isDesktop ? undefined : 760 }}>
+    <View
+      style={{ gap: theme.space[6], minWidth: isDesktop ? undefined : 760 }}
+    >
       {weeks.map((week, index) => {
         const rows = buildPanoramaRows(week);
         const { eyebrow, title } = weekTitle(week);
@@ -168,41 +200,135 @@ export function PanoramicAgenda({
               }}
             >
               <View style={{ gap: 1 }}>
-                <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.textSecondary }}>
+                <Text
+                  style={{
+                    ...theme.text.eyebrow,
+                    fontSize: 10.5,
+                    fontWeight: theme.weight.bold,
+                    textTransform: "uppercase",
+                    color: theme.colors.textSecondary,
+                  }}
+                >
                   {eyebrow}
                 </Text>
-                <Text style={{ ...theme.text.title, fontSize: 21, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>{title}</Text>
+                <Text
+                  style={{
+                    ...theme.text.title,
+                    fontSize: 21,
+                    fontWeight: theme.weight.semibold,
+                    color: theme.colors.textPrimary,
+                  }}
+                >
+                  {title}
+                </Text>
               </View>
               {/* Legenda dos estados — no cabeçalho da folha, como no canvas */}
-              <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] + 3, flexWrap: "wrap" }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: theme.space[3] + 3,
+                  flexWrap: "wrap",
+                }}
+              >
                 {[
-                  { label: "Vago", Icon: CircleDashed, color: theme.colors.textSecondary },
-                  { label: "Pendente", Icon: Clock, color: theme.palette.warning[700] },
-                  { label: "Ocupado", Icon: CheckCircle2, color: theme.palette.success[700] },
-                  { label: "Meu", Icon: UserCircle2, color: theme.colors.brand },
+                  {
+                    label: "Vago",
+                    Icon: CircleDashed,
+                    color: theme.colors.textSecondary,
+                  },
+                  {
+                    label: "Pendente",
+                    Icon: Clock,
+                    color: theme.palette.warning[700],
+                  },
+                  {
+                    label: "Ocupado",
+                    Icon: CheckCircle2,
+                    color: theme.palette.success[700],
+                  },
+                  {
+                    label: "Meu",
+                    Icon: UserCircle2,
+                    color: theme.colors.brand,
+                  },
                 ].map(({ label, Icon, color }) => (
-                  <View key={label} style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] + 2 }}>
+                  <View
+                    key={label}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: theme.space[1] + 2,
+                    }}
+                  >
                     <Icon size={15} color={color} />
-                    <Text style={{ ...theme.text.caption, fontSize: 12.5, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}>{label}</Text>
+                    <Text
+                      style={{
+                        ...theme.text.caption,
+                        fontSize: 12.5,
+                        fontWeight: theme.weight.semibold,
+                        color: theme.colors.textSecondary,
+                      }}
+                    >
+                      {label}
+                    </Text>
                   </View>
                 ))}
               </View>
               {index === 0 ? (
                 <View style={{ marginLeft: "auto", flexDirection: "row" }}>
-                  <SummaryCell label="Plantões" value={summary.shifts} color={theme.colors.textPrimary} />
-                  <SummaryCell label="Em aberto" value={summary.open} color={theme.palette.warning[700]} />
-                  <SummaryCell label="Pendentes" value={summary.pending} color={theme.palette.warning[700]} />
-                  <SummaryCell label="Meus" value={summary.mine} color={theme.colors.brand} />
+                  <SummaryCell
+                    label="Plantões"
+                    value={summary.shifts}
+                    color={theme.colors.textPrimary}
+                  />
+                  <SummaryCell
+                    label="Em aberto"
+                    value={summary.open}
+                    color={theme.palette.warning[700]}
+                  />
+                  <SummaryCell
+                    label="Pendentes"
+                    value={summary.pending}
+                    color={theme.palette.warning[700]}
+                  />
+                  <SummaryCell
+                    label="Meus"
+                    value={summary.mine}
+                    color={theme.colors.brand}
+                  />
                 </View>
               ) : null}
             </View>
 
             {/* Linha de cabeçalho navy: Hospital / setor + os sete dias */}
-            <View style={{ flexDirection: "row", backgroundColor: theme.colors.brand }}>
-              <View style={{ width: LABEL_COL, flexDirection: "row", alignItems: "center", gap: theme.space[2], paddingVertical: theme.space[3] - 1, paddingHorizontal: theme.space[3] + 2 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                backgroundColor: theme.colors.brand,
+              }}
+            >
+              <View
+                style={{
+                  width: LABEL_COL,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: theme.space[2],
+                  paddingVertical: theme.space[3] - 1,
+                  paddingHorizontal: theme.space[3] + 2,
+                }}
+              >
                 <Rows3 size={15} color={theme.colors.onDark.textMuted} />
-                <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.onDark.textSoft }}>
-                  Hospital / setor
+                <Text
+                  style={{
+                    ...theme.text.eyebrow,
+                    fontSize: 10.5,
+                    fontWeight: theme.weight.bold,
+                    textTransform: "uppercase",
+                    color: theme.colors.onDark.textSoft,
+                  }}
+                >
+                  Hospital / setor / qualificação
                 </Text>
               </View>
               {week.days.map((day) => {
@@ -221,10 +347,21 @@ export function PanoramicAgenda({
                       borderLeftColor: theme.colors.onDark.surface,
                     }}
                   >
-                    <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, fontWeight: theme.weight.bold, color: theme.colors.onDark.textMuted }}>
+                    <Text
+                      style={{
+                        ...theme.text.eyebrow,
+                        fontSize: 10.5,
+                        fontWeight: theme.weight.bold,
+                        color: theme.colors.onDark.textMuted,
+                      }}
+                    >
                       {DAY_LABELS[day.dow]}
                     </Text>
-                    <DayNumeral day={parseInt(day.date.slice(8, 10), 10)} size={30} emphasis={isToday ? "todayOnDark" : "onDark"} />
+                    <DayNumeral
+                      day={parseInt(day.date.slice(8, 10), 10)}
+                      size={30}
+                      emphasis={isToday ? "todayOnDark" : "onDark"}
+                    />
                   </View>
                 );
               })}
@@ -232,7 +369,11 @@ export function PanoramicAgenda({
 
             {rows.length === 0 ? (
               <View style={{ padding: theme.space[6], alignItems: "center" }}>
-                <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>Sem plantões nesta semana.</Text>
+                <Text
+                  style={{ ...theme.text.body, color: theme.colors.textMuted }}
+                >
+                  Sem plantões nesta semana.
+                </Text>
               </View>
             ) : (
               rows.map((row) => (
@@ -248,16 +389,43 @@ export function PanoramicAgenda({
                       borderBottomColor: theme.colors.gridLine,
                       borderRightWidth: 2,
                       borderRightColor: theme.colors.brand,
-                      backgroundColor: row.firstOfHospital ? theme.colors.surfaceAlt : theme.colors.surface,
+                      backgroundColor: row.firstOfHospital
+                        ? theme.colors.surfaceAlt
+                        : theme.colors.surface,
                     }}
                   >
                     {row.firstOfHospital ? (
-                      <Text numberOfLines={1} style={{ ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.bold, color: theme.colors.brand }}>
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          ...theme.text.body,
+                          fontSize: 13.5,
+                          fontWeight: theme.weight.bold,
+                          color: theme.colors.brand,
+                        }}
+                      >
                         {row.hospitalName}
                       </Text>
                     ) : null}
-                    <Text numberOfLines={1} style={{ ...theme.text.body, fontSize: 13, color: theme.colors.textSecondary }}>
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        ...theme.text.body,
+                        fontSize: 13,
+                        color: theme.colors.textSecondary,
+                      }}
+                    >
                       {row.sectorName}
+                    </Text>
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        ...theme.text.caption,
+                        fontSize: 11,
+                        color: theme.colors.textMuted,
+                      }}
+                    >
+                      {row.qualificationName}
                     </Text>
                   </View>
                   {week.days.map((day) => {
@@ -276,18 +444,50 @@ export function PanoramicAgenda({
                           borderBottomColor: theme.colors.gridLine,
                           borderLeftWidth: 1,
                           borderLeftColor: theme.colors.gridLine,
-                          backgroundColor: isWeekend ? theme.colors.paperWeekend : theme.colors.surface,
+                          backgroundColor: isWeekend
+                            ? theme.colors.paperWeekend
+                            : theme.colors.surface,
                         }}
                       >
                         {shifts.length === 0 ? (
-                          <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                            <Text style={{ ...numeral, fontSize: 13, color: theme.colors.textDisabled }}>·</Text>
+                          <View
+                            style={{
+                              flex: 1,
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
+                            <Text
+                              style={{
+                                ...numeral,
+                                fontSize: 13,
+                                color: theme.colors.textDisabled,
+                              }}
+                            >
+                              ·
+                            </Text>
                           </View>
                         ) : (
-                          shifts.slice(0, MAX_CHIPS).map((shift) => <GridChip key={shift.id} shift={shift} onPress={() => onShiftPress(shift.id)} />)
+                          shifts
+                            .slice(0, MAX_CHIPS)
+                            .map((shift) => (
+                              <GridChip
+                                key={shift.id}
+                                shift={shift}
+                                onPress={() => onShiftPress(shift.id)}
+                              />
+                            ))
                         )}
                         {shifts.length > MAX_CHIPS ? (
-                          <Text style={{ ...numeral, fontSize: 11, fontWeight: theme.weight.bold, color: theme.colors.textSecondary, paddingLeft: 2 }}>
+                          <Text
+                            style={{
+                              ...numeral,
+                              fontSize: 11,
+                              fontWeight: theme.weight.bold,
+                              color: theme.colors.textSecondary,
+                              paddingLeft: 2,
+                            }}
+                          >
                             +{shifts.length - MAX_CHIPS}
                           </Text>
                         ) : null}
@@ -308,8 +508,17 @@ export function PanoramicAgenda({
     return <View style={{ paddingBottom: theme.space[10] }}>{sheets}</View>;
   }
   return (
-    <ScrollView style={{ flex: 1 }} refreshControl={refreshControl} contentContainerStyle={{ paddingBottom: theme.space[20] }} showsVerticalScrollIndicator={false}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: "flex-start", paddingTop: 2 }}>
+    <ScrollView
+      style={{ flex: 1 }}
+      refreshControl={refreshControl}
+      contentContainerStyle={{ paddingBottom: theme.space[20] }}
+      showsVerticalScrollIndicator={false}
+    >
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ alignItems: "flex-start", paddingTop: 2 }}
+      >
         {sheets}
       </ScrollView>
     </ScrollView>
@@ -317,15 +526,29 @@ export function PanoramicAgenda({
 }
 
 /** Chip de plantão na célula: barra de 4 px + hora tabular + nome. */
-function GridChip({ shift, onPress }: { shift: AgendaShift; onPress: () => void }) {
+function GridChip({
+  shift,
+  onPress,
+}: {
+  shift: AgendaShift;
+  onPress: () => void;
+}) {
   // O panorama geral é listagem: VAGO neutro. Quem quer agir abre o detalhe.
-  const v = shiftVisualFor(shift.status, { isMine: shift.isMine, context: "listing" });
+  const v = shiftVisualFor(shift.status, {
+    isMine: shift.isMine,
+    context: "listing",
+  });
   const Icon = v.Icon;
   const s = new Date(shift.startAt);
   const e = new Date(shift.endAt);
   const name = shift.isMine
     ? "Você"
-    : shift.professionalNames[0] ?? (shift.status === "VAGO" ? "Sem escalado" : shift.status === "PENDENTE" ? "Sem confirmar" : v.label);
+    : (shift.professionalNames[0] ??
+      (shift.status === "VAGO"
+        ? "Sem escalado"
+        : shift.status === "PENDENTE"
+          ? "Sem confirmar"
+          : v.label));
   return (
     <Pressable
       onPress={onPress}
@@ -346,22 +569,75 @@ function GridChip({ shift, onPress }: { shift: AgendaShift; onPress: () => void 
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
         <Icon size={11} color={v.iconFg} />
-        <Text style={{ ...numeral, fontSize: 11.5, lineHeight: 14, fontWeight: theme.weight.bold, letterSpacing: -0.2, color: v.timeFg }}>
-          {pad2(s.getHours())}:{pad2(s.getMinutes())}-{pad2(e.getHours())}:{pad2(e.getMinutes())}
+        <Text
+          style={{
+            ...numeral,
+            fontSize: 11.5,
+            lineHeight: 14,
+            fontWeight: theme.weight.bold,
+            letterSpacing: -0.2,
+            color: v.timeFg,
+          }}
+        >
+          {pad2(s.getHours())}:{pad2(s.getMinutes())}-{pad2(e.getHours())}:
+          {pad2(e.getMinutes())}
         </Text>
       </View>
-      <Text numberOfLines={1} style={{ fontSize: 11, lineHeight: 14, fontWeight: v.nameWeight, color: v.nameFg }}>
+      <Text
+        numberOfLines={1}
+        style={{
+          fontSize: 11,
+          lineHeight: 14,
+          fontWeight: v.nameWeight,
+          color: v.nameFg,
+        }}
+      >
         {name}
       </Text>
     </Pressable>
   );
 }
 
-function SummaryCell({ label, value, color }: { label: string; value: number; color: string }) {
+function SummaryCell({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color: string;
+}) {
   return (
-    <View style={{ alignItems: "flex-end", paddingHorizontal: theme.space[3] + 1, borderLeftWidth: 1, borderLeftColor: theme.colors.borderStrong }}>
-      <Text style={{ ...numeral, fontSize: 20, lineHeight: 24, fontWeight: theme.weight.bold, letterSpacing: -0.4, color }}>{pad2(value)}</Text>
-      <Text style={{ ...theme.text.eyebrow, fontSize: 10.5, letterSpacing: 1.2, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.textSecondary }}>
+    <View
+      style={{
+        alignItems: "flex-end",
+        paddingHorizontal: theme.space[3] + 1,
+        borderLeftWidth: 1,
+        borderLeftColor: theme.colors.borderStrong,
+      }}
+    >
+      <Text
+        style={{
+          ...numeral,
+          fontSize: 20,
+          lineHeight: 24,
+          fontWeight: theme.weight.bold,
+          letterSpacing: -0.4,
+          color,
+        }}
+      >
+        {pad2(value)}
+      </Text>
+      <Text
+        style={{
+          ...theme.text.eyebrow,
+          fontSize: 10.5,
+          letterSpacing: 1.2,
+          fontWeight: theme.weight.bold,
+          textTransform: "uppercase",
+          color: theme.colors.textSecondary,
+        }}
+      >
         {label}
       </Text>
     </View>

@@ -6,13 +6,30 @@
 // a ser rejeitada. No change-password, o aparelho atual recebe sessão nova
 // (cookie + token) e continua logado.
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
-import express, { type Express } from "express";
-import { auditTrail, passwordResets, professionalInstitutions, professionals, users } from "../drizzle/schema";
+import { createServer, type Server } from "node:http";
+import express from "express";
+import {
+  auditTrail,
+  institutions,
+  passwordResets,
+  professionalInstitutions,
+  professionals,
+  users,
+} from "../drizzle/schema";
 import { sdk } from "../server/_core/sdk";
+import { sessionInstanceProof } from "../server/_core/session-instance";
 import { getDb } from "../server/db";
 import { mailer } from "../server/mailer";
 import { adminRouter } from "../server/routes/admin";
@@ -23,47 +40,143 @@ const PASSWORD = "SenhaOriginal123";
 const NEW_PASSWORD = "SenhaNovaForte456";
 
 describe("sessões revogadas ao trocar/redefinir senha", () => {
-  let app: Express;
+  let server: Server;
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   let userId: number;
   let adminId: number;
+  let institutionId: number;
+  let originalPasswordHash: string;
   const email = `sv-user-${STAMP}@test.local`;
   const adminEmail = `sv-admin-${STAMP}@test.local`;
 
-  const login = (e: string, p: string) => request(app).post("/api/auth/login").send({ email: e, password: p });
+  const login = (e: string, p: string) =>
+    request(server).post("/api/auth/login").send({ email: e, password: p });
   const cookieOf = (res: request.Response) => {
     const sc = res.headers["set-cookie"];
-    return (Array.isArray(sc) ? sc : [sc]).find((c: string) => c?.startsWith("session=")) ?? "";
+    return (
+      (Array.isArray(sc) ? sc : [sc]).find((c: string) =>
+        c?.startsWith("session="),
+      ) ?? ""
+    );
   };
-  const me = (cookie: string) => request(app).get("/api/auth/me").set("Cookie", cookie);
-  const meBearer = (token: string) => request(app).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+  const me = (cookie: string) =>
+    request(server).get("/api/auth/me").set("Cookie", cookie);
+  const meBearer = (token: string) =>
+    request(server).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+  const sessionInstanceForCookie = (cookie: string): string => {
+    const token = cookie.match(/(?:^|;\s*)session=([^;]+)/)?.[1];
+    if (!token) throw new Error("Cookie de sessão ausente no teste");
+    return sessionInstanceProof(token);
+  };
 
   beforeAll(async () => {
     const conn = await getDb();
     if (!conn) throw new Error("Database not available");
     db = conn;
-    app = express();
+    const app = express();
     app.use(express.json());
     app.use("/api/auth", authRouter);
     app.use("/api/admin", adminRouter);
+    server = createServer(app);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    originalPasswordHash = await bcrypt.hash(PASSWORD, 4);
     const [u] = await db
       .insert(users)
-      .values({ name: "SV User", email, passwordHash: await bcrypt.hash(PASSWORD, 4), loginMethod: "email", role: "doctor" })
+      .values({
+        name: "SV User",
+        email,
+        passwordHash: originalPasswordHash,
+        loginMethod: "email",
+        role: "doctor",
+      })
       .$returningId();
     userId = u.id;
     const [a] = await db
       .insert(users)
-      .values({ name: "SV Admin", email: adminEmail, passwordHash: await bcrypt.hash(PASSWORD, 4), loginMethod: "email", role: "admin" })
+      .values({
+        name: "SV Admin",
+        email: adminEmail,
+        passwordHash: await bcrypt.hash(PASSWORD, 4),
+        loginMethod: "email",
+        role: "admin",
+      })
       .$returningId();
     adminId = a.id;
+
+    const [institution] = await db
+      .insert(institutions)
+      .values({
+        name: `SV Tenant ${STAMP}`,
+        cnpj: `${STAMP}61`.slice(-14).padStart(14, "0"),
+        legalName: `SV Tenant ${STAMP}`,
+        tradeName: `SV${STAMP}`.slice(0, 20),
+        isActive: true,
+      })
+      .$returningId();
+    institutionId = institution.id;
+    for (const [id, role] of [
+      [userId, "USER"],
+      [adminId, "GESTOR_PLUS"],
+    ] as const) {
+      const [professional] = await db
+        .insert(professionals)
+        .values({
+          userId: id,
+          name: id === adminId ? "SV Admin" : "SV User",
+          role: "Médico",
+          userRole: role,
+        })
+        .$returningId();
+      await db.insert(professionalInstitutions).values({
+        professionalId: professional.id,
+        userId: id,
+        institutionId,
+        roleInInstitution: role,
+        isPrimary: true,
+        active: true,
+      });
+    }
+  });
+
+  beforeEach(async () => {
+    await db.transaction(async (tx) => {
+      await tx.delete(passwordResets).where(eq(passwordResets.userId, userId));
+      await tx
+        .update(users)
+        .set({
+          passwordHash: originalPasswordHash,
+          sessionVersion: 1,
+          mustChangePassword: false,
+        })
+        .where(eq(users.id, userId));
+    });
   });
 
   afterAll(async () => {
-    await db.delete(passwordResets).where(eq(passwordResets.userId, userId));
-    await db.delete(auditTrail).where(inArray(auditTrail.entityId, [userId, adminId]));
-    await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.userId, [userId, adminId]));
-    await db.delete(professionals).where(inArray(professionals.userId, [userId, adminId]));
-    await db.delete(users).where(inArray(users.id, [userId, adminId]));
+    try {
+      await db.delete(passwordResets).where(eq(passwordResets.userId, userId));
+      await db
+        .delete(auditTrail)
+        .where(inArray(auditTrail.entityId, [userId, adminId]));
+      await db
+        .delete(professionalInstitutions)
+        .where(inArray(professionalInstitutions.userId, [userId, adminId]));
+      await db
+        .delete(professionals)
+        .where(inArray(professionals.userId, [userId, adminId]));
+      await db.delete(institutions).where(eq(institutions.id, institutionId));
+      await db.delete(users).where(inArray(users.id, [userId, adminId]));
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("sessão carrega a versão; sessão sem `sv` (legada) vale como v1", async () => {
@@ -71,7 +184,11 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     expect(res.status).toBe(200);
     const session = await sdk.verifySession(res.body.token);
     expect(session?.sessionVersion).toBe(1);
-    const legacy = await sdk.signSession({ userId: String(userId), name: "SV User", sessionVersion: undefined as any });
+    const legacy = await sdk.signSession({
+      userId: String(userId),
+      name: "SV User",
+      sessionVersion: undefined as any,
+    });
     const parsedLegacy = await sdk.verifySession(legacy);
     expect(parsedLegacy?.sessionVersion).toBe(1);
   });
@@ -81,10 +198,17 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     const deviceB = await login(email, PASSWORD);
     const cookieA = cookieOf(deviceA);
     const tokenB = deviceB.body.token as string;
-    expect((await me(cookieA)).status).toBe(200);
+    const currentSession = await me(cookieA);
+    expect(currentSession.status).toBe(200);
+    const currentSessionInstance = sessionInstanceForCookie(cookieA);
+    expect(currentSession.body.sessionInstance).toBe(currentSessionInstance);
     expect((await meBearer(tokenB)).status).toBe(200);
 
-    const change = await request(app).post("/api/auth/change-password").set("Cookie", cookieA).send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+    const change = await request(server)
+      .post("/api/auth/change-password")
+      .set("Cookie", cookieA)
+      .set("x-client-session-instance", currentSessionInstance)
+      .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
     expect(change.status).toBe(200);
     expect(typeof change.body.token).toBe("string");
 
@@ -96,16 +220,28 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
   });
 
   it("reset via 'esqueci minha senha' revoga todas as sessões", async () => {
-    const device = await login(email, NEW_PASSWORD);
+    const device = await login(email, PASSWORD);
     const cookie = cookieOf(device);
     expect((await me(cookie)).status).toBe(200);
 
-    const spy = vi.spyOn(mailer, "sendMail").mockResolvedValue({ delivered: false, transport: "console" } as any);
+    const spy = vi
+      .spyOn(mailer, "sendMail")
+      .mockResolvedValue({ delivered: false, transport: "console" } as any);
     try {
-      expect((await request(app).post("/api/auth/forgot-password").send({ email })).status).toBe(200);
-      const text = String(spy.mock.calls[0][0].text ?? spy.mock.calls[0][0].html ?? "");
+      expect(
+        (
+          await request(server)
+            .post("/api/auth/forgot-password")
+            .send({ email })
+        ).status,
+      ).toBe(200);
+      const text = String(
+        spy.mock.calls[0][0].text ?? spy.mock.calls[0][0].html ?? "",
+      );
       const token = text.match(/token=([0-9a-f]{64})/)![1];
-      const reset = await request(app).post("/api/auth/reset-password").send({ token, newPassword: `${NEW_PASSWORD}x` });
+      const reset = await request(server)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: `${NEW_PASSWORD}x` });
       expect(reset.status).toBe(200);
     } finally {
       spy.mockRestore();
@@ -115,14 +251,20 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
   });
 
   it("senha temporária do admin revoga as sessões do alvo", async () => {
-    const device = await login(email, `${NEW_PASSWORD}x`);
+    const device = await login(email, PASSWORD);
     const cookie = cookieOf(device);
     expect((await me(cookie)).status).toBe(200);
     const adminCookie = cookieOf(await login(adminEmail, PASSWORD));
-    const reset = await request(app).post(`/api/admin/users/${userId}/reset-password`).set("Cookie", adminCookie);
+    const reset = await request(server)
+      .post(`/api/admin/users/${userId}/reset-password`)
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionId));
     expect(reset.status).toBe(200);
     expect((await me(cookie)).status).toBe(401);
-    const [row] = await db.select({ v: users.sessionVersion }).from(users).where(eq(users.id, userId));
-    expect(row.v).toBe(4); // v1 → change (2) → reset (3) → admin (4)
+    const [row] = await db
+      .select({ v: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    expect(row.v).toBe(2);
   });
 });

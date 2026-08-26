@@ -1,5 +1,18 @@
 import { useState, useEffect, useMemo, type ReactNode } from "react";
-import { Text, View, TouchableOpacity, TextInput, ActivityIndicator, Switch, Platform, Modal, Pressable, Keyboard, StyleSheet, useWindowDimensions } from "react-native";
+import {
+  Text,
+  View,
+  TouchableOpacity,
+  TextInput,
+  ActivityIndicator,
+  Switch,
+  Platform,
+  Modal,
+  Pressable,
+  Keyboard,
+  StyleSheet,
+  useWindowDimensions,
+} from "react-native";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
@@ -9,12 +22,35 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, ChevronRight, Calendar, Clock, Repeat, CheckCircle2 } from "lucide-react-native";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Calendar,
+  Clock,
+  Repeat,
+  CheckCircle2,
+  Building2,
+  MapPin,
+  Stethoscope,
+} from "lucide-react-native";
 import { scheduleShiftReminder } from "@/lib/notifications";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR } from "@/lib/datetime";
-import { fromLocalISODateString, normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
-import { formatShiftTemplateTimeRange, getShiftTemplatesForSector } from "@/lib/shift-template-options";
+import {
+  fromLocalISODateString,
+  normalizeToNoon,
+  toLocalISODateString,
+} from "@/lib/datetime-utils";
+import {
+  formatShiftTemplateTimeRange,
+  getShiftTemplatesForSector,
+} from "@/lib/shift-template-options";
+import { useTenantState } from "@/lib/tenant-state";
+import { useScheduleContext } from "@/hooks/use-schedule-context";
+import {
+  groupScheduleContexts,
+  scheduleContextMutationFields,
+} from "@/lib/schedule-context-selection";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -37,8 +73,14 @@ const COVERAGE_OPTIONS: { value: CoverageType; label: string }[] = [
 
 const PAYMENT_MODEL_OPTIONS: { value: PaymentModel; label: string }[] = [
   { value: "FIXO", label: "Fixo" },
-  { value: "FIXO_PRODUTIVIDADE_TETO", label: "Fixo + produtividade (com teto)" },
-  { value: "FIXO_PRODUTIVIDADE_SEM_TETO", label: "Fixo + produtividade (sem teto)" },
+  {
+    value: "FIXO_PRODUTIVIDADE_TETO",
+    label: "Fixo + produtividade (com teto)",
+  },
+  {
+    value: "FIXO_PRODUTIVIDADE_SEM_TETO",
+    label: "Fixo + produtividade (sem teto)",
+  },
   { value: "PRODUTIVIDADE_PURA", label: "Produtividade pura" },
 ];
 
@@ -51,7 +93,9 @@ const ACTION_MIN_WIDTH = theme.spacing.contentMaxWidth / 5;
 const CALENDAR_DAY_NAMES = ["D", "S", "T", "Q", "Q", "S", "S"];
 const CALENDAR_COLUMNS = 7;
 
-function getSafeDateParam(value: string | string[] | undefined): string | undefined {
+function getSafeDateParam(
+  value: string | string[] | undefined,
+): string | undefined {
   if (typeof value !== "string") return undefined;
   return DATE_REGEX.test(value) ? value : undefined;
 }
@@ -61,11 +105,16 @@ function formatLocalDateBR(dateKey: string): string {
 }
 
 function getMonthLabel(month: Date): string {
-  const label = month.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  const label = month.toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric",
+  });
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-function getMonthGrid(month: Date): { dateKey: string; isCurrentMonth: boolean }[] {
+function getMonthGrid(
+  month: Date,
+): { dateKey: string; isCurrentMonth: boolean }[] {
   const firstDay = new Date(month.getFullYear(), month.getMonth(), 1, 12);
   const gridStart = new Date(firstDay);
   gridStart.setDate(firstDay.getDate() - firstDay.getDay());
@@ -95,8 +144,10 @@ export default function CreateShiftScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const utils = trpc.useUtils();
+  const { activeInstitutionId } = useTenantState();
   const { width } = useWindowDimensions();
-  const initialDate = getSafeDateParam(params.date) ?? toLocalISODateString(new Date());
+  const initialDate =
+    getSafeDateParam(params.date) ?? toLocalISODateString(new Date());
 
   // Guard: somente admin/manager podem criar escalas
   useEffect(() => {
@@ -106,14 +157,23 @@ export default function CreateShiftScreen() {
   }, [authLoading, can, permissionsLoading, router, user]);
 
   // Estados do formulário
-  const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>(undefined);
+  const [selectedHospitalId, setSelectedHospitalId] = useState<
+    number | undefined
+  >(undefined);
+  const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>(
+    undefined,
+  );
   const [selectedDate, setSelectedDate] = useState(initialDate);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState<Date | null>(null);
-  const [calendarMonth, setCalendarMonth] = useState(() => fromLocalISODateString(initialDate));
-  const [selectedTemplateId, setSelectedTemplateId] = useState<number | undefined>(undefined);
+  const [calendarMonth, setCalendarMonth] = useState(() =>
+    fromLocalISODateString(initialDate),
+  );
+  const [selectedTemplateId, setSelectedTemplateId] = useState<
+    number | undefined
+  >(undefined);
   const [formError, setFormError] = useState<string | null>(null);
-  
+
   // Repetição automática
   const [enableRepeat, setEnableRepeat] = useState(false);
   const [repeatWeeks, setRepeatWeeks] = useState("1");
@@ -123,18 +183,100 @@ export default function CreateShiftScreen() {
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
   const [modality, setModality] = useState<Modality>("PLANTAO");
-  const [coverageType, setCoverageType] = useState<CoverageType | undefined>("URGENCIA_EMERGENCIA");
+  const [coverageType, setCoverageType] = useState<CoverageType | undefined>(
+    "URGENCIA_EMERGENCIA",
+  );
   const [paymentModel, setPaymentModel] = useState<PaymentModel>("FIXO");
   const [productivityCapBrl, setProductivityCapBrl] = useState("");
 
-  // Buscar setores e templates
-  const { data: sectors, isLoading: loadingSectors } = trpc.sectors.list.useQuery();
+  // O destino deixa de ser uma lista plana de setores: um contexto combina
+  // hospital + setor + qualificação profissional autorizada.
+  const scheduleContext = useScheduleContext({
+    userId: user?.id,
+    institutionId: activeInstitutionId,
+  });
+  const selectScheduleContext = scheduleContext.selectContext;
+  const clearCurrentScheduleContext = scheduleContext.clearCurrentSelection;
+  const manageableContexts = useMemo(
+    () => scheduleContext.contexts.filter((context) => context.canManage),
+    [scheduleContext.contexts],
+  );
+  const contextHierarchy = useMemo(
+    () => groupScheduleContexts(manageableContexts),
+    [manageableContexts],
+  );
+  const selectedScheduleContext = manageableContexts.find(
+    (context) => context.id === scheduleContext.selectedContextId,
+  );
+  const selectedHospital = contextHierarchy.find(
+    (hospital) => hospital.hospitalId === selectedHospitalId,
+  );
+  const selectedSector = selectedHospital?.sectors.find(
+    (sector) => sector.sectorId === selectedSectorId,
+  );
+  const templateSectors = useMemo(
+    () =>
+      contextHierarchy.flatMap((hospital) =>
+        hospital.sectors.map((sector) => ({
+          id: sector.sectorId,
+          hospitalId: hospital.hospitalId,
+        })),
+      ),
+    [contextHierarchy],
+  );
   const { data: templates } = trpc.shifts.listTemplates.useQuery();
   const availableTemplates = useMemo(
-    () => getShiftTemplatesForSector(templates, sectors, selectedSectorId),
-    [templates, sectors, selectedSectorId],
+    () =>
+      getShiftTemplatesForSector(
+        templates,
+        templateSectors,
+        selectedScheduleContext?.sectorId,
+      ),
+    [selectedScheduleContext?.sectorId, templates, templateSectors],
   );
-  const selectedTemplate = availableTemplates.find((template) => template.id === selectedTemplateId);
+  const selectedTemplate = availableTemplates.find(
+    (template) => template.id === selectedTemplateId,
+  );
+
+  useEffect(() => {
+    if (!selectedScheduleContext) return;
+    setSelectedHospitalId(selectedScheduleContext.hospitalId);
+    setSelectedSectorId(selectedScheduleContext.sectorId);
+  }, [selectedScheduleContext]);
+
+  useEffect(() => {
+    setSelectedHospitalId((current) => {
+      if (
+        contextHierarchy.some((hospital) => hospital.hospitalId === current)
+      ) {
+        return current;
+      }
+      return contextHierarchy.length === 1
+        ? contextHierarchy[0].hospitalId
+        : undefined;
+    });
+  }, [contextHierarchy]);
+
+  useEffect(() => {
+    const sectors = selectedHospital?.sectors ?? [];
+    setSelectedSectorId((current) => {
+      if (sectors.some((sector) => sector.sectorId === current)) return current;
+      return sectors.length === 1 ? sectors[0].sectorId : undefined;
+    });
+  }, [selectedHospital]);
+
+  useEffect(() => {
+    const options = selectedSector?.contexts ?? [];
+    if (
+      selectedScheduleContext &&
+      options.some((context) => context.id === selectedScheduleContext.id)
+    ) {
+      return;
+    }
+    if (options.length === 1) {
+      selectScheduleContext(options[0].id);
+    }
+  }, [selectScheduleContext, selectedScheduleContext, selectedSector]);
 
   useEffect(() => {
     if (!availableTemplates.length) {
@@ -142,11 +284,15 @@ export default function CreateShiftScreen() {
       return;
     }
 
-    if (selectedTemplateId && availableTemplates.some((template) => template.id === selectedTemplateId)) {
+    if (
+      selectedTemplateId &&
+      availableTemplates.some((template) => template.id === selectedTemplateId)
+    ) {
       return;
     }
 
-    const requestedShift = typeof params.shift === "string" ? params.shift : undefined;
+    const requestedShift =
+      typeof params.shift === "string" ? params.shift : undefined;
     const preferredTemplate = requestedShift
       ? availableTemplates.find((template) => template.name === requestedShift)
       : undefined;
@@ -157,25 +303,29 @@ export default function CreateShiftScreen() {
   const createShift = trpc.shifts.create.useMutation({
     onSuccess: async () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      
+
       // Agendar lembrete 30 min antes em dispositivos nativos.
-      if (Platform.OS !== "web" && selectedSectorId && selectedDate && selectedTemplate) {
-        const sector = sectors?.find(s => s.id === selectedSectorId);
-        const startDateTime = new Date(`${selectedDate}T${selectedTemplate.startTime}`);
-        
-        if (sector) {
-          try {
-            await scheduleShiftReminder(
-              sector.name,
-              startDateTime,
-              `${selectedTemplate.name} (${formatShiftTemplateTimeRange(selectedTemplate)})`
-            );
-          } catch (error) {
-            console.warn("Não foi possível agendar lembrete local:", error);
-          }
+      if (
+        Platform.OS !== "web" &&
+        selectedScheduleContext &&
+        selectedDate &&
+        selectedTemplate
+      ) {
+        const startDateTime = new Date(
+          `${selectedDate}T${selectedTemplate.startTime}`,
+        );
+
+        try {
+          await scheduleShiftReminder(
+            selectedScheduleContext.sectorName,
+            startDateTime,
+            `${selectedTemplate.name} (${formatShiftTemplateTimeRange(selectedTemplate)})`,
+          );
+        } catch (error) {
+          console.warn("Não foi possível agendar lembrete local:", error);
         }
       }
-      
+
       utils.shifts.listByPeriod.invalidate();
       utils.shifts.listAgenda.invalidate();
       router.back();
@@ -189,10 +339,25 @@ export default function CreateShiftScreen() {
     },
   });
 
+  const handleSelectHospital = (hospitalId: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setFormError(null);
+    setSelectedHospitalId(hospitalId);
+    setSelectedSectorId(undefined);
+    clearCurrentScheduleContext();
+  };
+
   const handleSelectSector = (sectorId: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setFormError(null);
     setSelectedSectorId(sectorId);
+    clearCurrentScheduleContext();
+  };
+
+  const handleSelectQualification = (contextId: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setFormError(null);
+    selectScheduleContext(contextId);
   };
 
   const handleSelectTemplate = (templateId: number) => {
@@ -210,8 +375,8 @@ export default function CreateShiftScreen() {
     if (createShift.isPending) return;
     setFormError(null);
 
-    if (!selectedSectorId || !selectedDate) {
-      showFormError("Selecione setor e data.");
+    if (!selectedScheduleContext || !selectedDate) {
+      showFormError("Selecione hospital, setor, qualificação e data.");
       return;
     }
 
@@ -239,8 +404,13 @@ export default function CreateShiftScreen() {
       showFormError("Informe o teto de produtividade ou troque o modelo.");
       return;
     }
-    if (productivityCapBrl && !PRODUCTIVITY_CAP_REGEX.test(productivityCapBrl)) {
-      showFormError("Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).");
+    if (
+      productivityCapBrl &&
+      !PRODUCTIVITY_CAP_REGEX.test(productivityCapBrl)
+    ) {
+      showFormError(
+        "Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).",
+      );
       return;
     }
 
@@ -249,7 +419,7 @@ export default function CreateShiftScreen() {
     createShift.mutate({
       date: selectedDate,
       shiftTemplateId: selectedTemplate.id,
-      sectorId: selectedSectorId,
+      ...scheduleContextMutationFields(selectedScheduleContext),
       modality,
       coverageType: modality === "PLANTAO" ? coverageType : null,
       paymentModel,
@@ -267,7 +437,7 @@ export default function CreateShiftScreen() {
 
   // Gerar data de hoje no formato YYYY-MM-DD (para backend)
   const today = toLocalISODateString(new Date());
-  
+
   // Handler para DateTimePicker (apenas atualiza tempDate durante rolagem)
   const handleDateChange = (event: any, date?: Date) => {
     if (Platform.OS === "android" && event.type === "dismissed") {
@@ -275,7 +445,7 @@ export default function CreateShiftScreen() {
       setTempDate(null);
       return;
     }
-    
+
     if (Platform.OS === "android" && date) {
       // Android: confirmar imediatamente
       const normalized = normalizeToNoon(date);
@@ -290,7 +460,7 @@ export default function CreateShiftScreen() {
       setTempDate(date);
     }
   };
-  
+
   // Confirmar seleção de data (iOS)
   const handleConfirmDate = () => {
     if (tempDate) {
@@ -304,14 +474,14 @@ export default function CreateShiftScreen() {
     setTempDate(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
-  
+
   // Cancelar seleção de data (iOS)
   const handleCancelDate = () => {
     setShowDatePicker(false);
     setTempDate(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
-  
+
   // Handler para abrir DateTimePicker ao tocar no ícone
   const handleCalendarPress = () => {
     Keyboard.dismiss(); // Fechar teclado antes de abrir modal
@@ -345,7 +515,9 @@ export default function CreateShiftScreen() {
     return (
       <ScreenGradient scrollable={false}>
         <View className="flex-1 justify-center items-center">
-          <Text className="text-lg" style={{ color: theme.colors.textMuted }}>Faça login para continuar</Text>
+          <Text className="text-lg" style={{ color: theme.colors.textMuted }}>
+            Faça login para continuar
+          </Text>
         </View>
       </ScreenGradient>
     );
@@ -370,32 +542,133 @@ export default function CreateShiftScreen() {
           <View style={styles.headerText}>
             <Text style={styles.eyebrow}>Plantão</Text>
             <Text style={styles.title}>Nova Escala</Text>
-            <Text style={styles.subtitle}>Crie um turno para depois vincular o profissional.</Text>
+            <Text style={styles.subtitle}>
+              Crie um turno para depois vincular o profissional.
+            </Text>
           </View>
         </View>
 
         <View style={styles.contentGrid}>
           <View style={styles.primaryColumn}>
-            <FormSection title="Setor" icon={<Calendar size={22} color={theme.colors.textPrimary} />} required>
-              {loadingSectors ? (
+            <FormSection
+              title="Destino da escala"
+              icon={<Building2 size={22} color={theme.colors.textPrimary} />}
+              required
+            >
+              {scheduleContext.isSelectionHydrating ? (
                 <View style={styles.loadingBox}>
-                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <ActivityIndicator
+                    size="small"
+                    color={theme.colors.primary}
+                  />
                 </View>
+              ) : scheduleContext.isError ? (
+                <View style={styles.fieldStack}>
+                  <Text style={styles.errorText}>
+                    Não foi possível carregar os contextos de escala
+                    autorizados.
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => scheduleContext.refetch()}
+                    activeOpacity={0.78}
+                    style={styles.retryButton}
+                  >
+                    <Text style={styles.retryButtonLabel}>
+                      Tentar novamente
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : contextHierarchy.length === 0 ? (
+                <Text style={styles.helperText}>
+                  Você não possui hospital, setor e qualificação liberados para
+                  criar escalas nesta instituição.
+                </Text>
               ) : (
-                <View style={styles.optionGrid}>
-                  {sectors?.map((sector) => (
-                    <OptionButton
-                      key={sector.id}
-                      label={sector.name}
-                      selected={selectedSectorId === sector.id}
-                      onPress={() => handleSelectSector(sector.id)}
-                    />
-                  ))}
+                <View style={styles.contextSteps}>
+                  <View>
+                    <View style={styles.contextStepLabelRow}>
+                      <Building2 size={16} color={theme.colors.brand} />
+                      <Text style={[styles.label, styles.contextStepLabel]}>
+                        1. Hospital
+                      </Text>
+                    </View>
+                    <View style={styles.optionGrid}>
+                      {contextHierarchy.map((hospital) => (
+                        <OptionButton
+                          key={hospital.hospitalId}
+                          label={hospital.hospitalName}
+                          selected={selectedHospitalId === hospital.hospitalId}
+                          onPress={() =>
+                            handleSelectHospital(hospital.hospitalId)
+                          }
+                        />
+                      ))}
+                    </View>
+                  </View>
+
+                  <View>
+                    <View style={styles.contextStepLabelRow}>
+                      <MapPin size={16} color={theme.colors.brand} />
+                      <Text style={[styles.label, styles.contextStepLabel]}>
+                        2. Setor
+                      </Text>
+                    </View>
+                    {selectedHospital ? (
+                      <View style={styles.optionGrid}>
+                        {selectedHospital.sectors.map((sector) => (
+                          <OptionButton
+                            key={sector.sectorId}
+                            label={sector.sectorName}
+                            selected={selectedSectorId === sector.sectorId}
+                            onPress={() => handleSelectSector(sector.sectorId)}
+                          />
+                        ))}
+                      </View>
+                    ) : (
+                      <Text style={styles.helperText}>
+                        Selecione o hospital primeiro.
+                      </Text>
+                    )}
+                  </View>
+
+                  <View>
+                    <View style={styles.contextStepLabelRow}>
+                      <Stethoscope size={16} color={theme.colors.brand} />
+                      <Text style={[styles.label, styles.contextStepLabel]}>
+                        3. Qualificação
+                      </Text>
+                    </View>
+                    {selectedSector ? (
+                      <View style={styles.optionGrid}>
+                        {selectedSector.contexts.map((context) => (
+                          <OptionButton
+                            key={context.id}
+                            label={context.qualificationName}
+                            description={context.qualificationCode}
+                            selected={
+                              selectedScheduleContext?.id === context.id
+                            }
+                            onPress={() =>
+                              handleSelectQualification(context.id)
+                            }
+                          />
+                        ))}
+                      </View>
+                    ) : (
+                      <Text style={styles.helperText}>
+                        Selecione o setor primeiro.
+                      </Text>
+                    )}
+                  </View>
                 </View>
               )}
             </FormSection>
 
-            <FormSection title="Data" icon={<Calendar size={22} color={theme.colors.textPrimary} />} required>
+            <FormSection
+              title="Data"
+              icon={<Calendar size={22} color={theme.colors.textPrimary} />}
+              required
+            >
               <TouchableOpacity
                 onPress={handleCalendarPress}
                 activeOpacity={0.78}
@@ -403,14 +676,20 @@ export default function CreateShiftScreen() {
               >
                 <View>
                   <Text style={styles.label}>Data selecionada</Text>
-                  <Text style={styles.dateValue}>{formatLocalDateBR(selectedDateValue)}</Text>
+                  <Text style={styles.dateValue}>
+                    {formatLocalDateBR(selectedDateValue)}
+                  </Text>
                 </View>
                 <Text style={styles.dateAction}>Alterar</Text>
               </TouchableOpacity>
 
               {showDatePicker && Platform.OS === "android" && (
                 <DateTimePicker
-                  value={selectedDate ? fromLocalISODateString(selectedDate) : new Date()}
+                  value={
+                    selectedDate
+                      ? fromLocalISODateString(selectedDate)
+                      : new Date()
+                  }
                   mode="date"
                   display="default"
                   onChange={handleDateChange}
@@ -420,7 +699,11 @@ export default function CreateShiftScreen() {
               )}
             </FormSection>
 
-            <FormSection title="Turno" icon={<Clock size={22} color={theme.colors.textPrimary} />} required>
+            <FormSection
+              title="Turno"
+              icon={<Clock size={22} color={theme.colors.textPrimary} />}
+              required
+            >
               <View style={styles.optionGrid}>
                 {availableTemplates.map((template) => (
                   <OptionButton
@@ -434,7 +717,9 @@ export default function CreateShiftScreen() {
               </View>
               {!availableTemplates.length ? (
                 <Text style={styles.helperText}>
-                  {selectedSectorId ? "Nenhum turno ativo para este setor." : "Selecione um setor para ver os turnos."}
+                  {selectedScheduleContext
+                    ? "Nenhum turno ativo para este setor."
+                    : "Selecione hospital, setor e qualificação para ver os turnos."}
                 </Text>
               ) : null}
             </FormSection>
@@ -450,12 +735,16 @@ export default function CreateShiftScreen() {
                         label={option.label}
                         selected={modality === option.value}
                         onPress={() => {
-                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          Haptics.impactAsync(
+                            Haptics.ImpactFeedbackStyle.Light,
+                          );
                           setModality(option.value);
                           if (option.value === "SOBREAVISO") {
                             setCoverageType(undefined);
                           } else {
-                            setCoverageType((current) => current ?? "URGENCIA_EMERGENCIA");
+                            setCoverageType(
+                              (current) => current ?? "URGENCIA_EMERGENCIA",
+                            );
                           }
                         }}
                       />
@@ -473,7 +762,9 @@ export default function CreateShiftScreen() {
                           label={option.label}
                           selected={coverageType === option.value}
                           onPress={() => {
-                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            Haptics.impactAsync(
+                              Haptics.ImpactFeedbackStyle.Light,
+                            );
                             setCoverageType(option.value);
                           }}
                         />
@@ -491,7 +782,9 @@ export default function CreateShiftScreen() {
                         label={option.label}
                         selected={paymentModel === option.value}
                         onPress={() => {
-                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          Haptics.impactAsync(
+                            Haptics.ImpactFeedbackStyle.Light,
+                          );
                           setPaymentModel(option.value);
                           if (option.value !== "FIXO_PRODUTIVIDADE_TETO") {
                             setProductivityCapBrl("");
@@ -504,7 +797,9 @@ export default function CreateShiftScreen() {
 
                 {paymentModel === "FIXO_PRODUTIVIDADE_TETO" ? (
                   <View>
-                    <Text style={styles.label}>Teto da produtividade (BRL)</Text>
+                    <Text style={styles.label}>
+                      Teto da produtividade (BRL)
+                    </Text>
                     <TextInput
                       value={productivityCapBrl}
                       onChangeText={setProductivityCapBrl}
@@ -519,34 +814,84 @@ export default function CreateShiftScreen() {
             </FormSection>
           </View>
 
-          <View style={[styles.secondaryColumn, isWide ? styles.secondaryColumnWide : null]}>
+          <View
+            style={[
+              styles.secondaryColumn,
+              isWide ? styles.secondaryColumnWide : null,
+            ]}
+          >
             <FormSection title="Resumo">
               <View style={styles.summaryStack}>
-                <SummaryLine label="Setor" value={sectors?.find((s) => s.id === selectedSectorId)?.name ?? "Selecione um setor"} />
-                <SummaryLine label="Data" value={formatLocalDateBR(selectedDateValue)} />
+                <SummaryLine
+                  label="Hospital"
+                  value={
+                    selectedScheduleContext?.hospitalName ??
+                    selectedHospital?.hospitalName ??
+                    "Selecione um hospital"
+                  }
+                />
+                <SummaryLine
+                  label="Setor"
+                  value={
+                    selectedScheduleContext?.sectorName ??
+                    selectedSector?.sectorName ??
+                    "Selecione um setor"
+                  }
+                />
+                <SummaryLine
+                  label="Qualificação"
+                  value={
+                    selectedScheduleContext?.qualificationName ??
+                    "Selecione uma qualificação"
+                  }
+                />
+                <SummaryLine
+                  label="Data"
+                  value={formatLocalDateBR(selectedDateValue)}
+                />
                 <SummaryLine
                   label="Turno"
-                  value={selectedTemplate ? `${selectedTemplate.name} · ${formatShiftTemplateTimeRange(selectedTemplate)}` : "Selecione um turno"}
+                  value={
+                    selectedTemplate
+                      ? `${selectedTemplate.name} · ${formatShiftTemplateTimeRange(selectedTemplate)}`
+                      : "Selecione um turno"
+                  }
                 />
-                <SummaryLine label="Modalidade" value={modality === "PLANTAO" ? "Plantão" : "Sobreaviso"} />
+                <SummaryLine
+                  label="Modalidade"
+                  value={modality === "PLANTAO" ? "Plantão" : "Sobreaviso"}
+                />
                 {modality === "PLANTAO" ? (
                   <SummaryLine
                     label="Cobertura"
-                    value={COVERAGE_OPTIONS.find((option) => option.value === coverageType)?.label ?? "Selecione a cobertura"}
+                    value={
+                      COVERAGE_OPTIONS.find(
+                        (option) => option.value === coverageType,
+                      )?.label ?? "Selecione a cobertura"
+                    }
                   />
                 ) : null}
                 <SummaryLine
                   label="Pagamento"
-                  value={PAYMENT_MODEL_OPTIONS.find((option) => option.value === paymentModel)?.label ?? "Fixo"}
+                  value={
+                    PAYMENT_MODEL_OPTIONS.find(
+                      (option) => option.value === paymentModel,
+                    )?.label ?? "Fixo"
+                  }
                 />
               </View>
             </FormSection>
 
-            <FormSection title="Repetição" icon={<Repeat size={22} color={theme.colors.textPrimary} />}>
+            <FormSection
+              title="Repetição"
+              icon={<Repeat size={22} color={theme.colors.textPrimary} />}
+            >
               <View style={styles.switchRow}>
                 <View style={styles.switchText}>
                   <Text style={styles.bodyStrong}>Repetir Escala</Text>
-                  <Text style={styles.bodyMuted}>Cria novas escalas em semanas futuras.</Text>
+                  <Text style={styles.bodyMuted}>
+                    Cria novas escalas em semanas futuras.
+                  </Text>
                 </View>
                 <Switch
                   value={enableRepeat}
@@ -554,7 +899,10 @@ export default function CreateShiftScreen() {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     setEnableRepeat(value);
                   }}
-                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
+                  trackColor={{
+                    false: theme.colors.border,
+                    true: theme.colors.primary,
+                  }}
                   thumbColor={theme.colors.surface}
                 />
               </View>
@@ -602,7 +950,10 @@ export default function CreateShiftScreen() {
             <TouchableOpacity
               onPress={handleCreateShift}
               disabled={primaryActionDisabled}
-              style={[styles.submitButton, primaryActionDisabled ? styles.disabledButton : null]}
+              style={[
+                styles.submitButton,
+                primaryActionDisabled ? styles.disabledButton : null,
+              ]}
               activeOpacity={0.78}
               accessibilityRole="button"
               accessibilityLabel="Criar Escala"
@@ -629,8 +980,12 @@ export default function CreateShiftScreen() {
         <WebCalendarModal
           selectedDate={selectedDateValue}
           visibleMonth={calendarMonth}
-          onPreviousMonth={() => setCalendarMonth((current) => addCalendarMonths(current, -1))}
-          onNextMonth={() => setCalendarMonth((current) => addCalendarMonths(current, 1))}
+          onPreviousMonth={() =>
+            setCalendarMonth((current) => addCalendarMonths(current, -1))
+          }
+          onNextMonth={() =>
+            setCalendarMonth((current) => addCalendarMonths(current, 1))
+          }
           onSelectDate={handleSelectWebDate}
           onCancel={handleCancelDate}
         />
@@ -644,14 +999,27 @@ export default function CreateShiftScreen() {
         onRequestClose={handleCancelDate}
       >
         <Pressable style={styles.modalOverlay} onPress={handleCancelDate}>
-          <Pressable style={styles.dateSheet} onPress={(e) => e.stopPropagation()}>
+          <Pressable
+            style={styles.dateSheet}
+            onPress={(e) => e.stopPropagation()}
+          >
             <Text style={styles.sheetTitle}>Selecionar data</Text>
             <Text style={styles.sheetSubtitle}>
-              Data selecionada: {tempDate ? formatLocalDateBR(toLocalISODateString(normalizeToNoon(tempDate))) : formatLocalDateBR(selectedDate || today)}
+              Data selecionada:{" "}
+              {tempDate
+                ? formatLocalDateBR(
+                    toLocalISODateString(normalizeToNoon(tempDate)),
+                  )
+                : formatLocalDateBR(selectedDate || today)}
             </Text>
-            
+
             <DateTimePicker
-              value={tempDate || (selectedDate ? fromLocalISODateString(selectedDate) : new Date())}
+              value={
+                tempDate ||
+                (selectedDate
+                  ? fromLocalISODateString(selectedDate)
+                  : new Date())
+              }
               mode="date"
               display="spinner"
               onChange={handleDateChange}
@@ -659,10 +1027,18 @@ export default function CreateShiftScreen() {
               minimumDate={new Date()}
               textColor={theme.colors.surface}
             />
-            
+
             <View style={styles.sheetActions}>
-              <SheetButton label="Cancelar" onPress={handleCancelDate} variant="secondary" />
-              <SheetButton label="Confirmar" onPress={handleConfirmDate} variant="primary" />
+              <SheetButton
+                label="Cancelar"
+                onPress={handleCancelDate}
+                variant="secondary"
+              />
+              <SheetButton
+                label="Confirmar"
+                onPress={handleConfirmDate}
+                variant="primary"
+              />
             </View>
           </Pressable>
         </Pressable>
@@ -686,7 +1062,10 @@ function FormSection({
     <TintedGlassCard variant="light" style={styles.sectionCard}>
       <View style={styles.sectionHeader}>
         {icon}
-        <Text style={styles.sectionTitle}>{title}{required ? " *" : ""}</Text>
+        <Text style={styles.sectionTitle}>
+          {title}
+          {required ? " *" : ""}
+        </Text>
       </View>
       {children}
     </TintedGlassCard>
@@ -708,11 +1087,26 @@ function OptionButton({
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.78}
-      style={[styles.optionButton, selected ? styles.optionButtonSelected : null]}
+      style={[
+        styles.optionButton,
+        selected ? styles.optionButtonSelected : null,
+      ]}
     >
-      <Text style={[styles.optionLabel, selected ? styles.optionLabelSelected : null]}>{label}</Text>
+      <Text
+        style={[
+          styles.optionLabel,
+          selected ? styles.optionLabelSelected : null,
+        ]}
+      >
+        {label}
+      </Text>
       {description ? (
-        <Text style={[styles.optionDescription, selected ? styles.optionDescriptionSelected : null]}>
+        <Text
+          style={[
+            styles.optionDescription,
+            selected ? styles.optionDescriptionSelected : null,
+          ]}
+        >
           {description}
         </Text>
       ) : null}
@@ -750,23 +1144,39 @@ function WebCalendarModal({
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
       <Pressable style={styles.modalOverlay} onPress={onCancel}>
-        <Pressable style={styles.webDateDialog} onPress={(e) => e.stopPropagation()}>
+        <Pressable
+          style={styles.webDateDialog}
+          onPress={(e) => e.stopPropagation()}
+        >
           <View style={styles.calendarHeader}>
-            <TouchableOpacity onPress={onPreviousMonth} activeOpacity={0.78} style={styles.calendarNavButton}>
+            <TouchableOpacity
+              onPress={onPreviousMonth}
+              activeOpacity={0.78}
+              style={styles.calendarNavButton}
+            >
               <ChevronLeft size={20} color={theme.colors.textPrimary} />
             </TouchableOpacity>
             <View style={styles.calendarTitleBlock}>
               <Text style={styles.dialogTitle}>Selecionar data</Text>
-              <Text style={styles.dialogSubtitle}>{getMonthLabel(visibleMonth)}</Text>
+              <Text style={styles.dialogSubtitle}>
+                {getMonthLabel(visibleMonth)}
+              </Text>
             </View>
-            <TouchableOpacity onPress={onNextMonth} activeOpacity={0.78} style={styles.calendarNavButton}>
+            <TouchableOpacity
+              onPress={onNextMonth}
+              activeOpacity={0.78}
+              style={styles.calendarNavButton}
+            >
               <ChevronRight size={20} color={theme.colors.textPrimary} />
             </TouchableOpacity>
           </View>
 
           <View style={styles.calendarWeekRow}>
             {CALENDAR_DAY_NAMES.map((dayName, index) => (
-              <Text key={`${dayName}-${index}`} style={styles.calendarWeekLabel}>
+              <Text
+                key={`${dayName}-${index}`}
+                style={styles.calendarWeekLabel}
+              >
                 {dayName}
               </Text>
             ))}
@@ -809,8 +1219,14 @@ function WebCalendarModal({
           </View>
 
           <View style={styles.calendarFooter}>
-            <Text style={styles.dialogSubtitle}>Data selecionada: {formatLocalDateBR(selectedDate)}</Text>
-            <SheetButton label="Cancelar" onPress={onCancel} variant="secondary" />
+            <Text style={styles.dialogSubtitle}>
+              Data selecionada: {formatLocalDateBR(selectedDate)}
+            </Text>
+            <SheetButton
+              label="Cancelar"
+              onPress={onCancel}
+              variant="secondary"
+            />
           </View>
         </Pressable>
       </Pressable>
@@ -831,9 +1247,19 @@ function SheetButton({
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.78}
-      style={[styles.sheetButton, variant === "primary" ? styles.sheetButtonPrimary : styles.sheetButtonSecondary]}
+      style={[
+        styles.sheetButton,
+        variant === "primary"
+          ? styles.sheetButtonPrimary
+          : styles.sheetButtonSecondary,
+      ]}
     >
-      <Text style={[styles.sheetButtonLabel, variant === "primary" ? styles.sheetButtonLabelPrimary : null]}>
+      <Text
+        style={[
+          styles.sheetButtonLabel,
+          variant === "primary" ? styles.sheetButtonLabelPrimary : null,
+        ]}
+      >
         {label}
       </Text>
     </TouchableOpacity>
@@ -921,6 +1347,19 @@ const styles = StyleSheet.create({
     minHeight: theme.space[14],
     alignItems: "center",
     justifyContent: "center",
+  },
+  contextSteps: {
+    gap: theme.space[5],
+  },
+  contextStepLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.space[2],
+    marginBottom: theme.space[2],
+  },
+  contextStepLabel: {
+    marginBottom: theme.space[0],
+    color: theme.colors.textPrimary,
   },
   optionGrid: {
     flexDirection: "row",
@@ -1043,6 +1482,22 @@ const styles = StyleSheet.create({
     ...theme.text.body,
     color: theme.colors.textMuted,
     marginTop: theme.space[3],
+  },
+  retryButton: {
+    minHeight: theme.space[10],
+    alignSelf: "flex-start",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: theme.space[4],
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.surface,
+  },
+  retryButtonLabel: {
+    ...theme.text.body,
+    color: theme.colors.primary,
+    fontWeight: theme.weight.bold,
   },
   errorText: {
     ...theme.text.body,

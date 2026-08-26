@@ -1,5 +1,33 @@
-import { mysqlTable, int, varchar, text, mysqlEnum, timestamp, datetime, boolean, time, json, unique, index, decimal, foreignKey } from "drizzle-orm/mysql-core";
-import { relations } from "drizzle-orm";
+import {
+  mysqlTable,
+  int,
+  varchar,
+  text,
+  mysqlEnum,
+  timestamp,
+  datetime,
+  boolean,
+  time,
+  json,
+  unique,
+  index,
+  decimal,
+  foreignKey,
+  customType,
+  check,
+} from "drizzle-orm/mysql-core";
+import { relations, sql } from "drizzle-orm";
+
+const binaryVarchar = customType<{
+  data: string;
+  driverData: string;
+  config: { length: number };
+  configRequired: true;
+}>({
+  dataType(config) {
+    return `varchar(${config.length}) COLLATE utf8mb4_bin`;
+  },
+});
 
 /**
  * Core user table backing auth flow.
@@ -18,14 +46,18 @@ export const users = mysqlTable("users", {
   email: varchar("email", { length: 320 }).unique(),
   passwordHash: varchar("password_hash", { length: 255 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["admin", "manager", "doctor", "nurse", "tech"]).default("doctor").notNull(),
+  role: mysqlEnum("role", ["admin", "manager", "doctor", "nurse", "tech"])
+    .default("doctor")
+    .notNull(),
   /**
    * Auto-cadastro (2026-08-18): contas criadas pela página pública de
    * cadastro nascem PENDING e só operam após aprovação do gestor na aba
    * Admin. Default APPROVED preserva todas as contas existentes e as
    * criadas pelo admin.
    */
-  approvalStatus: mysqlEnum("approval_status", ["PENDING", "APPROVED"]).default("APPROVED").notNull(),
+  approvalStatus: mysqlEnum("approval_status", ["PENDING", "APPROVED"])
+    .default("APPROVED")
+    .notNull(),
   /**
    * Senha temporária definida pelo admin (2026-08-22): o app força a
    * troca antes de liberar qualquer tela. change-password limpa a flag.
@@ -61,14 +93,18 @@ export const passwordResets = mysqlTable(
   "password_resets",
   {
     id: int("id").primaryKey().autoincrement(),
-    userId: int("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
     tokenHash: varchar("token_hash", { length: 64 }).notNull(),
     expiresAt: timestamp("expires_at").notNull(),
     usedAt: timestamp("used_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    idxPasswordResetsTokenHash: index("idx_password_resets_token_hash").on(table.tokenHash),
+    idxPasswordResetsTokenHash: index("idx_password_resets_token_hash").on(
+      table.tokenHash,
+    ),
   }),
 );
 
@@ -102,13 +138,22 @@ export const hospitals = mysqlTable(
   "hospitals",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
     name: varchar("name", { length: 255 }).notNull(),
     address: text("address"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    idxHospitalInstitutionId: index("idx_hospitals_institution_id").on(table.institutionId, table.id),
+    idxHospitalInstitutionId: index("idx_hospitals_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
+    uniqHospitalTopologyId: unique("uniq_hospitals_topology_id").on(
+      table.institutionId,
+      table.id,
+    ),
   }),
 );
 
@@ -120,16 +165,37 @@ export const sectors = mysqlTable(
   "sectors",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
     name: varchar("name", { length: 255 }).notNull(),
-    category: mysqlEnum("category", ["internacao", "cirurgico", "servico"]).notNull(),
+    category: mysqlEnum("category", [
+      "internacao",
+      "cirurgico",
+      "servico",
+    ]).notNull(),
     color: varchar("color", { length: 7 }).notNull(), // Hex color
     minStaffCount: int("min_staff_count").notNull().default(2),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    idxSectorInstitutionId: index("idx_sectors_institution_id").on(table.institutionId, table.id),
+    idxSectorInstitutionId: index("idx_sectors_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
+    uniqSectorTopologyId: unique("uniq_sectors_topology_id").on(
+      table.institutionId,
+      table.hospitalId,
+      table.id,
+    ),
+    fkSectorHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_sectors_hospital_topology",
+    }),
   }),
 );
 
@@ -140,22 +206,88 @@ export const sectors = mysqlTable(
 /**
  * Enum para roles de usuário (RBAC)
  */
-export const userRoleEnum = mysqlEnum("user_role", ["USER", "GESTOR_MEDICO", "GESTOR_PLUS"]);
+export const userRoleEnum = mysqlEnum("user_role", [
+  "USER",
+  "GESTOR_MEDICO",
+  "GESTOR_PLUS",
+]);
 
-export const professionals = mysqlTable("professionals", {
-  id: int("id").primaryKey().autoincrement(),
-  userId: int("user_id").notNull().references(() => users.id),
-  name: varchar("name", { length: 255 }).notNull(),
-  role: varchar("role", { length: 100 }).notNull(), // Ex: "Médico", "Enfermeiro", "Técnico"
-  /**
-   * Serviço/especialidade (2026-08-19): eixo de separação entre
-   * especialistas (ex.: "Anestesiologia", "Cirurgia Geral"). Alinhado
-   * ao campo specialty do Comunica+. NULL = sem restrição (legado).
-   */
-  specialty: varchar("specialty", { length: 100 }),
-  userRole: userRoleEnum.notNull().default("USER"), // RBAC: USER, GESTOR_MEDICO, GESTOR_PLUS
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+/**
+ * Catálogo versionado de especialidades reconhecidas pelo CFM. O código é a
+ * identidade estável; o nome é somente o rótulo oficial da versão declarada.
+ */
+export const medicalSpecialties = mysqlTable(
+  "medical_specialties",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    code: varchar("code", { length: 64 }).notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    sourceVersion: varchar("source_version", { length: 32 }).notNull(),
+    active: boolean("active").notNull().default(true),
+    sortOrder: int("sort_order").notNull(),
+  },
+  (table) => ({
+    uniqMedicalSpecialtyCode: unique("uniq_medical_specialty_code").on(
+      table.code,
+    ),
+    idxMedicalSpecialtySortOrder: index("idx_medical_specialty_sort_order").on(
+      table.sortOrder,
+    ),
+  }),
+);
+
+export type MedicalSpecialtyRow = typeof medicalSpecialties.$inferSelect;
+export type InsertMedicalSpecialty = typeof medicalSpecialties.$inferInsert;
+
+/** Perfil assistencial que não representa título de especialista do CFM. */
+export const operationalProfileCodeEnum = mysqlEnum(
+  "operational_profile_code",
+  ["MEDICO_GENERALISTA", "RESIDENTE_ANESTESIOLOGIA"],
+);
+
+export const scheduleContextAdmissionPolicyEnum = mysqlEnum(
+  "admission_policy",
+  [
+    "PINNED_QUALIFICATION",
+    "ALL_CFM_SPECIALTIES",
+    "ALL_CFM_EXCEPT_GENERALIST",
+  ],
+);
+
+export const professionals = mysqlTable(
+  "professionals",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id),
+    name: varchar("name", { length: 255 }).notNull(),
+    role: varchar("role", { length: 100 }).notNull(), // Ex: "Médico", "Enfermeiro", "Técnico"
+    /**
+     * Serviço/especialidade (2026-08-19): eixo de separação entre
+     * especialistas (ex.: "Anestesiologia", "Cirurgia Geral"). Alinhado
+     * ao campo specialty do Comunica+. NULL = sem restrição (legado).
+     */
+    specialty: varchar("specialty", { length: 100 }),
+    /** Especialidade CFM canônica. NULL preserva cadastros legados/ignorados. */
+    medicalSpecialtyId: int("medical_specialty_id").references(
+      () => medicalSpecialties.id,
+    ),
+    /** Perfil não-CFM, por exemplo médico generalista. */
+    operationalProfileCode: operationalProfileCodeEnum,
+    userRole: userRoleEnum.notNull().default("USER"), // RBAC: USER, GESTOR_MEDICO, GESTOR_PLUS
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxProfessionalsMedicalSpecialty: index(
+      "idx_professionals_medical_specialty",
+    ).on(table.medicalSpecialtyId),
+    chkProfessionalsAtMostOneMedicalQualification: check(
+      "chk_professionals_at_most_one_medical_qualification",
+      sql`(${table.medicalSpecialtyId} is null or ${table.operationalProfileCode} is null)`,
+    ),
+  }),
+);
 
 /**
  * Vínculo multi-institucional de profissionais (SaaS multi-tenant enterprise).
@@ -165,9 +297,15 @@ export const professionalInstitutions = mysqlTable(
   "professional_institutions",
   {
     id: int("id").primaryKey().autoincrement(),
-    professionalId: int("professional_id").notNull().references(() => professionals.id, { onDelete: "cascade" }),
-    userId: int("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    institutionId: int("institution_id").notNull().references(() => institutions.id, { onDelete: "cascade" }),
+    professionalId: int("professional_id")
+      .notNull()
+      .references(() => professionals.id, { onDelete: "cascade" }),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id, { onDelete: "cascade" }),
     roleInInstitution: userRoleEnum.notNull().default("USER"),
     isPrimary: boolean("is_primary").notNull().default(false),
     active: boolean("active").notNull().default(true),
@@ -175,11 +313,23 @@ export const professionalInstitutions = mysqlTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    uniqProfessionalInstitution: unique().on(table.professionalId, table.institutionId),
+    uniqProfessionalInstitution: unique().on(
+      table.professionalId,
+      table.institutionId,
+    ),
     uniqUserInstitution: unique().on(table.userId, table.institutionId),
-    idxProfessionalInstitution: index("idx_prof_inst_prof").on(table.professionalId, table.institutionId),
-    idxInstitutionActive: index("idx_prof_inst_institution_active").on(table.institutionId, table.active),
-    idxProfessionalInstitutionId: index("idx_prof_inst_institution_id").on(table.institutionId, table.id),
+    idxProfessionalInstitution: index("idx_prof_inst_prof").on(
+      table.professionalId,
+      table.institutionId,
+    ),
+    idxInstitutionActive: index("idx_prof_inst_institution_active").on(
+      table.institutionId,
+      table.active,
+    ),
+    idxProfessionalInstitutionId: index("idx_prof_inst_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
   }),
 );
 
@@ -191,16 +341,24 @@ export const professionalAccess = mysqlTable(
   "professional_access",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    professionalId: int("professional_id").notNull().references(() => professionals.id),
-    hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    professionalId: int("professional_id")
+      .notNull()
+      .references(() => professionals.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
     sectorId: int("sector_id").references(() => sectors.id), // Null = acesso a todos os setores do hospital
     canAccess: boolean("can_access").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    idxProfessionalAccessInstitutionId: index("idx_prof_access_institution_id").on(table.institutionId, table.id),
+    idxProfessionalAccessInstitutionId: index(
+      "idx_prof_access_institution_id",
+    ).on(table.institutionId, table.id),
   }),
 );
 
@@ -212,16 +370,27 @@ export const managerScope = mysqlTable(
   "manager_scope",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id, { onDelete: "cascade" }),
-    managerProfessionalId: int("manager_professional_id").notNull().references(() => professionals.id, { onDelete: "cascade" }),
-    hospitalId: int("hospital_id").notNull().references(() => hospitals.id, { onDelete: "cascade" }),
-    sectorId: int("sector_id").references(() => sectors.id, { onDelete: "cascade" }), // Null = gestor de todo o hospital
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id, { onDelete: "cascade" }),
+    managerProfessionalId: int("manager_professional_id")
+      .notNull()
+      .references(() => professionals.id, { onDelete: "cascade" }),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id, { onDelete: "cascade" }),
+    sectorId: int("sector_id").references(() => sectors.id, {
+      onDelete: "cascade",
+    }), // Null = gestor de todo o hospital
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    idxManagerScopeInstitutionId: index("idx_manager_scope_institution_id").on(table.institutionId, table.id),
+    idxManagerScopeInstitutionId: index("idx_manager_scope_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
   }),
 );
 
@@ -232,33 +401,46 @@ export const institutionConfig = mysqlTable(
   "institution_config",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().unique().references(() => institutions.id, { onDelete: "cascade" }),
+    institutionId: int("institution_id")
+      .notNull()
+      .unique()
+      .references(() => institutions.id, { onDelete: "cascade" }),
     editWindowDays: int("edit_window_days").notNull().default(3), // Janela de edição retroativa (0 = não permite passado)
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    idxInstitutionConfigInstitutionId: index("idx_institution_config_institution_id").on(table.institutionId, table.id),
+    idxInstitutionConfigInstitutionId: index(
+      "idx_institution_config_institution_id",
+    ).on(table.institutionId, table.id),
   }),
 );
 
 /**
  * Enum para tipo de alocação
  */
-export const assignmentTypeEnum = mysqlEnum("assignment_type", ["ON_DUTY", "BACKUP", "ON_CALL"]);
+export const assignmentTypeEnum = mysqlEnum("assignment_type", [
+  "ON_DUTY",
+  "BACKUP",
+  "ON_CALL",
+]);
 
 /**
  * Templates de turnos (customizáveis por hospital ou setor)
  * Ex: "Manhã 7h-13h", "Cinderela 19h-1h", "Noite UTI 19h-7h"
- * 
+ *
  * Regra: templates de setor (sectorId != null) sobrepõem templates do hospital (sectorId = null)
  */
 export const shiftTemplates = mysqlTable(
   "shift_templates",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
     sectorId: int("sector_id").references(() => sectors.id), // Null = template do hospital, não-null = template específico do setor
     name: varchar("name", { length: 100 }).notNull(), // Ex: "Manhã", "Tarde", "Noite", "Cinderela"
     startTime: time("start_time").notNull(), // Horário de início (HH:MM:SS)
@@ -269,9 +451,159 @@ export const shiftTemplates = mysqlTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    idxShiftTemplateInstitutionId: index("idx_shift_templates_institution_id").on(table.institutionId, table.id),
+    idxShiftTemplateInstitutionId: index(
+      "idx_shift_templates_institution_id",
+    ).on(table.institutionId, table.id),
   }),
 );
+
+/**
+ * Escala operacional selecionável pelo usuário.
+ *
+ * Uma escala é o cruzamento instituição → hospital → setor com política
+ * de admissão: qualificação fixa, todas as especialidades CFM, ou todas
+ * exceto generalista. Dois índices UNIQUE complementares cobrem o caso
+ * pinado porque o MySQL permite múltiplos NULLs em um índice composto.
+ */
+export const scheduleContexts = mysqlTable(
+  "schedule_contexts",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    sectorId: int("sector_id")
+      .notNull()
+      .references(() => sectors.id),
+    medicalSpecialtyId: int("medical_specialty_id").references(
+      () => medicalSpecialties.id,
+    ),
+    operationalProfileCode: operationalProfileCodeEnum,
+    admissionPolicy: scheduleContextAdmissionPolicyEnum
+      .notNull()
+      .default("PINNED_QUALIFICATION"),
+    active: boolean("active").notNull().default(true),
+  },
+  (table) => ({
+    uniqScheduleContextSpecialty: unique("uniq_schedule_context_specialty").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.medicalSpecialtyId,
+    ),
+    uniqScheduleContextOperationalProfile: unique(
+      "uniq_schedule_context_operational_profile",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.operationalProfileCode,
+    ),
+    idxScheduleContextInstitution: index("idx_schedule_context_institution").on(
+      table.institutionId,
+      table.id,
+    ),
+    idxScheduleContextHospital: index("idx_schedule_context_hospital").on(
+      table.hospitalId,
+    ),
+    idxScheduleContextSector: index("idx_schedule_context_sector").on(
+      table.sectorId,
+    ),
+    idxScheduleContextMedicalSpecialty: index(
+      "idx_schedule_context_medical_specialty",
+    ).on(table.medicalSpecialtyId),
+    uniqScheduleContextTopologyId: unique(
+      "uniq_schedule_context_topology_id",
+    ).on(table.institutionId, table.hospitalId, table.sectorId, table.id),
+    fkScheduleContextHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_schedule_context_hospital_topology",
+    }),
+    fkScheduleContextSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_schedule_context_sector_topology",
+    }),
+    chkScheduleContextQualificationMatchesPolicy: check(
+      "chk_schedule_context_qualification_matches_policy",
+      sql`(
+        (
+          ${table.admissionPolicy} = 'PINNED_QUALIFICATION'
+          and (
+            (${table.medicalSpecialtyId} is not null and ${table.operationalProfileCode} is null)
+            or
+            (${table.medicalSpecialtyId} is null and ${table.operationalProfileCode} is not null)
+          )
+        )
+        or
+        (
+          ${table.admissionPolicy} in ('ALL_CFM_SPECIALTIES', 'ALL_CFM_EXCEPT_GENERALIST')
+          and ${table.medicalSpecialtyId} is null
+          and ${table.operationalProfileCode} is null
+        )
+      )`,
+    ),
+  }),
+);
+
+export type ScheduleContext = typeof scheduleContexts.$inferSelect;
+export type InsertScheduleContext = typeof scheduleContexts.$inferInsert;
+
+/**
+ * Convite de uma escala (instituição + hospital + setor). O código em claro
+ * só aparece na criação; o banco guarda o hash. Um médico usa um convite
+ * por setor; outro convite no mesmo hospital libera o segundo setor.
+ */
+export const scheduleInvites = mysqlTable(
+  "schedule_invites",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    sectorId: int("sector_id")
+      .notNull()
+      .references(() => sectors.id),
+    codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    createdByUserId: int("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    maxRedemptions: int("max_redemptions").notNull().default(40),
+    redeemedCount: int("redeemed_count").notNull().default(0),
+    expiresAt: timestamp("expires_at").notNull(),
+    revokedAt: timestamp("revoked_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqScheduleInviteCodeHash: unique("uniq_schedule_invite_code_hash").on(
+      table.codeHash,
+    ),
+    idxScheduleInviteInstitution: index("idx_schedule_invite_institution").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+    ),
+    fkScheduleInviteHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_schedule_invite_hospital_topology",
+    }),
+    fkScheduleInviteSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_schedule_invite_sector_topology",
+    }),
+  }),
+);
+
+export type ScheduleInvite = typeof scheduleInvites.$inferSelect;
 
 // ========================================
 // INSTÂNCIAS DE TURNO E ALOCAÇÕES (V2)
@@ -284,9 +616,19 @@ export const shiftInstances = mysqlTable(
   "shift_instances",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
-    sectorId: int("sector_id").notNull().references(() => sectors.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    sectorId: int("sector_id")
+      .notNull()
+      .references(() => sectors.id),
+    /** Contexto canônico; NULL mantém instâncias legadas não classificadas. */
+    scheduleContextId: int("schedule_context_id").references(
+      () => scheduleContexts.id,
+    ),
     label: varchar("label", { length: 100 }).notNull(),
     /** Serviço/especialidade do plantão (separação entre especialistas). */
     specialty: varchar("specialty", { length: 100 }),
@@ -299,9 +641,14 @@ export const shiftInstances = mysqlTable(
     // e não suportava filtragem nem cálculo financeiro. A estrutura aqui
     // separa: o que é (PLANTAO vs SOBREAVISO), o que cobre quando é
     // plantão (urgência vs eletivas), e como é remunerado.
-    modality: mysqlEnum("modality", ["PLANTAO", "SOBREAVISO"]).notNull().default("PLANTAO"),
+    modality: mysqlEnum("modality", ["PLANTAO", "SOBREAVISO"])
+      .notNull()
+      .default("PLANTAO"),
     // coverage_type só faz sentido para PLANTAO; null em SOBREAVISO.
-    coverageType: mysqlEnum("coverage_type", ["URGENCIA_EMERGENCIA", "ELETIVAS"]),
+    coverageType: mysqlEnum("coverage_type", [
+      "URGENCIA_EMERGENCIA",
+      "ELETIVAS",
+    ]),
     paymentModel: mysqlEnum("payment_model", [
       "FIXO",
       "FIXO_PRODUTIVIDADE_TETO",
@@ -313,17 +660,43 @@ export const shiftInstances = mysqlTable(
     // Teto da produtividade em BRL; só usado quando paymentModel inclui
     // teto. decimal(12,2) suporta valores até 9.999.999.999,99 — mais
     // do que suficiente para um plantão.
-    productivityCapBrl: decimal("productivity_cap_brl", { precision: 12, scale: 2 }),
+    productivityCapBrl: decimal("productivity_cap_brl", {
+      precision: 12,
+      scale: 2,
+    }),
 
     createdBy: int("created_by").references(() => users.id),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    idxShiftInstanceInstitutionId: index("idx_shift_instances_institution_id").on(table.institutionId, table.id),
+    idxShiftInstanceInstitutionId: index(
+      "idx_shift_instances_institution_id",
+    ).on(table.institutionId, table.id),
+    idxShiftInstanceScheduleContext: index(
+      "idx_shift_instances_schedule_context",
+    ).on(table.institutionId, table.scheduleContextId),
+    fkShiftInstanceScheduleContextTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.scheduleContextId,
+      ],
+      foreignColumns: [
+        scheduleContexts.institutionId,
+        scheduleContexts.hospitalId,
+        scheduleContexts.sectorId,
+        scheduleContexts.id,
+      ],
+      name: "fk_shift_instance_schedule_context_topology",
+    }),
     // Permite filtragem por modalidade no Radar (e.g. mostrar só
     // plantões PLANTAO/URGENCIA_EMERGENCIA num determinado dia).
-    idxShiftInstanceModality: index("idx_shift_instances_modality").on(table.institutionId, table.modality),
+    idxShiftInstanceModality: index("idx_shift_instances_modality").on(
+      table.institutionId,
+      table.modality,
+    ),
   }),
 );
 
@@ -334,11 +707,21 @@ export const shiftAssignmentsV2 = mysqlTable(
   "shift_assignments_v2",
   {
     id: int("id").primaryKey().autoincrement(),
-    shiftInstanceId: int("shift_instance_id").notNull().references(() => shiftInstances.id),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
-    sectorId: int("sector_id").notNull().references(() => sectors.id),
-    professionalId: int("professional_id").notNull().references(() => professionals.id),
+    shiftInstanceId: int("shift_instance_id")
+      .notNull()
+      .references(() => shiftInstances.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    sectorId: int("sector_id")
+      .notNull()
+      .references(() => sectors.id),
+    professionalId: int("professional_id")
+      .notNull()
+      .references(() => professionals.id),
     assignmentType: assignmentTypeEnum.notNull().default("ON_DUTY"),
     status: varchar("status", { length: 20 }).notNull().default("PENDENTE"),
     isActive: boolean("is_active").notNull().default(true),
@@ -347,7 +730,9 @@ export const shiftAssignmentsV2 = mysqlTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    idxShiftAssignmentInstitutionId: index("idx_shift_assignments_institution_id").on(table.institutionId, table.id),
+    idxShiftAssignmentInstitutionId: index(
+      "idx_shift_assignments_institution_id",
+    ).on(table.institutionId, table.id),
   }),
 );
 
@@ -359,21 +744,34 @@ export const shiftReminders = mysqlTable(
   "shift_reminders",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    shiftInstanceId: int("shift_instance_id").notNull().references(() => shiftInstances.id),
-    userId: int("user_id").notNull().references(() => users.id),
-    reminderType: mysqlEnum("reminder_type", ["PRE_SHIFT"]).notNull().default("PRE_SHIFT"),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    shiftInstanceId: int("shift_instance_id")
+      .notNull()
+      .references(() => shiftInstances.id),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id),
+    reminderType: mysqlEnum("reminder_type", ["PRE_SHIFT"])
+      .notNull()
+      .default("PRE_SHIFT"),
     reminderAt: timestamp("reminder_at").notNull(),
     sentAt: timestamp("sent_at").notNull().defaultNow(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    uniqShiftReminder: unique().on(table.shiftInstanceId, table.userId, table.reminderType),
-    idxShiftRemindersInstitutionId: index("idx_shift_reminders_institution_id").on(
-      table.institutionId,
-      table.id,
+    uniqShiftReminder: unique().on(
+      table.shiftInstanceId,
+      table.userId,
+      table.reminderType,
     ),
-    idxShiftRemindersReminderAt: index("idx_shift_reminders_reminder_at").on(table.reminderAt),
+    idxShiftRemindersInstitutionId: index(
+      "idx_shift_reminders_institution_id",
+    ).on(table.institutionId, table.id),
+    idxShiftRemindersReminderAt: index("idx_shift_reminders_reminder_at").on(
+      table.reminderAt,
+    ),
   }),
 );
 
@@ -384,16 +782,23 @@ export const shiftAuditLog = mysqlTable(
   "shift_audit_log",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
     event: varchar("event", { length: 50 }).notNull(),
-    shiftInstanceId: int("shift_instance_id").notNull().references(() => shiftInstances.id),
+    shiftInstanceId: int("shift_instance_id")
+      .notNull()
+      .references(() => shiftInstances.id),
     professionalId: int("professional_id").references(() => professionals.id),
     reason: text("reason"),
     metadata: json("metadata"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    idxShiftAuditInstitutionId: index("idx_shift_audit_institution_id").on(table.institutionId, table.id),
+    idxShiftAuditInstitutionId: index("idx_shift_audit_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
   }),
 );
 
@@ -404,14 +809,29 @@ export const pushTokens = mysqlTable(
   "push_tokens",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    userId: int("user_id").notNull().references(() => users.id),
-    token: varchar("token", { length: 512 }).notNull(),
+    // Proveniência do tenant ativo no registro, nunca autoridade de entrega.
+    // O token pertence à conta/dispositivo e pode nascer antes da hidratação
+    // do tenant; o destino é sempre revalidado no intent de push.
+    institutionId: int("institution_id").references(() => institutions.id),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id),
+    // Expo tokens são opacos e case-sensitive. A mesma igualdade binária
+    // governa UNIQUE, queries e o SHA-256 usado pelo mutex distribuído.
+    token: binaryVarchar("token", { length: 512 }).notNull(),
     platform: varchar("platform", { length: 20 }).notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    idxPushTokenInstitutionId: index("idx_push_tokens_institution_id").on(table.institutionId, table.id),
+    uniqPushToken: unique("uniq_push_token").on(table.token),
+    chkPushTokenNoWhitespace: check(
+      "chk_push_token_no_whitespace",
+      sql`${table.token} NOT REGEXP '[[:space:]]'`,
+    ),
+    idxPushTokenInstitutionId: index("idx_push_tokens_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
   }),
 );
 
@@ -422,13 +842,23 @@ export const notifications = mysqlTable(
   "notifications",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    userId: int("user_id").notNull().references(() => users.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id),
     title: varchar("title", { length: 255 }).notNull(),
     body: text("body"),
-    type: mysqlEnum("type", ["GENERAL", "SHIFT_REMINDER"]).notNull().default("GENERAL"),
-    status: mysqlEnum("status", ["PENDING", "SENT", "FAILED"]).notNull().default("PENDING"),
-    shiftInstanceId: int("shift_instance_id").references(() => shiftInstances.id),
+    type: mysqlEnum("type", ["GENERAL", "SHIFT_REMINDER"])
+      .notNull()
+      .default("GENERAL"),
+    status: mysqlEnum("status", ["PENDING", "SENT", "FAILED"])
+      .notNull()
+      .default("PENDING"),
+    shiftInstanceId: int("shift_instance_id").references(
+      () => shiftInstances.id,
+    ),
     reminderType: mysqlEnum("reminder_type", ["RADAR_11H", "RADAR_3H"]),
     dedupKey: varchar("dedup_key", { length: 191 }).unique(),
     deepLink: varchar("deep_link", { length: 1024 }),
@@ -439,8 +869,14 @@ export const notifications = mysqlTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    idxNotificationInstitutionId: index("idx_notifications_institution_id").on(table.institutionId, table.id),
-    idxNotificationsStatus: index("idx_notifications_status").on(table.status, table.createdAt),
+    idxNotificationInstitutionId: index("idx_notifications_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
+    idxNotificationsStatus: index("idx_notifications_status").on(
+      table.status,
+      table.createdAt,
+    ),
   }),
 );
 
@@ -454,17 +890,20 @@ export const ssoUsedTokens = mysqlTable(
     jti: varchar("jti", { length: 191 }).notNull().unique(),
     sub: varchar("sub", { length: 191 }).notNull(),
     tenantKey: varchar("tenant_key", { length: 191 }).notNull(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
     expiresAt: datetime("expires_at").notNull(),
     usedAt: timestamp("used_at").notNull().defaultNow(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
-    idxSsoUsedTokensExpiresAt: index("idx_sso_used_tokens_expires_at").on(table.expiresAt),
-    idxSsoUsedTokensInstitutionId: index("idx_sso_used_tokens_institution_id").on(
-      table.institutionId,
-      table.id,
+    idxSsoUsedTokensExpiresAt: index("idx_sso_used_tokens_expires_at").on(
+      table.expiresAt,
     ),
+    idxSsoUsedTokensInstitutionId: index(
+      "idx_sso_used_tokens_institution_id",
+    ).on(table.institutionId, table.id),
   }),
 );
 
@@ -476,10 +915,16 @@ export const monthlyRosters = mysqlTable(
   "monthly_rosters",
   {
     id: int("id").autoincrement().primaryKey(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
     yearMonth: varchar("year_month", { length: 7 }).notNull(), // formato "YYYY-MM"
-    status: mysqlEnum("status", ["DRAFT", "PUBLISHED", "LOCKED"]).notNull().default("DRAFT"),
+    status: mysqlEnum("status", ["DRAFT", "PUBLISHED", "LOCKED"])
+      .notNull()
+      .default("DRAFT"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
     publishedAt: datetime("published_at"),
@@ -489,11 +934,19 @@ export const monthlyRosters = mysqlTable(
     version: int("version").notNull().default(1),
   },
   (table) => ({
-    uniquePerMonth: unique().on(table.institutionId, table.hospitalId, table.yearMonth),
-    fkInstitution: index("idx_monthly_rosters_institution").on(table.institutionId),
-    idxMonthlyRosterInstitutionId: index("idx_monthly_rosters_institution_id").on(table.institutionId, table.id),
+    uniquePerMonth: unique().on(
+      table.institutionId,
+      table.hospitalId,
+      table.yearMonth,
+    ),
+    fkInstitution: index("idx_monthly_rosters_institution").on(
+      table.institutionId,
+    ),
+    idxMonthlyRosterInstitutionId: index(
+      "idx_monthly_rosters_institution_id",
+    ).on(table.institutionId, table.id),
     fkHospital: index("idx_monthly_rosters_hospital").on(table.hospitalId),
-  })
+  }),
 );
 
 /**
@@ -579,7 +1032,9 @@ export const auditTrail = mysqlTable(
     toUserId: int("to_user_id"),
 
     // Contexto organizacional
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
     hospitalId: int("hospital_id"),
     sectorId: int("sector_id"),
     shiftInstanceId: int("shift_instance_id"),
@@ -593,77 +1048,109 @@ export const auditTrail = mysqlTable(
   },
   (table) => ({
     idxAuditActor: index("idx_audit_actor").on(table.actorUserId),
-    idxAuditEntity: index("idx_audit_entity").on(table.entityType, table.entityId),
+    idxAuditEntity: index("idx_audit_entity").on(
+      table.entityType,
+      table.entityId,
+    ),
     idxAuditShift: index("idx_audit_shift").on(table.shiftInstanceId),
-    idxAuditInstitutionId: index("idx_audit_institution_id").on(table.institutionId, table.id),
+    idxAuditInstitutionId: index("idx_audit_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
     idxAuditDate: index("idx_audit_date").on(table.createdAt),
-  })
+  }),
 );
-
 
 /**
  * Solicitações de troca (SWAP) e repasse (TRANSFER) entre profissionais.
  */
-export const swapRequests = mysqlTable("swap_requests", {
-  id: int("id").primaryKey().autoincrement(),
+export const swapRequests = mysqlTable(
+  "swap_requests",
+  {
+    id: int("id").primaryKey().autoincrement(),
 
-  // Tipo da operação. CESSAO é o nome canônico para o handoff
-  // unidirecional do plantão (A → B sem contrapartida); TRANSFER é o
-  // valor legado, mantido enquanto o frontend antigo migra. SWAP é a
-  // troca bidirecional A↔B. Cf. docs/product/escala-ux.md §6.
-  type: mysqlEnum("type", ["SWAP", "TRANSFER", "CESSAO"]).notNull(),
+    // Tipo da operação. CESSAO é o nome canônico para o handoff
+    // unidirecional do plantão (A → B sem contrapartida); TRANSFER é o
+    // valor legado, mantido enquanto o frontend antigo migra. SWAP é a
+    // troca bidirecional A↔B. Cf. docs/product/escala-ux.md §6.
+    type: mysqlEnum("type", ["SWAP", "TRANSFER", "CESSAO"]).notNull(),
 
-  // Status do fluxo
-  status: mysqlEnum("status", [
-    "PENDING",
-    "ACCEPTED",
-    "APPROVED",
-    "REJECTED_BY_PEER",
-    "REJECTED_BY_MANAGER",
-    "CANCELLED",
-    "EXPIRED",
-  ]).notNull().default("PENDING"),
+    // Status do fluxo
+    status: mysqlEnum("status", [
+      "PENDING",
+      "ACCEPTED",
+      "APPROVED",
+      "REJECTED_BY_PEER",
+      "REJECTED_BY_MANAGER",
+      "CANCELLED",
+      "EXPIRED",
+    ])
+      .notNull()
+      .default("PENDING"),
 
-  // Quem está oferecendo
-  fromProfessionalId: int("from_professional_id").notNull().references(() => professionals.id),
-  fromUserId: int("from_user_id").notNull().references(() => users.id),
-  fromShiftInstanceId: int("from_shift_instance_id").notNull().references(() => shiftInstances.id),
-  fromAssignmentId: int("from_assignment_id").notNull().references(() => shiftAssignmentsV2.id),
+    // Quem está oferecendo
+    fromProfessionalId: int("from_professional_id")
+      .notNull()
+      .references(() => professionals.id),
+    fromUserId: int("from_user_id")
+      .notNull()
+      .references(() => users.id),
+    fromShiftInstanceId: int("from_shift_instance_id")
+      .notNull()
+      .references(() => shiftInstances.id),
+    fromAssignmentId: int("from_assignment_id")
+      .notNull()
+      .references(() => shiftAssignmentsV2.id),
 
-  // Quem aceitou (preenchido quando alguém aceita)
-  toProfessionalId: int("to_professional_id").references(() => professionals.id),
-  toUserId: int("to_user_id").references(() => users.id),
-  // Para SWAP: qual shift o receptor está oferecendo em troca
-  toShiftInstanceId: int("to_shift_instance_id").references(() => shiftInstances.id),
-  toAssignmentId: int("to_assignment_id").references(() => shiftAssignmentsV2.id),
+    // Quem aceitou (preenchido quando alguém aceita)
+    toProfessionalId: int("to_professional_id").references(
+      () => professionals.id,
+    ),
+    toUserId: int("to_user_id").references(() => users.id),
+    // Para SWAP: qual shift o receptor está oferecendo em troca
+    toShiftInstanceId: int("to_shift_instance_id").references(
+      () => shiftInstances.id,
+    ),
+    toAssignmentId: int("to_assignment_id").references(
+      () => shiftAssignmentsV2.id,
+    ),
 
-  // Quem aprovou/rejeitou (gestor)
-  reviewedByUserId: int("reviewed_by_user_id").references(() => users.id),
-  reviewedAt: datetime("reviewed_at"),
-  reviewNote: varchar("review_note", { length: 500 }),
+    // Quem aprovou/rejeitou (gestor)
+    reviewedByUserId: int("reviewed_by_user_id").references(() => users.id),
+    reviewedAt: datetime("reviewed_at"),
+    reviewNote: varchar("review_note", { length: 500 }),
 
-  // Contexto
-  institutionId: int("institution_id").notNull().references(() => institutions.id),
-  hospitalId: int("hospital_id").notNull().references(() => hospitals.id),
-  sectorId: int("sector_id").references(() => sectors.id),
+    // Contexto
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    sectorId: int("sector_id").references(() => sectors.id),
 
-  // Detalhes
-  reason: varchar("reason", { length: 500 }),
+    // Detalhes
+    reason: varchar("reason", { length: 500 }),
 
-  // Controle
-  expiresAt: datetime("expires_at"),
-  version: int("version").notNull().default(1),
+    // Controle
+    expiresAt: datetime("expires_at"),
+    version: int("version").notNull().default(1),
 
-  // Timestamps
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
-}, (table) => ({
-  idxFrom: index("idx_swap_from").on(table.fromProfessionalId),
-  idxTo: index("idx_swap_to").on(table.toProfessionalId),
-  idxStatus: index("idx_swap_status").on(table.status),
-  idxShift: index("idx_swap_shift").on(table.fromShiftInstanceId),
-  idxSwapInstitutionId: index("idx_swap_institution_id").on(table.institutionId, table.id),
-}));
+    // Timestamps
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    idxFrom: index("idx_swap_from").on(table.fromProfessionalId),
+    idxTo: index("idx_swap_to").on(table.toProfessionalId),
+    idxStatus: index("idx_swap_status").on(table.status),
+    idxShift: index("idx_swap_shift").on(table.fromShiftInstanceId),
+    idxSwapInstitutionId: index("idx_swap_institution_id").on(
+      table.institutionId,
+      table.id,
+    ),
+  }),
+);
 
 // ========================================
 // CONFIRMAÇÃO DE PRESENÇA PRÉ-PLANTÃO
@@ -676,34 +1163,46 @@ export const swapRequests = mysqlTable("swap_requests", {
  *   CRON (11h/17h/22h) → Push "Confirma plantão?" → PENDING
  *     → SIM: CONFIRMED (auto-SSO no Comunica+)
  *     → NÃO: DECLINED (abre tela indicar substituto)
- *     → sem resposta +30min: AUTO_CONFIRMED (loga e notifica gestor)
+ *     → sem resposta +30min: mantém estado e escala para decisão humana
  *
  * Substituição:
  *   Médico original DECLINED → indica substituto → NOMINATED
  *   Substituto aceita → REPLACEMENT_CONFIRMED
- *   Substituto recusa/ignora → fallback para AUTO_CONFIRMED
+ *   Substituto recusa/ignora → alerta gerencial, sem confirmação automática
  */
 export const dutyConfirmations = mysqlTable(
   "duty_confirmations",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
-    shiftInstanceId: int("shift_instance_id").notNull().references(() => shiftInstances.id),
-    assignmentId: int("assignment_id").notNull().references(() => shiftAssignmentsV2.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    shiftInstanceId: int("shift_instance_id")
+      .notNull()
+      .references(() => shiftInstances.id),
+    assignmentId: int("assignment_id")
+      .notNull()
+      .references(() => shiftAssignmentsV2.id),
 
     // Profissional escalado originalmente
-    professionalId: int("professional_id").notNull().references(() => professionals.id),
-    userId: int("user_id").notNull().references(() => users.id),
+    professionalId: int("professional_id")
+      .notNull()
+      .references(() => professionals.id),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id),
 
     status: mysqlEnum("status", [
-      "PENDING",                // Notificação enviada, aguardando resposta
-      "CONFIRMED",              // Médico confirmou presença
-      "DECLINED",               // Médico recusou, pode indicar substituto
-      "NOMINATED",              // Substituto indicado, aguardando aceite
-      "REPLACEMENT_CONFIRMED",  // Substituto aceitou
-      "REPLACEMENT_DECLINED",   // Substituto recusou
-      "AUTO_CONFIRMED",         // Sem resposta → logado automaticamente
-    ]).notNull().default("PENDING"),
+      "PENDING", // Notificação enviada, aguardando resposta
+      "CONFIRMED", // Médico confirmou presença
+      "DECLINED", // Médico recusou, pode indicar substituto
+      "NOMINATED", // Substituto indicado, aguardando aceite
+      "REPLACEMENT_CONFIRMED", // Substituto aceitou
+      "REPLACEMENT_DECLINED", // Substituto recusou
+      "AUTO_CONFIRMED", // Legado somente leitura; não é mais produzido
+    ])
+      .notNull()
+      .default("PENDING"),
 
     // Substituto (preenchido quando NOMINATED).
     // FK declarada explicitamente no callback (fkReplacementProf) porque
@@ -715,14 +1214,16 @@ export const dutyConfirmations = mysqlTable(
     replacementUserId: int("replacement_user_id").references(() => users.id),
 
     // Controle de tempo
-    notifiedAt: timestamp("notified_at"),               // Quando o push foi enviado
-    respondedAt: timestamp("responded_at"),              // Quando médico respondeu
-    recheckAt: timestamp("recheck_at"),                  // Quando rodar rechecagem (+30min)
-    autoConfirmedAt: timestamp("auto_confirmed_at"),     // Se auto-confirmado
-    ssoTriggeredAt: timestamp("sso_triggered_at"),       // Quando SSO foi executado
+    notifiedAt: timestamp("notified_at"), // Quando o push foi enviado
+    respondedAt: timestamp("responded_at"), // Quando médico respondeu
+    recheckAt: timestamp("recheck_at"), // Quando rodar rechecagem (+30min)
+    autoConfirmedAt: timestamp("auto_confirmed_at"), // Legado histórico
+    ssoTriggeredAt: timestamp("sso_triggered_at"), // Ticket Expo do SSO aceito
 
     // Token único para deep link de confirmação
-    confirmationToken: varchar("confirmation_token", { length: 191 }).notNull().unique(),
+    confirmationToken: varchar("confirmation_token", { length: 191 })
+      .notNull()
+      .unique(),
 
     // Metadata
     declineReason: varchar("decline_reason", { length: 500 }),
@@ -741,7 +1242,10 @@ export const dutyConfirmations = mysqlTable(
     idxStatus: index("idx_duty_conf_status").on(table.status),
     idxRecheck: index("idx_duty_conf_recheck").on(table.recheckAt),
     idxShift: index("idx_duty_conf_shift").on(table.shiftInstanceId),
-    idxInstitution: index("idx_duty_conf_institution").on(table.institutionId, table.id),
+    idxInstitution: index("idx_duty_conf_institution").on(
+      table.institutionId,
+      table.id,
+    ),
     // Nome explícito ≤64 chars (ver comentário na coluna).
     fkReplacementProf: foreignKey({
       columns: [table.replacementProfessionalId],
@@ -770,8 +1274,12 @@ export const ssoLaunchCodes = mysqlTable(
   {
     id: int("id").primaryKey().autoincrement(),
     code: varchar("code", { length: 128 }).notNull().unique(),
-    userId: int("user_id").notNull().references(() => users.id),
-    institutionId: int("institution_id").notNull().references(() => institutions.id),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
     clientNonce: varchar("client_nonce", { length: 191 }).notNull(),
     expiresAt: timestamp("expires_at").notNull(),
     usedAt: timestamp("used_at"),
@@ -786,28 +1294,31 @@ export const ssoLaunchCodes = mysqlTable(
 // RELATIONS (Multi-Tenant Hierarchy)
 // ========================================
 
-export const dutyConfirmationsRelations = relations(dutyConfirmations, ({ one }) => ({
-  institution: one(institutions, {
-    fields: [dutyConfirmations.institutionId],
-    references: [institutions.id],
+export const dutyConfirmationsRelations = relations(
+  dutyConfirmations,
+  ({ one }) => ({
+    institution: one(institutions, {
+      fields: [dutyConfirmations.institutionId],
+      references: [institutions.id],
+    }),
+    shiftInstance: one(shiftInstances, {
+      fields: [dutyConfirmations.shiftInstanceId],
+      references: [shiftInstances.id],
+    }),
+    assignment: one(shiftAssignmentsV2, {
+      fields: [dutyConfirmations.assignmentId],
+      references: [shiftAssignmentsV2.id],
+    }),
+    professional: one(professionals, {
+      fields: [dutyConfirmations.professionalId],
+      references: [professionals.id],
+    }),
+    user: one(users, {
+      fields: [dutyConfirmations.userId],
+      references: [users.id],
+    }),
   }),
-  shiftInstance: one(shiftInstances, {
-    fields: [dutyConfirmations.shiftInstanceId],
-    references: [shiftInstances.id],
-  }),
-  assignment: one(shiftAssignmentsV2, {
-    fields: [dutyConfirmations.assignmentId],
-    references: [shiftAssignmentsV2.id],
-  }),
-  professional: one(professionals, {
-    fields: [dutyConfirmations.professionalId],
-    references: [professionals.id],
-  }),
-  user: one(users, {
-    fields: [dutyConfirmations.userId],
-    references: [users.id],
-  }),
-}));
+);
 
 export const institutionsRelations = relations(institutions, ({ many }) => ({
   hospitals: many(hospitals),
@@ -816,6 +1327,7 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   professionalAccesses: many(professionalAccess),
   managerScopes: many(managerScope),
   shiftTemplates: many(shiftTemplates),
+  scheduleContexts: many(scheduleContexts),
   shiftInstances: many(shiftInstances),
   shiftAssignments: many(shiftAssignmentsV2),
   shiftAuditLogs: many(shiftAuditLog),
@@ -844,6 +1356,7 @@ export const hospitalsRelations = relations(hospitals, ({ one, many }) => ({
   }),
   sectors: many(sectors),
   shiftTemplates: many(shiftTemplates),
+  scheduleContexts: many(scheduleContexts),
   shiftInstances: many(shiftInstances),
   shiftAssignments: many(shiftAssignmentsV2),
   monthlyRosters: many(monthlyRosters),
@@ -860,34 +1373,53 @@ export const sectorsRelations = relations(sectors, ({ one, many }) => ({
     references: [hospitals.id],
   }),
   shiftTemplates: many(shiftTemplates),
+  scheduleContexts: many(scheduleContexts),
   shiftInstances: many(shiftInstances),
   shiftAssignments: many(shiftAssignmentsV2),
   swapRequests: many(swapRequests),
 }));
 
-export const professionalsRelations = relations(professionals, ({ one, many }) => ({
-  user: one(users, {
-    fields: [professionals.userId],
-    references: [users.id],
+export const professionalsRelations = relations(
+  professionals,
+  ({ one, many }) => ({
+    user: one(users, {
+      fields: [professionals.userId],
+      references: [users.id],
+    }),
+    medicalSpecialty: one(medicalSpecialties, {
+      fields: [professionals.medicalSpecialtyId],
+      references: [medicalSpecialties.id],
+    }),
+    institutionLinks: many(professionalInstitutions),
+    accesses: many(professionalAccess),
   }),
-  institutionLinks: many(professionalInstitutions),
-  accesses: many(professionalAccess),
-}));
+);
 
-export const professionalInstitutionsRelations = relations(professionalInstitutions, ({ one }) => ({
-  professional: one(professionals, {
-    fields: [professionalInstitutions.professionalId],
-    references: [professionals.id],
+export const medicalSpecialtiesRelations = relations(
+  medicalSpecialties,
+  ({ many }) => ({
+    professionals: many(professionals),
+    scheduleContexts: many(scheduleContexts),
   }),
-  user: one(users, {
-    fields: [professionalInstitutions.userId],
-    references: [users.id],
+);
+
+export const professionalInstitutionsRelations = relations(
+  professionalInstitutions,
+  ({ one }) => ({
+    professional: one(professionals, {
+      fields: [professionalInstitutions.professionalId],
+      references: [professionals.id],
+    }),
+    user: one(users, {
+      fields: [professionalInstitutions.userId],
+      references: [users.id],
+    }),
+    institution: one(institutions, {
+      fields: [professionalInstitutions.institutionId],
+      references: [institutions.id],
+    }),
   }),
-  institution: one(institutions, {
-    fields: [professionalInstitutions.institutionId],
-    references: [institutions.id],
-  }),
-}));
+);
 
 export const shiftTemplatesRelations = relations(shiftTemplates, ({ one }) => ({
   institution: one(institutions, {
@@ -904,22 +1436,52 @@ export const shiftTemplatesRelations = relations(shiftTemplates, ({ one }) => ({
   }),
 }));
 
-export const shiftInstancesRelations = relations(shiftInstances, ({ one, many }) => ({
-  institution: one(institutions, {
-    fields: [shiftInstances.institutionId],
-    references: [institutions.id],
+export const scheduleContextsRelations = relations(
+  scheduleContexts,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [scheduleContexts.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [scheduleContexts.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [scheduleContexts.sectorId],
+      references: [sectors.id],
+    }),
+    medicalSpecialty: one(medicalSpecialties, {
+      fields: [scheduleContexts.medicalSpecialtyId],
+      references: [medicalSpecialties.id],
+    }),
+    shiftInstances: many(shiftInstances),
   }),
-  hospital: one(hospitals, {
-    fields: [shiftInstances.hospitalId],
-    references: [hospitals.id],
+);
+
+export const shiftInstancesRelations = relations(
+  shiftInstances,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [shiftInstances.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [shiftInstances.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [shiftInstances.sectorId],
+      references: [sectors.id],
+    }),
+    scheduleContext: one(scheduleContexts, {
+      fields: [shiftInstances.scheduleContextId],
+      references: [scheduleContexts.id],
+    }),
+    assignments: many(shiftAssignmentsV2),
+    reminders: many(shiftReminders),
   }),
-  sector: one(sectors, {
-    fields: [shiftInstances.sectorId],
-    references: [sectors.id],
-  }),
-  assignments: many(shiftAssignmentsV2),
-  reminders: many(shiftReminders),
-}));
+);
 
 export const ssoUsedTokensRelations = relations(ssoUsedTokens, ({ one }) => ({
   institution: one(institutions, {
@@ -943,28 +1505,31 @@ export const shiftRemindersRelations = relations(shiftReminders, ({ one }) => ({
   }),
 }));
 
-export const shiftAssignmentsRelations = relations(shiftAssignmentsV2, ({ one }) => ({
-  institution: one(institutions, {
-    fields: [shiftAssignmentsV2.institutionId],
-    references: [institutions.id],
+export const shiftAssignmentsRelations = relations(
+  shiftAssignmentsV2,
+  ({ one }) => ({
+    institution: one(institutions, {
+      fields: [shiftAssignmentsV2.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [shiftAssignmentsV2.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [shiftAssignmentsV2.sectorId],
+      references: [sectors.id],
+    }),
+    shiftInstance: one(shiftInstances, {
+      fields: [shiftAssignmentsV2.shiftInstanceId],
+      references: [shiftInstances.id],
+    }),
+    professional: one(professionals, {
+      fields: [shiftAssignmentsV2.professionalId],
+      references: [professionals.id],
+    }),
   }),
-  hospital: one(hospitals, {
-    fields: [shiftAssignmentsV2.hospitalId],
-    references: [hospitals.id],
-  }),
-  sector: one(sectors, {
-    fields: [shiftAssignmentsV2.sectorId],
-    references: [sectors.id],
-  }),
-  shiftInstance: one(shiftInstances, {
-    fields: [shiftAssignmentsV2.shiftInstanceId],
-    references: [shiftInstances.id],
-  }),
-  professional: one(professionals, {
-    fields: [shiftAssignmentsV2.professionalId],
-    references: [professionals.id],
-  }),
-}));
+);
 
 export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
   institution: one(institutions, {

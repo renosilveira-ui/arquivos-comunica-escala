@@ -6,6 +6,7 @@
 // PENDENTE. Chamar sempre dentro da mesma transação que mexeu nas
 // alocações, para o turno nunca ficar inconsistente com elas.
 
+import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { shiftAssignmentsV2, shiftInstances } from "../drizzle/schema";
 import type { getDb } from "./db";
@@ -26,8 +27,26 @@ export async function recomputeShiftStatus(
   tx: ShiftStatusTx,
   shiftInstanceId: number,
 ): Promise<ShiftStatus> {
+  const [shift] = await tx
+    .select({
+      institutionId: shiftInstances.institutionId,
+      hospitalId: shiftInstances.hospitalId,
+      sectorId: shiftInstances.sectorId,
+    })
+    .from(shiftInstances)
+    .where(eq(shiftInstances.id, shiftInstanceId))
+    .limit(1)
+    .for("share");
+  if (!shift) {
+    throw new TRPCError({ code: "CONFLICT", message: "Turno inexistente durante a derivação de status." });
+  }
   const rows = await tx
-    .select({ status: shiftAssignmentsV2.status })
+    .select({
+      status: shiftAssignmentsV2.status,
+      institutionId: shiftAssignmentsV2.institutionId,
+      hospitalId: shiftAssignmentsV2.hospitalId,
+      sectorId: shiftAssignmentsV2.sectorId,
+    })
     .from(shiftAssignmentsV2)
     .where(
       and(
@@ -35,6 +54,19 @@ export async function recomputeShiftStatus(
         eq(shiftAssignmentsV2.isActive, true),
       ),
     );
+  if (
+    rows.some(
+      (assignment) =>
+        assignment.institutionId !== shift.institutionId ||
+        assignment.hospitalId !== shift.hospitalId ||
+        assignment.sectorId !== shift.sectorId,
+    )
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "O turno contém alocação ativa com topologia inconsistente.",
+    });
+  }
   const status = deriveShiftStatus(rows.map((r) => r.status));
   await tx.update(shiftInstances).set({ status }).where(eq(shiftInstances.id, shiftInstanceId));
   return status;

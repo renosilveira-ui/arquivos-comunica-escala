@@ -1,7 +1,8 @@
 /**
  * Seed shift data for development / testing.
- * Creates shift templates, shift instances for the next 7 days,
- * and allocates test professionals (Ana, Pedro) to some shifts.
+ * Creates shift templates and vacant shift instances for the next 7 days.
+ * Active assignments must be created through the canonical server mutations,
+ * which validate the shift scheduleContextId under transaction locks.
  *
  * Usage: DATABASE_URL="..." npx tsx server/scripts/seed-shifts.ts
  */
@@ -14,7 +15,6 @@ import {
   sectors,
   shiftTemplates,
   shiftInstances,
-  shiftAssignmentsV2,
   users,
   professionals,
   professionalInstitutions,
@@ -45,7 +45,11 @@ function nextNDays(n: number): string[] {
 // Horários de escala são operacionais locais (Fortaleza/Brasil), não UTC do servidor.
 const SCHEDULE_TIME_ZONE_OFFSET = "-03:00";
 
-function buildTimestamps(date: string, startTime: string, endTime: string): [Date, Date] {
+function buildTimestamps(
+  date: string,
+  startTime: string,
+  endTime: string,
+): [Date, Date] {
   const startAt = new Date(`${date}T${startTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
   const endAt = new Date(`${date}T${endTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
   if (endAt <= startAt) endAt.setDate(endAt.getDate() + 1);
@@ -118,7 +122,9 @@ async function main() {
       );
     if (existing) {
       templateIds.push(existing.id);
-      console.log(`✓ Template "${tmpl.name}" already exists (id=${existing.id})`);
+      console.log(
+        `✓ Template "${tmpl.name}" already exists (id=${existing.id})`,
+      );
     } else {
       const [result] = await db.insert(shiftTemplates).values({
         institutionId: 1,
@@ -139,12 +145,19 @@ async function main() {
   // ── 5. Create 10 shift instances spread across next 7 days ──────────
   // Distribution: 2 per day for first 4 days, then 1 on day 5 and 1 on day 6 = 10
   const days = nextNDays(7);
-  const STATUSES: Array<"VAGO" | "PENDENTE" | "OCUPADO"> = [
-    "VAGO", "VAGO", "VAGO", "VAGO", "VAGO",
-    "PENDENTE", "PENDENTE", "PENDENTE",
-    "OCUPADO", "OCUPADO",
+  const STATUSES: "VAGO"[] = [
+    "VAGO",
+    "VAGO",
+    "VAGO",
+    "VAGO",
+    "VAGO",
+    "VAGO",
+    "VAGO",
+    "VAGO",
+    "VAGO",
+    "VAGO",
   ];
-  const plan: Array<{ date: string; templateIdx: number }> = [
+  const plan: { date: string; templateIdx: number }[] = [
     { date: days[0], templateIdx: 0 },
     { date: days[0], templateIdx: 1 },
     { date: days[1], templateIdx: 2 },
@@ -161,7 +174,11 @@ async function main() {
   for (let i = 0; i < plan.length; i++) {
     const { date, templateIdx } = plan[i];
     const tmpl = TEMPLATES[templateIdx];
-    const [startAt, endAt] = buildTimestamps(date, tmpl.startTime, tmpl.endTime);
+    const [startAt, endAt] = buildTimestamps(
+      date,
+      tmpl.startTime,
+      tmpl.endTime,
+    );
     const label = tmpl.name;
     const status = STATUSES[i];
     const [result] = await db.insert(shiftInstances).values({
@@ -180,11 +197,15 @@ async function main() {
   console.log(`✓ Created ${shiftInstanceIds.length} shift instances`);
 
   // ── 6. Ensure professional records for test users ────────────────────
-  const professionalIds: Map<string, number> = new Map();
   for (const tp of TEST_PROFESSIONALS) {
-    const [user] = await db.select().from(users).where(eq(users.email, tp.email));
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, tp.email));
     if (!user) {
-      console.warn(`  ⚠ User ${tp.email} not found — run seed-admin + register test users first`);
+      console.warn(
+        `  ⚠ User ${tp.email} not found — run seed-admin + register test users first`,
+      );
       continue;
     }
 
@@ -196,7 +217,9 @@ async function main() {
     let proId: number;
     if (existingPro) {
       proId = existingPro.id;
-      console.log(`✓ Professional for ${tp.email} already exists (id=${proId})`);
+      console.log(
+        `✓ Professional for ${tp.email} already exists (id=${proId})`,
+      );
     } else {
       const [result] = await db.insert(professionals).values({
         userId: user.id,
@@ -230,50 +253,6 @@ async function main() {
       });
       console.log(`  ✓ Tenant link created for ${tp.email}`);
     }
-    professionalIds.set(tp.email, proId);
-  }
-
-  // ── 7. Allocate Ana to shifts #0 and #1, Pedro to shifts #2 and #3 ──
-  const allocs: Array<{ email: string; shiftIdx: number }> = [
-    { email: "ana@hospital.com", shiftIdx: 0 },
-    { email: "ana@hospital.com", shiftIdx: 1 },
-    { email: "pedro@hospital.com", shiftIdx: 2 },
-    { email: "pedro@hospital.com", shiftIdx: 3 },
-  ];
-
-  for (const alloc of allocs) {
-    const proId = professionalIds.get(alloc.email);
-    if (!proId) continue;
-    const instanceId = shiftInstanceIds[alloc.shiftIdx];
-
-    // Check if assignment already exists
-    const [existing] = await db
-      .select()
-      .from(shiftAssignmentsV2)
-      .where(
-        and(
-          eq(shiftAssignmentsV2.professionalId, proId),
-          eq(shiftAssignmentsV2.shiftInstanceId, instanceId),
-          eq(shiftAssignmentsV2.isActive, true),
-        ),
-      );
-
-    if (existing) {
-      console.log(`  ✓ Assignment already exists: ${alloc.email} → instance #${instanceId}`);
-      continue;
-    }
-
-    await db.insert(shiftAssignmentsV2).values({
-      shiftInstanceId: instanceId,
-      institutionId: 1,
-      hospitalId: 1,
-      sectorId: 1,
-      professionalId: proId,
-      assignmentType: "ON_DUTY",
-      status: "PENDENTE",
-      isActive: true,
-    });
-    console.log(`  ✓ Assigned ${alloc.email} → instance #${instanceId}`);
   }
 
   console.log("\n✅ seed-shifts complete");

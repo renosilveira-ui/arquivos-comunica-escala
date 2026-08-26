@@ -17,10 +17,15 @@ import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
 import { Surface } from "@/components/ui/Surface";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { SkeletonList } from "@/components/ui/Skeleton";
+import { usePermissions } from "@/hooks/use-permissions";
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
-  const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
+  const {
+    isGlobalAdmin,
+    roleInInstitution,
+    isLoading: permissionsLoading,
+  } = usePermissions();
   
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } =
@@ -51,7 +56,7 @@ export default function VacanciesScreen() {
   const [modalityFilter, setModalityFilter] = useState<"PLANTAO" | "SOBREAVISO" | undefined>(undefined);
 
   // Determinar se usuário pode ver "Todos os hospitais"
-  const allowAllHospitals = professional?.userRole === "GESTOR_PLUS" || isAdminOrManager;
+  const allowAllHospitals = isGlobalAdmin || roleInInstitution === "GESTOR_PLUS";
 
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
@@ -169,7 +174,7 @@ export default function VacanciesScreen() {
     });
   };
 
-  if (authLoading || professionalLoading) {
+  if (authLoading || permissionsLoading || professionalLoading) {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
@@ -345,20 +350,18 @@ export default function VacanciesScreen() {
                   </View>
 
                   {/* Botão de ação */}
-                  {isAdminOrManager ? null : (
-                    <AppButton
-                      title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}
-                      variant="primary"
-                      size="lg"
-                      disabled={!vacancy.canAssume || assumeVacancyMutation.isPending}
-                      onPress={() =>
-                        handleAssumeVacancy(
-                          vacancy.id,
-                          `${vacancy.shift} - ${vacancy.sector} (${formatDate(vacancy.date)})`
-                        )
-                      }
-                    />
-                  )}
+                  <AppButton
+                    title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}
+                    variant="primary"
+                    size="lg"
+                    disabled={!vacancy.canAssume || assumeVacancyMutation.isPending}
+                    onPress={() =>
+                      handleAssumeVacancy(
+                        vacancy.id,
+                        `${vacancy.shift} - ${vacancy.sector} (${formatDate(vacancy.date)})`
+                      )
+                    }
+                  />
                 </Surface>
               );
             })}

@@ -1,8 +1,16 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { addDaysToKey, dayKeyBrt, dayWindowBrt, mondayOfKey, weekdayOfKey, yearMonthBrt } from "./local-time";
-import { eq, and, gte, lte, lt, inArray } from "drizzle-orm";
+import {
+  addDaysToKey,
+  dayKeyBrt,
+  dayWindowBrt,
+  mondayOfKey,
+  weekdayOfKey,
+  yearMonthBrt,
+} from "./local-time";
+import { eq, and, gte, lte, lt, inArray, isNull, ne, or } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { TRPCError } from "@trpc/server";
 import {
   shiftInstances,
@@ -10,21 +18,44 @@ import {
   shiftAssignmentsV2,
   professionals,
   hospitals,
+  institutions,
   sectors,
   monthlyRosters,
+  professionalAccess,
   professionalInstitutions,
+  scheduleContexts,
+  users,
 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
-import { assertMonthEditable, lockMonth, publishMonth } from "./month-guards";
-import { checkTimeConflictForProfessional } from "./shift-validations-v2";
+import {
+  assertMonthEditableForUpdate,
+  assertMonthsEditableForUpdate,
+  lockMonthsForUpdate,
+  lockMonth,
+  publishMonth,
+} from "./month-guards";
+import {
+  ASSIGNMENT_WRITE_TRANSACTION_CONFIG,
+  assertAssignmentWritesAllowedForUpdate,
+  assertShiftAssignmentCapacityForUpdate,
+  checkTimeConflictForProfessional,
+  type AssignmentWriteCandidate,
+} from "./shift-validations-v2";
 import {
   assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
+  assertManagerScopeAccessForUpdate,
   getTenantActorFromContext,
 } from "./_core/policy";
 import { assertInstitutionHierarchy } from "./_core/tenant";
+import {
+  assertActorCanReadShiftScheduleContext,
+  assertActiveScheduleContextTopology,
+  listAuthorizedScheduleContexts,
+  resolveScheduleContextForShiftCreation,
+} from "./schedule-contexts";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -53,16 +84,27 @@ function buildShiftTimestamps(
 // porque é semanticamente inconsistente — sobreaviso não tem cobertura.
 const modalityFields = z.object({
   modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
-  coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).nullable().optional(),
+  coverageType: z
+    .enum(["URGENCIA_EMERGENCIA", "ELETIVAS"])
+    .nullable()
+    .optional(),
   paymentModel: z
-    .enum(["FIXO", "FIXO_PRODUTIVIDADE_TETO", "FIXO_PRODUTIVIDADE_SEM_TETO", "PRODUTIVIDADE_PURA"])
+    .enum([
+      "FIXO",
+      "FIXO_PRODUTIVIDADE_TETO",
+      "FIXO_PRODUTIVIDADE_SEM_TETO",
+      "PRODUTIVIDADE_PURA",
+    ])
     .optional(),
   // BRL como string ("1500.00") para evitar perda de precisão de Number
   // em valores monetários grandes. Drizzle armazena decimal como string
   // no inferType, então segue o mesmo formato no transporte.
   productivityCapBrl: z
     .string()
-    .regex(/^\d+(\.\d{1,2})?$/, "productivityCapBrl deve ser BRL no formato \"1500.00\"")
+    .regex(
+      /^\d+(\.\d{1,2})?$/,
+      'productivityCapBrl deve ser BRL no formato "1500.00"',
+    )
     .nullable()
     .optional(),
 });
@@ -76,12 +118,16 @@ type ModalityInput = z.infer<typeof modalityFields>;
  * tem teto, mas não bloqueamos — o caller pode preencher por
  * antecipação e mudar o modelo depois.
  */
-function assertModalityCoherent(input: ModalityInput, existingModality?: "PLANTAO" | "SOBREAVISO"): void {
+function assertModalityCoherent(
+  input: ModalityInput,
+  existingModality?: "PLANTAO" | "SOBREAVISO",
+): void {
   const effectiveModality = input.modality ?? existingModality ?? "PLANTAO";
   if (effectiveModality === "SOBREAVISO" && input.coverageType != null) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "SOBREAVISO não admite coverageType (apenas PLANTAO usa cobertura)",
+      message:
+        "SOBREAVISO não admite coverageType (apenas PLANTAO usa cobertura)",
     });
   }
 }
@@ -166,20 +212,24 @@ function resolveReplicationWindow(
       fromEnd: addDays(fromStart, 7),
       targetStart,
       targetEnd: addDays(targetStart, 7),
-      offsetDays: Math.round((targetStart.getTime() - fromStart.getTime()) / DAY_MS),
+      offsetDays: Math.round(
+        (targetStart.getTime() - fromStart.getTime()) / DAY_MS,
+      ),
     };
   }
 
   const [fy, fm] = from.start.split("-").map(Number);
   const [ty, tm] = to.start.split("-").map(Number);
-  const monthStart = (y: number, m: number) => localDayStart(`${y}-${pad2(m)}-01`);
+  const monthStart = (y: number, m: number) =>
+    localDayStart(`${y}-${pad2(m)}-01`);
   const nextMonthStart = (y: number, m: number) =>
     m === 12 ? monthStart(y + 1, 1) : monthStart(y, m + 1);
 
   const fromStart = monthStart(fy, fm);
   const targetStart = monthStart(ty, tm);
   const offsetDays = Math.round(
-    (firstMondayOnOrAfter(targetStart).getTime() - firstMondayOnOrAfter(fromStart).getTime()) /
+    (firstMondayOnOrAfter(targetStart).getTime() -
+      firstMondayOnOrAfter(fromStart).getTime()) /
       DAY_MS,
   );
   return {
@@ -192,17 +242,32 @@ function resolveReplicationWindow(
 }
 
 function naturalKey(x: {
+  institutionId: number;
   hospitalId: number;
   sectorId: number;
+  scheduleContextId: number | null;
   startAt: Date;
   endAt: Date;
   label: string;
 }): string {
-  return `${x.hospitalId}|${x.sectorId}|${x.startAt.getTime()}|${x.endAt.getTime()}|${x.label}`;
+  return JSON.stringify([
+    x.institutionId,
+    x.hospitalId,
+    x.sectorId,
+    x.scheduleContextId,
+    x.startAt.getTime(),
+    x.endAt.getTime(),
+    x.label,
+  ]);
 }
 
 type ReplicateCtx = {
-  user: { id: number; role: string; name?: string | null };
+  user: {
+    id: number;
+    role: string;
+    name?: string | null;
+    sessionVersion: number;
+  };
   institutionId: number;
 };
 
@@ -216,7 +281,10 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
 
   const win = resolveReplicationWindow(input.from, input.to);
   if (win.offsetDays === 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Origem e destino são o mesmo período." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Origem e destino são o mesmo período.",
+    });
   }
 
   const sourceShifts = await db
@@ -226,7 +294,9 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
       and(
         eq(shiftInstances.institutionId, ctx.institutionId),
         eq(shiftInstances.hospitalId, input.hospitalId),
-        ...(input.sectorId ? [eq(shiftInstances.sectorId, input.sectorId)] : []),
+        ...(input.sectorId
+          ? [eq(shiftInstances.sectorId, input.sectorId)]
+          : []),
         gte(shiftInstances.startAt, win.fromStart),
         lt(shiftInstances.startAt, win.fromEnd),
       ),
@@ -244,19 +314,19 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
   // legados que satisfaçam as FKs isoladas, mas cruzem a hierarquia.
   const sourceHierarchies = new Map(
     sourceShifts.map((source) => [
-      `${source.institutionId}|${source.hospitalId}|${source.sectorId}`,
+      `${source.institutionId}|${source.hospitalId}|${source.sectorId}|${source.scheduleContextId ?? "legacy"}`,
       {
         institutionId: source.institutionId,
         hospitalId: source.hospitalId,
         sectorId: source.sectorId,
+        scheduleContextId: source.scheduleContextId,
       },
     ]),
   );
-  await Promise.all(
-    Array.from(sourceHierarchies.values()).map((hierarchy) =>
-      assertInstitutionHierarchy(hierarchy, { db }),
-    ),
-  );
+  for (const hierarchy of sourceHierarchies.values()) {
+    await assertInstitutionHierarchy(hierarchy, { db });
+    await assertActiveScheduleContextTopology({ ...hierarchy, db });
+  }
 
   // Candidatos deslocados; os que caem fora do destino (só no modo mês)
   // não entram.
@@ -272,11 +342,14 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
 
   // Permissão por data: falha ANTES de qualquer escrita (sem cópia parcial).
   for (const c of inRange) assertCanEditScheduleDate(actor, c.startAt);
-  // Idempotência pela chave natural (hospital, setor, início, fim, label).
+  // Idempotência pela chave natural canônica
+  // (instituição, hospital, setor, escala, início, fim, label).
   const existing = await db
     .select({
+      institutionId: shiftInstances.institutionId,
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
+      scheduleContextId: shiftInstances.scheduleContextId,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       label: shiftInstances.label,
@@ -295,8 +368,10 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
   let skipped = 0;
   for (const c of inRange) {
     const key = naturalKey({
+      institutionId: c.source.institutionId,
       hospitalId: c.source.hospitalId,
       sectorId: c.source.sectorId,
+      scheduleContextId: c.source.scheduleContextId,
       startAt: c.startAt,
       endAt: c.endAt,
       label: c.source.label,
@@ -311,7 +386,11 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
 
   // Alocações: só copia quando o profissional está livre no destino.
   type SourceAssignment = typeof shiftAssignmentsV2.$inferSelect;
-  const plannedAssignments: { sourceShiftId: number; assignment: SourceAssignment }[] = [];
+  const plannedAssignments: {
+    sourceShiftId: number;
+    assignment: SourceAssignment;
+    candidate: AssignmentWriteCandidate;
+  }[] = [];
   let conflicts = 0;
   if (input.includeAssignments && toCreate.length > 0) {
     const sourceAssignments = await db
@@ -326,29 +405,38 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
           eq(shiftAssignmentsV2.isActive, true),
         ),
       );
-    const linkedProfessionals = sourceAssignments.length > 0
-      ? await db
-          .select({ professionalId: professionalInstitutions.professionalId })
-          .from(professionalInstitutions)
-          .innerJoin(
-            professionals,
-            and(
-              eq(professionals.id, professionalInstitutions.professionalId),
-              eq(professionals.userId, professionalInstitutions.userId),
-            ),
-          )
-          .where(
-            and(
-              eq(professionalInstitutions.institutionId, ctx.institutionId),
-              eq(professionalInstitutions.active, true),
-              inArray(
-                professionalInstitutions.professionalId,
-                Array.from(new Set(sourceAssignments.map((assignment) => assignment.professionalId))),
+    const linkedProfessionals =
+      sourceAssignments.length > 0
+        ? await db
+            .select({ professionalId: professionalInstitutions.professionalId })
+            .from(professionalInstitutions)
+            .innerJoin(
+              professionals,
+              and(
+                eq(professionals.id, professionalInstitutions.professionalId),
+                eq(professionals.userId, professionalInstitutions.userId),
               ),
-            ),
-          )
-      : [];
-    const linkedProfessionalIds = new Set(linkedProfessionals.map((row) => row.professionalId));
+            )
+            .where(
+              and(
+                eq(professionalInstitutions.institutionId, ctx.institutionId),
+                eq(professionalInstitutions.active, true),
+                inArray(
+                  professionalInstitutions.professionalId,
+                  Array.from(
+                    new Set(
+                      sourceAssignments.map(
+                        (assignment) => assignment.professionalId,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            )
+        : [];
+    const linkedProfessionalIds = new Set(
+      linkedProfessionals.map((row) => row.professionalId),
+    );
     for (const a of sourceAssignments) {
       const c = toCreate.find((x) => x.source.id === a.shiftInstanceId);
       if (!c) continue;
@@ -363,12 +451,63 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
           message: "Alocação de origem fora da hierarquia institucional",
         });
       }
-      const conflict = await checkTimeConflictForProfessional(a.professionalId, c.startAt, c.endAt);
+      const [activeAccess] = await db
+        .select({ id: professionalAccess.id })
+        .from(professionalAccess)
+        .where(
+          and(
+            eq(professionalAccess.professionalId, a.professionalId),
+            eq(professionalAccess.institutionId, c.source.institutionId),
+            eq(professionalAccess.hospitalId, c.source.hospitalId),
+            eq(professionalAccess.canAccess, true),
+            or(
+              isNull(professionalAccess.sectorId),
+              eq(professionalAccess.sectorId, c.source.sectorId),
+            ),
+          ),
+        )
+        .limit(1);
+      if (!activeAccess) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Profissional da origem sem acesso ativo ao hospital/setor de destino",
+        });
+      }
+      const conflict = await checkTimeConflictForProfessional(
+        a.professionalId,
+        c.startAt,
+        c.endAt,
+      );
       if (conflict.hasConflict) {
         conflicts++;
         continue;
       }
-      plannedAssignments.push({ sourceShiftId: c.source.id, assignment: a });
+      const candidate: AssignmentWriteCandidate = {
+        professionalId: a.professionalId,
+        institutionId: c.source.institutionId,
+        hospitalId: c.source.hospitalId,
+        sectorId: c.source.sectorId,
+        scheduleContextId: c.source.scheduleContextId,
+        startAt: c.startAt,
+        endAt: c.endAt,
+        requiredSpecialty: c.source.specialty,
+      };
+      const conflictsWithBatch = plannedAssignments.some(
+        (planned) =>
+          planned.candidate.professionalId === candidate.professionalId &&
+          planned.candidate.startAt < candidate.endAt &&
+          planned.candidate.endAt > candidate.startAt,
+      );
+      if (conflictsWithBatch) {
+        conflicts++;
+        continue;
+      }
+      plannedAssignments.push({
+        sourceShiftId: c.source.id,
+        assignment: a,
+        candidate,
+      });
     }
   }
 
@@ -386,27 +525,189 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
   };
   if (input.dryRun || toCreate.length === 0) return summary;
 
-  // Só registra override depois de concluir todo o plano e validar as
-  // relações de origem. Assim, dado contaminado ou réplica sem mudanças
-  // não deixa uma auditoria positiva sem a escrita correspondente.
-  const checked = new Set<string>();
-  for (const c of toCreate) {
-    const ym = yearMonthBrt(c.startAt);
-    if (checked.has(ym)) continue;
-    checked.add(ym);
-    await assertMonthEditable(
-      { user: { id: ctx.user.id } },
-      ctx.institutionId,
-      input.hospitalId,
-      c.startAt,
-      input.reason,
-    );
-  }
-
   await db.transaction(async (tx) => {
+    await lockMonthsForUpdate(tx, [
+      ...toCreate.map((candidate) => ({
+        institutionId: candidate.source.institutionId,
+        hospitalId: candidate.source.hospitalId,
+        date: candidate.source.startAt,
+      })),
+      ...toCreate.map((candidate) => ({
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        date: candidate.startAt,
+      })),
+    ]);
+    await assertMonthsEditableForUpdate(
+      tx,
+      { user: { id: ctx.user.id } },
+      toCreate.map((candidate) => ({
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        date: candidate.startAt,
+        reason: input.reason,
+      })),
+    );
+
+    // O planejamento acima é deliberadamente read-only (também alimenta o
+    // dry-run). Depois de conquistar as linhas mensais, refazemos as provas
+    // load-bearing antes de escrever: idempotência, fonte ainda atual e
+    // elegibilidade/conflitos dos profissionais.
+    const currentTargetShifts = await tx
+      .select({
+        institutionId: shiftInstances.institutionId,
+        hospitalId: shiftInstances.hospitalId,
+        sectorId: shiftInstances.sectorId,
+        scheduleContextId: shiftInstances.scheduleContextId,
+        startAt: shiftInstances.startAt,
+        endAt: shiftInstances.endAt,
+        label: shiftInstances.label,
+      })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, ctx.institutionId),
+          eq(shiftInstances.hospitalId, input.hospitalId),
+          gte(shiftInstances.startAt, win.targetStart),
+          lt(shiftInstances.startAt, win.targetEnd),
+        ),
+      )
+      .for("update");
+    const currentTargetKeys = new Set(currentTargetShifts.map(naturalKey));
+    if (
+      toCreate.some((candidate) =>
+        currentTargetKeys.has(
+          naturalKey({
+            institutionId: candidate.source.institutionId,
+            hospitalId: candidate.source.hospitalId,
+            sectorId: candidate.source.sectorId,
+            scheduleContextId: candidate.source.scheduleContextId,
+            startAt: candidate.startAt,
+            endAt: candidate.endAt,
+            label: candidate.source.label,
+          }),
+        ),
+      )
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "O período de destino mudou durante a replicação; atualize e tente novamente.",
+      });
+    }
+
+    const orderedSources = [
+      ...new Map(
+        toCreate.map(
+          (candidate) => [candidate.source.id, candidate.source] as const,
+        ),
+      ).values(),
+    ].sort((left, right) => left.id - right.id);
+    for (const source of orderedSources) {
+      const [lockedSource] = await tx
+        .select({ shift: shiftInstances })
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, source.id),
+            eq(shiftInstances.institutionId, source.institutionId),
+            eq(shiftInstances.hospitalId, source.hospitalId),
+            eq(shiftInstances.sectorId, source.sectorId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const current = lockedSource?.shift;
+      if (
+        !current ||
+        current.label !== source.label ||
+        current.scheduleContextId !== source.scheduleContextId ||
+        current.specialty !== source.specialty ||
+        current.startAt.getTime() !== source.startAt.getTime() ||
+        current.endAt.getTime() !== source.endAt.getTime() ||
+        current.status !== source.status ||
+        current.modality !== source.modality ||
+        current.coverageType !== source.coverageType ||
+        current.paymentModel !== source.paymentModel ||
+        current.productivityCapBrl !== source.productivityCapBrl
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Um turno de origem mudou durante a replicação; atualize e tente novamente.",
+        });
+      }
+      await assertInstitutionHierarchy(
+        {
+          institutionId: current.institutionId,
+          hospitalId: current.hospitalId,
+          sectorId: current.sectorId,
+        },
+        { db: tx, lockForShare: true },
+      );
+      await assertActiveScheduleContextTopology({
+        institutionId: current.institutionId,
+        hospitalId: current.hospitalId,
+        sectorId: current.sectorId,
+        scheduleContextId: current.scheduleContextId,
+        db: tx,
+      });
+    }
+
+    for (const planned of [...plannedAssignments].sort(
+      (left, right) => left.assignment.id - right.assignment.id,
+    )) {
+      const source = planned.assignment;
+      const [lockedAssignment] = await tx
+        .select({ id: shiftAssignmentsV2.id })
+        .from(shiftAssignmentsV2)
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, source.id),
+            eq(shiftAssignmentsV2.shiftInstanceId, source.shiftInstanceId),
+            eq(shiftAssignmentsV2.institutionId, source.institutionId),
+            eq(shiftAssignmentsV2.hospitalId, source.hospitalId),
+            eq(shiftAssignmentsV2.sectorId, source.sectorId),
+            eq(shiftAssignmentsV2.professionalId, source.professionalId),
+            eq(shiftAssignmentsV2.assignmentType, source.assignmentType),
+            eq(shiftAssignmentsV2.status, source.status),
+            eq(shiftAssignmentsV2.isActive, true),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!lockedAssignment) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Uma alocação de origem mudou durante a replicação; atualize e tente novamente.",
+        });
+      }
+    }
+
+    await assertAssignmentWritesAllowedForUpdate(
+      tx,
+      plannedAssignments.map((planned) => planned.candidate),
+      {
+        additionalProfessionalIds: actor.professionalId
+          ? [actor.professionalId]
+          : [],
+      },
+    );
+    await assertManagerScopeAccessForUpdate(
+      tx,
+      actor,
+      ctx.user.sessionVersion,
+      input.hospitalId,
+      input.sectorId,
+      toCreate.map((candidate) => candidate.startAt),
+    );
+
     let firstCreatedId = 0;
     for (const c of toCreate) {
-      const mine = plannedAssignments.filter((p) => p.sourceShiftId === c.source.id);
+      const mine = plannedAssignments.filter(
+        (p) => p.sourceShiftId === c.source.id,
+      );
       const status =
         mine.length === 0
           ? "VAGO"
@@ -420,6 +721,7 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
           institutionId: c.source.institutionId,
           hospitalId: c.source.hospitalId,
           sectorId: c.source.sectorId,
+          scheduleContextId: c.source.scheduleContextId,
           label: c.source.label,
           specialty: c.source.specialty,
           startAt: c.startAt,
@@ -435,6 +737,14 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
       if (!firstCreatedId) firstCreatedId = row.id;
 
       if (mine.length > 0) {
+        await assertShiftAssignmentCapacityForUpdate(tx, {
+          shiftInstanceId: row.id,
+          institutionId: c.source.institutionId,
+          hospitalId: c.source.hospitalId,
+          sectorId: c.source.sectorId,
+          activeDelta: mine.length,
+          expectedCurrentActiveCount: 0,
+        });
         await tx.insert(shiftAssignmentsV2).values(
           mine.map(({ assignment }) => ({
             shiftInstanceId: row.id,
@@ -454,20 +764,25 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
     await recordAudit(
       {
         actorUserId: ctx.user.id,
-        actorRole: ctx.user.role,
+        actorRole: actor.roleInInstitution,
         actorName: ctx.user.name ?? undefined,
         action: "SHIFT_CREATED",
         entityType: "SHIFT_INSTANCE",
         entityId: firstCreatedId,
         description: `Replicou ${summary.created} turnos de ${input.from.start} (${input.from.granularity === "week" ? "semana" : "mês"}) para ${input.to.start}; ${skipped} já existiam; ${plannedAssignments.length} alocações copiadas; ${conflicts} com conflito`,
-        metadata: { replication: true, ...summary, from: input.from, to: input.to },
+        metadata: {
+          replication: true,
+          ...summary,
+          from: input.from,
+          to: input.to,
+        },
         institutionId: ctx.institutionId,
         hospitalId: input.hospitalId,
         sectorId: input.sectorId,
       },
       { db: tx as any, strict: true },
     );
-  });
+  }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
   return summary;
 }
@@ -481,8 +796,11 @@ export const shiftsRouter = router({
     .input(
       z
         .object({
-          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
+          date: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
           shiftTemplateId: z.number().int(),
+          scheduleContextId: z.number().int().positive().optional(),
           sectorId: z.number().int().optional(),
           /** Obrigatório (≥ 5 caracteres) para Gestor+ criar em mês PUBLISHED/LOCKED. */
           reason: z.string().max(500).optional(),
@@ -502,15 +820,40 @@ export const shiftsRouter = router({
         .where(eq(shiftTemplates.id, input.shiftTemplateId));
 
       if (!template) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Template de turno não encontrado" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Template de turno não encontrado",
+        });
       }
       if (template.institutionId !== ctx.institutionId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Template fora do tenant ativo" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Template fora do tenant ativo",
+        });
       }
-      const sectorId = input.sectorId ?? template.sectorId;
-      if (!sectorId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "sectorId obrigatório (template não possui setor padrão)" });
+      if (!template.isActive) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Template de turno inativo",
+        });
       }
+      const requestedSectorId =
+        input.sectorId ?? template.sectorId ?? undefined;
+      if (!input.scheduleContextId && !requestedSectorId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "sectorId obrigatório (template não possui setor padrão)",
+        });
+      }
+      const selectedContext = await resolveScheduleContextForShiftCreation({
+        institutionId: ctx.institutionId,
+        scheduleContextId: input.scheduleContextId,
+        hospitalId: template.hospitalId,
+        sectorId: requestedSectorId,
+        templateSectorId: template.sectorId,
+        db,
+      });
+      const sectorId = selectedContext.sectorId;
       await assertManagerScopeAccess(actor, template.hospitalId, sectorId);
 
       assertModalityCoherent(input);
@@ -521,48 +864,147 @@ export const shiftsRouter = router({
         template.endTime,
       );
       assertCanEditScheduleDate(actor, startAt);
-      // Mês PUBLISHED/LOCKED: só Gestor+ com motivo (mesma regra do editor).
-      await assertMonthEditable({ user: { id: ctx.user.id } }, template.institutionId, template.hospitalId, startAt, input.reason);
-
-      const [result] = await db.insert(shiftInstances).values({
-        institutionId: template.institutionId,
-        hospitalId: template.hospitalId,
-        sectorId,
-        label: template.name,
-        startAt,
-        endAt,
-        status: "VAGO",
-        createdBy: ctx.user.id,
-        // Defaults aplicados pelo DB se não passados: modality=PLANTAO,
-        // paymentModel=FIXO. coverageType e productivityCapBrl ficam
-        // null por padrão.
-        ...(input.modality !== undefined ? { modality: input.modality } : {}),
-        ...(input.coverageType !== undefined ? { coverageType: input.coverageType } : {}),
-        ...(input.paymentModel !== undefined ? { paymentModel: input.paymentModel } : {}),
-        ...(input.productivityCapBrl !== undefined ? { productivityCapBrl: input.productivityCapBrl } : {}),
-      });
-
-      const insertId = (result as any).insertId as number;
-
-      await auditLog({
-        event: "SHIFT_CREATED",
-        shiftInstanceId: insertId,
-        professionalId: null,
-        metadata: { createdBy: ctx.user.id, templateId: input.shiftTemplateId, date: input.date },
-      });
-
-      await recordAudit({
-        actorUserId: ctx.user.id,
-        actorRole: ctx.user.role,
-        actorName: ctx.user.name ?? undefined,
-        action: "SHIFT_CREATED",
-        entityType: "SHIFT_INSTANCE",
-        entityId: insertId,
-        description: "Turno criado (" + template.name + " em " + input.date + ")",
-        institutionId: ctx.institutionId,
-        hospitalId: template.hospitalId,
-        sectorId: sectorId,
-        shiftInstanceId: insertId,
+      const insertId = await db.transaction(async (tx) => {
+        await assertMonthEditableForUpdate(
+          tx,
+          { user: { id: ctx.user.id } },
+          template.institutionId,
+          template.hospitalId,
+          startAt,
+          input.reason,
+        );
+        const activeContext = await resolveScheduleContextForShiftCreation({
+          institutionId: ctx.institutionId,
+          scheduleContextId: input.scheduleContextId,
+          hospitalId: template.hospitalId,
+          sectorId: requestedSectorId,
+          templateSectorId: template.sectorId,
+          db: tx,
+        });
+        if (
+          activeContext.id !== selectedContext.id ||
+          activeContext.sectorId !== selectedContext.sectorId ||
+          activeContext.medicalSpecialtyId !==
+            selectedContext.medicalSpecialtyId ||
+          activeContext.operationalProfileCode !==
+            selectedContext.operationalProfileCode
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A escala selecionada mudou durante a criação do turno.",
+          });
+        }
+        const proposedKey = naturalKey({
+          institutionId: template.institutionId,
+          hospitalId: template.hospitalId,
+          sectorId,
+          scheduleContextId: selectedContext.id,
+          startAt,
+          endAt,
+          label: template.name,
+        });
+        const [duplicate] = await tx
+          .select({
+            id: shiftInstances.id,
+            institutionId: shiftInstances.institutionId,
+            hospitalId: shiftInstances.hospitalId,
+            sectorId: shiftInstances.sectorId,
+            scheduleContextId: shiftInstances.scheduleContextId,
+            startAt: shiftInstances.startAt,
+            endAt: shiftInstances.endAt,
+            label: shiftInstances.label,
+          })
+          .from(shiftInstances)
+          .where(
+            and(
+              eq(shiftInstances.institutionId, template.institutionId),
+              eq(shiftInstances.hospitalId, template.hospitalId),
+              eq(shiftInstances.sectorId, sectorId),
+              eq(shiftInstances.scheduleContextId, selectedContext.id),
+              eq(shiftInstances.startAt, startAt),
+              eq(shiftInstances.endAt, endAt),
+              eq(shiftInstances.label, template.name),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        // Ordem global: mês → recurso operacional (natural key do shift) →
+        // identidade/PI/ACL. Admin de e-mail trava o shift antes da identidade;
+        // inverter estes dois mutexes aqui recria o ciclo shift↔user.
+        await assertManagerScopeAccessForUpdate(
+          tx,
+          actor,
+          ctx.user.sessionVersion,
+          template.hospitalId,
+          sectorId,
+          [startAt],
+        );
+        if (duplicate && naturalKey(duplicate) === proposedKey) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Já existe um turno com o mesmo horário, setor e identificação.",
+          });
+        }
+        const [result] = await tx.insert(shiftInstances).values({
+          institutionId: template.institutionId,
+          hospitalId: template.hospitalId,
+          sectorId,
+          scheduleContextId: selectedContext.id,
+          label: template.name,
+          specialty: activeContext.qualificationName,
+          startAt,
+          endAt,
+          status: "VAGO",
+          createdBy: ctx.user.id,
+          // Defaults aplicados pelo DB se não passados: modality=PLANTAO,
+          // paymentModel=FIXO. coverageType e productivityCapBrl ficam
+          // null por padrão.
+          ...(input.modality !== undefined ? { modality: input.modality } : {}),
+          ...(input.coverageType !== undefined
+            ? { coverageType: input.coverageType }
+            : {}),
+          ...(input.paymentModel !== undefined
+            ? { paymentModel: input.paymentModel }
+            : {}),
+          ...(input.productivityCapBrl !== undefined
+            ? { productivityCapBrl: input.productivityCapBrl }
+            : {}),
+        });
+        const createdId = Number(result.insertId);
+        await auditLog(
+          {
+            event: "SHIFT_CREATED",
+            shiftInstanceId: createdId,
+            institutionId: ctx.institutionId,
+            professionalId: null,
+            metadata: {
+              createdBy: ctx.user.id,
+              templateId: input.shiftTemplateId,
+              scheduleContextId: selectedContext.id,
+              date: input.date,
+            },
+          },
+          { db: tx },
+        );
+        await recordAudit(
+          {
+            actorUserId: ctx.user.id,
+            actorRole: actor.roleInInstitution,
+            actorName: ctx.user.name ?? undefined,
+            action: "SHIFT_CREATED",
+            entityType: "SHIFT_INSTANCE",
+            entityId: createdId,
+            description:
+              "Turno criado (" + template.name + " em " + input.date + ")",
+            institutionId: ctx.institutionId,
+            hospitalId: template.hospitalId,
+            sectorId,
+            shiftInstanceId: createdId,
+          },
+          { db: tx, strict: true },
+        );
+        return createdId;
       });
 
       const [created] = await db
@@ -582,6 +1024,7 @@ export const shiftsRouter = router({
     .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      const actor = await getTenantActorFromContext(ctx);
 
       const [instance] = await db
         .select({
@@ -589,7 +1032,9 @@ export const shiftsRouter = router({
           institutionId: shiftInstances.institutionId,
           hospitalId: shiftInstances.hospitalId,
           sectorId: shiftInstances.sectorId,
+          scheduleContextId: shiftInstances.scheduleContextId,
           label: shiftInstances.label,
+          specialty: shiftInstances.specialty,
           startAt: shiftInstances.startAt,
           endAt: shiftInstances.endAt,
           status: shiftInstances.status,
@@ -606,8 +1051,21 @@ export const shiftsRouter = router({
           sectorColor: sectors.color,
         })
         .from(shiftInstances)
-        .leftJoin(hospitals, eq(shiftInstances.hospitalId, hospitals.id))
-        .leftJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
+        .innerJoin(
+          hospitals,
+          and(
+            eq(hospitals.id, shiftInstances.hospitalId),
+            eq(hospitals.institutionId, shiftInstances.institutionId),
+          ),
+        )
+        .innerJoin(
+          sectors,
+          and(
+            eq(sectors.id, shiftInstances.sectorId),
+            eq(sectors.institutionId, shiftInstances.institutionId),
+            eq(sectors.hospitalId, shiftInstances.hospitalId),
+          ),
+        )
         .where(
           and(
             eq(shiftInstances.id, input.id),
@@ -616,8 +1074,17 @@ export const shiftsRouter = router({
         );
 
       if (!instance) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Turno não encontrado",
+        });
       }
+
+      await assertActorCanReadShiftScheduleContext({
+        actor,
+        shift: instance,
+        db,
+      });
 
       // Load the template that matches this instance's hospital + sector + label
       const [template] = await db
@@ -627,6 +1094,7 @@ export const shiftsRouter = router({
           and(
             eq(shiftTemplates.institutionId, ctx.institutionId),
             eq(shiftTemplates.hospitalId, instance.hospitalId),
+            eq(shiftTemplates.sectorId, instance.sectorId),
             eq(shiftTemplates.name, instance.label),
           ),
         )
@@ -650,11 +1118,36 @@ export const shiftsRouter = router({
           userId: professionals.userId,
         })
         .from(shiftAssignmentsV2)
-        .leftJoin(professionals, eq(shiftAssignmentsV2.professionalId, professionals.id))
+        .innerJoin(
+          professionals,
+          eq(shiftAssignmentsV2.professionalId, professionals.id),
+        )
+        .innerJoin(
+          professionalInstitutions,
+          and(
+            eq(professionalInstitutions.professionalId, professionals.id),
+            eq(professionalInstitutions.userId, professionals.userId),
+            eq(
+              professionalInstitutions.institutionId,
+              shiftAssignmentsV2.institutionId,
+            ),
+            eq(professionalInstitutions.active, true),
+          ),
+        )
+        .innerJoin(
+          users,
+          and(
+            eq(users.id, professionals.userId),
+            eq(users.approvalStatus, "APPROVED"),
+            isNull(users.deletedAt),
+          ),
+        )
         .where(
           and(
             eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
             eq(shiftAssignmentsV2.shiftInstanceId, input.id),
+            eq(shiftAssignmentsV2.hospitalId, instance.hospitalId),
+            eq(shiftAssignmentsV2.sectorId, instance.sectorId),
             eq(shiftAssignmentsV2.isActive, true),
           ),
         );
@@ -699,9 +1192,16 @@ export const shiftsRouter = router({
         );
 
       if (!existing) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Turno não encontrado",
+        });
       }
-      await assertManagerScopeAccess(actor, existing.hospitalId, existing.sectorId);
+      await assertManagerScopeAccess(
+        actor,
+        existing.hospitalId,
+        existing.sectorId,
+      );
 
       assertModalityCoherent(input, existing.modality);
 
@@ -709,16 +1209,23 @@ export const shiftsRouter = router({
       if (input.startAt !== undefined) patch.startAt = new Date(input.startAt);
       if (input.endAt !== undefined) patch.endAt = new Date(input.endAt);
       if (input.modality !== undefined) patch.modality = input.modality;
-      if (input.coverageType !== undefined) patch.coverageType = input.coverageType;
-      if (input.paymentModel !== undefined) patch.paymentModel = input.paymentModel;
-      if (input.productivityCapBrl !== undefined) patch.productivityCapBrl = input.productivityCapBrl;
+      if (input.coverageType !== undefined)
+        patch.coverageType = input.coverageType;
+      if (input.paymentModel !== undefined)
+        patch.paymentModel = input.paymentModel;
+      if (input.productivityCapBrl !== undefined)
+        patch.productivityCapBrl = input.productivityCapBrl;
 
       // Mantém o invariante "SOBREAVISO ⇒ coverageType IS NULL". Se a
       // transição é PLANTAO → SOBREAVISO sem coverageType explícito no
       // patch, o valor antigo seria preservado (URGENCIA_EMERGENCIA ou
       // ELETIVAS) e a row ficaria inconsistente. Auto-null defensivo.
       const effectiveModality = patch.modality ?? existing.modality;
-      if (effectiveModality === "SOBREAVISO" && input.coverageType === undefined && existing.coverageType !== null) {
+      if (
+        effectiveModality === "SOBREAVISO" &&
+        input.coverageType === undefined &&
+        existing.coverageType !== null
+      ) {
         patch.coverageType = null;
       }
 
@@ -730,37 +1237,211 @@ export const shiftsRouter = router({
       assertCanEditScheduleDate(actor, existing.startAt);
       if (patch.startAt) assertCanEditScheduleDate(actor, patch.startAt);
       const monthCtx = { user: { id: ctx.user.id } };
-      await assertMonthEditable(monthCtx, ctx.institutionId, existing.hospitalId, existing.startAt, input.reason);
-      if (patch.startAt && yearMonthBrt(patch.startAt) !== yearMonthBrt(existing.startAt)) {
-        await assertMonthEditable(monthCtx, ctx.institutionId, existing.hospitalId, patch.startAt, input.reason);
+      const targetDates = [existing.startAt];
+      if (
+        patch.startAt &&
+        yearMonthBrt(patch.startAt) !== yearMonthBrt(existing.startAt)
+      ) {
+        targetDates.push(patch.startAt);
       }
+      const policyDates =
+        patch.startAt && patch.startAt.getTime() !== existing.startAt.getTime()
+          ? [existing.startAt, patch.startAt]
+          : [existing.startAt];
 
-      await db
-        .update(shiftInstances)
-        .set(patch)
-        .where(eq(shiftInstances.id, input.id));
+      await db.transaction(async (tx) => {
+        await assertMonthsEditableForUpdate(
+          tx,
+          monthCtx,
+          targetDates.map((date) => ({
+            institutionId: ctx.institutionId,
+            hospitalId: existing.hospitalId,
+            date,
+            reason: input.reason,
+          })),
+        );
+        const [locked] = await tx
+          .select()
+          .from(shiftInstances)
+          .where(
+            and(
+              eq(shiftInstances.id, input.id),
+              eq(shiftInstances.institutionId, ctx.institutionId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (
+          !locked ||
+          locked.hospitalId !== existing.hospitalId ||
+          locked.sectorId !== existing.sectorId ||
+          locked.scheduleContextId !== existing.scheduleContextId ||
+          locked.startAt.getTime() !== existing.startAt.getTime() ||
+          locked.endAt.getTime() !== existing.endAt.getTime() ||
+          locked.modality !== existing.modality ||
+          locked.coverageType !== existing.coverageType ||
+          locked.paymentModel !== existing.paymentModel ||
+          locked.productivityCapBrl !== existing.productivityCapBrl
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "O turno mudou enquanto a edição era processada.",
+          });
+        }
 
-      await auditLog({
-        event: "SHIFT_UPDATED",
-        shiftInstanceId: input.id,
-        professionalId: null,
-        metadata: { updatedBy: ctx.user.id, changes: patch },
-      });
+        const effectiveStartAt = patch.startAt ?? locked.startAt;
+        const effectiveEndAt = patch.endAt ?? locked.endAt;
+        if (
+          !Number.isFinite(effectiveStartAt.getTime()) ||
+          !Number.isFinite(effectiveEndAt.getTime()) ||
+          effectiveEndAt <= effectiveStartAt
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "O fim do turno deve ser posterior ao início.",
+          });
+        }
+        const proposedKey = naturalKey({
+          institutionId: locked.institutionId,
+          hospitalId: locked.hospitalId,
+          sectorId: locked.sectorId,
+          scheduleContextId: locked.scheduleContextId,
+          startAt: effectiveStartAt,
+          endAt: effectiveEndAt,
+          label: locked.label,
+        });
+        const [duplicate] = await tx
+          .select({
+            id: shiftInstances.id,
+            institutionId: shiftInstances.institutionId,
+            hospitalId: shiftInstances.hospitalId,
+            sectorId: shiftInstances.sectorId,
+            scheduleContextId: shiftInstances.scheduleContextId,
+            startAt: shiftInstances.startAt,
+            endAt: shiftInstances.endAt,
+            label: shiftInstances.label,
+          })
+          .from(shiftInstances)
+          .where(
+            and(
+              ne(shiftInstances.id, locked.id),
+              eq(shiftInstances.institutionId, locked.institutionId),
+              eq(shiftInstances.hospitalId, locked.hospitalId),
+              eq(shiftInstances.sectorId, locked.sectorId),
+              ...(locked.scheduleContextId === null
+                ? [isNull(shiftInstances.scheduleContextId)]
+                : [
+                    eq(
+                      shiftInstances.scheduleContextId,
+                      locked.scheduleContextId,
+                    ),
+                  ]),
+              eq(shiftInstances.startAt, effectiveStartAt),
+              eq(shiftInstances.endAt, effectiveEndAt),
+              eq(shiftInstances.label, locked.label),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (duplicate && naturalKey(duplicate) === proposedKey) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Já existe um turno com o mesmo horário, setor e identificação.",
+          });
+        }
+        const windowChanged =
+          effectiveStartAt.getTime() !== locked.startAt.getTime() ||
+          effectiveEndAt.getTime() !== locked.endAt.getTime();
+        const activeAssignments = windowChanged
+          ? await tx
+              .select({
+                id: shiftAssignmentsV2.id,
+                professionalId: shiftAssignmentsV2.professionalId,
+                institutionId: shiftAssignmentsV2.institutionId,
+                hospitalId: shiftAssignmentsV2.hospitalId,
+                sectorId: shiftAssignmentsV2.sectorId,
+              })
+              .from(shiftAssignmentsV2)
+              .where(
+                and(
+                  eq(shiftAssignmentsV2.shiftInstanceId, locked.id),
+                  eq(shiftAssignmentsV2.isActive, true),
+                ),
+              )
+              .for("update")
+          : [];
 
-      await recordAudit({
-        actorUserId: ctx.user.id,
-        actorRole: ctx.user.role,
-        actorName: ctx.user.name ?? undefined,
-        action: "SHIFT_UPDATED",
-        entityType: "SHIFT_INSTANCE",
-        entityId: input.id,
-        description: "Turno atualizado",
-        institutionId: ctx.institutionId,
-        shiftInstanceId: input.id,
-        hospitalId: existing.hospitalId,
-        sectorId: existing.sectorId,
-        metadata: { changes: patch },
-      });
+        await assertAssignmentWritesAllowedForUpdate(
+          tx,
+          activeAssignments.map((assignment) => ({
+            professionalId: assignment.professionalId,
+            institutionId: locked.institutionId,
+            hospitalId: locked.hospitalId,
+            sectorId: locked.sectorId,
+            scheduleContextId: locked.scheduleContextId,
+            startAt: effectiveStartAt,
+            endAt: effectiveEndAt,
+            requiredSpecialty: locked.specialty,
+            excludeAssignmentIds: [assignment.id],
+          })),
+          {
+            additionalProfessionalIds: actor.professionalId
+              ? [actor.professionalId]
+              : [],
+          },
+        );
+        await assertManagerScopeAccessForUpdate(
+          tx,
+          actor,
+          ctx.user.sessionVersion,
+          locked.hospitalId,
+          locked.sectorId,
+          policyDates,
+        );
+        if (windowChanged) {
+          await assertShiftAssignmentCapacityForUpdate(tx, {
+            shiftInstanceId: locked.id,
+            institutionId: locked.institutionId,
+            hospitalId: locked.hospitalId,
+            sectorId: locked.sectorId,
+            activeDelta: 0,
+            expectedCurrentActiveCount: activeAssignments.length,
+          });
+        }
+
+        await tx
+          .update(shiftInstances)
+          .set(patch)
+          .where(eq(shiftInstances.id, input.id));
+        await auditLog(
+          {
+            event: "SHIFT_UPDATED",
+            shiftInstanceId: input.id,
+            institutionId: ctx.institutionId,
+            professionalId: null,
+            metadata: { updatedBy: ctx.user.id, changes: patch },
+          },
+          { db: tx },
+        );
+        await recordAudit(
+          {
+            actorUserId: ctx.user.id,
+            actorRole: actor.roleInInstitution,
+            actorName: ctx.user.name ?? undefined,
+            action: "SHIFT_UPDATED",
+            entityType: "SHIFT_INSTANCE",
+            entityId: input.id,
+            description: "Turno atualizado",
+            institutionId: ctx.institutionId,
+            shiftInstanceId: input.id,
+            hospitalId: existing.hospitalId,
+            sectorId: existing.sectorId,
+            metadata: { changes: patch },
+          },
+          { db: tx, strict: true },
+        );
+      }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       const [updated] = await db
         .select()
@@ -784,30 +1465,79 @@ export const shiftsRouter = router({
       z.object({
         startDate: z.string(),
         endDate: z.string(),
+        scheduleContextId: z.number().int().positive().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      const actor = await getTenantActorFromContext(ctx);
+      const authorizedContexts = await listAuthorizedScheduleContexts(
+        actor,
+        db,
+      );
+      const authorizedContextIds = new Set(
+        authorizedContexts.map((context) => context.id),
+      );
+      if (
+        input.scheduleContextId !== undefined &&
+        !authorizedContextIds.has(input.scheduleContextId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Escala fora do acesso do usuário neste tenant.",
+        });
+      }
 
       const start = new Date(input.startDate);
       const end = new Date(input.endDate);
 
-      const instances = await db
-        .select()
+      const instanceRows = await db
+        .select({
+          instance: shiftInstances,
+          activeScheduleContextId: scheduleContexts.id,
+        })
         .from(shiftInstances)
+        .innerJoin(
+          hospitals,
+          and(
+            eq(hospitals.id, shiftInstances.hospitalId),
+            eq(hospitals.institutionId, shiftInstances.institutionId),
+          ),
+        )
+        .innerJoin(
+          sectors,
+          and(
+            eq(sectors.id, shiftInstances.sectorId),
+            eq(sectors.institutionId, shiftInstances.institutionId),
+            eq(sectors.hospitalId, shiftInstances.hospitalId),
+          ),
+        )
+        .leftJoin(
+          scheduleContexts,
+          and(
+            eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+            eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+            eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+            eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+            eq(scheduleContexts.active, true),
+          ),
+        )
         .where(
           and(
             eq(shiftInstances.institutionId, ctx.institutionId),
             gte(shiftInstances.startAt, start),
             lte(shiftInstances.startAt, end),
+            ...(input.scheduleContextId !== undefined
+              ? [eq(shiftInstances.scheduleContextId, input.scheduleContextId)]
+              : []),
           ),
         );
 
-      if (instances.length === 0) return [];
+      if (instanceRows.length === 0) return [];
 
       // Attach active assignments (with professional name) to each instance
-      const instanceIds = instances.map((i) => i.id);
+      const instanceIds = instanceRows.map(({ instance }) => instance.id);
       const allAssignments = await db
         .select({
           id: shiftAssignmentsV2.id,
@@ -817,14 +1547,63 @@ export const shiftsRouter = router({
           status: shiftAssignmentsV2.status,
           isActive: shiftAssignmentsV2.isActive,
           professionalName: professionals.name,
+          userId: professionals.userId,
         })
         .from(shiftAssignmentsV2)
-        .leftJoin(professionals, eq(shiftAssignmentsV2.professionalId, professionals.id))
+        .innerJoin(
+          shiftInstances,
+          and(
+            eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId),
+            eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
+            eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
+            eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+          ),
+        )
+        .innerJoin(
+          hospitals,
+          and(
+            eq(hospitals.id, shiftInstances.hospitalId),
+            eq(hospitals.institutionId, shiftInstances.institutionId),
+          ),
+        )
+        .innerJoin(
+          sectors,
+          and(
+            eq(sectors.id, shiftInstances.sectorId),
+            eq(sectors.institutionId, shiftInstances.institutionId),
+            eq(sectors.hospitalId, shiftInstances.hospitalId),
+          ),
+        )
+        .innerJoin(
+          professionals,
+          eq(shiftAssignmentsV2.professionalId, professionals.id),
+        )
+        .innerJoin(
+          professionalInstitutions,
+          and(
+            eq(professionalInstitutions.professionalId, professionals.id),
+            eq(professionalInstitutions.userId, professionals.userId),
+            eq(
+              professionalInstitutions.institutionId,
+              shiftAssignmentsV2.institutionId,
+            ),
+            eq(professionalInstitutions.active, true),
+          ),
+        )
+        .innerJoin(
+          users,
+          and(
+            eq(users.id, professionals.userId),
+            eq(users.approvalStatus, "APPROVED"),
+            isNull(users.deletedAt),
+          ),
+        )
         .where(
           and(
             eq(shiftAssignmentsV2.isActive, true),
             eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
-            inArray(shiftAssignmentsV2.shiftInstanceId, instanceIds),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+            inArray(shiftInstances.id, instanceIds),
           ),
         );
 
@@ -835,10 +1614,29 @@ export const shiftsRouter = router({
         assignmentsByShift.set(a.shiftInstanceId, list);
       }
 
-      return instances.map((instance) => ({
-        ...instance,
-        assignments: assignmentsByShift.get(instance.id) ?? [],
-      }));
+      return instanceRows
+        .filter(({ instance, activeScheduleContextId }) => {
+          if (input.scheduleContextId !== undefined) {
+            return activeScheduleContextId === input.scheduleContextId;
+          }
+          if (
+            activeScheduleContextId !== null &&
+            authorizedContextIds.has(activeScheduleContextId)
+          ) {
+            return true;
+          }
+          // Exceção própria e exata; não transforma a alocação em acesso ao
+          // restante do setor/contexto.
+          return (assignmentsByShift.get(instance.id) ?? []).some(
+            (assignment) =>
+              assignment.professionalId === actor.professionalId &&
+              assignment.userId === actor.userId,
+          );
+        })
+        .map(({ instance }) => ({
+          ...instance,
+          assignments: assignmentsByShift.get(instance.id) ?? [],
+        }));
     }),
 
   // ------------------------------------------------------------------
@@ -846,10 +1644,10 @@ export const shiftsRouter = router({
   //
   // Endpoint dedicado para a tela "Agenda" unificada (substitui Calendar
   // + Weekly do menu). Retorna shifts agrupados server-side por
-  // (semana → dia → grupo hospital+setor) — pronto pra renderizar sem
+  // (semana → dia → grupo hospital+setor+contexto) — pronto pra renderizar sem
   // pós-processamento no cliente.
   //
-  // - scope = "geral": todos os shifts do tenant no período
+  // - scope = "geral": shifts dos contextos autorizados no período
   // - scope = "minha": filtra onde o profissional do user logado está
   //   ativo em alguma assignment
   //
@@ -862,33 +1660,62 @@ export const shiftsRouter = router({
         startDate: z.string(), // YYYY-MM-DD (Monday das semanas)
         weeks: z.number().int().min(1).max(12).default(4),
         scope: z.enum(["geral", "minha"]).default("geral"),
+        scheduleContextId: z.number().int().positive().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      const actor = await getTenantActorFromContext(ctx);
+      const authorizedContexts = await listAuthorizedScheduleContexts(
+        actor,
+        db,
+      );
+      const authorizedContextsById = new Map(
+        authorizedContexts.map((context) => [context.id, context] as const),
+      );
+      if (
+        input.scope === "geral" &&
+        input.scheduleContextId !== undefined &&
+        !authorizedContextsById.has(input.scheduleContextId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Escala fora do acesso do usuário neste tenant.",
+        });
+      }
 
       // Janela em dias do hospital (-03:00): o servidor roda em UTC e o
       // parse sem offset começava a semana às 21h do dia anterior (M6).
       const start = dayWindowBrt(input.startDate).start;
-      const end = dayWindowBrt(addDaysToKey(input.startDate, input.weeks * 7)).start;
+      const end = dayWindowBrt(
+        addDaysToKey(input.startDate, input.weeks * 7),
+      ).start;
 
-      // Resolve professional do user logado uma vez (usado em scope=minha
-      // e também útil pra eventual marcação "é um shift meu" no client).
-      let myProfessionalId: number | null = null;
-      const [me] = await db
-        .select({ id: professionals.id })
-        .from(professionals)
-        .where(eq(professionals.userId, ctx.user.id));
-      if (me) myProfessionalId = me.id;
+      const assignedProfessionals = alias(
+        professionals,
+        "agenda_assigned_professionals",
+      );
+      const assignedMemberships = alias(
+        professionalInstitutions,
+        "agenda_assigned_memberships",
+      );
+      const assignedUsers = alias(users, "agenda_assigned_users");
 
-      // 1. Shifts do tenant + hospital/sector via JOIN.
-      const rows = await db
+      // Uma única query revalida o ator e traz shifts + assignments. O ator
+      // é a tabela raiz para ainda haver uma linha sentinela quando o período
+      // está vazio; vínculo revogado ou instituição inativa continuam
+      // distinguíveis de uma agenda legitimamente vazia.
+      const joinedRows = await db
         .select({
+          actorProfessionalId: professionalInstitutions.professionalId,
           id: shiftInstances.id,
+          rawScheduleContextId: shiftInstances.scheduleContextId,
+          scheduleContextId: scheduleContexts.id,
           hospitalId: shiftInstances.hospitalId,
           sectorId: shiftInstances.sectorId,
           label: shiftInstances.label,
+          specialty: shiftInstances.specialty,
           startAt: shiftInstances.startAt,
           endAt: shiftInstances.endAt,
           status: shiftInstances.status,
@@ -896,66 +1723,234 @@ export const shiftsRouter = router({
           coverageType: shiftInstances.coverageType,
           hospitalName: hospitals.name,
           sectorName: sectors.name,
+          assignmentId: shiftAssignmentsV2.id,
+          assignmentProfessionalId: assignedMemberships.professionalId,
+          professionalName: assignedProfessionals.name,
+          assignmentUserId: assignedUsers.id,
         })
-        .from(shiftInstances)
-        .leftJoin(hospitals, eq(shiftInstances.hospitalId, hospitals.id))
-        .leftJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
-        .where(
+        .from(professionalInstitutions)
+        .innerJoin(
+          professionals,
           and(
-            eq(shiftInstances.institutionId, ctx.institutionId),
+            eq(professionals.id, professionalInstitutions.professionalId),
+            eq(professionals.userId, professionalInstitutions.userId),
+          ),
+        )
+        .innerJoin(
+          users,
+          and(
+            eq(users.id, professionalInstitutions.userId),
+            eq(users.id, ctx.user.id),
+            eq(users.approvalStatus, "APPROVED"),
+            isNull(users.deletedAt),
+          ),
+        )
+        .innerJoin(
+          institutions,
+          and(
+            eq(institutions.id, professionalInstitutions.institutionId),
+            eq(institutions.id, ctx.institutionId),
+            eq(institutions.isActive, true),
+          ),
+        )
+        .leftJoin(
+          shiftInstances,
+          and(
+            eq(shiftInstances.institutionId, institutions.id),
             gte(shiftInstances.startAt, start),
             lt(shiftInstances.startAt, end),
+            ...(input.scheduleContextId !== undefined
+              ? [eq(shiftInstances.scheduleContextId, input.scheduleContextId)]
+              : []),
+          ),
+        )
+        .leftJoin(
+          scheduleContexts,
+          and(
+            eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+            eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+            eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+            eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+          ),
+        )
+        .leftJoin(
+          hospitals,
+          and(
+            eq(hospitals.id, shiftInstances.hospitalId),
+            eq(hospitals.institutionId, shiftInstances.institutionId),
+          ),
+        )
+        .leftJoin(
+          sectors,
+          and(
+            eq(sectors.id, shiftInstances.sectorId),
+            eq(sectors.institutionId, shiftInstances.institutionId),
+            eq(sectors.hospitalId, shiftInstances.hospitalId),
+          ),
+        )
+        .leftJoin(
+          shiftAssignmentsV2,
+          and(
+            eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id),
+            eq(shiftAssignmentsV2.institutionId, shiftInstances.institutionId),
+            eq(shiftAssignmentsV2.hospitalId, shiftInstances.hospitalId),
+            eq(shiftAssignmentsV2.sectorId, shiftInstances.sectorId),
+            eq(shiftAssignmentsV2.isActive, true),
+          ),
+        )
+        .leftJoin(
+          assignedProfessionals,
+          eq(assignedProfessionals.id, shiftAssignmentsV2.professionalId),
+        )
+        .leftJoin(
+          assignedMemberships,
+          and(
+            eq(assignedMemberships.professionalId, assignedProfessionals.id),
+            eq(assignedMemberships.userId, assignedProfessionals.userId),
+            eq(
+              assignedMemberships.institutionId,
+              shiftAssignmentsV2.institutionId,
+            ),
+            eq(assignedMemberships.active, true),
+          ),
+        )
+        .leftJoin(
+          assignedUsers,
+          and(
+            eq(assignedUsers.id, assignedProfessionals.userId),
+            eq(assignedUsers.approvalStatus, "APPROVED"),
+            isNull(assignedUsers.deletedAt),
+          ),
+        )
+        .where(
+          and(
+            eq(professionalInstitutions.userId, ctx.user.id),
+            eq(professionalInstitutions.institutionId, ctx.institutionId),
+            eq(professionalInstitutions.active, true),
           ),
         );
 
-      // 2. Assignments ativos pra cada shift (com nome do profissional).
-      const ids = rows.map((r) => r.id);
-      const assignments =
-        ids.length > 0
-          ? await db
-              .select({
-                shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
-                professionalId: shiftAssignmentsV2.professionalId,
-                professionalName: professionals.name,
-              })
-              .from(shiftAssignmentsV2)
-              .leftJoin(
-                professionals,
-                eq(shiftAssignmentsV2.professionalId, professionals.id),
-              )
-              .where(
-                and(
-                  eq(shiftAssignmentsV2.isActive, true),
-                  eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
-                  inArray(shiftAssignmentsV2.shiftInstanceId, ids),
-                ),
-              )
-          : [];
+      if (joinedRows.length === 0) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Usuário sem vínculo ativo para a instituição",
+        });
+      }
+
+      const myProfessionalId = joinedRows[0].actorProfessionalId;
+      if (
+        ctx.tenantProfessionalId !== undefined &&
+        ctx.tenantProfessionalId !== myProfessionalId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Vínculo profissional mudou durante a consulta",
+        });
+      }
+
+      type AgendaRow = {
+        id: number;
+        rawScheduleContextId: number | null;
+        scheduleContextId: number | null;
+        hospitalId: number;
+        sectorId: number;
+        label: string;
+        specialty: string | null;
+        startAt: Date;
+        endAt: Date;
+        status: typeof shiftInstances.$inferSelect.status;
+        modality: typeof shiftInstances.$inferSelect.modality;
+        coverageType: typeof shiftInstances.$inferSelect.coverageType;
+        hospitalName: string;
+        sectorName: string;
+      };
+      const rowsById = new Map<number, AgendaRow>();
+      for (const row of joinedRows) {
+        if (
+          row.id === null ||
+          row.hospitalId === null ||
+          row.sectorId === null ||
+          row.hospitalName === null ||
+          row.sectorName === null
+        ) {
+          continue;
+        }
+        // FK isolada não prova topologia composta. Contexto não-null que não
+        // fecha com instituição/hospital/setor é descartado fail-closed.
+        if (
+          row.rawScheduleContextId !== null &&
+          row.scheduleContextId === null
+        ) {
+          continue;
+        }
+        if (!rowsById.has(row.id)) {
+          rowsById.set(row.id, {
+            id: row.id,
+            rawScheduleContextId: row.rawScheduleContextId,
+            scheduleContextId: row.scheduleContextId,
+            hospitalId: row.hospitalId,
+            sectorId: row.sectorId,
+            label: row.label!,
+            specialty: row.specialty,
+            startAt: row.startAt!,
+            endAt: row.endAt!,
+            status: row.status!,
+            modality: row.modality!,
+            coverageType: row.coverageType,
+            hospitalName: row.hospitalName,
+            sectorName: row.sectorName,
+          });
+        }
+      }
+      const rows = Array.from(rowsById.values());
 
       const assignByShift = new Map<
         number,
-        { professionalId: number; professionalName: string | null }[]
+        {
+          assignmentId: number;
+          professionalId: number;
+          professionalName: string | null;
+        }[]
       >();
-      for (const a of assignments) {
-        const list = assignByShift.get(a.shiftInstanceId) ?? [];
+      for (const row of joinedRows) {
+        if (
+          row.id === null ||
+          row.assignmentId === null ||
+          row.assignmentProfessionalId === null ||
+          row.assignmentUserId === null
+        ) {
+          continue;
+        }
+        const list = assignByShift.get(row.id) ?? [];
         list.push({
-          professionalId: a.professionalId,
-          professionalName: a.professionalName,
+          assignmentId: row.assignmentId,
+          professionalId: row.assignmentProfessionalId,
+          professionalName: row.professionalName,
         });
-        assignByShift.set(a.shiftInstanceId, list);
+        assignByShift.set(row.id, list);
+      }
+      for (const assignments of assignByShift.values()) {
+        assignments.sort(
+          (left, right) => left.assignmentId - right.assignmentId,
+        );
       }
 
       // 3. Filtra por escopo se "minha".
       const scoped = rows.filter((r) => {
-        if (input.scope === "geral") return true;
-        if (myProfessionalId == null) return false;
+        if (input.scope === "geral") {
+          return (
+            r.scheduleContextId !== null &&
+            authorizedContextsById.has(r.scheduleContextId)
+          );
+        }
         const my = assignByShift.get(r.id) ?? [];
         return my.some((a) => a.professionalId === myProfessionalId);
       });
 
-      // 4. Agrupa por week → day → hospital+sector.
+      // 4. Agrupa por week → day → hospital+sector+context.
       type AgendaShift = {
         id: number;
+        scheduleContextId: number | null;
         label: string;
         startAt: Date;
         endAt: Date;
@@ -970,6 +1965,8 @@ export const shiftsRouter = router({
         hospitalName: string;
         sectorId: number;
         sectorName: string;
+        scheduleContextId: number | null;
+        qualificationName: string;
         shifts: AgendaShift[];
       };
       type AgendaDay = {
@@ -991,7 +1988,7 @@ export const shiftsRouter = router({
       for (const r of scoped) {
         const dayKey = dayKeyBrt(new Date(r.startAt));
         const wkKey = mondayOfKey(dayKey);
-        const groupKey = `${r.hospitalId}-${r.sectorId}`;
+        const groupKey = `${r.hospitalId}-${r.sectorId}-${r.scheduleContextId ?? "legacy"}`;
 
         let dayMap = weekMap.get(wkKey);
         if (!dayMap) {
@@ -1010,6 +2007,14 @@ export const shiftsRouter = router({
             hospitalName: r.hospitalName ?? "—",
             sectorId: r.sectorId,
             sectorName: r.sectorName ?? "—",
+            scheduleContextId: r.scheduleContextId,
+            qualificationName:
+              (r.scheduleContextId !== null
+                ? authorizedContextsById.get(r.scheduleContextId)
+                    ?.qualificationName
+                : null) ??
+              r.specialty ??
+              "Escala não classificada",
             shifts: [],
           };
           groupMap.set(groupKey, group);
@@ -1020,6 +2025,7 @@ export const shiftsRouter = router({
           myList.some((a) => a.professionalId === myProfessionalId);
         group.shifts.push({
           id: r.id,
+          scheduleContextId: r.scheduleContextId,
           label: r.label,
           startAt: r.startAt,
           endAt: r.endAt,
@@ -1046,9 +2052,17 @@ export const shiftsRouter = router({
           const groups: AgendaGroup[] = groupMap
             ? Array.from(groupMap.values())
                 .sort((a, b) => {
-                  const h = a.hospitalName.localeCompare(b.hospitalName, "pt-BR");
+                  const h = a.hospitalName.localeCompare(
+                    b.hospitalName,
+                    "pt-BR",
+                  );
                   if (h !== 0) return h;
-                  return a.sectorName.localeCompare(b.sectorName, "pt-BR");
+                  const s = a.sectorName.localeCompare(b.sectorName, "pt-BR");
+                  if (s !== 0) return s;
+                  return a.qualificationName.localeCompare(
+                    b.qualificationName,
+                    "pt-BR",
+                  );
                 })
                 .map((g) => ({
                   ...g,
@@ -1100,12 +2114,8 @@ export const shiftsRouter = router({
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
-    const [professional] = await db
-      .select()
-      .from(professionals)
-      .where(eq(professionals.userId, ctx.user.id));
-
-    if (!professional) return null;
+    const actor = await getTenantActorFromContext(ctx);
+    if (!actor.professionalId) return null;
 
     const now = new Date();
 
@@ -1114,12 +2124,58 @@ export const shiftsRouter = router({
       .from(shiftAssignmentsV2)
       .innerJoin(
         shiftInstances,
-        eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id),
+        and(
+          eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId),
+          eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
+          eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
+          eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+        ),
+      )
+      .innerJoin(
+        hospitals,
+        and(
+          eq(hospitals.id, shiftInstances.hospitalId),
+          eq(hospitals.institutionId, shiftInstances.institutionId),
+        ),
+      )
+      .innerJoin(
+        sectors,
+        and(
+          eq(sectors.id, shiftInstances.sectorId),
+          eq(sectors.institutionId, shiftInstances.institutionId),
+          eq(sectors.hospitalId, shiftInstances.hospitalId),
+        ),
+      )
+      .innerJoin(
+        professionals,
+        eq(professionals.id, shiftAssignmentsV2.professionalId),
+      )
+      .innerJoin(
+        professionalInstitutions,
+        and(
+          eq(professionalInstitutions.professionalId, professionals.id),
+          eq(professionalInstitutions.userId, professionals.userId),
+          eq(
+            professionalInstitutions.institutionId,
+            shiftInstances.institutionId,
+          ),
+          eq(professionalInstitutions.active, true),
+        ),
+      )
+      .innerJoin(
+        users,
+        and(
+          eq(users.id, professionals.userId),
+          eq(users.approvalStatus, "APPROVED"),
+          isNull(users.deletedAt),
+        ),
       )
       .where(
         and(
-          eq(shiftAssignmentsV2.professionalId, professional.id),
+          eq(shiftAssignmentsV2.professionalId, actor.professionalId),
+          eq(professionals.userId, actor.userId),
           eq(shiftAssignmentsV2.isActive, true),
+          eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
           eq(shiftInstances.institutionId, ctx.institutionId),
           lte(shiftInstances.startAt, now),
           gte(shiftInstances.endAt, now),
@@ -1139,11 +2195,8 @@ export const shiftsRouter = router({
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
-    const [professional] = await db
-      .select({ id: professionals.id })
-      .from(professionals)
-      .where(eq(professionals.userId, ctx.user.id));
-    if (!professional) return null;
+    const actor = await getTenantActorFromContext(ctx);
+    if (!actor.professionalId) return null;
 
     const now = new Date();
     const rows = await db
@@ -1159,13 +2212,60 @@ export const shiftsRouter = router({
         assignmentId: shiftAssignmentsV2.id,
       })
       .from(shiftAssignmentsV2)
-      .innerJoin(shiftInstances, eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id))
-      .innerJoin(sectors, eq(shiftInstances.sectorId, sectors.id))
-      .innerJoin(hospitals, eq(shiftInstances.hospitalId, hospitals.id))
+      .innerJoin(
+        shiftInstances,
+        and(
+          eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId),
+          eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
+          eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
+          eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+        ),
+      )
+      .innerJoin(
+        sectors,
+        and(
+          eq(sectors.id, shiftInstances.sectorId),
+          eq(sectors.institutionId, shiftInstances.institutionId),
+          eq(sectors.hospitalId, shiftInstances.hospitalId),
+        ),
+      )
+      .innerJoin(
+        hospitals,
+        and(
+          eq(hospitals.id, shiftInstances.hospitalId),
+          eq(hospitals.institutionId, shiftInstances.institutionId),
+        ),
+      )
+      .innerJoin(
+        professionals,
+        eq(professionals.id, shiftAssignmentsV2.professionalId),
+      )
+      .innerJoin(
+        professionalInstitutions,
+        and(
+          eq(professionalInstitutions.professionalId, professionals.id),
+          eq(professionalInstitutions.userId, professionals.userId),
+          eq(
+            professionalInstitutions.institutionId,
+            shiftInstances.institutionId,
+          ),
+          eq(professionalInstitutions.active, true),
+        ),
+      )
+      .innerJoin(
+        users,
+        and(
+          eq(users.id, professionals.userId),
+          eq(users.approvalStatus, "APPROVED"),
+          isNull(users.deletedAt),
+        ),
+      )
       .where(
         and(
-          eq(shiftAssignmentsV2.professionalId, professional.id),
+          eq(shiftAssignmentsV2.professionalId, actor.professionalId),
+          eq(professionals.userId, actor.userId),
           eq(shiftAssignmentsV2.isActive, true),
+          eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
           eq(shiftInstances.institutionId, ctx.institutionId),
           // Em andamento (terminou depois de agora) ou futuro.
           gte(shiftInstances.endAt, now),
@@ -1194,27 +2294,20 @@ export const shiftsRouter = router({
       const actor = await getTenantActorFromContext(ctx);
       assertCanManageInstitutionSchedule(actor);
       if (input.institutionId !== ctx.institutionId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "institutionId inválido para tenant ativo",
+        });
       }
       await assertManagerScopeAccess(actor, input.hospitalId);
       await publishMonth(
         input.institutionId,
         input.hospitalId,
         input.yearMonth,
-        ctx.user.id,
+        actor,
+        ctx.user.sessionVersion,
+        ctx.user.name ?? undefined,
       );
-
-      await recordAudit({
-        actorUserId: ctx.user.id,
-        actorRole: ctx.user.role,
-        actorName: ctx.user.name ?? undefined,
-        action: "ROSTER_PUBLISHED",
-        entityType: "MONTHLY_ROSTER",
-        entityId: 0,
-        description: "Escala publicada (" + input.yearMonth + ")",
-        institutionId: input.institutionId,
-        hospitalId: input.hospitalId,
-      });
 
       return { ok: true };
     }),
@@ -1238,7 +2331,11 @@ export const shiftsRouter = router({
         { db },
       );
       const [roster] = await db
-        .select({ status: monthlyRosters.status, publishedAt: monthlyRosters.publishedAt, lockedAt: monthlyRosters.lockedAt })
+        .select({
+          status: monthlyRosters.status,
+          publishedAt: monthlyRosters.publishedAt,
+          lockedAt: monthlyRosters.lockedAt,
+        })
         .from(monthlyRosters)
         .where(
           and(
@@ -1270,27 +2367,20 @@ export const shiftsRouter = router({
       const actor = await getTenantActorFromContext(ctx);
       assertCanManageInstitutionSchedule(actor);
       if (input.institutionId !== ctx.institutionId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "institutionId inválido para tenant ativo",
+        });
       }
       await assertManagerScopeAccess(actor, input.hospitalId);
       await lockMonth(
         input.institutionId,
         input.hospitalId,
         input.yearMonth,
-        ctx.user.id,
+        actor,
+        ctx.user.sessionVersion,
+        ctx.user.name ?? undefined,
       );
-
-      await recordAudit({
-        actorUserId: ctx.user.id,
-        actorRole: ctx.user.role,
-        actorName: ctx.user.name ?? undefined,
-        action: "ROSTER_LOCKED",
-        entityType: "MONTHLY_ROSTER",
-        entityId: 0,
-        description: "Escala trancada (" + input.yearMonth + ")",
-        institutionId: input.institutionId,
-        hospitalId: input.hospitalId,
-      });
 
       return { ok: true };
     }),

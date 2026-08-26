@@ -3,10 +3,26 @@ import { theme } from "@/lib/theme";
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { Redirect, Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { ActivityIndicator, Platform, Text, TouchableOpacity, View } from "react-native";
+import {
+  ActivityIndicator,
+  AppState,
+  Platform,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import NetInfo from "@react-native-community/netinfo";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -19,15 +35,35 @@ import type { EdgeInsets, Metrics, Rect } from "react-native-safe-area-context";
 
 import { trpc, createTRPCClient } from "@/lib/trpc";
 import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
-import { TenantStateProvider, useTenantState } from "@/lib/tenant-state";
+import {
+  getActiveTenantSnapshot,
+  TenantStateProvider,
+  useTenantState,
+} from "@/lib/tenant-state";
 import { IntegrationManagerProvider } from "@/components/IntegrationManagerProvider";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NotificationListener } from "@/components/NotificationListener";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ToastProvider } from "@/components/ui/Toast";
 import { BootScreen } from "@/components/BootScreen";
-import { startQueryCachePersistence } from "@/lib/query-persist";
+import {
+  fenceQueryCachePersistence,
+  startQueryCachePersistence,
+} from "@/lib/query-persist";
+import {
+  canStartTenantAuthorizationHandshake,
+  runTenantAuthorizationAttempt,
+  tenantAuthorityMatchesMembership,
+  TenantAuthorizationCoordinator,
+  transitionTenantAuthorizationActivity,
+  type AuthorizedInstitution,
+  type TenantAuthorizationActivity,
+  type TenantAuthorizationReceipt,
+  type TenantAuthorizationSubject,
+} from "@/lib/tenant-authorization";
 import { emitSessionUnauthorized, isUnauthorizedError } from "@/lib/session-events";
+import { uiAlert } from "@/lib/ui/alert";
+import { isSessionTerminationNotDurableError } from "@/lib/session-cleanup";
 import Constants from "expo-constants";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -87,7 +123,25 @@ function PendingApprovalScreen() {
           Verificar novamente
         </Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={() => logout()} activeOpacity={0.7}>
+      <TouchableOpacity
+        onPress={() => {
+          void logout().catch((error) => {
+            console.warn("[Auth] logout failed", error);
+            if (isSessionTerminationNotDurableError(error)) {
+              uiAlert(
+                "Não foi possível sair com segurança",
+                "A sessão continua aberta neste aparelho. Tente novamente em instantes.",
+              );
+            } else {
+              uiAlert(
+                "Sessão encerrada com limpeza incompleta",
+                "Você saiu da conta, mas parte dos dados locais não pôde ser removida.",
+              );
+            }
+          });
+        }}
+        activeOpacity={0.7}
+      >
         <Text
           style={{
             color: theme.colors.textMuted,
@@ -102,160 +156,405 @@ function PendingApprovalScreen() {
   );
 }
 
-/** Handles auth-gated navigation. Must be rendered inside providers. */
-function AuthGuard() {
-  const { user } = useAuth();
-  const pathname = usePathname();
+type TenantAuthorizationAttestation = Readonly<{
+  receipt: TenantAuthorizationReceipt;
+  isCurrent: () => boolean;
+}>;
+
+const TenantAuthorizationContext = createContext<TenantAuthorizationAttestation | null>(null);
+
+function AuthorizationUnavailableScreen({ retry }: { retry: () => void }) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: theme.colors.background,
+        padding: theme.space[6],
+        gap: theme.space[4],
+      }}
+    >
+      <ActivityIndicator size="large" color={theme.colors.primary} />
+      <Text
+        style={{
+          color: theme.colors.textPrimary,
+          fontSize: 16,
+          fontWeight: "600",
+          textAlign: "center",
+        }}
+      >
+        Conectando ao servidor…
+      </Text>
+      <Text
+        style={{
+          color: theme.colors.textSecondary,
+          fontSize: 13,
+          textAlign: "center",
+        }}
+      >
+        Não foi possível confirmar seu vínculo institucional. Nenhum dado local foi aberto.
+      </Text>
+      <TouchableOpacity
+        onPress={retry}
+        activeOpacity={0.8}
+        style={{
+          paddingHorizontal: theme.space[5],
+          paddingVertical: theme.space[3],
+          borderRadius: theme.radius.md,
+          backgroundColor: theme.colors.primary,
+        }}
+      >
+        <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>Tentar novamente</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+type AuthorizationGateState =
+  | Readonly<{ status: "CHECKING"; subjectKey: string }>
+  | Readonly<{ status: "UNAVAILABLE"; subjectKey: string }>
+  | Readonly<{
+      status: "VERIFIED";
+      subjectKey: string;
+      attestation: TenantAuthorizationAttestation;
+    }>;
+
+function subjectKeyOf(subject: TenantAuthorizationSubject): string {
+  return `${subject.userId}:${subject.tenant.institutionId ?? "none"}:${subject.tenant.revision}`;
+}
+
+/**
+ * Fronteira real do cache tenant-bound: nem Stack, nem integrações, nem o
+ * restore montam antes de uma prova fresca de sessão + membership.
+ */
+function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }) {
+  const { user, refetch, sessionValidation } = useAuth();
   const {
     activeInstitutionId,
-    isHydrating: isHydratingTenant,
-    setActiveInstitutionId,
+    tenantRevision,
+    isHydrating,
     clearInstitutionSelection,
   } = useTenantState();
+  const queryClient = useQueryClient();
+  const utils = trpc.useUtils();
+  const coordinatorRef = useRef(new TenantAuthorizationCoordinator());
+  const currentSubjectRef = useRef<TenantAuthorizationSubject>({
+    userId: -1,
+    tenant: { institutionId: null, revision: -1 },
+  });
+  const initialActivity = useMemo<TenantAuthorizationActivity>(() => ({
+    visible: Platform.OS === "web"
+      ? typeof document === "undefined" || document.visibilityState !== "hidden"
+      : AppState.currentState === "active",
+    // No nativo, o primeiro evento/fetch do NetInfo precisa admitir a rede.
+    online: Platform.OS === "web"
+      ? typeof navigator === "undefined" || navigator.onLine
+      : false,
+    revision: 0,
+  }), []);
+  const activityRef = useRef(initialActivity);
+  const [activity, setActivity] = useState(initialActivity);
 
-  // O cache em memória é zerado no login e no logout (hooks/use-auth.ts).
-  // O invalidateQueries() que rodava aqui a cada mudança de usuário
-  // cancelava e reenviava o lote de abertura inteiro na hidratação do
-  // cache local — duas requisições idênticas a cada boot, as duas presas
-  // atrás do cold start do servidor (logs do Render, 23/08).
-  const hasCachedTenant = activeInstitutionId !== null;
-
-  const {
-    data: institutions,
-    isLoading: institutionsLoading,
-    isError: institutionsError,
-    refetch: refetchInstitutions,
-  } = trpc.professionals.listMyInstitutions.useQuery(undefined, {
-    enabled: !!user,
-    // Cold start do Render free leva 30-60s: retries com backoff seguram
-    // a maior parte; o resto cai na tela de reconexão abaixo.
-    retry: 3,
-    retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 15000),
+  const currentSubject: TenantAuthorizationSubject = {
+    userId: user?.id ?? -1,
+    tenant: { institutionId: activeInstitutionId, revision: tenantRevision },
+  };
+  currentSubjectRef.current = currentSubject;
+  const subjectKey = subjectKeyOf(currentSubject);
+  const [gateState, setGateState] = useState<AuthorizationGateState>({
+    status: "CHECKING",
+    subjectKey,
+  });
+  const currentSessionProof = sessionValidation.status === "VERIFIED" &&
+    user?.id === sessionValidation.userId &&
+    sessionValidation.isCurrent()
+    ? sessionValidation
+    : null;
+  const requiresHandshake = canStartTenantAuthorizationHandshake({
+    user,
+    sessionValidation,
   });
 
-  useEffect(() => {
-    if (!user || institutionsLoading || !institutions || activeInstitutionId) return;
-    if (institutions.length === 1) {
-      void setActiveInstitutionId(institutions[0].id);
-    }
-  }, [activeInstitutionId, institutions, institutionsLoading, setActiveInstitutionId, user]);
+  const getCurrentSubject = useCallback((): TenantAuthorizationSubject => ({
+    userId: currentSubjectRef.current.userId,
+    // O módulo muda antes do React. Consultá-lo aqui fecha também a janela
+    // entre a publicação B e o rerender do boundary.
+    tenant: getActiveTenantSnapshot(),
+  }), []);
 
-  // Resposta REAL do servidor diz que a instituição em cache já não é do
-  // usuário (desvinculado, desativada): limpa a seleção e o guard abaixo
-  // manda para a escolha de instituição.
-  useEffect(() => {
-    if (!user || !institutions || activeInstitutionId === null) return;
-    if (!institutions.some((i) => i.id === activeInstitutionId)) {
-      void clearInstitutionSelection();
-    }
-  }, [activeInstitutionId, clearInstitutionSelection, institutions, user]);
+  const updateActivity = useCallback((
+    patch: Partial<Pick<TenantAuthorizationActivity, "visible" | "online">>,
+  ) => {
+    const transition = transitionTenantAuthorizationActivity(activityRef.current, patch);
+    if (transition.action === "NONE") return;
+    activityRef.current = transition.state;
 
-  // Com usuário E instituição em cache, a interface NÃO espera o servidor:
-  // a Agenda pinta com o último estado conhecido (cache persistido, ver
-  // lib/query-persist.ts) e revalida em segundo plano. Só bloqueia quem
-  // ainda não tem contexto (primeiro acesso, pós-logout, sem instituição).
-  // (`isLoading` do auth já é tratado em TenantScope: o guard só monta
-  // com o usuário conhecido.)
-  if (isHydratingTenant || (!!user && institutionsLoading && !hasCachedTenant)) {
+    if (transition.action === "CLOSE") {
+      // O evento de lifecycle fecha a autoridade antes do próximo paint.
+      coordinatorRef.current.invalidate();
+      fenceQueryCachePersistence();
+      queryClient.clear();
+      setGateState({
+        status: "CHECKING",
+        subjectKey: subjectKeyOf(currentSubjectRef.current),
+      });
+    } else if (transition.action === "REVALIDATE") {
+      // Resume/reconnect sempre começa na identidade/status canônicos; o
+      // receipt antigo perde validade sincronamente ao iniciar o refetch.
+      void refetch();
+    }
+    setActivity(transition.state);
+  }, [queryClient, refetch]);
+
+  useEffect(() => {
+    // Sem polling contínuo: revogação ocorrida enquanto o app permanece
+    // foreground/online segue bloqueada no backend por request. O residual
+    // visual até um evento de lifecycle/rede fica explicitamente fora do SLA
+    // desta frente; resume/reconnect sempre reatesta antes de reabrir a UI.
+    const appStateSubscription = AppState.addEventListener("change", (nextState) => {
+      updateActivity({ visible: nextState === "active" });
+    });
+    const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
+      updateActivity({
+        online: state.isConnected === true && state.isInternetReachable !== false,
+      });
+    });
+    void NetInfo.fetch().then((state) => {
+      updateActivity({
+        online: state.isConnected === true && state.isInternetReachable !== false,
+      });
+    }).catch(() => updateActivity({ online: false }));
+
+    const handleVisibility = () => {
+      updateActivity({ visible: document.visibilityState !== "hidden" });
+    };
+    const handleOnline = () => updateActivity({ online: true });
+    const handleOffline = () => updateActivity({ online: false });
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibility);
+      globalThis.addEventListener?.("online", handleOnline);
+      globalThis.addEventListener?.("offline", handleOffline);
+    }
+
+    return () => {
+      appStateSubscription.remove();
+      netInfoUnsubscribe();
+      if (Platform.OS === "web" && typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibility);
+        globalThis.removeEventListener?.("online", handleOnline);
+        globalThis.removeEventListener?.("offline", handleOffline);
+      }
+    };
+  }, [updateActivity]);
+
+  useEffect(() => {
+    const coordinator = coordinatorRef.current;
+    if (
+      !requiresHandshake ||
+      !currentSessionProof ||
+      isHydrating ||
+      !activity.visible ||
+      !activity.online
+    ) {
+      coordinator.invalidate();
+      fenceQueryCachePersistence();
+      queryClient.clear();
+      setGateState({
+        status: user && sessionValidation.status === "UNAVAILABLE"
+          ? "UNAVAILABLE"
+          : "CHECKING",
+        subjectKey,
+      });
+      return;
+    }
+
+    const ticket = coordinator.begin(getCurrentSubject());
+    let cancelled = false;
+    fenceQueryCachePersistence();
+    queryClient.clear();
+    setGateState({ status: "CHECKING", subjectKey });
+
+    void (async () => {
+      let capabilities: Awaited<ReturnType<typeof utils.client.professionals.getMyCapabilities.query>> | undefined;
+      let managerScope: Awaited<ReturnType<typeof utils.client.professionals.getManagerScope.query>> | undefined;
+      try {
+        const result = await runTenantAuthorizationAttempt({
+          coordinator,
+          ticket,
+          currentSubject: getCurrentSubject,
+          loadInstitutions: () =>
+            utils.client.professionals.listMyInstitutions.query() as Promise<readonly AuthorizedInstitution[]>,
+          loadCurrentTenantAuthority: async () => {
+            [capabilities, managerScope] = await Promise.all([
+              utils.client.professionals.getMyCapabilities.query(),
+              utils.client.professionals.getManagerScope.query(),
+            ]);
+          },
+          clearRevokedTenant: clearInstitutionSelection,
+        });
+        if (cancelled || result.status !== "VERIFIED") return;
+        if (!coordinator.isCurrent(ticket, getCurrentSubject())) return;
+
+        const activeId = ticket.subject.tenant.institutionId;
+        if (activeId !== null) {
+          const membership = result.receipt.institutions.find(({ id }) => id === activeId);
+          if (!membership || !capabilities || !managerScope) {
+            throw new Error("Prova institucional incompleta.");
+          }
+          if (!tenantAuthorityMatchesMembership({
+            institutionId: activeId,
+            membership,
+            capabilities,
+            managerScope,
+          })) {
+            throw new Error("Autoridade institucional mudou durante o handshake.");
+          }
+        }
+
+        if (!coordinator.isCurrent(ticket, getCurrentSubject())) return;
+        utils.professionals.listMyInstitutions.setData(
+          undefined,
+          [...result.receipt.institutions],
+        );
+        if (capabilities) {
+          utils.professionals.getMyCapabilities.setData(undefined, capabilities);
+        }
+        if (managerScope) {
+          utils.professionals.getManagerScope.setData(undefined, managerScope);
+        }
+
+        const isCurrent = () => (
+          currentSessionProof.isCurrent() &&
+          coordinator.isCurrent(ticket, getCurrentSubject())
+        );
+        setGateState({
+          status: "VERIFIED",
+          subjectKey,
+          attestation: { receipt: result.receipt, isCurrent },
+        });
+      } catch (error) {
+        if (cancelled || !coordinator.isCurrent(ticket, getCurrentSubject())) return;
+        if (isUnauthorizedError(error)) emitSessionUnauthorized();
+        setGateState({ status: "UNAVAILABLE", subjectKey });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (coordinator.isCurrent(ticket, getCurrentSubject())) {
+        coordinator.invalidate();
+      }
+    };
+  }, [
+    clearInstitutionSelection,
+    activity.online,
+    activity.revision,
+    activity.visible,
+    currentSubject.userId,
+    currentSubject.tenant.institutionId,
+    currentSubject.tenant.revision,
+    getCurrentSubject,
+    isHydrating,
+    queryClient,
+    requiresHandshake,
+    currentSessionProof,
+    sessionValidation.status,
+    sessionValidation.sequence,
+    subjectKey,
+    user,
+    utils,
+  ]);
+
+  if (user && !currentSessionProof) {
+    if (sessionValidation.status === "UNAVAILABLE") {
+      return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
+    }
     return <BootScreen />;
   }
 
+  if (!requiresHandshake) {
+    return (
+      <TenantAuthorizationContext.Provider value={null}>
+        {children}
+      </TenantAuthorizationContext.Provider>
+    );
+  }
+
+  if (
+    isHydrating ||
+    !activity.visible ||
+    !activity.online ||
+    gateState.subjectKey !== subjectKey ||
+    gateState.status === "CHECKING"
+  ) {
+    return <BootScreen />;
+  }
+  if (gateState.status === "UNAVAILABLE") {
+    return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
+  }
+  if (!gateState.attestation.isCurrent()) return <BootScreen />;
+
+  return (
+    <TenantAuthorizationContext.Provider value={gateState.attestation}>
+      {activeInstitutionId !== null ? (
+        <QueryCachePersistence attestation={gateState.attestation} />
+      ) : null}
+      {children}
+    </TenantAuthorizationContext.Provider>
+  );
+}
+
+/** Handles auth-gated navigation. Must be rendered inside providers. */
+function AuthGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const pathname = usePathname();
+  const { activeInstitutionId, setActiveInstitutionId } = useTenantState();
+  const attestation = useContext(TenantAuthorizationContext);
+  const institutions = attestation?.receipt.institutions;
+
+  useEffect(() => {
+    if (!user || !institutions || activeInstitutionId !== null) return;
+    if (institutions.length === 1) {
+      void setActiveInstitutionId(institutions[0].id);
+    }
+  }, [activeInstitutionId, institutions, setActiveInstitutionId, user]);
+
   if (!user) {
-    // Rotas públicas: login, auto-cadastro e recuperação de senha.
-    // /ui-preview é a galeria do sistema de UI — só em desenvolvimento.
     if (
+      pathname === "/login" ||
       pathname === "/signup" ||
       pathname === "/forgot-password" ||
       pathname === "/reset-password" ||
+      pathname === "/oauth/callback" ||
       (__DEV__ && pathname === "/ui-preview")
     ) {
-      return null;
+      return <>{children}</>;
     }
     return <Redirect href="/login" />;
   }
 
-  // Conta pendente de aprovação (auto-cadastro): bloqueia o app inteiro
-  // até o gestor aprovar. Precisa vir ANTES da lógica de instituições —
-  // o vínculo do pendente é inativo e cairia no "sem instituições".
   if (user.approvalStatus === "PENDING") {
     return <PendingApprovalScreen />;
   }
 
-  // Senha temporária definida pelo admin: obriga a troca antes de
-  // qualquer outra tela (mesmo padrão do PENDING — vem antes da lógica
-  // de instituições). change-password refaz o /me e libera o app.
-  if (user.mustChangePassword && pathname !== "/change-password") {
-    return <Redirect href="/change-password" />;
+  if (user.mustChangePassword) {
+    return pathname === "/change-password"
+      ? <>{children}</>
+      : <Redirect href="/change-password" />;
   }
 
-  // Falha de REDE ao listar instituições (ex.: staging hibernado
-  // acordando) NÃO pode ser tratada como "sem instituições" — antes
-  // disso, o guard expulsava o usuário logado pro login/seleção toda
-  // vez que o servidor demorava. Sem instituição em cache, mostra
-  // reconexão com retry; com cache, o app segue e revalida depois.
-  if (institutionsError && !hasCachedTenant) {
-    return (
-      <View
-        style={{
-          flex: 1,
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: theme.colors.background,
-          padding: theme.space[6],
-          gap: theme.space[4],
-        }}
-      >
-        <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Text
-          style={{
-            color: theme.colors.textPrimary,
-            fontSize: 16,
-            fontWeight: "600",
-            textAlign: "center",
-          }}
-        >
-          Conectando ao servidor…
-        </Text>
-        <Text
-          style={{
-            color: theme.colors.textSecondary,
-            fontSize: 13,
-            textAlign: "center",
-          }}
-        >
-          O primeiro acesso pode levar até um minuto.
-        </Text>
-        <TouchableOpacity
-          onPress={() => refetchInstitutions()}
-          activeOpacity={0.8}
-          style={{
-            paddingHorizontal: theme.space[5],
-            paddingVertical: theme.space[3],
-            borderRadius: theme.radius.md,
-            backgroundColor: theme.colors.primary,
-          }}
-        >
-          <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>Tentar novamente</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+  if (!attestation || !attestation.isCurrent()) return <BootScreen />;
+  if (institutions?.length === 0) return <Redirect href="/login" />;
 
-  // "Sem instituições" só é decisão válida com resposta REAL do servidor.
-  const hasInstitutions = (institutions?.length ?? 0) > 0;
-  if (institutions && !hasInstitutions) {
-    return <Redirect href="/login" />;
-  }
-
-  if (!activeInstitutionId && pathname !== "/select-institution") {
+  if (activeInstitutionId === null && pathname !== "/select-institution") {
     return <Redirect href={"/select-institution" as any} />;
   }
-
-  if (activeInstitutionId && pathname === "/select-institution") {
+  if (activeInstitutionId !== null && pathname === "/select-institution") {
     return <Redirect href="/(tabs)" />;
   }
 
-  return null;
+  return <>{children}</>;
 }
 
 export const unstable_settings = {
@@ -271,14 +570,18 @@ export const unstable_settings = {
  */
 function TenantScope({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
+  const queryClient = useQueryClient();
+  const clearTenantBoundMemory = useCallback(() => queryClient.clear(), [queryClient]);
   // Só monta a árvore (Stack, guard, listeners) quando já se sabe quem é
   // o usuário. Antes, o provider nascia como "anon" e era REMONTADO meio
   // segundo depois com o id vindo do cache local — o navigator inteiro
   // montava duas vezes a cada abertura do app.
   if (isLoading) return <BootScreen />;
   return (
-    <TenantStateProvider key={user?.id ?? "anon"}>
-      <QueryCachePersistence />
+    <TenantStateProvider
+      key={user?.id ?? "anon"}
+      onBeforeTenantChange={clearTenantBoundMemory}
+    >
       {children}
     </TenantStateProvider>
   );
@@ -287,34 +590,29 @@ function TenantScope({ children }: { children: React.ReactNode }) {
 /**
  * Liga o cache persistido do react-query ao par usuário + instituição
  * ativos (chave própria no disco; trocar qualquer um dos dois desliga o
- * anterior e restaura o certo). É o que faz a Agenda abrir na hora mesmo
- * com o servidor dormindo.
+ * anterior e restaura o certo). A whitelist contém só hospitais/setores;
+ * escalas e ações operacionais sempre aguardam resposta fresca.
  */
-function QueryCachePersistence() {
+function QueryCachePersistence({
+  attestation,
+}: {
+  attestation: TenantAuthorizationAttestation;
+}) {
   const { user } = useAuth();
   const { activeInstitutionId } = useTenantState();
   const queryClient = useQueryClient();
   const userId = user?.id ?? null;
-  const prevContext = useRef<string | null>(null);
 
   useEffect(() => {
     if (userId === null || activeInstitutionId === null) return;
-    const context = `${userId}:${activeInstitutionId}`;
-    if (prevContext.current !== null && prevContext.current !== context) {
-      // Trocou de instituição com as telas montadas: as consultas não
-      // levam o tenant na chave, então zera os dados da anterior e refaz
-      // as ativas — senão a Agenda mostrava a instituição antiga até o
-      // próximo refetch (e o cache dela seria gravado na chave da nova).
-      void queryClient.resetQueries();
-    }
-    prevContext.current = context;
     return startQueryCachePersistence({
       queryClient,
       userId,
       institutionId: activeInstitutionId,
       buster: Constants.expoConfig?.version ?? "dev",
+      isAuthorizationCurrent: attestation.isCurrent,
     });
-  }, [activeInstitutionId, queryClient, userId]);
+  }, [activeInstitutionId, attestation, queryClient, userId]);
 
   return null;
 }
@@ -389,27 +687,32 @@ export default function RootLayout() {
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
-          <ToastProvider>
-          <TenantScope>
-            <IntegrationManagerProvider>
-          {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
-          {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
-          {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="login" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="signup" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="forgot-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="reset-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="select-institution" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="oauth/callback" />
-          </Stack>
-          <AuthGuard />
-          <StatusBar style="auto" />
-          <NotificationListener />
-            </IntegrationManagerProvider>
-          </TenantScope>
-          </ToastProvider>
+            <ToastProvider>
+              <TenantScope>
+                {/* Account-scoped e estável: a troca A→B não pode desmontar
+                    o próprio listener antes de ele concluir a navegação. */}
+                <NotificationListener />
+                <TenantAuthorizationBoundary>
+                  <AuthGuard>
+                    <IntegrationManagerProvider>
+                      {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
+                      {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
+                      {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
+                      <Stack screenOptions={{ headerShown: false }}>
+                        <Stack.Screen name="login" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+                        <Stack.Screen name="signup" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+                        <Stack.Screen name="forgot-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+                        <Stack.Screen name="reset-password" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+                        <Stack.Screen name="select-institution" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+                        <Stack.Screen name="(tabs)" />
+                        <Stack.Screen name="oauth/callback" />
+                      </Stack>
+                      <StatusBar style="auto" />
+                    </IntegrationManagerProvider>
+                  </AuthGuard>
+                </TenantAuthorizationBoundary>
+              </TenantScope>
+            </ToastProvider>
           </AuthProvider>
         </QueryClientProvider>
       </trpc.Provider>

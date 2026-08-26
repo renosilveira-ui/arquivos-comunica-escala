@@ -20,6 +20,7 @@ import {
 } from "../server/_core/policy";
 import { editorRouter } from "../server/editor";
 import { professionalsRouter } from "../server/aux-routers";
+import { listActiveInstitutionIdsForUser } from "../server/_core/tenant";
 
 describe("Frente 1 - policy tenant + scoping crítico", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
@@ -393,6 +394,29 @@ describe("Frente 1 - policy tenant + scoping crítico", () => {
       hospitals: [],
       sectors: [],
     });
+  });
+
+  it("sessão emitida perde seleção e autoridade tenant após suspensão ou exclusão", async () => {
+    for (const revokedState of [
+      { approvalStatus: "PENDING" as const, deletedAt: null },
+      { approvalStatus: "APPROVED" as const, deletedAt: new Date() },
+    ]) {
+      try {
+        await db
+          .update(users)
+          .set(revokedState)
+          .where(eq(users.id, userId));
+        await expect(resolveTenantActor(userId, institutionAId, false)).rejects.toThrow(
+          /vínculo ativo/i,
+        );
+        await expect(listActiveInstitutionIdsForUser(userId)).resolves.toEqual([]);
+      } finally {
+        await db
+          .update(users)
+          .set({ approvalStatus: "APPROVED", deletedAt: null })
+          .where(eq(users.id, userId));
+      }
+    }
   });
 
   it("garante vínculo ativo ao resolver ator por tenant", async () => {

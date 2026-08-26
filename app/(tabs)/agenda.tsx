@@ -7,7 +7,17 @@ import {
   Platform,
 } from "react-native";
 import { useState, useMemo, useEffect } from "react";
-import { ChevronLeft, ChevronRight, Plus, Building2, ChevronDown, CalendarDays, LayoutGrid, ListChecks, type LucideIcon } from "lucide-react-native";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  Building2,
+  ChevronDown,
+  CalendarDays,
+  LayoutGrid,
+  ListChecks,
+  type LucideIcon,
+} from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { MonthAgenda, type DayOffer } from "@/components/agenda/MonthAgenda";
@@ -27,7 +37,9 @@ import { useTenantState } from "@/lib/tenant-state";
 import { useSsoHandoff } from "@/hooks/use-sso-handoff";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { VoiceCommandButton } from "@/components/VoiceCommandButton";
-import { keepPreviousData } from "@tanstack/react-query";
+import { ScheduleContextSelector } from "@/components/ScheduleContextSelector";
+import { useScheduleContext } from "@/hooks/use-schedule-context";
+import { agendaScheduleContextId } from "@/lib/schedule-context-selection";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -78,7 +90,20 @@ function monthKeyOf(d: Date): string {
 
 function formatMonthTitle(monthKey: string): string {
   const [y, m] = monthKey.split("-").map(Number);
-  const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  const months = [
+    "Jan",
+    "Fev",
+    "Mar",
+    "Abr",
+    "Mai",
+    "Jun",
+    "Jul",
+    "Ago",
+    "Set",
+    "Out",
+    "Nov",
+    "Dez",
+  ];
   return `${months[m - 1]} ${y}`;
 }
 
@@ -155,10 +180,11 @@ export default function AgendaScreen() {
   const { user } = useAuth();
   const { can } = usePermissions();
   const { activeInstitutionId, clearInstitutionSelection } = useTenantState();
-  const { data: myInstitutions } = trpc.professionals.listMyInstitutions.useQuery(undefined, {
-    enabled: !!user,
-    staleTime: 60_000,
-  });
+  const { data: myInstitutions } =
+    trpc.professionals.listMyInstitutions.useQuery(undefined, {
+      enabled: !!user,
+      staleTime: 60_000,
+    });
   const canCreateShift = can("create:shift");
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -174,9 +200,13 @@ export default function AgendaScreen() {
   const weeksCount = isDesktop ? 4 : 2;
 
   // Panorama: âncora por MÊS (grade completa). Calendário: por semanas.
-  const [anchorMonthKey, setAnchorMonthKey] = useState(() => monthKeyOf(new Date()));
+  const [anchorMonthKey, setAnchorMonthKey] = useState(() =>
+    monthKeyOf(new Date()),
+  );
   // Folha de mês: "Calendário" no desktop, "Panorama" no celular.
-  const isMonthSheet = isDesktop ? viewMode === "calendario" : viewMode === "panorama";
+  const isMonthSheet = isDesktop
+    ? viewMode === "calendario"
+    : viewMode === "panorama";
   // Grade hospital × dia (semanas): só no desktop.
   const isHospitalGrid = isDesktop && viewMode === "panorama";
   const panoramaStart = useMemo(() => {
@@ -185,17 +215,34 @@ export default function AgendaScreen() {
   }, [anchorMonthKey]);
   const queryStartDate = isMonthSheet ? panoramaStart : anchorWeekStart;
   const queryWeeks = isMonthSheet ? 6 : weeksCount;
+  const scheduleContext = useScheduleContext({
+    userId: user?.id,
+    institutionId: activeInstitutionId,
+  });
+  // "Minha" sempre agrega as alocações do médico em todos os setores. O
+  // seletor limita somente a visão Geral.
+  const selectedAgendaContextId = agendaScheduleContextId(
+    scope,
+    scheduleContext.selectedContextId,
+  );
 
   // Card "Próximo plantão": em andamento ou o próximo futuro.
   const { data: nextShift } = trpc.shifts.getNextShift.useQuery(undefined, {
     enabled: !!user?.id,
     refetchInterval: 60_000,
   });
-  const { data: pendingConfirmation } = trpc.confirmations.getPending.useQuery(undefined, {
-    enabled: !!user?.id,
-  });
+  const { data: pendingConfirmation } = trpc.confirmations.getPending.useQuery(
+    undefined,
+    {
+      enabled: !!user?.id,
+    },
+  );
   // Erro do SSO vira toast (o card não tem área de erro própria).
-  const { launch: ssoLaunch, error: ssoError, clearError: clearSsoError } = useSsoHandoff();
+  const {
+    launch: ssoLaunch,
+    error: ssoError,
+    clearError: clearSsoError,
+  } = useSsoHandoff(activeInstitutionId);
   const feedback = useActionFeedback();
   useEffect(() => {
     if (!ssoError) return;
@@ -208,16 +255,34 @@ export default function AgendaScreen() {
       startDate: queryStartDate,
       weeks: queryWeeks,
       scope,
+      scheduleContextId: selectedAgendaContextId,
     },
     {
-      enabled: !!user?.id,
+      enabled:
+        !!user?.id &&
+        (scope === "minha" ||
+          scheduleContext.isError ||
+          !scheduleContext.isSelectionHydrating),
       // Cold start / oscilação de rede não pode virar tela vazia:
       // retries seguram a maioria; o resto cai no estado de erro abaixo.
       retry: 2,
       retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 10000),
-      // Ao mudar de semana/mês, mantém a grade anterior na tela em vez
-      // de trocar tudo por spinner (o "CARREGANDO" do PegaPlantão).
-      placeholderData: keepPreviousData,
+      // Mantém a grade ao navegar datas, mas nunca conserva dados de outro
+      // contexto sob o rótulo recém-selecionado.
+      placeholderData: (previousData, previousQuery) => {
+        const previousMeta = previousQuery?.queryKey?.[1] as
+          | {
+              input?: {
+                scope?: AgendaScope;
+                scheduleContextId?: number;
+              };
+            }
+          | undefined;
+        return previousMeta?.input?.scope === scope &&
+          previousMeta.input.scheduleContextId === selectedAgendaContextId
+          ? previousData
+          : undefined;
+      },
     },
   );
 
@@ -227,8 +292,14 @@ export default function AgendaScreen() {
   }, [queryStartDate, data?.weeks, queryWeeks]);
 
   const { data: availableSwaps } = trpc.swaps.listAvailable.useQuery(
-    {},
-    { enabled: !!user?.id && isMonthSheet, staleTime: 60_000 },
+    { scheduleContextId: selectedAgendaContextId },
+    {
+      enabled:
+        !!user?.id &&
+        isMonthSheet &&
+        (scope === "minha" || !scheduleContext.isSelectionHydrating),
+      staleTime: 60_000,
+    },
   );
   const dayOffers = useMemo<DayOffer[]>(() => {
     return ((availableSwaps ?? []) as any[]).map((sw) => {
@@ -246,7 +317,8 @@ export default function AgendaScreen() {
   }, [availableSwaps]);
 
   const activeInstitutionName = useMemo(
-    () => myInstitutions?.find((i) => i.id === activeInstitutionId)?.name ?? null,
+    () =>
+      myInstitutions?.find((i) => i.id === activeInstitutionId)?.name ?? null,
     [myInstitutions, activeInstitutionId],
   );
 
@@ -258,7 +330,8 @@ export default function AgendaScreen() {
         (acc, w) =>
           acc +
           w.days.reduce(
-            (dAcc, d) => dAcc + d.groups.reduce((gAcc, g) => gAcc + g.shifts.length, 0),
+            (dAcc, d) =>
+              dAcc + d.groups.reduce((gAcc, g) => gAcc + g.shifts.length, 0),
             0,
           ),
         0,
@@ -274,7 +347,7 @@ export default function AgendaScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await refetch();
+    await Promise.all([refetch(), scheduleContext.refetch()]);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setRefreshing(false);
   };
@@ -313,23 +386,78 @@ export default function AgendaScreen() {
             Geral/Minha; trocador de vista de largura cheia; e, só para
             gestor, a faixa com o status da escala e o botão Ações. */}
         <View style={{ gap: theme.space[2] + 1, marginBottom: theme.space[3] }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-            <Text style={{ ...theme.text.titleLg, fontSize: 22, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>Agenda</Text>
-            <View style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 3 }}>
-              <TouchableOpacity onPress={goPrev} style={navBtnStyle} hitSlop={8} accessibilityLabel="Período anterior">
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: theme.space[2],
+            }}
+          >
+            <Text
+              style={{
+                ...theme.text.titleLg,
+                fontSize: 22,
+                fontWeight: theme.weight.semibold,
+                color: theme.colors.textPrimary,
+              }}
+            >
+              Agenda
+            </Text>
+            <View
+              style={{
+                marginLeft: "auto",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 3,
+              }}
+            >
+              <TouchableOpacity
+                onPress={goPrev}
+                style={navBtnStyle}
+                hitSlop={8}
+                accessibilityLabel="Período anterior"
+              >
                 <ChevronLeft size={16} color={theme.colors.brand} />
               </TouchableOpacity>
               <Text
                 numberOfLines={1}
-                style={{ ...numeral, minWidth: 74, textAlign: "center", fontSize: 13.5, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}
+                style={{
+                  ...numeral,
+                  minWidth: 74,
+                  textAlign: "center",
+                  fontSize: 13.5,
+                  fontWeight: theme.weight.bold,
+                  color: theme.colors.textPrimary,
+                }}
               >
-                {isMonthSheet ? formatMonthTitle(anchorMonthKey) : formatMonthRange(anchorWeekStart, weeksCount)}
+                {isMonthSheet
+                  ? formatMonthTitle(anchorMonthKey)
+                  : formatMonthRange(anchorWeekStart, weeksCount)}
               </Text>
-              <TouchableOpacity onPress={goNext} style={navBtnStyle} hitSlop={8} accessibilityLabel="Próximo período">
+              <TouchableOpacity
+                onPress={goNext}
+                style={navBtnStyle}
+                hitSlop={8}
+                accessibilityLabel="Próximo período"
+              >
                 <ChevronRight size={16} color={theme.colors.brand} />
               </TouchableOpacity>
-              <TouchableOpacity onPress={goToday} style={todayBtnStyle} hitSlop={6} accessibilityLabel="Ir para hoje">
-                <Text style={{ ...theme.text.caption, fontSize: 12.5, fontWeight: theme.weight.bold, color: theme.colors.onDark.text }}>Hoje</Text>
+              <TouchableOpacity
+                onPress={goToday}
+                style={todayBtnStyle}
+                hitSlop={6}
+                accessibilityLabel="Ir para hoje"
+              >
+                <Text
+                  style={{
+                    ...theme.text.caption,
+                    fontSize: 12.5,
+                    fontWeight: theme.weight.bold,
+                    color: theme.colors.onDark.text,
+                  }}
+                >
+                  Hoje
+                </Text>
               </TouchableOpacity>
               {Platform.OS !== "web" ? (
                 <View style={{ marginLeft: 2 }}>
@@ -342,7 +470,13 @@ export default function AgendaScreen() {
           {/* Instituição ativa — SEMPRE visível e tocável para trocar: a
               agenda é por instituição; sem isso o usuário via a grade vazia
               da instituição errada sem nenhuma pista do motivo. */}
-          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] - 1 }}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: theme.space[2] - 1,
+            }}
+          >
             <TouchableOpacity
               onPress={handleSwitchInstitution}
               activeOpacity={0.7}
@@ -362,21 +496,101 @@ export default function AgendaScreen() {
               }}
             >
               <Building2 size={15} color={theme.colors.brand} />
-              <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
+              <Text
+                numberOfLines={1}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  ...theme.text.body,
+                  fontSize: 13.5,
+                  fontWeight: theme.weight.semibold,
+                  color: theme.colors.textPrimary,
+                }}
+              >
                 {activeInstitutionName ?? "Selecionar instituição"}
               </Text>
               <ChevronDown size={13} color={theme.colors.textSecondary} />
             </TouchableOpacity>
             <Segmented>
-              <SegButton label="Geral" active={scope === "geral"} onPress={() => setScope("geral")} />
-              <SegButton label="Minha" active={scope === "minha"} onPress={() => setScope("minha")} />
+              <SegButton
+                label="Geral"
+                active={scope === "geral"}
+                onPress={() => setScope("geral")}
+              />
+              <SegButton
+                label="Minha"
+                active={scope === "minha"}
+                onPress={() => setScope("minha")}
+              />
             </Segmented>
           </View>
 
+          {scope === "geral" ? (
+            <View style={{ gap: theme.space[2] }}>
+              <ScheduleContextSelector
+                contexts={scheduleContext.contexts}
+                selectedContextId={scheduleContext.selectedContextId}
+                onSelect={scheduleContext.selectContext}
+                loading={scheduleContext.isSelectionHydrating}
+                disabled={scheduleContext.isError}
+              />
+              {scheduleContext.isError ? (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: theme.space[2],
+                    paddingHorizontal: theme.space[1],
+                  }}
+                >
+                  <Text
+                    style={{
+                      ...theme.text.caption,
+                      flex: 1,
+                      color: theme.colors.danger,
+                    }}
+                  >
+                    Não foi possível listar seus setores. A visão geral segue
+                    protegida pelas permissões da instituição.
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => scheduleContext.refetch()}
+                    accessibilityRole="button"
+                    accessibilityLabel="Tentar carregar setores novamente"
+                  >
+                    <Text
+                      style={{
+                        ...theme.text.caption,
+                        color: theme.colors.primary,
+                        fontWeight: theme.weight.bold,
+                      }}
+                    >
+                      Tentar novamente
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
           <Segmented stretch>
-            <SegButton label="Lista" Icon={ListChecks} active={viewMode === "lista"} onPress={() => setViewMode("lista")} stretch subtle />
+            <SegButton
+              label="Lista"
+              Icon={ListChecks}
+              active={viewMode === "lista"}
+              onPress={() => setViewMode("lista")}
+              stretch
+              subtle
+            />
             {isDesktop ? (
-              <SegButton label="Calendário" Icon={CalendarDays} active={viewMode === "calendario"} onPress={() => setViewMode("calendario")} stretch subtle />
+              <SegButton
+                label="Calendário"
+                Icon={CalendarDays}
+                active={viewMode === "calendario"}
+                onPress={() => setViewMode("calendario")}
+                stretch
+                subtle
+              />
             ) : null}
             <SegButton
               label="Panorama"
@@ -392,7 +606,11 @@ export default function AgendaScreen() {
             <ManagerActionsMenu
               variant="strip"
               institutionId={activeInstitutionId ?? null}
-              period={isMonthSheet ? { kind: "month", monthKey: anchorMonthKey } : { kind: "week", weekStart: anchorWeekStart }}
+              period={
+                isMonthSheet
+                  ? { kind: "month", monthKey: anchorMonthKey }
+                  : { kind: "week", weekStart: anchorWeekStart }
+              }
               onChanged={() => {
                 refetch();
               }}
@@ -405,7 +623,10 @@ export default function AgendaScreen() {
         <View style={{ marginBottom: theme.space[3] }}>
           <NextShiftCard
             shift={nextShift ?? null}
-            needsConfirmation={!!nextShift && pendingConfirmation?.shiftInstanceId === nextShift.id}
+            needsConfirmation={
+              !!nextShift &&
+              pendingConfirmation?.shiftInstanceId === nextShift.id
+            }
             onConfirm={
               pendingConfirmation
                 ? () =>
@@ -417,18 +638,31 @@ export default function AgendaScreen() {
             }
             onSwap={
               nextShift && !nextShift.inProgress
-                ? () => router.push({ pathname: "/request-swap" as any, params: { fromShiftId: String(nextShift.id) } })
+                ? () =>
+                    router.push({
+                      pathname: "/request-swap" as any,
+                      params: { fromShiftId: String(nextShift.id) },
+                    })
                 : undefined
             }
             onOpenComunica={
-              nextShift?.inProgress
+              nextShift?.inProgress && activeInstitutionId !== null
                 ? () => {
-                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    ssoLaunch(activeInstitutionId ?? undefined);
+                    if (Platform.OS !== "web")
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    ssoLaunch();
                   }
                 : undefined
             }
-            onPress={nextShift ? () => router.push({ pathname: "/shift-details", params: { id: String(nextShift.id) } }) : undefined}
+            onPress={
+              nextShift
+                ? () =>
+                    router.push({
+                      pathname: "/shift-details",
+                      params: { id: String(nextShift.id) },
+                    })
+                : undefined
+            }
           />
         </View>
 
@@ -481,6 +715,41 @@ export default function AgendaScreen() {
               </Text>
             </TouchableOpacity>
           </View>
+        ) : scope === "geral" &&
+          !scheduleContext.isSelectionHydrating &&
+          !scheduleContext.isError &&
+          scheduleContext.contexts.length === 0 ? (
+          <View
+            style={{
+              alignItems: "center",
+              paddingVertical: theme.space[10],
+              paddingHorizontal: theme.space[6],
+              gap: theme.space[3],
+            }}
+          >
+            <Building2 size={40} color={theme.colors.textDisabled} />
+            <Text
+              style={{
+                fontSize: 15,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                textAlign: "center",
+              }}
+            >
+              Nenhuma escala configurada para você
+            </Text>
+            <Text
+              style={{
+                fontSize: 13,
+                color: theme.colors.textSecondary,
+                textAlign: "center",
+                lineHeight: 19,
+              }}
+            >
+              Solicite ao gestor a liberação do hospital, setor e qualificação
+              corretos para o seu vínculo.
+            </Text>
+          </View>
         ) : data && totalShifts === 0 ? (
           // Período genuinamente sem plantões: dizer com todas as letras
           // (e lembrar QUAL instituição está sendo consultada) em vez de
@@ -502,7 +771,9 @@ export default function AgendaScreen() {
                 textAlign: "center",
               }}
             >
-              {scope === "minha" ? "Você não está alocado em nenhum plantão neste período" : "Nenhum plantão neste período"}
+              {scope === "minha"
+                ? "Você não está alocado em nenhum plantão neste período"
+                : "Nenhum plantão neste período"}
               {activeInstitutionName ? ` em ${activeInstitutionName}` : ""}
             </Text>
             <Text
@@ -624,7 +895,13 @@ export default function AgendaScreen() {
 // ─── Segmented control ───────────────────────────────────────────────
 // Geral/Minha (ativo = navy sólido) e o trocador de vista (ativo = branco
 // com texto navy, "subtle"): o mesmo recipiente, dois pesos.
-function Segmented({ children, stretch = false }: { children: React.ReactNode; stretch?: boolean }) {
+function Segmented({
+  children,
+  stretch = false,
+}: {
+  children: React.ReactNode;
+  stretch?: boolean;
+}) {
   return (
     <View
       style={{
@@ -657,8 +934,18 @@ function SegButton({
   stretch?: boolean;
   subtle?: boolean;
 }) {
-  const bg = active ? (subtle ? theme.colors.surface : theme.colors.brand) : "transparent";
-  const fg = active ? (subtle ? theme.colors.brand : theme.colors.onDark.text) : subtle ? theme.colors.textMuted : theme.colors.textSecondary;
+  const bg = active
+    ? subtle
+      ? theme.colors.surface
+      : theme.colors.brand
+    : "transparent";
+  const fg = active
+    ? subtle
+      ? theme.colors.brand
+      : theme.colors.onDark.text
+    : subtle
+      ? theme.colors.textMuted
+      : theme.colors.textSecondary;
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -678,7 +965,18 @@ function SegButton({
       }}
     >
       {Icon ? <Icon size={15} color={fg} /> : null}
-      <Text style={{ ...theme.text.body, fontSize: 13, fontWeight: active ? theme.weight.bold : subtle ? theme.weight.medium : theme.weight.semibold, color: fg }}>
+      <Text
+        style={{
+          ...theme.text.body,
+          fontSize: 13,
+          fontWeight: active
+            ? theme.weight.bold
+            : subtle
+              ? theme.weight.medium
+              : theme.weight.semibold,
+          color: fg,
+        }}
+      >
         {label}
       </Text>
     </TouchableOpacity>
@@ -705,6 +1003,8 @@ type AgendaGroupRow = {
   hospitalName: string;
   sectorId: number;
   sectorName: string;
+  scheduleContextId: number | null;
+  qualificationName: string;
   shifts: AgendaShift[];
 };
 type AgendaDay = {
@@ -743,16 +1043,38 @@ function DesktopGrid({
                     flex: 1,
                     paddingVertical: theme.space[2],
                     paddingHorizontal: theme.space[2],
-                    backgroundColor: isToday ? theme.colors.paperSelected : theme.colors.surfaceAlt,
+                    backgroundColor: isToday
+                      ? theme.colors.paperSelected
+                      : theme.colors.surfaceAlt,
                     borderTopWidth: 2,
-                    borderTopColor: isToday ? theme.colors.brand : theme.colors.borderStrong,
+                    borderTopColor: isToday
+                      ? theme.colors.brand
+                      : theme.colors.borderStrong,
                     borderRightWidth: 1,
                     borderRightColor: theme.colors.border,
                   }}
                 >
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-                    <DayNumeral day={parseInt(day.date.slice(8, 10), 10)} size={26} emphasis={isToday ? "today" : "default"} />
-                    <Text style={{ ...theme.text.eyebrow, fontWeight: theme.weight.bold, color: isToday ? theme.colors.brand : theme.colors.textSecondary }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: theme.space[2],
+                    }}
+                  >
+                    <DayNumeral
+                      day={parseInt(day.date.slice(8, 10), 10)}
+                      size={26}
+                      emphasis={isToday ? "today" : "default"}
+                    />
+                    <Text
+                      style={{
+                        ...theme.text.eyebrow,
+                        fontWeight: theme.weight.bold,
+                        color: isToday
+                          ? theme.colors.brand
+                          : theme.colors.textSecondary,
+                      }}
+                    >
                       {DAY_LABELS[day.dow]}
                     </Text>
                   </View>
@@ -797,7 +1119,7 @@ function DesktopGrid({
                 ) : (
                   day.groups.map((group) => (
                     <DesktopGroupBlock
-                      key={`${group.hospitalId}-${group.sectorId}`}
+                      key={`${group.hospitalId}-${group.sectorId}-${group.scheduleContextId ?? "legacy"}`}
                       group={group}
                       onShiftPress={onShiftPress}
                     />
@@ -821,7 +1143,7 @@ function DesktopGroupBlock({
 }) {
   return (
     <View>
-      {/* Header colorido com hospital - setor */}
+      {/* Hospital, setor e qualificação identificam uma escala distinta. */}
       <View
         style={{
           backgroundColor: theme.colors.primarySoft,
@@ -842,6 +1164,8 @@ function DesktopGroupBlock({
           }}
         >
           {group.hospitalName} – {group.sectorName}
+          {"\n"}
+          {group.qualificationName}
         </Text>
       </View>
 

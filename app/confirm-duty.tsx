@@ -13,20 +13,30 @@ import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export default function ConfirmDutyScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const params = useLocalSearchParams<{ token?: string }>();
+  const params = useLocalSearchParams<{ token?: string | string[] }>();
   const feedback = useActionFeedback();
+  const hasDirectedToken = params.token !== undefined;
+  const directedToken =
+    typeof params.token === "string" && UUID_PATTERN.test(params.token)
+      ? params.token
+      : null;
+  const malformedDirectedToken = hasDirectedToken && directedToken === null;
 
-  const { data: pending, isLoading, isError, refetch } = trpc.confirmations.getPending.useQuery(
-    undefined,
-    { enabled: !!user, retry: 2 },
+  const pendingQuery = trpc.confirmations.getPending.useQuery(
+    directedToken ? { confirmationToken: directedToken } : undefined,
+    { enabled: !!user && !malformedDirectedToken, retry: 2 },
   );
+  const pending = pendingQuery.data ?? null;
   // Push "duty_nomination": o token é de uma indicação dirigida a MIM.
   const nominationQuery = trpc.confirmations.getNomination.useQuery(
-    { confirmationToken: params.token ?? "" },
-    { enabled: !!user && !!params.token, retry: 1 },
+    { confirmationToken: directedToken ?? "" },
+    { enabled: !!user && directedToken !== null, retry: 1 },
   );
   const nomination = nominationQuery.data ?? null;
 
@@ -61,7 +71,7 @@ export default function ConfirmDutyScreen() {
       // No web o "confirm" vira: OK = indicar substituto, Cancelar = fechar.
       uiConfirmDestructive(
         "Plantão recusado",
-        "Indique um substituto ou o sistema confirmará automaticamente em 30 minutos.",
+        "Indique um substituto. Se a cobertura continuar pendente, o gestor será avisado para verificar manualmente.",
         "Indicar substituto",
         () => router.push({
           pathname: "/nominate-replacement" as any,
@@ -74,7 +84,7 @@ export default function ConfirmDutyScreen() {
     },
   });
 
-  const token = params.token ?? pending?.confirmationToken;
+  const token = directedToken ?? pending?.confirmationToken;
   const isBusy = confirmMutation.isPending || declineMutation.isPending;
 
   const handleConfirm = () => {
@@ -88,13 +98,16 @@ export default function ConfirmDutyScreen() {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     uiConfirmDestructive(
       "Recusar plantão?",
-      "Você poderá indicar um substituto. Se ninguém for indicado em 30 minutos, o sistema confirmará automaticamente.",
+      "Você poderá indicar um substituto. Sem aceite, o plantão continuará pendente e o gestor deverá verificar a cobertura.",
       "Sim, recusar",
       () => declineMutation.mutate({ confirmationToken: token }),
     );
   };
 
-  if (isLoading || (params.token && nominationQuery.isLoading)) {
+  if (
+    pendingQuery.isLoading ||
+    (directedToken !== null && nominationQuery.isLoading)
+  ) {
     return (
       <ScreenGradient variant="light">
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
@@ -106,14 +119,37 @@ export default function ConfirmDutyScreen() {
 
   // Erro ≠ "tudo em dia": sem esta distinção, uma falha de rede
   // mostrava o check verde de sucesso enquanto uma confirmação real
-  // seguia pendente rumo ao auto-confirm dos 30min.
-  if (isError) {
+  // seguia pendente e exigia resposta ou verificação humana.
+  const directedLookupMiss =
+    hasDirectedToken &&
+    !malformedDirectedToken &&
+    !pendingQuery.isError &&
+    !nominationQuery.isError &&
+    !pending &&
+    !nomination;
+  if (
+    malformedDirectedToken ||
+    pendingQuery.isError ||
+    nominationQuery.isError ||
+    directedLookupMiss
+  ) {
     return (
       <ScreenGradient variant="light">
         <View style={{ flex: 1, justifyContent: "center" }}>
           <QueryErrorState
-            title="Não foi possível verificar suas confirmações"
-            onRetry={() => refetch()}
+            title={
+              malformedDirectedToken || directedLookupMiss
+                ? "Esta confirmação não está disponível ou já foi encerrada"
+                : "Não foi possível verificar suas confirmações"
+            }
+            onRetry={() => {
+              if (malformedDirectedToken) {
+                router.replace("/(tabs)/agenda" as any);
+                return;
+              }
+              void pendingQuery.refetch();
+              if (directedToken !== null) void nominationQuery.refetch();
+            }}
           />
         </View>
       </ScreenGradient>
@@ -166,7 +202,7 @@ export default function ConfirmDutyScreen() {
               onPress={() =>
                 uiConfirmDestructive(
                   "Recusar a indicação?",
-                  "Quem indicou você será avisado para indicar outra pessoa.",
+                  "Quem indicou você e a gestão serão avisados; a presença continuará sem confirmação.",
                   "Sim, recusar",
                   () => declineNominationMutation.mutate({ confirmationToken: nomination.confirmationToken }),
                 )

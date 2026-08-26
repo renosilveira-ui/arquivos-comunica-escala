@@ -23,7 +23,15 @@ import { uiAlert } from "@/lib/ui/alert";
 import { ChevronLeft, Save, Calendar, Clock } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
-import { fromLocalISODateString, normalizeToNoon, toLocalISODateString } from "@/lib/datetime-utils";
+import {
+  fromLocalISODateString,
+  normalizeToNoon,
+  toLocalISODateString,
+} from "@/lib/datetime-utils";
+import {
+  canLoadEditShift,
+  resolveEditShiftPermissionState,
+} from "@/lib/permission-screen-state";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -46,8 +54,14 @@ const COVERAGE_OPTIONS: { value: CoverageType; label: string }[] = [
 
 const PAYMENT_MODEL_OPTIONS: { value: PaymentModel; label: string }[] = [
   { value: "FIXO", label: "Fixo" },
-  { value: "FIXO_PRODUTIVIDADE_TETO", label: "Fixo + produtividade (com teto)" },
-  { value: "FIXO_PRODUTIVIDADE_SEM_TETO", label: "Fixo + produtividade (sem teto)" },
+  {
+    value: "FIXO_PRODUTIVIDADE_TETO",
+    label: "Fixo + produtividade (com teto)",
+  },
+  {
+    value: "FIXO_PRODUTIVIDADE_SEM_TETO",
+    label: "Fixo + produtividade (sem teto)",
+  },
   { value: "PRODUTIVIDADE_PURA", label: "Produtividade pura" },
 ];
 
@@ -59,8 +73,8 @@ const PRODUCTIVITY_CAP_REGEX = /^\d+(\.\d{1,2})?$/;
  * Suporte a modo demo
  */
 export default function EditShiftScreen() {
-  const { user } = useAuth();
-  const { can } = usePermissions();
+  const { user, isLoading: authLoading } = useAuth();
+  const { can, isLoading: permissionsLoading } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const shiftId = Number(params.id);
@@ -68,12 +82,17 @@ export default function EditShiftScreen() {
   // Guard: somente admin/manager podem editar escalas. `can` muda de
   // identidade a cada render; o efeito depende do RESULTADO, não da função.
   const canEditShift = can("edit:shift");
+  const permissionState = resolveEditShiftPermissionState({
+    authLoading,
+    hasUser: user !== null && user !== undefined,
+    permissionsLoading,
+    canEditShift,
+  });
   useEffect(() => {
-    if (!canEditShift) router.back();
-  }, [canEditShift, router]);
+    if (permissionState === "DENIED") router.back();
+  }, [permissionState, router]);
 
   // Estados do formulário
-  const [selectedSectorId, setSelectedSectorId] = useState<number | undefined>();
   const [startDate, setStartDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -82,7 +101,9 @@ export default function EditShiftScreen() {
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
   const [modality, setModality] = useState<Modality>("PLANTAO");
-  const [coverageType, setCoverageType] = useState<CoverageType | undefined>(undefined);
+  const [coverageType, setCoverageType] = useState<CoverageType | undefined>(
+    undefined,
+  );
   const [paymentModel, setPaymentModel] = useState<PaymentModel>("FIXO");
   const [productivityCapBrl, setProductivityCapBrl] = useState("");
 
@@ -96,14 +117,10 @@ export default function EditShiftScreen() {
   const [tempStartDate, setTempStartDate] = useState<Date | null>(null);
   const [tempEndDate, setTempEndDate] = useState<Date | null>(null);
 
-  // Buscar setores
-  const { data: sectors } = trpc.sectors.list.useQuery();
-  const availableSectors = sectors || [];
-
   // Buscar detalhes da escala
   const { data: shiftData, isLoading: loadingShift } = trpc.shifts.get.useQuery(
     { id: shiftId },
-    { enabled: !!shiftId }
+    { enabled: canLoadEditShift(permissionState, !!shiftId) },
   );
   const utils = trpc.useUtils();
 
@@ -230,11 +247,6 @@ export default function EditShiftScreen() {
     router.back();
   };
 
-  const handleSelectSector = (sectorId: number) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setSelectedSectorId(sectorId);
-  };
-
   const handleSave = () => {
     if (!startDate || !startTime || !endDate || !endTime) {
       uiAlert("Erro", "Preencha todos os campos obrigatórios");
@@ -271,9 +283,15 @@ export default function EditShiftScreen() {
       uiAlert("Atenção", "Informe o teto de produtividade ou troque o modelo.");
       return;
     }
-    if (productivityCapBrl && !PRODUCTIVITY_CAP_REGEX.test(productivityCapBrl)) {
+    if (
+      productivityCapBrl &&
+      !PRODUCTIVITY_CAP_REGEX.test(productivityCapBrl)
+    ) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      uiAlert("Atenção", "Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).");
+      uiAlert(
+        "Atenção",
+        "Teto deve ser BRL no formato 1500.00 (ponto, não vírgula).",
+      );
       return;
     }
 
@@ -292,10 +310,43 @@ export default function EditShiftScreen() {
     });
   };
 
-  if (!user) {
+  if (permissionState === "LOADING") {
     return (
       <ScreenGradient>
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            paddingHorizontal: 24,
+          }}
+        >
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text
+            style={{
+              fontSize: 16,
+              color: theme.colors.textMuted,
+              marginTop: 16,
+            }}
+          >
+            Carregando...
+          </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (permissionState === "UNAUTHENTICATED") {
+    return (
+      <ScreenGradient>
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            paddingHorizontal: 24,
+          }}
+        >
           <Text style={{ fontSize: 18, color: theme.colors.textMuted }}>
             Faça login para continuar
           </Text>
@@ -307,10 +358,42 @@ export default function EditShiftScreen() {
   if (loadingShift) {
     return (
       <ScreenGradient>
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }}>
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            paddingHorizontal: 24,
+          }}
+        >
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={{ fontSize: 16, color: theme.colors.textMuted, marginTop: 16 }}>
+          <Text
+            style={{
+              fontSize: 16,
+              color: theme.colors.textMuted,
+              marginTop: 16,
+            }}
+          >
             Carregando...
+          </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (permissionState === "DENIED") {
+    return (
+      <ScreenGradient>
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            paddingHorizontal: 24,
+          }}
+        >
+          <Text style={{ fontSize: 16, color: theme.colors.textMuted }}>
+            Acesso não autorizado
           </Text>
         </View>
       </ScreenGradient>
@@ -319,66 +402,109 @@ export default function EditShiftScreen() {
 
   return (
     <ScreenGradient>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 100 }}>
+      <ScrollView
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 20,
+          paddingBottom: 100,
+        }}
+      >
         <View style={{ gap: 24 }}>
           {/* Header */}
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <TouchableOpacity onPress={handleBack} activeOpacity={0.7}>
               <ChevronLeft size={28} color={theme.colors.textPrimary} />
             </TouchableOpacity>
-            <Text style={{ fontSize: 28, fontWeight: "700", color: theme.colors.textPrimary, flex: 1 }}>
+            <Text
+              style={{
+                fontSize: 28,
+                fontWeight: "700",
+                color: theme.colors.textPrimary,
+                flex: 1,
+              }}
+            >
               Editar Escala
             </Text>
           </View>
 
-          {/* Seleção de Setor */}
+          {/* Contexto canônico. Mover um turno de contexto exige recriação
+              explícita para não transportar alocações entre escalas. */}
           <TintedGlassCard variant="light">
-            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
-              Setor *
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                marginBottom: 16,
+              }}
+            >
+              Escala
             </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <View style={{ flexDirection: "row", gap: 12 }}>
-                {availableSectors.map((sector) => {
-                  const isSelected = selectedSectorId === sector.id;
-                  return (
-                    <TouchableOpacity
-                      key={sector.id}
-                      onPress={() => handleSelectSector(sector.id)}
-                      style={{
-                        paddingHorizontal: 20,
-                        paddingVertical: 12,
-                        borderRadius: 16,
-                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
-                        borderWidth: 2,
-                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text
-                        style={{
-                          fontSize: 16,
-                          fontWeight: "600",
-                          color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
-                        }}
-                      >
-                        {sector.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </ScrollView>
+            <Text
+              style={{
+                fontSize: 16,
+                fontWeight: "700",
+                color: theme.colors.textPrimary,
+              }}
+            >
+              {shiftData?.sectorName ?? "Setor não identificado"}
+            </Text>
+            <Text
+              style={{
+                fontSize: 14,
+                color: theme.colors.textMuted,
+                marginTop: 4,
+              }}
+            >
+              {shiftData?.hospitalName ?? "Hospital não identificado"}
+              {shiftData?.specialty ? ` · ${shiftData.specialty}` : ""}
+            </Text>
+            <Text
+              style={{
+                fontSize: 13,
+                color: theme.colors.textMuted,
+                marginTop: 10,
+              }}
+            >
+              Para mudar hospital, setor ou qualificação, crie o turno na escala
+              correta.
+            </Text>
           </TintedGlassCard>
 
           {/* Data e Hora de Início */}
           <TintedGlassCard variant="light">
-            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                marginBottom: 16,
+              }}
+            >
               Início *
             </Text>
             <View style={{ flexDirection: "row", gap: 12 }}>
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? fromLocalISODateString(startDate) : new Date()); setShowStartDatePicker(true); }} activeOpacity={0.7}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <TouchableOpacity
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setTempStartDate(
+                        startDate
+                          ? fromLocalISODateString(startDate)
+                          : new Date(),
+                      );
+                      setShowStartDatePicker(true);
+                    }}
+                    activeOpacity={0.7}
+                  >
                     <Calendar size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
                   <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
@@ -386,7 +512,15 @@ export default function EditShiftScreen() {
                   </Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => { Keyboard.dismiss(); setTempStartDate(startDate ? fromLocalISODateString(startDate) : new Date()); setShowStartDatePicker(true); }}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setTempStartDate(
+                      startDate
+                        ? fromLocalISODateString(startDate)
+                        : new Date(),
+                    );
+                    setShowStartDatePicker(true);
+                  }}
                   activeOpacity={0.7}
                   style={{
                     backgroundColor: theme.colors.surfaceAlt,
@@ -396,13 +530,17 @@ export default function EditShiftScreen() {
                     borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
+                  <Text
+                    style={{ fontSize: 16, color: theme.colors.textPrimary }}
+                  >
                     {formatDateBR(startDate) || "DD/MM/AAAA"}
                   </Text>
                 </TouchableOpacity>
                 {showStartDatePicker && (
                   <DateTimePicker
-                    value={startDate ? fromLocalISODateString(startDate) : new Date()}
+                    value={
+                      startDate ? fromLocalISODateString(startDate) : new Date()
+                    }
                     mode="date"
                     display={Platform.OS === "ios" ? "spinner" : "default"}
                     onChange={handleStartDateChange}
@@ -411,8 +549,18 @@ export default function EditShiftScreen() {
                 )}
               </View>
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <TouchableOpacity onPress={() => setShowStartTimePicker(true)} activeOpacity={0.7}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <TouchableOpacity
+                    onPress={() => setShowStartTimePicker(true)}
+                    activeOpacity={0.7}
+                  >
                     <Clock size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
                   <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
@@ -430,13 +578,19 @@ export default function EditShiftScreen() {
                     borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
+                  <Text
+                    style={{ fontSize: 16, color: theme.colors.textPrimary }}
+                  >
                     {startTime || "HH:MM"}
                   </Text>
                 </TouchableOpacity>
                 {showStartTimePicker && (
                   <DateTimePicker
-                    value={startTime ? new Date(`2000-01-01T${startTime}`) : new Date()}
+                    value={
+                      startTime
+                        ? new Date(`2000-01-01T${startTime}`)
+                        : new Date()
+                    }
                     mode="time"
                     display={Platform.OS === "ios" ? "spinner" : "default"}
                     onChange={handleStartTimeChange}
@@ -450,13 +604,36 @@ export default function EditShiftScreen() {
 
           {/* Data e Hora de Término */}
           <TintedGlassCard variant="light">
-            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                marginBottom: 16,
+              }}
+            >
               Término *
             </Text>
             <View style={{ flexDirection: "row", gap: 12 }}>
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <TouchableOpacity onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? fromLocalISODateString(endDate) : new Date()); setShowEndDatePicker(true); }} activeOpacity={0.7}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <TouchableOpacity
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setTempEndDate(
+                        endDate ? fromLocalISODateString(endDate) : new Date(),
+                      );
+                      setShowEndDatePicker(true);
+                    }}
+                    activeOpacity={0.7}
+                  >
                     <Calendar size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
                   <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
@@ -464,7 +641,13 @@ export default function EditShiftScreen() {
                   </Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => { Keyboard.dismiss(); setTempEndDate(endDate ? fromLocalISODateString(endDate) : new Date()); setShowEndDatePicker(true); }}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setTempEndDate(
+                      endDate ? fromLocalISODateString(endDate) : new Date(),
+                    );
+                    setShowEndDatePicker(true);
+                  }}
                   activeOpacity={0.7}
                   style={{
                     backgroundColor: theme.colors.surfaceAlt,
@@ -474,13 +657,17 @@ export default function EditShiftScreen() {
                     borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
+                  <Text
+                    style={{ fontSize: 16, color: theme.colors.textPrimary }}
+                  >
                     {formatDateBR(endDate) || "DD/MM/AAAA"}
                   </Text>
                 </TouchableOpacity>
                 {showEndDatePicker && (
                   <DateTimePicker
-                    value={endDate ? fromLocalISODateString(endDate) : new Date()}
+                    value={
+                      endDate ? fromLocalISODateString(endDate) : new Date()
+                    }
                     mode="date"
                     display={Platform.OS === "ios" ? "spinner" : "default"}
                     onChange={handleEndDateChange}
@@ -489,8 +676,18 @@ export default function EditShiftScreen() {
                 )}
               </View>
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <TouchableOpacity onPress={() => setShowEndTimePicker(true)} activeOpacity={0.7}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <TouchableOpacity
+                    onPress={() => setShowEndTimePicker(true)}
+                    activeOpacity={0.7}
+                  >
                     <Clock size={18} color={theme.colors.textMuted} />
                   </TouchableOpacity>
                   <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
@@ -508,13 +705,17 @@ export default function EditShiftScreen() {
                     borderColor: theme.colors.border,
                   }}
                 >
-                  <Text style={{ fontSize: 16, color: theme.colors.textPrimary }}>
+                  <Text
+                    style={{ fontSize: 16, color: theme.colors.textPrimary }}
+                  >
                     {endTime || "HH:MM"}
                   </Text>
                 </TouchableOpacity>
                 {showEndTimePicker && (
                   <DateTimePicker
-                    value={endTime ? new Date(`2000-01-01T${endTime}`) : new Date()}
+                    value={
+                      endTime ? new Date(`2000-01-01T${endTime}`) : new Date()
+                    }
                     mode="time"
                     display={Platform.OS === "ios" ? "spinner" : "default"}
                     onChange={handleEndTimeChange}
@@ -528,13 +729,22 @@ export default function EditShiftScreen() {
 
           {/* Modalidade */}
           <TintedGlassCard variant="light">
-            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                marginBottom: 16,
+              }}
+            >
               Modalidade
             </Text>
 
             {/* Modalidade — PLANTAO / SOBREAVISO */}
             <View style={{ gap: 8, marginBottom: 16 }}>
-              <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Modalidade *</Text>
+              <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
+                Modalidade *
+              </Text>
               <View style={{ flexDirection: "row", gap: 12 }}>
                 {MODALITY_OPTIONS.map((option) => {
                   const isSelected = modality === option.value;
@@ -553,9 +763,13 @@ export default function EditShiftScreen() {
                         paddingHorizontal: 20,
                         paddingVertical: 12,
                         borderRadius: 16,
-                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
+                        backgroundColor: isSelected
+                          ? theme.colors.primary
+                          : theme.colors.surfaceAlt,
                         borderWidth: 1,
-                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                        borderColor: isSelected
+                          ? theme.colors.primary
+                          : theme.colors.border,
                       }}
                       activeOpacity={0.7}
                     >
@@ -564,7 +778,9 @@ export default function EditShiftScreen() {
                           fontSize: 16,
                           fontWeight: "600",
                           textAlign: "center",
-                          color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
+                          color: isSelected
+                            ? theme.colors.surface
+                            : theme.colors.textPrimary,
                         }}
                       >
                         {option.label}
@@ -578,7 +794,9 @@ export default function EditShiftScreen() {
             {/* Cobertura — apenas para PLANTAO */}
             {modality === "PLANTAO" && (
               <View style={{ gap: 8, marginBottom: 16 }}>
-                <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Cobertura</Text>
+                <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
+                  Cobertura
+                </Text>
                 <View style={{ flexDirection: "row", gap: 12 }}>
                   {COVERAGE_OPTIONS.map((option) => {
                     const isSelected = coverageType === option.value;
@@ -586,7 +804,9 @@ export default function EditShiftScreen() {
                       <TouchableOpacity
                         key={option.value}
                         onPress={() => {
-                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          Haptics.impactAsync(
+                            Haptics.ImpactFeedbackStyle.Light,
+                          );
                           setCoverageType(option.value);
                         }}
                         style={{
@@ -594,9 +814,13 @@ export default function EditShiftScreen() {
                           paddingHorizontal: 20,
                           paddingVertical: 12,
                           borderRadius: 16,
-                          backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
+                          backgroundColor: isSelected
+                            ? theme.colors.primary
+                            : theme.colors.surfaceAlt,
                           borderWidth: 1,
-                          borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                          borderColor: isSelected
+                            ? theme.colors.primary
+                            : theme.colors.border,
                         }}
                         activeOpacity={0.7}
                       >
@@ -605,7 +829,9 @@ export default function EditShiftScreen() {
                             fontSize: 16,
                             fontWeight: "600",
                             textAlign: "center",
-                            color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
+                            color: isSelected
+                              ? theme.colors.surface
+                              : theme.colors.textPrimary,
                           }}
                         >
                           {option.label}
@@ -619,7 +845,9 @@ export default function EditShiftScreen() {
 
             {/* Modelo de pagamento — lista vertical */}
             <View style={{ gap: 8, marginBottom: 16 }}>
-              <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Modelo de pagamento *</Text>
+              <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
+                Modelo de pagamento *
+              </Text>
               <View style={{ gap: 12 }}>
                 {PAYMENT_MODEL_OPTIONS.map((option) => {
                   const isSelected = paymentModel === option.value;
@@ -637,9 +865,13 @@ export default function EditShiftScreen() {
                         paddingHorizontal: 20,
                         paddingVertical: 16,
                         borderRadius: 16,
-                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceAlt,
+                        backgroundColor: isSelected
+                          ? theme.colors.primary
+                          : theme.colors.surfaceAlt,
                         borderWidth: 1,
-                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                        borderColor: isSelected
+                          ? theme.colors.primary
+                          : theme.colors.border,
                       }}
                       activeOpacity={0.7}
                     >
@@ -647,7 +879,9 @@ export default function EditShiftScreen() {
                         style={{
                           fontSize: 16,
                           fontWeight: "600",
-                          color: isSelected ? theme.colors.surface : theme.colors.textPrimary,
+                          color: isSelected
+                            ? theme.colors.surface
+                            : theme.colors.textPrimary,
                         }}
                       >
                         {option.label}
@@ -661,7 +895,9 @@ export default function EditShiftScreen() {
             {/* Teto da produtividade — apenas para FIXO_PRODUTIVIDADE_TETO */}
             {paymentModel === "FIXO_PRODUTIVIDADE_TETO" && (
               <View style={{ gap: 8 }}>
-                <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>Teto da produtividade (BRL)</Text>
+                <Text style={{ fontSize: 14, color: theme.colors.textMuted }}>
+                  Teto da produtividade (BRL)
+                </Text>
                 <TextInput
                   value={productivityCapBrl}
                   onChangeText={setProductivityCapBrl}
@@ -684,7 +920,14 @@ export default function EditShiftScreen() {
 
           {/* Observações */}
           <TintedGlassCard variant="light">
-            <Text style={{ fontSize: 18, fontWeight: "600", color: theme.colors.textPrimary, marginBottom: 16 }}>
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "600",
+                color: theme.colors.textPrimary,
+                marginBottom: 16,
+              }}
+            >
               Observações
             </Text>
             <TextInput
@@ -723,7 +966,13 @@ export default function EditShiftScreen() {
               }}
               activeOpacity={0.7}
             >
-              <Text style={{ fontSize: 16, fontWeight: "600", color: theme.colors.textPrimary }}>
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "600",
+                  color: theme.colors.textPrimary,
+                }}
+              >
                 Cancelar
               </Text>
             </TouchableOpacity>
@@ -742,7 +991,13 @@ export default function EditShiftScreen() {
               activeOpacity={0.7}
             >
               <Save size={20} color={theme.colors.surface} />
-              <Text style={{ fontSize: 16, fontWeight: "600", color: theme.colors.surface }}>
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "600",
+                  color: theme.colors.surface,
+                }}
+              >
                 Salvar
               </Text>
             </TouchableOpacity>
@@ -775,15 +1030,38 @@ export default function EditShiftScreen() {
             }}
             onPress={(e) => e.stopPropagation()}
           >
-            <Text style={{ color: theme.colors.surface, fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
+            <Text
+              style={{
+                color: theme.colors.surface,
+                fontSize: 18,
+                fontWeight: "700",
+                marginBottom: 8,
+                textAlign: "center",
+              }}
+            >
               Selecionar data de início
             </Text>
-            <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14, marginBottom: 20, textAlign: "center" }}>
-              Data selecionada: {tempStartDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempStartDate))) : formatDateBR(startDate || toLocalISODateString(new Date()))}
+            <Text
+              style={{
+                color: theme.colors.onDark.textMuted,
+                fontSize: 14,
+                marginBottom: 20,
+                textAlign: "center",
+              }}
+            >
+              Data selecionada:{" "}
+              {tempStartDate
+                ? formatDateBR(
+                    toLocalISODateString(normalizeToNoon(tempStartDate)),
+                  )
+                : formatDateBR(startDate || toLocalISODateString(new Date()))}
             </Text>
 
             <DateTimePicker
-              value={tempStartDate || (startDate ? fromLocalISODateString(startDate) : new Date())}
+              value={
+                tempStartDate ||
+                (startDate ? fromLocalISODateString(startDate) : new Date())
+              }
               mode="date"
               display="spinner"
               onChange={handleStartDateChange}
@@ -803,7 +1081,15 @@ export default function EditShiftScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
+                <Text
+                  style={{
+                    color: theme.colors.surface,
+                    fontSize: 16,
+                    fontWeight: "600",
+                  }}
+                >
+                  Cancelar
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -817,7 +1103,15 @@ export default function EditShiftScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
+                <Text
+                  style={{
+                    color: theme.colors.surface,
+                    fontSize: 16,
+                    fontWeight: "600",
+                  }}
+                >
+                  Confirmar
+                </Text>
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -849,15 +1143,38 @@ export default function EditShiftScreen() {
             }}
             onPress={(e) => e.stopPropagation()}
           >
-            <Text style={{ color: theme.colors.surface, fontSize: 18, fontWeight: "700", marginBottom: 8, textAlign: "center" }}>
+            <Text
+              style={{
+                color: theme.colors.surface,
+                fontSize: 18,
+                fontWeight: "700",
+                marginBottom: 8,
+                textAlign: "center",
+              }}
+            >
               Selecionar data de término
             </Text>
-            <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14, marginBottom: 20, textAlign: "center" }}>
-              Data selecionada: {tempEndDate ? formatDateBR(toLocalISODateString(normalizeToNoon(tempEndDate))) : formatDateBR(endDate || toLocalISODateString(new Date()))}
+            <Text
+              style={{
+                color: theme.colors.onDark.textMuted,
+                fontSize: 14,
+                marginBottom: 20,
+                textAlign: "center",
+              }}
+            >
+              Data selecionada:{" "}
+              {tempEndDate
+                ? formatDateBR(
+                    toLocalISODateString(normalizeToNoon(tempEndDate)),
+                  )
+                : formatDateBR(endDate || toLocalISODateString(new Date()))}
             </Text>
 
             <DateTimePicker
-              value={tempEndDate || (endDate ? fromLocalISODateString(endDate) : new Date())}
+              value={
+                tempEndDate ||
+                (endDate ? fromLocalISODateString(endDate) : new Date())
+              }
               mode="date"
               display="spinner"
               onChange={handleEndDateChange}
@@ -877,7 +1194,15 @@ export default function EditShiftScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Cancelar</Text>
+                <Text
+                  style={{
+                    color: theme.colors.surface,
+                    fontSize: 16,
+                    fontWeight: "600",
+                  }}
+                >
+                  Cancelar
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -891,7 +1216,15 @@ export default function EditShiftScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={{ color: theme.colors.surface, fontSize: 16, fontWeight: "600" }}>Confirmar</Text>
+                <Text
+                  style={{
+                    color: theme.colors.surface,
+                    fontSize: 16,
+                    fontWeight: "600",
+                  }}
+                >
+                  Confirmar
+                </Text>
               </TouchableOpacity>
             </View>
           </Pressable>

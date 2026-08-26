@@ -3,19 +3,17 @@ import {
   Text,
   View,
   TouchableOpacity,
-  TextInput,
   ActivityIndicator,
-  Modal,
  } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { apiFetch } from "@/lib/_core/api";
 import { useRouter, useFocusEffect } from "expo-router";
-import { ChevronLeft, Shield, Check, X } from "lucide-react-native";
+import { ChevronLeft, Shield } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
-import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,7 +28,7 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 interface SwapItem {
   id: number;
-  type: "SWAP" | "TRANSFER";
+  type: "SWAP" | "TRANSFER" | "CESSAO";
   status: string;
   reason: string | null;
   reviewNote: string | null;
@@ -71,21 +69,14 @@ const STATUS_LABEL: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export default function ApproveSwapsScreen() {
-  const feedback = useActionFeedback();
   const { user } = useAuth();
+  const { can, isLoading: permissionsLoading } = usePermissions();
   const router = useRouter();
 
   const [tab, setTab] = useState<TabFilter>("ACCEPTED");
   const [items, setItems] = useState<SwapItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const [actionLoading, setActionLoading] = useState<number | null>(null);
-
-  // Modal state
-  const [modalVisible, setModalVisible] = useState(false);
-  const [modalAction, setModalAction] = useState<"approve" | "reject">("approve");
-  const [modalSwapId, setModalSwapId] = useState<number>(0);
-  const [modalNote, setModalNote] = useState("");
 
   const fetchItems = useCallback(async () => {
     setLoading(true);
@@ -95,7 +86,7 @@ export default function ApproveSwapsScreen() {
 
     // try/finally: sem isso, uma rejeição de rede escapava do callback
     // (unhandled) e o spinner nunca saía da tela; e res.ok ignorado
-    // fazia HTTP 4xx/5xx virar "Nenhuma troca aguardando aprovação".
+    // fazia HTTP 4xx/5xx virar um histórico vazio enganoso.
     try {
       const res = await apiFetch<any>(
         `/api/trpc/swaps.list?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: params } }))}`,
@@ -126,43 +117,6 @@ export default function ApproveSwapsScreen() {
     if (user?.id) fetchItems();
   }, [tab, fetchItems, user?.id]);
 
-  const openModal = (action: "approve" | "reject", swapId: number) => {
-    setModalAction(action);
-    setModalSwapId(swapId);
-    setModalNote("");
-    setModalVisible(true);
-  };
-
-  const handleModalSubmit = async () => {
-    if (modalAction === "reject" && !modalNote.trim()) {
-      feedback.error("Informe o motivo da rejeição.");
-      return;
-    }
-
-    setModalVisible(false);
-    setActionLoading(modalSwapId);
-
-    const endpoint = modalAction === "approve" ? "swaps.approve" : "swaps.rejectByManager";
-    const body: Record<string, any> = { swapRequestId: modalSwapId };
-    if (modalNote.trim()) body.note = modalNote.trim();
-
-    const res = await apiFetch<any>(`/api/trpc/${endpoint}?batch=1`, {
-      method: "POST",
-      body: JSON.stringify({ "0": { json: body } }),
-    });
-
-    setActionLoading(null);
-
-    const result = (res.data as any)?.[0];
-    if (result?.error) {
-      feedback.error(result.error.json?.message ?? "Não foi possível processar a troca.");
-      return;
-    }
-
-    feedback.success(modalAction === "approve" ? "Troca aprovada." : "Troca rejeitada.");
-    fetchItems();
-  };
-
   const formatDate = (iso: string) => {
     const d = new Date(iso);
     return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -177,16 +131,25 @@ export default function ApproveSwapsScreen() {
 
   const acceptedCount = items.filter((i) => i.status === "ACCEPTED").length;
 
-  // Redirect non-admin/manager
-  const isManager = user?.role === "admin" || user?.role === "manager";
+  const canViewHistory = can("view:swap-history");
 
-  if (!isManager) {
+  if (permissionsLoading) {
+    return (
+      <ScreenGradient scrollable={false}>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (!canViewHistory) {
     return (
       <ScreenGradient scrollable={false}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <Shield size={64} color={theme.colors.textMuted} />
           <Text style={{ color: theme.colors.textPrimary, fontSize: 20, fontWeight: "600", marginTop: 16 }}>Acesso Restrito</Text>
-          <Text style={{ color: theme.colors.textSecondary, fontSize: 14, marginTop: 8 }}>Apenas gestores podem gerenciar trocas.</Text>
+          <Text style={{ color: theme.colors.textSecondary, fontSize: 14, marginTop: 8 }}>Apenas gestores podem consultar este histórico.</Text>
         </View>
       </ScreenGradient>
     );
@@ -207,7 +170,7 @@ export default function ApproveSwapsScreen() {
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <Shield size={28} color={theme.colors.primary} />
-            <Text style={{ color: theme.colors.textPrimary, fontSize: 28, fontWeight: "700" }}>Gerenciar Trocas</Text>
+            <Text style={{ color: theme.colors.textPrimary, fontSize: 28, fontWeight: "700" }}>Histórico de Trocas</Text>
           </View>
         </View>
 
@@ -231,7 +194,7 @@ export default function ApproveSwapsScreen() {
               }}
             >
               <Text style={{ color: tab === t ? theme.palette.primary[700] : theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>
-                {t === "ACCEPTED" ? "Pendentes" : "Todos"}
+                {t === "ACCEPTED" ? "Aguardando ofertante" : "Todos"}
               </Text>
               {t === "ACCEPTED" && acceptedCount > 0 && (
                 <View style={{
@@ -264,7 +227,7 @@ export default function ApproveSwapsScreen() {
           <View style={{ paddingVertical: 60, alignItems: "center" }}>
             <Shield size={48} color={theme.colors.borderStrong} />
             <Text style={{ color: theme.colors.textMuted, fontSize: 16, marginTop: 12 }}>
-              {tab === "ACCEPTED" ? "Nenhuma troca aguardando aprovação" : "Nenhuma troca encontrada"}
+              {tab === "ACCEPTED" ? "Nenhuma troca aguardando decisão do ofertante" : "Nenhuma troca encontrada"}
             </Text>
           </View>
         ) : (
@@ -283,7 +246,7 @@ export default function ApproveSwapsScreen() {
                 {/* Top row: type + status badges */}
                 <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
                   <Badge variant={item.type === "SWAP" ? "info" : "warning"}>
-                    {item.type === "SWAP" ? "TROCA" : "REPASSE"}
+                    {item.type === "SWAP" ? "TROCA" : item.type === "CESSAO" ? "CESSÃO" : "REPASSE"}
                   </Badge>
                   <Badge variant={STATUS_BADGE[item.status] ?? "neutral"}>
                     {STATUS_LABEL[item.status] ?? item.status}
@@ -343,52 +306,12 @@ export default function ApproveSwapsScreen() {
                   Solicitado em {formatDate(item.createdAt)}
                 </Text>
 
-                {/* Action buttons — only for ACCEPTED */}
+                {/* Gestor acompanha; a decisão é integralmente entre A e B. */}
                 {item.status === "ACCEPTED" && (
-                  <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
-                    <TouchableOpacity
-                      onPress={() => openModal("approve", item.id)}
-                      disabled={actionLoading === item.id}
-                      style={{
-                        flex: 1,
-                        flexDirection: "row",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 6,
-                        paddingVertical: 12,
-                        borderRadius: 10,
-                        backgroundColor: theme.colors.success,
-                        opacity: actionLoading === item.id ? 0.6 : 1,
-                      }}
-                    >
-                      {actionLoading === item.id ? (
-                        <ActivityIndicator color={theme.colors.surface} size="small" />
-                      ) : (
-                        <>
-                          <Check size={18} color={theme.colors.surface} />
-                          <Text style={{ color: theme.colors.surface, fontSize: 15, fontWeight: "600" }}>Aprovar</Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      onPress={() => openModal("reject", item.id)}
-                      disabled={actionLoading === item.id}
-                      style={{
-                        flex: 1,
-                        flexDirection: "row",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 6,
-                        paddingVertical: 12,
-                        borderRadius: 10,
-                        backgroundColor: theme.colors.danger,
-                        opacity: actionLoading === item.id ? 0.6 : 1,
-                      }}
-                    >
-                      <X size={18} color={theme.colors.surface} />
-                      <Text style={{ color: theme.colors.surface, fontSize: 15, fontWeight: "600" }}>Rejeitar</Text>
-                    </TouchableOpacity>
+                  <View style={{ marginTop: 14, padding: 12, borderRadius: 10, backgroundColor: theme.colors.primarySoft }}>
+                    <Text style={{ color: theme.palette.primary[700], fontSize: 13 }}>
+                      Aguardando decisão do profissional que ofertou o plantão. Gestores acompanham o histórico, sem aprovar ou bloquear.
+                    </Text>
                   </View>
                 )}
               </View>
@@ -396,88 +319,6 @@ export default function ApproveSwapsScreen() {
           </View>
         )}
 
-        {/* Modal for approve/reject note */}
-        <Modal
-          visible={modalVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setModalVisible(false)}
-        >
-          <View style={{ flex: 1, backgroundColor: theme.colors.overlay, justifyContent: "center", alignItems: "center", padding: 24 }}>
-            <View style={{
-              backgroundColor: theme.colors.surface,
-              borderRadius: 16,
-              padding: 24,
-              width: "100%",
-              maxWidth: 400,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-            }}>
-              <Text style={{ color: theme.colors.textPrimary, fontSize: 20, fontWeight: "700", marginBottom: 16 }}>
-                {modalAction === "approve" ? "Aprovar Troca" : "Rejeitar Troca"}
-              </Text>
-
-              <Text style={{ color: theme.colors.textSecondary, fontSize: 14, marginBottom: 12 }}>
-                {modalAction === "approve"
-                  ? "Nota opcional para registro:"
-                  : "Informe o motivo da rejeição (obrigatório):"}
-              </Text>
-
-              <TextInput
-                placeholder={modalAction === "approve" ? "Nota (opcional)..." : "Motivo da rejeição..."}
-                placeholderTextColor={theme.colors.textMuted}
-                value={modalNote}
-                onChangeText={setModalNote}
-                multiline
-                numberOfLines={3}
-                style={{
-                  color: theme.colors.textPrimary,
-                  fontSize: 15,
-                  backgroundColor: theme.colors.background,
-                  borderRadius: 10,
-                  padding: 12,
-                  minHeight: 80,
-                  textAlignVertical: "top",
-                  borderWidth: 1,
-                  borderColor: theme.colors.border,
-                  marginBottom: 20,
-                }}
-              />
-
-              <View style={{ flexDirection: "row", gap: 12 }}>
-                <TouchableOpacity
-                  onPress={() => setModalVisible(false)}
-                  style={{
-                    flex: 1,
-                    paddingVertical: 12,
-                    borderRadius: 10,
-                    alignItems: "center",
-                    backgroundColor: theme.colors.background,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border,
-                  }}
-                >
-                  <Text style={{ color: theme.colors.textSecondary, fontSize: 15, fontWeight: "600" }}>Cancelar</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={handleModalSubmit}
-                  style={{
-                    flex: 1,
-                    paddingVertical: 12,
-                    borderRadius: 10,
-                    alignItems: "center",
-                    backgroundColor: modalAction === "approve" ? theme.colors.success : theme.colors.danger,
-                  }}
-                >
-                  <Text style={{ color: theme.colors.surface, fontSize: 15, fontWeight: "600" }}>
-                    {modalAction === "approve" ? "Confirmar" : "Rejeitar"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
       </View>
     </ScreenGradient>
   );

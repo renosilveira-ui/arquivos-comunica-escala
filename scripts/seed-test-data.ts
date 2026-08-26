@@ -19,6 +19,8 @@ import {
   shiftAuditLog,
   users,
   institutionConfig,
+  medicalSpecialties,
+  scheduleContexts,
 } from "../drizzle/schema";
 import { and, eq, inArray } from "drizzle-orm";
 
@@ -193,6 +195,11 @@ export async function seedTestData() {
     INNER JOIN sectors s ON s.id = pa.sector_id
     WHERE s.hospital_id = ${hospital.id} AND s.name = 'UTI'
   `);
+  await db.execute(`
+    DELETE sc FROM schedule_contexts sc
+    INNER JOIN sectors s ON s.id = sc.sector_id
+    WHERE s.hospital_id = ${hospital.id} AND s.name = 'UTI'
+  `);
   await db.execute(`DELETE FROM sectors WHERE hospital_id = ${hospital.id} AND name = 'UTI'`);
   await db.insert(sectors).values({
     institutionId: institution.id,
@@ -213,6 +220,44 @@ export async function seedTestData() {
   console.log(`✅ Instituição: ${institution.name}`);
   console.log(`✅ Hospital: ${hospital.name}`);
   console.log(`✅ Setor: ${sector.name}`);
+
+  await db.insert(medicalSpecialties).values({
+    code: "ANESTESIOLOGIA",
+    name: "Anestesiologia",
+    sourceVersion: "CFM_2380_2024",
+    active: true,
+    sortOrder: 3,
+  }).onDuplicateKeyUpdate({ set: { active: true } });
+  const [anesthesia] = await db
+    .select({ id: medicalSpecialties.id })
+    .from(medicalSpecialties)
+    .where(eq(medicalSpecialties.code, "ANESTESIOLOGIA"));
+  const openScale = async (sectorId: number) => {
+    const [existing] = await db
+      .select({ id: scheduleContexts.id })
+      .from(scheduleContexts)
+      .where(
+        and(
+          eq(scheduleContexts.institutionId, institution.id),
+          eq(scheduleContexts.hospitalId, hospital.id),
+          eq(scheduleContexts.sectorId, sectorId),
+        ),
+      );
+    if (existing) return existing.id;
+    const [created] = await db
+      .insert(scheduleContexts)
+      .values({
+        institutionId: institution.id,
+        hospitalId: hospital.id,
+        sectorId,
+        admissionPolicy: "ALL_CFM_SPECIALTIES",
+        active: true,
+      })
+      .$returningId();
+    return created.id;
+  };
+  const ccContextId = await openScale(sector.id);
+  const utiContextId = await openScale(sectorUti.id);
 
   // ── 4. Garantir 4 users ──────────────────────────────────────────────────
   const testOpenIds = [
@@ -269,8 +314,20 @@ export async function seedTestData() {
 
     let professionalId = existingProfessional?.id;
     if (!professionalId) {
-      const [proResult] = await db.insert(professionals).values(prof);
+      const [proResult] = await db.insert(professionals).values({
+        ...prof,
+        medicalSpecialtyId: anesthesia.id,
+        specialty: "Anestesiologia",
+      });
       professionalId = (proResult as any).insertId as number;
+    } else if (!existingProfessional.medicalSpecialtyId) {
+      await db
+        .update(professionals)
+        .set({
+          medicalSpecialtyId: anesthesia.id,
+          specialty: "Anestesiologia",
+        })
+        .where(eq(professionals.id, professionalId));
     }
 
     // Guard pela unique key REAL da tabela — (user_id, institution_id).
@@ -373,6 +430,7 @@ export async function seedTestData() {
     startAt: makeTime(tomorrow, 7),
     endAt: makeTime(tomorrow, 13),
     status: "VAGO",
+    scheduleContextId: ccContextId,
     modality: "PLANTAO",
     coverageType: "URGENCIA_EMERGENCIA",
     paymentModel: "FIXO_PRODUTIVIDADE_SEM_TETO",
@@ -387,6 +445,7 @@ export async function seedTestData() {
     startAt: makeTime(now, 13),
     endAt: makeTime(now, 19),
     status: "OCUPADO",
+    scheduleContextId: ccContextId,
     modality: "PLANTAO",
     coverageType: "ELETIVAS",
     paymentModel: "FIXO",
@@ -404,6 +463,7 @@ export async function seedTestData() {
     startAt: makeTime(tomorrow, 19),
     endAt: makeTime(dayAfterTomorrow, 7),
     status: "PENDENTE",
+    scheduleContextId: ccContextId,
     modality: "SOBREAVISO",
     paymentModel: "PRODUTIVIDADE_PURA",
   });
@@ -418,6 +478,7 @@ export async function seedTestData() {
     startAt: makeTime(fiveDaysAgo, 7),
     endAt: makeTime(fiveDaysAgo, 13),
     status: "VAGO",
+    scheduleContextId: ccContextId,
     modality: "PLANTAO",
     coverageType: "URGENCIA_EMERGENCIA",
     paymentModel: "FIXO_PRODUTIVIDADE_TETO",
@@ -433,6 +494,7 @@ export async function seedTestData() {
     startAt: makeTime(tomorrow, 7),
     endAt: makeTime(tomorrow, 19),
     status: "OCUPADO",
+    scheduleContextId: utiContextId,
     modality: "PLANTAO",
     coverageType: "URGENCIA_EMERGENCIA",
     paymentModel: "FIXO",
@@ -516,6 +578,8 @@ export async function seedTestData() {
           name: `UTI Dummy ${i}`,
           role: "Médico",
           userRole: "USER",
+          medicalSpecialtyId: anesthesia.id,
+          specialty: "Anestesiologia",
         });
         dummyProfId = (dummyProResult as any).insertId as number;
       }

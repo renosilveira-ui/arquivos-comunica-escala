@@ -12,7 +12,13 @@
 //   - carregando = skeleton com a forma do conteúdo, não spinner.
 
 import { useMemo, useState, type ReactElement } from "react";
-import { Pressable, ScrollView, Text, View, type RefreshControlProps } from "react-native";
+import {
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+  type RefreshControlProps,
+} from "react-native";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { SkeletonList } from "@/components/ui/Skeleton";
@@ -33,13 +39,32 @@ export type MobileAgendaGroup = {
   hospitalName: string;
   sectorId: number;
   sectorName: string;
+  scheduleContextId?: number | null;
+  qualificationName?: string;
   shifts: MobileAgendaShift[];
 };
-export type MobileAgendaDay = { date: string; dow: number; groups: MobileAgendaGroup[] };
+export type MobileAgendaDay = {
+  date: string;
+  dow: number;
+  groups: MobileAgendaGroup[];
+};
 export type MobileAgendaWeek = { weekStart: string; days: MobileAgendaDay[] };
 
 const DAY_LABELS = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"] as const;
-const MONTHS_SHORT = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"] as const;
+const MONTHS_SHORT = [
+  "jan",
+  "fev",
+  "mar",
+  "abr",
+  "mai",
+  "jun",
+  "jul",
+  "ago",
+  "set",
+  "out",
+  "nov",
+  "dez",
+] as const;
 
 /** "ter, 18 ago" */
 function formatDayHeader(date: string, dow: number): string {
@@ -58,7 +83,14 @@ interface Props {
   header?: ReactElement | null;
 }
 
-export function MobileDayList({ weeks, todayKey, loading = false, refreshControl, onShiftPress, header }: Props) {
+export function MobileDayList({
+  weeks,
+  todayKey,
+  loading = false,
+  refreshControl,
+  onShiftPress,
+  header,
+}: Props) {
   const [showPast, setShowPast] = useState(false);
 
   const { past, upcoming } = useMemo(() => {
@@ -76,7 +108,10 @@ export function MobileDayList({ weeks, todayKey, loading = false, refreshControl
       refreshControl={refreshControl}
       // 76pt de respiro no fim: o botão "+" fica sobre o papel, entre o
       // conteúdo e a barra de abas — nenhum plantão na pegada do botão.
-      contentContainerStyle={{ paddingBottom: theme.space[20], gap: theme.space[3] + 1 }}
+      contentContainerStyle={{
+        paddingBottom: theme.space[20],
+        gap: theme.space[3] + 1,
+      }}
       showsVerticalScrollIndicator={false}
     >
       {header}
@@ -98,21 +133,57 @@ export function MobileDayList({ weeks, todayKey, loading = false, refreshControl
                 gap: theme.space[1] + 2,
               }}
             >
-              {showPast ? <ChevronUp size={15} color={theme.colors.textSecondary} /> : <ChevronDown size={15} color={theme.colors.textSecondary} />}
-              <Text style={{ ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}>
-                {showPast ? "Ocultar dias anteriores" : `Ver ${past.length} dia${past.length === 1 ? "" : "s"} anterior${past.length === 1 ? "" : "es"}`}
+              {showPast ? (
+                <ChevronUp size={15} color={theme.colors.textSecondary} />
+              ) : (
+                <ChevronDown size={15} color={theme.colors.textSecondary} />
+              )}
+              <Text
+                style={{
+                  ...theme.text.body,
+                  fontSize: 13.5,
+                  fontWeight: theme.weight.semibold,
+                  color: theme.colors.textSecondary,
+                }}
+              >
+                {showPast
+                  ? "Ocultar dias anteriores"
+                  : `Ver ${past.length} dia${past.length === 1 ? "" : "s"} anterior${past.length === 1 ? "" : "es"}`}
               </Text>
             </Pressable>
           ) : null}
 
-          {showPast ? past.map((day) => <DayBlock key={day.date} day={day} isToday={false} onShiftPress={onShiftPress} />) : null}
+          {showPast
+            ? past.map((day) => (
+                <DayBlock
+                  key={day.date}
+                  day={day}
+                  isToday={false}
+                  onShiftPress={onShiftPress}
+                />
+              ))
+            : null}
 
           {upcoming.length === 0 ? (
-            <Text style={{ ...theme.text.body, color: theme.colors.textMuted, textAlign: "center", paddingVertical: theme.space[8] }}>
+            <Text
+              style={{
+                ...theme.text.body,
+                color: theme.colors.textMuted,
+                textAlign: "center",
+                paddingVertical: theme.space[8],
+              }}
+            >
               Nenhum dia neste período.
             </Text>
           ) : (
-            upcoming.map((day) => <DayBlock key={day.date} day={day} isToday={day.date === todayKey} onShiftPress={onShiftPress} />)
+            upcoming.map((day) => (
+              <DayBlock
+                key={day.date}
+                day={day}
+                isToday={day.date === todayKey}
+                onShiftPress={onShiftPress}
+              />
+            ))
           )}
         </>
       )}
@@ -120,7 +191,15 @@ export function MobileDayList({ weeks, todayKey, loading = false, refreshControl
   );
 }
 
-function DayBlock({ day, isToday, onShiftPress }: { day: MobileAgendaDay; isToday: boolean; onShiftPress: (id: number) => void }) {
+function DayBlock({
+  day,
+  isToday,
+  onShiftPress,
+}: {
+  day: MobileAgendaDay;
+  isToday: boolean;
+  onShiftPress: (id: number) => void;
+}) {
   const empty = day.groups.length === 0;
   const dayNumber = parseInt(day.date.slice(8, 10), 10);
 
@@ -138,25 +217,49 @@ function DayBlock({ day, isToday, onShiftPress }: { day: MobileAgendaDay; isToda
           borderBottomColor: theme.colors.borderStrong,
         }}
       >
-        <Text style={{ ...theme.text.caption, fontWeight: theme.weight.semibold, color: theme.colors.textSecondary }}>
+        <Text
+          style={{
+            ...theme.text.caption,
+            fontWeight: theme.weight.semibold,
+            color: theme.colors.textSecondary,
+          }}
+        >
           {formatDayHeader(day.date, day.dow)}
         </Text>
-        <Text style={{ ...theme.text.caption, color: theme.colors.textDisabled }}>Sem plantões</Text>
+        <Text
+          style={{ ...theme.text.caption, color: theme.colors.textDisabled }}
+        >
+          Sem plantões
+        </Text>
       </View>
     );
   }
 
   return (
     <View style={{ gap: theme.space[2] }}>
-      <DayRule day={dayNumber} title={formatDayHeader(day.date, day.dow)} isToday={isToday} />
+      <DayRule
+        day={dayNumber}
+        title={formatDayHeader(day.date, day.dow)}
+        isToday={isToday}
+      />
 
       {empty ? (
-        <Text style={{ ...theme.text.body, color: theme.colors.textMuted, paddingHorizontal: theme.space[3], paddingVertical: theme.space[2] }}>
+        <Text
+          style={{
+            ...theme.text.body,
+            color: theme.colors.textMuted,
+            paddingHorizontal: theme.space[3],
+            paddingVertical: theme.space[2],
+          }}
+        >
           Sem plantões hoje.
         </Text>
       ) : (
         day.groups.map((group) => (
-          <View key={`${group.hospitalId}-${group.sectorId}`} style={{ gap: theme.space[1] + 2 }}>
+          <View
+            key={`${group.hospitalId}-${group.sectorId}-${group.scheduleContextId ?? "legacy"}`}
+            style={{ gap: theme.space[1] + 2 }}
+          >
             <Text
               style={{
                 ...theme.text.eyebrow,
@@ -170,9 +273,15 @@ function DayBlock({ day, isToday, onShiftPress }: { day: MobileAgendaDay; isToda
               numberOfLines={1}
             >
               {group.hospitalName} · {group.sectorName}
+              {group.qualificationName ? ` · ${group.qualificationName}` : ""}
             </Text>
             {group.shifts.map((shift) => (
-              <ShiftRowCard key={shift.id} shift={shift} context="actionable" onPress={() => onShiftPress(shift.id)} />
+              <ShiftRowCard
+                key={shift.id}
+                shift={shift}
+                context="actionable"
+                onPress={() => onShiftPress(shift.id)}
+              />
             ))}
           </View>
         ))

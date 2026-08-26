@@ -5,8 +5,9 @@
 // 15 min sem tráfego; acordar leva 30–60 s. Até aqui o app mostrava tela
 // preta com spinner esse tempo todo, mesmo com usuário, instituição e a
 // agenda da última abertura já conhecidos. Persistir as consultas de
-// abertura deixa a Agenda pintar na hora com o último estado conhecido e
-// revalidar em segundo plano (stale-while-revalidate).
+// abertura evita repetir a topologia estável de hospitais/setores. Escalas,
+// confirmações e ações nunca vêm do disco: cobertura operacional stale não
+// pode aparecer como verdade atual nem habilitar SSO/troca/decisão.
 //
 // Só entram consultas de LEITURA de abertura de tela, e só quando tiveram
 // sucesso. Nada de mutações, nada de fila de aprovação do gestor com
@@ -18,15 +19,6 @@ import type { Query } from "@tanstack/react-query";
 
 /** Procedures tRPC cujo resultado pode ser restaurado na abertura do app. */
 export const PERSISTED_PROCEDURES: ReadonlySet<string> = new Set([
-  "professionals.listMyInstitutions",
-  "professionals.getMyCapabilities",
-  "professionals.getByUserId",
-  "professionals.getManagerScope",
-  "shifts.getNextShift",
-  "shifts.listAgenda",
-  "shifts.listByPeriod",
-  "confirmations.getPending",
-  "swaps.listAvailable",
   "hospitals.list",
   "sectors.list",
 ]);
@@ -45,8 +37,12 @@ export function procedurePathOf(queryKey: readonly unknown[]): string | null {
   return (head as string[]).join(".");
 }
 
+export function isPersistedQueryKey(queryKey: readonly unknown[]): boolean {
+  const path = procedurePathOf(queryKey);
+  return path !== null && PERSISTED_PROCEDURES.has(path);
+}
+
 export function shouldPersistQuery(query: Pick<Query, "queryKey" | "state">): boolean {
   if (query.state.status !== "success") return false;
-  const path = procedurePathOf(query.queryKey);
-  return path !== null && PERSISTED_PROCEDURES.has(path);
+  return isPersistedQueryKey(query.queryKey);
 }

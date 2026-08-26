@@ -26,15 +26,16 @@ import {
   User,
   Briefcase,
   ClipboardCheck,
-  Lock,
   Search,
   Plus,
 } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
+import { usePermissions } from "@/hooks/use-permissions";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { AvailableSwapsList } from "@/components/swaps/AvailableSwapsList";
+import { resolvePendingContentState } from "@/lib/permission-screen-state";
 
 // ---------------------------------------------------------------------------
 // Helpers for Available Swaps section
@@ -44,8 +45,13 @@ import { AvailableSwapsList } from "@/components/swaps/AvailableSwapsList";
 export default function PendingScreen() {
   const router = useRouter();
   const { user, isLoading: authLoading } = useAuth();
+  const {
+    canApproveAssignments,
+    isGlobalAdmin,
+    roleInInstitution,
+    isLoading: permissionsLoading,
+  } = usePermissions();
   const feedback = useActionFeedback();
-  const isAdminOrManager = user?.role === "admin" || user?.role === "manager";
   const [mySearch, setMySearch] = useState("");
   // Chaves de dia sempre LOCAIS: toISOString() é UTC e, depois das 21h no
   // Brasil, já aponta para amanhã — "Hoje" sumia com os plantões do dia.
@@ -92,7 +98,7 @@ export default function PendingScreen() {
 
   // Determinar se usuário pode ver "Todos os hospitais"
   const allowAllHospitals =
-    professional?.userRole === "GESTOR_PLUS" || isAdminOrManager;
+    isGlobalAdmin || roleInInstitution === "GESTOR_PLUS";
 
   // Buscar contadores de vagas/pendências (com cache de 60s)
   const { data: counts } = trpc.filters.summaryCounts.useQuery(
@@ -119,7 +125,7 @@ export default function PendingScreen() {
       shiftLabel: filters.shiftLabel ?? undefined,
       modality: modalityFilter,
     },
-    { enabled: !!user?.id },
+    { enabled: !!user?.id && canApproveAssignments && !permissionsLoading },
   );
 
   const myShiftsStart = useMemo(() => {
@@ -273,7 +279,32 @@ export default function PendingScreen() {
     );
   }
 
-  if (!professionalLoading && user && !professional && !isAdminOrManager) {
+  const pendingContentState = resolvePendingContentState({
+    pendingLoading: isLoading,
+    permissionsLoading,
+    professionalLoading,
+    myShiftsLoading: loadingMyShifts,
+    hasProfessional: professional !== undefined && professional !== null,
+    canApproveAssignments,
+  });
+
+  if (pendingContentState === "LOADING") {
+    return (
+      <ScreenGradient>
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text
+            className="mt-4 text-base"
+            style={{ color: theme.colors.textMuted }}
+          >
+            Carregando pendências...
+          </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (pendingContentState === "MISSING_PROFESSIONAL") {
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
@@ -295,26 +326,7 @@ export default function PendingScreen() {
     );
   }
 
-  if (isLoading || authLoading || professionalLoading || loadingMyShifts) {
-    return (
-      <ScreenGradient>
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text
-            className="mt-4 text-base"
-            style={{ color: theme.colors.textMuted }}
-          >
-            Carregando pendências...
-          </Text>
-        </View>
-      </ScreenGradient>
-    );
-  }
-
-  const isManagerView =
-    isAdminOrManager ||
-    professional?.userRole === "GESTOR_MEDICO" ||
-    professional?.userRole === "GESTOR_PLUS";
+  const isManagerView = canApproveAssignments;
 
   if (!isManagerView) {
     return (
@@ -747,26 +759,6 @@ export default function PendingScreen() {
                     </View>
                   </View>
 
-                  {/* Botões de ação ou mensagem de permissão */}
-                  {professional?.userRole === "USER" ? (
-                    // 🔒 Usuário comum: mostrar mensagem de permissão
-                    <View
-                      className="flex-row items-center justify-center gap-2 rounded-xl border py-3 px-4"
-                      style={{
-                        backgroundColor: theme.colors.background,
-                        borderColor: theme.colors.border,
-                      }}
-                    >
-                      <Lock size={18} color={theme.colors.textMuted} />
-                      <Text
-                        className="text-sm font-medium"
-                        style={{ color: theme.colors.textSecondary }}
-                      >
-                        Somente gestores podem aprovar pendências
-                      </Text>
-                    </View>
-                  ) : (
-                    // ✅ Gestor: mostrar botões de aprovação/rejeição
                     <View className="flex-row gap-3">
                       <TouchableOpacity
                         onPress={() =>
@@ -842,7 +834,6 @@ export default function PendingScreen() {
                         </Text>
                       </TouchableOpacity>
                     </View>
-                  )}
                 </View>
               );
             })}

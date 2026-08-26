@@ -8,11 +8,16 @@
 // Fixtures no mesmo padrão de cessao-flow.test.ts (seed: Pedro/Ana), janela
 // +60 dias para não colidir com os outros arquivos.
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import { getDb } from "../server/db";
-import { hospitals, institutions, professionals, sectors, shiftAssignmentsV2, shiftInstances, swapRequests } from "../drizzle/schema";
+import { hospitals, institutions, monthlyRosters, professionals, sectors, shiftAssignmentsV2, shiftInstances, swapRequests } from "../drizzle/schema";
 import { swapRouter } from "../server/swap-router";
+import { yearMonthBrt } from "../server/local-time";
+
+vi.mock("../server/integrations/comunica-plus", () => ({
+  enqueueComunicaSwapApproved: vi.fn(async () => 1),
+}));
 
 const PREFIX = "swap-guardas-";
 
@@ -37,13 +42,22 @@ describe("swaps: guardas de alocação ativa, oferta única e tipo preservado", 
 
   async function cleanup() {
     const old = await db
-      .select({ id: shiftInstances.id })
+      .select({ id: shiftInstances.id, startAt: shiftInstances.startAt })
       .from(shiftInstances)
       .where(and(eq(shiftInstances.institutionId, institutionId), like(shiftInstances.label, `${PREFIX}%`)));
     for (const s of old) {
       await db.delete(swapRequests).where(eq(swapRequests.fromShiftInstanceId, s.id));
       await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, s.id));
       await db.delete(shiftInstances).where(eq(shiftInstances.id, s.id));
+    }
+    for (const yearMonth of new Set(old.map(({ startAt }) => yearMonthBrt(startAt)))) {
+      await db.delete(monthlyRosters).where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      );
     }
   }
 
@@ -83,9 +97,14 @@ describe("swaps: guardas de alocação ativa, oferta única e tipo preservado", 
   }
 
   async function shiftWithA(opts: { dayOffset: number; type?: "ON_DUTY" | "ON_CALL" | "BACKUP"; label: string }) {
+    const startAt = at(8, opts.dayOffset);
+    await db
+      .insert(monthlyRosters)
+      .values({ institutionId, hospitalId, yearMonth: yearMonthBrt(startAt), status: "PUBLISHED" })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, label: `${PREFIX}${opts.label}`, startAt: at(8, opts.dayOffset), endAt: at(14, opts.dayOffset), status: "OCUPADO" })
+      .values({ institutionId, hospitalId, sectorId, label: `${PREFIX}${opts.label}`, startAt, endAt: at(14, opts.dayOffset), status: "OCUPADO" })
       .$returningId();
     const [a] = await db
       .insert(shiftAssignmentsV2)

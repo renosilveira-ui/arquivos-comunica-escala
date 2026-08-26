@@ -1,8 +1,6 @@
 import { useAuth } from "./use-auth";
 import { trpc } from "@/lib/trpc";
 
-type Role = "admin" | "manager" | "doctor" | "nurse" | "tech";
-
 export type Permission =
   | "view:dashboard"
   | "view:reports"
@@ -11,43 +9,20 @@ export type Permission =
   | "view:weekly"
   | "create:shift"
   | "edit:shift"
-  | "approve:swaps"
+  | "view:swap-history"
   | "request:swap";
-
-const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-  admin: [
-    "view:dashboard",
-    "view:reports",
-    "view:vacancies",
-    "view:admin",
-    "view:weekly",
-    "create:shift",
-    "edit:shift",
-    "approve:swaps",
-    "request:swap",
-  ],
-  manager: [
-    "view:dashboard",
-    "view:reports",
-    "view:vacancies",
-    "view:weekly",
-    "create:shift",
-    "edit:shift",
-    "approve:swaps",
-    "request:swap",
-  ],
-  doctor: ["view:vacancies", "request:swap"],
-  nurse: ["view:vacancies", "request:swap"],
-  tech: [],
-};
 
 export function usePermissions() {
   const { user, isLoading } = useAuth();
-  const role = user?.role as Role | undefined;
-  const { data: capabilities } = trpc.professionals.getMyCapabilities.useQuery(undefined, {
+  const capabilitiesQuery = trpc.professionals.getMyCapabilities.useQuery(undefined, {
     enabled: !!user,
     staleTime: 60_000,
   });
+  const capabilities = !capabilitiesQuery.isLoading &&
+    !capabilitiesQuery.isFetching &&
+    !capabilitiesQuery.isError
+    ? capabilitiesQuery.data
+    : undefined;
 
   const can = (permission: Permission): boolean => {
     if (capabilities) {
@@ -59,19 +34,31 @@ export function usePermissions() {
         "view:weekly": capabilities.canViewWeekly,
         "create:shift": capabilities.canCreateShift,
         "edit:shift": capabilities.canEditShift,
-        "approve:swaps": capabilities.canApproveSwaps,
+        "view:swap-history": capabilities.canViewSwapHistory,
         "request:swap": capabilities.canRequestSwap,
       };
       return map[permission];
     }
-    if (!role) return false;
-    return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
+    // Toda permissão acima é tenant-bound. users.role é papel global e jamais
+    // substitui uma capability institucional ausente, carregando ou em erro.
+    return false;
   };
 
-  const isAdmin = capabilities ? capabilities.canViewAdmin : role === "admin";
+  const isAdmin = capabilities?.canViewAdmin ?? false;
   const isManager = capabilities
     ? capabilities.canCreateShift || capabilities.canApproveAssignments
-    : role === "admin" || role === "manager";
+    : false;
 
-  return { can, role, isAdmin, isManager, isLoading };
+  return {
+    can,
+    role: capabilities?.roleInInstitution,
+    roleInInstitution: capabilities?.roleInInstitution,
+    isGlobalAdmin: capabilities?.isGlobalAdmin ?? false,
+    isAdmin,
+    isManager,
+    canApproveAssignments: capabilities?.canApproveAssignments ?? false,
+    isLoading: isLoading || (
+      !!user && (capabilitiesQuery.isLoading || capabilitiesQuery.isFetching)
+    ),
+  };
 }

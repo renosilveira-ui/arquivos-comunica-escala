@@ -48,7 +48,7 @@ import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2";
 import { and, eq } from "drizzle-orm";
@@ -66,14 +66,21 @@ import { resolveSslConfig } from "../server/_core/db-ssl";
 // Configuration
 // ---------------------------------------------------------------------------
 
-const TARGET_INSTITUTION_NAME =
-  "Cooperativa dos Médicos de Fortaleza - Unimed";
+const TARGET_INSTITUTION_NAME = "Cooperativa dos Médicos de Fortaleza - Unimed";
 
 const VALID_ROLES = ["admin", "manager", "doctor", "nurse", "tech"] as const;
 type ValidRole = (typeof VALID_ROLES)[number];
 
 const BCRYPT_ROUNDS = 12;
 const PASSWORD_LENGTH = 16;
+
+function blockLegacyUnstructuredImport(): void {
+  throw new Error(
+    "Importação em lote temporariamente bloqueada: o CSV legado não informa " +
+      "qualificação médica nem escalas autorizadas. Cadastre o piloto pelo Admin " +
+      "até existir um importador estruturado com contextos explícitos.",
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,9 +145,7 @@ function parseCsv(content: string): CsvRow[] {
     const name = cells[nameIdx];
     const email = cells[emailIdx]?.toLowerCase();
     if (!name || !email) {
-      console.warn(
-        `[skip] line ${i + 1}: missing name or email — ${lines[i]}`,
-      );
+      console.warn(`[skip] line ${i + 1}: missing name or email — ${lines[i]}`);
       continue;
     }
     let role: ValidRole = "doctor";
@@ -215,6 +220,11 @@ function csvEscape(value: string): string {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // Fail closed before reading a CSV, connecting to MySQL or creating users.
+  // The legacy importer granted every sector in the institution and cannot be
+  // used after schedule contexts became the authorization boundary.
+  blockLegacyUnstructuredImport();
+
   const csvPath = process.env.PROFESSIONALS_CSV;
   if (!csvPath) {
     throw new Error(
@@ -347,7 +357,10 @@ async function main() {
       // rows newly imported doctors exist but cannot be placed on a shift.
       for (const sector of sectorRows) {
         const [existingAccess] = await db
-          .select({ id: professionalAccess.id, canAccess: professionalAccess.canAccess })
+          .select({
+            id: professionalAccess.id,
+            canAccess: professionalAccess.canAccess,
+          })
           .from(professionalAccess)
           .where(
             and(
@@ -387,10 +400,7 @@ async function main() {
   // -------------------------------------------------------------------------
   // Write output CSV
   // -------------------------------------------------------------------------
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[:.]/g, "-")
-    .slice(0, 19);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const outDir = resolve(process.cwd(), "data");
   mkdirSync(outDir, { recursive: true });
   const outPath = resolve(outDir, `credentials-${timestamp}.csv`);
@@ -427,9 +437,7 @@ async function main() {
     "\nDistribute the credentials CSV via your chosen channel and " +
       "DELETE the file after distribution.",
   );
-  console.log(
-    "Instruct each user to change their password on first login.",
-  );
+  console.log("Instruct each user to change their password on first login.");
 }
 
 main().catch((err) => {

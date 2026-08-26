@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { and, eq, like } from "drizzle-orm";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { getDb } from "../server/db";
 import {
+  auditTrail,
   hospitals,
   institutions,
   monthlyRosters,
@@ -13,14 +14,19 @@ import {
 } from "../drizzle/schema";
 import { swapRouter } from "../server/swap-router";
 import { yearMonthFromDate } from "../lib/date-utils";
+import { yearMonthBrt } from "../server/local-time";
+
+vi.mock("../server/integrations/comunica-plus", () => ({
+  enqueueComunicaSwapApproved: vi.fn(async () => 1),
+}));
 
 /**
  * Fluxo cessão sem gestor (docs/product/escala-ux.md §6).
  *
  * O endpoint canônico de aprovação é `swaps.approveByOwner`: quem
  * ofertou o plantão (A) aprova a candidatura, sem passar por gestor.
- * `swaps.approve` (gestor) continua existindo como legado durante a
- * migração do frontend.
+ * `swaps.approve` e `swaps.rejectByManager` existem apenas como contratos
+ * legados deny-only: gestor acompanha o histórico, sem decidir ou bloquear.
  *
  * Estes testes blindam:
  *   1. Apenas o dono do plantão pode chamar `approveByOwner`.
@@ -42,6 +48,7 @@ describe("Cessão sem gestor (approveByOwner)", () => {
   let userBId: number;
   let proAId: number;
   let proBId: number;
+  const rosterMonths = new Set<string>();
 
   // Janela base afastada do seed compartilhado e dos fixtures de
   // anti-overlap-h1-h2 (que usa +30 dias). Aqui usamos +45 dias.
@@ -96,21 +103,45 @@ describe("Cessão sem gestor (approveByOwner)", () => {
     await cleanupFixtures();
   });
 
+  afterEach(async () => {
+    if (!db) return;
+    for (const yearMonth of rosterMonths) {
+      await db.delete(monthlyRosters).where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      );
+    }
+    rosterMonths.clear();
+  });
+
   async function cleanupFixtures(): Promise<void> {
     if (!db) return;
     const oldShifts = await db
-      .select({ id: shiftInstances.id })
+      .select({ id: shiftInstances.id, startAt: shiftInstances.startAt })
       .from(shiftInstances)
       .where(
         and(
           eq(shiftInstances.institutionId, institutionId),
           like(shiftInstances.label, `${FIXTURE_PREFIX}%`),
         ),
-      );
+    );
     for (const s of oldShifts) {
+      await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, s.id));
       await db.delete(swapRequests).where(eq(swapRequests.fromShiftInstanceId, s.id));
       await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, s.id));
       await db.delete(shiftInstances).where(eq(shiftInstances.id, s.id));
+    }
+    for (const yearMonth of new Set(oldShifts.map((shift) => yearMonthFromDate(shift.startAt)))) {
+      await db.delete(monthlyRosters).where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      );
     }
   }
 
@@ -184,6 +215,15 @@ describe("Cessão sem gestor (approveByOwner)", () => {
       assignmentBId = (resAssignB as any).insertId as number;
     }
 
+    for (const startAt of [at(8, offset), ...(opts.type === "SWAP" ? [at(15, offset)] : [])]) {
+      const yearMonth = yearMonthBrt(startAt);
+      rosterMonths.add(yearMonth);
+      await db
+        .insert(monthlyRosters)
+        .values({ institutionId, hospitalId, yearMonth, status: "PUBLISHED" })
+        .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
+    }
+
     const [resSwap] = await db.insert(swapRequests).values({
       type: opts.type,
       status: "ACCEPTED",
@@ -245,6 +285,18 @@ describe("Cessão sem gestor (approveByOwner)", () => {
     expect(swap.status).toBe("APPROVED");
     expect(swap.reviewedByUserId).toBe(userAId);
     expect(swap.reviewedAt).toBeTruthy();
+    const [audit] = await db!
+      .select({ action: auditTrail.action, metadata: auditTrail.metadata })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, swapId),
+          eq(auditTrail.action, "CESSAO_APPROVED_BY_OWNER"),
+        ),
+      );
+    expect(audit.action).toBe("CESSAO_APPROVED_BY_OWNER");
+    expect(audit.metadata).toMatchObject({ approvalPath: "OWNER" });
   });
 
   it("não-dono (B) é bloqueado com FORBIDDEN", async () => {
@@ -333,6 +385,7 @@ describe("Cessão sem gestor (approveByOwner)", () => {
       .from(shiftInstances)
       .where(eq(shiftInstances.id, shiftAId));
     const ym = yearMonthFromDate(shift.startAt);
+    rosterMonths.add(ym);
 
     // Insere/atualiza roster como LOCKED
     await db!
@@ -368,13 +421,131 @@ describe("Cessão sem gestor (approveByOwner)", () => {
       );
   });
 
-  // NB: an audit-log assertion (action = CESSAO_APPROVED_BY_OWNER,
-  // metadata.approvalPath = "OWNER") was attempted here but is flaky
-  // against the fire-and-forget recordAudit pattern: callers do not
-  // `await recordAudit(...)`, so the INSERT may not be committed by
-  // the time the test queries. The action-type wiring is covered by
-  // server typecheck (the union in audit-trail.ts) — see PR
-  // description for the audit-await follow-up.
+  it("serializa a efetivação com lockMonth concorrente e preserva a cessão", async () => {
+    const { swapId, shiftAId, assignmentAId } = await setupAcceptedSwap({
+      type: "CESSAO",
+      dayOffset: 10,
+    });
+    const [shift] = await db!
+      .select({ startAt: shiftInstances.startAt })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftAId));
+    const ym = yearMonthFromDate(shift.startAt);
+    rosterMonths.add(ym);
+    await db!.delete(monthlyRosters).where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, ym),
+      ),
+    );
+    await db!.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: ym,
+      status: "PUBLISHED",
+    });
+
+    let releaseLock!: () => void;
+    let rowLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const locker = db!.transaction(async (tx) => {
+      await tx
+        .update(monthlyRosters)
+        .set({ status: "LOCKED" })
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+            eq(monthlyRosters.yearMonth, ym),
+          ),
+        );
+      rowLocked();
+      await release;
+    });
+
+    await locked;
+    let settled = false;
+    const approval = callerAs(userAId).approveByOwner({ swapRequestId: swapId })
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      .finally(() => { settled = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(settled).toBe(false);
+    } finally {
+      releaseLock();
+    }
+    await locker;
+    const outcome = await approval;
+    expect(outcome).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+
+    const [swap] = await db!.select().from(swapRequests).where(eq(swapRequests.id, swapId));
+    const [original] = await db!
+      .select({ isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, assignmentAId));
+    const replacements = await db!
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftAId),
+          eq(shiftAssignmentsV2.professionalId, proBId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    expect(swap.status).toBe("ACCEPTED");
+    expect(original.isActive).toBe(true);
+    expect(replacements).toHaveLength(0);
+  });
+
+  it("SWAP recusa atomicamente quando o segundo mês está LOCKED", async () => {
+    const fixture = await setupAcceptedSwap({ type: "SWAP", dayOffset: 11 });
+    const secondStart = at(15, 50);
+    const secondEnd = at(21, 50);
+    await db!
+      .update(shiftInstances)
+      .set({ startAt: secondStart, endAt: secondEnd })
+      .where(eq(shiftInstances.id, fixture.shiftBId!));
+    const secondYm = yearMonthFromDate(secondStart);
+    rosterMonths.add(yearMonthFromDate(at(8, 11)));
+    rosterMonths.add(secondYm);
+    await db!.delete(monthlyRosters).where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, secondYm),
+      ),
+    );
+    await db!.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: secondYm,
+      status: "LOCKED",
+    });
+
+    await expect(
+      callerAs(userAId).approveByOwner({ swapRequestId: fixture.swapId }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const originals = await db!
+      .select({ id: shiftAssignmentsV2.id, isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(
+        inArray(shiftAssignmentsV2.id, [fixture.assignmentAId, fixture.assignmentBId!]),
+      );
+    const [swap] = await db!
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, fixture.swapId));
+    expect(originals).toHaveLength(2);
+    expect(originals.every((assignment) => assignment.isActive)).toBe(true);
+    expect(swap.status).toBe("ACCEPTED");
+  });
 
   it("SWAP bidirecional: ambas as assignments são trocadas", async () => {
     const { shiftAId, shiftBId, assignmentAId, assignmentBId, swapId } = await setupAcceptedSwap({

@@ -1,9 +1,6 @@
 // lib/sso-launch.ts — Abre o Comunica+ a partir do Escala (mobile)
 //
-// Fase 3 da integração: preferir o APP NATIVO do Comunica+
-// (comunicamais://), que mantém sessão própria persistente — o médico
-// cai direto no app, não no navegador. Se o app não estiver instalado,
-// fallback para o fluxo browser logado via launch-code:
+// Todo handoff mobile passa pelo launch-code tenant-bound:
 //
 // POST /api/sso/launch-code (autenticado, Bearer) → recebe launchUrl
 // one-time → Linking.openURL abre o browser externo → o servidor
@@ -14,17 +11,59 @@
 //   - NotificationListener (toque no push type=sso_ready)
 //   - useSsoHandoff (botão manual "Abrir Comunica+", branch mobile)
 
-import { Platform, Linking } from "react-native";
+import { Linking, Platform } from "react-native";
 import * as Auth from "@/lib/_core/auth";
-import { getApiBaseUrl } from "@/lib/_core/api";
-
-/** Scheme registrado pelo app nativo do Comunica+ (native/app.json). */
-const COMUNICA_APP_URL = "comunicamais://";
-
+import { apiFetch } from "@/lib/_core/api";
 
 export interface SsoLaunchResult {
   ok: boolean;
   error?: string;
+}
+
+export interface SsoLaunchOptions {
+  signal?: AbortSignal;
+  canNavigate?: () => boolean;
+}
+
+const SSO_INVALID_TENANT_MESSAGE =
+  "Selecione uma instituicao valida antes de abrir o Comunica+";
+const SSO_PREPARATION_FAILED_MESSAGE =
+  "Não foi possível preparar o login no Comunica+. Tente novamente.";
+const SSO_OPEN_FAILED_MESSAGE =
+  "Não foi possível abrir o Comunica+. Tente novamente.";
+const SSO_CANCELLED_MESSAGE = "A abertura do Comunica+ foi cancelada.";
+
+function isCancelled(options: SsoLaunchOptions): boolean {
+  return options.signal?.aborted === true || options.canNavigate?.() === false;
+}
+
+function isLaunchCurrent(
+  transportTicket: number,
+  options: SsoLaunchOptions,
+): boolean {
+  return (
+    !isCancelled(options) &&
+    Auth.isSessionTransportTicketCurrent(transportTicket)
+  );
+}
+
+export function isValidSsoTenantId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+/**
+ * Pushes SSO carregam o tenant que originou a intencao. A URL recebida no
+ * payload nunca e autoridade de navegacao: o destino nasce exclusivamente do
+ * launch-code emitido pelo servidor.
+ */
+export async function openComunicaFromNotification(
+  data: Readonly<Record<string, unknown>>,
+  options: SsoLaunchOptions = {},
+): Promise<SsoLaunchResult> {
+  if (!isValidSsoTenantId(data.institutionId)) {
+    return { ok: false, error: "Instituicao do push SSO ausente ou invalida" };
+  }
+  return openComunica(data.institutionId, options);
 }
 
 /**
@@ -32,57 +71,74 @@ export interface SsoLaunchResult {
  * Mobile-only — no web o handoff é form-POST direto (useSsoHandoff).
  */
 export async function openComunicaViaLaunchCode(
-  tenantId?: number,
+  tenantId: number,
+  options: SsoLaunchOptions = {},
 ): Promise<SsoLaunchResult> {
+  if (!isValidSsoTenantId(tenantId)) {
+    return { ok: false, error: SSO_INVALID_TENANT_MESSAGE };
+  }
+  // O launch-code abre URL externa e não pode carregar o cookie web entre
+  // abas. No navegador, o único fluxo autorizado é o form POST cercado pelo
+  // Web Lock em runWebSsoHandoff.
+  if (Platform.OS === "web") {
+    return { ok: false, error: SSO_CANCELLED_MESSAGE };
+  }
   try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (tenantId) headers["x-tenant-id"] = String(tenantId);
+    const transportTicket = Auth.captureSessionTransportTicket();
+    if (transportTicket === null || !isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
 
-    const token = await Auth.getSessionToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    const res = await fetch(`${getApiBaseUrl()}/api/sso/launch-code`, {
+    const res = await apiFetch<{ launchUrl?: string }>("/api/sso/launch-code", {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+        "x-tenant-id": String(tenantId),
+      },
       body: JSON.stringify({}),
+      signal: options.signal,
     });
 
+    if (!isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
     if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      return { ok: false, error: body?.error ?? `Erro ${res.status} ao preparar login` };
+      return { ok: false, error: SSO_PREPARATION_FAILED_MESSAGE };
     }
 
-    const data = (await res.json()) as { launchUrl?: string };
-    if (!data.launchUrl) {
-      return { ok: false, error: "Resposta inválida do servidor" };
+    const data = res.data;
+    if (!isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
+    if (typeof data?.launchUrl !== "string" || !data.launchUrl) {
+      return { ok: false, error: SSO_PREPARATION_FAILED_MESSAGE };
     }
 
+    // Último fence antes do único efeito irreversível do fluxo mobile.
+    if (!isLaunchCurrent(transportTicket, options)) {
+      return { ok: false, error: SSO_CANCELLED_MESSAGE };
+    }
     await Linking.openURL(data.launchUrl);
     return { ok: true };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message || "Falha ao abrir Comunica+" };
+  } catch {
+    return {
+      ok: false,
+      error: isCancelled(options) ? SSO_CANCELLED_MESSAGE : SSO_OPEN_FAILED_MESSAGE,
+    };
   }
 }
 
 /**
- * Abre o Comunica+ — app nativo se instalado, senão browser logado.
- *
- * O app nativo guarda a própria sessão (SecureStore), então abri-lo já
- * resolve o caso comum. Se o médico estiver deslogado lá, ele cai na
- * tela de login do próprio app — comportamento aceitável e explícito.
- * `openURL` para scheme sem handler rejeita a promise (iOS e Android),
- * e aí caímos no fluxo browser via launch-code.
+ * Abre somente a URL one-time emitida pelo servidor para o tenant autenticado.
+ * Um scheme nativo nu não carrega handoff nem prova o tenant e, por isso, não
+ * pode representar sucesso de SSO.
  */
-export async function openComunica(tenantId?: number): Promise<SsoLaunchResult> {
-  if (Platform.OS !== "web") {
-    try {
-      await Linking.openURL(COMUNICA_APP_URL);
-      return { ok: true };
-    } catch {
-      // App não instalado — segue para o browser logado.
-    }
+export async function openComunica(
+  tenantId: number,
+  options: SsoLaunchOptions = {},
+): Promise<SsoLaunchResult> {
+  if (!isValidSsoTenantId(tenantId)) {
+    return { ok: false, error: SSO_INVALID_TENANT_MESSAGE };
   }
-  return openComunicaViaLaunchCode(tenantId);
+  return openComunicaViaLaunchCode(tenantId, options);
 }
