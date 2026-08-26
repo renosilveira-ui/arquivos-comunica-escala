@@ -898,10 +898,13 @@ describe("admissão do token no login nativo", () => {
       expect(headers.Authorization).toBeUndefined();
       expect(headers["x-client-expected-user-id"]).toBeUndefined();
       expect(headers["x-tenant-id"]).toBeUndefined();
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ ok: true, pending: false, awaitingScale: true }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -911,9 +914,14 @@ describe("admissão do token no login nativo", () => {
         name: "Pessoa",
         email: "pessoa@example.com",
         password: "segredo-seguro",
-        institutionId: 101,
+        medicalSpecialtyCode: "ANESTESIOLOGIA",
+        operationalProfileCode: null,
       }),
-    ).resolves.toEqual({ ok: true, pending: true });
+    ).resolves.toEqual({
+      ok: true,
+      pending: false,
+      awaitingScale: true,
+    });
   });
 
   it("logout de transição envia identidade esperada canônica", async () => {
