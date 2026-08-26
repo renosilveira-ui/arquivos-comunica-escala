@@ -3,58 +3,57 @@ import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { dayKeyBrt, dayWindowBrt, monthWindowBrt } from "./local-time";
 import { dateFromExecute, rowsFromExecute } from "./_core/db-results";
-import { assertMonthEditableForUpdate } from "./month-guards";
 import { yearMonthFromDate } from "../lib/date-utils";
-import { and, eq, gte, lt, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { shiftInstances } from "../drizzle/schema";
-import { auditLog } from "./audit-log";
-import { recordAudit } from "./audit-trail";
+import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
 import {
-  actorCapabilities,
-  assertCanEditScheduleDate,
-  assertManagerScopeAccess,
-  assertManagerScopeAccessForUpdate,
-  getTenantActorFromContext,
-  type TenantActor,
-} from "./_core/policy";
-import { assertInstitutionHierarchy } from "./_core/tenant";
+  listAuthorizedScheduleContexts,
+  requireSingleLegacyScheduleContext,
+  type AuthorizedScheduleContext,
+} from "./schedule-contexts";
 
 /**
  * Calendar Router
- * 
+ *
  * Endpoints para visualização do calendário mensal:
  * - getMonthGrid: retorna grid do mês com status M/T/N por dia
  * - getDay: retorna 3 turnos do dia com slots e assignments
  */
 
-// Helper: verifica RBAC para acesso ao calendário
-async function checkCalendarAccess(
+// Resolve uma única escala operacional antes de qualquer leitura. Em setores
+// com mais de uma qualificação, clientes legados precisam informar o ID em
+// vez de misturar os plantões silenciosamente.
+async function resolveCalendarAccess(
   actor: TenantActor,
   institutionId: number,
   hospitalId: number,
   sectorId: number,
-  yearMonth: string
+  yearMonth: string,
+  requestedScheduleContextId?: number,
 ): Promise<{
-  canAccess: boolean;
-  canAutoCreateShifts: boolean;
+  context: AuthorizedScheduleContext;
   monthStatus: "DRAFT" | "PUBLISHED" | "LOCKED";
 }> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-
-  const capabilities = actorCapabilities(actor);
-
-  // Valida a hierarquia para todos os papéis antes de consultar o roster.
-  // Gestores passam também pela sua jurisdição; Gestor+/admin continuam com
-  // escopo amplo apenas dentro do tenant ativo.
-  if (capabilities.canCreateShift) {
-    await assertManagerScopeAccess(actor, hospitalId, sectorId);
-  } else {
-    await assertInstitutionHierarchy(
-      { institutionId: actor.institutionId, hospitalId, sectorId },
-      { db },
-    );
+  const candidates = (await listAuthorizedScheduleContexts(actor, db)).filter(
+    (context) =>
+      context.institutionId === institutionId &&
+      context.hospitalId === hospitalId &&
+      context.sectorId === sectorId,
+  );
+  const context =
+    requestedScheduleContextId === undefined
+      ? requireSingleLegacyScheduleContext(candidates)
+      : candidates.find(
+          (candidate) => candidate.id === requestedScheduleContextId,
+        );
+  if (!context) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala fora do acesso do usuário neste tenant.",
+    });
   }
 
   // 1. Buscar status do mês
@@ -63,26 +62,32 @@ async function checkCalendarAccess(
         WHERE institution_id = ${institutionId} 
         AND hospital_id = ${hospitalId} 
         AND ${sql.identifier("year_month")} = ${yearMonth}
-        LIMIT 1`
+        LIMIT 1`,
   );
   const rosterRows = rowsFromExecute<any>(rosterResult);
-  const monthStatus = (rosterRows[0]?.status || "DRAFT") as "DRAFT" | "PUBLISHED" | "LOCKED";
+  const monthStatus = (rosterRows[0]?.status || "DRAFT") as
+    "DRAFT" | "PUBLISHED" | "LOCKED";
 
-  // USER institucional pode consultar estados finais publicados; LOCKED é
-  // somente uma restrição de escrita, não revoga a visibilidade da escala.
-  if (!capabilities.canCreateShift) {
-    return {
-      canAccess: monthStatus === "PUBLISHED" || monthStatus === "LOCKED",
-      canAutoCreateShifts: false,
-      monthStatus,
-    };
+  // Um gestor lendo fora de sua manager_scope pelo próprio vínculo clínico
+  // segue a mesma regra de publicação de um USER.
+  if (
+    !context.canManage &&
+    monthStatus !== "PUBLISHED" &&
+    monthStatus !== "LOCKED"
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Você não tem permissão para acessar este calendário",
+    });
   }
 
-  return { canAccess: true, canAutoCreateShifts: true, monthStatus };
+  return { context, monthStatus };
 }
 
 // Helper: agrupa shifts por dia e label
-function groupShiftsByDay(shifts: { start_at: Date | string; label: string; status: string }[]): Record<string, Record<string, string>> {
+function groupShiftsByDay(
+  shifts: { start_at: Date | string; label: string; status: string }[],
+): Record<string, Record<string, string>> {
   const grouped: Record<string, Record<string, string>> = {};
 
   for (const shift of shifts) {
@@ -96,10 +101,10 @@ function groupShiftsByDay(shifts: { start_at: Date | string; label: string; stat
 
     // Mapear label para letra
     const labelMap: Record<string, string> = {
-      "Manhã": "M",
-      "Tarde": "T",
-      "Noite": "N",
-      "Cinderela": "C"
+      Manhã: "M",
+      Tarde: "T",
+      Noite: "N",
+      Cinderela: "C",
     };
 
     const key = labelMap[label] || label;
@@ -134,13 +139,17 @@ export const calendarRouter = router({
         institutionId: z.number(),
         hospitalId: z.number(),
         sectorId: z.number(),
+        scheduleContextId: z.number().int().positive().optional(),
         yearMonth: z.string().regex(/^\d{4}-\d{2}$/), // YYYY-MM
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const { institutionId, hospitalId, sectorId, yearMonth } = input;
       if (institutionId !== ctx.institutionId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "institutionId inválido para tenant ativo",
+        });
       }
       const actor = await getTenantActorFromContext(ctx);
 
@@ -148,32 +157,34 @@ export const calendarRouter = router({
       if (!db) throw new Error("Database not available");
 
       // 1. Verificar RBAC
-      const { canAccess, monthStatus } = await checkCalendarAccess(
+      const { context, monthStatus } = await resolveCalendarAccess(
         actor,
         institutionId,
         hospitalId,
         sectorId,
-        yearMonth
+        yearMonth,
+        input.scheduleContextId,
       );
 
-      if (!canAccess) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Você não tem permissão para acessar este calendário",
-        });
-      }
-
       // 2. Calcular range do mês no relógio do hospital (-03:00), fim exclusivo.
-      const { start: startOfMonth, end: endOfMonth } = monthWindowBrt(yearMonth);
+      const { start: startOfMonth, end: endOfMonth } =
+        monthWindowBrt(yearMonth);
 
       // 3. Buscar shift_instances do hospital+setor no range
       const shiftResult = await db.execute<any>(
-        sql`SELECT id, label, start_at, end_at, status
-            FROM shift_instances
-            WHERE institution_id = ${institutionId}
-            AND hospital_id = ${hospitalId} AND sector_id = ${sectorId}
-            AND start_at >= ${startOfMonth} AND start_at < ${endOfMonth}
-            ORDER BY start_at ASC`
+        sql`SELECT si.id, si.label, si.start_at, si.end_at, si.status
+            FROM shift_instances si
+            INNER JOIN schedule_contexts sc
+              ON sc.id = si.schedule_context_id
+             AND sc.institution_id = si.institution_id
+             AND sc.hospital_id = si.hospital_id
+             AND sc.sector_id = si.sector_id
+             AND sc.active = true
+            WHERE si.institution_id = ${institutionId}
+            AND si.hospital_id = ${hospitalId} AND si.sector_id = ${sectorId}
+            AND si.schedule_context_id = ${context.id}
+            AND si.start_at >= ${startOfMonth} AND si.start_at < ${endOfMonth}
+            ORDER BY si.start_at ASC`,
       );
       const shiftRows = rowsFromExecute<any>(shiftResult);
 
@@ -206,6 +217,7 @@ export const calendarRouter = router({
       }
 
       return {
+        scheduleContextId: context.id,
         monthStatus,
         days,
         counts,
@@ -222,13 +234,17 @@ export const calendarRouter = router({
         institutionId: z.number(),
         hospitalId: z.number(),
         sectorId: z.number(),
+        scheduleContextId: z.number().int().positive().optional(),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // YYYY-MM-DD
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const { institutionId, hospitalId, sectorId, date } = input;
       if (institutionId !== ctx.institutionId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "institutionId inválido para tenant ativo" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "institutionId inválido para tenant ativo",
+        });
       }
       const actor = await getTenantActorFromContext(ctx);
 
@@ -239,40 +255,48 @@ export const calendarRouter = router({
       const yearMonth = yearMonthFromDate(new Date(date));
 
       // 2. Verificar RBAC
-      const { canAccess, canAutoCreateShifts, monthStatus } = await checkCalendarAccess(
+      const { context, monthStatus } = await resolveCalendarAccess(
         actor,
         institutionId,
         hospitalId,
         sectorId,
-        yearMonth
+        yearMonth,
+        input.scheduleContextId,
       );
-
-      if (!canAccess) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Você não tem permissão para acessar este dia",
-        });
-      }
 
       // 3. Buscar shift_instances do dia
       // Dia no relógio do hospital (-03:00), fim exclusivo (auditoria M6).
       const { start: startOfDay, end: endOfDay } = dayWindowBrt(date);
 
       const shiftResult = await db.execute<any>(
-        sql`SELECT id, label, start_at, end_at, status
-            FROM shift_instances
-            WHERE institution_id = ${institutionId}
-            AND hospital_id = ${hospitalId} AND sector_id = ${sectorId}
-            AND start_at >= ${startOfDay} AND start_at < ${endOfDay}
-            ORDER BY start_at ASC`
+        sql`SELECT si.id, si.label, si.start_at, si.end_at, si.status
+            FROM shift_instances si
+            INNER JOIN schedule_contexts sc
+              ON sc.id = si.schedule_context_id
+             AND sc.institution_id = si.institution_id
+             AND sc.hospital_id = si.hospital_id
+             AND sc.sector_id = si.sector_id
+             AND sc.active = true
+            WHERE si.institution_id = ${institutionId}
+            AND si.hospital_id = ${hospitalId} AND si.sector_id = ${sectorId}
+            AND si.schedule_context_id = ${context.id}
+            AND si.start_at >= ${startOfDay} AND si.start_at < ${endOfDay}
+            ORDER BY si.start_at ASC`,
       );
       const shiftRows = rowsFromExecute<any>(shiftResult);
 
       // 4. Para cada shift, buscar assignments
       const shifts = await Promise.all(
-        shiftRows.map(async (shift: { id: number; label: string; start_at: Date | string; end_at: Date | string; status: string }) => {
-          const assignmentResult = await db.execute<any>(
-            sql`SELECT 
+        shiftRows.map(
+          async (shift: {
+            id: number;
+            label: string;
+            start_at: Date | string;
+            end_at: Date | string;
+            status: string;
+          }) => {
+            const assignmentResult = await db.execute<any>(
+              sql`SELECT
                   sa.id as assignmentId,
                   sa.assignment_type as assignmentType,
                   sa.professional_id as professionalId,
@@ -292,181 +316,47 @@ export const calendarRouter = router({
                   AND sa.hospital_id = ${hospitalId}
                   AND sa.sector_id = ${sectorId}
                   AND sa.is_active = true
-                ORDER BY sa.assignment_type ASC`
-          );
-          const assignmentRows = rowsFromExecute<any>(assignmentResult);
+                ORDER BY sa.assignment_type ASC`,
+            );
+            const assignmentRows = rowsFromExecute<any>(assignmentResult);
 
-          // Criar slots (ON_DUTY, BACKUP, ON_CALL)
-          const slotTypes = ["ON_DUTY", "BACKUP", "ON_CALL"];
-          const slots = slotTypes.map((type) => {
-            const assignment = assignmentRows.find((a: any) => a.assignmentType === type);
-            if (assignment) {
-              return {
-                assignmentType: type,
-                assignmentId: assignment.assignmentId,
-                professionalId: assignment.professionalId,
-                professionalName: assignment.professionalName,
-                status: assignment.status,
-              };
-            } else {
-              return {
-                assignmentType: type,
-                status: "EMPTY",
-              };
-            }
-          });
+            // Criar slots (ON_DUTY, BACKUP, ON_CALL)
+            const slotTypes = ["ON_DUTY", "BACKUP", "ON_CALL"];
+            const slots = slotTypes.map((type) => {
+              const assignment = assignmentRows.find(
+                (a: any) => a.assignmentType === type,
+              );
+              if (assignment) {
+                return {
+                  assignmentType: type,
+                  assignmentId: assignment.assignmentId,
+                  professionalId: assignment.professionalId,
+                  professionalName: assignment.professionalName,
+                  status: assignment.status,
+                };
+              } else {
+                return {
+                  assignmentType: type,
+                  status: "EMPTY",
+                };
+              }
+            });
 
-          return {
-            shiftInstanceId: shift.id,
-            label: shift.label,
-            startAt: dateFromExecute(shift.start_at).toISOString(),
-            endAt: dateFromExecute(shift.end_at).toISOString(),
-            status: shift.status,
-            slots,
-          };
-        })
+            return {
+              shiftInstanceId: shift.id,
+              label: shift.label,
+              startAt: dateFromExecute(shift.start_at).toISOString(),
+              endAt: dateFromExecute(shift.end_at).toISOString(),
+              status: shift.status,
+              slots,
+            };
+          },
+        ),
       );
-
-      // 5. Se gestor contextual e não existir turno, criar automaticamente
-      // como VAGO — mas SÓ se este gestor pudesse criar esses turnos pelo
-      // editor: janela do mês corrente (GESTOR_MEDICO) e mês em DRAFT.
-      // Abrir um dia de mês publicado/trancado ou fora da alçada numa
-      // *query* gravava 3 turnos sem auditoria (auditoria 22/08, M1).
-      let mayAutoCreate = canAutoCreateShifts && shifts.length === 0 && monthStatus === "DRAFT";
-      const dayStart = new Date(`${date}T00:00:00-03:00`);
-      if (mayAutoCreate) {
-        try {
-          assertCanEditScheduleDate(actor, dayStart);
-        } catch {
-          mayAutoCreate = false;
-        }
-      }
-      if (mayAutoCreate) {
-        // Criar 3 turnos padrão (Manhã, Tarde, Noite)
-        const defaultShifts = [
-          { label: "Manhã", startHour: 7, endHour: 13 },
-          { label: "Tarde", startHour: 13, endHour: 19 },
-          { label: "Noite", startHour: 19, endHour: 7 },
-        ];
-
-        const createdShifts = await db.transaction(async (tx) => {
-          // A linha mensal é a trava de serialização: publicação/lock e outra
-          // auto-criação do mesmo mês precisam concluir antes desta decisão.
-          await assertMonthEditableForUpdate(
-            tx,
-            { user: { id: ctx.user.id } },
-            institutionId,
-            hospitalId,
-            dayStart,
-          );
-
-          const existingQuery = tx
-            .select({ id: shiftInstances.id })
-            .from(shiftInstances)
-            .where(
-              and(
-                eq(shiftInstances.institutionId, institutionId),
-                eq(shiftInstances.hospitalId, hospitalId),
-                eq(shiftInstances.sectorId, sectorId),
-                gte(shiftInstances.startAt, startOfDay),
-                lt(shiftInstances.startAt, endOfDay),
-              ),
-            )
-            .limit(1);
-          const existing = await existingQuery.for("update");
-          if (existing.length > 0) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: "Os turnos deste dia foram criados por outra operação.",
-            });
-          }
-
-          const actorRole = await assertManagerScopeAccessForUpdate(
-            tx,
-            actor,
-            ctx.user.sessionVersion,
-            hospitalId,
-            sectorId,
-            [dayStart],
-          );
-          const created = [] as {
-            shiftInstanceId: number;
-            label: string;
-            startAt: string;
-            endAt: string;
-            status: string;
-            slots: { assignmentType: string; status: string }[];
-          }[];
-
-          for (const def of defaultShifts) {
-            // Horário de PAREDE do hospital (America/Sao_Paulo, UTC-3 fixo) —
-            // mesma convenção de shifts-crud.buildShiftTimestamps.
-            const pad = (hour: number) => String(hour).padStart(2, "0");
-            const startAt = new Date(`${date}T${pad(def.startHour)}:00:00-03:00`);
-            let endAt = new Date(`${date}T${pad(def.endHour)}:00:00-03:00`);
-            if (endAt <= startAt) endAt = new Date(endAt.getTime() + 24 * 60 * 60 * 1000);
-
-            const [inserted] = await tx.insert(shiftInstances).values({
-              institutionId,
-              hospitalId,
-              sectorId,
-              label: def.label,
-              startAt,
-              endAt,
-              status: "VAGO",
-              createdBy: ctx.user.id,
-            });
-            const shiftInstanceId = Number(inserted.insertId);
-
-            await auditLog(
-              {
-                event: "SHIFT_CREATED",
-                shiftInstanceId,
-                institutionId,
-                professionalId: actor.professionalId,
-                reason: "Criação automática ao abrir o dia",
-                metadata: { autoCreated: true, date, sectorId, label: def.label },
-              },
-              { db: tx },
-            );
-            await recordAudit(
-              {
-                actorUserId: ctx.user.id,
-                actorRole,
-                actorName: ctx.user.name ?? undefined,
-                action: "SHIFT_CREATED",
-                entityType: "SHIFT_INSTANCE",
-                entityId: shiftInstanceId,
-                description: `Turno ${def.label} criado automaticamente em ${date}`,
-                institutionId,
-                hospitalId,
-                sectorId,
-                shiftInstanceId,
-                metadata: { autoCreated: true },
-              },
-              { db: tx, strict: true },
-            );
-
-            created.push({
-              shiftInstanceId,
-              label: def.label,
-              startAt: startAt.toISOString(),
-              endAt: endAt.toISOString(),
-              status: "VAGO",
-              slots: [
-                { assignmentType: "ON_DUTY", status: "EMPTY" },
-                { assignmentType: "BACKUP", status: "EMPTY" },
-                { assignmentType: "ON_CALL", status: "EMPTY" },
-              ],
-            });
-          }
-          return created;
-        });
-        shifts.push(...createdShifts);
-      }
 
       return {
         date,
+        scheduleContextId: context.id,
         monthStatus,
         shifts,
       };

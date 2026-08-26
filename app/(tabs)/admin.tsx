@@ -15,10 +15,34 @@ import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
 import { apiFetch } from "@/lib/_core/api";
-import { Lock, Plus, Pencil, Users, X, UserPlus, Check, KeyRound, Copy } from "lucide-react-native";
+import {
+  Lock,
+  Plus,
+  Pencil,
+  Users,
+  X,
+  UserPlus,
+  Check,
+  KeyRound,
+  Copy,
+} from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { useFocusEffect } from "expo-router";
 import { confirmAction } from "@/lib/ui/confirm";
+import {
+  ProfessionalQualificationPicker,
+  qualificationPayload,
+  type ProfessionalQualificationSelection,
+} from "@/components/ProfessionalQualificationPicker";
+import {
+  isMedicalSpecialtyCode,
+  isOperationalProfileCode,
+} from "@/lib/medical-specialties";
+import {
+  ScheduleContextAccessPicker,
+  compatibleScheduleContextIds,
+  type ScheduleContextAccessOption,
+} from "@/components/ScheduleContextAccessPicker";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,7 +61,15 @@ interface AdminUser {
   globalRole: UserRole;
   roleInInstitution: InstitutionRole;
   createdAt: string;
-  professional: { id: number; userRole: string; specialty?: string | null } | null;
+  professional: {
+    id: number;
+    userRole: string;
+    specialty?: string | null;
+    medicalSpecialtyId?: number | null;
+    medicalSpecialtyCode?: string | null;
+    operationalProfileCode?: string | null;
+    scheduleContextIds: number[];
+  } | null;
 }
 
 /** Conta criada pelo auto-cadastro público, aguardando aprovação. */
@@ -48,6 +80,9 @@ interface PendingSignup {
   createdAt: string;
   institutionId: number | null;
   institutionName: string | null;
+  medicalSpecialtyId: number | null;
+  medicalSpecialtyCode: string | null;
+  operationalProfileCode: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +112,33 @@ const INSTITUTION_ROLE_BADGE: Record<InstitutionRole, BadgeVariant> = {
   GESTOR_PLUS: "critical",
 };
 
-const INSTITUTION_ROLES: InstitutionRole[] = ["USER", "GESTOR_MEDICO", "GESTOR_PLUS"];
+const INSTITUTION_ROLES: InstitutionRole[] = [
+  "USER",
+  "GESTOR_MEDICO",
+  "GESTOR_PLUS",
+];
+
+function qualificationFromApi(input: {
+  medicalSpecialtyCode?: string | null;
+  operationalProfileCode?: string | null;
+}): ProfessionalQualificationSelection | null {
+  if (
+    input.medicalSpecialtyCode &&
+    isMedicalSpecialtyCode(input.medicalSpecialtyCode)
+  ) {
+    return { kind: "MEDICAL_SPECIALTY", code: input.medicalSpecialtyCode };
+  }
+  if (
+    input.operationalProfileCode &&
+    isOperationalProfileCode(input.operationalProfileCode)
+  ) {
+    return {
+      kind: "OPERATIONAL_PROFILE",
+      code: input.operationalProfileCode,
+    };
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // CreateUserModal
@@ -85,18 +146,25 @@ const INSTITUTION_ROLES: InstitutionRole[] = ["USER", "GESTOR_MEDICO", "GESTOR_P
 
 function CreateUserModal({
   visible,
+  scheduleContexts,
   onClose,
   onCreated,
 }: {
   visible: boolean;
+  scheduleContexts: ScheduleContextAccessOption[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [professionalRole, setProfessionalRole] = useState<ProfessionalRole>("doctor");
-  const [roleInInstitution, setRoleInInstitution] = useState<InstitutionRole>("USER");
+  const [professionalRole, setProfessionalRole] =
+    useState<ProfessionalRole>("doctor");
+  const [roleInInstitution, setRoleInInstitution] =
+    useState<InstitutionRole>("USER");
+  const [qualification, setQualification] =
+    useState<ProfessionalQualificationSelection | null>(null);
+  const [scheduleContextIds, setScheduleContextIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -106,6 +174,8 @@ function CreateUserModal({
     setPassword("");
     setProfessionalRole("doctor");
     setRoleInInstitution("USER");
+    setQualification(null);
+    setScheduleContextIds([]);
     setError("");
   };
 
@@ -116,6 +186,14 @@ function CreateUserModal({
     }
     if (password.length < 8 || password.length > 128) {
       setError("A senha deve ter entre 8 e 128 caracteres");
+      return;
+    }
+    if (professionalRole === "doctor" && !qualification) {
+      setError("Selecione a especialidade ou o perfil médico generalista");
+      return;
+    }
+    if (professionalRole === "doctor" && scheduleContextIds.length === 0) {
+      setError("Selecione ao menos uma escala e setor");
       return;
     }
     setLoading(true);
@@ -130,6 +208,10 @@ function CreateUserModal({
           password,
           professionalRole,
           roleInInstitution,
+          ...qualificationPayload(
+            professionalRole === "doctor" ? qualification : null,
+          ),
+          ...(professionalRole === "doctor" ? { scheduleContextIds } : {}),
         }),
       },
     );
@@ -290,10 +372,18 @@ function CreateUserModal({
             {PROFESSIONAL_ROLES.map((r) => (
               <TouchableOpacity
                 key={r}
-                onPress={() => setProfessionalRole(r)}
+                onPress={() => {
+                  setProfessionalRole(r);
+                  if (r !== "doctor") {
+                    setQualification(null);
+                    setScheduleContextIds([]);
+                  }
+                }}
                 style={{
                   backgroundColor:
-                    professionalRole === r ? theme.colors.primary : theme.colors.surface,
+                    professionalRole === r
+                      ? theme.colors.primary
+                      : theme.colors.surface,
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 8,
@@ -314,6 +404,34 @@ function CreateUserModal({
               </TouchableOpacity>
             ))}
           </View>
+
+          {professionalRole === "doctor" ? (
+            <View style={{ marginBottom: 20 }}>
+              <ProfessionalQualificationPicker
+                value={qualification}
+                onChange={(value) => {
+                  setQualification(value);
+                  setScheduleContextIds((current) =>
+                    compatibleScheduleContextIds({
+                      contexts: scheduleContexts,
+                      qualification: value,
+                      selectedIds: current,
+                    }),
+                  );
+                }}
+                required
+              />
+              <View style={{ marginTop: 14 }}>
+                <ScheduleContextAccessPicker
+                  contexts={scheduleContexts}
+                  qualification={qualification}
+                  selectedIds={scheduleContextIds}
+                  onChange={setScheduleContextIds}
+                  required
+                />
+              </View>
+            </View>
+          ) : null}
 
           <Text
             style={{
@@ -338,7 +456,9 @@ function CreateUserModal({
                 onPress={() => setRoleInInstitution(r)}
                 style={{
                   backgroundColor:
-                    roleInInstitution === r ? theme.colors.primary : theme.colors.surface,
+                    roleInInstitution === r
+                      ? theme.colors.primary
+                      : theme.colors.surface,
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 8,
@@ -387,7 +507,11 @@ function CreateUserModal({
               <ActivityIndicator color={theme.colors.onDark.text} />
             ) : (
               <Text
-                style={{ color: theme.colors.onDark.text, fontSize: 16, fontWeight: "700" }}
+                style={{
+                  color: theme.colors.onDark.text,
+                  fontSize: 16,
+                  fontWeight: "700",
+                }}
               >
                 Criar Usuário
               </Text>
@@ -406,18 +530,23 @@ function CreateUserModal({
 function EditUserModal({
   visible,
   user: editUser,
+  scheduleContexts,
   onClose,
   onUpdated,
 }: {
   visible: boolean;
   user: AdminUser | null;
+  scheduleContexts: ScheduleContextAccessOption[];
   onClose: () => void;
   onUpdated: () => void;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [roleInInstitution, setRoleInInstitution] = useState<InstitutionRole>("USER");
-  const [specialty, setSpecialty] = useState("");
+  const [roleInInstitution, setRoleInInstitution] =
+    useState<InstitutionRole>("USER");
+  const [qualification, setQualification] =
+    useState<ProfessionalQualificationSelection | null>(null);
+  const [scheduleContextIds, setScheduleContextIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   // Senha temporária (frente A3): mostrada UMA vez após "Redefinir senha".
@@ -432,7 +561,14 @@ function EditUserModal({
         setName(editUser.name ?? "");
         setEmail(editUser.email ?? "");
         setRoleInInstitution(editUser.roleInInstitution);
-        setSpecialty(editUser.professional?.specialty ?? "");
+        setQualification(
+          qualificationFromApi({
+            medicalSpecialtyCode: editUser.professional?.medicalSpecialtyCode,
+            operationalProfileCode:
+              editUser.professional?.operationalProfileCode,
+          }),
+        );
+        setScheduleContextIds(editUser.professional?.scheduleContextIds ?? []);
         setError("");
         setTempPassword(null);
         setCopied(false);
@@ -449,10 +585,10 @@ function EditUserModal({
     setResetting(true);
     setError("");
     try {
-      const res = await adminFetch<{ temporaryPassword?: string; error?: string }>(
-        `/api/admin/users/${editUser.id}/reset-password`,
-        { method: "POST" },
-      );
+      const res = await adminFetch<{
+        temporaryPassword?: string;
+        error?: string;
+      }>(`/api/admin/users/${editUser.id}/reset-password`, { method: "POST" });
       if (res.ok && res.data?.temporaryPassword) {
         setTempPassword(res.data.temporaryPassword);
         setCopied(false);
@@ -470,7 +606,11 @@ function EditUserModal({
     if (!tempPassword) return;
     // Sem expo-clipboard no projeto: no web usa a Clipboard API; no
     // nativo o texto é selecionável (pressionar e segurar → copiar).
-    if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
+    if (
+      Platform.OS === "web" &&
+      typeof navigator !== "undefined" &&
+      navigator.clipboard
+    ) {
       try {
         await navigator.clipboard.writeText(tempPassword);
         setCopied(true);
@@ -486,6 +626,15 @@ function EditUserModal({
       setError("Nome e e-mail são obrigatórios");
       return;
     }
+    const isDoctor = editUser.globalRole === "doctor";
+    if (isDoctor && !qualification) {
+      setError("Selecione a especialidade ou o perfil médico generalista");
+      return;
+    }
+    if (isDoctor && scheduleContextIds.length === 0) {
+      setError("Selecione ao menos uma escala e setor");
+      return;
+    }
     setLoading(true);
     setError("");
     const res = await adminFetch<{ user?: unknown; error?: string }>(
@@ -496,7 +645,8 @@ function EditUserModal({
           name: name.trim(),
           email: email.trim().toLowerCase(),
           roleInInstitution,
-          specialty: specialty.trim() || null,
+          ...qualificationPayload(isDoctor ? qualification : null),
+          ...(isDoctor ? { scheduleContextIds } : {}),
         }),
       },
     );
@@ -611,30 +761,31 @@ function EditUserModal({
             }}
           />
 
-          {/* Especialidade (serviço) */}
-          <Text
-            style={{
-              color: theme.colors.textSecondary,
-              fontSize: 14,
-              marginBottom: 6,
-            }}
-          >
-            Especialidade / serviço
-          </Text>
-          <TextInput
-            value={specialty}
-            onChangeText={setSpecialty}
-            placeholder="Ex.: Anestesiologia"
-            placeholderTextColor={theme.colors.textMuted}
-            style={{
-              backgroundColor: theme.colors.surface,
-              color: theme.colors.textPrimary,
-              borderRadius: theme.borderRadius.input,
-              padding: 12,
-              fontSize: 16,
-              marginBottom: 14,
-            }}
-          />
+          {editUser.globalRole === "doctor" ? (
+            <View style={{ marginBottom: 14, gap: 14 }}>
+              <ProfessionalQualificationPicker
+                value={qualification}
+                onChange={(value) => {
+                  setQualification(value);
+                  setScheduleContextIds((current) =>
+                    compatibleScheduleContextIds({
+                      contexts: scheduleContexts,
+                      qualification: value,
+                      selectedIds: current,
+                    }),
+                  );
+                }}
+                required
+              />
+              <ScheduleContextAccessPicker
+                contexts={scheduleContexts}
+                qualification={qualification}
+                selectedIds={scheduleContextIds}
+                onChange={setScheduleContextIds}
+                required
+              />
+            </View>
+          ) : null}
 
           {/* Papel institucional — não altera o papel global da conta. */}
           <Text
@@ -660,7 +811,9 @@ function EditUserModal({
                 onPress={() => setRoleInInstitution(r)}
                 style={{
                   backgroundColor:
-                    roleInInstitution === r ? theme.colors.primary : theme.colors.surface,
+                    roleInInstitution === r
+                      ? theme.colors.primary
+                      : theme.colors.surface,
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 8,
@@ -669,7 +822,9 @@ function EditUserModal({
                 <Text
                   style={{
                     color:
-                      roleInInstitution === r ? theme.colors.onDark.text : theme.colors.textSecondary,
+                      roleInInstitution === r
+                        ? theme.colors.onDark.text
+                        : theme.colors.textSecondary,
                     fontSize: 14,
                     fontWeight: "600",
                   }}
@@ -707,7 +862,11 @@ function EditUserModal({
               <ActivityIndicator color={theme.colors.onDark.text} />
             ) : (
               <Text
-                style={{ color: theme.colors.onDark.text, fontSize: 16, fontWeight: "700" }}
+                style={{
+                  color: theme.colors.onDark.text,
+                  fontSize: 16,
+                  fontWeight: "700",
+                }}
               >
                 Salvar Alterações
               </Text>
@@ -733,11 +892,22 @@ function EditUserModal({
                   gap: theme.space[2],
                 }}
               >
-                <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-                  Senha temporária — anote agora, ela não será exibida de novo. O usuário terá que
-                  trocá-la no próximo login.
+                <Text
+                  style={{
+                    ...theme.text.body,
+                    color: theme.colors.textSecondary,
+                  }}
+                >
+                  Senha temporária — anote agora, ela não será exibida de novo.
+                  O usuário terá que trocá-la no próximo login.
                 </Text>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: theme.space[2],
+                  }}
+                >
                   <Text
                     selectable
                     accessibilityLabel={`Senha temporária: ${tempPassword}`}
@@ -833,6 +1003,9 @@ function EditUserModal({
 export default function AdminScreen() {
   const { user } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [scheduleContexts, setScheduleContexts] = useState<
+    ScheduleContextAccessOption[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -844,11 +1017,23 @@ export default function AdminScreen() {
   // Cadastros pendentes (auto-cadastro público)
   const [pendingSignups, setPendingSignups] = useState<PendingSignup[]>([]);
   const [pendingBusyId, setPendingBusyId] = useState<number | null>(null);
+  const [pendingQualifications, setPendingQualifications] = useState<
+    Record<number, ProfessionalQualificationSelection | null>
+  >({});
+  const [pendingScheduleContextIds, setPendingScheduleContextIds] = useState<
+    Record<number, number[]>
+  >({});
+  const [pendingError, setPendingError] = useState<string | null>(null);
 
   const fetchUsers = useCallback(async () => {
     try {
       const res = await adminFetch<{ users: AdminUser[] }>("/api/admin/users");
-      console.log("[AdminScreen] fetchUsers response:", res.ok, "count:", res.data?.users?.length);
+      console.log(
+        "[AdminScreen] fetchUsers response:",
+        res.ok,
+        "count:",
+        res.data?.users?.length,
+      );
       if (res.ok && res.data?.users) {
         setUsers(res.data.users);
       }
@@ -860,11 +1045,37 @@ export default function AdminScreen() {
     }
   }, []);
 
+  const fetchScheduleContexts = useCallback(async () => {
+    try {
+      const res = await adminFetch<{
+        contexts: ScheduleContextAccessOption[];
+      }>("/api/admin/schedule-contexts");
+      if (res.ok && res.data?.contexts) {
+        setScheduleContexts(res.data.contexts);
+      }
+    } catch (err) {
+      console.error("[AdminScreen] fetchScheduleContexts error:", err);
+    }
+  }, []);
+
   const fetchPendingSignups = useCallback(async () => {
     try {
-      const res = await adminFetch<{ pending: PendingSignup[] }>("/api/admin/pending-signups");
+      const res = await adminFetch<{ pending: PendingSignup[] }>(
+        "/api/admin/pending-signups",
+      );
       if (res.ok && res.data?.pending) {
         setPendingSignups(res.data.pending);
+        setPendingQualifications((current) => {
+          const next: Record<
+            number,
+            ProfessionalQualificationSelection | null
+          > = {};
+          for (const signup of res.data!.pending) {
+            next[signup.id] =
+              current[signup.id] ?? qualificationFromApi(signup);
+          }
+          return next;
+        });
       }
     } catch (err) {
       console.error("[AdminScreen] fetchPendingSignups error:", err);
@@ -872,16 +1083,58 @@ export default function AdminScreen() {
   }, []);
 
   const handleSignupDecision = useCallback(
-    async (signupId: number, decision: "approve" | "reject") => {
+    async (
+      signupId: number,
+      decision: "approve" | "reject",
+      qualification?: ProfessionalQualificationSelection | null,
+      scheduleContextIds: number[] = [],
+    ) => {
+      if (decision === "approve" && !qualification) {
+        setPendingError(
+          "Selecione a qualificação médica antes de aprovar o cadastro.",
+        );
+        return;
+      }
+      if (decision === "approve" && scheduleContextIds.length === 0) {
+        setPendingError(
+          "Selecione ao menos uma escala e setor antes de aprovar.",
+        );
+        return;
+      }
+      setPendingError(null);
       setPendingBusyId(signupId);
       try {
         const res = await adminFetch<{ ok?: boolean; error?: string }>(
           `/api/admin/pending-signups/${signupId}/${decision}`,
-          { method: "POST" },
+          {
+            method: "POST",
+            ...(decision === "approve"
+              ? {
+                  body: JSON.stringify({
+                    ...qualificationPayload(qualification ?? null),
+                    scheduleContextIds,
+                  }),
+                }
+              : {}),
+          },
         );
         if (res.ok) {
           setPendingSignups((prev) => prev.filter((p) => p.id !== signupId));
+          setPendingQualifications((current) => {
+            const next = { ...current };
+            delete next[signupId];
+            return next;
+          });
+          setPendingScheduleContextIds((current) => {
+            const next = { ...current };
+            delete next[signupId];
+            return next;
+          });
           fetchUsers();
+        } else {
+          setPendingError(
+            res.data?.error ?? "Não foi possível concluir a decisão.",
+          );
         }
       } finally {
         setPendingBusyId(null);
@@ -893,13 +1146,15 @@ export default function AdminScreen() {
   useFocusEffect(
     useCallback(() => {
       fetchUsers();
+      fetchScheduleContexts();
       fetchPendingSignups();
-    }, [fetchUsers, fetchPendingSignups]),
+    }, [fetchUsers, fetchScheduleContexts, fetchPendingSignups]),
   );
 
   const handleRefresh = () => {
     setRefreshing(true);
     fetchUsers();
+    fetchScheduleContexts();
     fetchPendingSignups();
   };
 
@@ -972,12 +1227,14 @@ export default function AdminScreen() {
             alignItems: "center",
           }}
         >
-          <View
-            style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
-          >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <Users size={28} color={theme.colors.onDark.text} />
             <Text
-              style={{ color: theme.colors.onDark.text, fontSize: 26, fontWeight: "800" }}
+              style={{
+                color: theme.colors.onDark.text,
+                fontSize: 26,
+                fontWeight: "800",
+              }}
             >
               Administração
             </Text>
@@ -996,7 +1253,11 @@ export default function AdminScreen() {
           >
             <Plus size={18} color={theme.colors.onDark.text} />
             <Text
-              style={{ color: theme.colors.onDark.text, fontSize: 14, fontWeight: "700" }}
+              style={{
+                color: theme.colors.onDark.text,
+                fontSize: 14,
+                fontWeight: "700",
+              }}
             >
               Novo
             </Text>
@@ -1067,7 +1328,10 @@ export default function AdminScreen() {
                   marginTop: 4,
                 }}
               >
-                {users.filter((u) => u.roleInInstitution === "GESTOR_PLUS").length}
+                {
+                  users.filter((u) => u.roleInInstitution === "GESTOR_PLUS")
+                    .length
+                }
               </Text>
             </TintedGlassCard>
           </View>
@@ -1076,7 +1340,9 @@ export default function AdminScreen() {
         {/* Cadastros pendentes (auto-cadastro público) */}
         {pendingSignups.length > 0 && (
           <View style={{ gap: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+            >
               <UserPlus size={20} color={theme.colors.warning} />
               <Text
                 style={{
@@ -1089,6 +1355,11 @@ export default function AdminScreen() {
               </Text>
               <Badge variant="warning">{String(pendingSignups.length)}</Badge>
             </View>
+            {pendingError ? (
+              <Text style={{ color: theme.colors.danger, fontSize: 13 }}>
+                {pendingError}
+              </Text>
+            ) : null}
             {pendingSignups.map((p) => (
               <TintedGlassCard key={p.id}>
                 <View style={{ gap: 12 }}>
@@ -1102,19 +1373,72 @@ export default function AdminScreen() {
                     >
                       {p.name ?? "Sem nome"}
                     </Text>
-                    <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 14 }}>
+                    <Text
+                      style={{
+                        color: theme.colors.onDark.textMuted,
+                        fontSize: 14,
+                      }}
+                    >
                       {p.email ?? "—"}
                     </Text>
                     {p.institutionName && (
-                      <Text style={{ color: theme.colors.onDark.textMuted, fontSize: 13 }}>
+                      <Text
+                        style={{
+                          color: theme.colors.onDark.textMuted,
+                          fontSize: 13,
+                        }}
+                      >
                         Instituição: {p.institutionName}
                       </Text>
                     )}
                   </View>
+                  <ProfessionalQualificationPicker
+                    value={pendingQualifications[p.id] ?? null}
+                    onChange={(value) => {
+                      setPendingQualifications((current) => ({
+                        ...current,
+                        [p.id]: value,
+                      }));
+                      setPendingScheduleContextIds((current) => ({
+                        ...current,
+                        [p.id]: compatibleScheduleContextIds({
+                          contexts: scheduleContexts,
+                          qualification: value,
+                          selectedIds: current[p.id] ?? [],
+                        }),
+                      }));
+                    }}
+                    required
+                    tone="dark"
+                  />
+                  <ScheduleContextAccessPicker
+                    contexts={scheduleContexts}
+                    qualification={pendingQualifications[p.id] ?? null}
+                    selectedIds={pendingScheduleContextIds[p.id] ?? []}
+                    onChange={(ids) =>
+                      setPendingScheduleContextIds((current) => ({
+                        ...current,
+                        [p.id]: ids,
+                      }))
+                    }
+                    required
+                    tone="dark"
+                  />
                   <View style={{ flexDirection: "row", gap: 10 }}>
                     <TouchableOpacity
-                      onPress={() => handleSignupDecision(p.id, "approve")}
-                      disabled={pendingBusyId === p.id}
+                      onPress={() =>
+                        handleSignupDecision(
+                          p.id,
+                          "approve",
+                          pendingQualifications[p.id],
+                          pendingScheduleContextIds[p.id] ?? [],
+                        )
+                      }
+                      disabled={
+                        pendingBusyId === p.id ||
+                        !pendingQualifications[p.id] ||
+                        (pendingScheduleContextIds[p.id]?.length ?? 0) === 0
+                      }
                       activeOpacity={0.8}
                       style={{
                         flex: 1,
@@ -1125,11 +1449,19 @@ export default function AdminScreen() {
                         backgroundColor: theme.colors.success,
                         paddingVertical: 10,
                         borderRadius: theme.borderRadius.button,
-                        opacity: pendingBusyId === p.id ? 0.6 : 1,
+                        opacity:
+                          pendingBusyId === p.id ||
+                          !pendingQualifications[p.id] ||
+                          (pendingScheduleContextIds[p.id]?.length ?? 0) === 0
+                            ? 0.6
+                            : 1,
                       }}
                     >
                       {pendingBusyId === p.id ? (
-                        <ActivityIndicator size="small" color={theme.colors.onDark.text} />
+                        <ActivityIndicator
+                          size="small"
+                          color={theme.colors.onDark.text}
+                        />
                       ) : (
                         <>
                           <Check size={16} color={theme.colors.onDark.text} />
@@ -1240,7 +1572,9 @@ export default function AdminScreen() {
                       gap: 10,
                     }}
                   >
-                    <Badge variant={INSTITUTION_ROLE_BADGE[u.roleInInstitution]}>
+                    <Badge
+                      variant={INSTITUTION_ROLE_BADGE[u.roleInInstitution]}
+                    >
                       {INSTITUTION_ROLE_LABELS[u.roleInInstitution]}
                     </Badge>
                     <TouchableOpacity
@@ -1268,12 +1602,14 @@ export default function AdminScreen() {
       {/* Modals */}
       <CreateUserModal
         visible={showCreate}
+        scheduleContexts={scheduleContexts}
         onClose={() => setShowCreate(false)}
         onCreated={fetchUsers}
       />
       <EditUserModal
         visible={!!editTarget}
         user={editTarget}
+        scheduleContexts={scheduleContexts}
         onClose={() => setEditTarget(null)}
         onUpdated={fetchUsers}
       />

@@ -19,11 +19,22 @@
 //     cobre (antes ficava entre a grade e o detalhe, sob a barra de abas).
 
 import { useMemo, useState, useEffect, type ReactElement } from "react";
-import { Pressable, ScrollView, Text, View, type RefreshControlProps } from "react-native";
+import {
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+  type RefreshControlProps,
+} from "react-native";
 import { ArrowRightLeft } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { shiftTickColor } from "@/lib/shift-visual";
-import { CalendarFrame, CalendarLegend, DayNumeral, numeral } from "./CalendarSheet";
+import {
+  CalendarFrame,
+  CalendarLegend,
+  DayNumeral,
+  numeral,
+} from "./CalendarSheet";
 import { ShiftRowCard } from "./ShiftRowCard";
 
 type AgendaShift = {
@@ -43,6 +54,8 @@ type AgendaGroupRow = {
   hospitalName: string;
   sectorId: number;
   sectorName: string;
+  scheduleContextId?: number | null;
+  qualificationName?: string;
   shifts: AgendaShift[];
 };
 
@@ -65,13 +78,37 @@ export type DayOffer = {
   timeRange: string;
 };
 
-const WEEKDAY_HEADERS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"] as const;
+const WEEKDAY_HEADERS = [
+  "SEG",
+  "TER",
+  "QUA",
+  "QUI",
+  "SEX",
+  "SÁB",
+  "DOM",
+] as const;
 const MONTHS_PT = [
-  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
-  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+  "janeiro",
+  "fevereiro",
+  "março",
+  "abril",
+  "maio",
+  "junho",
+  "julho",
+  "agosto",
+  "setembro",
+  "outubro",
+  "novembro",
+  "dezembro",
 ] as const;
 const WEEKDAYS_PT = [
-  "domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado",
+  "domingo",
+  "segunda",
+  "terça",
+  "quarta",
+  "quinta",
+  "sexta",
+  "sábado",
 ] as const;
 
 const MAX_TICKS = 3;
@@ -118,7 +155,10 @@ export function MonthAgenda({
   }, [monthKey, todayKey]);
 
   const selectedDay = dayByKey.get(selected);
-  const selectedOffers = useMemo(() => offers.filter((o) => o.date === selected), [offers, selected]);
+  const selectedOffers = useMemo(
+    () => offers.filter((o) => o.date === selected),
+    [offers, selected],
+  );
 
   const legend = [
     { label: "Ocupado", color: theme.colors.statusOcupado },
@@ -134,7 +174,9 @@ export function MonthAgenda({
         <CalendarLegend items={legend} />
 
         {/* Iniciais dos dias, sobre navy */}
-        <View style={{ flexDirection: "row", backgroundColor: theme.colors.brand }}>
+        <View
+          style={{ flexDirection: "row", backgroundColor: theme.colors.brand }}
+        >
           {WEEKDAY_HEADERS.map((h, i) => (
             <View
               key={h}
@@ -146,7 +188,15 @@ export function MonthAgenda({
                 borderLeftColor: theme.colors.onDark.divider,
               }}
             >
-              <Text style={{ ...theme.text.eyebrow, fontSize: 10, letterSpacing: 1, fontWeight: theme.weight.bold, color: theme.colors.onDark.textMuted }}>
+              <Text
+                style={{
+                  ...theme.text.eyebrow,
+                  fontSize: 10,
+                  letterSpacing: 1,
+                  fontWeight: theme.weight.bold,
+                  color: theme.colors.onDark.textMuted,
+                }}
+              >
                 {h}
               </Text>
             </View>
@@ -163,8 +213,11 @@ export function MonthAgenda({
               const isWeekend = day.dow === 0 || day.dow === 6;
               const shifts = day.groups.flatMap((g) => g.shifts);
               const isMineDay = shifts.some((s) => s.isMine);
-              const ticks = shifts.map((s) => shiftTickColor(s.status, s.isMine));
-              if (offers.some((o) => o.date === day.date)) ticks.push(theme.colors.info);
+              const ticks = shifts.map((s) =>
+                shiftTickColor(s.status, s.isMine),
+              );
+              if (offers.some((o) => o.date === day.date))
+                ticks.push(theme.colors.info);
               const extra = ticks.length - MAX_TICKS;
               const dayNum = parseInt(day.date.slice(8, 10), 10);
 
@@ -198,14 +251,42 @@ export function MonthAgenda({
                   <DayNumeral
                     day={dayNum}
                     size={24}
-                    emphasis={!inMonth ? "muted" : isToday ? "today" : isMineDay ? "mine" : "plain"}
+                    emphasis={
+                      !inMonth
+                        ? "muted"
+                        : isToday
+                          ? "today"
+                          : isMineDay
+                            ? "mine"
+                            : "plain"
+                    }
                   />
                   <View style={{ alignItems: "center", gap: 2 }}>
                     {ticks.slice(0, MAX_TICKS).map((color, t) => (
-                      <View key={t} style={{ width: 16, height: 3, borderRadius: 2, backgroundColor: inMonth ? color : theme.colors.border }} />
+                      <View
+                        key={t}
+                        style={{
+                          width: 16,
+                          height: 3,
+                          borderRadius: 2,
+                          backgroundColor: inMonth
+                            ? color
+                            : theme.colors.border,
+                        }}
+                      />
                     ))}
                     {extra > 0 ? (
-                      <Text style={{ ...numeral, fontSize: 11, lineHeight: 12, fontWeight: theme.weight.bold, color: theme.colors.textSecondary }}>+{extra}</Text>
+                      <Text
+                        style={{
+                          ...numeral,
+                          fontSize: 11,
+                          lineHeight: 12,
+                          fontWeight: theme.weight.bold,
+                          color: theme.colors.textSecondary,
+                        }}
+                      >
+                        +{extra}
+                      </Text>
                     ) : null}
                   </View>
                 </Pressable>
@@ -217,10 +298,33 @@ export function MonthAgenda({
 
       {/* Detalhe do dia selecionado */}
       <View style={{ marginTop: theme.space[3] + 1, gap: theme.space[2] + 1 }}>
-        <View style={{ flexDirection: "row", alignItems: "baseline", gap: theme.space[2], paddingHorizontal: 2 }}>
-          <Text style={{ ...theme.text.titleSm, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>{formatSelectedDay(selected)}</Text>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "baseline",
+            gap: theme.space[2],
+            paddingHorizontal: 2,
+          }}
+        >
+          <Text
+            style={{
+              ...theme.text.titleSm,
+              fontWeight: theme.weight.bold,
+              color: theme.colors.textPrimary,
+            }}
+          >
+            {formatSelectedDay(selected)}
+          </Text>
           {selected === todayKey ? (
-            <Text style={{ ...theme.text.eyebrow, fontSize: 10, fontWeight: theme.weight.bold, textTransform: "uppercase", color: theme.colors.brand }}>
+            <Text
+              style={{
+                ...theme.text.eyebrow,
+                fontSize: 10,
+                fontWeight: theme.weight.bold,
+                textTransform: "uppercase",
+                color: theme.colors.brand,
+              }}
+            >
               Hoje
             </Text>
           ) : null}
@@ -249,11 +353,24 @@ export function MonthAgenda({
           >
             <ArrowRightLeft size={17} color={theme.colors.brand} />
             <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
-              <Text style={{ ...theme.text.body, fontSize: 13.5, fontWeight: theme.weight.bold, color: theme.colors.brand }}>
+              <Text
+                style={{
+                  ...theme.text.body,
+                  fontSize: 13.5,
+                  fontWeight: theme.weight.bold,
+                  color: theme.colors.brand,
+                }}
+              >
                 Oferta de troca — {offer.shiftLabel}
               </Text>
-              <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
-                {offer.fromProfessionalName} · {offer.timeRange} · toque para responder
+              <Text
+                style={{
+                  ...theme.text.caption,
+                  color: theme.colors.textSecondary,
+                }}
+              >
+                {offer.fromProfessionalName} · {offer.timeRange} · toque para
+                responder
               </Text>
             </View>
           </Pressable>
@@ -270,11 +387,16 @@ export function MonthAgenda({
               borderRadius: theme.radius.md + 2,
             }}
           >
-            <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>Nenhum plantão neste dia.</Text>
+            <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
+              Nenhum plantão neste dia.
+            </Text>
           </View>
         ) : (
           selectedDay.groups.map((group) => (
-            <View key={`${group.hospitalId}-${group.sectorId}`} style={{ gap: theme.space[1] + 1 }}>
+            <View
+              key={`${group.hospitalId}-${group.sectorId}-${group.scheduleContextId ?? "legacy"}`}
+              style={{ gap: theme.space[1] + 1 }}
+            >
               <Text
                 numberOfLines={1}
                 style={{
@@ -287,9 +409,15 @@ export function MonthAgenda({
                 }}
               >
                 {group.hospitalName} – {group.sectorName}
+                {group.qualificationName ? ` – ${group.qualificationName}` : ""}
               </Text>
               {group.shifts.map((shift) => (
-                <ShiftRowCard key={shift.id} shift={shift} context="actionable" onPress={() => onShiftPress(shift.id)} />
+                <ShiftRowCard
+                  key={shift.id}
+                  shift={shift}
+                  context="actionable"
+                  onPress={() => onShiftPress(shift.id)}
+                />
               ))}
             </View>
           ))

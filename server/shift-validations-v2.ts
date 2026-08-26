@@ -13,6 +13,10 @@ import {
 import { getDb } from "./db";
 import { assertSpecialtyCompatible } from "./specialty";
 import { assertInstitutionHierarchy } from "./_core/tenant";
+import {
+  assertActiveScheduleContextTopology,
+  assertProfessionalEligibleForScheduleContext,
+} from "./schedule-contexts";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 export type AssignmentWriteTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -33,6 +37,7 @@ export type AssignmentWriteCandidate = {
   institutionId: number;
   hospitalId: number;
   sectorId: number;
+  scheduleContextId: number | null;
   startAt: Date;
   endAt: Date;
   requiredSpecialty?: string | null;
@@ -84,7 +89,9 @@ export async function lockAssignmentProfessionalsForUpdate(
   > = new Map(),
 ): Promise<Map<number, LockedAssignmentProfessional>> {
   const locked = new Map<number, LockedAssignmentProfessional>();
-  const ordered = [...new Set(professionalIds)].sort((left, right) => left - right);
+  const ordered = [...new Set(professionalIds)].sort(
+    (left, right) => left - right,
+  );
   const snapshots = new Map<number, LockedAssignmentProfessional>();
   for (const professionalId of ordered) {
     const [snapshot] = await tx
@@ -97,7 +104,9 @@ export async function lockAssignmentProfessionalsForUpdate(
       .where(eq(professionals.id, professionalId))
       .limit(1);
     if (!snapshot) {
-      throw assignmentForbidden("Profissional inexistente, inativo ou sem usuário aprovado.");
+      throw assignmentForbidden(
+        "Profissional inexistente, inativo ou sem usuário aprovado.",
+      );
     }
     snapshots.set(professionalId, snapshot);
   }
@@ -105,18 +114,25 @@ export async function lockAssignmentProfessionalsForUpdate(
   // Identidade segue uma única ordem em toda a aplicação: users por id,
   // depois professionals por id. Joins FOR UPDATE podem ser reordenados pelo
   // optimizer e por isso não servem como protocolo de deadlock.
-  const orderedUserIds = [...new Set(
-    [...snapshots.values()].map((snapshot) => snapshot.userId),
-  )].sort((left, right) => left - right);
+  const orderedUserIds = [
+    ...new Set([...snapshots.values()].map((snapshot) => snapshot.userId)),
+  ].sort((left, right) => left - right);
   const expectedSessionsByUserId = new Map<number, number>();
   for (const [professionalId, expected] of expectedSessionsByProfessionalId) {
     const snapshot = snapshots.get(professionalId);
     if (!snapshot || snapshot.userId !== expected.expectedUserId) {
-      throw assignmentForbidden("Identidade profissional não corresponde ao usuário autenticado.");
+      throw assignmentForbidden(
+        "Identidade profissional não corresponde ao usuário autenticado.",
+      );
     }
     const previous = expectedSessionsByUserId.get(expected.expectedUserId);
-    if (previous !== undefined && previous !== expected.expectedSessionVersion) {
-      throw assignmentConflict("Expectativas de sessão divergentes para o mesmo usuário.");
+    if (
+      previous !== undefined &&
+      previous !== expected.expectedSessionVersion
+    ) {
+      throw assignmentConflict(
+        "Expectativas de sessão divergentes para o mesmo usuário.",
+      );
     }
     expectedSessionsByUserId.set(
       expected.expectedUserId,
@@ -137,7 +153,9 @@ export async function lockAssignmentProfessionalsForUpdate(
       .limit(1)
       .for("update");
     if (!user) {
-      throw assignmentForbidden("Profissional inexistente, inativo ou sem usuário aprovado.");
+      throw assignmentForbidden(
+        "Profissional inexistente, inativo ou sem usuário aprovado.",
+      );
     }
     const expectedSessionVersion = expectedSessionsByUserId.get(userId);
     if (
@@ -167,7 +185,9 @@ export async function lockAssignmentProfessionalsForUpdate(
       .limit(1)
       .for("update");
     if (!professional) {
-      throw assignmentForbidden("Identidade profissional mudou durante a operação.");
+      throw assignmentForbidden(
+        "Identidade profissional mudou durante a operação.",
+      );
     }
     locked.set(professionalId, professional);
   }
@@ -189,7 +209,13 @@ export async function assertAssignmentWritesAllowedForUpdate(
     number,
     Readonly<{ expectedUserId: number; expectedSessionVersion: number }>
   >();
-  for (const candidate of candidates) {
+  const orderedCandidates = [...candidates].sort(
+    (left, right) =>
+      (left.scheduleContextId ?? -1) - (right.scheduleContextId ?? -1) ||
+      left.professionalId - right.professionalId ||
+      left.startAt.getTime() - right.startAt.getTime(),
+  );
+  for (const candidate of orderedCandidates) {
     if (
       !Number.isFinite(candidate.startAt.getTime()) ||
       !Number.isFinite(candidate.endAt.getTime()) ||
@@ -212,7 +238,9 @@ export async function assertAssignmentWritesAllowedForUpdate(
       candidate.expectedSessionVersion !== undefined &&
       candidate.expectedUserId !== undefined
     ) {
-      const previous = expectedSessionsByProfessionalId.get(candidate.professionalId);
+      const previous = expectedSessionsByProfessionalId.get(
+        candidate.professionalId,
+      );
       if (
         previous &&
         (previous.expectedUserId !== candidate.expectedUserId ||
@@ -229,23 +257,27 @@ export async function assertAssignmentWritesAllowedForUpdate(
     }
   }
 
-  const lockedProfessionals = await lockAssignmentProfessionalsForUpdate(tx, [
-    ...candidates.map((candidate) => candidate.professionalId),
-    ...(options.additionalProfessionalIds ?? []),
-  ], expectedSessionsByProfessionalId);
+  const lockedProfessionals = await lockAssignmentProfessionalsForUpdate(
+    tx,
+    [
+      ...candidates.map((candidate) => candidate.professionalId),
+      ...(options.additionalProfessionalIds ?? []),
+    ],
+    expectedSessionsByProfessionalId,
+  );
 
   const topologyKeys = new Map<
     string,
     Pick<AssignmentWriteCandidate, "institutionId" | "hospitalId" | "sectorId">
   >();
-  for (const candidate of candidates) {
+  for (const candidate of orderedCandidates) {
     topologyKeys.set(
       `${candidate.institutionId}|${candidate.hospitalId}|${candidate.sectorId}`,
       candidate,
     );
   }
-  for (const [, topology] of [...topologyKeys.entries()].sort(([left], [right]) =>
-    left.localeCompare(right),
+  for (const [, topology] of [...topologyKeys.entries()].sort(
+    ([left], [right]) => left.localeCompare(right),
   )) {
     await assertInstitutionHierarchy(topology, { db: tx, lockForShare: true });
   }
@@ -276,7 +308,9 @@ export async function assertAssignmentWritesAllowedForUpdate(
       .orderBy(professionalInstitutions.id)
       .limit(1);
     if (!snapshot) {
-      throw assignmentForbidden("Profissional sem vínculo canônico ativo nesta instituição.");
+      throw assignmentForbidden(
+        "Profissional sem vínculo canônico ativo nesta instituição.",
+      );
     }
     membershipCache.add(key);
     membershipLocks.push({
@@ -287,7 +321,9 @@ export async function assertAssignmentWritesAllowedForUpdate(
       institutionId: candidate.institutionId,
     });
   }
-  for (const lock of membershipLocks.sort((left, right) => left.id - right.id)) {
+  for (const lock of membershipLocks.sort(
+    (left, right) => left.id - right.id,
+  )) {
     const [membership] = await tx
       .select({ id: professionalInstitutions.id })
       .from(professionalInstitutions)
@@ -303,7 +339,9 @@ export async function assertAssignmentWritesAllowedForUpdate(
       .limit(1)
       .for("update");
     if (!membership) {
-      throw assignmentForbidden("Profissional sem vínculo canônico ativo nesta instituição.");
+      throw assignmentForbidden(
+        "Profissional sem vínculo canônico ativo nesta instituição.",
+      );
     }
   }
 
@@ -337,7 +375,9 @@ export async function assertAssignmentWritesAllowedForUpdate(
       .orderBy(professionalAccess.id)
       .limit(1);
     if (!snapshot) {
-      throw assignmentForbidden("Profissional sem acesso ativo ao hospital/setor do plantão.");
+      throw assignmentForbidden(
+        "Profissional sem acesso ativo ao hospital/setor do plantão.",
+      );
     }
     accessCache.add(key);
     accessLocks.push({
@@ -368,7 +408,9 @@ export async function assertAssignmentWritesAllowedForUpdate(
       .limit(1)
       .for("update");
     if (!access) {
-      throw assignmentForbidden("Profissional sem acesso ativo ao hospital/setor do plantão.");
+      throw assignmentForbidden(
+        "Profissional sem acesso ativo ao hospital/setor do plantão.",
+      );
     }
   }
 
@@ -392,16 +434,42 @@ export async function assertAssignmentWritesAllowedForUpdate(
     }[]
   >();
 
-  for (const candidate of candidates) {
+  for (const candidate of orderedCandidates) {
     const professional = lockedProfessionals.get(candidate.professionalId)!;
     if (
       candidate.expectedUserId !== undefined &&
       professional.userId !== candidate.expectedUserId
     ) {
-      throw assignmentForbidden("Identidade profissional não corresponde ao usuário autenticado.");
+      throw assignmentForbidden(
+        "Identidade profissional não corresponde ao usuário autenticado.",
+      );
     }
 
-    assertSpecialtyCompatible(candidate.requiredSpecialty, professional.specialty);
+    // Em turnos classificados, a autorização é exclusivamente estruturada e
+    // revalidada abaixo contra schedule_context_id. O texto legado pode
+    // conter aliases corretos (ex.: Clínica Geral/Médico generalista,
+    // Ortopedia/Ortopedia e Traumatologia) e nunca deve negar nem conceder.
+    if (candidate.scheduleContextId === null) {
+      assertSpecialtyCompatible(
+        candidate.requiredSpecialty,
+        professional.specialty,
+      );
+    } else {
+      await assertProfessionalEligibleForScheduleContext({
+        institutionId: candidate.institutionId,
+        professionalId: candidate.professionalId,
+        scheduleContextId: candidate.scheduleContextId,
+        db: tx,
+        lockForShare: true,
+      });
+      await assertActiveScheduleContextTopology({
+        institutionId: candidate.institutionId,
+        hospitalId: candidate.hospitalId,
+        sectorId: candidate.sectorId,
+        scheduleContextId: candidate.scheduleContextId,
+        db: tx,
+      });
+    }
 
     let activeSchedule = scheduleCache.get(professional.id);
     if (!activeSchedule) {
@@ -423,7 +491,10 @@ export async function assertAssignmentWritesAllowedForUpdate(
           sectorHospitalId: sectors.hospitalId,
         })
         .from(shiftAssignmentsV2)
-        .innerJoin(shiftInstances, eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId))
+        .innerJoin(
+          shiftInstances,
+          eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId),
+        )
         .innerJoin(hospitals, eq(hospitals.id, shiftInstances.hospitalId))
         .innerJoin(sectors, eq(sectors.id, shiftInstances.sectorId))
         .where(
@@ -434,7 +505,8 @@ export async function assertAssignmentWritesAllowedForUpdate(
         );
       for (const assignment of activeSchedule) {
         if (
-          assignment.assignmentInstitutionId !== assignment.shiftInstitutionId ||
+          assignment.assignmentInstitutionId !==
+            assignment.shiftInstitutionId ||
           assignment.assignmentHospitalId !== assignment.shiftHospitalId ||
           assignment.assignmentSectorId !== assignment.shiftSectorId ||
           assignment.hospitalInstitutionId !== assignment.shiftInstitutionId ||
@@ -510,19 +582,25 @@ export async function assertShiftAssignmentCapacityForUpdate(
         assignment.sectorId !== input.sectorId,
     )
   ) {
-    throw assignmentConflict("O turno contém alocação ativa com topologia inconsistente.");
+    throw assignmentConflict(
+      "O turno contém alocação ativa com topologia inconsistente.",
+    );
   }
   if (
     input.expectedCurrentActiveCount !== undefined &&
     active.length !== input.expectedCurrentActiveCount
   ) {
-    throw assignmentConflict("O conjunto de alocações do turno mudou durante a operação.");
+    throw assignmentConflict(
+      "O conjunto de alocações do turno mudou durante a operação.",
+    );
   }
 
   const projected = active.length + (input.activeDelta ?? 0);
   const max = input.maxActiveAssignments ?? 20;
   if (projected < 0 || projected > max) {
-    throw assignmentConflict(`Limite de ${max} profissionais por turno excedido (${projected}/${max}).`);
+    throw assignmentConflict(
+      `Limite de ${max} profissionais por turno excedido (${projected}/${max}).`,
+    );
   }
   return active.length;
 }
@@ -581,9 +659,11 @@ async function runConflictQuery(
       AND sa.is_active = 1
       AND si.start_at  < ${endIso}
       AND si.end_at    > ${startIso}
-      ${excludeShiftInstanceId != null
-        ? sql`AND si.id != ${excludeShiftInstanceId}`
-        : sql``}
+      ${
+        excludeShiftInstanceId != null
+          ? sql`AND si.id != ${excludeShiftInstanceId}`
+          : sql``
+      }
   `);
 
   const rows = (results as any)[0] as any[];
@@ -661,7 +741,12 @@ export async function assertNoTimeConflict(
   endAt: Date,
   excludeShiftInstanceId?: number,
 ): Promise<void> {
-  const result = await checkTimeConflict(userId, startAt, endAt, excludeShiftInstanceId);
+  const result = await checkTimeConflict(
+    userId,
+    startAt,
+    endAt,
+    excludeShiftInstanceId,
+  );
   if (result.hasConflict) {
     throw new Error(buildConflictMessage(result.conflicts[0]));
   }

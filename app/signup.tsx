@@ -18,6 +18,11 @@ import {
 import { useRouter } from "expo-router";
 import { CheckCircle2 } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import {
+  ProfessionalQualificationPicker,
+  qualificationPayload,
+  type ProfessionalQualificationSelection,
+} from "@/components/ProfessionalQualificationPicker";
 import { theme } from "@/lib/theme";
 import { authApi } from "@/lib/_core/api";
 
@@ -53,9 +58,12 @@ export default function SignupScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [specialty, setSpecialty] = useState("");
+  const [qualification, setQualification] =
+    useState<ProfessionalQualificationSelection | null>(null);
   const [institutionId, setInstitutionId] = useState<number | null>(null);
-  const [institutions, setInstitutions] = useState<{ id: number; name: string }[]>([]);
+  const [institutions, setInstitutions] = useState<
+    { id: number; name: string }[]
+  >([]);
   const [loadingInstitutions, setLoadingInstitutions] = useState(true);
   const [focusedField, setFocusedField] = useState<Field | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -98,6 +106,12 @@ export default function SignupScreen() {
       setErrorMsg("Selecione a instituição onde você atua.");
       return;
     }
+    if (!qualification) {
+      setErrorMsg(
+        "Selecione sua especialidade ou o perfil médico generalista.",
+      );
+      return;
+    }
     setErrorMsg(null);
     setSubmitting(true);
     try {
@@ -106,7 +120,7 @@ export default function SignupScreen() {
         email: email.trim(),
         password,
         institutionId,
-        specialty: specialty.trim() || undefined,
+        ...qualificationPayload(qualification),
       });
       if (result.ok) {
         setDone(true);
@@ -121,7 +135,9 @@ export default function SignupScreen() {
   if (done) {
     return (
       <ScreenGradient>
-        <View style={{ flex: 1, justifyContent: "center", paddingHorizontal: 16 }}>
+        <View
+          style={{ flex: 1, justifyContent: "center", paddingHorizontal: 16 }}
+        >
           <View
             style={{
               backgroundColor: theme.palette.neutral[900],
@@ -210,7 +226,13 @@ export default function SignupScreen() {
             >
               Criar conta
             </Text>
-            <Text style={{ fontSize: 14, color: theme.colors.textMuted, marginTop: 6 }}>
+            <Text
+              style={{
+                fontSize: 14,
+                color: theme.colors.textMuted,
+                marginTop: 6,
+              }}
+            >
               Seu acesso será liberado após aprovação do gestor
             </Text>
           </View>
@@ -236,7 +258,9 @@ export default function SignupScreen() {
                 onBlur={() => setFocusedField(null)}
                 placeholderTextColor={theme.colors.onDark.textMuted}
                 placeholder="Dr(a). Nome Sobrenome"
-                style={focusedField === "name" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
+                style={
+                  focusedField === "name" ? INPUT_FOCUSED_STYLE : INPUT_STYLE
+                }
               />
             </View>
 
@@ -253,7 +277,9 @@ export default function SignupScreen() {
                 onBlur={() => setFocusedField(null)}
                 placeholderTextColor={theme.colors.onDark.textMuted}
                 placeholder="seu@email.com"
-                style={focusedField === "email" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
+                style={
+                  focusedField === "email" ? INPUT_FOCUSED_STYLE : INPUT_STYLE
+                }
               />
             </View>
 
@@ -269,7 +295,11 @@ export default function SignupScreen() {
                 onBlur={() => setFocusedField(null)}
                 placeholderTextColor={theme.colors.onDark.textMuted}
                 placeholder="Mínimo 8 caracteres"
-                style={focusedField === "password" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
+                style={
+                  focusedField === "password"
+                    ? INPUT_FOCUSED_STYLE
+                    : INPUT_STYLE
+                }
               />
             </View>
 
@@ -286,27 +316,28 @@ export default function SignupScreen() {
                 onSubmitEditing={handleSignup}
                 placeholderTextColor={theme.colors.onDark.textMuted}
                 placeholder="••••••••"
-                style={focusedField === "confirm" ? INPUT_FOCUSED_STYLE : INPUT_STYLE}
+                style={
+                  focusedField === "confirm" ? INPUT_FOCUSED_STYLE : INPUT_STYLE
+                }
               />
             </View>
 
             <View>
-              <Text style={LABEL_STYLE}>Especialidade (opcional)</Text>
-              <TextInput
-                value={specialty}
-                onChangeText={setSpecialty}
-                returnKeyType="next"
-                onFocus={() => setFocusedField(null)}
-                placeholderTextColor={theme.colors.onDark.textMuted}
-                placeholder="Ex.: Anestesiologia"
-                style={INPUT_STYLE}
+              <ProfessionalQualificationPicker
+                value={qualification}
+                onChange={setQualification}
+                required
+                tone="dark"
               />
             </View>
 
             <View>
               <Text style={LABEL_STYLE}>Instituição</Text>
               {loadingInstitutions ? (
-                <ActivityIndicator color={theme.colors.primary} style={{ paddingVertical: 12 }} />
+                <ActivityIndicator
+                  color={theme.colors.primary}
+                  style={{ paddingVertical: 12 }}
+                />
               ) : institutions.length === 0 ? (
                 <Text style={{ color: theme.colors.textMuted, fontSize: 13 }}>
                   Nenhuma instituição disponível. Tente novamente mais tarde.
@@ -323,7 +354,9 @@ export default function SignupScreen() {
                         style={{
                           borderRadius: 10,
                           borderWidth: 1.5,
-                          borderColor: selected ? theme.colors.primary : theme.palette.neutral[400],
+                          borderColor: selected
+                            ? theme.colors.primary
+                            : theme.palette.neutral[400],
                           backgroundColor: selected
                             ? theme.colors.primarySoft
                             : theme.palette.neutral[900],
@@ -335,7 +368,9 @@ export default function SignupScreen() {
                           style={{
                             fontSize: 15,
                             fontWeight: selected ? "700" : "500",
-                            color: selected ? theme.colors.primary : theme.palette.neutral[50],
+                            color: selected
+                              ? theme.colors.primary
+                              : theme.palette.neutral[50],
                           }}
                         >
                           {inst.name}
@@ -358,7 +393,11 @@ export default function SignupScreen() {
                 }}
               >
                 <Text
-                  style={{ color: theme.palette.danger[600], fontSize: 14, textAlign: "center" }}
+                  style={{
+                    color: theme.palette.danger[600],
+                    fontSize: 14,
+                    textAlign: "center",
+                  }}
                 >
                   {errorMsg}
                 </Text>

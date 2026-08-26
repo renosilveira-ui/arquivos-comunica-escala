@@ -36,10 +36,15 @@ import {
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import { dateFromExecute, rowsFromExecute } from "./_core/db-results";
 import { yearMonthBrt } from "./local-time";
+import {
+  assertActiveScheduleContextTopology,
+  assertProfessionalEligibleForScheduleContext,
+  listAssumableScheduleContextIds,
+} from "./schedule-contexts";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-type SwapType = typeof swapRequests.$inferSelect["type"];
+type SwapType = (typeof swapRequests.$inferSelect)["type"];
 type SwapRow = typeof swapRequests.$inferSelect;
 type ShiftRow = typeof shiftInstances.$inferSelect;
 
@@ -55,7 +60,7 @@ type CanonicalProfessional = {
 
 type CanonicalAssignmentTuple = {
   assignmentId: number;
-  assignmentType: typeof shiftAssignmentsV2.$inferSelect["assignmentType"];
+  assignmentType: (typeof shiftAssignmentsV2.$inferSelect)["assignmentType"];
   shift: ShiftRow;
   professional: CanonicalProfessional;
 };
@@ -69,6 +74,7 @@ type AvailableSwapRow = {
   fromProfessionalName: string;
   fromProfessionalRole: string;
   fromShiftInstanceId: number;
+  fromScheduleContextId: number;
   fromShiftLabel: string;
   fromShiftStartAt: Date | string | number;
   fromShiftEndAt: Date | string | number;
@@ -86,13 +92,17 @@ function topologyDenied(message: string): TRPCError {
   return new TRPCError({ code: "FORBIDDEN", message });
 }
 
-function assertSwapShiftsNotStarted(source: ShiftRow, counterpart: ShiftRow | null): void {
+function assertSwapShiftsNotStarted(
+  source: ShiftRow,
+  counterpart: ShiftRow | null,
+): void {
   const now = Date.now();
-  const started = source.startAt.getTime() <= now
-    ? "origem"
-    : counterpart && counterpart.startAt.getTime() <= now
-      ? "contrapartida"
-      : null;
+  const started =
+    source.startAt.getTime() <= now
+      ? "origem"
+      : counterpart && counterpart.startAt.getTime() <= now
+        ? "contrapartida"
+        : null;
   if (started) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -101,12 +111,16 @@ function assertSwapShiftsNotStarted(source: ShiftRow, counterpart: ShiftRow | nu
   }
 }
 
-function sameShiftSchedulingSnapshot(before: ShiftRow, current: ShiftRow): boolean {
+function sameShiftSchedulingSnapshot(
+  before: ShiftRow,
+  current: ShiftRow,
+): boolean {
   return (
     current.id === before.id &&
     current.institutionId === before.institutionId &&
     current.hospitalId === before.hospitalId &&
     current.sectorId === before.sectorId &&
+    current.scheduleContextId === before.scheduleContextId &&
     current.startAt.getTime() === before.startAt.getTime() &&
     current.endAt.getTime() === before.endAt.getTime()
   );
@@ -124,7 +138,10 @@ function assertSameSwapSchedulingSnapshot(
     (beforeCounterpart !== null &&
       currentCounterpart !== null &&
       sameShiftSchedulingSnapshot(beforeCounterpart, currentCounterpart));
-  if (!sameShiftSchedulingSnapshot(beforeSource, currentSource) || !sameCounterpart) {
+  if (
+    !sameShiftSchedulingSnapshot(beforeSource, currentSource) ||
+    !sameCounterpart
+  ) {
     throw new TRPCError({ code: "CONFLICT", message });
   }
 }
@@ -174,7 +191,9 @@ async function requireCanonicalProfessional(
     .limit(1);
   const [snapshot] = await query;
   if (!snapshot) {
-    throw topologyDenied("Identidade profissional sem vínculo canônico ativo neste tenant");
+    throw topologyDenied(
+      "Identidade profissional sem vínculo canônico ativo neste tenant",
+    );
   }
   if (!input.lockForUpdate) {
     const { membershipId: _membershipId, ...professional } = snapshot;
@@ -204,7 +223,8 @@ async function requireCanonicalProfessional(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "A sessão foi revogada durante a operação. Entre novamente e repita.",
+      message:
+        "A sessão foi revogada durante a operação. Entre novamente e repita.",
     });
   }
   const [currentProfessional] = await db
@@ -238,15 +258,18 @@ async function requireCanonicalProfessional(
     )
     .limit(1)
     .for("update");
-  const professional = currentUser && currentProfessional && currentMembership
-    ? {
-        ...currentProfessional,
-        email: currentUser.email,
-        roleInInstitution: currentMembership.roleInInstitution,
-      }
-    : undefined;
+  const professional =
+    currentUser && currentProfessional && currentMembership
+      ? {
+          ...currentProfessional,
+          email: currentUser.email,
+          roleInInstitution: currentMembership.roleInInstitution,
+        }
+      : undefined;
   if (!professional) {
-    throw topologyDenied("Identidade profissional sem vínculo canônico ativo neste tenant");
+    throw topologyDenied(
+      "Identidade profissional sem vínculo canônico ativo neste tenant",
+    );
   }
   return professional;
 }
@@ -298,7 +321,8 @@ async function requireCurrentListAvailableActor(
   if (!current) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "A sessão ou o vínculo institucional mudou. Entre novamente e repita.",
+      message:
+        "A sessão ou o vínculo institucional mudou. Entre novamente e repita.",
     });
   }
 }
@@ -374,7 +398,9 @@ async function requireProfessionalAccess(
     .limit(1);
   const rows = input.lockForUpdate ? await query.for("update") : await query;
   if (!rows[0]) {
-    throw topologyDenied("Profissional sem acesso ativo ao hospital/setor do plantão");
+    throw topologyDenied(
+      "Profissional sem acesso ativo ao hospital/setor do plantão",
+    );
   }
   return rows[0].id;
 }
@@ -428,6 +454,32 @@ async function requireCanonicalShift(
   return shift;
 }
 
+async function assertProfessionalQualifiedForShift(
+  db: any,
+  shift: ShiftRow,
+  professional: CanonicalProfessional,
+  lockForShare: boolean,
+): Promise<void> {
+  if (shift.scheduleContextId === null) {
+    assertSpecialtyCompatible(shift.specialty, professional.specialty);
+    return;
+  }
+  await assertProfessionalEligibleForScheduleContext({
+    institutionId: shift.institutionId,
+    professionalId: professional.professionalId,
+    scheduleContextId: shift.scheduleContextId,
+    db,
+    lockForShare,
+  });
+  await assertActiveScheduleContextTopology({
+    institutionId: shift.institutionId,
+    hospitalId: shift.hospitalId,
+    sectorId: shift.sectorId,
+    scheduleContextId: shift.scheduleContextId,
+    db,
+  });
+}
+
 async function requireCanonicalAssignmentTuple(
   db: any,
   input: {
@@ -452,7 +504,12 @@ async function requireCanonicalAssignmentTuple(
     sectorId: shift.sectorId,
     lockForUpdate: input.lockForUpdate,
   });
-  assertSpecialtyCompatible(shift.specialty, professional.specialty);
+  await assertProfessionalQualifiedForShift(
+    db,
+    shift,
+    professional,
+    input.lockForUpdate === true,
+  );
 
   const canonicalTupleConditions = [
     eq(shiftAssignmentsV2.shiftInstanceId, shift.id),
@@ -463,9 +520,14 @@ async function requireCanonicalAssignmentTuple(
   ];
   const requestedTupleConditions = [...canonicalTupleConditions];
   if (typeof input.assignmentId === "number") {
-    requestedTupleConditions.push(eq(shiftAssignmentsV2.id, input.assignmentId));
+    requestedTupleConditions.push(
+      eq(shiftAssignmentsV2.id, input.assignmentId),
+    );
   }
-  const selectAssignments = async (conditions: ReturnType<typeof eq>[], limit: number) => {
+  const selectAssignments = async (
+    conditions: ReturnType<typeof eq>[],
+    limit: number,
+  ) => {
     const query = db
       .select({
         id: shiftAssignmentsV2.id,
@@ -504,17 +566,22 @@ async function requireCanonicalAssignmentTuple(
     if (activeRows.length > 1) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "Há alocações ativas duplicadas para a mesma tupla profissional/turno",
+        message:
+          "Há alocações ativas duplicadas para a mesma tupla profissional/turno",
       });
     }
     const active = activeRows[0];
     if (active && active.status !== "OCUPADO") {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "A alocação ainda não está confirmada como OCUPADO para troca ou cessão",
+        message:
+          "A alocação ainda não está confirmada como OCUPADO para troca ou cessão",
       });
     }
-    if (active && (input.assignmentId === undefined || active.id === input.assignmentId)) {
+    if (
+      active &&
+      (input.assignmentId === undefined || active.id === input.assignmentId)
+    ) {
       assignment = active;
     }
   }
@@ -528,7 +595,9 @@ async function requireCanonicalAssignmentTuple(
         });
       }
     }
-    throw topologyDenied("Alocação não corresponde à tupla turno/tenant/profissional informada");
+    throw topologyDenied(
+      "Alocação não corresponde à tupla turno/tenant/profissional informada",
+    );
   }
   return {
     assignmentId: assignment.id,
@@ -557,6 +626,12 @@ async function requireProfessionalCanReceiveShift(
     sectorId: input.shift.sectorId,
     lockForUpdate: input.lockForUpdate,
   });
+  await assertProfessionalQualifiedForShift(
+    db,
+    input.shift,
+    professional,
+    input.lockForUpdate === true,
+  );
   return professional;
 }
 
@@ -605,7 +680,10 @@ async function requireCanonicalShiftOccupant(
         userId: professionals.userId,
       })
       .from(shiftAssignmentsV2)
-      .innerJoin(professionals, eq(professionals.id, shiftAssignmentsV2.professionalId))
+      .innerJoin(
+        professionals,
+        eq(professionals.id, shiftAssignmentsV2.professionalId),
+      )
       .where(conditions);
   }
   for (const candidate of candidates) {
@@ -634,11 +712,16 @@ function assertSwapShape(swap: SwapRow): void {
   }
   if (isOneWay(swap.type)) {
     if (swap.toShiftInstanceId !== null || swap.toAssignmentId !== null) {
-      throw topologyDenied("Cessão/repasse não pode carregar turno ou alocação de contrapartida");
+      throw topologyDenied(
+        "Cessão/repasse não pode carregar turno ou alocação de contrapartida",
+      );
     }
     return;
   }
-  if (!swap.toShiftInstanceId || swap.toShiftInstanceId === swap.fromShiftInstanceId) {
+  if (
+    !swap.toShiftInstanceId ||
+    swap.toShiftInstanceId === swap.fromShiftInstanceId
+  ) {
     throw topologyDenied("Troca sem turno de contrapartida válido");
   }
   if (swap.status === "ACCEPTED" || swap.status === "APPROVED") {
@@ -646,7 +729,9 @@ function assertSwapShape(swap: SwapRow): void {
       throw topologyDenied("Troca aceita sem tupla completa do receptor");
     }
   } else if (swap.status === "PENDING" && swap.toAssignmentId !== null) {
-    throw topologyDenied("Troca pendente não pode antecipar uma alocação receptora");
+    throw topologyDenied(
+      "Troca pendente não pode antecipar uma alocação receptora",
+    );
   }
 }
 
@@ -680,7 +765,10 @@ async function requireCanonicalSwapRecipient(
     lockForUpdate?: boolean;
     expectedSessionVersion?: number;
   },
-): Promise<{ professional: CanonicalProfessional; toTuple: CanonicalAssignmentTuple | null }> {
+): Promise<{
+  professional: CanonicalProfessional;
+  toTuple: CanonicalAssignmentTuple | null;
+}> {
   const professional = await requireProfessionalCanReceiveShift(db, {
     institutionId: swap.institutionId,
     professionalId: input.professionalId,
@@ -689,10 +777,9 @@ async function requireCanonicalSwapRecipient(
     lockForUpdate: input.lockForUpdate,
     expectedSessionVersion: input.expectedSessionVersion,
   });
-  assertSpecialtyCompatible(source.shift.specialty, professional.specialty);
-
   if (isOneWay(swap.type)) return { professional, toTuple: null };
-  if (!swap.toShiftInstanceId) throw topologyDenied("Troca sem turno de contrapartida");
+  if (!swap.toShiftInstanceId)
+    throw topologyDenied("Troca sem turno de contrapartida");
   const toTuple = await requireCanonicalAssignmentTuple(db, {
     institutionId: swap.institutionId,
     shiftInstanceId: swap.toShiftInstanceId,
@@ -703,7 +790,6 @@ async function requireCanonicalSwapRecipient(
     lockForUpdate: input.lockForUpdate,
     expectedSessionVersion: input.expectedSessionVersion,
   });
-  assertSpecialtyCompatible(toTuple.shift.specialty, source.professional.specialty);
   await requireProfessionalCanReceiveShift(db, {
     institutionId: swap.institutionId,
     professionalId: swap.fromProfessionalId,
@@ -728,12 +814,28 @@ function isOneWay(type: SwapType): boolean {
  * the SWAP / TRANSFER / CESSAO audit naming so a CESSAO request emits a
  * consistent CESSAO_* timeline (was emitting TRANSFER_* before).
  */
-type AuditPhase = "OFFERED" | "ACCEPTED" | "REJECTED" | "APPROVED_BY_OWNER" | "CANCELLED";
-function auditNames(type: SwapType, phase: AuditPhase): {
+type AuditPhase =
+  "OFFERED" | "ACCEPTED" | "REJECTED" | "APPROVED_BY_OWNER" | "CANCELLED";
+function auditNames(
+  type: SwapType,
+  phase: AuditPhase,
+): {
   action:
-    | "SWAP_REQUESTED" | "SWAP_ACCEPTED" | "SWAP_REJECTED" | "SWAP_APPROVED_BY_OWNER" | "SWAP_CANCELLED"
-    | "TRANSFER_OFFERED" | "TRANSFER_ACCEPTED" | "TRANSFER_REJECTED" | "TRANSFER_APPROVED_BY_OWNER" | "TRANSFER_CANCELLED"
-    | "CESSAO_OFFERED" | "CESSAO_ACCEPTED" | "CESSAO_REJECTED" | "CESSAO_APPROVED_BY_OWNER" | "CESSAO_CANCELLED";
+    | "SWAP_REQUESTED"
+    | "SWAP_ACCEPTED"
+    | "SWAP_REJECTED"
+    | "SWAP_APPROVED_BY_OWNER"
+    | "SWAP_CANCELLED"
+    | "TRANSFER_OFFERED"
+    | "TRANSFER_ACCEPTED"
+    | "TRANSFER_REJECTED"
+    | "TRANSFER_APPROVED_BY_OWNER"
+    | "TRANSFER_CANCELLED"
+    | "CESSAO_OFFERED"
+    | "CESSAO_ACCEPTED"
+    | "CESSAO_REJECTED"
+    | "CESSAO_APPROVED_BY_OWNER"
+    | "CESSAO_CANCELLED";
   entityType: "SWAP_REQUEST" | "TRANSFER_REQUEST";
   label: "Troca" | "Repasse" | "Cessão";
 } {
@@ -755,7 +857,11 @@ function auditNames(type: SwapType, phase: AuditPhase): {
       APPROVED_BY_OWNER: "CESSAO_APPROVED_BY_OWNER",
       CANCELLED: "CESSAO_CANCELLED",
     } as const;
-    return { action: m[phase], entityType: "TRANSFER_REQUEST", label: "Cessão" };
+    return {
+      action: m[phase],
+      entityType: "TRANSFER_REQUEST",
+      label: "Cessão",
+    };
   }
   // TRANSFER (legacy)
   const m = {
@@ -789,9 +895,14 @@ async function requireCurrentSwapOwner(
     swap.fromUserId !== actor.userId ||
     swap.fromProfessionalId !== currentActor.professionalId
   ) {
-    throw topologyDenied("A ação não pertence ao dono canônico da alocação de origem");
+    throw topologyDenied(
+      "A ação não pertence ao dono canônico da alocação de origem",
+    );
   }
-  return { professional: currentActor, auditRole: currentActor.roleInInstitution };
+  return {
+    professional: currentActor,
+    auditRole: currentActor.roleInInstitution,
+  };
 }
 
 async function requireAcceptedSwapTopology(
@@ -804,23 +915,22 @@ async function requireAcceptedSwapTopology(
   toTuple: CanonicalAssignmentTuple | null;
 }> {
   if (swap.status !== "ACCEPTED" || !swap.toProfessionalId || !swap.toUserId) {
-    throw new TRPCError({ code: "CONFLICT", message: "Solicitação não está aceita com receptor completo" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Solicitação não está aceita com receptor completo",
+    });
   }
   const source = await requireCanonicalSourceTuple(db, swap, {
     requireActive: true,
     lockForUpdate,
   });
-  const { professional: recipient, toTuple } = await requireCanonicalSwapRecipient(
-    db,
-    swap,
-    source,
-    {
+  const { professional: recipient, toTuple } =
+    await requireCanonicalSwapRecipient(db, swap, source, {
       professionalId: swap.toProfessionalId,
       userId: swap.toUserId,
       requireActiveAssignment: true,
       lockForUpdate,
-    },
-  );
+    });
   assertSwapShiftsNotStarted(source.shift, toTuple?.shift ?? null);
   return { source, recipient, toTuple };
 }
@@ -845,7 +955,8 @@ async function requireSwapTopologyForRead(
     return;
   }
   if (!isOneWay(swap.type)) {
-    if (!swap.toShiftInstanceId) throw topologyDenied("Troca sem turno de contrapartida");
+    if (!swap.toShiftInstanceId)
+      throw topologyDenied("Troca sem turno de contrapartida");
     const toShift = await requireCanonicalShift(db, {
       institutionId: swap.institutionId,
       shiftInstanceId: swap.toShiftInstanceId,
@@ -857,7 +968,6 @@ async function requireSwapTopologyForRead(
       userId: source.professional.userId,
       shift: toShift,
     });
-    assertSpecialtyCompatible(toShift.specialty, source.professional.specialty);
     await requireCanonicalShiftOccupant(db, { shift: toShift, lockForUpdate });
   }
 }
@@ -873,21 +983,35 @@ async function requirePendingSwapForRecipient(
   professional: CanonicalProfessional;
   toTuple: CanonicalAssignmentTuple | null;
 }> {
-  if (!actor.professionalId) throw topologyDenied("Ator sem identidade profissional canônica");
+  if (!actor.professionalId)
+    throw topologyDenied("Ator sem identidade profissional canônica");
   if (swap.status !== "PENDING") {
-    throw new TRPCError({ code: "CONFLICT", message: `Status atual é ${swap.status}, esperava PENDING` });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `Status atual é ${swap.status}, esperava PENDING`,
+    });
   }
   if (swap.expiresAt && swap.expiresAt.getTime() < Date.now()) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Solicitação expirada" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Solicitação expirada",
+    });
   }
   if (swap.fromUserId === actor.userId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Você não pode aceitar sua própria oferta" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Você não pode aceitar sua própria oferta",
+    });
   }
   if (
     (swap.toProfessionalId !== null || swap.toUserId !== null) &&
-    (swap.toProfessionalId !== actor.professionalId || swap.toUserId !== actor.userId)
+    (swap.toProfessionalId !== actor.professionalId ||
+      swap.toUserId !== actor.userId)
   ) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Esta oferta foi direcionada a outro profissional" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Esta oferta foi direcionada a outro profissional",
+    });
   }
   const source = await requireCanonicalSourceTuple(db, swap, {
     requireActive: true,
@@ -911,19 +1035,30 @@ function isInstitutionManager(actor: TenantActor): boolean {
   );
 }
 
-async function assertActorCanReadSwap(actor: TenantActor, swap: SwapRow): Promise<void> {
+async function assertActorCanReadSwap(
+  actor: TenantActor,
+  swap: SwapRow,
+): Promise<void> {
+  if (!actor.professionalId)
+    throw topologyDenied("Ator sem identidade profissional canônica");
+  const isOfferer =
+    swap.fromUserId === actor.userId &&
+    swap.fromProfessionalId === actor.professionalId;
+  const isReceiver =
+    swap.toUserId === actor.userId &&
+    swap.toProfessionalId === actor.professionalId;
+  // A própria oferta/aceite continua legível mesmo após perda de
+  // manager_scope; isso não abre solicitações de terceiros.
+  if (isOfferer || isReceiver) return;
   if (isInstitutionManager(actor)) {
-    await assertManagerScopeAccess(actor, swap.hospitalId, swap.sectorId ?? undefined);
+    await assertManagerScopeAccess(
+      actor,
+      swap.hospitalId,
+      swap.sectorId ?? undefined,
+    );
     return;
   }
-  if (!actor.professionalId) throw topologyDenied("Ator sem identidade profissional canônica");
-  const isOfferer =
-    swap.fromUserId === actor.userId && swap.fromProfessionalId === actor.professionalId;
-  const isReceiver =
-    swap.toUserId === actor.userId && swap.toProfessionalId === actor.professionalId;
-  if (!isOfferer && !isReceiver) {
-    throw topologyDenied("Solicitação não pertence ao profissional autenticado");
-  }
+  throw topologyDenied("Solicitação não pertence ao profissional autenticado");
 }
 
 async function filterReadableSwaps(
@@ -950,9 +1085,12 @@ async function lockSwapShiftsForUpdate(
   shiftInstanceIds: (number | null | undefined)[],
 ): Promise<void> {
   const ordered = [
-    ...new Set(shiftInstanceIds.filter((id): id is number => typeof id === "number")),
+    ...new Set(
+      shiftInstanceIds.filter((id): id is number => typeof id === "number"),
+    ),
   ].sort((left, right) => left - right);
-  if (ordered.length === 0) throw topologyDenied("Solicitação sem turno de origem");
+  if (ordered.length === 0)
+    throw topologyDenied("Solicitação sem turno de origem");
 
   for (const shiftInstanceId of ordered) {
     const [locked] = await tx
@@ -976,25 +1114,28 @@ async function lockSwapAssignmentsForUpdate(
   shiftInstanceIds: (number | null | undefined)[],
 ): Promise<number[]> {
   const shiftIds = [
-    ...new Set(shiftInstanceIds.filter((id): id is number => typeof id === "number")),
+    ...new Set(
+      shiftInstanceIds.filter((id): id is number => typeof id === "number"),
+    ),
   ];
-  const snapshots = shiftIds.length === 0
-    ? []
-    : await tx
-        .select({
-          id: shiftAssignmentsV2.id,
-          professionalId: shiftAssignmentsV2.professionalId,
-        })
-        .from(shiftAssignmentsV2)
-        .where(
-          and(
-            eq(shiftAssignmentsV2.institutionId, institutionId),
-            inArray(shiftAssignmentsV2.shiftInstanceId, shiftIds),
-          ),
-        );
-  for (const assignmentId of snapshots.map((row: { id: number }) => row.id).sort(
-    (left: number, right: number) => left - right,
-  )) {
+  const snapshots =
+    shiftIds.length === 0
+      ? []
+      : await tx
+          .select({
+            id: shiftAssignmentsV2.id,
+            professionalId: shiftAssignmentsV2.professionalId,
+          })
+          .from(shiftAssignmentsV2)
+          .where(
+            and(
+              eq(shiftAssignmentsV2.institutionId, institutionId),
+              inArray(shiftAssignmentsV2.shiftInstanceId, shiftIds),
+            ),
+          );
+  for (const assignmentId of snapshots
+    .map((row: { id: number }) => row.id)
+    .sort((left: number, right: number) => left - right)) {
     const [locked] = await tx
       .select({ id: shiftAssignmentsV2.id })
       .from(shiftAssignmentsV2)
@@ -1016,7 +1157,9 @@ async function lockSwapAssignmentsForUpdate(
   const professionalIds = snapshots.map(
     (row: { professionalId: number }) => row.professionalId,
   );
-  return [...new Set<number>(professionalIds)].sort((left, right) => left - right);
+  return [...new Set<number>(professionalIds)].sort(
+    (left, right) => left - right,
+  );
 }
 
 async function lockSwapRequestForUpdate(
@@ -1036,7 +1179,10 @@ async function lockSwapRequestForUpdate(
     .limit(1)
     .for("update");
   if (!swap) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Solicitação não encontrada",
+    });
   }
   return swap;
 }
@@ -1136,9 +1282,11 @@ async function assertNoProfessionalTimeConflict(
       AND sa.is_active = 1
       AND si.start_at < ${endIso}
       AND si.end_at > ${startIso}
-      ${input.excludeAssignmentId !== undefined
-        ? sql`AND sa.id != ${input.excludeAssignmentId}`
-        : sql``}
+      ${
+        input.excludeAssignmentId !== undefined
+          ? sql`AND sa.id != ${input.excludeAssignmentId}`
+          : sql``
+      }
   `);
   const [conflict] = rowsFromExecute<{
     shiftInstanceId: number;
@@ -1167,6 +1315,7 @@ function assignmentWriteCandidatesForSwap(
     institutionId: source.shift.institutionId,
     hospitalId: source.shift.hospitalId,
     sectorId: source.shift.sectorId,
+    scheduleContextId: source.shift.scheduleContextId,
     startAt: source.shift.startAt,
     endAt: source.shift.endAt,
     requiredSpecialty: source.shift.specialty,
@@ -1182,6 +1331,7 @@ function assignmentWriteCandidatesForSwap(
       institutionId: toTuple.shift.institutionId,
       hospitalId: toTuple.shift.hospitalId,
       sectorId: toTuple.shift.sectorId,
+      scheduleContextId: toTuple.shift.scheduleContextId,
       startAt: toTuple.shift.startAt,
       endAt: toTuple.shift.endAt,
       requiredSpecialty: toTuple.shift.specialty,
@@ -1219,7 +1369,6 @@ async function assertNoSwapTimeConflicts(
     excludeAssignmentId: source.assignmentId,
   });
 }
-
 
 /**
  * Efetua um swap/cessão/transfer já em estado ACCEPTED. Roda
@@ -1285,7 +1434,10 @@ async function effectuateApprovedSwap(
           eq(shiftAssignmentsV2.institutionId, tuple.shift.institutionId),
           eq(shiftAssignmentsV2.hospitalId, tuple.shift.hospitalId),
           eq(shiftAssignmentsV2.sectorId, tuple.shift.sectorId),
-          eq(shiftAssignmentsV2.professionalId, tuple.professional.professionalId),
+          eq(
+            shiftAssignmentsV2.professionalId,
+            tuple.professional.professionalId,
+          ),
           eq(shiftAssignmentsV2.isActive, true),
         ),
       );
@@ -1320,11 +1472,15 @@ async function effectuateApprovedSwap(
       });
     }
     if (currentSwap.expiresAt && currentSwap.expiresAt.getTime() < Date.now()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "Solicitação expirada — peça uma nova oferta" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Solicitação expirada — peça uma nova oferta",
+      });
     }
 
     await assertPublishedSwapMonthsForUpdate(tx, monthTargets);
-    if (!currentSwap.toProfessionalId) throw topologyDenied("Solicitação sem receptor canônico");
+    if (!currentSwap.toProfessionalId)
+      throw topologyDenied("Solicitação sem receptor canônico");
     await lockSwapShiftsForUpdate(tx, currentSwap.institutionId, [
       currentSwap.fromShiftInstanceId,
       currentSwap.toShiftInstanceId,
@@ -1332,10 +1488,7 @@ async function effectuateApprovedSwap(
     const assignmentProfessionalIds = await lockSwapAssignmentsForUpdate(
       tx,
       currentSwap.institutionId,
-      [
-        currentSwap.fromShiftInstanceId,
-        currentSwap.toShiftInstanceId,
-      ],
+      [currentSwap.fromShiftInstanceId, currentSwap.toShiftInstanceId],
     );
     await lockAssignmentProfessionalsForUpdate(
       tx,
@@ -1368,9 +1521,12 @@ async function effectuateApprovedSwap(
         topology.recipient,
         topology.toTuple,
       ),
-      { additionalProfessionalIds: [topology.source.professional.professionalId] },
+      {
+        additionalProfessionalIds: [
+          topology.source.professional.professionalId,
+        ],
+      },
     );
-
     if (isOneWay(currentSwap.type)) {
       await deactivateActive(tx, topology.source, "de origem");
 
@@ -1386,7 +1542,8 @@ async function effectuateApprovedSwap(
         createdBy: actor.userId,
       });
     } else {
-      if (!topology.toTuple) throw topologyDenied("Troca sem alocação de contrapartida canônica");
+      if (!topology.toTuple)
+        throw topologyDenied("Troca sem alocação de contrapartida canônica");
       await deactivateActive(tx, topology.source, "de origem");
       await deactivateActive(tx, topology.toTuple, "do colega");
       await tx.insert(shiftAssignmentsV2).values({
@@ -1510,24 +1667,39 @@ export const swapRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
 
       const userId = ctx.user!.id;
       const expectedSessionVersion = ctx.user!.sessionVersion;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
-      if (!actor.professionalId) throw topologyDenied("Ator sem identidade profissional canônica");
+      if (!actor.professionalId)
+        throw topologyDenied("Ator sem identidade profissional canônica");
       if (isOneWay(input.type) && input.toShiftInstanceId !== undefined) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Cessão/repasse não aceita turno de contrapartida" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cessão/repasse não aceita turno de contrapartida",
+        });
       }
       if (
         input.type === "SWAP" &&
-        (!input.toShiftInstanceId || input.toShiftInstanceId === input.fromShiftInstanceId)
+        (!input.toShiftInstanceId ||
+          input.toShiftInstanceId === input.fromShiftInstanceId)
       ) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "SWAP requer outro turno de contrapartida" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "SWAP requer outro turno de contrapartida",
+        });
       }
 
-      const validateOfferTopology = async (conn: any, lockForUpdate: boolean) => {
+      const validateOfferTopology = async (
+        conn: any,
+        lockForUpdate: boolean,
+      ) => {
         const source = await requireCanonicalAssignmentTuple(conn, {
           institutionId,
           shiftInstanceId: input.fromShiftInstanceId,
@@ -1546,7 +1718,10 @@ export const swapRouter = router({
             lockForUpdate,
           });
           if (toShift.status !== "OCUPADO") {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Turno de troca não está ocupado" });
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Turno de troca não está ocupado",
+            });
           }
           await requireProfessionalCanReceiveShift(conn, {
             institutionId,
@@ -1556,7 +1731,6 @@ export const swapRouter = router({
             lockForUpdate,
             expectedSessionVersion,
           });
-          assertSpecialtyCompatible(toShift.specialty, source.professional.specialty);
         }
         assertSwapShiftsNotStarted(source.shift, toShift);
 
@@ -1570,9 +1744,11 @@ export const swapRouter = router({
             lockForUpdate,
           });
           if (target.userId === userId) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Não é possível direcionar a oferta a você mesmo" });
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Não é possível direcionar a oferta a você mesmo",
+            });
           }
-          assertSpecialtyCompatible(source.shift.specialty, target.specialty);
           if (toShift) {
             await requireCanonicalAssignmentTuple(conn, {
               institutionId,
@@ -1586,14 +1762,19 @@ export const swapRouter = router({
           counterpart = target;
         } else if (toShift) {
           counterpart = (
-            await requireCanonicalShiftOccupant(conn, { shift: toShift, lockForUpdate })
+            await requireCanonicalShiftOccupant(conn, {
+              shift: toShift,
+              lockForUpdate,
+            })
           ).professional;
         }
         return { source, toShift, target, counterpart };
       };
 
       const preflight = await validateOfferTopology(db, false);
-      const expiresAt = new Date(Date.now() + input.expiresInHours * 60 * 60 * 1000);
+      const expiresAt = new Date(
+        Date.now() + input.expiresInHours * 60 * 60 * 1000,
+      );
 
       const offerAudit = auditNames(input.type, "OFFERED");
       const offerDescription =
@@ -1601,11 +1782,13 @@ export const swapRouter = router({
           ? `Troca oferecida: turno #${input.fromShiftInstanceId} ↔ turno #${input.toShiftInstanceId}`
           : `${offerAudit.label} oferecida: turno #${input.fromShiftInstanceId}`;
       return db.transaction(async (tx) => {
-        const monthTargets: MonthLockTarget[] = [{
-          institutionId: preflight.source.shift.institutionId,
-          hospitalId: preflight.source.shift.hospitalId,
-          date: preflight.source.shift.startAt,
-        }];
+        const monthTargets: MonthLockTarget[] = [
+          {
+            institutionId: preflight.source.shift.institutionId,
+            hospitalId: preflight.source.shift.hospitalId,
+            date: preflight.source.shift.startAt,
+          },
+        ];
         if (preflight.toShift) {
           monthTargets.push({
             institutionId: preflight.toShift.institutionId,
@@ -1654,7 +1837,8 @@ export const swapRouter = router({
         if (openOffer) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Já existe uma oferta aberta para este plantão. Cancele-a antes de criar outra.",
+            message:
+              "Já existe uma oferta aberta para este plantão. Cancele-a antes de criar outra.",
           });
         }
 
@@ -1714,13 +1898,18 @@ export const swapRouter = router({
     .input(z.object({ swapRequestId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
 
       const userId = ctx.user!.id;
       const expectedSessionVersion = ctx.user!.sessionVersion;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
-      if (!actor.professionalId) throw topologyDenied("Ator sem identidade profissional canônica");
+      if (!actor.professionalId)
+        throw topologyDenied("Ator sem identidade profissional canônica");
 
       const [swap] = await db
         .select()
@@ -1731,7 +1920,11 @@ export const swapRouter = router({
             eq(swapRequests.institutionId, institutionId),
           ),
         );
-      if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+      if (!swap)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Solicitação não encontrada",
+        });
 
       const preflight = await requirePendingSwapForRecipient(
         db,
@@ -1740,7 +1933,10 @@ export const swapRouter = router({
         false,
         expectedSessionVersion,
       );
-      assertSwapShiftsNotStarted(preflight.source.shift, preflight.toTuple?.shift ?? null);
+      assertSwapShiftsNotStarted(
+        preflight.source.shift,
+        preflight.toTuple?.shift ?? null,
+      );
       await assertNoSwapTimeConflicts(
         db,
         swap,
@@ -1776,7 +1972,10 @@ export const swapRouter = router({
           .limit(1)
           .for("update");
         if (!current || current.version !== swap.version) {
-          throw new TRPCError({ code: "CONFLICT", message: "Esta oferta já foi respondida por outra pessoa." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Esta oferta já foi respondida por outra pessoa.",
+          });
         }
         await lockSwapShiftsForUpdate(tx, current.institutionId, [
           current.fromShiftInstanceId,
@@ -1803,7 +2002,10 @@ export const swapRouter = router({
           true,
           expectedSessionVersion,
         );
-        assertSwapShiftsNotStarted(locked.source.shift, locked.toTuple?.shift ?? null);
+        assertSwapShiftsNotStarted(
+          locked.source.shift,
+          locked.toTuple?.shift ?? null,
+        );
         assertSameSwapSchedulingSnapshot(
           preflight.source.shift,
           locked.source.shift,
@@ -1819,7 +2021,11 @@ export const swapRouter = router({
             locked.professional,
             locked.toTuple,
           ),
-          { additionalProfessionalIds: [locked.source.professional.professionalId] },
+          {
+            additionalProfessionalIds: [
+              locked.source.professional.professionalId,
+            ],
+          },
         );
         const [accepted] = await tx
           .update(swapRequests)
@@ -1839,7 +2045,10 @@ export const swapRouter = router({
             ),
           );
         if (!accepted.affectedRows) {
-          throw new TRPCError({ code: "CONFLICT", message: "Esta oferta já foi respondida por outra pessoa." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Esta oferta já foi respondida por outra pessoa.",
+          });
         }
 
         const acceptAudit = auditNames(current.type, "ACCEPTED");
@@ -1873,7 +2082,11 @@ export const swapRouter = router({
     .input(z.object({ swapRequestId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
 
       const userId = ctx.user!.id;
       const expectedSessionVersion = ctx.user!.sessionVersion;
@@ -1905,12 +2118,9 @@ export const swapRouter = router({
           true,
           expectedSessionVersion,
         );
-        await transitionSwapStatusForUpdate(
-          tx,
-          current,
-          ["PENDING"],
-          { status: "REJECTED_BY_PEER" },
-        );
+        await transitionSwapStatusForUpdate(tx, current, ["PENDING"], {
+          status: "REJECTED_BY_PEER",
+        });
 
         const rejectAudit = auditNames(current.type, "REJECTED");
         await recordAudit(
@@ -1957,7 +2167,11 @@ export const swapRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
 
       const userId = ctx.user!.id;
       const expectedSessionVersion = ctx.user!.sessionVersion;
@@ -1973,12 +2187,17 @@ export const swapRouter = router({
             eq(swapRequests.institutionId, institutionId),
           ),
         );
-      if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+      if (!swap)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Solicitação não encontrada",
+        });
 
       if (swap.fromUserId !== userId) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "Apenas o dono do plantão original pode aprovar a candidatura",
+          message:
+            "Apenas o dono do plantão original pode aprovar a candidatura",
         });
       }
 
@@ -2016,7 +2235,8 @@ export const swapRouter = router({
     .mutation(() => {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "Gestores têm acesso somente ao histórico; a decisão pertence ao ofertante e ao candidato",
+        message:
+          "Gestores têm acesso somente ao histórico; a decisão pertence ao ofertante e ao candidato",
       });
     }),
 
@@ -2030,7 +2250,8 @@ export const swapRouter = router({
     .mutation(() => {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "Gestores têm acesso somente ao histórico; a decisão pertence ao ofertante e ao candidato",
+        message:
+          "Gestores têm acesso somente ao histórico; a decisão pertence ao ofertante e ao candidato",
       });
     }),
 
@@ -2039,7 +2260,11 @@ export const swapRouter = router({
     .input(z.object({ swapRequestId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
 
       const userId = ctx.user!.id;
       const expectedSessionVersion = ctx.user!.sessionVersion;
@@ -2114,12 +2339,17 @@ export const swapRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
 
       const userId = ctx.user!.id;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
-      if (!actor.professionalId) throw topologyDenied("Ator sem identidade profissional canônica");
+      if (!actor.professionalId)
+        throw topologyDenied("Ator sem identidade profissional canônica");
 
       // Filtros (status/type/role e "só os meus" para não-gestor) são
       // aplicados inline no SQL abaixo.
@@ -2176,16 +2406,20 @@ export const swapRouter = router({
           ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
           ${input.role === "OFFERER" ? sql`AND sr.from_user_id = ${userId}` : sql``}
           ${input.role === "RECEIVER" ? sql`AND sr.to_user_id = ${userId}` : sql``}
-          ${!isInstitutionManager(actor)
-            ? sql`AND (sr.from_professional_id = ${actor.professionalId} OR sr.to_professional_id = ${actor.professionalId})`
-            : sql``}
+          ${
+            !isInstitutionManager(actor)
+              ? sql`AND (sr.from_professional_id = ${actor.professionalId} OR sr.to_professional_id = ${actor.professionalId})`
+              : sql``
+          }
         ORDER BY sr.created_at DESC
         LIMIT ${input.limit}
         OFFSET ${input.offset}
       `);
 
       const data = (rows as any)[0] as any[];
-      const candidateIds = data.map((row) => Number(row.id)).filter(Number.isInteger);
+      const candidateIds = data
+        .map((row) => Number(row.id))
+        .filter(Number.isInteger);
       const candidateSwaps = candidateIds.length
         ? await db
             .select()
@@ -2198,47 +2432,60 @@ export const swapRouter = router({
             )
         : [];
       const readableIds = new Set(
-        (await filterReadableSwaps(db, actor, candidateSwaps)).map((swap) => swap.id),
+        (await filterReadableSwaps(db, actor, candidateSwaps)).map(
+          (swap) => swap.id,
+        ),
       );
 
-      return data.filter((r: any) => readableIds.has(Number(r.id))).map((r: any) => ({
-        id: r.id,
-        type: r.type,
-        status: r.status,
-        reason: r.reason,
-        reviewNote: r.reviewNote,
-        expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
-        createdAt: new Date(r.createdAt),
-        reviewedAt: r.reviewedAt ? new Date(r.reviewedAt) : null,
-        fromProfessional: { id: r.fromProfessionalId, name: r.fromProfessionalName, role: r.fromProfessionalRole },
-        toProfessional: r.toProfessionalId
-          ? { id: r.toProfessionalId, name: r.toProfessionalName, role: r.toProfessionalRole }
-          : null,
-        fromShift: {
-          id: r.fromShiftInstanceId,
-          label: r.fromShiftLabel,
-          startAt: new Date(r.fromShiftStartAt),
-          endAt: new Date(r.fromShiftEndAt),
-          hospitalName: r.fromHospitalName,
-          sectorName: r.fromSectorName,
-        },
-        toShift: r.toShiftInstanceId
-          ? {
-              id: r.toShiftInstanceId,
-              label: r.toShiftLabel,
-              startAt: new Date(r.toShiftStartAt),
-              endAt: new Date(r.toShiftEndAt),
-              hospitalName: r.toHospitalName,
-              sectorName: r.toSectorName,
-            }
-          : null,
-        reviewerName: r.reviewerName ?? null,
-        // True quando o usuário logado é o ofertante e a candidatura
-        // está aguardando aprovação dele (approveByOwner). A tela
-        // "Minhas ofertas" usa esse flag pra filtrar/destacar o que
-        // exige ação imediata sem precisar comparar fromUserId no client.
-        awaitingMyApproval: r.status === "ACCEPTED" && r.fromUserId === userId,
-      }));
+      return data
+        .filter((r: any) => readableIds.has(Number(r.id)))
+        .map((r: any) => ({
+          id: r.id,
+          type: r.type,
+          status: r.status,
+          reason: r.reason,
+          reviewNote: r.reviewNote,
+          expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
+          createdAt: new Date(r.createdAt),
+          reviewedAt: r.reviewedAt ? new Date(r.reviewedAt) : null,
+          fromProfessional: {
+            id: r.fromProfessionalId,
+            name: r.fromProfessionalName,
+            role: r.fromProfessionalRole,
+          },
+          toProfessional: r.toProfessionalId
+            ? {
+                id: r.toProfessionalId,
+                name: r.toProfessionalName,
+                role: r.toProfessionalRole,
+              }
+            : null,
+          fromShift: {
+            id: r.fromShiftInstanceId,
+            label: r.fromShiftLabel,
+            startAt: new Date(r.fromShiftStartAt),
+            endAt: new Date(r.fromShiftEndAt),
+            hospitalName: r.fromHospitalName,
+            sectorName: r.fromSectorName,
+          },
+          toShift: r.toShiftInstanceId
+            ? {
+                id: r.toShiftInstanceId,
+                label: r.toShiftLabel,
+                startAt: new Date(r.toShiftStartAt),
+                endAt: new Date(r.toShiftEndAt),
+                hospitalName: r.toHospitalName,
+                sectorName: r.toSectorName,
+              }
+            : null,
+          reviewerName: r.reviewerName ?? null,
+          // True quando o usuário logado é o ofertante e a candidatura
+          // está aguardando aprovação dele (approveByOwner). A tela
+          // "Minhas ofertas" usa esse flag pra filtrar/destacar o que
+          // exige ação imediata sem precisar comparar fromUserId no client.
+          awaitingMyApproval:
+            r.status === "ACCEPTED" && r.fromUserId === userId,
+        }));
     }),
 
   // ── getById ───────────────────────────────────────────────────────────────
@@ -2246,7 +2493,11 @@ export const swapRouter = router({
     .input(z.object({ id: z.number() }))
     .query(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
       const [swap] = await db
@@ -2259,7 +2510,11 @@ export const swapRouter = router({
           ),
         )
         .limit(1);
-      if (!swap) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+      if (!swap)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Solicitação não encontrada",
+        });
       await requireSwapTopologyForRead(db, swap);
       await assertActorCanReadSwap(actor, swap);
 
@@ -2297,7 +2552,11 @@ export const swapRouter = router({
       `);
 
       const data = (rows as any)[0] as any[];
-      if (!data[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Solicitação não encontrada" });
+      if (!data[0])
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Solicitação não encontrada",
+        });
 
       const r = data[0];
       return {
@@ -2311,9 +2570,17 @@ export const swapRouter = router({
         updatedAt: new Date(r.updated_at),
         reviewedAt: r.reviewed_at ? new Date(r.reviewed_at) : null,
         version: r.version,
-        fromProfessional: { id: r.from_professional_id, name: r.from_professional_name, role: r.from_professional_role },
+        fromProfessional: {
+          id: r.from_professional_id,
+          name: r.from_professional_name,
+          role: r.from_professional_role,
+        },
         toProfessional: r.to_professional_id
-          ? { id: r.to_professional_id, name: r.to_professional_name, role: r.to_professional_role }
+          ? {
+              id: r.to_professional_id,
+              name: r.to_professional_name,
+              role: r.to_professional_role,
+            }
           : null,
         fromShift: {
           id: r.from_shift_instance_id,
@@ -2347,22 +2614,43 @@ export const swapRouter = router({
     .input(
       z.object({
         type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
+        scheduleContextId: z.number().int().positive().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
 
       const userId = ctx.user!.id;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
-      if (!actor.professionalId) throw topologyDenied("Ator sem identidade profissional canônica");
+      if (!actor.professionalId)
+        throw topologyDenied("Ator sem identidade profissional canônica");
       await requireCurrentListAvailableActor(db, {
         institutionId,
         professionalId: actor.professionalId,
         userId,
         expectedSessionVersion: ctx.user.sessionVersion,
       });
+      const assumableContextIds = await listAssumableScheduleContextIds(
+        institutionId,
+        actor.professionalId,
+        db,
+      );
+      if (
+        input.scheduleContextId !== undefined &&
+        !assumableContextIds.includes(input.scheduleContextId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Escala fora do acesso ou qualificação do profissional.",
+        });
+      }
+      if (assumableContextIds.length === 0) return [];
 
       const result = await db.execute(sql`
         SELECT
@@ -2374,6 +2662,7 @@ export const swapRouter = router({
           fp.name             AS fromProfessionalName,
           fp.role             AS fromProfessionalRole,
           fsi.id              AS fromShiftInstanceId,
+          fsi.schedule_context_id AS fromScheduleContextId,
           fsi.label           AS fromShiftLabel,
           fsi.start_at        AS fromShiftStartAt,
           fsi.end_at          AS fromShiftEndAt,
@@ -2394,6 +2683,15 @@ export const swapRouter = router({
          AND fsi.institution_id = sr.institution_id
          AND fsi.hospital_id = sr.hospital_id
          AND fsi.sector_id = sr.sector_id
+        JOIN schedule_contexts fsc
+          ON fsc.id = fsi.schedule_context_id
+         AND fsc.institution_id = fsi.institution_id
+         AND fsc.hospital_id = fsi.hospital_id
+         AND fsc.sector_id = fsi.sector_id
+         AND fsc.active = 1
+        LEFT JOIN medical_specialties fms
+          ON fms.id = fsc.medical_specialty_id
+         AND fms.active = 1
         JOIN hospitals fh
           ON fh.id = fsi.hospital_id
          AND fh.institution_id = fsi.institution_id
@@ -2463,6 +2761,11 @@ export const swapRouter = router({
         WHERE sr.status = 'PENDING'
           AND sr.institution_id = ${institutionId}
           AND sr.from_user_id != ${userId}
+          ${
+            input.scheduleContextId !== undefined
+              ? sql`AND fsi.schedule_context_id = ${input.scheduleContextId}`
+              : sql``
+          }
           AND (
             (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
             OR (sr.to_professional_id = ${actor.professionalId} AND sr.to_user_id = ${userId})
@@ -2488,6 +2791,20 @@ export const swapRouter = router({
               AND source_access.hospital_id = fsi.hospital_id
               AND source_access.can_access = 1
               AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
+          )
+          AND (
+            (
+              fsc.medical_specialty_id IS NOT NULL
+              AND fms.id IS NOT NULL
+              AND ap.medical_specialty_id = fsc.medical_specialty_id
+              AND fp.medical_specialty_id = fsc.medical_specialty_id
+            )
+            OR
+            (
+              fsc.operational_profile_code IS NOT NULL
+              AND ap.operational_profile_code = fsc.operational_profile_code
+              AND fp.operational_profile_code = fsc.operational_profile_code
+            )
           )
           AND EXISTS (
             SELECT 1
@@ -2606,9 +2923,13 @@ export const swapRouter = router({
         reason: r.reason,
         expiresAt: r.expiresAt === null ? null : dateFromExecute(r.expiresAt),
         createdAt: dateFromExecute(r.createdAt),
-        fromProfessional: { name: r.fromProfessionalName, role: r.fromProfessionalRole },
+        fromProfessional: {
+          name: r.fromProfessionalName,
+          role: r.fromProfessionalRole,
+        },
         fromShift: {
           id: r.fromShiftInstanceId,
+          scheduleContextId: r.fromScheduleContextId,
           label: r.fromShiftLabel,
           startAt: dateFromExecute(r.fromShiftStartAt),
           endAt: dateFromExecute(r.fromShiftEndAt),

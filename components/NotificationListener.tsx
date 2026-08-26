@@ -71,6 +71,7 @@ export type NotificationRoutingDependencies = Readonly<{
   invalidateQueries: () => Promise<void>;
   navigateToConfirmation: (confirmationToken: string) => void;
   navigateToAgenda: () => void;
+  navigateToShiftDetails?: (shiftInstanceId: number) => void;
   openComunica: (
     institutionId: number,
     canNavigate: () => boolean,
@@ -97,6 +98,18 @@ export type NotificationRoutingCoordinator = Readonly<{
 }>;
 
 export function parseNotificationInstitutionId(value: unknown): number | null {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^[1-9]\d*$/.test(value)
+        ? Number(value)
+        : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function parseNotificationShiftInstanceId(
+  value: unknown,
+): number | null {
   const parsed =
     typeof value === "number"
       ? value
@@ -294,7 +307,14 @@ export async function routeNotificationData(
     case "duty_auto_confirmed":
     case "manager_confirmation_escalation":
     case "replacement_accepted":
-    case "replacement_declined": {
+    case "replacement_declined":
+    case "shift_reminder": {
+      const shiftInstanceId = parseNotificationShiftInstanceId(
+        data.shiftInstanceId,
+      );
+      if (shiftInstanceId === null || !dependencies.navigateToShiftDetails) {
+        return false;
+      }
       const alignedSnapshot = await alignNotificationTenant(
         data,
         dependencies,
@@ -306,7 +326,7 @@ export async function routeNotificationData(
       ) {
         return false;
       }
-      dependencies.navigateToAgenda();
+      dependencies.navigateToShiftDetails(shiftInstanceId);
       return true;
     }
 
@@ -411,6 +431,11 @@ export function NotificationListener() {
         });
       },
       navigateToAgenda: () => router.push("/(tabs)/agenda" as any),
+      navigateToShiftDetails: (shiftInstanceId) =>
+        router.push({
+          pathname: "/shift-details" as any,
+          params: { id: String(shiftInstanceId) },
+        }),
       openComunica: async (institutionId, canNavigate, signal) => {
         if (!canNavigate()) return { ok: false };
         if (Platform.OS === "web") {

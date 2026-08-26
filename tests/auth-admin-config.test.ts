@@ -14,10 +14,13 @@ import request from "supertest";
 import express, { type Express } from "express";
 import {
   auditTrail,
+  hospitals,
   institutions,
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
+  sectors,
   users,
 } from "../drizzle/schema";
 import { createAuthRateLimit } from "../server/_core/security";
@@ -31,12 +34,60 @@ import * as auditService from "../server/audit-trail";
 const STAMP = Date.now();
 const PASSWORD = "SenhaAdmin123";
 
+type TestDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+async function createSingleActiveGeneralistContext(
+  db: TestDb,
+  institutionId: number,
+  tag: string,
+): Promise<number> {
+  const [hospital] = await db
+    .insert(hospitals)
+    .values({
+      institutionId,
+      name: `AAC Hospital ${tag} ${STAMP}`,
+    })
+    .$returningId();
+  const [sector] = await db
+    .insert(sectors)
+    .values({
+      institutionId,
+      hospitalId: hospital.id,
+      name: `AAC Emergência ${tag} ${STAMP}`,
+      category: "servico",
+      color: "#2563EB",
+    })
+    .$returningId();
+  const [context] = await db
+    .insert(scheduleContexts)
+    .values({
+      institutionId,
+      hospitalId: hospital.id,
+      sectorId: sector.id,
+      medicalSpecialtyId: null,
+      operationalProfileCode: "MEDICO_GENERALISTA",
+      active: true,
+    })
+    .$returningId();
+  return context.id;
+}
+
+function generalistRegistration(scheduleContextId: number) {
+  return {
+    medicalSpecialtyCode: null,
+    operationalProfileCode: "MEDICO_GENERALISTA" as const,
+    scheduleContextIds: [scheduleContextId],
+  };
+}
+
 describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", () => {
   let app: Express;
-  let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
+  let db: TestDb;
   let instA: number;
   let instB: number;
   let instC: number;
+  let contextA: number;
+  let contextB: number;
   let adminId: number;
   let cookie: string;
   const createdUserIds: number[] = [];
@@ -74,6 +125,8 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
     instA = await mk("A");
     instB = await mk("B");
     instC = await mk("C");
+    contextA = await createSingleActiveGeneralistContext(db, instA, "A");
+    contextB = await createSingleActiveGeneralistContext(db, instB, "B");
 
     const [admin] = await db
       .insert(users)
@@ -145,6 +198,15 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .where(inArray(professionalInstitutions.userId, ids));
     await db.delete(professionals).where(inArray(professionals.userId, ids));
     await db
+      .delete(scheduleContexts)
+      .where(inArray(scheduleContexts.institutionId, [instA, instB, instC]));
+    await db
+      .delete(sectors)
+      .where(inArray(sectors.institutionId, [instA, instB, instC]));
+    await db
+      .delete(hospitals)
+      .where(inArray(hospitals.institutionId, [instA, instB, instC]));
+    await db
       .delete(institutions)
       .where(inArray(institutions.id, [instA, instB, instC]));
     await db.delete(users).where(inArray(users.id, ids));
@@ -184,6 +246,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         email: deniedEmail,
         password: "SenhaNova123",
         role: "doctor",
+        ...generalistRegistration(contextA),
       });
     expect(registerResponse.status).toBe(428);
     expect(registerResponse.body).toMatchObject({
@@ -213,6 +276,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         email: targetEmail,
         password: "SenhaNova123",
         role: "doctor",
+        ...generalistRegistration(contextB),
       });
     expect(res.status).toBe(201);
     const [u] = await db
@@ -259,6 +323,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         email: deniedEmail,
         password: "SenhaNova123",
         role: "doctor",
+        ...generalistRegistration(contextA),
       });
     expect(register.status).toBe(409);
     expect(register.body).toMatchObject({ code: "EXPECTED_USER_MISMATCH" });
@@ -327,6 +392,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         email: malformedEmail,
         password: "SenhaNova123",
         role: "doctor",
+        ...generalistRegistration(contextA),
       });
     expect(malformedRegister.status).toBe(400);
     expect(malformedRegister.body).toMatchObject({
@@ -352,6 +418,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         email: unauthenticatedEmail,
         password: "SenhaNova123",
         role: "doctor",
+        ...generalistRegistration(contextA),
       });
     expect(unauthenticatedRegister.status).toBe(401);
 
@@ -385,6 +452,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         password: "SenhaNova123",
         role: "doctor",
         institutionId: instA,
+        ...generalistRegistration(contextA),
       });
     expect(res.status).toBe(201);
     const [u] = await db
@@ -407,6 +475,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         email: `aac-x-${STAMP}@test.local`,
         password: "SenhaNova123",
         institutionId: 99999999,
+        ...generalistRegistration(contextA),
       });
     expect(bad.status).toBe(400);
   });
@@ -422,6 +491,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
             name: "AAC Sem Tenant",
             email: email("missing"),
             password: "SenhaNova123",
+            ...generalistRegistration(contextA),
           })
       ).status,
     ).toBe(400);
@@ -436,6 +506,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
             email: email("mismatch"),
             password: "SenhaNova123",
             institutionId: instB,
+            ...generalistRegistration(contextA),
           })
       ).status,
     ).toBe(400);
@@ -449,6 +520,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
             name: "AAC Tenant C",
             email: email("foreign"),
             password: "SenhaNova123",
+            ...generalistRegistration(contextA),
           })
       ).status,
     ).toBe(403);
@@ -466,14 +538,20 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
     const cases = [
       {
         tag: "legacy-admin",
-        payload: { role: "admin" },
+        payload: {
+          role: "admin",
+          ...generalistRegistration(contextA),
+        },
         globalRole: "doctor",
         institutionRole: "GESTOR_PLUS",
         professionalLabel: "Médico",
       },
       {
         tag: "legacy-manager",
-        payload: { role: "manager" },
+        payload: {
+          role: "manager",
+          ...generalistRegistration(contextA),
+        },
         globalRole: "doctor",
         institutionRole: "GESTOR_MEDICO",
         professionalLabel: "Médico",
@@ -538,6 +616,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         password: "SenhaNova123",
         role: "admin",
         roleInInstitution: "USER",
+        ...generalistRegistration(contextA),
       });
     expect(conflict.status).toBe(400);
     expect(
@@ -560,6 +639,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         password: "SenhaNova123",
         professionalRole: "doctor",
         roleInInstitution: "GESTOR_PLUS",
+        ...generalistRegistration(contextA),
       });
     expect(actorCreation.status).toBe(201);
     const [actor] = await db
@@ -588,6 +668,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         name: "AAC Contextual Child",
         email: childEmail,
         password: "SenhaNova123",
+        ...generalistRegistration(contextA),
       });
     expect(child.status).toBe(201);
     const [childUser] = await db
@@ -614,6 +695,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         name: "AAC Contextual Denied",
         email: deniedEmail,
         password: "SenhaNova123",
+        ...generalistRegistration(contextA),
       });
     expect(denied.status).toBe(403);
     expect(
@@ -656,6 +738,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
           name: "AAC Revoked Race",
           email: targetEmail,
           password: gatedPassword,
+          ...generalistRegistration(contextA),
         })
         .then((response) => response);
       await hashStarted;
@@ -749,6 +832,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         name: "AAC Poisoned Target",
         email: deniedEmail,
         password: "SenhaNova123",
+        ...generalistRegistration(contextA),
       });
     expect(denied.status).toBe(403);
     expect(
@@ -772,6 +856,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         password: "SenhaNova123",
         professionalRole: "doctor",
         roleInInstitution: "GESTOR_PLUS",
+        ...generalistRegistration(contextA),
       });
     auditFailure.mockRestore();
     expect(failed.status).toBe(500);
@@ -836,6 +921,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         name: "AAC Orphan Target",
         email: deniedEmail,
         password: "SenhaNova123",
+        ...generalistRegistration(contextA),
       });
     expect(denied.status).toBe(403);
     expect(
@@ -927,6 +1013,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
           name: "AAC Session Revoked Register",
           email: targetEmail,
           password: gatedPassword,
+          ...generalistRegistration(contextA),
         })
         .then((response) => response);
       await hashStarted;

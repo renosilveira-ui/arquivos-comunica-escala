@@ -16,6 +16,10 @@ import {
 } from "./session-binding-protocol";
 import { getActiveWebSessionWorkflowSignal } from "./web-session-workflow";
 import { getActiveInstitutionId } from "../tenant-state";
+import type {
+  MedicalSpecialtyCode,
+  OperationalProfileCode,
+} from "../medical-specialties";
 
 export { getApiBaseUrl } from "./api-base-url";
 
@@ -718,7 +722,8 @@ export const authApi = {
     email: string;
     password: string;
     institutionId: number;
-    specialty?: string;
+    medicalSpecialtyCode: MedicalSpecialtyCode | null;
+    operationalProfileCode: OperationalProfileCode | null;
   }): Promise<{ ok: boolean; error?: string }> {
     const res = await apiFetchInternal<{ ok?: boolean; error?: string }>(
       "/api/auth/signup",

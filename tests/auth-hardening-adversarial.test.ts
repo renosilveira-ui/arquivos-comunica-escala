@@ -940,6 +940,7 @@ describe("auth hardening adversarial", () => {
             institutionId: shift.institutionId,
             hospitalId: shift.hospitalId,
             sectorId: shift.sectorId,
+            scheduleContextId: shift.scheduleContextId,
             startAt: shift.startAt,
             endAt: shift.endAt,
             requiredSpecialty: shift.specialty,

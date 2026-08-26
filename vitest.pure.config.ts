@@ -1,0 +1,37 @@
+import path from "node:path";
+import { defineConfig } from "vitest/config";
+
+/**
+ * Suítes estruturais sem banco. O vitest.config.ts principal prepara e semeia
+ * MySQL para testes de integração; estes contratos devem rodar também antes de
+ * qualquer migration ser aplicada.
+ */
+export default defineConfig({
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./"),
+    },
+  },
+  test: {
+    environment: "node",
+    setupFiles: [],
+    include: [
+      "tests/medical-specialties-catalog.test.ts",
+      "tests/schedule-contexts-schema.test.ts",
+      "tests/schedule-contexts-migration.test.ts",
+      "tests/schedule-context-policy.test.ts",
+      "tests/medical-qualification.test.ts",
+      "tests/sao-carlos-context-blueprint.test.ts",
+      "tests/schedule-context-router.test.ts",
+      "tests/schedule-context-selection.test.ts",
+      "tests/assignment-schedule-context-guards.test.ts",
+      "tests/schedule-context-readiness.test.ts",
+      "tests/admin-schedule-context-selection.test.ts",
+      "tests/schedule-context-readers-source.test.ts",
+      "tests/notification-shift-routing.test.ts",
+      "tests/bulk-import-structured-guard.test.ts",
+      "tests/replacement-candidates-schedule-context.test.ts",
+      "tests/edit-shift-context-immutable.test.ts",
+    ],
+  },
+});

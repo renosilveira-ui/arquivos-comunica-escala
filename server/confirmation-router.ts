@@ -4,16 +4,16 @@ import { router, protectedProcedure, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { assertMonthNotLockedForUpdate } from "./month-guards";
 import { recomputeShiftStatus } from "./shift-status";
-import { eq, and, asc, isNull } from "drizzle-orm";
+import { eq, and, asc, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   dutyConfirmations,
   professionals,
-  professionalInstitutions,
   shiftAssignmentsV2,
   users,
 } from "../drizzle/schema";
-import { assertSpecialtyCompatible, specialtiesConflict } from "./specialty";
+import { assertSpecialtyCompatible } from "./specialty";
+import { rowsFromExecute } from "./_core/db-results";
 import { recordAudit } from "./audit-trail";
 import { enqueueAutoSsoPush, triggerAutoSso } from "./sso/auto-sso";
 import {
@@ -40,6 +40,10 @@ import {
   assertAssignmentWritesAllowedForUpdate,
   assertShiftAssignmentCapacityForUpdate,
 } from "./shift-validations-v2";
+import {
+  assertActiveScheduleContextTopology,
+  assertProfessionalEligibleForScheduleContext,
+} from "./schedule-contexts";
 
 type ConfirmationDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -81,12 +85,14 @@ export const confirmationRouter = router({
    * Registra push token do dispositivo para o usuário logado.
    */
   registerPushToken: sessionProcedure
-    .input(z.object({
-      token: expoPushTokenInput,
-      previousToken: expoPushTokenInput.optional(),
-      platform: z.enum(["ios", "android", "web"]),
-      expectedUserId: z.number().int().positive(),
-    }))
+    .input(
+      z.object({
+        token: expoPushTokenInput,
+        previousToken: expoPushTokenInput.optional(),
+        platform: z.enum(["ios", "android", "web"]),
+        expectedUserId: z.number().int().positive(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       if (input.expectedUserId !== ctx.user.id) {
         throw new TRPCError({
@@ -94,7 +100,8 @@ export const confirmationRouter = router({
           message: "Usuário do registro push não corresponde à sessão",
         });
       }
-      const { registerPushToken: register } = await import("./notifications-service");
+      const { registerPushToken: register } =
+        await import("./notifications-service");
       return register(
         ctx.user.id,
         input.token,
@@ -109,10 +116,12 @@ export const confirmationRouter = router({
 
   /** Logout / troca de conta: o aparelho deixa de receber push deste usuário. */
   unregisterPushToken: sessionProcedure
-    .input(z.object({
-      token: expoPushTokenInput,
-      expectedUserId: z.number().int().positive(),
-    }))
+    .input(
+      z.object({
+        token: expoPushTokenInput,
+        expectedUserId: z.number().int().positive(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       if (input.expectedUserId !== ctx.user.id) {
         throw new TRPCError({
@@ -120,7 +129,8 @@ export const confirmationRouter = router({
           message: "Usuário do desregistro push não corresponde à sessão",
         });
       }
-      const { unregisterPushToken: unregister } = await import("./notifications-service");
+      const { unregisterPushToken: unregister } =
+        await import("./notifications-service");
       return unregister(ctx.user.id, input.token, ctx.user.sessionVersion);
     }),
 
@@ -169,59 +179,140 @@ export const confirmationRouter = router({
    * Lista profissionais da instituição ativa (para indicar substituto).
    * Exclui o próprio usuário logado.
    */
-  listReplacementCandidates: protectedProcedure.query(async ({ ctx }) => {
-    const db = await getDb();
-    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+  listReplacementCandidates: protectedProcedure
+    .input(z.object({ confirmationToken: z.string().uuid() }).optional())
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-    const rows = await db
-      .select({
-        id: professionals.id,
-        name: professionals.name,
-        role: professionals.role,
-        userId: professionals.userId,
-        specialty: professionals.specialty,
-      })
-      .from(professionals)
-      .innerJoin(
-        professionalInstitutions,
-        and(
-          eq(professionalInstitutions.professionalId, professionals.id),
-          eq(professionalInstitutions.institutionId, ctx.institutionId),
-          eq(professionalInstitutions.active, true),
-        ),
-      )
-      .innerJoin(
-        users,
-        and(
-          eq(users.id, professionalInstitutions.userId),
-          eq(users.approvalStatus, "APPROVED"),
-          isNull(users.deletedAt),
-        ),
-      )
-      .where(
-        // Exclude the logged-in user
-        eq(professionalInstitutions.userId, professionals.userId),
+      const candidateConfirmations = await db
+        .select({ id: dutyConfirmations.id })
+        .from(dutyConfirmations)
+        .where(
+          and(
+            ...(input?.confirmationToken
+              ? [
+                  eq(
+                    dutyConfirmations.confirmationToken,
+                    input.confirmationToken,
+                  ),
+                ]
+              : []),
+            eq(dutyConfirmations.userId, ctx.user.id),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
+            eq(dutyConfirmations.status, "DECLINED"),
+          ),
+        )
+        .limit(2);
+      const candidateConfirmation = candidateConfirmations[0];
+      if (!candidateConfirmation) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Confirmação recusada não encontrada",
+        });
+      }
+      if (!input?.confirmationToken && candidateConfirmations.length > 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Há mais de uma recusa pendente; abra novamente o plantão para indicar o substituto correto.",
+        });
+      }
+
+      const current = await requireValidDutyConfirmation(
+        db,
+        candidateConfirmation.id,
+        {
+          allowedStatuses: ["DECLINED"],
+          expectedActor: { kind: "ORIGINAL", userId: ctx.user.id },
+          expectedInstitutionId: ctx.institutionId,
+        },
       );
+      if (current.shift.scheduleContextId === null) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Plantão sem escala operacional classificada; solicite regularização ao gestor.",
+        });
+      }
 
-    // Só colegas do MESMO serviço podem substituir (NULL = sem restrição).
-    const [me] = await db
-      .select({ specialty: professionals.specialty })
-      .from(professionals)
-      .where(eq(professionals.userId, ctx.user.id))
-      .limit(1);
+      // A lista usa a mesma verdade canônica da mutation: contexto ativo,
+      // topologia composta, qualificação estruturada e ACL setorial. O texto
+      // legado de especialidade nunca concede nem nega um candidato.
+      const result = await db.execute(sql`
+        SELECT DISTINCT p.id, p.name, p.role
+        FROM professionals p
+        INNER JOIN professional_institutions pi
+          ON pi.professional_id = p.id
+         AND pi.user_id = p.user_id
+         AND pi.institution_id = ${current.shift.institutionId}
+         AND pi.active = true
+        INNER JOIN users u
+          ON u.id = p.user_id
+         AND u.approval_status = 'APPROVED'
+         AND u.deleted_at IS NULL
+        INNER JOIN professional_access pa
+          ON pa.professional_id = p.id
+         AND pa.institution_id = ${current.shift.institutionId}
+         AND pa.hospital_id = ${current.shift.hospitalId}
+         AND pa.can_access = true
+         AND (pa.sector_id IS NULL OR pa.sector_id = ${current.shift.sectorId})
+        INNER JOIN schedule_contexts sc
+          ON sc.id = ${current.shift.scheduleContextId}
+         AND sc.institution_id = ${current.shift.institutionId}
+         AND sc.hospital_id = ${current.shift.hospitalId}
+         AND sc.sector_id = ${current.shift.sectorId}
+         AND sc.active = true
+        LEFT JOIN medical_specialties ms
+          ON ms.id = sc.medical_specialty_id
+         AND ms.active = true
+        WHERE p.id != ${current.original.professionalId}
+          AND p.user_id != ${current.original.userId}
+          AND (
+            (
+              sc.medical_specialty_id IS NOT NULL
+              AND ms.id IS NOT NULL
+              AND p.medical_specialty_id = sc.medical_specialty_id
+            )
+            OR
+            (
+              sc.operational_profile_code IS NOT NULL
+              AND p.operational_profile_code = sc.operational_profile_code
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM shift_assignments_v2 conflict_assignment
+            INNER JOIN shift_instances conflict_shift
+              ON conflict_shift.id = conflict_assignment.shift_instance_id
+             AND conflict_shift.institution_id = conflict_assignment.institution_id
+             AND conflict_shift.hospital_id = conflict_assignment.hospital_id
+             AND conflict_shift.sector_id = conflict_assignment.sector_id
+            WHERE conflict_assignment.professional_id = p.id
+              AND conflict_assignment.is_active = true
+              AND conflict_shift.start_at < ${current.shift.endAt}
+              AND conflict_shift.end_at > ${current.shift.startAt}
+          )
+        ORDER BY p.name ASC
+      `);
 
-    return rows
-      .filter((r) => r.userId !== ctx.user.id)
-      .filter((r) => !specialtiesConflict(me?.specialty ?? null, r.specialty))
-      .map((r) => ({ id: r.id, name: r.name, role: r.role }));
-  }),
+      return rowsFromExecute<{ id: number; name: string; role: string }>(
+        result,
+      ).map((candidate) => ({
+        id: Number(candidate.id),
+        name: String(candidate.name),
+        role: String(candidate.role),
+      }));
+    }),
 
   /**
    * Retorna confirmação pendente para o usuário logado (se houver).
    * Usado pelo frontend para exibir tela de confirmação.
    */
   getPending: protectedProcedure
-    .input(z.object({ confirmationToken: z.string().uuid().optional() }).optional())
+    .input(
+      z.object({ confirmationToken: z.string().uuid().optional() }).optional(),
+    )
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -290,7 +381,10 @@ export const confirmationRouter = router({
         .limit(1);
 
       if (!conf) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Confirmação não encontrada" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Confirmação não encontrada",
+        });
       }
       await db.transaction(async (tx) => {
         const current = await requireValidDutyConfirmation(tx, conf.id, {
@@ -309,35 +403,45 @@ export const confirmationRouter = router({
           expectedStatus: "PENDING",
           respondedAt: new Date(),
         });
-        await recordAudit({
-          action: "ASSIGNMENT_APPROVED",
-          entityType: "SHIFT_ASSIGNMENT",
-          entityId: current.confirmation.assignmentId,
-          actorUserId: ctx.user.id,
-          actorRole: ctx.user.role,
-          actorName: ctx.user.name ?? undefined,
-          institutionId: current.confirmation.institutionId,
-          shiftInstanceId: current.confirmation.shiftInstanceId,
-          description: "Médico confirmou presença no plantão",
-        }, { db: tx, strict: true });
+        await recordAudit(
+          {
+            action: "ASSIGNMENT_APPROVED",
+            entityType: "SHIFT_ASSIGNMENT",
+            entityId: current.confirmation.assignmentId,
+            actorUserId: ctx.user.id,
+            actorRole: ctx.user.role,
+            actorName: ctx.user.name ?? undefined,
+            institutionId: current.confirmation.institutionId,
+            shiftInstanceId: current.confirmation.shiftInstanceId,
+            description: "Médico confirmou presença no plantão",
+          },
+          { db: tx, strict: true },
+        );
         const externalSubjectBinding = await resolveApprovedExternalSubject(
           tx,
           current.original.userId,
         );
-        await enqueueDutySync({
-          confirmationId: current.confirmation.id,
-          institutionId: current.shift.institutionId,
-          shiftInstanceId: current.shift.id,
-          targetUserId: current.original.userId,
-          ...externalSubjectBinding,
-          shiftSnapshot: dutyShiftSnapshot(current.shift),
-          action: "CONFIRM",
-          confirmationStatus: "CONFIRMED",
-          expectedStatuses: ["CONFIRMED"],
-          dutyType: current.shift.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO",
-          serviceName: current.shift.specialty,
-          dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:confirmed:${current.original.userId}`,
-        }, new Date(), tx);
+        await enqueueDutySync(
+          {
+            confirmationId: current.confirmation.id,
+            institutionId: current.shift.institutionId,
+            shiftInstanceId: current.shift.id,
+            targetUserId: current.original.userId,
+            ...externalSubjectBinding,
+            shiftSnapshot: dutyShiftSnapshot(current.shift),
+            action: "CONFIRM",
+            confirmationStatus: "CONFIRMED",
+            expectedStatuses: ["CONFIRMED"],
+            dutyType:
+              current.shift.modality === "SOBREAVISO"
+                ? "SOBREAVISO"
+                : "PLANTAO",
+            serviceName: current.shift.specialty,
+            dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:confirmed:${current.original.userId}`,
+          },
+          new Date(),
+          tx,
+        );
         await enqueueAutoSsoPush(current.confirmation.id, new Date(), tx);
       });
 
@@ -352,10 +456,12 @@ export const confirmationRouter = router({
    * Médico recusa o plantão. Pode indicar substituto depois.
    */
   decline: protectedProcedure
-    .input(z.object({
-      confirmationToken: z.string().uuid(),
-      reason: z.string().max(500).optional(),
-    }))
+    .input(
+      z.object({
+        confirmationToken: z.string().uuid(),
+        reason: z.string().max(500).optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -373,7 +479,10 @@ export const confirmationRouter = router({
         .limit(1);
 
       if (!conf) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Confirmação não encontrada" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Confirmação não encontrada",
+        });
       }
       // Reset recheck timer: +30min from now for replacement flow
       const newRecheckAt = new Date(Date.now() + 30 * 60 * 1000);
@@ -397,40 +506,50 @@ export const confirmationRouter = router({
           declineReason: input.reason ?? null,
           recheckAt: newRecheckAt,
         });
-        await recordAudit({
-          action: "ASSIGNMENT_REJECTED",
-          entityType: "SHIFT_ASSIGNMENT",
-          entityId: current.confirmation.assignmentId,
-          actorUserId: ctx.user.id,
-          actorRole: ctx.user.role,
-          actorName: ctx.user.name ?? undefined,
-          institutionId: current.confirmation.institutionId,
-          shiftInstanceId: current.confirmation.shiftInstanceId,
-          description: `Médico recusou plantão${input.reason ? `: ${input.reason}` : ""}`,
-        }, { db: tx, strict: true });
+        await recordAudit(
+          {
+            action: "ASSIGNMENT_REJECTED",
+            entityType: "SHIFT_ASSIGNMENT",
+            entityId: current.confirmation.assignmentId,
+            actorUserId: ctx.user.id,
+            actorRole: ctx.user.role,
+            actorName: ctx.user.name ?? undefined,
+            institutionId: current.confirmation.institutionId,
+            shiftInstanceId: current.confirmation.shiftInstanceId,
+            description: `Médico recusou plantão${input.reason ? `: ${input.reason}` : ""}`,
+          },
+          { db: tx, strict: true },
+        );
         const externalSubjectBinding = await resolveApprovedExternalSubject(
           tx,
           current.original.userId,
         );
-        await enqueueDutySync({
-          confirmationId: current.confirmation.id,
-          institutionId: current.shift.institutionId,
-          shiftInstanceId: current.shift.id,
-          targetUserId: current.original.userId,
-          ...externalSubjectBinding,
-          shiftSnapshot: dutyShiftSnapshot(current.shift),
-          action: "WITHDRAW",
-          confirmationStatus: "DECLINED",
-          expectedStatuses: [
-            "DECLINED",
-            "NOMINATED",
-            "REPLACEMENT_DECLINED",
-            "REPLACEMENT_CONFIRMED",
-          ],
-          dutyType: current.shift.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO",
-          serviceName: current.shift.specialty,
-          dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:withdraw:${current.original.userId}`,
-        }, new Date(), tx);
+        await enqueueDutySync(
+          {
+            confirmationId: current.confirmation.id,
+            institutionId: current.shift.institutionId,
+            shiftInstanceId: current.shift.id,
+            targetUserId: current.original.userId,
+            ...externalSubjectBinding,
+            shiftSnapshot: dutyShiftSnapshot(current.shift),
+            action: "WITHDRAW",
+            confirmationStatus: "DECLINED",
+            expectedStatuses: [
+              "DECLINED",
+              "NOMINATED",
+              "REPLACEMENT_DECLINED",
+              "REPLACEMENT_CONFIRMED",
+            ],
+            dutyType:
+              current.shift.modality === "SOBREAVISO"
+                ? "SOBREAVISO"
+                : "PLANTAO",
+            serviceName: current.shift.specialty,
+            dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:withdraw:${current.original.userId}`,
+          },
+          new Date(),
+          tx,
+        );
       });
 
       return { ok: true, status: "DECLINED" as const };
@@ -441,10 +560,12 @@ export const confirmationRouter = router({
    * Envia push ao substituto pedindo aceite.
    */
   nominateReplacement: protectedProcedure
-    .input(z.object({
-      confirmationToken: z.string().uuid(),
-      replacementProfessionalId: z.number().int().positive(),
-    }))
+    .input(
+      z.object({
+        confirmationToken: z.string().uuid(),
+        replacementProfessionalId: z.number().int().positive(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -462,7 +583,10 @@ export const confirmationRouter = router({
         .limit(1);
 
       if (!conf) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Confirmação não encontrada" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Confirmação não encontrada",
+        });
       }
       const [candidateSnapshot] = await db
         .select({ id: professionals.id, userId: professionals.userId })
@@ -487,11 +611,13 @@ export const confirmationRouter = router({
             sessionVersion: ctx.user.sessionVersion,
           },
           expectedInstitutionId: ctx.institutionId,
-          additionalAuthorityTargets: [{
-            professionalId: candidateSnapshot.id,
-            userId: candidateSnapshot.userId,
-            requireAccess: true,
-          }],
+          additionalAuthorityTargets: [
+            {
+              professionalId: candidateSnapshot.id,
+              userId: candidateSnapshot.userId,
+              requireAccess: true,
+            },
+          ],
           lockForUpdate: true,
         });
         // O vínculo e o acesso do indicado são reavaliados na mesma
@@ -534,7 +660,27 @@ export const confirmationRouter = router({
           });
         }
 
-        assertSpecialtyCompatible(current.shift.specialty, candidate.specialty);
+        if (current.shift.scheduleContextId === null) {
+          assertSpecialtyCompatible(
+            current.shift.specialty,
+            candidate.specialty,
+          );
+        } else {
+          await assertProfessionalEligibleForScheduleContext({
+            institutionId: current.shift.institutionId,
+            professionalId: candidate.id,
+            scheduleContextId: current.shift.scheduleContextId,
+            db: tx,
+            lockForShare: true,
+          });
+          await assertActiveScheduleContextTopology({
+            institutionId: current.shift.institutionId,
+            hospitalId: current.shift.hospitalId,
+            sectorId: current.shift.sectorId,
+            scheduleContextId: current.shift.scheduleContextId,
+            db: tx,
+          });
+        }
         await transitionDutyConfirmation(tx, {
           kind: "NOMINATE",
           ...dutyConfirmationCasIdentity(current.confirmation),
@@ -545,12 +691,22 @@ export const confirmationRouter = router({
         });
 
         const TZ = "America/Sao_Paulo";
-        const startTime = new Date(current.shift.startAt).toLocaleTimeString("pt-BR", {
-          hour: "2-digit", minute: "2-digit", timeZone: TZ,
-        });
-        const endTime = new Date(current.shift.endAt).toLocaleTimeString("pt-BR", {
-          hour: "2-digit", minute: "2-digit", timeZone: TZ,
-        });
+        const startTime = new Date(current.shift.startAt).toLocaleTimeString(
+          "pt-BR",
+          {
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZone: TZ,
+          },
+        );
+        const endTime = new Date(current.shift.endAt).toLocaleTimeString(
+          "pt-BR",
+          {
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZone: TZ,
+          },
+        );
         const intent: TrackedPushInput = {
           institutionId: current.shift.institutionId,
           userId: candidate.userId,
@@ -578,27 +734,36 @@ export const confirmationRouter = router({
           },
         };
         await enqueueTrackedPushNotification(intent, new Date(), tx);
-        await recordAudit({
-          action: "TRANSFER_OFFERED",
-          entityType: "SHIFT_ASSIGNMENT",
-          entityId: current.confirmation.assignmentId,
-          actorUserId: ctx.user.id,
-          actorRole: ctx.user.role,
-          actorName: ctx.user.name ?? undefined,
-          institutionId: current.confirmation.institutionId,
-          shiftInstanceId: current.confirmation.shiftInstanceId,
-          toProfessionalId: candidate.id,
-          toUserId: candidate.userId,
-          description: `Indicou ${candidate.name} como substituto`,
-        }, { db: tx, strict: true });
+        await recordAudit(
+          {
+            action: "TRANSFER_OFFERED",
+            entityType: "SHIFT_ASSIGNMENT",
+            entityId: current.confirmation.assignmentId,
+            actorUserId: ctx.user.id,
+            actorRole: ctx.user.role,
+            actorName: ctx.user.name ?? undefined,
+            institutionId: current.confirmation.institutionId,
+            shiftInstanceId: current.confirmation.shiftInstanceId,
+            toProfessionalId: candidate.id,
+            toUserId: candidate.userId,
+            description: `Indicou ${candidate.name} como substituto`,
+          },
+          { db: tx, strict: true },
+        );
         return { replacement: candidate, pushIntent: intent };
       });
 
       await sendTrackedPushNotification(pushIntent).catch(() =>
-        console.error(`[Confirmation] NOMINATION_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`),
+        console.error(
+          `[Confirmation] NOMINATION_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`,
+        ),
       );
 
-      return { ok: true, status: "NOMINATED" as const, replacementName: replacement.name };
+      return {
+        ok: true,
+        status: "NOMINATED" as const,
+        replacementName: replacement.name,
+      };
     }),
 
   /**
@@ -623,11 +788,17 @@ export const confirmationRouter = router({
         .limit(1);
 
       if (!conf) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Confirmação não encontrada" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Confirmação não encontrada",
+        });
       }
 
       if (conf.status !== "NOMINATED") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Esta indicação já foi processada" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Esta indicação já foi processada",
+        });
       }
       const valid = await requireValidDutyConfirmation(db, conf.id, {
         allowedStatuses: ["NOMINATED"],
@@ -639,7 +810,8 @@ export const confirmationRouter = router({
       if (!valid.original.isActive) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "A alocação original já foi alterada — esta indicação não vale mais.",
+          message:
+            "A alocação original já foi alterada — esta indicação não vale mais.",
         });
       }
       // Realocação é a mesma operação de uma cessão: transação, alocação
@@ -668,30 +840,36 @@ export const confirmationRouter = router({
           current.shift.institutionId !== valid.shift.institutionId ||
           current.shift.hospitalId !== valid.shift.hospitalId ||
           current.shift.sectorId !== valid.shift.sectorId ||
+          current.shift.scheduleContextId !== valid.shift.scheduleContextId ||
           current.shift.startAt.getTime() !== valid.shift.startAt.getTime()
         ) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "O plantão mudou durante o aceite; atualize a tela e tente novamente.",
+            message:
+              "O plantão mudou durante o aceite; atualize a tela e tente novamente.",
           });
         }
         if (!current.original.isActive) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "A alocação original já foi alterada — esta indicação não vale mais.",
+            message:
+              "A alocação original já foi alterada — esta indicação não vale mais.",
           });
         }
         const replacementPro = current.replacement!;
-        await assertAssignmentWritesAllowedForUpdate(tx, [{
-          professionalId: replacementPro.professionalId,
-          expectedUserId: replacementPro.userId,
-          institutionId: current.shift.institutionId,
-          hospitalId: current.shift.hospitalId,
-          sectorId: current.shift.sectorId,
-          startAt: current.shift.startAt,
-          endAt: current.shift.endAt,
-          requiredSpecialty: current.shift.specialty,
-        }]);
+        await assertAssignmentWritesAllowedForUpdate(tx, [
+          {
+            professionalId: replacementPro.professionalId,
+            expectedUserId: replacementPro.userId,
+            institutionId: current.shift.institutionId,
+            hospitalId: current.shift.hospitalId,
+            sectorId: current.shift.sectorId,
+            scheduleContextId: current.shift.scheduleContextId,
+            startAt: current.shift.startAt,
+            endAt: current.shift.endAt,
+            requiredSpecialty: current.shift.specialty,
+          },
+        ]);
         await assertShiftAssignmentCapacityForUpdate(tx, {
           shiftInstanceId: current.shift.id,
           institutionId: current.shift.institutionId,
@@ -714,11 +892,17 @@ export const confirmationRouter = router({
         const [deactivated] = await tx
           .update(shiftAssignmentsV2)
           .set({ isActive: false })
-          .where(and(eq(shiftAssignmentsV2.id, current.original.assignmentId!), eq(shiftAssignmentsV2.isActive, true)));
+          .where(
+            and(
+              eq(shiftAssignmentsV2.id, current.original.assignmentId!),
+              eq(shiftAssignmentsV2.isActive, true),
+            ),
+          );
         if (!deactivated.affectedRows) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "A alocação original já foi alterada — esta indicação não vale mais.",
+            message:
+              "A alocação original já foi alterada — esta indicação não vale mais.",
           });
         }
         await tx.insert(shiftAssignmentsV2).values({
@@ -760,49 +944,63 @@ export const confirmationRouter = router({
           },
         };
         await enqueueTrackedPushNotification(intent, new Date(), tx);
-        await recordAudit({
-          action: "TRANSFER_ACCEPTED",
-          entityType: "SHIFT_ASSIGNMENT",
-          entityId: current.confirmation.assignmentId,
-          actorUserId: ctx.user.id,
-          actorRole: ctx.user.role,
-          actorName: ctx.user.name ?? undefined,
-          institutionId: current.confirmation.institutionId,
-          shiftInstanceId: current.confirmation.shiftInstanceId,
-          fromProfessionalId: current.confirmation.professionalId,
-          fromUserId: current.confirmation.userId,
-          toProfessionalId: replacementPro.professionalId,
-          toUserId: replacementPro.userId,
-          description: "Substituto aceitou o plantão",
-        }, { db: tx, strict: true });
+        await recordAudit(
+          {
+            action: "TRANSFER_ACCEPTED",
+            entityType: "SHIFT_ASSIGNMENT",
+            entityId: current.confirmation.assignmentId,
+            actorUserId: ctx.user.id,
+            actorRole: ctx.user.role,
+            actorName: ctx.user.name ?? undefined,
+            institutionId: current.confirmation.institutionId,
+            shiftInstanceId: current.confirmation.shiftInstanceId,
+            fromProfessionalId: current.confirmation.professionalId,
+            fromUserId: current.confirmation.userId,
+            toProfessionalId: replacementPro.professionalId,
+            toUserId: replacementPro.userId,
+            description: "Substituto aceitou o plantão",
+          },
+          { db: tx, strict: true },
+        );
         const externalSubjectBinding = await resolveApprovedExternalSubject(
           tx,
           replacementPro.userId,
         );
-        await enqueueDutySync({
-          confirmationId: current.confirmation.id,
-          institutionId: current.shift.institutionId,
-          shiftInstanceId: current.shift.id,
-          targetUserId: replacementPro.userId,
-          ...externalSubjectBinding,
-          shiftSnapshot: dutyShiftSnapshot(current.shift),
-          action: "CONFIRM",
-          confirmationStatus: "REPLACEMENT_CONFIRMED",
-          expectedStatuses: ["REPLACEMENT_CONFIRMED"],
-          dutyType: current.shift.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO",
-          serviceName: current.shift.specialty,
-          dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:replacement-confirmed:${replacementPro.userId}`,
-        }, new Date(), tx);
+        await enqueueDutySync(
+          {
+            confirmationId: current.confirmation.id,
+            institutionId: current.shift.institutionId,
+            shiftInstanceId: current.shift.id,
+            targetUserId: replacementPro.userId,
+            ...externalSubjectBinding,
+            shiftSnapshot: dutyShiftSnapshot(current.shift),
+            action: "CONFIRM",
+            confirmationStatus: "REPLACEMENT_CONFIRMED",
+            expectedStatuses: ["REPLACEMENT_CONFIRMED"],
+            dutyType:
+              current.shift.modality === "SOBREAVISO"
+                ? "SOBREAVISO"
+                : "PLANTAO",
+            serviceName: current.shift.specialty,
+            dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:replacement-confirmed:${replacementPro.userId}`,
+          },
+          new Date(),
+          tx,
+        );
         await enqueueAutoSsoPush(current.confirmation.id, new Date(), tx);
         return intent;
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       // Auto-SSO for replacement → Comunica+ (fire-and-forget)
       triggerAutoSso(conf.id).catch(() =>
-        console.error(`[Confirmation] REPLACEMENT_AUTO_SSO_FAILED confirmation=${conf.id}`),
+        console.error(
+          `[Confirmation] REPLACEMENT_AUTO_SSO_FAILED confirmation=${conf.id}`,
+        ),
       );
       await sendTrackedPushNotification(pushIntent).catch(() =>
-        console.error(`[Confirmation] ACCEPTANCE_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`),
+        console.error(
+          `[Confirmation] ACCEPTANCE_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`,
+        ),
       );
 
       return { ok: true, status: "REPLACEMENT_CONFIRMED" as const };
@@ -852,7 +1050,8 @@ export const confirmationRouter = router({
           kind: "DECLINE_NOMINATION",
           ...dutyConfirmationCasIdentity(current.confirmation),
           expectedStatus: "NOMINATED",
-          expectedReplacementProfessionalId: current.replacement!.professionalId,
+          expectedReplacementProfessionalId:
+            current.replacement!.professionalId,
           expectedReplacementUserId: current.replacement!.userId,
           respondedAt: escalateAt,
           recheckAt: escalateAt,
@@ -884,26 +1083,31 @@ export const confirmationRouter = router({
           },
         };
         await enqueueTrackedPushNotification(intent, escalateAt, tx);
-        await recordAudit({
-          action: "TRANSFER_REJECTED",
-          entityType: "SHIFT_ASSIGNMENT",
-          entityId: current.confirmation.assignmentId,
-          actorUserId: ctx.user.id,
-          actorRole: ctx.user.role,
-          actorName: ctx.user.name ?? undefined,
-          institutionId: current.confirmation.institutionId,
-          shiftInstanceId: current.confirmation.shiftInstanceId,
-          fromProfessionalId: current.confirmation.professionalId,
-          fromUserId: current.confirmation.userId,
-          toProfessionalId: current.replacement!.professionalId,
-          toUserId: current.replacement!.userId,
-          description: "Substituto recusou o plantão indicado",
-        }, { db: tx, strict: true });
+        await recordAudit(
+          {
+            action: "TRANSFER_REJECTED",
+            entityType: "SHIFT_ASSIGNMENT",
+            entityId: current.confirmation.assignmentId,
+            actorUserId: ctx.user.id,
+            actorRole: ctx.user.role,
+            actorName: ctx.user.name ?? undefined,
+            institutionId: current.confirmation.institutionId,
+            shiftInstanceId: current.confirmation.shiftInstanceId,
+            fromProfessionalId: current.confirmation.professionalId,
+            fromUserId: current.confirmation.userId,
+            toProfessionalId: current.replacement!.professionalId,
+            toUserId: current.replacement!.userId,
+            description: "Substituto recusou o plantão indicado",
+          },
+          { db: tx, strict: true },
+        );
         return intent;
       });
 
       await sendTrackedPushNotification(pushIntent).catch(() =>
-        console.error(`[Confirmation] DECLINE_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`),
+        console.error(
+          `[Confirmation] DECLINE_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`,
+        ),
       );
 
       return { ok: true };

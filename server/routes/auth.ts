@@ -10,7 +10,7 @@ import {
   institutions,
   professionalInstitutions,
   professionalAccess,
-  hospitals,
+  medicalSpecialties,
   passwordResets,
   shiftAssignmentsV2,
   shiftInstances,
@@ -55,6 +55,16 @@ import {
   revokeUserPushRegistrations,
   withPushAccountMutex,
 } from "../push-registration-revocation";
+import {
+  parseMedicalQualification,
+  type CanonicalMedicalQualification,
+} from "../medical-qualification";
+import {
+  parseScheduleContextIds,
+  resolveScheduleContextAclSelection,
+  scheduleContextsToSpecificAccessTargets,
+  ScheduleContextAclError,
+} from "../schedule-contexts";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -2388,15 +2398,29 @@ authRouter.post(
       return;
     }
 
-    const { name, email, password, role, professionalRole, roleInInstitution } =
-      req.body as {
-        name?: unknown;
-        email?: unknown;
-        password?: unknown;
-        role?: unknown;
-        professionalRole?: unknown;
-        roleInInstitution?: unknown;
-      };
+    const {
+      name,
+      email,
+      password,
+      role,
+      professionalRole,
+      roleInInstitution,
+      medicalSpecialtyCode,
+      operationalProfileCode,
+      specialty,
+      scheduleContextIds,
+    } = req.body as {
+      name?: unknown;
+      email?: unknown;
+      password?: unknown;
+      role?: unknown;
+      professionalRole?: unknown;
+      roleInInstitution?: unknown;
+      medicalSpecialtyCode?: unknown;
+      operationalProfileCode?: unknown;
+      specialty?: unknown;
+      scheduleContextIds?: unknown;
+    };
 
     if (
       typeof name !== "string" ||
@@ -2426,6 +2450,8 @@ authRouter.post(
 
     let targetInstitutionId: number;
     let requestedRoles: ReturnType<typeof deriveRegistrationRoles>;
+    let qualification: CanonicalMedicalQualification;
+    let requestedScheduleContextIds: number[] | undefined;
     try {
       targetInstitutionId = resolveExplicitRegisterTenant(req);
       requestedRoles = deriveRegistrationRoles({
@@ -2433,7 +2459,40 @@ authRouter.post(
         professionalRole,
         roleInInstitution,
       });
+      const parsedQualification = parseMedicalQualification({
+        medicalSpecialtyCode,
+        operationalProfileCode,
+        legacySpecialty: specialty,
+        allowMissing: true,
+      });
+      if (!parsedQualification.ok) {
+        throw new RegisterValidationError(400, parsedQualification.error);
+      }
+      qualification = parsedQualification.value;
+      if (
+        requestedRoles.professionalRole !== "doctor" &&
+        (qualification.medicalSpecialtyCode ||
+          qualification.operationalProfileCode)
+      ) {
+        throw new RegisterValidationError(
+          400,
+          "Qualificação médica só pode ser atribuída a médicos",
+        );
+      }
+      if (requestedRoles.professionalRole === "doctor") {
+        requestedScheduleContextIds =
+          parseScheduleContextIds(scheduleContextIds);
+      } else if (scheduleContextIds !== undefined) {
+        throw new RegisterValidationError(
+          400,
+          "Escalas médicas só podem ser atribuídas a médicos",
+        );
+      }
     } catch (error) {
+      if (error instanceof ScheduleContextAclError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
       if (error instanceof RegisterValidationError) {
         res.status(error.status).json({ error: error.message });
         return;
@@ -2479,6 +2538,44 @@ authRouter.post(
           caller.sessionVersion,
         );
 
+        const medicalSpecialtyId = qualification.medicalSpecialtyCode
+          ? (
+              await tx
+                .select({ id: medicalSpecialties.id })
+                .from(medicalSpecialties)
+                .where(
+                  and(
+                    eq(
+                      medicalSpecialties.code,
+                      qualification.medicalSpecialtyCode,
+                    ),
+                    eq(medicalSpecialties.active, true),
+                  ),
+                )
+                .limit(1)
+                .for("share")
+            )[0]?.id
+          : null;
+        if (qualification.medicalSpecialtyCode && !medicalSpecialtyId) {
+          throw new RegisterValidationError(
+            400,
+            "Especialidade médica não está ativa no catálogo",
+          );
+        }
+
+        const selectedScheduleContexts =
+          requestedRoles.professionalRole === "doctor"
+            ? await resolveScheduleContextAclSelection({
+                db: tx,
+                institutionId: targetInstitutionId,
+                qualification: {
+                  medicalSpecialtyId,
+                  operationalProfileCode: qualification.operationalProfileCode,
+                },
+                requestedScheduleContextIds,
+              })
+            : [];
+
         const [newUser] = await tx
           .insert(users)
           .values({
@@ -2499,6 +2596,9 @@ authRouter.post(
             role: mapProfessionalRoleToLabel(requestedRoles.professionalRole),
             // Projeção legada para a build atual; autorização lê exclusivamente PI.
             userRole: requestedRoles.roleInInstitution,
+            specialty: qualification.legacyLabel,
+            medicalSpecialtyId,
+            operationalProfileCode: qualification.operationalProfileCode,
           })
           .$returningId();
 
@@ -2511,16 +2611,14 @@ authRouter.post(
           active: true,
         });
 
-        const institutionHospitals = await tx
-          .select({ id: hospitals.id })
-          .from(hospitals)
-          .where(eq(hospitals.institutionId, targetInstitutionId));
-        for (const hospital of institutionHospitals) {
+        for (const access of scheduleContextsToSpecificAccessTargets(
+          selectedScheduleContexts,
+        )) {
           await tx.insert(professionalAccess).values({
             institutionId: targetInstitutionId,
             professionalId: newProfessional.id,
-            hospitalId: hospital.id,
-            sectorId: null,
+            hospitalId: access.hospitalId,
+            sectorId: access.sectorId,
             canAccess: true,
           });
         }
@@ -2538,6 +2636,11 @@ authRouter.post(
             metadata: {
               professionalRole: requestedRoles.professionalRole,
               roleInInstitution: requestedRoles.roleInInstitution,
+              medicalSpecialtyCode: qualification.medicalSpecialtyCode,
+              operationalProfileCode: qualification.operationalProfileCode,
+              scheduleContextIds: selectedScheduleContexts.map(
+                (context) => context.id,
+              ),
               actorMembershipId,
             },
           },
@@ -2551,12 +2654,19 @@ authRouter.post(
           role: requestedRoles.professionalRole,
           professionalRole: requestedRoles.professionalRole,
           roleInInstitution: requestedRoles.roleInInstitution,
+          scheduleContextIds: selectedScheduleContexts.map(
+            (context) => context.id,
+          ),
         };
       });
 
       res.status(201).json({ user: created });
     } catch (error) {
       if (error instanceof RegisterValidationError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      if (error instanceof ScheduleContextAclError) {
         res.status(error.status).json({ error: error.message });
         return;
       }
@@ -2615,11 +2725,21 @@ authRouter.get(
 authRouter.post(
   "/signup",
   async (req: Request, res: Response): Promise<void> => {
-    const { name, email, password, institutionId, specialty } = req.body as {
+    const {
+      name,
+      email,
+      password,
+      institutionId,
+      medicalSpecialtyCode,
+      operationalProfileCode,
+      specialty,
+    } = req.body as {
       name?: unknown;
       email?: unknown;
       password?: unknown;
       institutionId?: unknown;
+      medicalSpecialtyCode?: unknown;
+      operationalProfileCode?: unknown;
       specialty?: unknown;
     };
 
@@ -2649,16 +2769,16 @@ authRouter.post(
         .json({ error: "name ou email excede o tamanho permitido" });
       return;
     }
-    if (
-      specialty !== undefined &&
-      specialty !== null &&
-      typeof specialty !== "string"
-    ) {
-      res.status(400).json({ error: "specialty deve ser texto" });
-      return;
-    }
-    if (typeof specialty === "string" && specialty.trim().length > 100) {
-      res.status(400).json({ error: "specialty excede o tamanho permitido" });
+    const parsedQualification = parseMedicalQualification({
+      medicalSpecialtyCode,
+      operationalProfileCode,
+      legacySpecialty: specialty,
+      // Compatibilidade de uma versão: a build anterior permitia omitir o
+      // campo. A conta fica PENDING e não ganha contexto até ser classificada.
+      allowMissing: true,
+    });
+    if (!parsedQualification.ok) {
+      res.status(400).json({ error: parsedQualification.error });
       return;
     }
 
@@ -2693,10 +2813,7 @@ authRouter.post(
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const trimmedName = name.trim();
-    const normalizedSpecialty =
-      typeof specialty === "string" && specialty.trim()
-        ? specialty.trim()
-        : null;
+    const qualification = parsedQualification.value;
 
     try {
       await db.transaction(async (tx) => {
@@ -2718,6 +2835,31 @@ authRouter.post(
           );
         }
 
+        const medicalSpecialtyId = qualification.medicalSpecialtyCode
+          ? (
+              await tx
+                .select({ id: medicalSpecialties.id })
+                .from(medicalSpecialties)
+                .where(
+                  and(
+                    eq(
+                      medicalSpecialties.code,
+                      qualification.medicalSpecialtyCode,
+                    ),
+                    eq(medicalSpecialties.active, true),
+                  ),
+                )
+                .limit(1)
+                .for("share")
+            )[0]?.id
+          : null;
+        if (qualification.medicalSpecialtyCode && !medicalSpecialtyId) {
+          throw new AuthMutationError(
+            400,
+            "Especialidade médica não está ativa no catálogo",
+          );
+        }
+
         const [newUser] = await tx
           .insert(users)
           .values({
@@ -2736,7 +2878,9 @@ authRouter.post(
             name: trimmedName,
             role: mapRoleToLabel("doctor"),
             userRole: "USER",
-            specialty: normalizedSpecialty,
+            specialty: qualification.legacyLabel,
+            medicalSpecialtyId,
+            operationalProfileCode: qualification.operationalProfileCode,
           })
           .$returningId();
 

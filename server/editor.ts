@@ -30,6 +30,7 @@ type ShiftTarget = {
   institutionId: number;
   hospitalId: number;
   sectorId: number;
+  scheduleContextId: number | null;
   specialty: string | null;
   startAt: Date;
   endAt: Date;
@@ -55,6 +56,7 @@ async function getShiftTarget(
       institutionId: shiftInstances.institutionId,
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
+      scheduleContextId: shiftInstances.scheduleContextId,
       specialty: shiftInstances.specialty,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
@@ -84,7 +86,11 @@ async function getShiftTarget(
     // A leitura de autorização não deve revelar a existência de um turno
     // legado/envenenado fora da hierarquia. Dentro da transação, a mesma
     // incoerência continua falhando explicitamente e sem escrita.
-    if (!lockForUpdate && error instanceof TRPCError && error.code === "FORBIDDEN") {
+    if (
+      !lockForUpdate &&
+      error instanceof TRPCError &&
+      error.code === "FORBIDDEN"
+    ) {
       return null;
     }
     throw error;
@@ -101,7 +107,9 @@ async function getAssignmentTarget(
 ): Promise<AssignmentTarget | null> {
   if (lockForUpdate) {
     if (expectedShiftInstanceId === undefined) {
-      throw new Error("expectedShiftInstanceId is required for an assignment lock");
+      throw new Error(
+        "expectedShiftInstanceId is required for an assignment lock",
+      );
     }
     const [shift] = await db
       .select({
@@ -109,6 +117,7 @@ async function getAssignmentTarget(
         institutionId: shiftInstances.institutionId,
         hospitalId: shiftInstances.hospitalId,
         sectorId: shiftInstances.sectorId,
+        scheduleContextId: shiftInstances.scheduleContextId,
         specialty: shiftInstances.specialty,
         startAt: shiftInstances.startAt,
         endAt: shiftInstances.endAt,
@@ -180,6 +189,7 @@ async function getAssignmentTarget(
       institutionId: shiftInstances.institutionId,
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
+      scheduleContextId: shiftInstances.scheduleContextId,
       specialty: shiftInstances.specialty,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
@@ -219,12 +229,16 @@ function sameInstant(left: Date, right: Date): boolean {
   return left.getTime() === right.getTime();
 }
 
-function assertSameShiftTarget(authorized: ShiftTarget, locked: ShiftTarget): void {
+function assertSameShiftTarget(
+  authorized: ShiftTarget,
+  locked: ShiftTarget,
+): void {
   if (
     authorized.id !== locked.id ||
     authorized.institutionId !== locked.institutionId ||
     authorized.hospitalId !== locked.hospitalId ||
     authorized.sectorId !== locked.sectorId ||
+    authorized.scheduleContextId !== locked.scheduleContextId ||
     authorized.specialty !== locked.specialty ||
     authorized.status !== locked.status ||
     !sameInstant(authorized.startAt, locked.startAt) ||
@@ -237,7 +251,10 @@ function assertSameShiftTarget(authorized: ShiftTarget, locked: ShiftTarget): vo
   }
 }
 
-function assertSameAssignmentTarget(authorized: AssignmentTarget, locked: AssignmentTarget): void {
+function assertSameAssignmentTarget(
+  authorized: AssignmentTarget,
+  locked: AssignmentTarget,
+): void {
   assertSameShiftTarget(authorized, locked);
   if (
     authorized.assignmentId !== locked.assignmentId ||
@@ -254,7 +271,7 @@ function assertSameAssignmentTarget(authorized: AssignmentTarget, locked: Assign
 
 /**
  * Editor Router
- * 
+ *
  * Endpoints para edição direta de turnos por gestores:
  * - assignDirect: gestor aloca profissional diretamente (OCUPADO)
  * - markVacant: marca turno como VAGO
@@ -273,7 +290,7 @@ export const editorRouter = router({
         professionalId: z.number(),
         assignmentType: z.enum(["ON_DUTY", "BACKUP", "ON_CALL"]),
         reason: z.string().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { shiftInstanceId, professionalId, assignmentType, reason } = input;
@@ -291,9 +308,16 @@ export const editorRouter = router({
 
       // A leitura inicial serve apenas para autorização e UX. A transação
       // abaixo relê e trava o mesmo alvo antes de qualquer escrita.
-      const shift = await getShiftTarget(db, shiftInstanceId, ctx.institutionId);
+      const shift = await getShiftTarget(
+        db,
+        shiftInstanceId,
+        ctx.institutionId,
+      );
       if (!shift) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Turno não encontrado",
+        });
       }
 
       await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
@@ -311,9 +335,17 @@ export const editorRouter = router({
           reason,
         );
 
-        const lockedShift = await getShiftTarget(tx, shiftInstanceId, ctx.institutionId, true);
+        const lockedShift = await getShiftTarget(
+          tx,
+          shiftInstanceId,
+          ctx.institutionId,
+          true,
+        );
         if (!lockedShift) {
-          throw new TRPCError({ code: "CONFLICT", message: "O turno não está mais disponível." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "O turno não está mais disponível.",
+          });
         }
         assertSameShiftTarget(shift, lockedShift);
         await assertAssignmentWritesAllowedForUpdate(
@@ -324,6 +356,7 @@ export const editorRouter = router({
               institutionId: lockedShift.institutionId,
               hospitalId: lockedShift.hospitalId,
               sectorId: lockedShift.sectorId,
+              scheduleContextId: lockedShift.scheduleContextId,
               startAt: lockedShift.startAt,
               endAt: lockedShift.endAt,
               requiredSpecialty: lockedShift.specialty,
@@ -409,7 +442,7 @@ export const editorRouter = router({
       z.object({
         shiftInstanceId: z.number(),
         reason: z.string().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { shiftInstanceId, reason } = input;
@@ -425,9 +458,16 @@ export const editorRouter = router({
       const managerId = actor.professionalId;
       if (!managerId) throw new ForbiddenError("Profissional não encontrado");
 
-      const shift = await getShiftTarget(db, shiftInstanceId, ctx.institutionId);
+      const shift = await getShiftTarget(
+        db,
+        shiftInstanceId,
+        ctx.institutionId,
+      );
       if (!shift) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Turno não encontrado" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Turno não encontrado",
+        });
       }
 
       await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
@@ -442,9 +482,17 @@ export const editorRouter = router({
           shift.startAt,
           reason,
         );
-        const lockedShift = await getShiftTarget(tx, shiftInstanceId, ctx.institutionId, true);
+        const lockedShift = await getShiftTarget(
+          tx,
+          shiftInstanceId,
+          ctx.institutionId,
+          true,
+        );
         if (!lockedShift) {
-          throw new TRPCError({ code: "CONFLICT", message: "O turno não está mais disponível." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "O turno não está mais disponível.",
+          });
         }
         assertSameShiftTarget(shift, lockedShift);
         const actorRole = await assertManagerScopeAccessForUpdate(
@@ -485,7 +533,10 @@ export const editorRouter = router({
           });
         }
         if (lockedShift.status === "VAGO" && activeAssignments.length === 0) {
-          throw new TRPCError({ code: "CONFLICT", message: "O turno já está vago." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "O turno já está vago.",
+          });
         }
 
         await tx
@@ -564,7 +615,7 @@ export const editorRouter = router({
       z.object({
         assignmentId: z.number(),
         reason: z.string(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { assignmentId, reason } = input;
@@ -580,12 +631,23 @@ export const editorRouter = router({
       const managerId = actor.professionalId;
       if (!managerId) throw new ForbiddenError("Profissional não encontrado");
 
-      const assignment = await getAssignmentTarget(db, assignmentId, ctx.institutionId);
+      const assignment = await getAssignmentTarget(
+        db,
+        assignmentId,
+        ctx.institutionId,
+      );
       if (!assignment) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Alocação não encontrada" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Alocação não encontrada",
+        });
       }
 
-      await assertManagerScopeAccess(actor, assignment.hospitalId, assignment.sectorId);
+      await assertManagerScopeAccess(
+        actor,
+        assignment.hospitalId,
+        assignment.sectorId,
+      );
       assertCanEditScheduleDate(actor, assignment.startAt);
 
       await db.transaction(async (tx) => {
@@ -606,11 +668,17 @@ export const editorRouter = router({
           assignment.id,
         );
         if (!lockedAssignment) {
-          throw new TRPCError({ code: "CONFLICT", message: "A alocação não está mais disponível." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A alocação não está mais disponível.",
+          });
         }
         assertSameAssignmentTarget(assignment, lockedAssignment);
         if (!lockedAssignment.isActive) {
-          throw new TRPCError({ code: "CONFLICT", message: "A alocação já foi removida." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A alocação já foi removida.",
+          });
         }
         const actorRole = await assertManagerScopeAccessForUpdate(
           tx,
@@ -628,10 +696,16 @@ export const editorRouter = router({
             and(
               eq(shiftAssignmentsV2.id, assignmentId),
               eq(shiftAssignmentsV2.shiftInstanceId, lockedAssignment.id),
-              eq(shiftAssignmentsV2.institutionId, lockedAssignment.institutionId),
+              eq(
+                shiftAssignmentsV2.institutionId,
+                lockedAssignment.institutionId,
+              ),
               eq(shiftAssignmentsV2.hospitalId, lockedAssignment.hospitalId),
               eq(shiftAssignmentsV2.sectorId, lockedAssignment.sectorId),
-              eq(shiftAssignmentsV2.professionalId, lockedAssignment.professionalId),
+              eq(
+                shiftAssignmentsV2.professionalId,
+                lockedAssignment.professionalId,
+              ),
               eq(shiftAssignmentsV2.status, lockedAssignment.assignmentStatus),
               eq(shiftAssignmentsV2.isActive, true),
             ),
@@ -658,7 +732,10 @@ export const editorRouter = router({
             institutionId: lockedAssignment.institutionId,
             professionalId: managerId,
             reason,
-            metadata: { assignmentId, unassignedProfessionalId: lockedAssignment.professionalId },
+            metadata: {
+              assignmentId,
+              unassignedProfessionalId: lockedAssignment.professionalId,
+            },
           },
           { db: tx },
         );

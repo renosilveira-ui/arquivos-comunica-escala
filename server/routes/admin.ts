@@ -9,9 +9,9 @@ import {
   professionals,
   auditTrail,
   institutions,
-  hospitals,
   professionalInstitutions,
   professionalAccess,
+  medicalSpecialties,
   dutyConfirmations,
   shiftAssignmentsV2,
   shiftInstances,
@@ -20,20 +20,31 @@ import { AuthenticationInfrastructureError, sdk } from "../_core/sdk";
 import { SessionInstanceConstraintError } from "../_core/session-instance";
 import { ExpectedUserConstraintError } from "../_core/expected-user";
 import { recordAudit } from "../audit-trail";
+import type { OperationalProfileCode } from "../../lib/medical-specialties";
 import { parseTenantIdHeader } from "../_core/tenant";
 import {
   PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
   revokeUserPushRegistrations,
   withPushAccountMutex,
 } from "../push-registration-revocation";
+import {
+  parseMedicalQualification,
+  type CanonicalMedicalQualification,
+} from "../medical-qualification";
+import {
+  listAdministrativeScheduleContexts,
+  parseScheduleContextIds,
+  projectEffectiveScheduleContextIds,
+  resolveScheduleContextAclSelection,
+  scheduleContextsToSpecificAccessTargets,
+  ScheduleContextAclError,
+} from "../schedule-contexts";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
 
 const USER_NAME_MAX_LENGTH = 255;
 const USER_EMAIL_MAX_LENGTH = 320;
-const PROFESSIONAL_SPECIALTY_MAX_LENGTH = 100;
-
 const VALID_USER_ROLES: readonly UserRole[] = [
   "admin",
   "manager",
@@ -97,6 +108,8 @@ type AdminMutationAuthoritySnapshot = {
   mustChangePassword: boolean;
   sessionVersion: number;
   specialty: string | null;
+  medicalSpecialtyId: number | null;
+  operationalProfileCode: OperationalProfileCode | null;
 };
 
 function requireExplicitTenantHeader(req: Request): number {
@@ -165,6 +178,8 @@ async function readAdminMutationAuthoritySnapshot(
       mustChangePassword: users.mustChangePassword,
       sessionVersion: users.sessionVersion,
       specialty: professionals.specialty,
+      medicalSpecialtyId: professionals.medicalSpecialtyId,
+      operationalProfileCode: professionals.operationalProfileCode,
     })
     .from(professionalInstitutions)
     .innerJoin(
@@ -202,7 +217,9 @@ function sameAdminMutationSnapshot(
     expected.passwordHash === current.passwordHash &&
     expected.mustChangePassword === current.mustChangePassword &&
     expected.sessionVersion === current.sessionVersion &&
-    expected.specialty === current.specialty
+    expected.specialty === current.specialty &&
+    expected.medicalSpecialtyId === current.medicalSpecialtyId &&
+    expected.operationalProfileCode === current.operationalProfileCode
   );
 }
 
@@ -471,6 +488,8 @@ type LockedIdentityRows = {
       role: string;
       userRole: InstitutionRole;
       specialty: string | null;
+      medicalSpecialtyId: number | null;
+      operationalProfileCode: OperationalProfileCode | null;
     }
   >;
   memberships: Map<
@@ -534,6 +553,8 @@ async function lockIdentityRowsInOrder(
         role: professionals.role,
         userRole: professionals.userRole,
         specialty: professionals.specialty,
+        medicalSpecialtyId: professionals.medicalSpecialtyId,
+        operationalProfileCode: professionals.operationalProfileCode,
       })
       .from(professionals)
       .where(eq(professionals.id, professionalId))
@@ -642,6 +663,8 @@ function rebuildApprovedAdminAuthoritySnapshot(
     mustChangePassword: user.mustChangePassword,
     sessionVersion: user.sessionVersion,
     specialty: professional.specialty,
+    medicalSpecialtyId: professional.medicalSpecialtyId,
+    operationalProfileCode: professional.operationalProfileCode,
   };
 }
 
@@ -711,6 +734,8 @@ type PendingSignupSnapshot = {
   professionalRole: string;
   professionalUserRole: InstitutionRole;
   specialty: string | null;
+  medicalSpecialtyId: number | null;
+  operationalProfileCode: OperationalProfileCode | null;
   roleInInstitution: InstitutionRole;
   isPrimary: boolean;
   active: boolean;
@@ -747,6 +772,8 @@ async function readPendingSignupSnapshot(
       professionalRole: professionals.role,
       professionalUserRole: professionals.userRole,
       specialty: professionals.specialty,
+      medicalSpecialtyId: professionals.medicalSpecialtyId,
+      operationalProfileCode: professionals.operationalProfileCode,
       roleInInstitution: professionalInstitutions.roleInInstitution,
       isPrimary: professionalInstitutions.isPrimary,
       active: professionalInstitutions.active,
@@ -890,6 +917,8 @@ async function lockAndRevalidatePendingSignup(
     professionalRole: pendingProfessional.role,
     professionalUserRole: pendingProfessional.userRole,
     specialty: pendingProfessional.specialty,
+    medicalSpecialtyId: pendingProfessional.medicalSpecialtyId,
+    operationalProfileCode: pendingProfessional.operationalProfileCode,
     roleInInstitution: pendingMembership.roleInInstitution,
     isPrimary: pendingMembership.isPrimary,
     active: pendingMembership.active,
@@ -957,6 +986,12 @@ function sendAdminTenantError(res: Response, error: unknown): boolean {
   return true;
 }
 
+function sendScheduleContextAclError(res: Response, error: unknown): boolean {
+  if (!(error instanceof ScheduleContextAclError)) return false;
+  res.status(error.status).json({ error: error.message });
+  return true;
+}
+
 function affectedRows(result: unknown): number {
   if (Array.isArray(result)) {
     const header = result[0] as { affectedRows?: unknown } | undefined;
@@ -1003,6 +1038,44 @@ async function requireAdmin(req: Request, res: Response, next: () => void) {
 
 adminRouter.use(requireAdmin);
 
+// Catálogo tenant-scoped usado pelo administrador para conceder acesso
+// explícito às escalas. Não depende do acesso do próprio profissional alvo.
+adminRouter.get(
+  "/schedule-contexts",
+  async (req: Request, res: Response): Promise<void> => {
+    const db = await getDb();
+    if (!db) {
+      res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+    let institutionId: number;
+    try {
+      institutionId = await requireExplicitAdminTenant(db, req);
+    } catch (error) {
+      if (sendScheduleContextAclError(res, error)) return;
+      if (sendAdminTenantError(res, error)) return;
+      throw error;
+    }
+    const contexts = await listAdministrativeScheduleContexts(
+      institutionId,
+      db,
+    );
+    res.json({
+      contexts: contexts.map((context) => ({
+        id: context.id,
+        hospitalId: context.hospitalId,
+        hospitalName: context.hospitalName,
+        sectorId: context.sectorId,
+        sectorName: context.sectorName,
+        medicalSpecialtyCode: context.medicalSpecialtyCode,
+        operationalProfileCode: context.operationalProfileCode,
+        qualificationName: context.qualificationName,
+        displayName: context.displayName,
+      })),
+    });
+  },
+);
+
 // GET /api/admin/users — list users from the explicit active tenant
 adminRouter.get(
   "/users",
@@ -1031,6 +1104,9 @@ adminRouter.get(
         professionalId: professionals.id,
         userRole: professionals.userRole,
         specialty: professionals.specialty,
+        medicalSpecialtyId: professionals.medicalSpecialtyId,
+        operationalProfileCode: professionals.operationalProfileCode,
+        medicalSpecialtyCode: medicalSpecialties.code,
         roleInInstitution: professionalInstitutions.roleInInstitution,
       })
       .from(professionalInstitutions)
@@ -1042,6 +1118,10 @@ adminRouter.get(
         ),
       )
       .innerJoin(users, eq(users.id, professionalInstitutions.userId))
+      .leftJoin(
+        medicalSpecialties,
+        eq(medicalSpecialties.id, professionals.medicalSpecialtyId),
+      )
       .where(
         and(
           eq(professionalInstitutions.institutionId, institutionId),
@@ -1050,6 +1130,21 @@ adminRouter.get(
         ),
       )
       .orderBy(asc(users.name));
+
+    const activeContexts = await listAdministrativeScheduleContexts(
+      institutionId,
+      db,
+    );
+    const accessRows = await db
+      .select({
+        institutionId: professionalAccess.institutionId,
+        professionalId: professionalAccess.professionalId,
+        hospitalId: professionalAccess.hospitalId,
+        sectorId: professionalAccess.sectorId,
+        canAccess: professionalAccess.canAccess,
+      })
+      .from(professionalAccess)
+      .where(eq(professionalAccess.institutionId, institutionId));
 
     const result = allUsers.map((row) => ({
       id: row.id,
@@ -1068,6 +1163,19 @@ adminRouter.get(
             id: row.professionalId,
             userRole: row.userRole,
             specialty: row.specialty,
+            medicalSpecialtyId: row.medicalSpecialtyId,
+            medicalSpecialtyCode: row.medicalSpecialtyCode,
+            operationalProfileCode: row.operationalProfileCode,
+            scheduleContextIds: projectEffectiveScheduleContextIds({
+              institutionId,
+              professionalId: row.professionalId,
+              qualification: {
+                medicalSpecialtyId: row.medicalSpecialtyId,
+                operationalProfileCode: row.operationalProfileCode,
+              },
+              contexts: activeContexts,
+              accesses: accessRows,
+            }),
           }
         : null,
     }));
@@ -1104,19 +1212,34 @@ adminRouter.put(
       res.status(400).json({ error: "Payload deve ser um objeto JSON" });
       return;
     }
-    const { name, email, role, roleInInstitution, specialty } = req.body as {
+    const {
+      name,
+      email,
+      role,
+      roleInInstitution,
+      specialty,
+      medicalSpecialtyCode,
+      operationalProfileCode,
+      scheduleContextIds,
+    } = req.body as {
       name?: unknown;
       email?: unknown;
       role?: unknown;
       roleInInstitution?: unknown;
       specialty?: unknown;
+      medicalSpecialtyCode?: unknown;
+      operationalProfileCode?: unknown;
+      scheduleContextIds?: unknown;
     };
 
     const normalizedName = typeof name === "string" ? name.trim() : undefined;
     const normalizedEmail =
       typeof email === "string" ? email.toLowerCase().trim() : undefined;
-    const normalizedSpecialty =
-      typeof specialty === "string" ? specialty.trim() : specialty;
+    const qualificationUpdateRequested =
+      Object.prototype.hasOwnProperty.call(req.body, "specialty") ||
+      Object.prototype.hasOwnProperty.call(req.body, "medicalSpecialtyCode") ||
+      Object.prototype.hasOwnProperty.call(req.body, "operationalProfileCode");
+    let qualification: CanonicalMedicalQualification | undefined;
 
     if (name !== undefined) {
       if (typeof name !== "string" || !normalizedName) {
@@ -1142,17 +1265,18 @@ adminRouter.put(
         return;
       }
     }
-    if (specialty !== undefined && specialty !== null) {
-      if (typeof specialty !== "string") {
-        res.status(400).json({ error: "specialty deve ser texto ou null" });
+    if (qualificationUpdateRequested) {
+      const parsedQualification = parseMedicalQualification({
+        medicalSpecialtyCode,
+        operationalProfileCode,
+        legacySpecialty: specialty,
+        allowMissing: true,
+      });
+      if (!parsedQualification.ok) {
+        res.status(400).json({ error: parsedQualification.error });
         return;
       }
-      if (specialty.trim().length > PROFESSIONAL_SPECIALTY_MAX_LENGTH) {
-        res.status(400).json({
-          error: `specialty deve ter no máximo ${PROFESSIONAL_SPECIALTY_MAX_LENGTH} caracteres`,
-        });
-        return;
-      }
+      qualification = parsedQualification.value;
     }
 
     if (
@@ -1203,7 +1327,8 @@ adminRouter.put(
 
     if (
       Object.keys(updates).length === 0 &&
-      specialty === undefined &&
+      !qualificationUpdateRequested &&
+      scheduleContextIds === undefined &&
       requestedInstitutionRole === undefined
     ) {
       res.status(400).json({ error: "Nenhum campo para atualizar" });
@@ -1240,6 +1365,21 @@ adminRouter.put(
           404,
           "Usuário não possui vínculo ativo neste tenant",
         );
+      }
+      let requestedScheduleContextIds: number[] | undefined;
+      try {
+        if (targetSnapshot.globalRole === "doctor") {
+          requestedScheduleContextIds =
+            parseScheduleContextIds(scheduleContextIds);
+        } else if (scheduleContextIds !== undefined) {
+          throw new ScheduleContextAclError(
+            400,
+            "Escalas médicas só podem ser atribuídas a médicos",
+          );
+        }
+      } catch (error) {
+        if (sendScheduleContextAclError(res, error)) return;
+        throw error;
       }
       const emailActuallyChanges =
         normalizedEmail !== undefined &&
@@ -1278,6 +1418,64 @@ adminRouter.put(
                   tx,
                   userId,
                   emailDutySnapshots,
+                );
+              }
+
+              let effectiveMedicalSpecialtyId = target.medicalSpecialtyId;
+              let effectiveOperationalProfileCode =
+                target.operationalProfileCode;
+              if (qualificationUpdateRequested && qualification) {
+                effectiveMedicalSpecialtyId = qualification.medicalSpecialtyCode
+                  ? ((
+                      await tx
+                        .select({ id: medicalSpecialties.id })
+                        .from(medicalSpecialties)
+                        .where(
+                          and(
+                            eq(
+                              medicalSpecialties.code,
+                              qualification.medicalSpecialtyCode,
+                            ),
+                            eq(medicalSpecialties.active, true),
+                          ),
+                        )
+                        .limit(1)
+                        .for("share")
+                    )[0]?.id ?? null)
+                  : null;
+                if (
+                  qualification.medicalSpecialtyCode &&
+                  !effectiveMedicalSpecialtyId
+                ) {
+                  throw new AdminTenantError(
+                    409,
+                    "Especialidade médica deixou de estar ativa",
+                  );
+                }
+                effectiveOperationalProfileCode =
+                  qualification.operationalProfileCode;
+              }
+
+              const selectedScheduleContexts =
+                target.globalRole === "doctor"
+                  ? await resolveScheduleContextAclSelection({
+                      db: tx,
+                      institutionId,
+                      qualification: {
+                        medicalSpecialtyId: effectiveMedicalSpecialtyId,
+                        operationalProfileCode: effectiveOperationalProfileCode,
+                      },
+                      requestedScheduleContextIds,
+                    })
+                  : [];
+              if (
+                target.globalRole !== "doctor" &&
+                (effectiveMedicalSpecialtyId !== null ||
+                  effectiveOperationalProfileCode !== null)
+              ) {
+                throw new AdminTenantError(
+                  409,
+                  "Profissional não médico não pode possuir qualificação médica",
                 );
               }
 
@@ -1323,17 +1521,40 @@ adminRouter.put(
                 invalidatedPasswordResetCount = affectedRows(invalidation);
               }
 
-              if (specialty !== undefined) {
+              if (qualificationUpdateRequested && qualification) {
                 await tx
                   .update(professionals)
                   .set({
-                    specialty:
-                      typeof normalizedSpecialty === "string" &&
-                      normalizedSpecialty
-                        ? normalizedSpecialty
-                        : null,
+                    specialty: qualification.legacyLabel,
+                    medicalSpecialtyId: effectiveMedicalSpecialtyId,
+                    operationalProfileCode: effectiveOperationalProfileCode,
                   })
                   .where(eq(professionals.id, target.professionalId));
+              }
+
+              if (target.globalRole === "doctor") {
+                await tx
+                  .delete(professionalAccess)
+                  .where(
+                    and(
+                      eq(
+                        professionalAccess.professionalId,
+                        target.professionalId,
+                      ),
+                      eq(professionalAccess.institutionId, institutionId),
+                    ),
+                  );
+                for (const access of scheduleContextsToSpecificAccessTargets(
+                  selectedScheduleContexts,
+                )) {
+                  await tx.insert(professionalAccess).values({
+                    institutionId,
+                    professionalId: target.professionalId,
+                    hospitalId: access.hospitalId,
+                    sectorId: access.sectorId,
+                    canAccess: true,
+                  });
+                }
               }
 
               const nextRole =
@@ -1365,7 +1586,8 @@ adminRouter.put(
                   ? ["name"]
                   : []),
                 ...(emailActuallyChanges ? ["email"] : []),
-                ...(specialty !== undefined ? ["specialty"] : []),
+                ...(qualificationUpdateRequested ? ["qualification"] : []),
+                ...(target.globalRole === "doctor" ? ["scheduleContexts"] : []),
                 ...(roleChanged ? ["roleInInstitution"] : []),
               ];
 
@@ -1393,6 +1615,9 @@ adminRouter.put(
                     membershipId: target.membershipId,
                     previousRoleInInstitution: target.roleInInstitution,
                     newRoleInInstitution: nextRole,
+                    scheduleContextIds: selectedScheduleContexts.map(
+                      (context) => context.id,
+                    ),
                   },
                 },
                 { db: tx, strict: true },
@@ -1413,6 +1638,7 @@ adminRouter.put(
       updated = result.updatedUser;
       resultingInstitutionRole = result.nextRole;
     } catch (error) {
+      if (sendScheduleContextAclError(res, error)) return;
       if (sendAdminTenantError(res, error)) return;
       throw error;
     }
@@ -1712,6 +1938,9 @@ adminRouter.get(
         createdAt: users.createdAt,
         institutionId: professionalInstitutions.institutionId,
         institutionName: institutions.name,
+        medicalSpecialtyId: professionals.medicalSpecialtyId,
+        medicalSpecialtyCode: medicalSpecialties.code,
+        operationalProfileCode: professionals.operationalProfileCode,
       })
       .from(professionalInstitutions)
       .innerJoin(
@@ -1722,6 +1951,10 @@ adminRouter.get(
         ),
       )
       .innerJoin(users, eq(users.id, professionalInstitutions.userId))
+      .leftJoin(
+        medicalSpecialties,
+        eq(medicalSpecialties.id, professionals.medicalSpecialtyId),
+      )
       .innerJoin(
         institutions,
         eq(institutions.id, professionalInstitutions.institutionId),
@@ -1740,9 +1973,8 @@ adminRouter.get(
   },
 );
 
-// POST /api/admin/pending-signups/:id/approve — aprova a conta:
-// APPROVED + ativa o vínculo institucional + concede acesso a todos os
-// hospitais da instituição escolhida (sectorId null = todos os setores).
+// POST /api/admin/pending-signups/:id/approve — aprova a conta e grava apenas
+// os acessos hospital+setor correspondentes às escalas selecionadas.
 adminRouter.post(
   "/pending-signups/:id/approve",
   async (req: Request, res: Response): Promise<void> => {
@@ -1750,6 +1982,40 @@ adminRouter.post(
     if (!Number.isInteger(userId) || userId <= 0) {
       res.status(400).json({ error: "ID inválido" });
       return;
+    }
+    const qualificationUpdateRequested =
+      Object.prototype.hasOwnProperty.call(
+        req.body ?? {},
+        "medicalSpecialtyCode",
+      ) ||
+      Object.prototype.hasOwnProperty.call(
+        req.body ?? {},
+        "operationalProfileCode",
+      ) ||
+      Object.prototype.hasOwnProperty.call(req.body ?? {}, "specialty");
+    let requestedQualification: CanonicalMedicalQualification | undefined;
+    let requestedScheduleContextIds: number[] | undefined;
+    if (qualificationUpdateRequested) {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const parsedQualification = parseMedicalQualification({
+        medicalSpecialtyCode: body.medicalSpecialtyCode,
+        operationalProfileCode: body.operationalProfileCode,
+        legacySpecialty: body.specialty,
+        allowMissing: false,
+      });
+      if (!parsedQualification.ok) {
+        res.status(400).json({ error: parsedQualification.error });
+        return;
+      }
+      requestedQualification = parsedQualification.value;
+    }
+    try {
+      requestedScheduleContextIds = parseScheduleContextIds(
+        (req.body as Record<string, unknown> | undefined)?.scheduleContextIds,
+      );
+    } catch (error) {
+      if (sendScheduleContextAclError(res, error)) return;
+      throw error;
     }
 
     const db = await getDb();
@@ -1780,6 +2046,80 @@ adminRouter.post(
           expectedCallerSessionVersion: caller.sessionVersion,
         });
         const pending = locked.pending;
+
+        let effectiveMedicalSpecialtyId = pending.medicalSpecialtyId;
+        let effectiveOperationalProfileCode = pending.operationalProfileCode;
+        if (requestedQualification) {
+          effectiveMedicalSpecialtyId =
+            requestedQualification.medicalSpecialtyCode
+              ? ((
+                  await tx
+                    .select({ id: medicalSpecialties.id })
+                    .from(medicalSpecialties)
+                    .where(
+                      and(
+                        eq(
+                          medicalSpecialties.code,
+                          requestedQualification.medicalSpecialtyCode,
+                        ),
+                        eq(medicalSpecialties.active, true),
+                      ),
+                    )
+                    .limit(1)
+                    .for("share")
+                )[0]?.id ?? null)
+              : null;
+          if (
+            requestedQualification.medicalSpecialtyCode &&
+            !effectiveMedicalSpecialtyId
+          ) {
+            throw new AdminTenantError(
+              409,
+              "Especialidade médica deixou de estar ativa",
+            );
+          }
+          effectiveOperationalProfileCode =
+            requestedQualification.operationalProfileCode;
+          const qualificationUpdate = await tx
+            .update(professionals)
+            .set({
+              specialty: requestedQualification.legacyLabel,
+              medicalSpecialtyId: effectiveMedicalSpecialtyId,
+              operationalProfileCode: effectiveOperationalProfileCode,
+            })
+            .where(
+              and(
+                eq(professionals.id, pending.professionalId),
+                eq(professionals.userId, userId),
+              ),
+            );
+          if (affectedRows(qualificationUpdate) !== 1) {
+            throw new AdminTenantError(
+              409,
+              "Qualificação profissional mudou durante a aprovação",
+            );
+          }
+        }
+        if (
+          (effectiveMedicalSpecialtyId === null) ===
+          (effectiveOperationalProfileCode === null)
+        ) {
+          throw new AdminTenantError(
+            409,
+            "Defina uma especialidade ou o perfil médico generalista antes de aprovar",
+          );
+        }
+
+        const selectedScheduleContexts =
+          await resolveScheduleContextAclSelection({
+            db: tx,
+            institutionId,
+            qualification: {
+              medicalSpecialtyId: effectiveMedicalSpecialtyId,
+              operationalProfileCode: effectiveOperationalProfileCode,
+            },
+            requestedScheduleContextIds,
+          });
 
         const userUpdate = await tx
           .update(users)
@@ -1814,16 +2154,22 @@ adminRouter.post(
           );
         }
 
-        const institutionHospitals = await tx
-          .select({ id: hospitals.id })
-          .from(hospitals)
-          .where(eq(hospitals.institutionId, institutionId));
-        for (const hospital of institutionHospitals) {
+        await tx
+          .delete(professionalAccess)
+          .where(
+            and(
+              eq(professionalAccess.professionalId, pending.professionalId),
+              eq(professionalAccess.institutionId, institutionId),
+            ),
+          );
+        for (const access of scheduleContextsToSpecificAccessTargets(
+          selectedScheduleContexts,
+        )) {
           await tx.insert(professionalAccess).values({
             institutionId,
             professionalId: pending.professionalId,
-            hospitalId: hospital.id,
-            sectorId: null,
+            hospitalId: access.hospitalId,
+            sectorId: access.sectorId,
             canAccess: true,
           });
         }
@@ -1842,12 +2188,18 @@ adminRouter.post(
               approval: "APPROVED",
               selfSignup: true,
               membershipId: pending.membershipId,
+              medicalSpecialtyId: effectiveMedicalSpecialtyId,
+              operationalProfileCode: effectiveOperationalProfileCode,
+              scheduleContextIds: selectedScheduleContexts.map(
+                (context) => context.id,
+              ),
             },
           },
           { db: tx, strict: true },
         );
       });
     } catch (error) {
+      if (sendScheduleContextAclError(res, error)) return;
       if (sendAdminTenantError(res, error)) return;
       throw error;
     }

@@ -6,11 +6,7 @@ import { dayWindowBrt } from "./local-time";
 import { assertMonthNotLockedForUpdate } from "./month-guards";
 import { eq, and, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import {
-  professionals,
-  shiftInstances,
-  shiftAssignmentsV2,
-} from "../drizzle/schema";
+import { shiftInstances, shiftAssignmentsV2 } from "../drizzle/schema";
 import { auditLog } from "./audit-log";
 import {
   ASSIGNMENT_WRITE_TRANSACTION_CONFIG,
@@ -32,10 +28,20 @@ import { swapRouter } from "./swap-router";
 import { auditRouter } from "./audit-router";
 import { calendarRouter } from "./calendar";
 import { shiftsRouter } from "./shifts-crud";
-import { professionalsRouter, hospitalsRouter, sectorsRouter, filtersRouter } from "./aux-routers";
+import {
+  professionalsRouter,
+  hospitalsRouter,
+  sectorsRouter,
+  filtersRouter,
+} from "./aux-routers";
 import { confirmationRouter } from "./confirmation-router";
 import { voiceRouter } from "./voice-router";
 import { assertInstitutionHierarchy } from "./_core/tenant";
+import {
+  assertActiveScheduleContextTopology,
+  listAssumableScheduleContextIds,
+  scheduleContextsRouter,
+} from "./schedule-contexts";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type AssignmentDecisionDb = Pick<Db, "select">;
@@ -45,6 +51,7 @@ type VacancyShiftTarget = {
   institutionId: number;
   hospitalId: number;
   sectorId: number;
+  scheduleContextId: number | null;
   specialty: string | null;
   status: string;
   startAt: Date;
@@ -57,6 +64,7 @@ type AssignmentDecisionTarget = {
   institutionId: number;
   hospitalId: number;
   sectorId: number;
+  scheduleContextId: number | null;
   professionalId: number;
   status: string;
   isActive: boolean;
@@ -77,6 +85,7 @@ async function requireCanonicalVacancyShiftTarget(
       institutionId: shiftInstances.institutionId,
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
+      scheduleContextId: shiftInstances.scheduleContextId,
       specialty: shiftInstances.specialty,
       status: shiftInstances.status,
       startAt: shiftInstances.startAt,
@@ -106,6 +115,13 @@ async function requireCanonicalVacancyShiftTarget(
     },
     { db, lockForShare: lockForUpdate },
   );
+  await assertActiveScheduleContextTopology({
+    institutionId: shift.institutionId,
+    hospitalId: shift.hospitalId,
+    sectorId: shift.sectorId,
+    scheduleContextId: shift.scheduleContextId,
+    db,
+  });
   return shift;
 }
 
@@ -124,6 +140,7 @@ function assertSameVacancyShiftTarget(
     authorized.institutionId !== locked.institutionId ||
     authorized.hospitalId !== locked.hospitalId ||
     authorized.sectorId !== locked.sectorId ||
+    authorized.scheduleContextId !== locked.scheduleContextId ||
     authorized.specialty !== locked.specialty ||
     authorized.startAt.getTime() !== locked.startAt.getTime() ||
     authorized.endAt.getTime() !== locked.endAt.getTime()
@@ -149,7 +166,9 @@ async function requireCanonicalAssignmentDecisionTarget(
 ): Promise<AssignmentDecisionTarget> {
   if (lockForUpdate) {
     if (expectedShiftInstanceId === undefined) {
-      throw new Error("expectedShiftInstanceId is required for an assignment lock");
+      throw new Error(
+        "expectedShiftInstanceId is required for an assignment lock",
+      );
     }
     const [shift] = await db
       .select({
@@ -157,6 +176,7 @@ async function requireCanonicalAssignmentDecisionTarget(
         institutionId: shiftInstances.institutionId,
         hospitalId: shiftInstances.hospitalId,
         sectorId: shiftInstances.sectorId,
+        scheduleContextId: shiftInstances.scheduleContextId,
         specialty: shiftInstances.specialty,
         startAt: shiftInstances.startAt,
         endAt: shiftInstances.endAt,
@@ -205,7 +225,8 @@ async function requireCanonicalAssignmentDecisionTarget(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "A alocação mudou ou saiu da topologia do turno durante a decisão.",
+        message:
+          "A alocação mudou ou saiu da topologia do turno durante a decisão.",
       });
     }
     await assertInstitutionHierarchy(
@@ -218,6 +239,7 @@ async function requireCanonicalAssignmentDecisionTarget(
     );
     return {
       ...assignment,
+      scheduleContextId: shift.scheduleContextId,
       specialty: shift.specialty,
       startAt: shift.startAt,
       endAt: shift.endAt,
@@ -231,6 +253,7 @@ async function requireCanonicalAssignmentDecisionTarget(
       institutionId: shiftAssignmentsV2.institutionId,
       hospitalId: shiftAssignmentsV2.hospitalId,
       sectorId: shiftAssignmentsV2.sectorId,
+      scheduleContextId: shiftInstances.scheduleContextId,
       professionalId: shiftAssignmentsV2.professionalId,
       status: shiftAssignmentsV2.status,
       isActive: shiftAssignmentsV2.isActive,
@@ -283,6 +306,7 @@ function assertSameDecisionTarget(
     authorized.institutionId !== locked.institutionId ||
     authorized.hospitalId !== locked.hospitalId ||
     authorized.sectorId !== locked.sectorId ||
+    authorized.scheduleContextId !== locked.scheduleContextId ||
     authorized.professionalId !== locked.professionalId ||
     authorized.specialty !== locked.specialty ||
     authorized.startAt.getTime() !== locked.startAt.getTime() ||
@@ -298,10 +322,14 @@ function assertSameDecisionTarget(
 const shiftAssignmentsRouter = router({
   // Assumir vaga (USER solicita alocação PENDENTE)
   assumeVacancy: protectedProcedure
-    .input(z.object({
-      shiftInstanceId: z.number(),
-      assignmentType: z.enum(["ON_DUTY", "BACKUP", "ON_CALL"]).default("ON_DUTY"),
-    }))
+    .input(
+      z.object({
+        shiftInstanceId: z.number(),
+        assignmentType: z
+          .enum(["ON_DUTY", "BACKUP", "ON_CALL"])
+          .default("ON_DUTY"),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
@@ -351,6 +379,7 @@ const shiftAssignmentsRouter = router({
             institutionId: lockedShift.institutionId,
             hospitalId: lockedShift.hospitalId,
             sectorId: lockedShift.sectorId,
+            scheduleContextId: lockedShift.scheduleContextId,
             startAt: lockedShift.startAt,
             endAt: lockedShift.endAt,
             requiredSpecialty: lockedShift.specialty,
@@ -380,7 +409,8 @@ const shiftAssignmentsRouter = router({
         if (!claimed.affectedRows) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Este plantão acabou de ser assumido por outro profissional.",
+            message:
+              "Este plantão acabou de ser assumido por outro profissional.",
           });
         }
         const [result] = await tx.insert(shiftAssignmentsV2).values({
@@ -470,7 +500,7 @@ const shiftAssignmentsRouter = router({
             AND p.user_id = ${userId}
             AND sa.created_by = ${userId}
             AND sa.status IN ('PENDENTE', 'OCUPADO', 'REJEITADO')
-          ORDER BY sa.created_at DESC, si.start_at ASC`
+          ORDER BY sa.created_at DESC, si.start_at ASC`,
     );
 
     const data = (rows as any)[0];
@@ -489,7 +519,8 @@ const shiftAssignmentsRouter = router({
       hospitalName: r.hospitalName as string,
       sectorName: r.sectorName as string,
       modality: r.modality as "PLANTAO" | "SOBREAVISO",
-      coverageType: (r.coverageType ?? null) as "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
+      coverageType: (r.coverageType ?? null) as
+        "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
       paymentModel: r.paymentModel as
         | "FIXO"
         | "FIXO_PRODUTIVIDADE_TETO"
@@ -505,14 +536,16 @@ const shiftAssignmentsRouter = router({
   // Solicitações sem fazer outra query.
   listPending: protectedProcedure
     .input(
-      z.object({
-        hospitalId: z.number().optional(),
-        sectorId: z.number().optional(),
-        date: z.string().optional(),
-        shiftLabel: z.string().nullish(),
-        modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
-        coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
-      }).optional(),
+      z
+        .object({
+          hospitalId: z.number().optional(),
+          sectorId: z.number().optional(),
+          date: z.string().optional(),
+          shiftLabel: z.string().nullish(),
+          modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
+          coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
+        })
+        .optional(),
     )
     .query(async ({ input, ctx }) => {
       const db = await getDb();
@@ -534,13 +567,20 @@ const shiftAssignmentsRouter = router({
       const actor = await getTenantActorFromContext(ctx);
       const caps = actorCapabilities(actor);
       if (!caps.canApproveAssignments) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Apenas gestores podem listar solicitações pendentes." });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Apenas gestores podem listar solicitações pendentes.",
+        });
       }
       let scopeWhere = sql``;
-      const isLocalManager = !actor.isGlobalAdmin && actor.roleInInstitution === "GESTOR_MEDICO";
+      const isLocalManager =
+        !actor.isGlobalAdmin && actor.roleInInstitution === "GESTOR_MEDICO";
       if (isLocalManager) {
         if (!actor.professionalId) return [];
-        const scopeRows = rowsFromExecute<{ hospital_id: number; sector_id: number | null }>(
+        const scopeRows = rowsFromExecute<{
+          hospital_id: number;
+          sector_id: number | null;
+        }>(
           await db.execute(
             sql`SELECT hospital_id, sector_id FROM manager_scope
                 WHERE manager_professional_id = ${actor.professionalId}
@@ -600,35 +640,36 @@ const shiftAssignmentsRouter = router({
               AND sa.status = 'PENDENTE'
               ${scopeWhere}
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
-              ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
+              ${input?.sectorId ? sql`AND si.sector_id   = ${input.sectorId}` : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
-              ${input?.modality   ? sql`AND si.modality    = ${input.modality}`   : sql``}
+              ${input?.modality ? sql`AND si.modality    = ${input.modality}` : sql``}
               ${input?.coverageType ? sql`AND si.coverage_type = ${input.coverageType}` : sql``}
               ${startOfDay && endOfDay ? sql`AND si.start_at >= ${startOfDay} AND si.start_at < ${endOfDay}` : sql``}
-            ORDER BY si.start_at ASC`
+            ORDER BY si.start_at ASC`,
       );
 
       const data = (rows as any)[0];
       return (data as any[]).map((r) => ({
-        assignmentId:     r.assignmentId     as number,
-        professionalId:   r.professionalId   as number,
+        assignmentId: r.assignmentId as number,
+        professionalId: r.professionalId as number,
         professionalName: r.professionalName as string,
         professionalRole: r.professionalRole as string,
-        sectorId:         r.sectorId         as number,
-        sectorName:       r.sectorName       as string,
-        shiftInstanceId:  r.shiftInstanceId  as number,
-        shiftLabel:       r.shiftLabel       as string,
-        shiftStartAt:     new Date(r.shiftStartAt),
-        shiftEndAt:       new Date(r.shiftEndAt),
-        assignmentType:   r.assignmentType   as string,
-        status:           r.status           as string,
-        hospitalId:       r.hospitalId       as number,
+        sectorId: r.sectorId as number,
+        sectorName: r.sectorName as string,
+        shiftInstanceId: r.shiftInstanceId as number,
+        shiftLabel: r.shiftLabel as string,
+        shiftStartAt: new Date(r.shiftStartAt),
+        shiftEndAt: new Date(r.shiftEndAt),
+        assignmentType: r.assignmentType as string,
+        status: r.status as string,
+        hospitalId: r.hospitalId as number,
         // Modalidade do shift subjacente (PR #61). Mesmas colunas que
         // shiftInstances.listVacancies expõe, pra a UI de Solicitações
         // poder filtrar e renderizar consistentemente.
-        modality:           r.modality           as "PLANTAO" | "SOBREAVISO",
-        coverageType:       (r.coverageType ?? null) as "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
-        paymentModel:       r.paymentModel       as
+        modality: r.modality as "PLANTAO" | "SOBREAVISO",
+        coverageType: (r.coverageType ?? null) as
+          "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
+        paymentModel: r.paymentModel as
           | "FIXO"
           | "FIXO_PRODUTIVIDADE_TETO"
           | "FIXO_PRODUTIVIDADE_SEM_TETO"
@@ -641,9 +682,11 @@ const shiftAssignmentsRouter = router({
 const shiftInstancesRouter = router({
   // Aprovar alocação pendente
   approveAssignment: protectedProcedure
-    .input(z.object({
-      assignmentId: z.number(),
-    }))
+    .input(
+      z.object({
+        assignmentId: z.number(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
@@ -659,7 +702,11 @@ const shiftInstancesRouter = router({
 
       const actor = await getTenantActorFromContext(ctx);
       assertCanManageInstitutionSchedule(actor);
-      await assertManagerScopeAccess(actor, assignment.hospitalId, assignment.sectorId);
+      await assertManagerScopeAccess(
+        actor,
+        assignment.hospitalId,
+        assignment.sectorId,
+      );
 
       const managerProfessionalId = actor.professionalId;
       if (!managerProfessionalId) {
@@ -698,6 +745,7 @@ const shiftInstancesRouter = router({
               institutionId: lockedAssignment.institutionId,
               hospitalId: lockedAssignment.hospitalId,
               sectorId: lockedAssignment.sectorId,
+              scheduleContextId: lockedAssignment.scheduleContextId,
               startAt: lockedAssignment.startAt,
               endAt: lockedAssignment.endAt,
               requiredSpecialty: lockedAssignment.specialty,
@@ -772,10 +820,12 @@ const shiftInstancesRouter = router({
 
   // Rejeitar alocação pendente
   rejectAssignment: protectedProcedure
-    .input(z.object({
-      assignmentId: z.number(),
-      reason: z.string().optional(),
-    }))
+    .input(
+      z.object({
+        assignmentId: z.number(),
+        reason: z.string().optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
@@ -791,7 +841,11 @@ const shiftInstancesRouter = router({
 
       const actor = await getTenantActorFromContext(ctx);
       assertCanManageInstitutionSchedule(actor);
-      await assertManagerScopeAccess(actor, assignment.hospitalId, assignment.sectorId);
+      await assertManagerScopeAccess(
+        actor,
+        assignment.hospitalId,
+        assignment.sectorId,
+      );
 
       const managerProfessionalId = actor.professionalId;
       if (!managerProfessionalId) {
@@ -863,7 +917,8 @@ const shiftInstancesRouter = router({
             action: "ASSIGNMENT_REJECTED",
             entityType: "SHIFT_ASSIGNMENT",
             entityId: input.assignmentId,
-            description: "Alocação rejeitada" + (input.reason ? ": " + input.reason : ""),
+            description:
+              "Alocação rejeitada" + (input.reason ? ": " + input.reason : ""),
             institutionId: assignment.institutionId,
             shiftInstanceId: assignment.shiftInstanceId,
             hospitalId: assignment.hospitalId,
@@ -882,14 +937,16 @@ const shiftInstancesRouter = router({
   // aberto screen (and any radar filtering by modality).
   listVacancies: protectedProcedure
     .input(
-      z.object({
-        hospitalId: z.number().optional(),
-        sectorId:   z.number().optional(),
-        date:       z.string().optional(),
-        shiftLabel: z.string().nullish(),
-        modality:   z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
-        coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
-      }).optional(),
+      z
+        .object({
+          hospitalId: z.number().optional(),
+          sectorId: z.number().optional(),
+          date: z.string().optional(),
+          shiftLabel: z.string().nullish(),
+          modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
+          coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
+        })
+        .optional(),
     )
     .query(async ({ ctx, input }) => {
       const db = await getDb();
@@ -902,17 +959,18 @@ const shiftInstancesRouter = router({
         ({ start: startOfDay, end: endOfDay } = dayWindowBrt(input.date));
       }
 
-      // Especialidade do profissional logado: vaga de outro serviço
-      // não aparece (NULL de qualquer lado = sem restrição).
+      // Radar é uma lista de ações possíveis: exige professional_access e
+      // qualificação canônica exata do contexto (ID CFM ou perfil).
       const actor = await getTenantActorFromContext(ctx);
-      const [me] = actor.professionalId
-        ? await db
-            .select({ specialty: professionals.specialty })
-            .from(professionals)
-            .where(eq(professionals.id, actor.professionalId))
-            .limit(1)
-        : [undefined];
-      const mySpecialty = me?.specialty ?? null;
+      if (!actor.professionalId) return [];
+      const assumableContextIds = new Set(
+        await listAssumableScheduleContextIds(
+          ctx.institutionId,
+          actor.professionalId,
+          db,
+        ),
+      );
+      if (assumableContextIds.size === 0) return [];
 
       const rows = await db.execute<any>(
         sql`SELECT
@@ -928,13 +986,19 @@ const shiftInstancesRouter = router({
               s.name         AS sectorName,
               h.name         AS hospitalName,
               si.hospital_id AS hospitalId,
-              si.sector_id   AS sectorId
+              si.sector_id   AS sectorId,
+              si.schedule_context_id AS scheduleContextId
             FROM shift_instances si
             JOIN hospitals h ON h.id = si.hospital_id
               AND h.institution_id = si.institution_id
             JOIN sectors s ON s.id = si.sector_id
               AND s.institution_id = si.institution_id
               AND s.hospital_id = si.hospital_id
+            JOIN schedule_contexts sc ON sc.id = si.schedule_context_id
+              AND sc.institution_id = si.institution_id
+              AND sc.hospital_id = si.hospital_id
+              AND sc.sector_id = si.sector_id
+              AND sc.active = true
             WHERE si.status = 'VAGO'
               AND si.institution_id = ${ctx.institutionId}
               -- Mês trancado não oferece vagas (start_at em UTC → mês do hospital, -03:00)
@@ -946,16 +1010,17 @@ const shiftInstancesRouter = router({
                   AND mr.status = 'LOCKED'
               )
               ${input?.hospitalId ? sql`AND si.hospital_id = ${input.hospitalId}` : sql``}
-              ${input?.sectorId   ? sql`AND si.sector_id   = ${input.sectorId}`   : sql``}
+              ${input?.sectorId ? sql`AND si.sector_id   = ${input.sectorId}` : sql``}
               ${input?.shiftLabel ? sql`AND si.label       = ${input.shiftLabel}` : sql``}
-              ${input?.modality   ? sql`AND si.modality    = ${input.modality}`   : sql``}
+              ${input?.modality ? sql`AND si.modality    = ${input.modality}` : sql``}
               ${input?.coverageType ? sql`AND si.coverage_type = ${input.coverageType}` : sql``}
               ${startOfDay && endOfDay ? sql`AND si.start_at >= ${startOfDay} AND si.start_at < ${endOfDay}` : sql``}
-              ${mySpecialty ? sql`AND (si.specialty IS NULL OR si.specialty = ${mySpecialty})` : sql``}
-            ORDER BY si.start_at ASC`
+            ORDER BY si.start_at ASC`,
       );
 
-      const data = (rows as any)[0];
+      const data = rowsFromExecute<any>(rows).filter((row) =>
+        assumableContextIds.has(Number(row.scheduleContextId)),
+      );
 
       const alreadyRequestedIds = new Set<number>();
       if (actor.professionalId) {
@@ -966,7 +1031,10 @@ const shiftInstancesRouter = router({
             shiftInstances,
             and(
               eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId),
-              eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
+              eq(
+                shiftInstances.institutionId,
+                shiftAssignmentsV2.institutionId,
+              ),
               eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
               eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
             ),
@@ -982,43 +1050,48 @@ const shiftInstancesRouter = router({
         for (const e of existing) alreadyRequestedIds.add(e.shiftInstanceId);
       }
 
-      return (data as any[]).map((r) => ({
-        shiftInstanceId: r.shiftInstanceId as number,
-        startAt:         new Date(r.startAt),
-        endAt:           new Date(r.endAt),
-        label:           r.label           as string,
-        status:          r.status          as string,
-        sectorName:      r.sectorName      as string,
-        hospitalName:    r.hospitalName    as string,
-        canAssume:       r.status === "VAGO" && !alreadyRequestedIds.has(r.shiftInstanceId as number),
-        // Modalidade (PR #61). Tipos vêm como string do mysql2; expõe
-        // direto pra o cliente formatar com os labels PT-BR.
-        modality:           r.modality           as "PLANTAO" | "SOBREAVISO",
-        coverageType:       (r.coverageType ?? null) as "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
-        paymentModel:       r.paymentModel       as
-          | "FIXO"
-          | "FIXO_PRODUTIVIDADE_TETO"
-          | "FIXO_PRODUTIVIDADE_SEM_TETO"
-          | "PRODUTIVIDADE_PURA",
-        productivityCapBrl: (r.productivityCapBrl ?? null) as string | null,
-      }));
+      return data
+        .filter((r) => !alreadyRequestedIds.has(Number(r.shiftInstanceId)))
+        .map((r) => ({
+          shiftInstanceId: r.shiftInstanceId as number,
+          startAt: new Date(r.startAt),
+          endAt: new Date(r.endAt),
+          label: r.label as string,
+          status: r.status as string,
+          sectorName: r.sectorName as string,
+          hospitalName: r.hospitalName as string,
+          scheduleContextId: Number(r.scheduleContextId),
+          canAssume: true as const,
+          // Modalidade (PR #61). Tipos vêm como string do mysql2; expõe
+          // direto pra o cliente formatar com os labels PT-BR.
+          modality: r.modality as "PLANTAO" | "SOBREAVISO",
+          coverageType: (r.coverageType ?? null) as
+            "URGENCIA_EMERGENCIA" | "ELETIVAS" | null,
+          paymentModel: r.paymentModel as
+            | "FIXO"
+            | "FIXO_PRODUTIVIDADE_TETO"
+            | "FIXO_PRODUTIVIDADE_SEM_TETO"
+            | "PRODUTIVIDADE_PURA",
+          productivityCapBrl: (r.productivityCapBrl ?? null) as string | null,
+        }));
     }),
 });
 
 export const appRouter = router({
   shiftAssignments: shiftAssignmentsRouter,
-  shiftInstances:   shiftInstancesRouter,
-  editor:           editorRouter,
-  calendar:         calendarRouter,
-  shifts:           shiftsRouter,
-  professionals:    professionalsRouter,
-  hospitals:        hospitalsRouter,
-  sectors:          sectorsRouter,
-  filters:          filtersRouter,
-  swaps:            swapRouter,
-  audit:            auditRouter,
-  confirmations:    confirmationRouter,
-  voice:            voiceRouter,
+  shiftInstances: shiftInstancesRouter,
+  editor: editorRouter,
+  calendar: calendarRouter,
+  shifts: shiftsRouter,
+  professionals: professionalsRouter,
+  hospitals: hospitalsRouter,
+  sectors: sectorsRouter,
+  filters: filtersRouter,
+  swaps: swapRouter,
+  audit: auditRouter,
+  confirmations: confirmationRouter,
+  voice: voiceRouter,
+  scheduleContexts: scheduleContextsRouter,
 });
 
 export type AppRouter = typeof appRouter;

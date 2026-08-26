@@ -17,7 +17,8 @@ import { assertOfficialRoster } from "./month-guards";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type ConfirmationReadDb = Pick<Db, "select">;
-export type DutyConfirmationStatus = typeof dutyConfirmations.$inferSelect.status;
+export type DutyConfirmationStatus =
+  typeof dutyConfirmations.$inferSelect.status;
 
 /**
  * Incoerência determinística entre uma intenção durável e sua autoridade.
@@ -36,9 +37,11 @@ export class PersistedDutyConfirmationBindingError extends TRPCError {
  * com revogação de autoridade.
  */
 export function isCanonicalDutyConfirmationRejection(error: unknown): boolean {
-  return error instanceof PersistedDutyConfirmationBindingError ||
+  return (
+    error instanceof PersistedDutyConfirmationBindingError ||
     (error instanceof TRPCError &&
-      (error.code === "FORBIDDEN" || error.code === "BAD_REQUEST"));
+      (error.code === "FORBIDDEN" || error.code === "BAD_REQUEST"))
+  );
 }
 
 type ExpectedActor = {
@@ -94,16 +97,19 @@ export type ValidatedDutyConfirmation = {
     isActive: boolean;
     name: string;
   };
-  replacement: (EffectiveDutyTarget & {
-    name: string;
-    specialty: string | null;
-  }) | null;
+  replacement:
+    | (EffectiveDutyTarget & {
+        name: string;
+        specialty: string | null;
+      })
+    | null;
   effective: EffectiveDutyTarget;
   shift: {
     id: number;
     institutionId: number;
     hospitalId: number;
     sectorId: number;
+    scheduleContextId: number | null;
     label: string;
     startAt: Date;
     endAt: Date;
@@ -176,6 +182,7 @@ export async function requireValidDutyConfirmation(
     | "institutionId"
     | "hospitalId"
     | "sectorId"
+    | "scheduleContextId"
     | "label"
     | "startAt"
     | "endAt"
@@ -218,6 +225,7 @@ export async function requireValidDutyConfirmation(
         institutionId: shiftInstances.institutionId,
         hospitalId: shiftInstances.hospitalId,
         sectorId: shiftInstances.sectorId,
+        scheduleContextId: shiftInstances.scheduleContextId,
         label: shiftInstances.label,
         startAt: shiftInstances.startAt,
         endAt: shiftInstances.endAt,
@@ -260,10 +268,14 @@ export async function requireValidDutyConfirmation(
       !originalAssignmentSnapshot ||
       originalAssignmentSnapshot.hospitalId !== lockedShift.hospitalId ||
       originalAssignmentSnapshot.sectorId !== lockedShift.sectorId
-    ) invalid();
+    )
+      invalid();
 
     let replacementAssignmentSnapshot: { id: number } | null = null;
-    if (options.requireEffectiveAssignment && snapshot.status === "REPLACEMENT_CONFIRMED") {
+    if (
+      options.requireEffectiveAssignment &&
+      snapshot.status === "REPLACEMENT_CONFIRMED"
+    ) {
       if (!snapshot.replacementProfessionalId || !snapshot.replacementUserId) {
         invalid("Substituto inválido");
       }
@@ -276,8 +288,14 @@ export async function requireValidDutyConfirmation(
             eq(shiftAssignmentsV2.institutionId, lockedShift.institutionId),
             eq(shiftAssignmentsV2.hospitalId, lockedShift.hospitalId),
             eq(shiftAssignmentsV2.sectorId, lockedShift.sectorId),
-            eq(shiftAssignmentsV2.professionalId, snapshot.replacementProfessionalId),
-            eq(shiftAssignmentsV2.assignmentType, originalAssignmentSnapshot.assignmentType),
+            eq(
+              shiftAssignmentsV2.professionalId,
+              snapshot.replacementProfessionalId,
+            ),
+            eq(
+              shiftAssignmentsV2.assignmentType,
+              originalAssignmentSnapshot.assignmentType,
+            ),
             eq(shiftAssignmentsV2.status, "OCUPADO"),
             eq(shiftAssignmentsV2.isActive, true),
           ),
@@ -312,14 +330,23 @@ export async function requireValidDutyConfirmation(
                 eq(shiftAssignmentsV2.institutionId, lockedShift.institutionId),
                 eq(shiftAssignmentsV2.hospitalId, lockedShift.hospitalId),
                 eq(shiftAssignmentsV2.sectorId, lockedShift.sectorId),
-                eq(shiftAssignmentsV2.professionalId, snapshot.replacementProfessionalId!),
-                eq(shiftAssignmentsV2.assignmentType, originalAssignmentSnapshot.assignmentType),
+                eq(
+                  shiftAssignmentsV2.professionalId,
+                  snapshot.replacementProfessionalId!,
+                ),
+                eq(
+                  shiftAssignmentsV2.assignmentType,
+                  originalAssignmentSnapshot.assignmentType,
+                ),
                 eq(shiftAssignmentsV2.status, "OCUPADO"),
                 eq(shiftAssignmentsV2.isActive, true),
               )
             : and(
                 eq(shiftAssignmentsV2.id, target.id),
-                eq(shiftAssignmentsV2.shiftInstanceId, snapshot.shiftInstanceId),
+                eq(
+                  shiftAssignmentsV2.shiftInstanceId,
+                  snapshot.shiftInstanceId,
+                ),
                 eq(shiftAssignmentsV2.institutionId, snapshot.institutionId),
                 eq(shiftAssignmentsV2.hospitalId, lockedShift.hospitalId),
                 eq(shiftAssignmentsV2.sectorId, lockedShift.sectorId),
@@ -332,11 +359,13 @@ export async function requireValidDutyConfirmation(
         )
         .limit(1)
         .for("update");
-      if (!lockedAssignment) invalid("A alocação mudou durante o processamento");
+      if (!lockedAssignment)
+        invalid("A alocação mudou durante o processamento");
       if (!target.replacement) {
         if (
           lockedAssignment.status !== "OCUPADO" ||
-          (options.requireOriginalAssignmentActive !== false && !lockedAssignment.isActive)
+          (options.requireOriginalAssignmentActive !== false &&
+            !lockedAssignment.isActive)
         ) {
           invalid("A alocação mudou durante o processamento", "BAD_REQUEST");
         }
@@ -368,9 +397,11 @@ export async function requireValidDutyConfirmation(
       lockedConfirmation.professionalId !== snapshot.professionalId ||
       lockedConfirmation.userId !== snapshot.userId ||
       lockedConfirmation.status !== snapshot.status ||
-      lockedConfirmation.replacementProfessionalId !== snapshot.replacementProfessionalId ||
+      lockedConfirmation.replacementProfessionalId !==
+        snapshot.replacementProfessionalId ||
       lockedConfirmation.replacementUserId !== snapshot.replacementUserId
-    ) invalid("A confirmação mudou durante o processamento", "BAD_REQUEST");
+    )
+      invalid("A confirmação mudou durante o processamento", "BAD_REQUEST");
   }
 
   const topologyQuery = db
@@ -392,13 +423,17 @@ export async function requireValidDutyConfirmation(
       shiftEndAt: shiftInstances.endAt,
       shiftModality: shiftInstances.modality,
       shiftSpecialty: shiftInstances.specialty,
+      shiftScheduleContextId: shiftInstances.scheduleContextId,
     })
     .from(dutyConfirmations)
     .innerJoin(
       shiftAssignmentsV2,
       and(
         eq(shiftAssignmentsV2.id, dutyConfirmations.assignmentId),
-        eq(shiftAssignmentsV2.shiftInstanceId, dutyConfirmations.shiftInstanceId),
+        eq(
+          shiftAssignmentsV2.shiftInstanceId,
+          dutyConfirmations.shiftInstanceId,
+        ),
         eq(shiftAssignmentsV2.institutionId, dutyConfirmations.institutionId),
         eq(shiftAssignmentsV2.professionalId, dutyConfirmations.professionalId),
       ),
@@ -425,7 +460,10 @@ export async function requireValidDutyConfirmation(
       and(
         eq(professionalInstitutions.professionalId, professionals.id),
         eq(professionalInstitutions.userId, professionals.userId),
-        eq(professionalInstitutions.institutionId, dutyConfirmations.institutionId),
+        eq(
+          professionalInstitutions.institutionId,
+          dutyConfirmations.institutionId,
+        ),
       ),
     )
     .where(eq(dutyConfirmations.id, confirmationId))
@@ -489,7 +527,10 @@ export async function requireValidDutyConfirmation(
   ) {
     invalid("Confirmação não pertence à instituição ativa");
   }
-  if (options.expectedActor?.kind === "ORIGINAL" && conf.userId !== options.expectedActor.userId) {
+  if (
+    options.expectedActor?.kind === "ORIGINAL" &&
+    conf.userId !== options.expectedActor.userId
+  ) {
     invalid("Confirmação não pertence ao usuário autenticado");
   }
   const currentAssignmentStatus =
@@ -499,12 +540,17 @@ export async function requireValidDutyConfirmation(
   const currentAssignmentType =
     currentLockedOriginalAssignment?.assignmentType ?? row.assignmentType;
   if (currentAssignmentStatus !== "OCUPADO") {
-    invalid("A alocação ainda não foi aprovada para este plantão", "BAD_REQUEST");
+    invalid(
+      "A alocação ainda não foi aprovada para este plantão",
+      "BAD_REQUEST",
+    );
   }
   const requireOriginalMembership =
-    options.requireOriginalMembership !== false && conf.status !== "REPLACEMENT_CONFIRMED";
+    options.requireOriginalMembership !== false &&
+    conf.status !== "REPLACEMENT_CONFIRMED";
   const requireOriginalAccess =
-    options.requireOriginalAccess !== false && conf.status !== "REPLACEMENT_CONFIRMED";
+    options.requireOriginalAccess !== false &&
+    conf.status !== "REPLACEMENT_CONFIRMED";
   const requiresReplacementBinding =
     options.requireReplacementMembership === true ||
     options.expectedActor?.kind === "REPLACEMENT" ||
@@ -517,11 +563,14 @@ export async function requireValidDutyConfirmation(
   }
   const needsReplacementAuthority = requiresReplacementBinding;
 
-  let lockedAuthorities: Map<number, {
-    userId: number;
-    name: string;
-    specialty: string | null;
-  }> | null = null;
+  let lockedAuthorities: Map<
+    number,
+    {
+      userId: number;
+      name: string;
+      specialty: string | null;
+    }
+  > | null = null;
   if (options.lockForUpdate) {
     type AuthorityTarget = {
       professionalId: number;
@@ -535,19 +584,26 @@ export async function requireValidDutyConfirmation(
     const byProfessionalId = new Map<number, AuthorityTarget>();
     const addTarget = (target: AuthorityTarget) => {
       const existing = byProfessionalId.get(target.professionalId);
-      if (existing && existing.userId !== target.userId) invalid("Identidade profissional inválida");
-      byProfessionalId.set(target.professionalId, existing
-        ? {
-            ...existing,
-            original: existing.original || target.original,
-            requireActiveMembership:
-              existing.requireActiveMembership || target.requireActiveMembership,
-            allowMissingMembership:
-              existing.allowMissingMembership && target.allowMissingMembership,
-            requireAccess: existing.requireAccess || target.requireAccess,
-            requireApprovedUser: existing.requireApprovedUser || target.requireApprovedUser,
-          }
-        : target);
+      if (existing && existing.userId !== target.userId)
+        invalid("Identidade profissional inválida");
+      byProfessionalId.set(
+        target.professionalId,
+        existing
+          ? {
+              ...existing,
+              original: existing.original || target.original,
+              requireActiveMembership:
+                existing.requireActiveMembership ||
+                target.requireActiveMembership,
+              allowMissingMembership:
+                existing.allowMissingMembership &&
+                target.allowMissingMembership,
+              requireAccess: existing.requireAccess || target.requireAccess,
+              requireApprovedUser:
+                existing.requireApprovedUser || target.requireApprovedUser,
+            }
+          : target,
+      );
     };
     addTarget({
       professionalId: conf.professionalId,
@@ -583,9 +639,11 @@ export async function requireValidDutyConfirmation(
     const targets = [...byProfessionalId.values()].sort(
       (left, right) => left.professionalId - right.professionalId,
     );
-    const userTargets = [...new Map(
-      targets.map((target) => [target.userId, target] as const),
-    ).values()].sort((left, right) => left.userId - right.userId);
+    const userTargets = [
+      ...new Map(
+        targets.map((target) => [target.userId, target] as const),
+      ).values(),
+    ].sort((left, right) => left.userId - right.userId);
     for (const target of userTargets) {
       const [currentUser] = await db
         .select({
@@ -601,7 +659,8 @@ export async function requireValidDutyConfirmation(
       if (
         !currentUser ||
         (target.requireApprovedUser &&
-          (currentUser.approvalStatus !== "APPROVED" || currentUser.deletedAt !== null)) ||
+          (currentUser.approvalStatus !== "APPROVED" ||
+            currentUser.deletedAt !== null)) ||
         (target.userId === options.expectedActor?.userId &&
           currentUser.sessionVersion !== options.expectedActor.sessionVersion)
       ) {
@@ -612,9 +671,11 @@ export async function requireValidDutyConfirmation(
         ) {
           invalid("Sessão revogada");
         }
-        invalid(target.original
-          ? "Conta do titular não está ativa"
-          : "Conta do substituto não está ativa");
+        invalid(
+          target.original
+            ? "Conta do titular não está ativa"
+            : "Conta do substituto não está ativa",
+        );
       }
     }
     lockedAuthorities = new Map();
@@ -635,13 +696,20 @@ export async function requireValidDutyConfirmation(
         )
         .limit(1)
         .for("update");
-      if (!professional) invalid(target.original ? "Titular inválido" : "Substituto inválido");
+      if (!professional)
+        invalid(target.original ? "Titular inválido" : "Substituto inválido");
       lockedAuthorities.set(target.professionalId, professional);
     }
-    const memberships = new Map<number, { id: number; active: boolean } | null>();
+    const memberships = new Map<
+      number,
+      { id: number; active: boolean } | null
+    >();
     for (const target of targets) {
       const [membership] = await db
-        .select({ id: professionalInstitutions.id, active: professionalInstitutions.active })
+        .select({
+          id: professionalInstitutions.id,
+          active: professionalInstitutions.active,
+        })
         .from(professionalInstitutions)
         .where(
           and(
@@ -656,15 +724,25 @@ export async function requireValidDutyConfirmation(
         (!membership && !target.allowMissingMembership) ||
         (target.requireActiveMembership && !membership?.active)
       ) {
-        invalid(target.original
-          ? "Titular sem vínculo ativo nesta instituição"
-          : "Substituto sem vínculo ativo nesta instituição");
+        invalid(
+          target.original
+            ? "Titular sem vínculo ativo nesta instituição"
+            : "Substituto sem vínculo ativo nesta instituição",
+        );
       }
     }
     for (const [target, membership] of targets
-      .map((target) => [target, memberships.get(target.professionalId)] as const)
-      .filter((entry): entry is readonly [AuthorityTarget, { id: number; active: boolean }] =>
-        entry[1] != null)
+      .map(
+        (target) => [target, memberships.get(target.professionalId)] as const,
+      )
+      .filter(
+        (
+          entry,
+        ): entry is readonly [
+          AuthorityTarget,
+          { id: number; active: boolean },
+        ] => entry[1] != null,
+      )
       .sort((left, right) => left[1].id - right[1].id)) {
       const [lockedMembership] = await db
         .select({ active: professionalInstitutions.active })
@@ -683,9 +761,11 @@ export async function requireValidDutyConfirmation(
         !lockedMembership ||
         (target.requireActiveMembership && !lockedMembership.active)
       ) {
-        invalid(target.original
-          ? "Titular sem vínculo ativo nesta instituição"
-          : "Substituto sem vínculo ativo nesta instituição");
+        invalid(
+          target.original
+            ? "Titular sem vínculo ativo nesta instituição"
+            : "Substituto sem vínculo ativo nesta instituição",
+        );
       }
     }
     const accesses: { target: AuthorityTarget; id: number }[] = [];
@@ -709,13 +789,17 @@ export async function requireValidDutyConfirmation(
         .orderBy(professionalAccess.id)
         .limit(1);
       if (!access) {
-        invalid(target.original
-          ? "Titular sem acesso ao hospital ou setor deste plantão"
-          : "Substituto sem acesso ao hospital ou setor deste plantão");
+        invalid(
+          target.original
+            ? "Titular sem acesso ao hospital ou setor deste plantão"
+            : "Substituto sem acesso ao hospital ou setor deste plantão",
+        );
       }
       accesses.push({ target, id: access.id });
     }
-    for (const { target, id } of accesses.sort((left, right) => left.id - right.id)) {
+    for (const { target, id } of accesses.sort(
+      (left, right) => left.id - right.id,
+    )) {
       const [lockedAccess] = await db
         .select({ id: professionalAccess.id })
         .from(professionalAccess)
@@ -735,9 +819,11 @@ export async function requireValidDutyConfirmation(
         .limit(1)
         .for("update");
       if (!lockedAccess) {
-        invalid(target.original
-          ? "Titular sem acesso ao hospital ou setor deste plantão"
-          : "Substituto sem acesso ao hospital ou setor deste plantão");
+        invalid(
+          target.original
+            ? "Titular sem acesso ao hospital ou setor deste plantão"
+            : "Substituto sem acesso ao hospital ou setor deste plantão",
+        );
       }
     }
   } else if (requireOriginalMembership && !row.originalMembershipActive) {
@@ -762,18 +848,30 @@ export async function requireValidDutyConfirmation(
       )
       .limit(1);
     const [originalAccess] = await originalAccessQuery;
-    if (!originalAccess) invalid("Titular sem acesso ao hospital ou setor deste plantão");
+    if (!originalAccess)
+      invalid("Titular sem acesso ao hospital ou setor deste plantão");
   }
-  if (options.requireOriginalAssignmentActive !== false && !currentAssignmentIsActive) {
-    invalid("Esta alocação foi removida da escala — não há o que confirmar.", "BAD_REQUEST");
+  if (
+    options.requireOriginalAssignmentActive !== false &&
+    !currentAssignmentIsActive
+  ) {
+    invalid(
+      "Esta alocação foi removida da escala — não há o que confirmar.",
+      "BAD_REQUEST",
+    );
   }
 
   let replacement: ValidatedDutyConfirmation["replacement"] = null;
 
   if (needsReplacementAuthority) {
     if (lockedAuthorities) {
-      const lockedReplacement = lockedAuthorities.get(conf.replacementProfessionalId!);
-      if (!lockedReplacement || lockedReplacement.userId !== conf.replacementUserId) {
+      const lockedReplacement = lockedAuthorities.get(
+        conf.replacementProfessionalId!,
+      );
+      if (
+        !lockedReplacement ||
+        lockedReplacement.userId !== conf.replacementUserId
+      ) {
         invalid("Substituto inválido");
       }
       replacement = {
@@ -785,52 +883,53 @@ export async function requireValidDutyConfirmation(
       };
     } else {
       const replacementQuery = db
-      .select({
-        professionalId: professionals.id,
-        userId: professionals.userId,
-        name: professionals.name,
-        specialty: professionals.specialty,
-      })
-      .from(professionals)
-      .innerJoin(
-        professionalInstitutions,
-        and(
-          eq(professionalInstitutions.professionalId, professionals.id),
-          eq(professionalInstitutions.userId, professionals.userId),
-          eq(professionalInstitutions.institutionId, conf.institutionId),
-          eq(professionalInstitutions.active, true),
-        ),
-      )
-      .innerJoin(
-        users,
-        and(
-          eq(users.id, professionals.userId),
-          eq(users.approvalStatus, "APPROVED"),
-          isNull(users.deletedAt),
-        ),
-      )
-      .innerJoin(
-        professionalAccess,
-        and(
-          eq(professionalAccess.professionalId, professionals.id),
-          eq(professionalAccess.institutionId, conf.institutionId),
-          eq(professionalAccess.hospitalId, row.shiftHospitalId),
-          or(
-            isNull(professionalAccess.sectorId),
-            eq(professionalAccess.sectorId, row.shiftSectorId),
+        .select({
+          professionalId: professionals.id,
+          userId: professionals.userId,
+          name: professionals.name,
+          specialty: professionals.specialty,
+        })
+        .from(professionals)
+        .innerJoin(
+          professionalInstitutions,
+          and(
+            eq(professionalInstitutions.professionalId, professionals.id),
+            eq(professionalInstitutions.userId, professionals.userId),
+            eq(professionalInstitutions.institutionId, conf.institutionId),
+            eq(professionalInstitutions.active, true),
           ),
-          eq(professionalAccess.canAccess, true),
-        ),
-      )
-      .where(
-        and(
-          eq(professionals.id, conf.replacementProfessionalId!),
-          eq(professionals.userId, conf.replacementUserId!),
-        ),
-      )
-      .limit(1);
+        )
+        .innerJoin(
+          users,
+          and(
+            eq(users.id, professionals.userId),
+            eq(users.approvalStatus, "APPROVED"),
+            isNull(users.deletedAt),
+          ),
+        )
+        .innerJoin(
+          professionalAccess,
+          and(
+            eq(professionalAccess.professionalId, professionals.id),
+            eq(professionalAccess.institutionId, conf.institutionId),
+            eq(professionalAccess.hospitalId, row.shiftHospitalId),
+            or(
+              isNull(professionalAccess.sectorId),
+              eq(professionalAccess.sectorId, row.shiftSectorId),
+            ),
+            eq(professionalAccess.canAccess, true),
+          ),
+        )
+        .where(
+          and(
+            eq(professionals.id, conf.replacementProfessionalId!),
+            eq(professionals.userId, conf.replacementUserId!),
+          ),
+        )
+        .limit(1);
       const [replacementPerson] = await replacementQuery;
-      if (!replacementPerson) invalid("Substituto sem vínculo ativo nesta instituição");
+      if (!replacementPerson)
+        invalid("Substituto sem vínculo ativo nesta instituição");
       replacement = {
         assignmentId: null,
         professionalId: replacementPerson.professionalId,
@@ -842,7 +941,8 @@ export async function requireValidDutyConfirmation(
     if (
       options.expectedActor?.kind === "REPLACEMENT" &&
       replacement.userId !== options.expectedActor.userId
-    ) invalid("Você não é o profissional indicado");
+    )
+      invalid("Você não é o profissional indicado");
   }
 
   let effective: EffectiveDutyTarget = {
@@ -850,7 +950,10 @@ export async function requireValidDutyConfirmation(
     professionalId: conf.professionalId,
     userId: conf.userId,
   };
-  if (options.requireEffectiveAssignment && conf.status === "REPLACEMENT_CONFIRMED") {
+  if (
+    options.requireEffectiveAssignment &&
+    conf.status === "REPLACEMENT_CONFIRMED"
+  ) {
     if (!replacement) invalid("Substituto inválido");
     if (currentAssignmentIsActive) {
       invalid("A alocação original ainda está ativa", "BAD_REQUEST");
@@ -876,7 +979,8 @@ export async function requireValidDutyConfirmation(
         ? [{ id: prelockedEffectiveAssignmentId }]
         : []
       : await replacementAssignmentQuery;
-    if (!replacementAssignment) invalid("Substituto não está alocado neste plantão");
+    if (!replacementAssignment)
+      invalid("Substituto não está alocado neste plantão");
     replacement.assignmentId = replacementAssignment.id;
     effective = {
       assignmentId: replacementAssignment.id,
@@ -904,6 +1008,8 @@ export async function requireValidDutyConfirmation(
       institutionId: row.shiftInstitutionId,
       hospitalId: row.shiftHospitalId,
       sectorId: row.shiftSectorId,
+      scheduleContextId:
+        currentLockedShift?.scheduleContextId ?? row.shiftScheduleContextId,
       label: currentLockedShift?.label ?? row.shiftLabel,
       startAt: currentShiftStartAt,
       endAt: currentLockedShift?.endAt ?? row.shiftEndAt,
@@ -915,10 +1021,7 @@ export async function requireValidDutyConfirmation(
 }
 
 export type DutyConfirmationRecipientAuthority =
-  | "ORIGINAL"
-  | "REPLACEMENT"
-  | "EFFECTIVE"
-  | "MANAGER";
+  "ORIGINAL" | "REPLACEMENT" | "EFFECTIVE" | "MANAGER";
 
 type ManagerRecipientSnapshot = {
   professionalId: number;
@@ -966,7 +1069,10 @@ async function findAuthorizedManagerRecipient(
         eq(professionals.userId, expectedUserId),
         eq(managerScope.institutionId, shift.institutionId),
         eq(managerScope.hospitalId, shift.hospitalId),
-        or(isNull(managerScope.sectorId), eq(managerScope.sectorId, shift.sectorId)),
+        or(
+          isNull(managerScope.sectorId),
+          eq(managerScope.sectorId, shift.sectorId),
+        ),
         eq(managerScope.active, true),
       ),
     )
@@ -1038,7 +1144,9 @@ async function findAuthorizedManagerRecipient(
     )
     .orderBy(professionals.id)
     .limit(1);
-  return globalAdmin ? { ...globalAdmin, scopeId: null, role: "GLOBAL_ADMIN" } : null;
+  return globalAdmin
+    ? { ...globalAdmin, scopeId: null, role: "GLOBAL_ADMIN" }
+    : null;
 }
 
 /**
@@ -1083,17 +1191,20 @@ export async function requireAuthorizedDutyConfirmationRecipient(
       preflight.shift,
       input.expectedUserId,
     );
-    if (!managerSnapshot) invalid("Gestor sem escopo ativo para receber o alerta");
+    if (!managerSnapshot)
+      invalid("Gestor sem escopo ativo para receber o alerta");
   }
   const valid = await requireValidDutyConfirmation(db, input.confirmationId, {
     ...validationOptions,
     ...(managerSnapshot
       ? {
-          additionalAuthorityTargets: [{
-            professionalId: managerSnapshot.professionalId,
-            userId: input.expectedUserId,
-            requireAccess: false,
-          }],
+          additionalAuthorityTargets: [
+            {
+              professionalId: managerSnapshot.professionalId,
+              userId: input.expectedUserId,
+              requireAccess: false,
+            },
+          ],
         }
       : {}),
     lockForUpdate: input.lockForUpdate,
@@ -1126,7 +1237,10 @@ export async function requireAuthorizedDutyConfirmationRecipient(
       .from(professionalInstitutions)
       .where(
         and(
-          eq(professionalInstitutions.professionalId, valid.original.professionalId),
+          eq(
+            professionalInstitutions.professionalId,
+            valid.original.professionalId,
+          ),
           eq(professionalInstitutions.userId, input.expectedUserId),
           eq(professionalInstitutions.institutionId, valid.shift.institutionId),
           eq(professionalInstitutions.active, true),
@@ -1160,9 +1274,15 @@ export async function requireAuthorizedDutyConfirmationRecipient(
         .where(
           and(
             eq(professionalInstitutions.id, membership.id),
-            eq(professionalInstitutions.professionalId, valid.original.professionalId),
+            eq(
+              professionalInstitutions.professionalId,
+              valid.original.professionalId,
+            ),
             eq(professionalInstitutions.userId, input.expectedUserId),
-            eq(professionalInstitutions.institutionId, valid.shift.institutionId),
+            eq(
+              professionalInstitutions.institutionId,
+              valid.shift.institutionId,
+            ),
             eq(professionalInstitutions.active, true),
           ),
         )
@@ -1174,7 +1294,10 @@ export async function requireAuthorizedDutyConfirmationRecipient(
         .where(
           and(
             eq(professionalAccess.id, access.id),
-            eq(professionalAccess.professionalId, valid.original.professionalId),
+            eq(
+              professionalAccess.professionalId,
+              valid.original.professionalId,
+            ),
             eq(professionalAccess.institutionId, valid.shift.institutionId),
             eq(professionalAccess.hospitalId, valid.shift.hospitalId),
             or(
@@ -1201,13 +1324,12 @@ export async function requireAuthorizedDutyConfirmationRecipient(
   if (!manager) invalid("Gestor sem escopo ativo para receber o alerta");
   if (
     managerSnapshot &&
-    (
-      manager.professionalId !== managerSnapshot.professionalId ||
+    (manager.professionalId !== managerSnapshot.professionalId ||
       manager.membershipId !== managerSnapshot.membershipId ||
       manager.scopeId !== managerSnapshot.scopeId ||
-      manager.role !== managerSnapshot.role
-    )
-  ) invalid("A autoridade gerencial mudou durante o retry");
+      manager.role !== managerSnapshot.role)
+  )
+    invalid("A autoridade gerencial mudou durante o retry");
   if (input.lockForUpdate) {
     const [currentMembership] = await db
       .select({ id: professionalInstitutions.id })
@@ -1237,7 +1359,10 @@ export async function requireAuthorizedDutyConfirmationRecipient(
             eq(managerScope.managerProfessionalId, manager.professionalId),
             eq(managerScope.institutionId, valid.shift.institutionId),
             eq(managerScope.hospitalId, valid.shift.hospitalId),
-            or(isNull(managerScope.sectorId), eq(managerScope.sectorId, valid.shift.sectorId)),
+            or(
+              isNull(managerScope.sectorId),
+              eq(managerScope.sectorId, valid.shift.sectorId),
+            ),
             eq(managerScope.active, true),
           ),
         )
