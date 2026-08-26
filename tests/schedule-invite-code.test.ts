@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   formatScheduleInviteCode,
@@ -38,5 +39,11 @@ describe("código de convite de escala", () => {
   it("o alfabeto do gerador não inclui caracteres ambíguos", () => {
     expect(ALPHABET).not.toMatch(/[01IO]/);
     expect(ALPHABET).toHaveLength(32);
+  });
+
+  it("o gerador usa randomInt, não resto de divisão em bytes", () => {
+    const source = readFileSync("lib/schedule-invite-code.ts", "utf8");
+    expect(source).toContain("randomInt(INVITE_ALPHABET.length)");
+    expect(source).not.toMatch(/randomBytes[\s\S]*%/);
   });
 });

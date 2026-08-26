@@ -1,14 +1,13 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 
 /** Sem 0/O/1/I para o médico digitar no celular sem ambiguidade. */
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const INVITE_BODY_LENGTH = 8;
 
 export function generateScheduleInviteCode(): string {
-  const bytes = randomBytes(INVITE_BODY_LENGTH);
   let body = "";
-  for (const byte of bytes) {
-    body += INVITE_ALPHABET[byte % INVITE_ALPHABET.length];
+  for (let i = 0; i < INVITE_BODY_LENGTH; i++) {
+    body += INVITE_ALPHABET[randomInt(INVITE_ALPHABET.length)];
   }
   return `${body.slice(0, 4)}-${body.slice(4)}`;
 }
