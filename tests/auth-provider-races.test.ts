@@ -50,7 +50,7 @@ type CapturedAuthValue = {
   login: (
     email: string,
     password: string,
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<{ ok: boolean; error?: string; admissionPending?: true }>;
   rotateSession: (
     operation: (
       credential: object,
@@ -195,9 +195,15 @@ async function renderRealAuthProvider(
     stagedExpectedUserId = null;
     stagedSessionTokenValue = null;
   });
+  let persistedUserId =
+    options.initialUser === undefined
+      ? userA.id
+      : (options.initialUser?.id ?? null);
   const setUserInfo = vi.fn(async (user: TestUser) => {
+    persistedUserId = user.id;
     await options.persistUser?.(user);
   });
+  const getPersistedUserId = vi.fn(async () => persistedUserId);
   const clearActiveInstitutionId = vi.fn(async () => {
     await options.clearActiveInstitution?.();
   });
@@ -210,7 +216,10 @@ async function renderRealAuthProvider(
     stagedExpectedUserId = null;
     stagedSessionTokenValue = null;
   });
-  const clearUserInfo = vi.fn(options.clearUserInfo ?? (async () => undefined));
+  const clearUserInfo = vi.fn(async () => {
+    persistedUserId = null;
+    await options.clearUserInfo?.();
+  });
   const clearPersistedQueryCache = vi.fn(
     options.clearPersistedQueryCache ?? (async () => undefined),
   );
@@ -453,6 +462,7 @@ async function renderRealAuthProvider(
           ? await options.admittedSessionUserId()
           : admittedSessionUserId,
     ),
+    getPersistedUserId,
     isSessionTokenQuarantined: vi.fn(
       async () =>
         locallyQuarantinedToken !== null ||
@@ -858,7 +868,41 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
       "[Auth] me() falhou por rede/servidor — sessão não revalidada",
     );
     expect(harness.setSessionValidation).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "UNAVAILABLE" }),
+      expect.objectContaining({
+        status: "UNAVAILABLE",
+        durableSession: true,
+      }),
+    );
+  });
+
+  it("login nativo com /me indisponível após commit não publica usuário e marca admissão pendente", async () => {
+    const harness = await renderRealAuthProvider({
+      initialUser: null,
+      loginRequest: async () => ({
+        ok: true,
+        user: userB,
+        token: "token-B",
+      }),
+      meRequest: async () => ({
+        user: null,
+        sessionInvalid: false,
+        networkOrServerError: true,
+      }),
+    });
+
+    await expect(harness.auth.login(userB.email, "senha-B")).resolves.toEqual({
+      ok: false,
+      error:
+        "O login foi recebido, mas a sessão ainda não pôde ser revalidada.",
+      admissionPending: true,
+    });
+    expect(harness.commitStagedSessionToken).toHaveBeenCalledTimes(1);
+    expect(harness.setUser).not.toHaveBeenCalledWith(userB);
+    expect(harness.setSessionValidation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "UNAVAILABLE",
+        durableSession: true,
+      }),
     );
   });
 
@@ -876,7 +920,7 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
       expect(harness.meDetailedApi).toHaveBeenCalledTimes(1),
     );
     expect(harness.setSessionValidation).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "CHECKING" }),
+      expect.objectContaining({ status: "CHECKING", durableSession: true }),
     );
     expect(harness.setUserInfo).not.toHaveBeenCalled();
     expect(harness.setUser).not.toHaveBeenCalled();
@@ -1673,6 +1717,7 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
       ok: false,
       error:
         "Não foi possível confirmar a sessão local; a revalidação permanece bloqueada.",
+      admissionPending: true,
     });
     expect(harness.revokeSessionTokenApi).toHaveBeenCalledTimes(1);
     expect(harness.prepareSessionTokenRevocation).toHaveBeenCalledWith(
@@ -1947,6 +1992,7 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
       ok: false,
       error:
         "Não foi possível confirmar a sessão local; a revalidação permanece bloqueada.",
+      admissionPending: true,
     });
 
     expect(harness.revokeSessionTokenApi).toHaveBeenCalledWith("token-B");

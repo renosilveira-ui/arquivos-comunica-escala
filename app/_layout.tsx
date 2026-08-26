@@ -241,7 +241,15 @@ type TenantAuthorizationAttestation = Readonly<{
 
 const TenantAuthorizationContext = createContext<TenantAuthorizationAttestation | null>(null);
 
-function AuthorizationUnavailableScreen({ retry }: { retry: () => void }) {
+function AuthorizationUnavailableScreen({
+  retry,
+  title = "Conectando ao servidor…",
+  body = "Não foi possível confirmar seu vínculo institucional. Nenhum dado local foi aberto.",
+}: {
+  retry: () => void;
+  title?: string;
+  body?: string;
+}) {
   return (
     <View
       style={{
@@ -262,7 +270,7 @@ function AuthorizationUnavailableScreen({ retry }: { retry: () => void }) {
           textAlign: "center",
         }}
       >
-        Conectando ao servidor…
+        {title}
       </Text>
       <Text
         style={{
@@ -271,7 +279,7 @@ function AuthorizationUnavailableScreen({ retry }: { retry: () => void }) {
           textAlign: "center",
         }}
       >
-        Não foi possível confirmar seu vínculo institucional. Nenhum dado local foi aberto.
+        {body}
       </Text>
       <TouchableOpacity
         onPress={retry}
@@ -602,7 +610,7 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
 
 /** Handles auth-gated navigation. Must be rendered inside providers. */
 function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+  const { user, refetch, sessionValidation } = useAuth();
   const pathname = usePathname();
   const { activeInstitutionId, setActiveInstitutionId } = useTenantState();
   const attestation = useContext(TenantAuthorizationContext);
@@ -616,6 +624,24 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   }, [activeInstitutionId, institutions, setActiveInstitutionId, user]);
 
   if (!user) {
+    if (
+      (sessionValidation.status === "CHECKING" ||
+        sessionValidation.status === "UNAVAILABLE") &&
+      sessionValidation.durableSession
+    ) {
+      if (sessionValidation.status === "UNAVAILABLE") {
+        return (
+          <AuthorizationUnavailableScreen
+            retry={() => {
+              void refetch();
+            }}
+            title="O servidor está acordando"
+            body="Sua sessão já foi recebida. Nenhum dado local foi aberto. Toque em tentar novamente em instantes."
+          />
+        );
+      }
+      return <BootScreen />;
+    }
     if (
       pathname === "/login" ||
       pathname === "/signup" ||
