@@ -1,7 +1,14 @@
 /**
  * Corrige a qualificação médica de um profissional no banco (staging/prod).
  *
- * Uso:
+ * Uso (especialidade CFM):
+ *   DATABASE_URL='mysql://...' DATABASE_SSL=insecure \
+ *     pnpm tsx scripts/fix-professional-qualification.ts \
+ *       --name "Ananda Arruda" \
+ *       --specialty CLINICA_MEDICA \
+ *       --apply
+ *
+ * Uso (perfil operacional):
  *   DATABASE_URL='mysql://...' DATABASE_SSL=insecure \
  *     pnpm tsx scripts/fix-professional-qualification.ts \
  *       --name "Ananda Arruda" \
@@ -22,14 +29,31 @@ import {
 } from "../drizzle/schema";
 import { resolveSslConfig } from "../server/_core/db-ssl";
 import {
+  MEDICAL_SPECIALTIES,
   OPERATIONAL_PROFILES,
+  isMedicalSpecialtyCode,
+  isOperationalProfileCode,
+  type MedicalSpecialtyCode,
   type OperationalProfileCode,
 } from "../lib/medical-specialties";
+
+type TargetQualification =
+  | {
+      kind: "MEDICAL_SPECIALTY";
+      code: MedicalSpecialtyCode;
+      label: string;
+    }
+  | {
+      kind: "OPERATIONAL_PROFILE";
+      code: OperationalProfileCode;
+      label: string;
+    };
 
 function parseArgs(argv: string[]) {
   let name: string | undefined;
   let email: string | undefined;
-  let profile: OperationalProfileCode = "MEDICO_GENERALISTA";
+  let specialty: MedicalSpecialtyCode | undefined;
+  let profile: OperationalProfileCode | undefined;
   let apply = false;
 
   for (let i = 2; i < argv.length; i++) {
@@ -37,31 +61,57 @@ function parseArgs(argv: string[]) {
     if (arg === "--apply") apply = true;
     else if (arg === "--name") name = argv[++i];
     else if (arg === "--email") email = argv[++i];
-    else if (arg === "--profile") profile = argv[++i] as OperationalProfileCode;
-    else throw new Error(`Argumento desconhecido: ${arg}`);
+    else if (arg === "--specialty") {
+      const code = argv[++i];
+      if (!code || !isMedicalSpecialtyCode(code)) {
+        throw new Error(`Especialidade inválida: ${code ?? "(vazio)"}`);
+      }
+      specialty = code;
+    } else if (arg === "--profile") {
+      const code = argv[++i];
+      if (!code || !isOperationalProfileCode(code)) {
+        throw new Error(`Perfil operacional inválido: ${code ?? "(vazio)"}`);
+      }
+      profile = code;
+    } else throw new Error(`Argumento desconhecido: ${arg}`);
   }
 
   if (!name && !email) {
     throw new Error("Informe --name ou --email");
   }
-  if (!OPERATIONAL_PROFILES.some((item) => item.code === profile)) {
-    throw new Error(`Perfil operacional inválido: ${profile}`);
+  if (specialty && profile) {
+    throw new Error("Informe apenas --specialty ou --profile, não ambos");
+  }
+  if (!specialty && !profile) {
+    specialty = "CLINICA_MEDICA";
   }
 
-  return { name, email, profile, apply };
+  const target: TargetQualification = specialty
+    ? {
+        kind: "MEDICAL_SPECIALTY",
+        code: specialty,
+        label:
+          MEDICAL_SPECIALTIES.find((item) => item.code === specialty)?.name ??
+          specialty,
+      }
+    : {
+        kind: "OPERATIONAL_PROFILE",
+        code: profile!,
+        label:
+          OPERATIONAL_PROFILES.find((item) => item.code === profile)?.name ??
+          profile!,
+      };
+
+  return { name, email, target, apply };
 }
 
 async function main() {
-  const { name, email, profile, apply } = parseArgs(process.argv);
+  const { name, email, target, apply } = parseArgs(process.argv);
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     console.error("Erro: DATABASE_URL não definida.");
     process.exit(1);
   }
-
-  const profileLabel =
-    OPERATIONAL_PROFILES.find((item) => item.code === profile)?.name ??
-    profile;
 
   const url = new URL(databaseUrl);
   const ssl = resolveSslConfig();
@@ -139,18 +189,47 @@ async function main() {
     ),
   );
 
-  const alreadyGeneralist =
-    row.medicalSpecialtyId === null &&
-    row.operationalProfileCode === profile;
-  if (alreadyGeneralist) {
-    console.log("[fix-qualification] já está como generalista — nada a fazer.");
+  let targetMedicalSpecialtyId: number | null = null;
+  let targetOperationalProfileCode: OperationalProfileCode | null = null;
+  let targetLabel = target.label;
+
+  if (target.kind === "MEDICAL_SPECIALTY") {
+    const [specialtyRow] = await db
+      .select({ id: medicalSpecialties.id })
+      .from(medicalSpecialties)
+      .where(
+        and(
+          eq(medicalSpecialties.code, target.code),
+          eq(medicalSpecialties.active, true),
+        ),
+      )
+      .limit(1);
+    if (!specialtyRow) {
+      console.error(
+        `[fix-qualification] especialidade ${target.code} não encontrada no catálogo.`,
+      );
+      pool.end();
+      process.exit(1);
+    }
+    targetMedicalSpecialtyId = specialtyRow.id;
+  } else {
+    targetOperationalProfileCode = target.code;
+  }
+
+  const alreadyMatches =
+    row.medicalSpecialtyId === targetMedicalSpecialtyId &&
+    row.operationalProfileCode === targetOperationalProfileCode;
+  if (alreadyMatches) {
+    console.log(
+      `[fix-qualification] já está como ${targetLabel} — nada a fazer.`,
+    );
     pool.end();
     return;
   }
 
   if (!apply) {
     console.log(
-      `[fix-qualification] dry-run: definiria medical_specialty_id=NULL, operational_profile_code=${profile}, specialty='${profileLabel}'`,
+      `[fix-qualification] dry-run: definiria medical_specialty_id=${targetMedicalSpecialtyId ?? "NULL"}, operational_profile_code=${targetOperationalProfileCode ?? "NULL"}, specialty='${targetLabel}'`,
     );
     console.log("[fix-qualification] repita com --apply para gravar.");
     pool.end();
@@ -160,9 +239,9 @@ async function main() {
   const result = await db
     .update(professionals)
     .set({
-      medicalSpecialtyId: null,
-      operationalProfileCode: profile,
-      specialty: profileLabel,
+      medicalSpecialtyId: targetMedicalSpecialtyId,
+      operationalProfileCode: targetOperationalProfileCode,
+      specialty: targetLabel,
     })
     .where(eq(professionals.id, row.professionalId));
 
@@ -175,7 +254,9 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("[fix-qualification] qualificação atualizada com sucesso.");
+  console.log(
+    `[fix-qualification] qualificação atualizada para ${targetLabel} com sucesso.`,
+  );
   pool.end();
 }
 
