@@ -24,6 +24,15 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).not.toContain("node:crypto");
   });
 
+  it("a lista padrão inclui a sala de espera e filtra por nome sem acento", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    expect(source).toContain("foldCandidateSearch");
+    expect(source).toContain("notExists");
+    expect(source).toContain("eq(professionalInstitutions.active, true)");
+    expect(source).toContain("name: z.string().trim().max(120).optional()");
+    expect(source).toContain("foldCandidateSearch(row.name ?? \"\").includes(nameNeedle)");
+  });
+
   it("o app não importa o gerador de código com crypto de Node", () => {
     const signup = readFileSync("app/signup.tsx", "utf8");
     const join = readFileSync("app/join-schedule.tsx", "utf8");
@@ -33,7 +42,9 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(join).not.toContain("schedule-invite-code");
     expect(invites).toContain("scheduleInvites.create");
     expect(invites).toContain("userIds");
+    expect(invites).toContain("Buscar por nome");
     expect(invites).not.toContain("schedule-invite-code");
     expect(invites).not.toContain("Share.share");
+    expect(invites).not.toContain("Buscar e-mail");
   });
 });

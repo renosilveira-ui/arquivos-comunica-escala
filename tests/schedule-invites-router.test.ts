@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
 import { appRouter } from "../server/routers";
-import { parseInviteCode, ScheduleInviteError } from "../server/schedule-invites";
+import {
+  foldCandidateSearch,
+  parseInviteCode,
+  ScheduleInviteError,
+} from "../server/schedule-invites";
 
 const mocks = vi.hoisted(() => ({
   getDb: vi.fn(),
@@ -107,5 +111,11 @@ describe("scheduleInvites no appRouter", () => {
     expect(() => parseInviteCode("")).toThrow(ScheduleInviteError);
     expect(() => parseInviteCode("ABC")).toThrow(ScheduleInviteError);
     expect(() => parseInviteCode(12)).toThrow(ScheduleInviteError);
+  });
+
+  it("a busca por nome ignora acento e maiúscula", () => {
+    expect(foldCandidateSearch("José da Silva")).toBe("jose da silva");
+    expect(foldCandidateSearch("  JOSÉ ")).toBe("jose");
+    expect(foldCandidateSearch("José da Silva").includes("jose")).toBe(true);
   });
 });

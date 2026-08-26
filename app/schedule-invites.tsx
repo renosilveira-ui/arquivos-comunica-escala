@@ -25,18 +25,21 @@ export default function ScheduleInvitesScreen() {
     sectorId: number;
     label: string;
   } | null>(null);
-  const [emailSearch, setEmailSearch] = useState("");
-  const [appliedEmail, setAppliedEmail] = useState<string | undefined>(
-    undefined,
-  );
+  const [nameSearch, setNameSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
   const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
 
+  const appliedLooksLikeEmail = appliedSearch.includes("@");
   const candidates = trpc.scheduleInvites.listCandidates.useQuery(
     selectedScale
       ? {
           hospitalId: selectedScale.hospitalId,
           sectorId: selectedScale.sectorId,
-          email: appliedEmail,
+          name:
+            appliedLooksLikeEmail || !appliedSearch
+              ? undefined
+              : appliedSearch,
+          email: appliedLooksLikeEmail ? appliedSearch : undefined,
         }
       : { hospitalId: 1, sectorId: 1 },
     { enabled: selectedScale !== null },
@@ -102,8 +105,9 @@ export default function ScheduleInvitesScreen() {
             marginBottom: theme.space[5],
           }}
         >
-          Selecione os médicos já cadastrados. Cada um recebe um link de 24
-          horas, de uso único, no e-mail da conta.
+          Convite desta escala — hospital e setor que você selecionar abaixo.
+          Quem criou conta e ainda espera uma escala já aparece na lista.
+          Cada convite vale 24 horas, de uso único, no e-mail da conta.
         </Text>
 
         <Text
@@ -142,8 +146,8 @@ export default function ScheduleInvitesScreen() {
                   label: `${scale.hospitalName} — ${scale.sectorName}`,
                 });
                 setSelectedUserIds([]);
-                setAppliedEmail(undefined);
-                setEmailSearch("");
+                setAppliedSearch("");
+                setNameSearch("");
               }}
               style={{
                 backgroundColor: theme.colors.surface,
@@ -174,13 +178,21 @@ export default function ScheduleInvitesScreen() {
             >
               Médicos para {selectedScale.label}
             </Text>
+            <Text
+              style={{
+                ...theme.text.caption,
+                color: theme.colors.textMuted,
+                marginBottom: theme.space[2],
+              }}
+            >
+              A sala de espera já está abaixo. Digite o nome para filtrar.
+            </Text>
             <TextInput
-              value={emailSearch}
-              onChangeText={setEmailSearch}
-              autoCapitalize="none"
+              value={nameSearch}
+              onChangeText={setNameSearch}
+              autoCapitalize="words"
               autoCorrect={false}
-              keyboardType="email-address"
-              placeholder="Buscar e-mail de quem acabou de se cadastrar"
+              placeholder="Buscar por nome"
               placeholderTextColor={theme.colors.textMuted}
               style={{
                 backgroundColor: theme.colors.surface,
@@ -195,10 +207,10 @@ export default function ScheduleInvitesScreen() {
               }}
             />
             <AppButton
-              title="Buscar e-mail"
+              title="Buscar por nome"
               variant="secondary"
               onPress={() => {
-                setAppliedEmail(emailSearch.trim() || undefined);
+                setAppliedSearch(nameSearch.trim());
                 setSelectedUserIds([]);
               }}
               style={{ marginBottom: theme.space[3], alignSelf: "flex-start" }}
@@ -216,8 +228,8 @@ export default function ScheduleInvitesScreen() {
             !candidates.isError &&
             (candidates.data ?? []).length === 0 ? (
               <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
-                Nenhum médico elegível nesta lista. Quem acabou de criar conta
-                sem escala entra pela busca de e-mail.
+                Nenhum médico elegível nesta lista. Confira se a especialidade
+                combina com a escala ou refine a busca pelo nome.
               </Text>
             ) : null}
             {(candidates.data ?? []).map((candidate) => {
