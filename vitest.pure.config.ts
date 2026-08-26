@@ -32,6 +32,11 @@ export default defineConfig({
       "tests/bulk-import-structured-guard.test.ts",
       "tests/replacement-candidates-schedule-context.test.ts",
       "tests/edit-shift-context-immutable.test.ts",
+      "tests/schedule-invite-code.test.ts",
+      "tests/schedule-invites-schema.test.ts",
+      "tests/schedule-invites-migration.test.ts",
+      "tests/schedule-invites-router.test.ts",
+      "tests/schedule-invites-source.test.ts",
     ],
   },
 });

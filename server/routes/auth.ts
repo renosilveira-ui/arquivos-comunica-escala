@@ -65,6 +65,12 @@ import {
   scheduleContextsToSpecificAccessTargets,
   ScheduleContextAclError,
 } from "../schedule-contexts";
+import {
+  parseInviteCode,
+  peekScheduleInviteInstitution,
+  redeemScheduleInviteInTransaction,
+  ScheduleInviteError,
+} from "../schedule-invites";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -2730,6 +2736,7 @@ authRouter.post(
       email,
       password,
       institutionId,
+      inviteCode,
       medicalSpecialtyCode,
       operationalProfileCode,
       specialty,
@@ -2738,6 +2745,7 @@ authRouter.post(
       email?: unknown;
       password?: unknown;
       institutionId?: unknown;
+      inviteCode?: unknown;
       medicalSpecialtyCode?: unknown;
       operationalProfileCode?: unknown;
       specialty?: unknown;
@@ -2782,15 +2790,44 @@ authRouter.post(
       return;
     }
 
-    const instId = Number(institutionId);
-    if (!Number.isInteger(instId) || instId <= 0) {
-      res.status(400).json({ error: "Selecione uma instituição" });
-      return;
+    let parsedInvite: string | null = null;
+    if (inviteCode !== undefined && inviteCode !== null && inviteCode !== "") {
+      try {
+        parsedInvite = parseInviteCode(inviteCode);
+      } catch (error) {
+        if (error instanceof ScheduleInviteError) {
+          res.status(error.status).json({ error: error.message });
+          return;
+        }
+        throw error;
+      }
     }
 
     const db = await getDb();
     if (!db) {
       res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+
+    let instId = Number(institutionId);
+    if (parsedInvite) {
+      try {
+        const peeked = await peekScheduleInviteInstitution(db, parsedInvite);
+        if (Number.isInteger(instId) && instId > 0 && instId !== peeked.institutionId) {
+          res.status(409).json({ error: "Convite não pertence à instituição selecionada" });
+          return;
+        }
+        instId = peeked.institutionId;
+      } catch (error) {
+        if (error instanceof ScheduleInviteError) {
+          res.status(error.status).json({ error: error.message });
+          return;
+        }
+        throw error;
+      }
+    }
+    if (!Number.isInteger(instId) || instId <= 0) {
+      res.status(400).json({ error: "Informe o convite da escala ou a instituição" });
       return;
     }
 
@@ -2868,7 +2905,7 @@ authRouter.post(
             passwordHash,
             role: "doctor",
             loginMethod: "email",
-            approvalStatus: "PENDING",
+            approvalStatus: parsedInvite ? "APPROVED" : "PENDING",
           })
           .$returningId();
         const [newProfessional] = await tx
@@ -2884,16 +2921,27 @@ authRouter.post(
           })
           .$returningId();
 
-        // Vínculo INATIVO até a aprovação: não aparece em listagens de
-        // alocação nem passa no resolveTenantActor.
-        await tx.insert(professionalInstitutions).values({
-          professionalId: newProfessional.id,
-          userId: newUser.id,
-          institutionId: lockedInstitution.id,
-          roleInInstitution: "USER",
-          isPrimary: true,
-          active: false,
-        });
+        if (parsedInvite) {
+          await redeemScheduleInviteInTransaction(tx, {
+            code: parsedInvite,
+            userId: newUser.id,
+            professionalId: newProfessional.id,
+            qualification: {
+              medicalSpecialtyId: medicalSpecialtyId ?? null,
+              operationalProfileCode: qualification.operationalProfileCode,
+            },
+          });
+        } else {
+          // Sem convite: vínculo INATIVO até a aprovação do admin.
+          await tx.insert(professionalInstitutions).values({
+            professionalId: newProfessional.id,
+            userId: newUser.id,
+            institutionId: lockedInstitution.id,
+            roleInInstitution: "USER",
+            isPrimary: true,
+            active: false,
+          });
+        }
         await recordAudit(
           {
             institutionId: lockedInstitution.id,
@@ -2903,10 +2951,13 @@ authRouter.post(
             actorUserId: newUser.id,
             actorRole: "doctor",
             actorName: auditActorName(trimmedName),
-            description: `Auto-cadastro do usuário #${newUser.id} na instituição #${lockedInstitution.id} — aguardando aprovação`,
+            description: parsedInvite
+              ? `Auto-cadastro com convite de escala — usuário #${newUser.id}`
+              : `Auto-cadastro do usuário #${newUser.id} na instituição #${lockedInstitution.id} — aguardando aprovação`,
             metadata: {
               institutionId: lockedInstitution.id,
               selfSignup: true,
+              viaInvite: Boolean(parsedInvite),
             },
           },
           { db: tx, strict: true },
@@ -2914,6 +2965,10 @@ authRouter.post(
       });
     } catch (error) {
       if (error instanceof AuthMutationError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      if (error instanceof ScheduleInviteError) {
         res.status(error.status).json({ error: error.message });
         return;
       }
@@ -2937,6 +2992,81 @@ authRouter.post(
       return;
     }
 
-    res.status(201).json({ ok: true, pending: true });
+    res.status(201).json({
+      ok: true,
+      pending: !parsedInvite,
+    });
+  },
+);
+
+// POST /api/auth/redeem-invite — médico autenticado entra em outra escala.
+authRouter.post(
+  "/redeem-invite",
+  async (req: Request, res: Response): Promise<void> => {
+    let authUser: User;
+    try {
+      authUser = await sdk.authenticateRequest(req);
+    } catch {
+      res.status(401).json({ error: "Autenticação necessária" });
+      return;
+    }
+
+    let parsedInvite: string;
+    try {
+      parsedInvite = parseInviteCode(
+        (req.body as { inviteCode?: unknown })?.inviteCode,
+      );
+    } catch (error) {
+      if (error instanceof ScheduleInviteError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+
+    const db = await getDb();
+    if (!db) {
+      res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+
+    try {
+      const joined = await db.transaction(async (tx) => {
+        const [professional] = await tx
+          .select({
+            id: professionals.id,
+            medicalSpecialtyId: professionals.medicalSpecialtyId,
+            operationalProfileCode: professionals.operationalProfileCode,
+          })
+          .from(professionals)
+          .where(eq(professionals.userId, authUser.id))
+          .limit(1)
+          .for("update");
+        if (!professional) {
+          throw new ScheduleInviteError(409, "Profissional não encontrado");
+        }
+        return redeemScheduleInviteInTransaction(tx, {
+          code: parsedInvite,
+          userId: authUser.id,
+          professionalId: professional.id,
+          qualification: {
+            medicalSpecialtyId: professional.medicalSpecialtyId,
+            operationalProfileCode: professional.operationalProfileCode,
+          },
+        });
+      });
+      res.json({
+        ok: true,
+        hospitalName: joined.hospitalName,
+        sectorName: joined.sectorName,
+      });
+    } catch (error) {
+      if (error instanceof ScheduleInviteError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      console.error("[redeem-invite] Falha transacional");
+      res.status(500).json({ error: "Falha ao entrar na escala. Tente novamente." });
+    }
   },
 );

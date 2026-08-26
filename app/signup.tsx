@@ -1,10 +1,10 @@
-// app/signup.tsx — auto-cadastro público (feat/self-signup)
+// app/signup.tsx — auto-cadastro público.
 //
-// Qualquer profissional cria a própria conta escolhendo a instituição.
-// A conta nasce PENDING: só opera depois que um administrador aprovar
-// na aba Admin → Cadastros pendentes.
+// O médico cola o convite da escala. A instituição sai do convite; a conta
+// nasce APPROVED naquele setor. Sem convite, a API ainda aceita instituição
+// e deixa PENDING (legado / testes).
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   View,
   Text,
@@ -51,43 +51,22 @@ const INPUT_FOCUSED_STYLE = {
   borderColor: theme.colors.primary,
 };
 
-type Field = "name" | "email" | "password" | "confirm";
+type Field = "name" | "email" | "password" | "confirm" | "invite";
 
 export default function SignupScreen() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [qualification, setQualification] =
     useState<ProfessionalQualificationSelection | null>(null);
-  const [institutionId, setInstitutionId] = useState<number | null>(null);
-  const [institutions, setInstitutions] = useState<
-    { id: number; name: string }[]
-  >([]);
-  const [loadingInstitutions, setLoadingInstitutions] = useState(true);
   const [focusedField, setFocusedField] = useState<Field | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState<"joined" | "pending" | null>(null);
 
   const router = useRouter();
-
-  useEffect(() => {
-    let cancelled = false;
-    authApi
-      .listSignupInstitutions()
-      .then((list) => {
-        if (cancelled) return;
-        setInstitutions(list);
-        if (list.length === 1) setInstitutionId(list[0].id);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingInstitutions(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const handleSignup = async () => {
     if (!name.trim() || !email.trim() || !password || !confirm) {
@@ -102,13 +81,13 @@ export default function SignupScreen() {
       setErrorMsg("As senhas não coincidem.");
       return;
     }
-    if (!institutionId) {
-      setErrorMsg("Selecione a instituição onde você atua.");
+    if (!inviteCode.trim()) {
+      setErrorMsg("Informe o convite que o gestor da escala enviou.");
       return;
     }
     if (!qualification) {
       setErrorMsg(
-        "Selecione sua especialidade ou o perfil médico generalista.",
+        "Selecione sua especialidade ou o perfil operacional aceito.",
       );
       return;
     }
@@ -119,11 +98,11 @@ export default function SignupScreen() {
         name: name.trim(),
         email: email.trim(),
         password,
-        institutionId,
+        inviteCode: inviteCode.trim(),
         ...qualificationPayload(qualification),
       });
       if (result.ok) {
-        setDone(true);
+        setDone(result.pending === false ? "joined" : "pending");
       } else {
         setErrorMsg(result.error ?? "Erro ao criar cadastro.");
       }
@@ -158,7 +137,7 @@ export default function SignupScreen() {
                 textAlign: "center",
               }}
             >
-              Cadastro enviado
+              {done === "joined" ? "Escala liberada" : "Cadastro enviado"}
             </Text>
             <Text
               style={{
@@ -168,8 +147,9 @@ export default function SignupScreen() {
                 lineHeight: 20,
               }}
             >
-              Sua conta foi criada e aguarda aprovação do gestor da instituição.
-              Você poderá entrar assim que for aprovado.
+              {done === "joined"
+                ? "Sua conta já está na escala do convite. Entre com o e-mail e a senha que acabou de criar."
+                : "Sua conta foi criada e aguarda aprovação do gestor da instituição."}
             </Text>
             <TouchableOpacity
               onPress={() => router.replace("/login")}
@@ -233,7 +213,7 @@ export default function SignupScreen() {
                 marginTop: 6,
               }}
             >
-              Seu acesso será liberado após aprovação do gestor
+              Use o convite que o gestor da sua escala enviou
             </Text>
           </View>
 
@@ -332,54 +312,20 @@ export default function SignupScreen() {
             </View>
 
             <View>
-              <Text style={LABEL_STYLE}>Instituição</Text>
-              {loadingInstitutions ? (
-                <ActivityIndicator
-                  color={theme.colors.primary}
-                  style={{ paddingVertical: 12 }}
-                />
-              ) : institutions.length === 0 ? (
-                <Text style={{ color: theme.colors.textMuted, fontSize: 13 }}>
-                  Nenhuma instituição disponível. Tente novamente mais tarde.
-                </Text>
-              ) : (
-                <View style={{ gap: 8 }}>
-                  {institutions.map((inst) => {
-                    const selected = institutionId === inst.id;
-                    return (
-                      <TouchableOpacity
-                        key={inst.id}
-                        onPress={() => setInstitutionId(inst.id)}
-                        activeOpacity={0.8}
-                        style={{
-                          borderRadius: 10,
-                          borderWidth: 1.5,
-                          borderColor: selected
-                            ? theme.colors.primary
-                            : theme.palette.neutral[400],
-                          backgroundColor: selected
-                            ? theme.colors.primarySoft
-                            : theme.palette.neutral[900],
-                          paddingHorizontal: 16,
-                          paddingVertical: 14,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 15,
-                            fontWeight: selected ? "700" : "500",
-                            color: selected
-                              ? theme.colors.primary
-                              : theme.palette.neutral[50],
-                          }}
-                        >
-                          {inst.name}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              )}
+              <Text style={LABEL_STYLE}>Convite da escala</Text>
+              <TextInput
+                value={inviteCode}
+                onChangeText={setInviteCode}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                onFocus={() => setFocusedField("invite")}
+                onBlur={() => setFocusedField(null)}
+                placeholderTextColor={theme.colors.onDark.textMuted}
+                placeholder="ABCD-EFGH"
+                style={
+                  focusedField === "invite" ? INPUT_FOCUSED_STYLE : INPUT_STYLE
+                }
+              />
             </View>
 
             {errorMsg && (

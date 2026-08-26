@@ -455,7 +455,7 @@ export async function assertActorCanReadShiftScheduleContext(input: {
   return grant;
 }
 
-async function selectActiveScheduleContexts(
+export async function selectActiveScheduleContexts(
   db: ContextDb,
   institutionId: number,
   filters: { id?: number; hospitalId?: number; sectorId?: number } = {},

@@ -553,6 +553,58 @@ export const scheduleContexts = mysqlTable(
 export type ScheduleContext = typeof scheduleContexts.$inferSelect;
 export type InsertScheduleContext = typeof scheduleContexts.$inferInsert;
 
+/**
+ * Convite de uma escala (instituição + hospital + setor). O código em claro
+ * só aparece na criação; o banco guarda o hash. Um médico usa um convite
+ * por setor; outro convite no mesmo hospital libera o segundo setor.
+ */
+export const scheduleInvites = mysqlTable(
+  "schedule_invites",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    sectorId: int("sector_id")
+      .notNull()
+      .references(() => sectors.id),
+    codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    createdByUserId: int("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    maxRedemptions: int("max_redemptions").notNull().default(40),
+    redeemedCount: int("redeemed_count").notNull().default(0),
+    expiresAt: timestamp("expires_at").notNull(),
+    revokedAt: timestamp("revoked_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqScheduleInviteCodeHash: unique("uniq_schedule_invite_code_hash").on(
+      table.codeHash,
+    ),
+    idxScheduleInviteInstitution: index("idx_schedule_invite_institution").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+    ),
+    fkScheduleInviteHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_schedule_invite_hospital_topology",
+    }),
+    fkScheduleInviteSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_schedule_invite_sector_topology",
+    }),
+  }),
+);
+
+export type ScheduleInvite = typeof scheduleInvites.$inferSelect;
+
 // ========================================
 // INSTÂNCIAS DE TURNO E ALOCAÇÕES (V2)
 // ========================================

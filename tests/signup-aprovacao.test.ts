@@ -24,9 +24,11 @@ import {
   professionalInstitutions,
   professionals,
   scheduleContexts,
+  scheduleInvites,
   sectors,
   users,
 } from "../drizzle/schema";
+import { hashScheduleInviteCode } from "../lib/schedule-invite-code";
 import { resolveInstitutionForUser } from "../server/_core/tenant";
 import { getDb } from "../server/db";
 import { adminRouter } from "../server/routes/admin";
@@ -264,6 +266,9 @@ describe("auto-cadastro público e aprovação", () => {
       .from(users)
       .where(like(users.email, `signup-%-${STAMP}@test.local`));
     const ids = mine.map((u) => u.id);
+    await db
+      .delete(scheduleInvites)
+      .where(eq(scheduleInvites.institutionId, institutionId));
     await db
       .delete(auditTrail)
       .where(eq(auditTrail.institutionId, institutionId));
@@ -787,6 +792,138 @@ describe("auto-cadastro público e aprovação", () => {
           .set("x-tenant-id", String(institutionId))
       ).status,
     ).toBe(404);
+  });
+
+  it("convite libera a escala; especialidade incompatível e convite inválido fecham", async () => {
+    const recoveryCode = "ABCD2345";
+    const secondCode = "EFGH6789";
+    await db.insert(scheduleInvites).values({
+      institutionId,
+      hospitalId: hospitalA,
+      sectorId: recoverySectorId,
+      codeHash: hashScheduleInviteCode(recoveryCode),
+      createdByUserId: adminId,
+      maxRedemptions: 40,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    expect(
+      (
+        await request(app).post("/api/auth/signup").send({
+          name: "Invite Ghost",
+          email: `signup-invite-ghost-${STAMP}@test.local`,
+          password: PASSWORD,
+          inviteCode: "ZZZZ9999",
+          medicalSpecialtyCode: "ANESTESIOLOGIA",
+        })
+      ).status,
+    ).toBe(400);
+
+    const wrong = await request(app).post("/api/auth/signup").send({
+      name: "Invite Wrong",
+      email: `signup-invite-wrong-${STAMP}@test.local`,
+      password: PASSWORD,
+      inviteCode: "ABCD-2345",
+      operationalProfileCode: "MEDICO_GENERALISTA",
+      medicalSpecialtyCode: null,
+    });
+    expect(wrong.status).toBe(409);
+    expect(wrong.body.error).toMatch(/especialidade/i);
+
+    const email = `signup-invite-ok-${STAMP}@test.local`;
+    const joined = await request(app).post("/api/auth/signup").send({
+      name: "Invite Doctor",
+      email,
+      password: PASSWORD,
+      inviteCode: "abcd-2345",
+      medicalSpecialtyCode: "ANESTESIOLOGIA",
+    });
+    expect(joined.status).toBe(201);
+    expect(joined.body.pending).toBe(false);
+
+    const [user] = await db.select().from(users).where(eq(users.email, email));
+    expect(user.approvalStatus).toBe("APPROVED");
+    const [membership] = await db
+      .select()
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, user.id));
+    expect(membership).toMatchObject({
+      institutionId,
+      active: true,
+      roleInInstitution: "USER",
+    });
+    const access = await db
+      .select({
+        hospitalId: professionalAccess.hospitalId,
+        sectorId: professionalAccess.sectorId,
+        canAccess: professionalAccess.canAccess,
+      })
+      .from(professionalAccess)
+      .innerJoin(
+        professionals,
+        eq(professionals.id, professionalAccess.professionalId),
+      )
+      .where(eq(professionals.userId, user.id));
+    expect(access).toEqual([
+      { hospitalId: hospitalA, sectorId: recoverySectorId, canAccess: true },
+    ]);
+
+    const session = await login(email, PASSWORD);
+    expect(session.status).toBe(200);
+    const already = await request(app)
+      .post("/api/auth/redeem-invite")
+      .set("Cookie", cookieOf(session))
+      .send({ inviteCode: "ABCD-2345" });
+    expect(already.status).toBe(409);
+    expect(already.body.error).toMatch(/já está/i);
+
+    const [anesthesia] = await db
+      .select({ id: medicalSpecialties.id })
+      .from(medicalSpecialties)
+      .where(eq(medicalSpecialties.code, "ANESTESIOLOGIA"));
+    const [extraSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId: hospitalA,
+        name: `Segundo Setor ${STAMP}`,
+        category: "servico",
+        color: "#0F766E",
+      })
+      .$returningId();
+    await db.insert(scheduleContexts).values({
+      institutionId,
+      hospitalId: hospitalA,
+      sectorId: extraSector.id,
+      medicalSpecialtyId: anesthesia.id,
+    });
+    await db.insert(scheduleInvites).values({
+      institutionId,
+      hospitalId: hospitalA,
+      sectorId: extraSector.id,
+      codeHash: hashScheduleInviteCode(secondCode),
+      createdByUserId: adminId,
+      maxRedemptions: 40,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    const second = await request(app)
+      .post("/api/auth/redeem-invite")
+      .set("Cookie", cookieOf(session))
+      .send({ inviteCode: "EFGH-6789" });
+    expect(second.status).toBe(200);
+    expect(second.body.ok).toBe(true);
+    const both = await db
+      .select({ sectorId: professionalAccess.sectorId })
+      .from(professionalAccess)
+      .innerJoin(
+        professionals,
+        eq(professionals.id, professionalAccess.professionalId),
+      )
+      .where(eq(professionals.userId, user.id));
+    expect(both.map((row) => row.sectorId).sort()).toEqual(
+      [recoverySectorId, extraSector.id].sort(),
+    );
   });
 
   it("não-admin não acessa a fila de pendentes", async () => {

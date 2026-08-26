@@ -142,8 +142,18 @@ export default function ProfileScreen() {
               href: "/(tabs)/admin",
             }
           : null,
+        isManager
+          ? {
+              key: "invites",
+              title: "Convites da escala",
+              subtitle: "Gere o código e envie aos médicos do seu setor",
+              Icon: Link2,
+              tone: "default" as const,
+              href: "/schedule-invites",
+            }
+          : null,
       ].filter((l): l is NonNullable<typeof l> => l !== null),
-    [can, canApproveAssignments],
+    [can, canApproveAssignments, isManager],
   );
   const showManagement = !isDesktopWeb && managementLinks.length > 0;
 
@@ -561,13 +571,30 @@ export default function ProfileScreen() {
           <View style={{ gap: theme.space[2] }}>
             <SectionHeader title="Conta e app" eyebrow="Preferências" />
             <Surface padded={false}>
+              {isDesktopWeb && isManager ? (
+                <ListRow
+                  title="Convites da escala"
+                  subtitle="Gere o código e envie aos médicos do seu setor"
+                  Icon={Link2}
+                  divided={false}
+                  onPress={go("/schedule-invites")}
+                  accessibilityLabel="Gerar convites da escala"
+                />
+              ) : null}
+              <ListRow
+                title="Entrar em outra escala"
+                subtitle="Cole o convite de outro setor — TRR, Emergência, etc."
+                Icon={KeyRound}
+                divided={isDesktopWeb && isManager}
+                onPress={go("/join-schedule")}
+                accessibilityLabel="Entrar em outra escala com um convite"
+              />
               <ListRow
                 title="Instituição ativa"
                 subtitle="Trocar a instituição em uso neste aparelho"
                 Icon={Building2}
                 value="Alterar"
                 valueTone="action"
-                divided={false}
                 onPress={handleSwitchInstitution}
                 accessibilityLabel="Trocar instituição ativa"
               />

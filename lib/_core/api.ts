@@ -716,16 +716,21 @@ export const authApi = {
     return res.ok ? (res.data?.institutions ?? []) : [];
   },
 
-  /** Auto-cadastro público — conta nasce pendente de aprovação do gestor. */
+  /** Auto-cadastro público. Com convite, a escala já nasce liberada. */
   async signup(input: {
     name: string;
     email: string;
     password: string;
-    institutionId: number;
+    institutionId?: number;
+    inviteCode?: string;
     medicalSpecialtyCode: MedicalSpecialtyCode | null;
     operationalProfileCode: OperationalProfileCode | null;
-  }): Promise<{ ok: boolean; error?: string }> {
-    const res = await apiFetchInternal<{ ok?: boolean; error?: string }>(
+  }): Promise<{ ok: boolean; pending?: boolean; error?: string }> {
+    const res = await apiFetchInternal<{
+      ok?: boolean;
+      pending?: boolean;
+      error?: string;
+    }>(
       "/api/auth/signup",
       {
         method: "POST",
@@ -734,10 +739,42 @@ export const authApi = {
       undefined,
       "public",
     );
-    if (res.ok && res.data?.ok) return { ok: true };
+    if (res.ok && res.data?.ok) {
+      return { ok: true, pending: res.data.pending !== false };
+    }
     return {
       ok: false,
       error: (res.data as any)?.error ?? res.error ?? "Erro ao criar cadastro",
+    };
+  },
+
+  async redeemInvite(
+    inviteCode: string,
+  ): Promise<{
+    ok: boolean;
+    hospitalName?: string;
+    sectorName?: string;
+    error?: string;
+  }> {
+    const res = await apiFetchInternal<{
+      ok?: boolean;
+      hospitalName?: string;
+      sectorName?: string;
+      error?: string;
+    }>("/api/auth/redeem-invite", {
+      method: "POST",
+      body: JSON.stringify({ inviteCode }),
+    });
+    if (res.ok && res.data?.ok) {
+      return {
+        ok: true,
+        hospitalName: res.data.hospitalName,
+        sectorName: res.data.sectorName,
+      };
+    }
+    return {
+      ok: false,
+      error: (res.data as any)?.error ?? res.error ?? "Convite inválido",
     };
   },
 
