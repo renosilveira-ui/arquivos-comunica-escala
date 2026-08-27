@@ -968,14 +968,22 @@ export async function listAssumableScheduleContextIds(
     institutionId,
     professionalId,
   );
+  const scopes = await loadManagerScopes(
+    database,
+    institutionId,
+    professionalId,
+  );
   if (!professional) return [];
   return contexts
     .filter(
       (context) =>
         qualificationMatches(professional, context) &&
-        accesses.some((access) =>
+        (accesses.some((access) =>
           accessCoversContext(access, professionalId, context),
-        ),
+        ) ||
+          scopes.some((scope) =>
+            managerScopeCoversContext(scope, professionalId, context),
+          )),
     )
     .map((context) => context.id);
 }

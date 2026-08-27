@@ -9,13 +9,20 @@ import {
   professionals,
   scheduleContextAllowedQualifications,
   scheduleContexts,
+  scheduleInvites,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
   users,
 } from "../drizzle/schema";
+import {
+  generateScheduleInviteCode,
+  hashScheduleInviteCode,
+  normalizeScheduleInviteCode,
+} from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
 import { appRouter } from "../server/routers";
+import { redeemScheduleInviteInTransaction } from "../server/schedule-invites";
 import {
   ensureTestAnesthesiaSpecialty,
   openTestScale,
@@ -32,6 +39,7 @@ describe("professionals.listAssignableForShift", () => {
   let assignedProfessionalId: number;
   let hospitalWideProfessionalId: number;
   let crossSectorProfessionalId: number;
+  let inviteeProfessionalId: number;
   let shiftInstanceId: number;
   let scheduleContextId: number;
   let anesthesiaId: number;
@@ -136,6 +144,12 @@ describe("professionals.listAssignableForShift", () => {
 
     const crossSector = await createUserProfessional(stamp, "CrossSector");
     crossSectorProfessionalId = crossSector.professionalId;
+
+    const invitee = await createUserProfessional(stamp, "Invitee");
+    inviteeProfessionalId = invitee.professionalId;
+    await db
+      .delete(professionalInstitutions)
+      .where(eq(professionalInstitutions.professionalId, inviteeProfessionalId));
     const [otherSector] = await db
       .insert(sectors)
       .values({
@@ -187,9 +201,32 @@ describe("professionals.listAssignableForShift", () => {
       status: "OCUPADO",
       isActive: true,
     });
+
+    const inviteCode = generateScheduleInviteCode();
+    await db.insert(scheduleInvites).values({
+      institutionId,
+      hospitalId,
+      sectorId,
+      codeHash: hashScheduleInviteCode(normalizeScheduleInviteCode(inviteCode)),
+      createdByUserId: managerUserId,
+      invitedUserId: invitee.userId,
+      maxRedemptions: 1,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await db.transaction(async (tx) => {
+      await redeemScheduleInviteInTransaction(tx, {
+        code: normalizeScheduleInviteCode(inviteCode),
+        userId: invitee.userId,
+        professionalId: inviteeProfessionalId,
+        qualification: {
+          medicalSpecialtyId: anesthesiaId,
+          operationalProfileCode: null,
+        },
+      });
+    });
   });
 
-  it("exige acesso exato ao setor para escala com allowlist", async () => {
+  it("inclui GESTOR_MEDICO com scope e convite resgatado; allowlist exige acesso setorial", async () => {
     const caller = appRouter.createCaller({
       user: {
         id: managerUserId,
@@ -207,10 +244,15 @@ describe("professionals.listAssignableForShift", () => {
     const ids = rows.map((row: { id: number }) => row.id);
 
     expect(ids).toContain(availableProfessionalId);
+    expect(ids).toContain(managerProfessionalId);
+    expect(ids).toContain(inviteeProfessionalId);
     expect(ids).not.toContain(assignedProfessionalId);
     expect(ids).not.toContain(hospitalWideProfessionalId);
     expect(ids).not.toContain(crossSectorProfessionalId);
-    expect(rows[0]).toMatchObject({ id: availableProfessionalId, name: expect.any(String) });
+    expect(rows.find((row: { id: number }) => row.id === availableProfessionalId)).toMatchObject({
+      id: availableProfessionalId,
+      name: expect.any(String),
+    });
 
     const [shift] = await db
       .select()
