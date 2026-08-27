@@ -39,7 +39,10 @@ export default defineConfig({
       "tests/schedule-invites-source.test.ts",
       "tests/schedule-invites-named-migration.test.ts",
       "tests/professional-institutions-role-migration.test.ts",
+<<<<<<< HEAD
       "tests/schedule-context-allowlist-migration.test.ts",
+=======
+>>>>>>> origin/main
       "tests/provision-sala-recuperacao-source.test.ts",
       "tests/schedule-invite-mail.test.ts",
       "tests/request-deadline.test.ts",

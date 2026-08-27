@@ -33,7 +33,7 @@ export type ScheduleContextQualification = {
   medicalSpecialtyId: number | null;
   operationalProfileCode: "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null;
   admissionPolicy?: ScheduleContextAdmissionPolicy;
-  allowedQualifications?: ReadonlyArray<AllowedScheduleContextQualification>;
+  allowedQualifications?: readonly AllowedScheduleContextQualification[];
 };
 
 export type ProfessionalQualification = ScheduleContextQualification;

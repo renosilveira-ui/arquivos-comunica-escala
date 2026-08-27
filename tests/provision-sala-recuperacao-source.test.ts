@@ -9,6 +9,10 @@ describe("provision Sala de Recuperação — SQL bruto", () => {
     );
     expect(source).toContain("\\`year_month\\`");
     expect(source).not.toMatch(/\bAND year_month = \?/);
+<<<<<<< HEAD
     expect(source).toContain("QUALIFICATION_ALLOWLIST");
+=======
+    expect(source).not.toMatch(/hospital_id, year_month, status/);
+>>>>>>> origin/main
   });
 });
