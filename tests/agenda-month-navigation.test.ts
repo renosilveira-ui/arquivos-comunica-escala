@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   buildAgendaMonthPickerOptions,
+  calendarOpenBaseHint,
+  calendarOpenConfirmTitle,
+  calendarOpenOriginFromPreviousMonth,
+  calendarOpenPreviewTitle,
   countShiftsInMonth,
+  emptyMonthCalendarDescription,
   monthKeyOf,
   nextMonthKey,
   previousMonthKey,
@@ -28,11 +33,49 @@ describe("navegação mensal da Agenda", () => {
     ]);
   });
 
-  it("abre o mês vazio a partir do mês anterior", () => {
+  it("calcula o mês anterior sem assumir que ele tenha escala", () => {
     expect(sourceMonthForCalendarTarget("2026-09")).toBe("2026-08");
     expect(previousMonthKey("2026-01")).toBe("2025-12");
     expect(nextMonthKey("2026-08")).toBe("2026-09");
     expect(monthKeyOf(new Date(2026, 8, 1))).toBe("2026-09");
+  });
+
+  it("no primeiro mês a copy não pede a escala anterior", () => {
+    expect(calendarOpenOriginFromPreviousMonth(undefined)).toBe("templates");
+    expect(calendarOpenOriginFromPreviousMonth(false)).toBe("templates");
+    expect(emptyMonthCalendarDescription("templates")).toBe(
+      "Crie o calendário deste mês a partir dos modelos de horário para começar a alocar os profissionais.",
+    );
+    expect(
+      calendarOpenBaseHint("setembro de 2026", "agosto de 2026", "templates"),
+    ).toBe(
+      "Destino: setembro de 2026. Sem escala anterior — usa os modelos de horário.",
+    );
+    expect(
+      calendarOpenPreviewTitle("agosto de 2026", "setembro de 2026", "templates"),
+    ).toBe(
+      "Criar o calendário de setembro de 2026 a partir dos modelos de horário:",
+    );
+    expect(calendarOpenConfirmTitle(12, "templates")).toBe("Confirmar calendário");
+    expect(calendarOpenConfirmTitle(0, "templates")).toBe("Nada a criar");
+  });
+
+  it("com escala anterior a copy descreve a cópia do mês passado", () => {
+    expect(calendarOpenOriginFromPreviousMonth(true)).toBe("previous-month");
+    expect(emptyMonthCalendarDescription("previous-month")).toBe(
+      "Crie o calendário deste mês a partir da escala anterior para alocar os profissionais.",
+    );
+    expect(
+      calendarOpenBaseHint("setembro de 2026", "agosto de 2026", "previous-month"),
+    ).toBe("Destino: setembro de 2026. Base: agosto de 2026.");
+    expect(
+      calendarOpenPreviewTitle(
+        "agosto de 2026",
+        "setembro de 2026",
+        "previous-month",
+      ),
+    ).toBe("Copiar agosto de 2026 para setembro de 2026:");
+    expect(calendarOpenConfirmTitle(0, "previous-month")).toBe("Nada a copiar");
   });
 
   it("ignora plantões dos dias de padding fora do mês selecionado", () => {
@@ -72,5 +115,13 @@ describe("wiring do calendário mensal na Agenda", () => {
     expect(menu).toContain("requestedCalendarTargetMonth");
     expect(menu).toContain("Abrir calendário de");
     expect(menu).toContain('variant === "empty-state"');
+    expect(agenda).toContain("emptyMonthCalendarDescription");
+    expect(agenda).toContain("calendarOpenOriginFromPreviousMonth");
+    expect(agenda).not.toContain(
+      "Abra o calendário deste mês a partir da escala anterior",
+    );
+    expect(menu).toContain("calendarOpenPreviewTitle");
+    expect(menu).toContain("hasMonthShifts");
+    expect(menu).toContain("scheduleContextId");
   });
 });

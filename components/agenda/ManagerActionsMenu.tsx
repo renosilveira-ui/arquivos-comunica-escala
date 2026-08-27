@@ -17,8 +17,13 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
 import { toLocalISODateString } from "@/lib/datetime-utils";
 import {
+  calendarOpenBaseHint,
+  calendarOpenConfirmTitle,
+  calendarOpenOriginFromPreviousMonth,
+  calendarOpenPreviewTitle,
   nextMonthKey,
   sourceMonthForCalendarTarget,
+  type CalendarOpenOrigin,
 } from "@/lib/agenda-month-navigation";
 
 export type ManagerPeriod =
@@ -33,6 +38,8 @@ interface Props {
   selectedScheduleContext?: {
     hospitalId: number;
     sectorId: number;
+    scheduleContextId?: number;
+    id?: number;
   } | null;
   onChanged?: () => void;
   /**
@@ -95,7 +102,7 @@ export function ManagerActionsMenu({
   const [targetMonth, setTargetMonth] = useState<string | null>(null);
   const [calendarRule, setCalendarRule] = useState<"FULL" | "REMOVE_WEEKENDS" | "REMOVE_NIGHTS" | "REMOVE_DAYS" | "CUSTOM">("FULL");
   const [selectedShiftIds, setSelectedShiftIds] = useState<number[]>([]);
-  const [preview, setPreview] = useState<{ created: number; skipped?: number; outOfRange?: number; candidates?: { sourceShiftId: number; label: string; startAt: string }[] } | null>(null);
+  const [preview, setPreview] = useState<{ created: number; skipped?: number; outOfRange?: number; origin?: CalendarOpenOrigin; candidates?: { sourceShiftId: number; label: string; startAt: string }[] } | null>(null);
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
 
@@ -119,6 +126,24 @@ export function ManagerActionsMenu({
   const { data: roster } = trpc.shifts.rosterStatus.useQuery(
     { hospitalId: hospitalId ?? 0, yearMonth: monthKey },
     { enabled: wantsStatus && !!hospitalId, staleTime: 60_000 },
+  );
+  const { data: previousMonthShifts } = trpc.shifts.hasMonthShifts.useQuery(
+    {
+      hospitalId: selectedScheduleContext?.hospitalId ?? 0,
+      sectorId: selectedScheduleContext?.sectorId ?? 0,
+      yearMonth: sourceMonth,
+    },
+    {
+      enabled:
+        wantsStatus &&
+        !!selectedScheduleContext &&
+        period.kind === "month" &&
+        !!requestedCalendarTargetMonth,
+      staleTime: 60_000,
+    },
+  );
+  const calendarOrigin = calendarOpenOriginFromPreviousMonth(
+    previousMonthShifts?.hasShifts,
   );
 
   const replicate = trpc.shifts.replicateRange.useMutation();
@@ -170,6 +195,13 @@ export function ManagerActionsMenu({
     }
   }, [period, requestedCalendarTargetMonth, sourceMonth]);
 
+  useEffect(() => {
+    if (calendarOrigin === "templates" && calendarRule === "CUSTOM") {
+      setCalendarRule("FULL");
+      setSelectedShiftIds([]);
+    }
+  }, [calendarOrigin, calendarRule]);
+
   function close() {
     setOpen(false);
     setStep("menu");
@@ -198,6 +230,9 @@ export function ManagerActionsMenu({
         ? await replicateMonthCalendar.mutateAsync({
             hospitalId: replicateInput.hospitalId,
             sectorId: replicationSectorId,
+            scheduleContextId:
+              selectedScheduleContext?.scheduleContextId ??
+              selectedScheduleContext?.id,
             sourceMonth,
             targetMonth: calendarTargetMonth,
             rule: calendarRule,
@@ -209,8 +244,13 @@ export function ManagerActionsMenu({
             sectorId: replicationSectorId,
             dryRun: true,
           });
-      setPreview({ created: r.created, skipped: r.skipped, outOfRange: r.outOfRange });
-      if ("candidates" in r) setPreview({ created: r.created, candidates: r.candidates });
+      setPreview({
+        created: r.created,
+        skipped: r.skipped,
+        outOfRange: r.outOfRange,
+        origin: r.origin,
+        candidates: "candidates" in r ? r.candidates : undefined,
+      });
       setStep("replicate");
     } catch (err) {
       feedback.error((err as Error).message);
@@ -226,6 +266,9 @@ export function ManagerActionsMenu({
         ? await replicateMonthCalendar.mutateAsync({
             hospitalId: replicateInput.hospitalId,
             sectorId: replicationSectorId,
+            scheduleContextId:
+              selectedScheduleContext?.scheduleContextId ??
+              selectedScheduleContext?.id,
             sourceMonth,
             targetMonth: calendarTargetMonth,
             rule: calendarRule,
@@ -238,12 +281,21 @@ export function ManagerActionsMenu({
             dryRun: false,
           });
       await utils.shifts.listAgenda.invalidate();
+      await utils.shifts.hasMonthShifts.invalidate();
       onChanged?.();
       const parts = [`${r.created} turno${r.created === 1 ? "" : "s"} criado${r.created === 1 ? "" : "s"}`];
       if (r.skipped) parts.push(`${r.skipped} já existia${r.skipped === 1 ? "" : "m"}`);
       if (includeAssignments) parts.push(`${r.assignmentsCopied} alocaç${r.assignmentsCopied === 1 ? "ão" : "ões"} copiada${r.assignmentsCopied === 1 ? "" : "s"}`);
       if (r.conflicts) parts.push(`${r.conflicts} com conflito ficaram vagos`);
-      feedback.success(`Replicado para ${period.kind === "month" ? monthLabel(calendarTargetMonth) : targetLabel}: ${parts.join(" · ")}.`);
+      const confirmedOrigin: CalendarOpenOrigin =
+        r.origin === "templates" || r.origin === "previous-month"
+          ? r.origin
+          : calendarOrigin;
+      feedback.success(
+        period.kind === "month" && confirmedOrigin === "templates"
+          ? `Calendário de ${monthLabel(calendarTargetMonth)} criado: ${parts.join(" · ")}.`
+          : `Replicado para ${period.kind === "month" ? monthLabel(calendarTargetMonth) : targetLabel}: ${parts.join(" · ")}.`,
+      );
       close();
     } catch (err) {
       feedback.error((err as Error).message);
@@ -293,6 +345,28 @@ export function ManagerActionsMenu({
 
   const rosterStatus = roster?.status ?? "DRAFT";
   const openMonthName = MONTHS_PT[Number((requestedCalendarTargetMonth ?? calendarTargetMonth).slice(5, 7)) - 1];
+  const previewOrigin: CalendarOpenOrigin =
+    preview?.origin === "templates" || preview?.origin === "previous-month"
+      ? preview.origin
+      : calendarOrigin;
+  const monthRuleOptions: [
+    "FULL" | "REMOVE_WEEKENDS" | "REMOVE_NIGHTS" | "REMOVE_DAYS" | "CUSTOM",
+    string,
+  ][] =
+    previewOrigin === "templates"
+      ? [
+          ["FULL", "Mês inteiro"],
+          ["REMOVE_WEEKENDS", "Sem fins de semana"],
+          ["REMOVE_NIGHTS", "Sem noturnos"],
+          ["REMOVE_DAYS", "Sem diurnos"],
+        ]
+      : [
+          ["FULL", "Mês inteiro"],
+          ["REMOVE_WEEKENDS", "Sem fins de semana"],
+          ["REMOVE_NIGHTS", "Sem noturnos"],
+          ["REMOVE_DAYS", "Sem diurnos"],
+          ["CUSTOM", "Personalizado"],
+        ];
 
   const trigger =
     variant === "empty-state" ? (
@@ -411,7 +485,13 @@ export function ManagerActionsMenu({
             ) : step === "replicate" && preview ? (
               <View style={{ gap: theme.space[4] }}>
                 <Text style={{ ...theme.text.bodyLg, color: theme.colors.textPrimary }}>
-                  Copiar a {sourceLabel} para a {period.kind === "month" ? monthLabel(calendarTargetMonth) : targetLabel}:
+                  {period.kind === "month"
+                    ? calendarOpenPreviewTitle(
+                        sourceLabel,
+                        monthLabel(calendarTargetMonth),
+                        previewOrigin,
+                      )
+                    : `Copiar ${sourceLabel} para ${targetLabel}:`}
                 </Text>
                 <View style={{ gap: theme.space[1] }}>
                   <Text style={{ ...theme.text.body, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
@@ -456,7 +536,10 @@ export function ManagerActionsMenu({
                   </View>
                   <View style={{ flex: 1 }}>
                     <AppButton
-                      title={preview.created === 0 ? "Nada a copiar" : "Confirmar cópia"}
+                      title={calendarOpenConfirmTitle(
+                        preview.created,
+                        period.kind === "month" ? previewOrigin : "previous-month",
+                      )}
                       onPress={confirmReplicate}
                       disabled={preview.created === 0 || busy || (period.kind === "month" && calendarRule === "CUSTOM" && selectedShiftIds.length === 0)}
                     />
@@ -486,7 +569,11 @@ export function ManagerActionsMenu({
                     </Text>
                     {requestedCalendarTargetMonth ? (
                       <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-                        Destino: {monthLabel(calendarTargetMonth)}. Base: {monthLabel(sourceMonth)}.
+                        {calendarOpenBaseHint(
+                          monthLabel(calendarTargetMonth),
+                          monthLabel(sourceMonth),
+                          calendarOrigin,
+                        )}
                       </Text>
                     ) : (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -504,13 +591,7 @@ export function ManagerActionsMenu({
                     )}
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                       <View style={{ flexDirection: "row", gap: theme.space[2] }}>
-                        {([
-                          ["FULL", "Mês inteiro"],
-                          ["REMOVE_WEEKENDS", "Sem fins de semana"],
-                          ["REMOVE_NIGHTS", "Sem noturnos"],
-                          ["REMOVE_DAYS", "Sem diurnos"],
-                          ["CUSTOM", "Personalizado"],
-                        ] as const).map(([rule, label]) => {
+                        {monthRuleOptions.map(([rule, label]) => {
                           const selected = calendarRule === rule;
                           return <Pressable key={rule} onPress={() => { setCalendarRule(rule); setSelectedShiftIds([]); }} style={{ minHeight: theme.space[10], justifyContent: "center", paddingHorizontal: theme.space[3], borderRadius: theme.radius.full, borderWidth: 1, borderColor: selected ? theme.colors.primary : theme.colors.border, backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface }}>
                             <Text style={{ ...theme.text.caption, fontWeight: theme.weight.semibold, color: selected ? theme.colors.primary : theme.colors.textPrimary }}>{label}</Text>
@@ -533,7 +614,9 @@ export function ManagerActionsMenu({
                     canReplicate
                       ? period.kind === "week"
                         ? `${sourceLabel} → ${targetLabel}`
-                        : `${sourceLabel} → ${monthLabel(calendarTargetMonth)}`
+                        : calendarOrigin === "templates"
+                          ? `Modelos de horário → ${monthLabel(calendarTargetMonth)}`
+                          : `${sourceLabel} → ${monthLabel(calendarTargetMonth)}`
                       : replicationUnavailableExplanation
                   }
                   onPress={startReplicate}

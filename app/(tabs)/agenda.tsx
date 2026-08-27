@@ -48,8 +48,11 @@ import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
 import { AppButton } from "@/components/ui/AppButton";
 import {
   buildAgendaMonthPickerOptions,
+  calendarOpenOriginFromPreviousMonth,
   countShiftsInMonth,
+  emptyMonthCalendarDescription,
   monthKeyOf,
+  sourceMonthForCalendarTarget,
 } from "@/lib/agenda-month-navigation";
 
 /**
@@ -1077,6 +1080,18 @@ function EmptyMonthCalendarAction({
   onChanged: () => void;
 }) {
   const month = monthNamePt(monthKey);
+  const previousMonth = sourceMonthForCalendarTarget(monthKey);
+  const { data: previousMonthShifts } = trpc.shifts.hasMonthShifts.useQuery(
+    {
+      hospitalId: selectedContext.hospitalId,
+      sectorId: selectedContext.sectorId,
+      yearMonth: previousMonth,
+    },
+    { staleTime: 60_000 },
+  );
+  const origin = calendarOpenOriginFromPreviousMonth(
+    previousMonthShifts?.hasShifts,
+  );
   return (
     <View
       style={{
@@ -1099,15 +1114,18 @@ function EmptyMonthCalendarAction({
         Ainda não há plantões em {month}
       </Text>
       <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-        Abra o calendário deste mês a partir da escala anterior para alocar
-        os médicos.
+        {emptyMonthCalendarDescription(origin)}
       </Text>
       <ManagerActionsMenu
         variant="empty-state"
         institutionId={institutionId}
         period={{ kind: "month", monthKey }}
         calendarTargetMonth={monthKey}
-        selectedScheduleContext={selectedContext}
+        selectedScheduleContext={{
+          hospitalId: selectedContext.hospitalId,
+          sectorId: selectedContext.sectorId,
+          scheduleContextId: selectedContext.id,
+        }}
         onChanged={onChanged}
       />
     </View>
