@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatShiftTemplateTimeRange,
   getShiftTemplatesForSector,
+  pickShiftTemplatesForSector,
   type ShiftTemplateOption,
 } from "@/lib/shift-template-options";
 
@@ -85,5 +86,17 @@ describe("shift template options", () => {
 
   it("formata horario sem segundos para a tela", () => {
     expect(formatShiftTemplateTimeRange(templates[0])).toBe("19:00 - 07:00");
+  });
+
+  it("no primeiro mês usa só os modelos do setor, sem misturar os do hospital", () => {
+    expect(
+      pickShiftTemplatesForSector(templates, 10, 20).map((template) => template.id),
+    ).toEqual([3]);
+  });
+
+  it("no primeiro mês cai nos modelos do hospital quando o setor ainda não tem", () => {
+    expect(
+      pickShiftTemplatesForSector(templates, 10, 21).map((template) => template.id),
+    ).toEqual([2, 1]);
   });
 });
