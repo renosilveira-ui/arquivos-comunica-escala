@@ -6,6 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatDateBR } from "@/lib/datetime";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { Surface } from "@/components/ui/Surface";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { SkeletonList } from "@/components/ui/Skeleton";
@@ -116,9 +117,7 @@ export default function DashboardScreen() {
                 </View>
                 <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, fontVariant: ["tabular-nums"] }}>
                   {formatDateBR(shift.startAt)}{" · "}
-                  {new Date(shift.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-                  {" – "}
-                  {new Date(shift.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                  {formatHospitalTimeRange(shift.startAt, shift.endAt)}
                 </Text>
               </Surface>
             ))}

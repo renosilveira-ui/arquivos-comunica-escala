@@ -12,6 +12,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { formatHospitalTime } from "@/lib/hospital-time";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -159,7 +160,7 @@ export default function ConfirmDutyScreen() {
   if (nomination) {
     const nStart = new Date(nomination.shiftStartAt);
     const nEnd = new Date(nomination.shiftEndAt);
-    const fmt = (d: Date) => d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const fmt = (d: Date) => formatHospitalTime(d);
     const nDate = nStart.toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" });
     const nBusy = acceptNominationMutation.isPending || declineNominationMutation.isPending;
     return (
@@ -238,14 +239,8 @@ export default function ConfirmDutyScreen() {
     );
   }
 
-  const startTime = new Date(pending.shiftStartAt).toLocaleTimeString("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const endTime = new Date(pending.shiftEndAt).toLocaleTimeString("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const startTime = formatHospitalTime(pending.shiftStartAt);
+  const endTime = formatHospitalTime(pending.shiftEndAt);
   const dateStr = new Date(pending.shiftStartAt).toLocaleDateString("pt-BR", {
     weekday: "long",
     day: "2-digit",
