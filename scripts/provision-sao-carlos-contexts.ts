@@ -260,21 +260,188 @@ async function ensureContext(
   return "create";
 }
 
-async function assertCatalogReady(connection: Connection): Promise<void> {
-  const specialtyCodes = [
+async function findContextId(
+  connection: Connection,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    admissionPolicy: ScheduleContextAdmissionPolicy;
+    specialtyId: number | null;
+    operationalProfileCode: string | null;
+  },
+): Promise<number | null> {
+  const [rows] = await connection.execute<(RowDataPacket & { id: number })[]>(
+    `SELECT id
+       FROM schedule_contexts
+      WHERE institution_id = ?
+        AND hospital_id = ?
+        AND sector_id = ?
+        AND admission_policy = ?
+        AND medical_specialty_id <=> ?
+        AND operational_profile_code <=> ?
+      ORDER BY id
+      LIMIT 1
+      FOR SHARE`,
+    [
+      input.institutionId,
+      input.hospitalId,
+      input.sectorId,
+      input.admissionPolicy,
+      input.specialtyId,
+      input.operationalProfileCode,
+    ],
+  );
+  return rows[0]?.id ?? null;
+}
+
+async function ensureAllowlistQualification(
+  connection: Connection,
+  input: {
+    scheduleContextId: number;
+    qualification: PinnedQualification;
+    apply: boolean;
+  },
+): Promise<"create" | "exists"> {
+  const specialtyId =
+    input.qualification.kind === "MEDICAL_SPECIALTY"
+      ? await resolveSpecialtyId(connection, input.qualification.code)
+      : null;
+  const operationalProfileCode =
+    input.qualification.kind === "OPERATIONAL_PROFILE"
+      ? input.qualification.code
+      : null;
+  const [rows] = await connection.execute<CountRow[]>(
+    `SELECT COUNT(*) AS count
+       FROM schedule_context_allowed_qualifications
+      WHERE schedule_context_id = ?
+        AND medical_specialty_id <=> ?
+        AND operational_profile_code <=> ?`,
+    [input.scheduleContextId, specialtyId, operationalProfileCode],
+  );
+  if (Number(rows[0]?.count ?? 0) > 0) return "exists";
+  if (input.apply) {
+    await connection.execute(
+      `INSERT INTO schedule_context_allowed_qualifications
+        (schedule_context_id, medical_specialty_id, operational_profile_code)
+       VALUES (?, ?, ?)`,
+      [input.scheduleContextId, specialtyId, operationalProfileCode],
+    );
+  }
+  return "create";
+}
+
+async function consolidateLegacyPinnedContexts(
+  connection: Connection,
+  input: {
+    sectorId: number;
+    unifiedContextId: number;
+    apply: boolean;
+  },
+): Promise<number> {
+  const [legacy] = await connection.execute<(RowDataPacket & { id: number })[]>(
+    `SELECT id
+       FROM schedule_contexts
+      WHERE sector_id = ?
+        AND admission_policy = 'PINNED_QUALIFICATION'
+        AND active = TRUE
+        AND id <> ?
+      ORDER BY id
+      FOR UPDATE`,
+    [input.sectorId, input.unifiedContextId],
+  );
+  if (legacy.length === 0 || !input.apply) return legacy.length;
+  const legacyIds = legacy.map((row) => row.id);
+  const placeholders = legacyIds.map(() => "?").join(", ");
+  await connection.execute(
+    `UPDATE shift_instances
+        SET schedule_context_id = ?
+      WHERE schedule_context_id IN (${placeholders})`,
+    [input.unifiedContextId, ...legacyIds],
+  );
+  await connection.execute(
+    `UPDATE schedule_contexts
+        SET active = FALSE
+      WHERE id IN (${placeholders})`,
+    legacyIds,
+  );
+  return legacy.length;
+}
+
+async function ensureUnifiedAllowlistContext(
+  connection: Connection,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    qualifications: readonly PinnedQualification[];
+    apply: boolean;
+  },
+): Promise<string> {
+  const contextAction = await ensureContext(connection, {
+    institutionId: input.institutionId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    admissionPolicy: "QUALIFICATION_ALLOWLIST",
+    apply: input.apply,
+  });
+  const contextId = await findContextId(connection, {
+    institutionId: input.institutionId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    admissionPolicy: "QUALIFICATION_ALLOWLIST",
+    specialtyId: null,
+    operationalProfileCode: null,
+  });
+  const allowlistActions: string[] = [];
+  if (contextId) {
+    for (const qualification of input.qualifications) {
+      const allowAction = await ensureAllowlistQualification(connection, {
+        scheduleContextId: contextId,
+        qualification,
+        apply: input.apply,
+      });
+      allowlistActions.push(`${qualification.code}=${allowAction}`);
+    }
+    const retired = await consolidateLegacyPinnedContexts(connection, {
+      sectorId: input.sectorId,
+      unifiedContextId: contextId,
+      apply: input.apply,
+    });
+    if (retired > 0) {
+      allowlistActions.push(`retired=${retired}`);
+    }
+  }
+  return `QUALIFICATION_ALLOWLIST=${contextAction}; ${allowlistActions.join(", ")}`;
+}
+
+function blueprintSpecialtyCodes(): MedicalSpecialtyCode[] {
+  return [
     ...new Set(
-      HSC_SCHEDULE_CONTEXT_BLUEPRINT.flatMap((item) =>
-        item.admission.mode === "allowlist"
-          ? item.admission.qualifications.flatMap((qualification) =>
-              qualification.kind === "MEDICAL_SPECIALTY"
-                ? [qualification.code]
-                : [],
-            )
-          : [],
-      ),
+      HSC_SCHEDULE_CONTEXT_BLUEPRINT.flatMap((item) => {
+        if (item.admission.mode === "QUALIFICATION_ALLOWLIST") {
+          return item.admission.qualifications.flatMap((qualification) =>
+            qualification.kind === "MEDICAL_SPECIALTY"
+              ? [qualification.code]
+              : [],
+          );
+        }
+        if (
+          item.admission.mode === "PINNED_QUALIFICATION" &&
+          item.admission.qualification.kind === "MEDICAL_SPECIALTY"
+        ) {
+          return [item.admission.qualification.code];
+        }
+        return [];
+      }),
     ),
-  ] as MedicalSpecialtyCode[];
-  for (const code of specialtyCodes) await resolveSpecialtyId(connection, code);
+  ];
+}
+
+async function assertCatalogReady(connection: Connection): Promise<void> {
+  for (const code of blueprintSpecialtyCodes()) {
+    await resolveSpecialtyId(connection, code);
+  }
 }
 
 async function assertPriorityPilotReady(
@@ -296,7 +463,7 @@ async function assertPriorityPilotReady(
   );
   if (!sector) throw new Error("Sala de Recuperação ainda não foi criada");
 
-  if (recovery.admission.mode !== "allowlist") {
+  if (recovery.admission.mode !== "QUALIFICATION_ALLOWLIST") {
     throw new Error("Sala de Recuperação deve ter lista fechada de qualificações");
   }
   const [contexts] = await connection.execute<ContextRow[]>(
@@ -305,15 +472,29 @@ async function assertPriorityPilotReady(
       WHERE institution_id = ?
         AND hospital_id = ?
         AND sector_id = ?
-        AND admission_policy = 'PINNED_QUALIFICATION'
+        AND admission_policy = 'QUALIFICATION_ALLOWLIST'
         AND active = TRUE
       ORDER BY id
       FOR SHARE`,
     [input.institutionId, input.hospitalId, sector.id],
   );
-  if (contexts.length !== recovery.admission.qualifications.length) {
+  if (contexts.length !== 1) {
     throw new Error(
-      "Sala de Recuperação ainda não tem todas as escalas permitidas ativas",
+      "Sala de Recuperação deve ter exatamente uma escala unificada ativa",
+    );
+  }
+  const [allowlist] = await connection.execute<CountRow[]>(
+    `SELECT COUNT(*) AS count
+       FROM schedule_context_allowed_qualifications
+      WHERE schedule_context_id = ?`,
+    [contexts[0]!.id],
+  );
+  if (
+    Number(allowlist[0]?.count ?? 0) !==
+    recovery.admission.qualifications.length
+  ) {
+    throw new Error(
+      "Sala de Recuperação ainda não tem todas as qualificações permitidas",
     );
   }
 
@@ -446,19 +627,27 @@ export async function provisionSaoCarlosContexts(): Promise<void> {
         }
       }
       const contextActions: string[] = [];
-      if (sector && item.admission.mode === "allowlist") {
-        for (const qualification of item.admission.qualifications) {
-          const contextAction = await ensureContext(connection, {
+      if (sector && item.admission.mode === "QUALIFICATION_ALLOWLIST") {
+        contextActions.push(
+          await ensureUnifiedAllowlistContext(connection, {
             institutionId: target.institutionId,
             hospitalId: target.hospitalId,
             sectorId: sector.id,
-            admissionPolicy: "PINNED_QUALIFICATION",
-            qualification,
+            qualifications: item.admission.qualifications,
             apply,
-          });
-          contextActions.push(`${qualification.code}=${contextAction}`);
-        }
-      } else if (sector && item.admission.mode !== "allowlist") {
+          }),
+        );
+      } else if (sector && item.admission.mode === "PINNED_QUALIFICATION") {
+        const contextAction = await ensureContext(connection, {
+          institutionId: target.institutionId,
+          hospitalId: target.hospitalId,
+          sectorId: sector.id,
+          admissionPolicy: "PINNED_QUALIFICATION",
+          qualification: item.admission.qualification,
+          apply,
+        });
+        contextActions.push(`${item.admission.qualification.code}=${contextAction}`);
+      } else if (sector && item.admission.mode !== "PINNED_QUALIFICATION") {
         const contextAction = await ensureContext(connection, {
           institutionId: target.institutionId,
           hospitalId: target.hospitalId,

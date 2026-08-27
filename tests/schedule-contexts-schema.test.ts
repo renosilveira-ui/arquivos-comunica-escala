@@ -31,6 +31,7 @@ describe("schema de contextos de escala", () => {
       "PINNED_QUALIFICATION",
       "ALL_CFM_SPECIALTIES",
       "ALL_CFM_EXCEPT_GENERALIST",
+      "QUALIFICATION_ALLOWLIST",
     ]);
   });
 

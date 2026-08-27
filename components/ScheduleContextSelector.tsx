@@ -152,7 +152,7 @@ export function ScheduleContextSelector({
                 <Text
                   style={{ ...theme.text.body, color: theme.colors.textMuted }}
                 >
-                  Hospital, setor e qualificação permanecem separados.
+                  Escolha o hospital e o setor que deseja visualizar.
                 </Text>
               </View>
               <Pressable
@@ -192,8 +192,16 @@ export function ScheduleContextSelector({
                       sector.contexts.map((context) => (
                         <ContextOption
                           key={context.id}
-                          title={`${sector.sectorName} · ${context.qualificationName}`}
-                          subtitle={context.qualificationCode}
+                          title={
+                            context.qualificationKind === "SECTOR_POLICY"
+                              ? context.displayName
+                              : `${sector.sectorName} · ${context.qualificationName}`
+                          }
+                          subtitle={
+                            context.qualificationKind === "SECTOR_POLICY"
+                              ? context.hospitalName
+                              : context.qualificationCode
+                          }
                           selected={context.id === selectedContextId}
                           onPress={() => choose(context.id)}
                         />

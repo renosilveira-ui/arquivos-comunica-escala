@@ -19,7 +19,7 @@ describe("blueprint multissetorial do Hospital São Carlos", () => {
     ]);
   });
 
-  it("repete a mesma lista fechada na Sala de Recuperação e no TRR", () => {
+  it("usa escala unificada com lista fechada na Sala de Recuperação e no TRR", () => {
     expect(SAO_CARLOS_RECOVERY_QUALIFICATIONS.map((item) => item.code)).toEqual([
       "CLINICA_MEDICA",
       "RESIDENTE_ANESTESIOLOGIA",
@@ -34,7 +34,7 @@ describe("blueprint multissetorial do Hospital São Carlos", () => {
       (item) => item.sectorName === "TRR",
     );
     expect(recovery?.admission).toEqual({
-      mode: "allowlist",
+      mode: "QUALIFICATION_ALLOWLIST",
       qualifications: SAO_CARLOS_RECOVERY_QUALIFICATIONS,
     });
     expect(trr?.admission).toEqual(recovery?.admission);
@@ -48,10 +48,11 @@ describe("blueprint multissetorial do Hospital São Carlos", () => {
     ).toMatchObject({
       category: "cirurgico",
       admission: {
-        mode: "allowlist",
-        qualifications: [
-          { kind: "MEDICAL_SPECIALTY", code: "ORTOPEDIA_E_TRAUMATOLOGIA" },
-        ],
+        mode: "PINNED_QUALIFICATION",
+        qualification: {
+          kind: "MEDICAL_SPECIALTY",
+          code: "ORTOPEDIA_E_TRAUMATOLOGIA",
+        },
       },
     });
   });
@@ -68,16 +69,10 @@ describe("blueprint multissetorial do Hospital São Carlos", () => {
     ).toEqual({ mode: "ALL_CFM_EXCEPT_GENERALIST" });
   });
 
-  it("gera onze contextos pinados sem misturar setor aberto", () => {
+  it("gera somente Traumatologia como contexto pinado único", () => {
     const pinned = flattenSaoCarlosPinnedContexts();
-    expect(pinned).toHaveLength(11);
-    expect(
-      pinned.filter((item) => item.sectorName === "Sala de Recuperação"),
-    ).toHaveLength(5);
-    expect(pinned.filter((item) => item.sectorName === "TRR")).toHaveLength(5);
-    expect(
-      pinned.filter((item) => item.sectorName === "Traumatologia"),
-    ).toEqual([
+    expect(pinned).toHaveLength(1);
+    expect(pinned).toEqual([
       {
         sectorName: "Traumatologia",
         qualification: {

@@ -2823,6 +2823,28 @@ export const swapRouter = router({
               AND ap.operational_profile_code = fsc.operational_profile_code
               AND fp.operational_profile_code = fsc.operational_profile_code
             )
+            OR
+            (
+              fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+              AND EXISTS (
+                SELECT 1
+                  FROM schedule_context_allowed_qualifications aq
+                 WHERE aq.schedule_context_id = fsc.id
+                   AND (
+                     (
+                       aq.medical_specialty_id IS NOT NULL
+                       AND ap.medical_specialty_id = aq.medical_specialty_id
+                       AND fp.medical_specialty_id = aq.medical_specialty_id
+                     )
+                     OR
+                     (
+                       aq.operational_profile_code IS NOT NULL
+                       AND ap.operational_profile_code = aq.operational_profile_code
+                       AND fp.operational_profile_code = aq.operational_profile_code
+                     )
+                   )
+              )
+            )
           )
           AND EXISTS (
             SELECT 1

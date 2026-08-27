@@ -183,6 +183,42 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     ).toBe(true);
   });
 
+  it("QUALIFICATION_ALLOWLIST aceita qualquer qualificação da lista fechada", () => {
+    const context = {
+      medicalSpecialtyId: null,
+      operationalProfileCode: null,
+      admissionPolicy: "QUALIFICATION_ALLOWLIST" as const,
+      allowedQualifications: [
+        { medicalSpecialtyId: 10, operationalProfileCode: null },
+        {
+          medicalSpecialtyId: null,
+          operationalProfileCode: "RESIDENTE_ANESTESIOLOGIA" as const,
+        },
+      ],
+    };
+    expect(
+      qualificationMatches(
+        { medicalSpecialtyId: 10, operationalProfileCode: null },
+        context,
+      ),
+    ).toBe(true);
+    expect(
+      qualificationMatches(
+        {
+          medicalSpecialtyId: null,
+          operationalProfileCode: "RESIDENTE_ANESTESIOLOGIA",
+        },
+        context,
+      ),
+    ).toBe(true);
+    expect(
+      qualificationMatches(
+        { medicalSpecialtyId: 99, operationalProfileCode: null },
+        context,
+      ),
+    ).toBe(false);
+  });
+
   it("é mutation-sensitive: assignDirect/assume/swap/nomination não voltam ao texto", () => {
     const editor = readFileSync("server/editor.ts", "utf8");
     const routers = readFileSync("server/routers.ts", "utf8");
