@@ -251,6 +251,7 @@ export const scheduleContextAdmissionPolicyEnum = mysqlEnum(
     "PINNED_QUALIFICATION",
     "ALL_CFM_SPECIALTIES",
     "ALL_CFM_EXCEPT_GENERALIST",
+    "QUALIFICATION_ALLOWLIST",
   ],
 );
 
@@ -542,10 +543,59 @@ export const scheduleContexts = mysqlTable(
         )
         or
         (
-          ${table.admissionPolicy} in ('ALL_CFM_SPECIALTIES', 'ALL_CFM_EXCEPT_GENERALIST')
+          ${table.admissionPolicy} in (
+            'ALL_CFM_SPECIALTIES',
+            'ALL_CFM_EXCEPT_GENERALIST',
+            'QUALIFICATION_ALLOWLIST'
+          )
           and ${table.medicalSpecialtyId} is null
           and ${table.operationalProfileCode} is null
         )
+      )`,
+    ),
+  }),
+);
+
+/**
+ * Qualificações permitidas em escalas com política QUALIFICATION_ALLOWLIST.
+ * Uma escala por setor; a admissão é validada contra esta lista.
+ */
+export const scheduleContextAllowedQualifications = mysqlTable(
+  "schedule_context_allowed_qualifications",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    scheduleContextId: int("schedule_context_id").notNull(),
+    medicalSpecialtyId: int("medical_specialty_id"),
+    operationalProfileCode: operationalProfileCodeEnum,
+  },
+  (table) => ({
+    uniqAllowlistSpecialty: unique("uniq_sc_allowlist_specialty").on(
+      table.scheduleContextId,
+      table.medicalSpecialtyId,
+    ),
+    uniqAllowlistProfile: unique("uniq_sc_allowlist_profile").on(
+      table.scheduleContextId,
+      table.operationalProfileCode,
+    ),
+    idxAllowlistContext: index("idx_sc_allowlist_context").on(
+      table.scheduleContextId,
+    ),
+    fkScAllowlistContext: foreignKey({
+      columns: [table.scheduleContextId],
+      foreignColumns: [scheduleContexts.id],
+      name: "fk_sc_allowlist_context",
+    }).onDelete("cascade"),
+    fkScAllowlistSpecialty: foreignKey({
+      columns: [table.medicalSpecialtyId],
+      foreignColumns: [medicalSpecialties.id],
+      name: "fk_sc_allowlist_specialty",
+    }),
+    chkAllowlistExactlyOneQualification: check(
+      "chk_sc_allowlist_exactly_one_qualification",
+      sql`(
+        (${table.medicalSpecialtyId} is not null and ${table.operationalProfileCode} is null)
+        or
+        (${table.medicalSpecialtyId} is null and ${table.operationalProfileCode} is not null)
       )`,
     ),
   }),
@@ -1464,7 +1514,22 @@ export const scheduleContextsRelations = relations(
       fields: [scheduleContexts.medicalSpecialtyId],
       references: [medicalSpecialties.id],
     }),
+    allowedQualifications: many(scheduleContextAllowedQualifications),
     shiftInstances: many(shiftInstances),
+  }),
+);
+
+export const scheduleContextAllowedQualificationsRelations = relations(
+  scheduleContextAllowedQualifications,
+  ({ one }) => ({
+    scheduleContext: one(scheduleContexts, {
+      fields: [scheduleContextAllowedQualifications.scheduleContextId],
+      references: [scheduleContexts.id],
+    }),
+    medicalSpecialty: one(medicalSpecialties, {
+      fields: [scheduleContextAllowedQualifications.medicalSpecialtyId],
+      references: [medicalSpecialties.id],
+    }),
   }),
 );
 

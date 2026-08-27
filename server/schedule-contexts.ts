@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -8,6 +8,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContextAllowedQualifications,
   scheduleContexts,
   sectors,
   shiftAssignmentsV2,
@@ -20,10 +21,19 @@ import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
 import { protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 
+export type AllowedScheduleContextQualification = {
+  medicalSpecialtyId: number | null;
+  operationalProfileCode:
+    | "MEDICO_GENERALISTA"
+    | "RESIDENTE_ANESTESIOLOGIA"
+    | null;
+};
+
 export type ScheduleContextQualification = {
   medicalSpecialtyId: number | null;
   operationalProfileCode: "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null;
   admissionPolicy?: ScheduleContextAdmissionPolicy;
+  allowedQualifications?: readonly AllowedScheduleContextQualification[];
 };
 
 export type ProfessionalQualification = ScheduleContextQualification;
@@ -53,7 +63,6 @@ export type ActiveScheduleContext = ScheduleContextQualification & {
   sectorName: string;
   medicalSpecialtyCode: string | null;
   medicalSpecialtyName: string | null;
-  operationalProfileCode: "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null;
   admissionPolicy: ScheduleContextAdmissionPolicy;
   active: boolean;
 };
@@ -115,6 +124,15 @@ export function qualificationMatches(
     return (
       professional.medicalSpecialtyId !== null &&
       !isGeneralistOperationalProfile(professional.operationalProfileCode)
+    );
+  }
+  if (policy === "QUALIFICATION_ALLOWLIST") {
+    const allowed = context.allowedQualifications;
+    if (!allowed || allowed.length === 0) return false;
+    return allowed.some((entry) =>
+      entry.medicalSpecialtyId !== null
+        ? professional.medicalSpecialtyId === entry.medicalSpecialtyId
+        : professional.operationalProfileCode === entry.operationalProfileCode,
     );
   }
 
@@ -186,6 +204,16 @@ export function describeScheduleContext(
       qualificationKind: "SECTOR_POLICY",
       qualificationCode: "ALL_CFM_EXCEPT_GENERALIST",
       qualificationName: "Especialistas",
+      displayName: `${context.hospitalName} — ${context.sectorName}`,
+      canManage,
+    };
+  }
+  if (context.admissionPolicy === "QUALIFICATION_ALLOWLIST") {
+    return {
+      ...context,
+      qualificationKind: "SECTOR_POLICY",
+      qualificationCode: "QUALIFICATION_ALLOWLIST",
+      qualificationName: "",
       displayName: `${context.hospitalName} — ${context.sectorName}`,
       canManage,
     };
@@ -293,6 +321,58 @@ export function requireSingleLegacyScheduleContext<T extends { id: number }>(
     });
   }
   return candidates[0];
+}
+
+async function loadScheduleContextAllowlists(
+  db: ContextDb,
+  contextIds: readonly number[],
+): Promise<Map<number, AllowedScheduleContextQualification[]>> {
+  if (contextIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      scheduleContextId: scheduleContextAllowedQualifications.scheduleContextId,
+      medicalSpecialtyId:
+        scheduleContextAllowedQualifications.medicalSpecialtyId,
+      operationalProfileCode:
+        scheduleContextAllowedQualifications.operationalProfileCode,
+    })
+    .from(scheduleContextAllowedQualifications)
+    .where(
+      inArray(
+        scheduleContextAllowedQualifications.scheduleContextId,
+        [...contextIds],
+      ),
+    );
+  const map = new Map<number, AllowedScheduleContextQualification[]>();
+  for (const row of rows) {
+    const list = map.get(row.scheduleContextId) ?? [];
+    list.push({
+      medicalSpecialtyId: row.medicalSpecialtyId,
+      operationalProfileCode: row.operationalProfileCode as
+        | "MEDICO_GENERALISTA"
+        | "RESIDENTE_ANESTESIOLOGIA"
+        | null,
+    });
+    map.set(row.scheduleContextId, list);
+  }
+  return map;
+}
+
+async function enrichActiveScheduleContexts(
+  db: ContextDb,
+  rows: Omit<ActiveScheduleContext, "allowedQualifications">[],
+): Promise<ActiveScheduleContext[]> {
+  const allowlistIds = rows
+    .filter((row) => row.admissionPolicy === "QUALIFICATION_ALLOWLIST")
+    .map((row) => row.id);
+  const allowlists = await loadScheduleContextAllowlists(db, allowlistIds);
+  return rows.map((row) => ({
+    ...row,
+    allowedQualifications:
+      row.admissionPolicy === "QUALIFICATION_ALLOWLIST"
+        ? (allowlists.get(row.id) ?? [])
+        : undefined,
+  }));
 }
 
 export type ContextDb = Pick<
@@ -538,6 +618,11 @@ export async function selectActiveScheduleContexts(
             isNull(scheduleContexts.medicalSpecialtyId),
             isNull(scheduleContexts.operationalProfileCode),
           ),
+          and(
+            eq(scheduleContexts.admissionPolicy, "QUALIFICATION_ALLOWLIST"),
+            isNull(scheduleContexts.medicalSpecialtyId),
+            isNull(scheduleContexts.operationalProfileCode),
+          ),
         ),
       ),
     )
@@ -550,15 +635,18 @@ export async function selectActiveScheduleContexts(
     );
   const rows = lockForShare ? await query.for("share") : await query;
 
-  return rows.map((row) => ({
-    ...row,
-    active: true as const,
-    operationalProfileCode: row.operationalProfileCode as
-      | "MEDICO_GENERALISTA"
-      | "RESIDENTE_ANESTESIOLOGIA"
-      | null,
-    admissionPolicy: row.admissionPolicy,
-  }));
+  return enrichActiveScheduleContexts(
+    db,
+    rows.map((row) => ({
+      ...row,
+      active: true as const,
+      operationalProfileCode: row.operationalProfileCode as
+        | "MEDICO_GENERALISTA"
+        | "RESIDENTE_ANESTESIOLOGIA"
+        | null,
+      admissionPolicy: row.admissionPolicy,
+    })),
+  );
 }
 
 /**

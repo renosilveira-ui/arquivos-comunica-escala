@@ -260,7 +260,7 @@ async function ensureShiftTemplate(
   return "create";
 }
 
-async function resolveAnestesiaContextId(
+async function resolveUnifiedSectorContextId(
   connection: Connection,
   input: {
     institutionId: number;
@@ -271,13 +271,11 @@ async function resolveAnestesiaContextId(
   const [rows] = await connection.execute<ContextRow[]>(
     `SELECT sc.id
        FROM schedule_contexts sc
-       INNER JOIN medical_specialties ms ON ms.id = sc.medical_specialty_id
       WHERE sc.institution_id = ?
         AND sc.hospital_id = ?
         AND sc.sector_id = ?
-        AND sc.admission_policy = 'PINNED_QUALIFICATION'
+        AND sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
         AND sc.active = TRUE
-        AND ms.code = 'ANESTESIOLOGIA'
       ORDER BY sc.id
       LIMIT 1
       FOR SHARE`,
@@ -285,7 +283,7 @@ async function resolveAnestesiaContextId(
   );
   if (!rows[0]) {
     throw new Error(
-      "Contexto Anestesiologia da Sala de Recuperação ainda não foi provisionado",
+      "Escala unificada da Sala de Recuperação ainda não foi provisionada — rode provision:sao-carlos --apply",
     );
   }
   return rows[0].id;
@@ -588,7 +586,7 @@ export async function provisionSalaRecuperacaoSchedule(): Promise<void> {
 
     let seedLine = "seed=skipped";
     if (seedMonth) {
-      const scheduleContextId = await resolveAnestesiaContextId(connection, {
+      const scheduleContextId = await resolveUnifiedSectorContextId(connection, {
         institutionId: target.institutionId,
         hospitalId: target.hospitalId,
         sectorId: sector.id,

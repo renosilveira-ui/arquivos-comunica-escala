@@ -1164,8 +1164,7 @@ function DesktopGroupBlock({
           }}
         >
           {group.hospitalName} – {group.sectorName}
-          {"\n"}
-          {group.qualificationName}
+          {group.qualificationName ? `\n${group.qualificationName}` : ""}
         </Text>
       </View>
 

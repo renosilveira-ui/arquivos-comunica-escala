@@ -6,14 +6,19 @@ import type {
 export type ScheduleContextAdmissionPolicy =
   | "PINNED_QUALIFICATION"
   | "ALL_CFM_SPECIALTIES"
-  | "ALL_CFM_EXCEPT_GENERALIST";
+  | "ALL_CFM_EXCEPT_GENERALIST"
+  | "QUALIFICATION_ALLOWLIST";
 
 export type PinnedQualification =
   | { kind: "MEDICAL_SPECIALTY"; code: MedicalSpecialtyCode }
   | { kind: "OPERATIONAL_PROFILE"; code: OperationalProfileCode };
 
 export type SaoCarlosSectorAdmission =
-  | { mode: "allowlist"; qualifications: readonly PinnedQualification[] }
+  | {
+      mode: "QUALIFICATION_ALLOWLIST";
+      qualifications: readonly PinnedQualification[];
+    }
+  | { mode: "PINNED_QUALIFICATION"; qualification: PinnedQualification }
   | { mode: "ALL_CFM_SPECIALTIES" }
   | { mode: "ALL_CFM_EXCEPT_GENERALIST" };
 
@@ -48,7 +53,7 @@ export const HSC_SCHEDULE_CONTEXT_BLUEPRINT: readonly SaoCarlosSectorBlueprint[]
       category: "cirurgico",
       color: "#16A34A",
       admission: {
-        mode: "allowlist",
+        mode: "QUALIFICATION_ALLOWLIST",
         qualifications: SAO_CARLOS_RECOVERY_QUALIFICATIONS,
       },
     },
@@ -57,10 +62,11 @@ export const HSC_SCHEDULE_CONTEXT_BLUEPRINT: readonly SaoCarlosSectorBlueprint[]
       category: "cirurgico",
       color: "#0369A1",
       admission: {
-        mode: "allowlist",
-        qualifications: [
-          { kind: "MEDICAL_SPECIALTY", code: "ORTOPEDIA_E_TRAUMATOLOGIA" },
-        ],
+        mode: "PINNED_QUALIFICATION",
+        qualification: {
+          kind: "MEDICAL_SPECIALTY",
+          code: "ORTOPEDIA_E_TRAUMATOLOGIA",
+        },
       },
     },
     {
@@ -68,7 +74,7 @@ export const HSC_SCHEDULE_CONTEXT_BLUEPRINT: readonly SaoCarlosSectorBlueprint[]
       category: "servico",
       color: "#7C3AED",
       admission: {
-        mode: "allowlist",
+        mode: "QUALIFICATION_ALLOWLIST",
         qualifications: SAO_CARLOS_RECOVERY_QUALIFICATIONS,
       },
     },
@@ -86,16 +92,14 @@ export const HSC_SCHEDULE_CONTEXT_BLUEPRINT: readonly SaoCarlosSectorBlueprint[]
     },
   ];
 
+/** Setores com uma única qualificação pinada (Traumatologia). */
 export function flattenSaoCarlosPinnedContexts(): readonly {
   sectorName: string;
   qualification: PinnedQualification;
 }[] {
   return HSC_SCHEDULE_CONTEXT_BLUEPRINT.flatMap((sector) =>
-    sector.admission.mode === "allowlist"
-      ? sector.admission.qualifications.map((qualification) => ({
-          sectorName: sector.sectorName,
-          qualification,
-        }))
+    sector.admission.mode === "PINNED_QUALIFICATION"
+      ? [{ sectorName: sector.sectorName, qualification: sector.admission.qualification }]
       : [],
   );
 }
