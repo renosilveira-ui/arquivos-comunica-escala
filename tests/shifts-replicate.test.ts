@@ -31,6 +31,10 @@ import { shiftsRouter } from "../server/shifts-crud";
 const OFFSET = "-03:00";
 const at = (date: string, time: string) => new Date(`${date}T${time}${OFFSET}`);
 const localWeekday = (d: Date) => new Date(d.getTime() - 3 * 60 * 60 * 1000).getUTCDay();
+const isNightShiftBrt = (d: Date) => {
+  const hour = new Date(d.getTime() - 3 * 60 * 60 * 1000).getUTCHours();
+  return hour >= 18 || hour < 6;
+};
 
 describe("shifts.replicateRange", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
@@ -890,6 +894,75 @@ describe("shifts.replicateRange", () => {
     ));
     expect(copy.status).toBe("VAGO");
     expect((await db!.select().from(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, copy.id)))).toHaveLength(0);
+  });
+
+  it("calendário mensal remove noturnos ou diurnos no relógio BRT", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    const withoutNights = await caller.replicateMonthCalendar({
+      hospitalId,
+      sectorId,
+      sourceMonth: "2026-09",
+      targetMonth: "2033-04",
+      rule: "REMOVE_NIGHTS",
+      dryRun: true,
+    });
+    expect(withoutNights.candidates).not.toHaveLength(0);
+    expect(
+      withoutNights.candidates.every(
+        (candidate) => !isNightShiftBrt(new Date(candidate.startAt)),
+      ),
+    ).toBe(true);
+
+    const withoutDays = await caller.replicateMonthCalendar({
+      hospitalId,
+      sectorId,
+      sourceMonth: "2026-09",
+      targetMonth: "2033-05",
+      rule: "REMOVE_DAYS",
+      dryRun: true,
+    });
+    expect(withoutDays.candidates).not.toHaveLength(0);
+    expect(
+      withoutDays.candidates.every((candidate) =>
+        isNightShiftBrt(new Date(candidate.startAt)),
+      ),
+    ).toBe(true);
+  });
+
+  it("calendário mensal rejeita seleção personalizada vazia ou fora da origem", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    await expect(
+      caller.replicateMonthCalendar({
+        hospitalId,
+        sectorId,
+        sourceMonth: "2026-09",
+        targetMonth: "2033-06",
+        rule: "CUSTOM",
+        includeShiftIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.replicateMonthCalendar({
+        hospitalId,
+        sectorId,
+        sourceMonth: "2026-09",
+        targetMonth: "2033-06",
+        rule: "CUSTOM",
+        includeShiftIds: [999_999_999],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("calendário mensal rejeita origem e destino iguais", async () => {
+    await expect(
+      callerFor(managerUserId, "manager").replicateMonthCalendar({
+        hospitalId,
+        sectorId,
+        sourceMonth: "2026-09",
+        targetMonth: "2026-09",
+        rule: "FULL",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("rejeita mês alvo com turno em outro setor sem sobrescrever", async () => {
