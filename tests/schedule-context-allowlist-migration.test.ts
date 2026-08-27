@@ -13,6 +13,8 @@ describe("migration manual de escala unificada", () => {
   it("é aditiva e cria allowlist com política QUALIFICATION_ALLOWLIST", () => {
     expect(migration).toContain("schedule_context_allowed_qualifications");
     expect(migration).toContain("QUALIFICATION_ALLOWLIST");
+    expect(migration).toContain("fk_sc_allowlist_context");
+    expect(migration).toContain("fk_sc_allowlist_specialty");
     expect(migration).toContain("CREATE TABLE IF NOT EXISTS");
     expect(migration).not.toMatch(/\bDROP\s+TABLE\b/i);
     expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);

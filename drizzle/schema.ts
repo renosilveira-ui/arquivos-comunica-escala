@@ -564,12 +564,8 @@ export const scheduleContextAllowedQualifications = mysqlTable(
   "schedule_context_allowed_qualifications",
   {
     id: int("id").primaryKey().autoincrement(),
-    scheduleContextId: int("schedule_context_id")
-      .notNull()
-      .references(() => scheduleContexts.id, { onDelete: "cascade" }),
-    medicalSpecialtyId: int("medical_specialty_id").references(
-      () => medicalSpecialties.id,
-    ),
+    scheduleContextId: int("schedule_context_id").notNull(),
+    medicalSpecialtyId: int("medical_specialty_id"),
     operationalProfileCode: operationalProfileCodeEnum,
   },
   (table) => ({
@@ -584,6 +580,16 @@ export const scheduleContextAllowedQualifications = mysqlTable(
     idxAllowlistContext: index("idx_sc_allowlist_context").on(
       table.scheduleContextId,
     ),
+    fkScAllowlistContext: foreignKey({
+      columns: [table.scheduleContextId],
+      foreignColumns: [scheduleContexts.id],
+      name: "fk_sc_allowlist_context",
+    }).onDelete("cascade"),
+    fkScAllowlistSpecialty: foreignKey({
+      columns: [table.medicalSpecialtyId],
+      foreignColumns: [medicalSpecialties.id],
+      name: "fk_sc_allowlist_specialty",
+    }),
     chkAllowlistExactlyOneQualification: check(
       "chk_sc_allowlist_exactly_one_qualification",
       sql`(

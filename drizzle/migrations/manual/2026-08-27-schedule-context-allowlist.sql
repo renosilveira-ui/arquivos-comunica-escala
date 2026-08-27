@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS schedule_context_allowed_qualifications (
   KEY idx_sc_allowlist_context (schedule_context_id),
   CONSTRAINT fk_sc_allowlist_context
     FOREIGN KEY (schedule_context_id) REFERENCES schedule_contexts (id) ON DELETE CASCADE,
-  CONSTRAINT fk_sc_allowlist_medical_specialty
+  CONSTRAINT fk_sc_allowlist_specialty
     FOREIGN KEY (medical_specialty_id) REFERENCES medical_specialties (id),
   CONSTRAINT chk_sc_allowlist_exactly_one_qualification
     CHECK (
