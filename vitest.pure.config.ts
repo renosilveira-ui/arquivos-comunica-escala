@@ -41,6 +41,8 @@ export default defineConfig({
       "tests/schedule-invite-mail.test.ts",
       "tests/request-deadline.test.ts",
       "tests/login-admission-bounce.test.ts",
+      "tests/android-login-boot-hang.test.ts",
+      "tests/canonical-session-request-deadline.test.ts",
       "tests/auth-provider-races.test.ts",
       "tests/auth-logout-persistence.test.ts",
     ],

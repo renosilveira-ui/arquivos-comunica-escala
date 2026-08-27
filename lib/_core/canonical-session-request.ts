@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import { getApiBaseUrl } from "./api-base-url";
+import { withRequestDeadline } from "../request-deadline";
 import { getActiveWebSessionWorkflowSignal } from "./web-session-workflow";
 
 const EXPECTED_SESSION_USER_HEADER = "x-client-expected-user-id";
@@ -27,12 +28,13 @@ export async function requestCanonicalSession<T>(input: {
   const credentialPresented =
     Platform.OS === "web" || headers.Authorization !== undefined;
   const workflowSignal = getActiveWebSessionWorkflowSignal();
+  const deadline = withRequestDeadline(workflowSignal ?? undefined);
   try {
     const response = await fetch(`${getApiBaseUrl()}/api/auth/me`, {
       headers,
       cache: "no-store",
       ...(Platform.OS === "web" ? { credentials: "include" as const } : {}),
-      ...(workflowSignal ? { signal: workflowSignal } : {}),
+      signal: deadline.signal,
     });
     let data: T | null = null;
     try {
@@ -47,6 +49,8 @@ export async function requestCanonicalSession<T>(input: {
       credentialPresented,
     };
   } catch {
-    return { ok: false, status: 0, data: null, credentialPresented: false };
+    return { ok: false, status: 0, data: null, credentialPresented };
+  } finally {
+    deadline.cleanup();
   }
 }
