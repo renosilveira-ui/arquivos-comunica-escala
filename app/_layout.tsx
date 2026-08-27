@@ -48,6 +48,7 @@ import { ToastProvider } from "@/components/ui/Toast";
 import { BootScreen } from "@/components/BootScreen";
 import {
   AUTHORIZATION_GATE_STALL_MS,
+  REQUEST_DEADLINE_MS,
   isNetInfoOnline,
 } from "@/lib/request-deadline";
 import {
@@ -452,11 +453,14 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
       if (!user) {
         queryClient.clear();
       }
-      setGateState({
-        status: user && sessionValidation.status === "UNAVAILABLE"
-          ? "UNAVAILABLE"
-          : "CHECKING",
-        subjectKey,
+      setGateState((current) => {
+        const nextStatus =
+          user && sessionValidation.status === "UNAVAILABLE"
+            ? "UNAVAILABLE"
+            : "CHECKING";
+        return current.subjectKey === subjectKey && current.status === nextStatus
+          ? current
+          : { status: nextStatus, subjectKey };
       });
       return;
     }
@@ -570,8 +574,33 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     return () => clearTimeout(timer);
   }, [gateState.status, subjectKey]);
 
+  const [sessionProofStalled, setSessionProofStalled] = useState(false);
+  useEffect(() => {
+    if (!user || currentSessionProof) {
+      setSessionProofStalled(false);
+      return;
+    }
+    if (sessionValidation.status !== "CHECKING") {
+      setSessionProofStalled(false);
+      return;
+    }
+    const timer = setTimeout(
+      () => setSessionProofStalled(true),
+      REQUEST_DEADLINE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [
+    currentSessionProof,
+    user,
+    sessionValidation.status,
+    sessionValidation.sequence,
+  ]);
+
   if (user && !currentSessionProof) {
-    if (sessionValidation.status === "UNAVAILABLE") {
+    if (
+      sessionValidation.status === "UNAVAILABLE" ||
+      sessionProofStalled
+    ) {
       return <AuthorizationUnavailableScreen retry={() => { void refetch(); }} />;
     }
     return <BootScreen />;

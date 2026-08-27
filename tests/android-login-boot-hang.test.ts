@@ -34,6 +34,27 @@ describe("login nativo não trava no BootScreen após credenciais", () => {
     expect(boundary).toContain("updateActivity({ online: true })");
   });
 
+  it("usuário sem receipt de /me expira para retry, não BootScreen eterno", () => {
+    const layout = readFileSync("app/_layout.tsx", "utf8");
+    const boundary = layout.slice(
+      layout.indexOf("function TenantAuthorizationBoundary"),
+      layout.indexOf("function AuthGuard"),
+    );
+    expect(boundary).toContain("sessionProofStalled");
+    expect(boundary).toContain("REQUEST_DEADLINE_MS");
+  });
+
+  it("admissão canônica STALE após login marca UNAVAILABLE", () => {
+    const auth = readFileSync("hooks/use-auth.ts", "utf8");
+    const block = auth.slice(
+      auth.indexOf("const completeCanonicalSessionAdmission"),
+      auth.indexOf("const reconcileAmbiguousSessionCommit"),
+    );
+    expect(block).toContain("outcome === \"STALE\"");
+    expect(block).toContain("UNAVAILABLE");
+    expect(block).toContain("admissionPending = true");
+  });
+
   it("o watchdog de UI da admissão não ultrapassa o prazo do pedido", () => {
     expect(REQUEST_DEADLINE_MS).toBe(70_000);
   });
