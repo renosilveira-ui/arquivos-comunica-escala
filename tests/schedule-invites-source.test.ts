@@ -38,6 +38,7 @@ describe("wiring fail-closed dos convites nominais", () => {
     const join = readFileSync("app/join-schedule.tsx", "utf8");
     const invites = readFileSync("app/schedule-invites.tsx", "utf8");
     expect(signup).not.toContain("inviteCode");
+    expect(signup).not.toContain("Convite da escala");
     expect(signup).not.toContain("schedule-invite-code");
     expect(join).not.toContain("schedule-invite-code");
     expect(invites).toContain("scheduleInvites.create");
