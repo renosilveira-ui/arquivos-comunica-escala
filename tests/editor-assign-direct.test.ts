@@ -361,7 +361,7 @@ describe("editor.assignDirect", () => {
     expect(assignments).toHaveLength(1);
   });
 
-  it("revalida conta aprovada e especialidade do profissional alvo", async () => {
+  it("revalida conta aprovada do profissional alvo", async () => {
     const caller = editorRouter.createCaller({
       user: {
         id: managerUserId,
@@ -387,26 +387,6 @@ describe("editor.assignDirect", () => {
         }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
-      await db
-        .update(users)
-        .set({ approvalStatus: "APPROVED" })
-        .where(eq(users.id, targetUserId));
-      await db
-        .update(professionals)
-        .set({ medicalSpecialtyId: null })
-        .where(eq(professionals.id, targetProfessionalId));
-      await db
-        .update(shiftInstances)
-        .set({ specialty: "Anestesiologia" })
-        .where(eq(shiftInstances.id, shiftInstanceId));
-      await expect(
-        caller.assignDirect({
-          shiftInstanceId,
-          professionalId: targetProfessionalId,
-          assignmentType: "ON_DUTY",
-        }),
-      ).rejects.toMatchObject({ code: "FORBIDDEN" });
-
       const assignments = await db
         .select({ id: shiftAssignmentsV2.id })
         .from(shiftAssignmentsV2)
@@ -417,14 +397,196 @@ describe("editor.assignDirect", () => {
         .update(users)
         .set({ approvalStatus: "APPROVED" })
         .where(eq(users.id, targetUserId));
+    }
+  });
+
+  it("aloca clínico, genética e gestor sem especialidade da allowlist", async () => {
+    const stamp = Date.now();
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    const [clinicaSpecialty] = await db
+      .insert(medicalSpecialties)
+      .values({
+        code: `ASSIGN_DIRECT_CLINICA_${stamp}`,
+        name: "Clínica Médica",
+        sourceVersion: "TEST",
+        active: true,
+        sortOrder: 20,
+      })
+      .$returningId();
+    const [geneticaSpecialty] = await db
+      .insert(medicalSpecialties)
+      .values({
+        code: `ASSIGN_DIRECT_GENETICA_${stamp}`,
+        name: "Genética Médica",
+        sourceVersion: "TEST",
+        active: true,
+        sortOrder: 21,
+      })
+      .$returningId();
+
+    const [clinicaUser] = await db
+      .insert(users)
+      .values({
+        name: `Assign Clinica ${stamp}`,
+        email: `assign-clinica-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "doctor",
+        approvalStatus: "APPROVED",
+      })
+      .$returningId();
+    const [geneticaUser] = await db
+      .insert(users)
+      .values({
+        name: `Assign Genetica ${stamp}`,
+        email: `assign-genetica-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "doctor",
+        approvalStatus: "APPROVED",
+      })
+      .$returningId();
+
+    const [clinicaProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: clinicaUser.id,
+        name: `Assign Clinica ${stamp}`,
+        role: "Médico",
+        userRole: "USER",
+        medicalSpecialtyId: clinicaSpecialty.id,
+        specialty: "Clínica Médica",
+      })
+      .$returningId();
+    const [geneticaProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: geneticaUser.id,
+        name: `Assign Genetica ${stamp}`,
+        role: "Médico",
+        userRole: "USER",
+        medicalSpecialtyId: geneticaSpecialty.id,
+        specialty: "Genética Médica",
+      })
+      .$returningId();
+
+    await db.insert(professionalInstitutions).values([
+      {
+        professionalId: clinicaProfessional.id,
+        userId: clinicaUser.id,
+        institutionId,
+        roleInInstitution: "USER",
+        isPrimary: true,
+        active: true,
+      },
+      {
+        professionalId: geneticaProfessional.id,
+        userId: geneticaUser.id,
+        institutionId,
+        roleInInstitution: "USER",
+        isPrimary: true,
+        active: true,
+      },
+    ]);
+    await db.insert(professionalAccess).values([
+      {
+        institutionId,
+        professionalId: clinicaProfessional.id,
+        hospitalId,
+        sectorId,
+        canAccess: true,
+      },
+      {
+        institutionId,
+        professionalId: geneticaProfessional.id,
+        hospitalId,
+        sectorId,
+        canAccess: true,
+      },
+    ]);
+
+    try {
+      const clinica = await caller.assignDirect({
+        shiftInstanceId,
+        professionalId: clinicaProfessional.id,
+        assignmentType: "ON_DUTY",
+        reason: "Clínica Médica fora da allowlist",
+      });
+      expect(clinica.ok).toBe(true);
+
+      await caller.unassignDirect({
+        assignmentId: clinica.assignmentId,
+        reason: "Liberar vaga para genética",
+      });
+
+      const genetica = await caller.assignDirect({
+        shiftInstanceId,
+        professionalId: geneticaProfessional.id,
+        assignmentType: "ON_DUTY",
+        reason: "Genética fora da allowlist",
+      });
+      expect(genetica.ok).toBe(true);
+
+      await caller.unassignDirect({
+        assignmentId: genetica.assignmentId,
+        reason: "Liberar vaga para gestor",
+      });
+
+      const gestor = await caller.assignDirect({
+        shiftInstanceId,
+        professionalId: managerProfessionalId,
+        assignmentType: "ON_DUTY",
+        reason: "Gestor sem especialidade",
+      });
+      expect(gestor.ok).toBe(true);
+    } finally {
       await db
-        .update(professionals)
-        .set({ medicalSpecialtyId: anesthesiaSpecialtyId })
-        .where(eq(professionals.id, targetProfessionalId));
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId));
       await db
-        .update(shiftInstances)
-        .set({ specialty: null })
-        .where(eq(shiftInstances.id, shiftInstanceId));
+        .delete(professionalAccess)
+        .where(
+          inArray(professionalAccess.professionalId, [
+            clinicaProfessional.id,
+            geneticaProfessional.id,
+          ]),
+        );
+      await db
+        .delete(professionalInstitutions)
+        .where(
+          inArray(professionalInstitutions.professionalId, [
+            clinicaProfessional.id,
+            geneticaProfessional.id,
+          ]),
+        );
+      await db
+        .delete(professionals)
+        .where(
+          inArray(professionals.id, [
+            clinicaProfessional.id,
+            geneticaProfessional.id,
+          ]),
+        );
+      await db
+        .delete(users)
+        .where(inArray(users.id, [clinicaUser.id, geneticaUser.id]));
+      await db
+        .delete(medicalSpecialties)
+        .where(
+          inArray(medicalSpecialties.id, [
+            clinicaSpecialty.id,
+            geneticaSpecialty.id,
+          ]),
+        );
     }
   });
 
