@@ -726,7 +726,10 @@ export const scheduleInvitesRouter = router({
         }
 
         const delivery = await mailer.sendMail(mail);
-        if (delivery.transport === "resend" && !delivery.delivered) {
+        // Console (sem RESEND_API_KEY) também vem delivered:false.
+        // Não confirmar envio se o correio não entregou — o gestor via
+        // "saíram por e-mail" e o médico não recebia nada.
+        if (!delivery.delivered) {
           await db
             .update(scheduleInvites)
             .set({ revokedAt: new Date() })

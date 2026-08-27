@@ -48,6 +48,7 @@ export default defineConfig({
       "tests/sala-recuperacao-shift-blueprint.test.ts",
       "tests/open-month-shifts.test.ts",
       "tests/schedule-invite-mail.test.ts",
+      "tests/mailer.test.ts",
       "tests/request-deadline.test.ts",
       "tests/login-admission-bounce.test.ts",
       "tests/android-login-boot-hang.test.ts",
