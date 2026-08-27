@@ -605,6 +605,9 @@ export default function AgendaScreen() {
                   ? { kind: "month", monthKey: anchorMonthKey }
                   : { kind: "week", weekStart: anchorWeekStart }
               }
+              selectedScheduleContext={
+                scope === "geral" ? scheduleContext.selectedContext : null
+              }
               onChanged={() => {
                 refetch();
               }}
