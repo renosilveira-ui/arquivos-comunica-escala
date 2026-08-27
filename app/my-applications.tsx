@@ -6,6 +6,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, Inbox, Clock, AlertCircle, CalendarClock } from "lucide-react-native";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
 
 /**
  * Tela "Suas candidaturas" — RECEIVER counterpart de /my-offers.
@@ -59,9 +60,7 @@ function formatDate(d: Date): string {
 }
 
 function formatTimeRange(start: Date, end: Date): string {
-  const fmt = (date: Date) =>
-    date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  return `${fmt(start)} – ${fmt(end)}`;
+  return formatHospitalTimeRange(start, end);
 }
 
 export default function MyApplicationsScreen() {

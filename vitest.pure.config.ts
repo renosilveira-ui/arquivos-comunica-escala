@@ -41,6 +41,8 @@ export default defineConfig({
       "tests/professional-institutions-role-migration.test.ts",
       "tests/schedule-context-allowlist-migration.test.ts",
       "tests/provision-sala-recuperacao-source.test.ts",
+      "tests/hospital-time.test.ts",
+      "tests/sala-recuperacao-shift-blueprint.test.ts",
       "tests/schedule-invite-mail.test.ts",
       "tests/request-deadline.test.ts",
       "tests/login-admission-bounce.test.ts",

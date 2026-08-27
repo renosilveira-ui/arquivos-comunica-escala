@@ -17,6 +17,7 @@
 import { Pressable, Text, View } from "react-native";
 import { ArrowRightLeft, CheckCircle2, ChevronRight, Clock, ExternalLink, MapPin, PlayCircle } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+import { formatHospitalTime } from "@/lib/hospital-time";
 import { Surface, tonedText } from "@/components/ui/Surface";
 import { AppButton } from "@/components/ui/AppButton";
 import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
@@ -48,7 +49,7 @@ export interface NextShiftCardProps {
 const WEEKDAYS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 
 function fmtTime(d: Date): string {
-  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  return formatHospitalTime(d);
 }
 
 function sameLocalDay(a: Date, b: Date): boolean {
