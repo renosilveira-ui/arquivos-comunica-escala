@@ -24,6 +24,10 @@ export type ManagerPeriod =
 interface Props {
   institutionId: number | null;
   period: ManagerPeriod;
+  selectedScheduleContext?: {
+    hospitalId: number;
+    sectorId: number;
+  } | null;
   onChanged?: () => void;
   /**
    * "button" (padrão): só o botão "Ações".
@@ -72,7 +76,13 @@ const ROSTER_LABEL: Record<string, string> = {
   LOCKED: "Bloqueada",
 };
 
-export function ManagerActionsMenu({ institutionId, period, onChanged, variant = "button" }: Props) {
+export function ManagerActionsMenu({
+  institutionId,
+  period,
+  selectedScheduleContext = null,
+  onChanged,
+  variant = "button",
+}: Props) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("menu");
   const [hospitalId, setHospitalId] = useState<number | null>(null);
@@ -126,6 +136,18 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
       ? `semana ${weekLabel(addDaysKey(period.weekStart, 7))}`
       : monthLabel(nextMonthKey(period.monthKey));
   const calendarTargetMonth = targetMonth ?? nextMonthKey(monthKey);
+  // A escolha de hospital não identifica um setor. Para gestores com escopo
+  // setorial, só replicamos quando o setor contextual selecionado pertence ao
+  // hospital ativo; nunca inferimos um setor a partir dos turnos visíveis.
+  const replicationSectorId =
+    selectedScheduleContext?.hospitalId === hospitalId
+      ? selectedScheduleContext.sectorId
+      : null;
+  const canReplicate = !!replicateInput && replicationSectorId !== null;
+  const replicationUnavailableExplanation =
+    selectedScheduleContext === null
+      ? "Selecione um setor no filtro da agenda para replicar com segurança"
+      : "O setor selecionado não pertence ao hospital escolhido";
 
   useEffect(() => {
     if (period.kind === "month") setTargetMonth(nextMonthKey(period.monthKey));
@@ -146,19 +168,24 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
   }
 
   async function startReplicate() {
-    if (!replicateInput) return;
+    if (!replicateInput || !replicationSectorId) return;
     setStep("busy");
     try {
       const r: any = period.kind === "month"
         ? await replicateMonthCalendar.mutateAsync({
             hospitalId: replicateInput.hospitalId,
+            sectorId: replicationSectorId,
             sourceMonth: monthKey,
             targetMonth: calendarTargetMonth,
             rule: calendarRule,
             includeShiftIds: calendarRule === "CUSTOM" ? selectedShiftIds : undefined,
             dryRun: true,
           })
-        : await replicate.mutateAsync({ ...replicateInput, dryRun: true });
+        : await replicate.mutateAsync({
+            ...replicateInput,
+            sectorId: replicationSectorId,
+            dryRun: true,
+          });
       setPreview({ created: r.created, skipped: r.skipped, outOfRange: r.outOfRange });
       if ("candidates" in r) setPreview({ created: r.created, candidates: r.candidates });
       setStep("replicate");
@@ -169,18 +196,24 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
   }
 
   async function confirmReplicate() {
-    if (!replicateInput) return;
+    if (!replicateInput || !replicationSectorId) return;
     setStep("busy");
     try {
       const r: any = period.kind === "month"
         ? await replicateMonthCalendar.mutateAsync({
             hospitalId: replicateInput.hospitalId,
+            sectorId: replicationSectorId,
             sourceMonth: monthKey,
             targetMonth: calendarTargetMonth,
             rule: calendarRule,
             includeShiftIds: calendarRule === "CUSTOM" ? selectedShiftIds : undefined,
           })
-        : await replicate.mutateAsync({ ...replicateInput, includeAssignments, dryRun: false });
+        : await replicate.mutateAsync({
+            ...replicateInput,
+            sectorId: replicationSectorId,
+            includeAssignments,
+            dryRun: false,
+          });
       await utils.shifts.listAgenda.invalidate();
       onChanged?.();
       const parts = [`${r.created} turno${r.created === 1 ? "" : "s"} criado${r.created === 1 ? "" : "s"}`];
@@ -444,9 +477,15 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
                 <MenuItem
                   icon={<CopyPlus size={20} color={theme.colors.primary} />}
                   title={period.kind === "week" ? "Replicar esta semana para a próxima" : "Pré-visualizar novo calendário"}
-                  subtitle={period.kind === "week" ? `${sourceLabel} → ${targetLabel}` : `${sourceLabel} → ${monthLabel(calendarTargetMonth)}`}
+                  subtitle={
+                    canReplicate
+                      ? period.kind === "week"
+                        ? `${sourceLabel} → ${targetLabel}`
+                        : `${sourceLabel} → ${monthLabel(calendarTargetMonth)}`
+                      : replicationUnavailableExplanation
+                  }
                   onPress={startReplicate}
-                  disabled={!hospitalId}
+                  disabled={!canReplicate}
                 />
                 <MenuItem
                   icon={<Send size={20} color={rosterStatus === "DRAFT" ? theme.colors.primary : theme.colors.textMuted} />}
