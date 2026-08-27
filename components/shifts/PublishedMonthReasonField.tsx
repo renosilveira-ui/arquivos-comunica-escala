@@ -7,12 +7,14 @@ export function PublishedMonthReasonField({
   value,
   onChangeText,
   rosterStatus,
+  hasShifts,
 }: {
   value: string;
   onChangeText: (text: string) => void;
   rosterStatus: MonthlyRosterStatus | undefined;
+  hasShifts?: boolean;
 }) {
-  if (!requiresPublishedMonthReason(rosterStatus)) return null;
+  if (!requiresPublishedMonthReason(rosterStatus, hasShifts)) return null;
 
   const statusLabel = rosterStatus === "PUBLISHED" ? "publicada" : "bloqueada";
 

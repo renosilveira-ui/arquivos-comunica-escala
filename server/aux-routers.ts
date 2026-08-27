@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { router, protectedProcedure, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { dayWindowBrt } from "./local-time";
+import { dayWindowBrt, monthWindowBrt } from "./local-time";
 import { eq, and, gte, isNull, sql, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
@@ -193,6 +193,10 @@ export const professionalsRouter = router({
 
       await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
 
+      // Plantonista = vínculo ativo + (acesso setorial/hospitalar OU
+      // manager_scope neste setor) + qualificação da allowlist.
+      // GESTOR_MEDICO da escala também é médico: users.role=manager não
+      // o exclui. Sem professional_access ele ainda entra pelo scope.
       const result = await db.execute<{
         id: number;
         name: string;
@@ -215,7 +219,7 @@ export const professionalsRouter = router({
             ON u.id = p.user_id
             AND u.approval_status = 'APPROVED'
             AND u.deleted_at IS NULL
-          INNER JOIN professional_access pa
+          LEFT JOIN professional_access pa
             ON pa.professional_id = p.id
             AND pa.institution_id = ${ctx.institutionId}
             AND pa.hospital_id = ${shift.hospitalId}
@@ -231,6 +235,12 @@ export const professionalsRouter = router({
               )
             )
             AND pa.can_access = true
+          LEFT JOIN manager_scope mgr
+            ON mgr.manager_professional_id = p.id
+            AND mgr.institution_id = ${ctx.institutionId}
+            AND mgr.hospital_id = ${shift.hospitalId}
+            AND (mgr.sector_id IS NULL OR mgr.sector_id = ${shift.sectorId})
+            AND mgr.active = true
           INNER JOIN shift_instances target_shift
             ON target_shift.id = ${input.shiftInstanceId}
             AND target_shift.institution_id = ${ctx.institutionId}
@@ -250,6 +260,7 @@ export const professionalsRouter = router({
             AND sa.shift_instance_id = ${input.shiftInstanceId}
             AND sa.is_active = true
           WHERE sa.id IS NULL
+            AND (pa.id IS NOT NULL OR mgr.id IS NOT NULL)
             AND (
               (
                 sc.admission_policy = 'ALL_CFM_SPECIALTIES'
@@ -426,6 +437,40 @@ export const sectorsRouter = router({
 // ─── filters ─────────────────────────────────────────────────────────────────
 
 export const filtersRouter = router({
+  /**
+   * Há plantão neste hospital+mês? PUBLISHED em monthly_rosters não
+   * responde isso — o formulário de criar turno só pede motivo quando
+   * o mês já tem conteúdo.
+   */
+  hasMonthShifts: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int().positive(),
+        yearMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      await assertManagerScopeAccess(actor, input.hospitalId);
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const window = monthWindowBrt(input.yearMonth);
+      const [row] = await db
+        .select({ id: shiftInstances.id })
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.institutionId, ctx.institutionId),
+            eq(shiftInstances.hospitalId, input.hospitalId),
+            gte(shiftInstances.startAt, window.start),
+            lt(shiftInstances.startAt, window.end),
+          ),
+        )
+        .limit(1);
+      return { hasShifts: !!row };
+    }),
+
   /**
    * Returns aggregate counts for vacancies and pending assignments
    * for a given date, grouped by hospital and sector — used by ShiftFilters UI.

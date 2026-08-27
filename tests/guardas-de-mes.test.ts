@@ -891,8 +891,20 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     expect(yearMonthBrt(row.startAt)).toBe(nextYm);
   });
 
-  it("M2: mês PUBLISHED — GESTOR_MEDICO não cria; Gestor+ só com motivo", async () => {
+  it("M2: PUBLISHED sem turnos não exige motivo — status do roster é independente do calendário", async () => {
     await setRoster(currentYm, "PUBLISHED");
+    const date = dayKeyBrt(currentStart);
+    const createdByMedico = await asMedico().create({ date, shiftTemplateId: templateId });
+    expect(createdByMedico).toBeTruthy();
+    expect(await shiftsOfDay(date)).toHaveLength(1);
+  });
+
+  it("M2: mês PUBLISHED com turnos — GESTOR_MEDICO não cria; Gestor+ só com motivo", async () => {
+    await setRoster(currentYm, "PUBLISHED");
+    const seedDay = dayKeyBrt(currentStart) === `${currentYm}-02`
+      ? `${currentYm}-03`
+      : `${currentYm}-02`;
+    await insertShift(new Date(`${seedDay}T07:00:00-03:00`), "published-content");
     const date = dayKeyBrt(currentStart);
     await expect(asMedico().create({ date, shiftTemplateId: templateId })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(asPlus().create({ date, shiftTemplateId: templateId })).rejects.toMatchObject({ code: "BAD_REQUEST" });

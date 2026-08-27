@@ -34,6 +34,7 @@ import {
 } from "@/lib/permission-screen-state";
 import { PublishedMonthReasonField } from "@/components/shifts/PublishedMonthReasonField";
 import {
+  requiresPublishedMonthReason,
   usePublishedMonthRoster,
   validatePublishedMonthReason,
 } from "@/hooks/use-published-month-roster";
@@ -128,10 +129,8 @@ export default function EditShiftScreen() {
     { id: shiftId },
     { enabled: canLoadEditShift(permissionState, !!shiftId) },
   );
-  const { data: monthRoster } = usePublishedMonthRoster(
-    shiftData?.hospitalId,
-    startDate || undefined,
-  );
+  const { data: monthRoster, hasShifts: monthHasShifts } =
+    usePublishedMonthRoster(shiftData?.hospitalId, startDate || undefined);
   const utils = trpc.useUtils();
 
   // Mutation para atualizar escala
@@ -312,6 +311,7 @@ export default function EditShiftScreen() {
     const reasonError = validatePublishedMonthReason(
       monthRoster?.status,
       editReason,
+      monthHasShifts,
     );
     if (reasonError) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -977,8 +977,7 @@ export default function EditShiftScreen() {
             />
           </TintedGlassCard>
 
-          {monthRoster?.status === "PUBLISHED" ||
-          monthRoster?.status === "LOCKED" ? (
+          {requiresPublishedMonthReason(monthRoster?.status, monthHasShifts) ? (
             <TintedGlassCard variant="light">
               <Text
                 style={{
@@ -993,7 +992,8 @@ export default function EditShiftScreen() {
               <PublishedMonthReasonField
                 value={editReason}
                 onChangeText={setEditReason}
-                rosterStatus={monthRoster.status}
+                rosterStatus={monthRoster?.status}
+                hasShifts={monthHasShifts}
               />
             </TintedGlassCard>
           ) : null}

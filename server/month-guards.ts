@@ -1,7 +1,7 @@
 import { getDb } from "./db";
 import { TRPCError } from "@trpc/server";
 import { recordAudit } from "./audit-trail";
-import { yearMonthBrt } from "./local-time";
+import { monthWindowBrt, yearMonthBrt } from "./local-time";
 import { sql, eq, and, gte, isNull, lt, or } from "drizzle-orm";
 import {
   hospitals,
@@ -89,6 +89,11 @@ function orderedMonthTargets(targets: readonly MonthLockTarget[]) {
 
 /**
  * Confirma que o mês já é uma escala oficial para o profissional.
+ *
+ * PUBLISHED e LOCKED são o status de `monthly_rosters` no par
+ * hospital+mês — independem de existirem `shift_instances`. Seed ou
+ * materialização DRAFT seguida de publish pode deixar o mês "Publicada"
+ * com calendário vazio; isso não prova escala oficial com plantões.
  *
  * Esta leitura não materializa DRAFT e não usa lock: PUBLISHED e LOCKED são
  * estados monotônicos no fluxo de publicação, portanto uma aceitação válida
@@ -222,8 +227,40 @@ export async function assertMonthsNotLockedForUpdate(
 }
 
 /**
+ * Há plantão materializado neste hospital+mês? `monthly_rosters.status`
+ * não responde isso: PUBLISHED pode ser um mês vazio publicado cedo
+ * demais. A guarda de override só vale quando já existe conteúdo.
+ */
+async function monthHasShiftInstances(
+  tx: MonthLockDb,
+  institutionId: number,
+  hospitalId: number,
+  yearMonth: string,
+): Promise<boolean> {
+  const window = monthWindowBrt(yearMonth);
+  const [row] = await tx
+    .select({ id: shiftInstances.id })
+    .from(shiftInstances)
+    .where(
+      and(
+        eq(shiftInstances.institutionId, institutionId),
+        eq(shiftInstances.hospitalId, hospitalId),
+        gte(shiftInstances.startAt, window.start),
+        lt(shiftInstances.startAt, window.end),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
  * Guarda transacional para edições administrativas. Além de serializar com
  * publish/lock, registra o override no mesmo commit da alteração operacional.
+ *
+ * PUBLISHED sem nenhum `shift_instance` no hospital+mês não é escala
+ * oficial em produção: o gestor monta o primeiro calendário como se o
+ * roster ainda fosse DRAFT (sem Gestor+ e sem motivo de 5 caracteres).
+ * LOCKED continua trancado mesmo vazio.
  */
 export async function assertMonthsEditableForUpdate(
   tx: MonthLockDb,
@@ -283,6 +320,15 @@ export async function assertMonthsEditableForUpdate(
 
   for (const roster of rosters) {
     if (roster.status === "DRAFT") continue;
+    const emptyPublished =
+      roster.status === "PUBLISHED" &&
+      !(await monthHasShiftInstances(
+        tx,
+        roster.institutionId,
+        roster.hospitalId,
+        roster.yearMonth,
+      ));
+    if (emptyPublished) continue;
     const membership = memberships.get(roster.institutionId)!;
     const role = account.role === "admin"
       ? "GESTOR_PLUS"

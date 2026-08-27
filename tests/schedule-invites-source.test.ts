@@ -14,6 +14,7 @@ describe("wiring fail-closed dos convites nominais", () => {
   it("o resgate recusa especialidade incompatível, convite alheio e escala já liberada", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
     expect(source).toContain("qualificationMatches(input.qualification, context)");
+    expect(source).toContain("eq(professionalAccess.sectorId, invite.sectorId)");
     expect(source).toContain("Sua especialidade não é aceita nesta escala");
     expect(source).toContain("Você já está nesta escala");
     expect(source).toContain("Convite inválido ou expirado");
