@@ -29,10 +29,16 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
   it("alocar o gestor médico usa o mesmo manager_scope da elegibilidade", () => {
     const source = readFileSync("server/schedule-contexts.ts", "utf8");
     const start = source.indexOf("export async function listAssumableScheduleContextIds");
-    const assumable = source.slice(start, start + 1200);
+    const end = source.indexOf(
+      "export async function assertProfessionalEligibleForScheduleContext",
+      start,
+    );
+    const assumable = source.slice(start, end);
     expect(assumable).toContain("managerScopeCoversContext");
     expect(assumable).toContain("accessCoversContext");
     expect(assumable).toContain("qualificationMatches");
+    expect(assumable).toContain('roleInInstitution === "GESTOR_MEDICO"');
+    expect(assumable).toContain('roleInInstitution === "GESTOR_PLUS"');
   });
 
   it("catálogos, contadores e profissionais alocáveis usam a mesma fronteira", () => {

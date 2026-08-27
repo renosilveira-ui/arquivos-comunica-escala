@@ -863,6 +863,44 @@ async function loadProfessionalQualification(
   };
 }
 
+/** Qualificação + papel no tenant, numa query só — USER não paga manager_scope. */
+async function loadProfessionalQualificationForAssumable(
+  db: ContextDb,
+  institutionId: number,
+  professionalId: number,
+): Promise<{
+  qualification: ProfessionalQualification;
+  roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS" | null;
+} | null> {
+  const [row] = await db
+    .select({
+      medicalSpecialtyId: professionals.medicalSpecialtyId,
+      operationalProfileCode: professionals.operationalProfileCode,
+      roleInInstitution: professionalInstitutions.roleInInstitution,
+    })
+    .from(professionals)
+    .leftJoin(
+      professionalInstitutions,
+      and(
+        eq(professionalInstitutions.professionalId, professionals.id),
+        eq(professionalInstitutions.userId, professionals.userId),
+        eq(professionalInstitutions.institutionId, institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .where(eq(professionals.id, professionalId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    qualification: {
+      medicalSpecialtyId: row.medicalSpecialtyId,
+      operationalProfileCode: row.operationalProfileCode as
+        "MEDICO_GENERALISTA" | null,
+    },
+    roleInInstitution: row.roleInInstitution ?? null,
+  };
+}
+
 async function loadProfessionalAccesses(
   db: ContextDb,
   institutionId: number,
@@ -959,8 +997,9 @@ export async function listAssumableScheduleContextIds(
   // Também roda dentro de transações de candidatura; consultas sequenciais
   // evitam concorrência de comandos na mesma conexão MySQL.
   const contexts = await selectActiveScheduleContexts(database, institutionId);
-  const professional = await loadProfessionalQualification(
+  const professional = await loadProfessionalQualificationForAssumable(
     database,
+    institutionId,
     professionalId,
   );
   const accesses = await loadProfessionalAccesses(
@@ -968,16 +1007,18 @@ export async function listAssumableScheduleContextIds(
     institutionId,
     professionalId,
   );
-  const scopes = await loadManagerScopes(
-    database,
-    institutionId,
-    professionalId,
-  );
   if (!professional) return [];
+  // USER não tem manager_scope. Carregar sempre quebrava o orçamento de
+  // listAvailable (6 queries → 7) no caminho quente do plantonista.
+  const scopes =
+    professional.roleInInstitution === "GESTOR_MEDICO" ||
+    professional.roleInInstitution === "GESTOR_PLUS"
+      ? await loadManagerScopes(database, institutionId, professionalId)
+      : [];
   return contexts
     .filter(
       (context) =>
-        qualificationMatches(professional, context) &&
+        qualificationMatches(professional.qualification, context) &&
         (accesses.some((access) =>
           accessCoversContext(access, professionalId, context),
         ) ||
