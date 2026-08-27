@@ -1503,7 +1503,7 @@ export default function AdminScreen() {
                   </View>
                   {registration.status === "AWAITING_SCALE" ? (
                     <TouchableOpacity
-                      onPress={() => router.push("/schedule-invites")}
+                      onPress={() => router.push("/schedule-invites" as any)}
                       activeOpacity={0.8}
                       style={{
                         alignSelf: "flex-start",

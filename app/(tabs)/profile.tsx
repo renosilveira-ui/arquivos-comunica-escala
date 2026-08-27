@@ -73,7 +73,11 @@ import { useTenantState } from "@/lib/tenant-state";
 import { confirmAction } from "@/lib/ui/confirm";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
 import { isSessionTerminationNotDurableError } from "@/lib/session-cleanup";
-import { profileRoleBadgeLabel } from "@/lib/institution-roles";
+import {
+  canManageScheduleInvites,
+  profileRoleBadgeLabel,
+  SCHEDULE_INVITE_SUBTITLE,
+} from "@/lib/institution-roles";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -98,6 +102,10 @@ export default function ProfileScreen() {
     isGlobalAdmin,
     roleInInstitution,
     legacyGlobalRole: user?.role,
+  });
+  const showScheduleInvites = canManageScheduleInvites({
+    isGlobalAdmin,
+    roleInInstitution,
   });
 
   const managementLinks = useMemo(
@@ -133,18 +141,18 @@ export default function ProfileScreen() {
               href: "/(tabs)/admin",
             }
           : null,
-        isManager
+        showScheduleInvites
           ? {
               key: "invites",
               title: "Convites da escala",
-              subtitle: "Gere o código e envie aos médicos do seu setor",
+              subtitle: SCHEDULE_INVITE_SUBTITLE,
               Icon: Link2,
               tone: "default" as const,
               href: "/schedule-invites",
             }
           : null,
       ].filter((l): l is NonNullable<typeof l> => l !== null),
-    [can, canApproveAssignments, isManager],
+    [can, canApproveAssignments, showScheduleInvites],
   );
   const showManagement = !isDesktopWeb && managementLinks.length > 0;
 
@@ -562,21 +570,21 @@ export default function ProfileScreen() {
           <View style={{ gap: theme.space[2] }}>
             <SectionHeader title="Conta e app" eyebrow="Preferências" />
             <Surface padded={false}>
-              {isDesktopWeb && isManager ? (
+              {isDesktopWeb && showScheduleInvites ? (
                 <ListRow
                   title="Convites da escala"
-                  subtitle="Gere o código e envie aos médicos do seu setor"
+                  subtitle={SCHEDULE_INVITE_SUBTITLE}
                   Icon={Link2}
                   divided={false}
                   onPress={go("/schedule-invites")}
-                  accessibilityLabel="Gerar convites da escala"
+                  accessibilityLabel="Enviar convites da escala"
                 />
               ) : null}
               <ListRow
                 title="Entrar em outra escala"
                 subtitle="Use o convite de 24 horas que o gestor enviou por e-mail."
                 Icon={KeyRound}
-                divided={isDesktopWeb && isManager}
+                divided={isDesktopWeb && showScheduleInvites}
                 onPress={go("/join-schedule")}
                 accessibilityLabel="Entrar em outra escala com um convite"
               />
