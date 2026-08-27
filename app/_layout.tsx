@@ -198,7 +198,7 @@ function WaitingForScheduleScreen() {
         só seu, para o e-mail do cadastro.
       </Text>
       <TouchableOpacity
-        onPress={() => router.push("/join-schedule")}
+        onPress={() => router.push("/join-schedule" as any)}
         activeOpacity={0.8}
         style={{
           paddingHorizontal: theme.space[5],
