@@ -203,7 +203,7 @@ export const professionalsRouter = router({
             p.id,
             p.name,
             p.role,
-            pi.user_role AS roleInInstitution
+            pi.role_in_institution AS roleInInstitution
           FROM professionals p
           INNER JOIN professional_institutions pi
             ON pi.professional_id = p.id
@@ -260,6 +260,26 @@ export const professionalsRouter = router({
               (
                 sc.operational_profile_code IS NOT NULL
                 AND p.operational_profile_code = sc.operational_profile_code
+              )
+              OR
+              (
+                sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                AND EXISTS (
+                  SELECT 1
+                    FROM schedule_context_allowed_qualifications aq
+                   WHERE aq.schedule_context_id = sc.id
+                     AND (
+                       (
+                         aq.medical_specialty_id IS NOT NULL
+                         AND p.medical_specialty_id = aq.medical_specialty_id
+                       )
+                       OR
+                       (
+                         aq.operational_profile_code IS NOT NULL
+                         AND p.operational_profile_code = aq.operational_profile_code
+                       )
+                     )
+                )
               )
             )
             AND NOT EXISTS (

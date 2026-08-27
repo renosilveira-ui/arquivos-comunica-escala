@@ -213,6 +213,19 @@ export const userRoleEnum = mysqlEnum("user_role", [
 ]);
 
 /**
+ * Papel no vínculo institucional. Precisa de enum próprio: reusar
+ * `userRoleEnum` faria o Drizzle criar a coluna como `user_role` (o
+ * nome do enum), e o `drizzle-kit push` do CI não materializaria
+ * `role_in_institution`. A migração manual
+ * `2026-08-27-professional-institutions-role.sql` já usa este nome.
+ */
+export const roleInInstitutionEnum = mysqlEnum("role_in_institution", [
+  "USER",
+  "GESTOR_MEDICO",
+  "GESTOR_PLUS",
+]);
+
+/**
  * Catálogo versionado de especialidades reconhecidas pelo CFM. O código é a
  * identidade estável; o nome é somente o rótulo oficial da versão declarada.
  */
@@ -308,7 +321,7 @@ export const professionalInstitutions = mysqlTable(
       .notNull()
       .references(() => institutions.id, { onDelete: "cascade" }),
     /** Migração manual: drizzle/migrations/manual/2026-08-27-professional-institutions-role.sql */
-    roleInInstitution: userRoleEnum.notNull().default("USER"),
+    roleInInstitution: roleInInstitutionEnum.notNull().default("USER"),
     isPrimary: boolean("is_primary").notNull().default(false),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
