@@ -16,6 +16,10 @@ import { theme } from "@/lib/theme";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
 import { toLocalISODateString } from "@/lib/datetime-utils";
+import {
+  nextMonthKey,
+  sourceMonthForCalendarTarget,
+} from "@/lib/agenda-month-navigation";
 
 export type ManagerPeriod =
   | { kind: "week"; weekStart: string } // YYYY-MM-DD (segunda)
@@ -24,6 +28,8 @@ export type ManagerPeriod =
 interface Props {
   institutionId: number | null;
   period: ManagerPeriod;
+  /** Destino explícito ao abrir um mês ainda sem plantões. */
+  calendarTargetMonth?: string;
   selectedScheduleContext?: {
     hospitalId: number;
     sectorId: number;
@@ -35,8 +41,10 @@ interface Props {
    * ("Agosto · rascunho") e o botão ao lado — o estado que decide se
    * publicar/bloquear está disponível passa a ser lido antes do toque
    * (proposta de design 23/08), como a contagem de Solicitações no Perfil.
+   * "empty-state": ação primária "Abrir calendário de [mês]", visível
+   * fora do menu overflow.
    */
-  variant?: "button" | "strip";
+  variant?: "button" | "strip" | "empty-state";
 }
 
 type Step = "menu" | "replicate" | "busy";
@@ -50,12 +58,6 @@ function addDaysKey(dateKey: string, days: number): string {
   const d = new Date(`${dateKey}T12:00:00`);
   d.setDate(d.getDate() + days);
   return toLocalISODateString(d);
-}
-
-function nextMonthKey(monthKey: string): string {
-  const [y, m] = monthKey.split("-").map(Number);
-  const d = new Date(y, m, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function monthLabel(monthKey: string): string {
@@ -79,13 +81,16 @@ const ROSTER_LABEL: Record<string, string> = {
 export function ManagerActionsMenu({
   institutionId,
   period,
+  calendarTargetMonth: requestedCalendarTargetMonth,
   selectedScheduleContext = null,
   onChanged,
   variant = "button",
 }: Props) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("menu");
-  const [hospitalId, setHospitalId] = useState<number | null>(null);
+  const [hospitalId, setHospitalId] = useState<number | null>(
+    selectedScheduleContext?.hospitalId ?? null,
+  );
   const [includeAssignments, setIncludeAssignments] = useState(false);
   const [targetMonth, setTargetMonth] = useState<string | null>(null);
   const [calendarRule, setCalendarRule] = useState<"FULL" | "REMOVE_WEEKENDS" | "REMOVE_NIGHTS" | "REMOVE_DAYS" | "CUSTOM">("FULL");
@@ -97,13 +102,20 @@ export function ManagerActionsMenu({
   // Na faixa (variant "strip") o status da escala precisa existir ANTES do
   // toque, então hospitais e rosterStatus carregam com a tela, não só com
   // o menu aberto.
-  const wantsStatus = open || variant === "strip";
+  const wantsStatus = open || variant === "strip" || variant === "empty-state";
   const { data: hospitals } = trpc.hospitals.list.useQuery(undefined, { enabled: wantsStatus, staleTime: 60_000 });
   useEffect(() => {
-    if (!hospitalId && hospitals?.length) setHospitalId(hospitals[0].id);
-  }, [hospitals, hospitalId]);
+    if (selectedScheduleContext) {
+      setHospitalId(selectedScheduleContext.hospitalId);
+    } else if (!hospitalId && hospitals?.length) {
+      setHospitalId(hospitals[0].id);
+    }
+  }, [hospitals, hospitalId, selectedScheduleContext]);
 
   const monthKey = period.kind === "month" ? period.monthKey : period.weekStart.slice(0, 7);
+  const sourceMonth = requestedCalendarTargetMonth
+    ? sourceMonthForCalendarTarget(requestedCalendarTargetMonth)
+    : monthKey;
   const { data: roster } = trpc.shifts.rosterStatus.useQuery(
     { hospitalId: hospitalId ?? 0, yearMonth: monthKey },
     { enabled: wantsStatus && !!hospitalId, staleTime: 60_000 },
@@ -115,32 +127,35 @@ export function ManagerActionsMenu({
   const lock = trpc.shifts.lock.useMutation();
   const busy = replicate.isPending || replicateMonthCalendar.isPending || publish.isPending || lock.isPending;
 
+  const resolvedHospitalId = selectedScheduleContext?.hospitalId ?? hospitalId;
   const replicateInput = useMemo(() => {
-    if (!hospitalId) return null;
+    if (!resolvedHospitalId) return null;
     return period.kind === "week"
       ? {
-          hospitalId,
+          hospitalId: resolvedHospitalId,
           from: { start: period.weekStart, granularity: "week" as const },
           to: { start: addDaysKey(period.weekStart, 7) },
         }
       : {
-          hospitalId,
-          from: { start: `${period.monthKey}-01`, granularity: "month" as const },
-          to: { start: `${nextMonthKey(period.monthKey)}-01` },
+          hospitalId: resolvedHospitalId,
+          from: { start: `${sourceMonth}-01`, granularity: "month" as const },
+          to: { start: `${requestedCalendarTargetMonth ?? nextMonthKey(sourceMonth)}-01` },
         };
-  }, [hospitalId, period]);
+  }, [resolvedHospitalId, period, sourceMonth, requestedCalendarTargetMonth]);
 
-  const sourceLabel = period.kind === "week" ? `semana ${weekLabel(period.weekStart)}` : monthLabel(period.monthKey);
+  const sourceLabel = period.kind === "week" ? `semana ${weekLabel(period.weekStart)}` : monthLabel(sourceMonth);
   const targetLabel =
     period.kind === "week"
       ? `semana ${weekLabel(addDaysKey(period.weekStart, 7))}`
-      : monthLabel(nextMonthKey(period.monthKey));
-  const calendarTargetMonth = targetMonth ?? nextMonthKey(monthKey);
+      : monthLabel(requestedCalendarTargetMonth ?? nextMonthKey(sourceMonth));
+  const calendarTargetMonth =
+    targetMonth ?? requestedCalendarTargetMonth ?? nextMonthKey(sourceMonth);
   // A escolha de hospital não identifica um setor. Para gestores com escopo
   // setorial, só replicamos quando o setor contextual selecionado pertence ao
   // hospital ativo; nunca inferimos um setor a partir dos turnos visíveis.
   const replicationSectorId =
-    selectedScheduleContext?.hospitalId === hospitalId
+    selectedScheduleContext &&
+    selectedScheduleContext.hospitalId === resolvedHospitalId
       ? selectedScheduleContext.sectorId
       : null;
   const canReplicate = !!replicateInput && replicationSectorId !== null;
@@ -150,8 +165,10 @@ export function ManagerActionsMenu({
       : "O setor selecionado não pertence ao hospital escolhido";
 
   useEffect(() => {
-    if (period.kind === "month") setTargetMonth(nextMonthKey(period.monthKey));
-  }, [period]);
+    if (period.kind === "month") {
+      setTargetMonth(requestedCalendarTargetMonth ?? nextMonthKey(sourceMonth));
+    }
+  }, [period, requestedCalendarTargetMonth, sourceMonth]);
 
   function close() {
     setOpen(false);
@@ -167,6 +184,12 @@ export function ManagerActionsMenu({
     setOpen(true);
   }
 
+  async function openEmptyStateCalendar() {
+    openMenu();
+    if (!replicateInput || !replicationSectorId) return;
+    await startReplicate();
+  }
+
   async function startReplicate() {
     if (!replicateInput || !replicationSectorId) return;
     setStep("busy");
@@ -175,7 +198,7 @@ export function ManagerActionsMenu({
         ? await replicateMonthCalendar.mutateAsync({
             hospitalId: replicateInput.hospitalId,
             sectorId: replicationSectorId,
-            sourceMonth: monthKey,
+            sourceMonth,
             targetMonth: calendarTargetMonth,
             rule: calendarRule,
             includeShiftIds: calendarRule === "CUSTOM" ? selectedShiftIds : undefined,
@@ -203,7 +226,7 @@ export function ManagerActionsMenu({
         ? await replicateMonthCalendar.mutateAsync({
             hospitalId: replicateInput.hospitalId,
             sectorId: replicationSectorId,
-            sourceMonth: monthKey,
+            sourceMonth,
             targetMonth: calendarTargetMonth,
             rule: calendarRule,
             includeShiftIds: calendarRule === "CUSTOM" ? selectedShiftIds : undefined,
@@ -229,7 +252,7 @@ export function ManagerActionsMenu({
   }
 
   async function doPublish() {
-    if (!hospitalId || !institutionId) return;
+    if (!resolvedHospitalId || !institutionId) return;
     const ok = await feedback.confirmDestructive(
       "Publicar escala",
       `Publicar a escala de ${monthLabel(monthKey)}? Os profissionais alocados passam a ver a escala como oficial e o Comunica+ é avisado.`,
@@ -238,7 +261,7 @@ export function ManagerActionsMenu({
     if (!ok) return;
     setStep("busy");
     try {
-      await publish.mutateAsync({ institutionId, hospitalId, yearMonth: monthKey });
+      await publish.mutateAsync({ institutionId, hospitalId: resolvedHospitalId, yearMonth: monthKey });
       await utils.shifts.rosterStatus.invalidate();
       feedback.success(`Escala de ${monthLabel(monthKey)} publicada.`);
       close();
@@ -249,7 +272,7 @@ export function ManagerActionsMenu({
   }
 
   async function doLock() {
-    if (!hospitalId || !institutionId) return;
+    if (!resolvedHospitalId || !institutionId) return;
     const ok = await feedback.confirmDestructive(
       "Bloquear escala",
       `Bloquear a escala de ${monthLabel(monthKey)}? Depois disso nenhuma alocação ou troca pode ser alterada neste mês.`,
@@ -258,7 +281,7 @@ export function ManagerActionsMenu({
     if (!ok) return;
     setStep("busy");
     try {
-      await lock.mutateAsync({ institutionId, hospitalId, yearMonth: monthKey });
+      await lock.mutateAsync({ institutionId, hospitalId: resolvedHospitalId, yearMonth: monthKey });
       await utils.shifts.rosterStatus.invalidate();
       feedback.success(`Escala de ${monthLabel(monthKey)} bloqueada.`);
       close();
@@ -269,9 +292,26 @@ export function ManagerActionsMenu({
   }
 
   const rosterStatus = roster?.status ?? "DRAFT";
+  const openMonthName = MONTHS_PT[Number((requestedCalendarTargetMonth ?? calendarTargetMonth).slice(5, 7)) - 1];
 
   const trigger =
-    variant === "strip" ? (
+    variant === "empty-state" ? (
+      <View style={{ gap: theme.space[2], alignSelf: "stretch" }}>
+        <AppButton
+          title={`Abrir calendário de ${openMonthName}`}
+          onPress={() => {
+            void openEmptyStateCalendar();
+          }}
+          disabled={!canReplicate}
+          fullWidth
+        />
+        {!canReplicate ? (
+          <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
+            {replicationUnavailableExplanation}
+          </Text>
+        ) : null}
+      </View>
+    ) : variant === "strip" ? (
       <RosterStatusStrip monthKey={monthKey} status={rosterStatus} onPressActions={openMenu} />
     ) : (
       <Pressable
@@ -338,7 +378,7 @@ export function ManagerActionsMenu({
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View style={{ flexDirection: "row", gap: theme.space[2] }}>
                   {hospitals.map((h) => {
-                    const selected = h.id === hospitalId;
+                    const selected = h.id === resolvedHospitalId;
                     return (
                       <Pressable
                         key={h.id}
@@ -444,9 +484,14 @@ export function ManagerActionsMenu({
                     <Text style={{ ...theme.text.body, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
                       Novo calendário mensal
                     </Text>
+                    {requestedCalendarTargetMonth ? (
+                      <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                        Destino: {monthLabel(calendarTargetMonth)}. Base: {monthLabel(sourceMonth)}.
+                      </Text>
+                    ) : (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                       <View style={{ flexDirection: "row", gap: theme.space[2] }}>
-                        {[nextMonthKey(monthKey), nextMonthKey(nextMonthKey(monthKey)), nextMonthKey(nextMonthKey(nextMonthKey(monthKey)))].map((key) => {
+                        {[nextMonthKey(sourceMonth), nextMonthKey(nextMonthKey(sourceMonth)), nextMonthKey(nextMonthKey(nextMonthKey(sourceMonth)))].map((key) => {
                           const selected = key === calendarTargetMonth;
                           return (
                             <Pressable key={key} onPress={() => setTargetMonth(key)} style={{ minHeight: theme.space[10], justifyContent: "center", paddingHorizontal: theme.space[3], borderRadius: theme.radius.full, borderWidth: 1, borderColor: selected ? theme.colors.primary : theme.colors.border, backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface }}>
@@ -456,6 +501,7 @@ export function ManagerActionsMenu({
                         })}
                       </View>
                     </ScrollView>
+                    )}
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                       <View style={{ flexDirection: "row", gap: theme.space[2] }}>
                         {([
@@ -476,7 +522,13 @@ export function ManagerActionsMenu({
                 ) : null}
                 <MenuItem
                   icon={<CopyPlus size={20} color={theme.colors.primary} />}
-                  title={period.kind === "week" ? "Replicar esta semana para a próxima" : "Pré-visualizar novo calendário"}
+                  title={
+                    period.kind === "week"
+                      ? "Replicar esta semana para a próxima"
+                      : requestedCalendarTargetMonth
+                        ? `Abrir calendário de ${openMonthName}`
+                        : "Pré-visualizar novo calendário"
+                  }
                   subtitle={
                     canReplicate
                       ? period.kind === "week"
@@ -496,7 +548,7 @@ export function ManagerActionsMenu({
                       : `Já ${ROSTER_LABEL[rosterStatus]?.toLowerCase()}`
                   }
                   onPress={doPublish}
-                  disabled={!hospitalId || rosterStatus !== "DRAFT"}
+                  disabled={!resolvedHospitalId || rosterStatus !== "DRAFT"}
                 />
                 <MenuItem
                   icon={<Lock size={20} color={rosterStatus === "PUBLISHED" ? theme.colors.danger : theme.colors.textMuted} />}
@@ -509,7 +561,7 @@ export function ManagerActionsMenu({
                         : "Publique antes de bloquear"
                   }
                   onPress={doLock}
-                  disabled={!hospitalId || rosterStatus !== "PUBLISHED"}
+                  disabled={!resolvedHospitalId || rosterStatus !== "PUBLISHED"}
                 />
               </View>
             )}

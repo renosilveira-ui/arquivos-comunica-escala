@@ -6,7 +6,7 @@ import {
   useWindowDimensions,
   Platform,
 } from "react-native";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -39,9 +39,18 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { VoiceCommandButton } from "@/components/VoiceCommandButton";
 import { ScheduleContextSelector } from "@/components/ScheduleContextSelector";
 import { useScheduleContext } from "@/hooks/use-schedule-context";
-import { agendaScheduleContextId } from "@/lib/schedule-context-selection";
+import {
+  agendaScheduleContextId,
+  type ScheduleContextOption,
+} from "@/lib/schedule-context-selection";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
+import { AppButton } from "@/components/ui/AppButton";
+import {
+  buildAgendaMonthPickerOptions,
+  countShiftsInMonth,
+  monthKeyOf,
+} from "@/lib/agenda-month-navigation";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -84,10 +93,6 @@ function startOfWeekMon(d: Date): Date {
 
 function toDateKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function monthKeyOf(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function formatMonthTitle(monthKey: string): string {
@@ -316,22 +321,29 @@ export default function AgendaScreen() {
     [myInstitutions, activeInstitutionId],
   );
 
-  // Total de plantões da janela consultada — distingue "período
-  // realmente vazio" (mensagem explícita) de dados carregados.
-  const totalShifts = useMemo(
-    () =>
-      (data?.weeks ?? []).reduce(
-        (acc, w) =>
-          acc +
-          w.days.reduce(
-            (dAcc, d) =>
-              dAcc + d.groups.reduce((gAcc, g) => gAcc + g.shifts.length, 0),
-            0,
-          ),
-        0,
-      ),
-    [data?.weeks],
+  const visibleMonthKey = isMonthSheet
+    ? anchorMonthKey
+    : monthKeyOf(new Date(`${anchorWeekStart}T00:00:00`));
+  const selectedMonthShiftCount = useMemo(
+    () => countShiftsInMonth(data?.weeks ?? [], visibleMonthKey),
+    [data?.weeks, visibleMonthKey],
   );
+  const selectedManagerContext =
+    scope === "geral" && scheduleContext.selectedContext?.canManage
+      ? scheduleContext.selectedContext
+      : null;
+  const monthPickerKeys = useMemo(
+    () => buildAgendaMonthPickerOptions(new Date(), [visibleMonthKey]),
+    [visibleMonthKey],
+  );
+
+  const selectMonth = (monthKey: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const [year, month] = monthKey.split("-").map(Number);
+    setAnchorMonthKey(monthKey);
+    setAnchorWeekStart(toDateKey(startOfWeekMon(new Date(year, month - 1, 1))));
+    setViewMode(isDesktop ? "calendario" : "panorama");
+  };
 
   const handleSwitchInstitution = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -596,7 +608,30 @@ export default function AgendaScreen() {
             />
           </Segmented>
 
-          {canCreateShift ? (
+          <MonthPickerChips
+            monthKeys={monthPickerKeys}
+            selectedMonthKey={visibleMonthKey}
+            onSelect={selectMonth}
+          />
+
+          {canCreateShift && selectedManagerContext ? (
+            selectedMonthShiftCount > 0 ? (
+              <ManagerMonthActions
+                monthKey={visibleMonthKey}
+                onEdit={() => selectMonth(visibleMonthKey)}
+              >
+                <ManagerActionsMenu
+                  variant="strip"
+                  institutionId={activeInstitutionId ?? null}
+                  period={{ kind: "month", monthKey: visibleMonthKey }}
+                  selectedScheduleContext={selectedManagerContext}
+                  onChanged={() => {
+                    refetch();
+                  }}
+                />
+              </ManagerMonthActions>
+            ) : null
+          ) : canCreateShift ? (
             <ManagerActionsMenu
               variant="strip"
               institutionId={activeInstitutionId ?? null}
@@ -747,7 +782,7 @@ export default function AgendaScreen() {
               corretos para o seu vínculo.
             </Text>
           </View>
-        ) : data && totalShifts === 0 ? (
+        ) : data && selectedMonthShiftCount === 0 && !isMonthSheet ? (
           // Período genuinamente sem plantões: dizer com todas as letras
           // (e lembrar QUAL instituição está sendo consultada) em vez de
           // renderizar uma grade vazia muda.
@@ -785,8 +820,32 @@ export default function AgendaScreen() {
                 ? "Toque em Geral para ver todos os plantões da instituição."
                 : "Se a escala que você procura é de outra instituição, toque no nome da instituição acima para trocar."}
             </Text>
+            {canCreateShift && selectedManagerContext ? (
+              <EmptyMonthCalendarAction
+                monthKey={visibleMonthKey}
+                institutionId={activeInstitutionId ?? null}
+                selectedContext={selectedManagerContext}
+                onChanged={() => {
+                  refetch();
+                }}
+              />
+            ) : null}
           </View>
         ) : isMonthSheet ? (
+          <View style={{ gap: theme.space[3] }}>
+            {canCreateShift &&
+            selectedManagerContext &&
+            selectedMonthShiftCount === 0 &&
+            !isLoading ? (
+              <EmptyMonthCalendarAction
+                monthKey={visibleMonthKey}
+                institutionId={activeInstitutionId ?? null}
+                selectedContext={selectedManagerContext}
+                onChanged={() => {
+                  refetch();
+                }}
+              />
+            ) : null}
           <MonthAgenda
             weeks={weeksForRender}
             monthKey={anchorMonthKey}
@@ -808,6 +867,7 @@ export default function AgendaScreen() {
             }
             onOfferPress={() => router.push("/(tabs)/pending" as any)}
           />
+          </View>
         ) : isHospitalGrid ? (
           <PanoramicAgenda
             weeks={weeksForRender}
@@ -886,6 +946,171 @@ export default function AgendaScreen() {
         </TouchableOpacity>
       ) : null}
     </ScreenGradient>
+  );
+}
+
+function monthNamePt(monthKey: string): string {
+  const months = [
+    "janeiro",
+    "fevereiro",
+    "março",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
+  ];
+  const month = Number(monthKey.slice(5, 7));
+  return months[month - 1] ?? monthKey;
+}
+
+function MonthPickerChips({
+  monthKeys,
+  selectedMonthKey,
+  onSelect,
+}: {
+  monthKeys: string[];
+  selectedMonthKey: string;
+  onSelect: (monthKey: string) => void;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: theme.space[2],
+      }}
+    >
+      {monthKeys.map((key) => {
+        const selected = key === selectedMonthKey;
+        return (
+          <TouchableOpacity
+            key={key}
+            onPress={() => onSelect(key)}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            accessibilityLabel={`Ver ${formatMonthTitle(key)}`}
+            style={{
+              minHeight: theme.space[10] + theme.space[1],
+              justifyContent: "center",
+              paddingHorizontal: theme.space[3],
+              borderRadius: theme.radius.full,
+              borderWidth: 1,
+              borderColor: selected
+                ? theme.colors.primary
+                : theme.colors.border,
+              backgroundColor: selected
+                ? theme.colors.primarySoft
+                : theme.colors.surface,
+            }}
+          >
+            <Text
+              style={{
+                ...theme.text.body,
+                fontWeight: theme.weight.semibold,
+                color: selected
+                  ? theme.colors.primary
+                  : theme.colors.textPrimary,
+              }}
+            >
+              {formatMonthTitle(key)}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+function ManagerMonthActions({
+  monthKey,
+  onEdit,
+  children,
+}: {
+  monthKey: string;
+  onEdit: () => void;
+  children: ReactNode;
+}) {
+  const month = monthNamePt(monthKey);
+  return (
+    <View
+      style={{
+        gap: theme.space[3],
+        padding: theme.space[3],
+        borderRadius: theme.radius.lg,
+        borderWidth: 1,
+        borderColor: theme.colors.primary,
+        backgroundColor: theme.colors.primarySoft,
+      }}
+    >
+      <Text
+        style={{
+          ...theme.text.body,
+          color: theme.colors.textSecondary,
+        }}
+      >
+        Toque em um plantão vago para alocar profissionais em {month}.
+      </Text>
+      <AppButton
+        title={`Editar e alocar em ${month}`}
+        onPress={onEdit}
+        fullWidth
+      />
+      {children}
+    </View>
+  );
+}
+
+function EmptyMonthCalendarAction({
+  monthKey,
+  institutionId,
+  selectedContext,
+  onChanged,
+}: {
+  monthKey: string;
+  institutionId: number | null;
+  selectedContext: ScheduleContextOption;
+  onChanged: () => void;
+}) {
+  const month = monthNamePt(monthKey);
+  return (
+    <View
+      style={{
+        gap: theme.space[3],
+        padding: theme.space[3],
+        borderRadius: theme.radius.lg,
+        borderWidth: 1,
+        borderColor: theme.colors.primary,
+        backgroundColor: theme.colors.primarySoft,
+        alignSelf: "stretch",
+      }}
+    >
+      <Text
+        style={{
+          ...theme.text.bodyLg,
+          fontWeight: theme.weight.bold,
+          color: theme.colors.textPrimary,
+        }}
+      >
+        Ainda não há plantões em {month}
+      </Text>
+      <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+        Abra o calendário deste mês a partir da escala anterior para alocar
+        os médicos.
+      </Text>
+      <ManagerActionsMenu
+        variant="empty-state"
+        institutionId={institutionId}
+        period={{ kind: "month", monthKey }}
+        calendarTargetMonth={monthKey}
+        selectedScheduleContext={selectedContext}
+        onChanged={onChanged}
+      />
+    </View>
   );
 }
 
