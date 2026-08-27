@@ -1073,6 +1073,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           if (outcome === "UNAVAILABLE") {
             value.admissionPending = true;
+            return;
+          }
+          if (outcome === "STALE") {
+            value.admissionPending = true;
+            setSessionValidation(
+              unprovenSessionValidation(
+                "UNAVAILABLE",
+                latestAuthRefetchSequence,
+                true,
+              ),
+            );
           }
         },
       };
