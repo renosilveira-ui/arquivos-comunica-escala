@@ -40,6 +40,7 @@ export default defineConfig({
       "tests/schedule-invites-named-migration.test.ts",
       "tests/professional-institutions-role-migration.test.ts",
       "tests/schedule-context-allowlist-migration.test.ts",
+      "tests/consolidate-unified-sector-contexts-migration.test.ts",
       "tests/provision-sala-recuperacao-source.test.ts",
       "tests/hospital-time.test.ts",
       "tests/sala-recuperacao-shift-blueprint.test.ts",
@@ -50,6 +51,7 @@ export default defineConfig({
       "tests/canonical-session-request-deadline.test.ts",
       "tests/auth-provider-races.test.ts",
       "tests/auth-logout-persistence.test.ts",
+      "tests/institution-roles.test.ts",
     ],
   },
 });
