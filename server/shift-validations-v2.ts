@@ -5,6 +5,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -282,6 +283,33 @@ export async function assertAssignmentWritesAllowedForUpdate(
     await assertInstitutionHierarchy(topology, { db: tx, lockForShare: true });
   }
 
+  const requiresExactSectorAccessByContext = new Map<number, boolean>();
+  for (const candidate of orderedCandidates) {
+    if (
+      candidate.scheduleContextId === null ||
+      requiresExactSectorAccessByContext.has(candidate.scheduleContextId)
+    ) {
+      continue;
+    }
+    const [context] = await tx
+      .select({ admissionPolicy: scheduleContexts.admissionPolicy })
+      .from(scheduleContexts)
+      .where(
+        and(
+          eq(scheduleContexts.id, candidate.scheduleContextId),
+          eq(scheduleContexts.institutionId, candidate.institutionId),
+          eq(scheduleContexts.hospitalId, candidate.hospitalId),
+          eq(scheduleContexts.sectorId, candidate.sectorId),
+        ),
+      )
+      .limit(1)
+      .for("share");
+    requiresExactSectorAccessByContext.set(
+      candidate.scheduleContextId,
+      context?.admissionPolicy === "QUALIFICATION_ALLOWLIST",
+    );
+  }
+
   const membershipCache = new Set<string>();
   const membershipLocks: {
     id: number;
@@ -352,11 +380,27 @@ export async function assertAssignmentWritesAllowedForUpdate(
     institutionId: number;
     hospitalId: number;
     sectorId: number;
+    requiresExactSectorAccess: boolean;
   }[] = [];
+  const requiresExactSectorAccessByAccessKey = new Map<string, boolean>();
+  for (const candidate of candidates) {
+    const key = `${candidate.professionalId}|${candidate.institutionId}|${candidate.hospitalId}|${candidate.sectorId}`;
+    const requiresExactSectorAccess =
+      candidate.scheduleContextId !== null &&
+      requiresExactSectorAccessByContext.get(candidate.scheduleContextId) ===
+        true;
+    requiresExactSectorAccessByAccessKey.set(
+      key,
+      requiresExactSectorAccessByAccessKey.get(key) === true ||
+        requiresExactSectorAccess,
+    );
+  }
   for (const candidate of candidates) {
     const professional = lockedProfessionals.get(candidate.professionalId)!;
     const key = `${professional.id}|${candidate.institutionId}|${candidate.hospitalId}|${candidate.sectorId}`;
     if (accessCache.has(key)) continue;
+    const requiresExactSectorAccess =
+      requiresExactSectorAccessByAccessKey.get(key) === true;
     const [snapshot] = await tx
       .select({ id: professionalAccess.id })
       .from(professionalAccess)
@@ -366,10 +410,12 @@ export async function assertAssignmentWritesAllowedForUpdate(
           eq(professionalAccess.institutionId, candidate.institutionId),
           eq(professionalAccess.hospitalId, candidate.hospitalId),
           eq(professionalAccess.canAccess, true),
-          or(
-            isNull(professionalAccess.sectorId),
-            eq(professionalAccess.sectorId, candidate.sectorId),
-          ),
+          requiresExactSectorAccess
+            ? eq(professionalAccess.sectorId, candidate.sectorId)
+            : or(
+                isNull(professionalAccess.sectorId),
+                eq(professionalAccess.sectorId, candidate.sectorId),
+              ),
         ),
       )
       .orderBy(professionalAccess.id)
@@ -386,6 +432,7 @@ export async function assertAssignmentWritesAllowedForUpdate(
       institutionId: candidate.institutionId,
       hospitalId: candidate.hospitalId,
       sectorId: candidate.sectorId,
+      requiresExactSectorAccess,
     });
   }
   for (const lock of accessLocks.sort((left, right) => left.id - right.id)) {
@@ -399,10 +446,12 @@ export async function assertAssignmentWritesAllowedForUpdate(
           eq(professionalAccess.institutionId, lock.institutionId),
           eq(professionalAccess.hospitalId, lock.hospitalId),
           eq(professionalAccess.canAccess, true),
-          or(
-            isNull(professionalAccess.sectorId),
-            eq(professionalAccess.sectorId, lock.sectorId),
-          ),
+          lock.requiresExactSectorAccess
+            ? eq(professionalAccess.sectorId, lock.sectorId)
+            : or(
+                isNull(professionalAccess.sectorId),
+                eq(professionalAccess.sectorId, lock.sectorId),
+              ),
         ),
       )
       .limit(1)
