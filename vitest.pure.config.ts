@@ -51,6 +51,7 @@ export default defineConfig({
       "tests/canonical-session-request-deadline.test.ts",
       "tests/auth-provider-races.test.ts",
       "tests/auth-logout-persistence.test.ts",
+      "tests/web-session-visibility.test.ts",
       "tests/institution-roles.test.ts",
     ],
   },

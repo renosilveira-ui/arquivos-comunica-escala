@@ -46,6 +46,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -232,6 +233,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // não no AuthGuard — o guard é REMONTADO a cada troca de usuário
   // (TenantScope) e nunca via a transição.
   const queryClient = useQueryClient();
+  const sessionUserRef = useRef<AuthUser | null>(null);
+  const verifiedSessionSnapshotRef = useRef<{
+    userId: number;
+    ticket: SessionEpochTicket;
+    sequence: number;
+  } | null>(null);
+
+  useEffect(() => {
+    sessionUserRef.current = user;
+  }, [user]);
+
+  useEffect(() => {
+    if (
+      sessionValidation.status === "VERIFIED" &&
+      sessionValidation.isCurrent()
+    ) {
+      verifiedSessionSnapshotRef.current = {
+        userId: sessionValidation.userId,
+        ticket: sessionValidation.ticket,
+        sequence: sessionValidation.sequence,
+      };
+      return;
+    }
+    if (sessionValidation.status === "UNAVAILABLE") {
+      verifiedSessionSnapshotRef.current = null;
+    }
+  }, [sessionValidation]);
 
   const closeAsyncSessionAdmission = useCallback(() => {
     Auth.closeSessionTokenTransportAdmission();
@@ -600,20 +628,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (requestIntentGeneration !== sessionMutationState.intentGeneration) {
         return "STALE";
       }
-      // CHECKING é uma barreira de transporte, não apenas visual. O `/me`
-      // abaixo usa o escape restrito ao binding físico; tRPC/API normais ficam
-      // fechados até a mesma identidade ser novamente provada.
-      Auth.closeSessionTokenTransportAdmission();
+      const preservedVerifiedSession =
+        sessionUserRef.current !== null &&
+        verifiedSessionSnapshotRef.current !== null &&
+        verifiedSessionSnapshotRef.current.userId === sessionUserRef.current.id;
       const requestSequence = ++latestAuthRefetchSequence;
       let durableSession = expectedUserId !== undefined;
-      setSessionValidation(
-        unprovenSessionValidation("CHECKING", requestSequence, durableSession),
-      );
+      if (!preservedVerifiedSession) {
+        // CHECKING é uma barreira de transporte, não apenas visual. O `/me`
+        // abaixo usa o escape restrito ao binding físico; tRPC/API normais
+        // ficam fechados até a mesma identidade ser novamente provada.
+        Auth.closeSessionTokenTransportAdmission();
+        setSessionValidation(
+          unprovenSessionValidation("CHECKING", requestSequence, durableSession),
+        );
+      } else {
+        durableSession = true;
+      }
       const isLatestRequest = () =>
         workflowSignal?.aborted !== true &&
         requestSequence === latestAuthRefetchSequence &&
         requestIntentGeneration === sessionMutationState.intentGeneration &&
         appSessionEpoch.isCurrent(requestEpoch);
+      const markTransientRevalidationUnavailable = () => {
+        if (preservedVerifiedSession) return;
+        if (isLatestRequest()) {
+          setSessionValidation(
+            unprovenSessionValidation(
+              "UNAVAILABLE",
+              requestSequence,
+              durableSession,
+            ),
+          );
+        }
+      };
       let completionEpoch = requestEpoch;
       const revokeMismatchedTransport = async (
         mismatchExpectedUserId = expectedUserId,
@@ -962,15 +1010,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           console.warn(
             "[Auth] me() falhou por rede/servidor — sessão não revalidada",
           );
-          if (isLatestRequest()) {
-            setSessionValidation(
-              unprovenSessionValidation(
-                "UNAVAILABLE",
-                requestSequence,
-                durableSession,
-              ),
-            );
-          }
+          markTransientRevalidationUnavailable();
           return "UNAVAILABLE";
         }
         return "STALE";
@@ -978,15 +1018,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Erro inesperado: também não encerra uma sessão já admitida; no cold
         // start, continua sem autenticar até uma validação servidor bem-sucedida.
         console.warn("[Auth] me() lançou erro — sessão não revalidada");
-        if (isLatestRequest()) {
-          setSessionValidation(
-            unprovenSessionValidation(
-              "UNAVAILABLE",
-              requestSequence,
-              durableSession,
-            ),
-          );
-        }
+        markTransientRevalidationUnavailable();
         return "UNAVAILABLE";
       } finally {
         if (
@@ -1018,10 +1050,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           webSessionWorkflowSignal,
         );
       }
+      const preservedVerifiedSession =
+        sessionUserRef.current !== null &&
+        verifiedSessionSnapshotRef.current !== null &&
+        verifiedSessionSnapshotRef.current.userId === sessionUserRef.current.id;
       // Fecha a prova síncrona já na intenção, inclusive enquanto outra aba
       // ainda detém o workflow lock. Nenhum listener/request A atravessa a
       // espera e reaparece sob o cookie B.
-      closeAsyncSessionAdmission();
+      if (!preservedVerifiedSession) {
+        closeAsyncSessionAdmission();
+      }
       ++latestAuthRefetchSequence;
       return Auth.runExclusiveWebSessionMutation((workflowSignal) =>
         performRefetchInsideWebLock(

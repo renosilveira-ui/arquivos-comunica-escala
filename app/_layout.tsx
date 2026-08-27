@@ -388,9 +388,12 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
         subjectKey: subjectKeyOf(currentSubjectRef.current),
       });
     } else if (transition.action === "REVALIDATE") {
-      // Resume/reconnect sempre começa na identidade/status canônicos; o
-      // receipt antigo perde validade sincronamente ao iniciar o refetch.
-      void refetch();
+      // Reconnect de rede exige /me fresco. Voltar à aba só reabre o handshake
+      // institucional — refetch de sessão aqui derrubava VERIFIED em 401/abort
+      // transitório ao trocar de aba por ~1s no desktop.
+      if (patch.online === true) {
+        void refetch();
+      }
     }
     setActivity(transition.state);
   }, [queryClient, refetch]);
