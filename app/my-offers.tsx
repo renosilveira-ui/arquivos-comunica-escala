@@ -8,6 +8,7 @@ import * as Haptics from "expo-haptics";
 import { ChevronLeft, Inbox, Clock, AlertCircle } from "lucide-react-native";
 import { confirmAction } from "@/lib/ui/confirm";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
 
 /**
  * Tela "Minhas ofertas" — consome `swaps.list({ role: "OFFERER" })`
@@ -54,9 +55,7 @@ function formatDate(d: Date): string {
 }
 
 function formatTimeRange(start: Date, end: Date): string {
-  const fmt = (date: Date) =>
-    date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  return `${fmt(start)} – ${fmt(end)}`;
+  return formatHospitalTimeRange(start, end);
 }
 
 export default function MyOffersScreen() {

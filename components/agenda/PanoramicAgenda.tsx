@@ -32,6 +32,7 @@ import { theme } from "@/lib/theme";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import { CalendarFrame, DayNumeral, numeral } from "./CalendarSheet";
 import { formatTimeRange } from "./ShiftRowCard";
+import { formatHospitalTime } from "@/lib/hospital-time";
 
 type AgendaShift = {
   id: number;
@@ -539,8 +540,6 @@ function GridChip({
     context: "listing",
   });
   const Icon = v.Icon;
-  const s = new Date(shift.startAt);
-  const e = new Date(shift.endAt);
   const name = shift.isMine
     ? "Você"
     : (shift.professionalNames[0] ??
@@ -579,8 +578,7 @@ function GridChip({
             color: v.timeFg,
           }}
         >
-          {pad2(s.getHours())}:{pad2(s.getMinutes())}-{pad2(e.getHours())}:
-          {pad2(e.getMinutes())}
+          {formatHospitalTime(shift.startAt)}-{formatHospitalTime(shift.endAt)}
         </Text>
       </View>
       <Text

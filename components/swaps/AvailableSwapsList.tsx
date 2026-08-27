@@ -13,6 +13,7 @@ import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
 
 export interface AvailableSwap {
   id: number;
@@ -48,12 +49,7 @@ interface Props {
 const fmtDate = (value: Date | string) =>
   new Date(value).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
 
-const fmtTime = (s: Date | string, e: Date | string) => {
-  const sd = new Date(s);
-  const ed = new Date(e);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(sd.getHours())}:${p(sd.getMinutes())} – ${p(ed.getHours())}:${p(ed.getMinutes())}`;
-};
+const fmtTime = (s: Date | string, e: Date | string) => formatHospitalTimeRange(s, e);
 
 export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponíveis" }: Props) {
   const { user } = useAuth();

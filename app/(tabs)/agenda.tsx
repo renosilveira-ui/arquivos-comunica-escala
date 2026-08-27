@@ -40,6 +40,8 @@ import { VoiceCommandButton } from "@/components/VoiceCommandButton";
 import { ScheduleContextSelector } from "@/components/ScheduleContextSelector";
 import { useScheduleContext } from "@/hooks/use-schedule-context";
 import { agendaScheduleContextId } from "@/lib/schedule-context-selection";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -105,13 +107,6 @@ function formatMonthTitle(monthKey: string): string {
     "Dez",
   ];
   return `${months[m - 1]} ${y}`;
-}
-
-function formatTimeRange(startAt: Date | string, endAt: Date | string): string {
-  const s = new Date(startAt);
-  const e = new Date(endAt);
-  const f = (n: number) => String(n).padStart(2, "0");
-  return `${f(s.getHours())}:${f(s.getMinutes())}–${f(e.getHours())}:${f(e.getMinutes())}`;
 }
 
 function formatMonthRange(weekStart: string, weekCount: number): string {
@@ -305,13 +300,12 @@ export default function AgendaScreen() {
     return ((availableSwaps ?? []) as any[]).map((sw) => {
       const start = new Date(sw.fromShift?.startAt ?? 0);
       const end = new Date(sw.fromShift?.endAt ?? 0);
-      const f = (n: number) => String(n).padStart(2, "0");
       return {
         id: sw.id,
         fromProfessionalName: sw.fromProfessional?.name ?? "Colega",
         shiftLabel: sw.fromShift?.label ?? "Plantão",
         date: toDateKey(start),
-        timeRange: `${f(start.getHours())}:${f(start.getMinutes())}–${f(end.getHours())}:${f(end.getMinutes())}`,
+        timeRange: formatHospitalTimeRange(start, end),
       };
     });
   }, [availableSwaps]);

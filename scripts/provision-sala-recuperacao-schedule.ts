@@ -14,6 +14,10 @@
  * Semear calendário de um mês (DRAFT):
  *   HSC_SEED_MONTH=2026-09 HSC_PROVISION_CONFIRM=SAO_CARLOS_SALA_RECUPERACAO \
  *     --apply --seed-month ...
+ *
+ * Corrigir instantes UTC de um mês já semeado (ex.: script rodou sem timezone Z):
+ *   HSC_SEED_MONTH=2026-09 HSC_PROVISION_CONFIRM=SAO_CARLOS_SALA_RECUPERACAO \
+ *     --apply --repair-month ...
  */
 import "dotenv/config";
 import mysql, {
@@ -29,9 +33,10 @@ import {
   salaRecuperacaoCalendarDaysForMonth,
   type SalaRecuperacaoShiftTemplate,
 } from "../lib/sala-recuperacao-shift-blueprint";
+import { buildShiftTimestamps } from "../lib/hospital-time";
+import { dayKeyBrt, monthWindowBrt } from "../server/local-time";
 import { assertExactSaoCarlosSectorTopology } from "./provision-sao-carlos-contexts";
 
-const SCHEDULE_TIME_ZONE_OFFSET = "-03:00";
 const PROVISION_CONFIRM = "SAO_CARLOS_SALA_RECUPERACAO";
 
 type IdentityRow = RowDataPacket & {
@@ -111,18 +116,10 @@ function buildConnectionOptions() {
       sslMode === "REQUIRED"
         ? { rejectUnauthorized: true }
         : resolveSslConfig(process.env),
+    // Instantes no banco são UTC; sem timezone Z o mysql2 grava no fuso do
+    // processo (3h errado se o script rodar de uma máquina em -03:00).
+    timezone: "Z",
   };
-}
-
-function buildShiftTimestamps(
-  date: string,
-  startTime: string,
-  endTime: string,
-): [Date, Date] {
-  const startAt = new Date(`${date}T${startTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
-  const endAt = new Date(`${date}T${endTime}${SCHEDULE_TIME_ZONE_OFFSET}`);
-  if (endAt <= startAt) endAt.setDate(endAt.getDate() + 1);
-  return [startAt, endAt];
 }
 
 async function assertTarget(
@@ -514,9 +511,93 @@ async function seedMonthCalendar(
   return { created, skipped };
 }
 
+async function repairMonthCalendar(
+  connection: Connection,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    yearMonth: string;
+    apply: boolean;
+  },
+): Promise<{ repaired: number; alreadyCorrect: number; missing: number }> {
+  const calendar = salaRecuperacaoCalendarDaysForMonth(input.yearMonth);
+  const { start: monthStart, end: monthEnd } = monthWindowBrt(input.yearMonth);
+  let repaired = 0;
+  let alreadyCorrect = 0;
+  let missing = 0;
+
+  const [rows] = await connection.execute<
+    (RowDataPacket & {
+      id: number;
+      label: string;
+      startAt: Date;
+      endAt: Date;
+    })[]
+  >(
+    `SELECT id, label, start_at AS startAt, end_at AS endAt
+       FROM shift_instances
+      WHERE institution_id = ?
+        AND hospital_id = ?
+        AND sector_id = ?
+        AND start_at >= ?
+        AND start_at < ?
+      FOR UPDATE`,
+    [
+      input.institutionId,
+      input.hospitalId,
+      input.sectorId,
+      monthStart,
+      monthEnd,
+    ],
+  );
+
+  const byDayLabel = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    const dayKey = dayKeyBrt(row.startAt);
+    byDayLabel.set(`${dayKey}:${row.label}`, row);
+  }
+
+  for (const day of calendar) {
+    for (const template of day.templates) {
+      const [expectedStart, expectedEnd] = buildShiftTimestamps(
+        day.dayKey,
+        template.startTime,
+        template.endTime,
+      );
+      const existing = byDayLabel.get(`${day.dayKey}:${template.name}`);
+      if (!existing) {
+        missing += 1;
+        continue;
+      }
+      const startOk =
+        existing.startAt.getTime() === expectedStart.getTime();
+      const endOk = existing.endAt.getTime() === expectedEnd.getTime();
+      if (startOk && endOk) {
+        alreadyCorrect += 1;
+        continue;
+      }
+      if (input.apply) {
+        await connection.execute(
+          `UPDATE shift_instances
+              SET start_at = ?, end_at = ?
+            WHERE id = ?`,
+          [expectedStart, expectedEnd, existing.id],
+        );
+      }
+      repaired += 1;
+    }
+  }
+
+  return { repaired, alreadyCorrect, missing };
+}
+
 export async function provisionSalaRecuperacaoSchedule(): Promise<void> {
   const apply = process.argv.includes("--apply");
   const seedMonth = process.argv.includes("--seed-month")
+    ? process.env.HSC_SEED_MONTH?.trim()
+    : undefined;
+  const repairMonth = process.argv.includes("--repair-month")
     ? process.env.HSC_SEED_MONTH?.trim()
     : undefined;
 
@@ -527,6 +608,12 @@ export async function provisionSalaRecuperacaoSchedule(): Promise<void> {
   }
   if (seedMonth && !/^\d{4}-\d{2}$/.test(seedMonth)) {
     throw new Error("HSC_SEED_MONTH deve ser YYYY-MM");
+  }
+  if (repairMonth && !/^\d{4}-\d{2}$/.test(repairMonth)) {
+    throw new Error("HSC_SEED_MONTH deve ser YYYY-MM para --repair-month");
+  }
+  if (seedMonth && repairMonth) {
+    throw new Error("Use --seed-month ou --repair-month, não os dois");
   }
 
   const target = {
@@ -585,21 +672,33 @@ export async function provisionSalaRecuperacaoSchedule(): Promise<void> {
     });
 
     let seedLine = "seed=skipped";
-    if (seedMonth) {
+    if (seedMonth || repairMonth) {
+      const yearMonth = seedMonth ?? repairMonth!;
       const scheduleContextId = await resolveUnifiedSectorContextId(connection, {
         institutionId: target.institutionId,
         hospitalId: target.hospitalId,
         sectorId: sector.id,
       });
-      const seed = await seedMonthCalendar(connection, {
-        institutionId: target.institutionId,
-        hospitalId: target.hospitalId,
-        sectorId: sector.id,
-        scheduleContextId,
-        yearMonth: seedMonth,
-        apply,
-      });
-      seedLine = `seed=${seedMonth} created=${seed.created} skipped=${seed.skipped}`;
+      if (repairMonth) {
+        const repair = await repairMonthCalendar(connection, {
+          institutionId: target.institutionId,
+          hospitalId: target.hospitalId,
+          sectorId: sector.id,
+          yearMonth,
+          apply,
+        });
+        seedLine = `repair=${yearMonth} repaired=${repair.repaired} ok=${repair.alreadyCorrect} missing=${repair.missing}`;
+      } else {
+        const seed = await seedMonthCalendar(connection, {
+          institutionId: target.institutionId,
+          hospitalId: target.hospitalId,
+          sectorId: sector.id,
+          scheduleContextId,
+          yearMonth,
+          apply,
+        });
+        seedLine = `seed=${yearMonth} created=${seed.created} skipped=${seed.skipped}`;
+      }
     }
 
     if (apply) await connection.commit();

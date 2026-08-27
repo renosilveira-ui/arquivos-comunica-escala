@@ -16,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { uiAlert } from "@/lib/ui/alert";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { toLocalISODateString } from "@/lib/datetime-utils";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -186,12 +187,8 @@ export default function RequestSwapScreen() {
     return d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
   };
 
-  const formatShiftTime = (startValue: Date | string, endValue: Date | string) => {
-    const s = new Date(startValue);
-    const e = new Date(endValue);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${pad(s.getHours())}:${pad(s.getMinutes())} – ${pad(e.getHours())}:${pad(e.getMinutes())}`;
-  };
+  const formatShiftTime = (startValue: Date | string, endValue: Date | string) =>
+    formatHospitalTimeRange(startValue, endValue);
 
   // ---------------------------------------------------------------------------
   // Render

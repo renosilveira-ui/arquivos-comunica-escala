@@ -8,6 +8,7 @@
 
 import { Pressable, Text, View } from "react-native";
 import { theme } from "@/lib/theme";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import type { ShiftStatusContext } from "@/lib/shift-status";
 import { numeral } from "./CalendarSheet";
@@ -23,10 +24,7 @@ export interface ShiftRowShift {
 }
 
 export function formatTimeRange(startAt: Date | string, endAt: Date | string): string {
-  const s = new Date(startAt);
-  const e = new Date(endAt);
-  const f = (n: number) => String(n).padStart(2, "0");
-  return `${f(s.getHours())}:${f(s.getMinutes())}–${f(e.getHours())}:${f(e.getMinutes())}`;
+  return formatHospitalTimeRange(startAt, endAt);
 }
 
 export function ShiftRowCard({
