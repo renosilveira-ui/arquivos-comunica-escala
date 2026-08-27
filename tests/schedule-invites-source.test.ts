@@ -25,6 +25,16 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).not.toContain("node:crypto");
   });
 
+  it("não confirma o convite se o correio não entregou, inclusive sem chave", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    expect(source).toContain("const delivery = await mailer.sendMail(mail)");
+    expect(source).toContain("if (!delivery.delivered)");
+    expect(source).toContain("O e-mail de convite não saiu. Tente novamente.");
+    expect(source).not.toContain(
+      'delivery.transport === "resend" && !delivery.delivered',
+    );
+  });
+
   it("a lista padrão inclui a sala de espera e filtra por nome sem acento", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
     expect(source).toContain("foldCandidateSearch");
