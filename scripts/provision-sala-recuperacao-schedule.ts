@@ -445,14 +445,14 @@ async function seedMonthCalendar(
     (RowDataPacket & { id: number; status: string })[]
   >(
     `SELECT id, status FROM monthly_rosters
-      WHERE institution_id = ? AND hospital_id = ? AND year_month = ?
+      WHERE institution_id = ? AND hospital_id = ? AND \`year_month\` = ?
       FOR UPDATE`,
     [input.institutionId, input.hospitalId, input.yearMonth],
   );
   if (!rosterRows[0]) {
     if (input.apply) {
       await connection.execute(
-        `INSERT INTO monthly_rosters (institution_id, hospital_id, year_month, status)
+        `INSERT INTO monthly_rosters (institution_id, hospital_id, \`year_month\`, status)
          VALUES (?, ?, ?, 'DRAFT')`,
         [input.institutionId, input.hospitalId, input.yearMonth],
       );
