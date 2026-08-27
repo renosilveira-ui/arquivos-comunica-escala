@@ -892,16 +892,23 @@ describe("shifts.replicateRange", () => {
     expect((await db!.select().from(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, copy.id)))).toHaveLength(0);
   });
 
-  it("rejeita mês alvo já preenchido sem sobrescrever", async () => {
+  it("rejeita mês alvo com turno em outro setor sem sobrescrever", async () => {
     const caller = callerFor(managerUserId, "manager");
     await db!.insert(shiftInstances).values({
-      institutionId, hospitalId, sectorId, scheduleContextId, label: "Já existente",
+      institutionId,
+      hospitalId,
+      sectorId: reverseSectorId,
+      scheduleContextId: reverseScheduleContextId,
+      label: "Já existente em outro setor",
       startAt: at("2033-03-01", "08:00:00"), endAt: at("2033-03-01", "14:00:00"),
       status: "VAGO", createdBy: managerUserId,
     });
     await expect(caller.replicateMonthCalendar({
       hospitalId, sectorId, sourceMonth: "2026-09", targetMonth: "2033-03", rule: "FULL",
-    })).rejects.toMatchObject({ code: "CONFLICT" });
+    })).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "O mês de destino deste hospital já contém turnos. Nenhuma cópia foi feita.",
+    });
   });
 
   it("médico comum não pode replicar", async () => {

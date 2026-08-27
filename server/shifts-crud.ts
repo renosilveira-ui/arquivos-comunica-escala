@@ -893,13 +893,12 @@ async function replicateMonthCalendar(
   const existingTarget = async (tx: typeof db) => tx.select({ id: shiftInstances.id }).from(shiftInstances).where(and(
     eq(shiftInstances.institutionId, ctx.institutionId),
     eq(shiftInstances.hospitalId, input.hospitalId),
-    ...(input.sectorId ? [eq(shiftInstances.sectorId, input.sectorId)] : []),
     gte(shiftInstances.startAt, targetWindow.start),
     lt(shiftInstances.startAt, targetWindow.end),
   ));
   const existing = await existingTarget(db);
   if (existing.length) {
-    throw new TRPCError({ code: "CONFLICT", message: "O mês de destino já contém turnos. Nenhuma cópia foi feita." });
+    throw new TRPCError({ code: "CONFLICT", message: "O mês de destino deste hospital já contém turnos. Nenhuma cópia foi feita." });
   }
   const summary = {
     created: candidates.length,
@@ -924,7 +923,7 @@ async function replicateMonthCalendar(
       candidates.map((candidate) => candidate.startAt),
     );
     if ((await existingTarget(tx as unknown as typeof db)).length) {
-      throw new TRPCError({ code: "CONFLICT", message: "O mês de destino foi preenchido durante a cópia. Atualize e tente novamente." });
+      throw new TRPCError({ code: "CONFLICT", message: "O mês de destino deste hospital foi preenchido durante a cópia. Atualize e tente novamente." });
     }
     for (const candidate of candidates) {
       await tx.insert(shiftInstances).values({
