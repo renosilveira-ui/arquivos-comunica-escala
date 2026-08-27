@@ -26,6 +26,21 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("assignment.userId === actor.userId");
   });
 
+  it("alocar o gestor médico usa o mesmo manager_scope da elegibilidade", () => {
+    const source = readFileSync("server/schedule-contexts.ts", "utf8");
+    const start = source.indexOf("export async function listAssumableScheduleContextIds");
+    const end = source.indexOf(
+      "export async function assertProfessionalEligibleForScheduleContext",
+      start,
+    );
+    const assumable = source.slice(start, end);
+    expect(assumable).toContain("managerScopeCoversContext");
+    expect(assumable).toContain("accessCoversContext");
+    expect(assumable).toContain("qualificationMatches");
+    expect(assumable).toContain('roleInInstitution === "GESTOR_MEDICO"');
+    expect(assumable).toContain('roleInInstitution === "GESTOR_PLUS"');
+  });
+
   it("catálogos, contadores e profissionais alocáveis usam a mesma fronteira", () => {
     const source = readFileSync("server/aux-routers.ts", "utf8");
 
@@ -40,6 +55,8 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("conflict_shift.start_at < target_shift.end_at");
     expect(source).toContain("sc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
     expect(source).toContain("schedule_context_allowed_qualifications");
+    expect(source).toContain("LEFT JOIN manager_scope mgr");
+    expect(source).toContain("pa.id IS NOT NULL OR mgr.id IS NOT NULL");
   });
 
   it("replicação rejeita fonte sem contexto ativo e topologia composta", () => {

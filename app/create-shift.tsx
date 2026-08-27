@@ -53,6 +53,7 @@ import {
 } from "@/lib/schedule-context-selection";
 import { PublishedMonthReasonField } from "@/components/shifts/PublishedMonthReasonField";
 import {
+  requiresPublishedMonthReason,
   usePublishedMonthRoster,
   validatePublishedMonthReason,
 } from "@/hooks/use-published-month-roster";
@@ -243,10 +244,11 @@ export default function CreateShiftScreen() {
   const selectedTemplate = availableTemplates.find(
     (template) => template.id === selectedTemplateId,
   );
-  const { data: monthRoster } = usePublishedMonthRoster(
-    selectedScheduleContext?.hospitalId ?? selectedHospitalId,
-    selectedDate,
-  );
+  const { data: monthRoster, hasShifts: monthHasShifts } =
+    usePublishedMonthRoster(
+      selectedScheduleContext?.hospitalId ?? selectedHospitalId,
+      selectedDate,
+    );
 
   useEffect(() => {
     if (!selectedScheduleContext) return;
@@ -431,6 +433,7 @@ export default function CreateShiftScreen() {
     const reasonError = validatePublishedMonthReason(
       monthRoster?.status,
       editReason,
+      monthHasShifts,
     );
     if (reasonError) {
       showFormError(reasonError);
@@ -972,8 +975,7 @@ export default function CreateShiftScreen() {
               />
             </FormSection>
 
-            {monthRoster?.status === "PUBLISHED" ||
-            monthRoster?.status === "LOCKED" ? (
+            {requiresPublishedMonthReason(monthRoster?.status, monthHasShifts) ? (
               <FormSection title="Escala publicada">
                 <PublishedMonthReasonField
                   value={editReason}
@@ -981,7 +983,8 @@ export default function CreateShiftScreen() {
                     setFormError(null);
                     setEditReason(text);
                   }}
-                  rosterStatus={monthRoster.status}
+                  rosterStatus={monthRoster?.status}
+                  hasShifts={monthHasShifts}
                 />
               </FormSection>
             ) : null}

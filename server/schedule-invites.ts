@@ -235,6 +235,9 @@ export async function redeemScheduleInviteInTransaction(
       .where(eq(professionalInstitutions.id, membership.id));
   }
 
+  // QUALIFICATION_ALLOWLIST (Sala de Recuperação) exige acesso setorial
+  // exato em listAssignableForShift. Vínculo institucional sozinho não
+  // coloca o médico na lista de plantonistas — gravamos o setor do convite.
   const [existingAccess] = await tx
     .select({
       id: professionalAccess.id,
