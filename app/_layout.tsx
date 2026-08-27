@@ -333,10 +333,11 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     visible: Platform.OS === "web"
       ? typeof document === "undefined" || document.visibilityState !== "hidden"
       : AppState.currentState === "active",
-    // No nativo, o primeiro evento/fetch do NetInfo precisa admitir a rede.
+    // Nativo: assume online até o NetInfo negar. Começar offline bloqueava o
+    // handshake pós-login no Android enquanto o probe demorava ou falhava.
     online: Platform.OS === "web"
       ? typeof navigator === "undefined" || navigator.onLine
-      : false,
+      : true,
     revision: 0,
   }), []);
   const activityRef = useRef(initialActivity);
@@ -411,8 +412,8 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
         online: isNetInfoOnline(state),
       });
     }).catch(() => {
-      // Probe falhou: não declarar offline. No iOS o reachability costuma
-      // falhar no primeiro segundo e o app ficava preso no BootScreen.
+      // Probe falhou: mantém online otimista para não travar o handshake.
+      updateActivity({ online: true });
     });
 
     const handleVisibility = () => {
@@ -615,6 +616,21 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const { activeInstitutionId, setActiveInstitutionId } = useTenantState();
   const attestation = useContext(TenantAuthorizationContext);
   const institutions = attestation?.receipt.institutions;
+  const [admissionStalled, setAdmissionStalled] = useState(false);
+  const waitingDurableAdmission =
+    !user &&
+    sessionValidation.status === "CHECKING" &&
+    "durableSession" in sessionValidation &&
+    sessionValidation.durableSession === true;
+
+  useEffect(() => {
+    if (!waitingDurableAdmission) {
+      setAdmissionStalled(false);
+      return;
+    }
+    const timer = setTimeout(() => setAdmissionStalled(true), AUTHORIZATION_GATE_STALL_MS);
+    return () => clearTimeout(timer);
+  }, [sessionValidation.sequence, waitingDurableAdmission]);
 
   useEffect(() => {
     if (!user || !institutions || activeInstitutionId !== null) return;
@@ -624,12 +640,13 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   }, [activeInstitutionId, institutions, setActiveInstitutionId, user]);
 
   if (!user) {
-    if (
+    const durableAdmissionPending =
       (sessionValidation.status === "CHECKING" ||
         sessionValidation.status === "UNAVAILABLE") &&
-      sessionValidation.durableSession
-    ) {
-      if (sessionValidation.status === "UNAVAILABLE") {
+      "durableSession" in sessionValidation &&
+      sessionValidation.durableSession === true;
+    if (durableAdmissionPending) {
+      if (sessionValidation.status === "UNAVAILABLE" || admissionStalled) {
         return (
           <AuthorizationUnavailableScreen
             retry={() => {
