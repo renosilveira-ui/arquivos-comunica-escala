@@ -7,6 +7,8 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContextAllowedQualifications,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -28,7 +30,8 @@ describe("professionals.listAssignableForShift", () => {
   let managerProfessionalId: number;
   let availableProfessionalId: number;
   let assignedProfessionalId: number;
-  let noAccessProfessionalId: number;
+  let hospitalWideProfessionalId: number;
+  let crossSectorProfessionalId: number;
   let shiftInstanceId: number;
   let scheduleContextId: number;
   let anesthesiaId: number;
@@ -109,6 +112,14 @@ describe("professionals.listAssignableForShift", () => {
       hospitalId,
       sectorId,
     });
+    await db
+      .update(scheduleContexts)
+      .set({ admissionPolicy: "QUALIFICATION_ALLOWLIST" })
+      .where(eq(scheduleContexts.id, scheduleContextId));
+    await db.insert(scheduleContextAllowedQualifications).values({
+      scheduleContextId,
+      medicalSpecialtyId: anesthesiaId,
+    });
 
     const manager = await createUserProfessional(stamp, "Manager", "GESTOR_MEDICO");
     managerUserId = manager.userId;
@@ -120,8 +131,21 @@ describe("professionals.listAssignableForShift", () => {
     const assigned = await createUserProfessional(stamp, "AlreadyAssigned");
     assignedProfessionalId = assigned.professionalId;
 
-    const noAccess = await createUserProfessional(stamp, "NoAccess");
-    noAccessProfessionalId = noAccess.professionalId;
+    const hospitalWide = await createUserProfessional(stamp, "HospitalWide");
+    hospitalWideProfessionalId = hospitalWide.professionalId;
+
+    const crossSector = await createUserProfessional(stamp, "CrossSector");
+    crossSectorProfessionalId = crossSector.professionalId;
+    const [otherSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Assignable Outro Setor ${stamp}`,
+        category: "cirurgico",
+        color: "#2563EB",
+      })
+      .$returningId();
 
     await db.insert(managerScope).values({
       institutionId,
@@ -134,6 +158,8 @@ describe("professionals.listAssignableForShift", () => {
     await db.insert(professionalAccess).values([
       { institutionId, professionalId: availableProfessionalId, hospitalId, sectorId, canAccess: true },
       { institutionId, professionalId: assignedProfessionalId, hospitalId, sectorId, canAccess: true },
+      { institutionId, professionalId: hospitalWideProfessionalId, hospitalId, sectorId: null, canAccess: true },
+      { institutionId, professionalId: crossSectorProfessionalId, hospitalId, sectorId: otherSector.id, canAccess: true },
     ]);
 
     const [shift] = await db
@@ -163,7 +189,7 @@ describe("professionals.listAssignableForShift", () => {
     });
   });
 
-  it("lista somente profissionais com acesso ao setor e ainda não alocados", async () => {
+  it("exige acesso exato ao setor para escala com allowlist", async () => {
     const caller = appRouter.createCaller({
       user: {
         id: managerUserId,
@@ -182,7 +208,8 @@ describe("professionals.listAssignableForShift", () => {
 
     expect(ids).toContain(availableProfessionalId);
     expect(ids).not.toContain(assignedProfessionalId);
-    expect(ids).not.toContain(noAccessProfessionalId);
+    expect(ids).not.toContain(hospitalWideProfessionalId);
+    expect(ids).not.toContain(crossSectorProfessionalId);
     expect(rows[0]).toMatchObject({ id: availableProfessionalId, name: expect.any(String) });
 
     const [shift] = await db

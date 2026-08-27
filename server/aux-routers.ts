@@ -163,6 +163,7 @@ export const professionalsRouter = router({
           hospitalId: shiftInstances.hospitalId,
           sectorId: shiftInstances.sectorId,
           scheduleContextId: shiftInstances.scheduleContextId,
+          admissionPolicy: scheduleContexts.admissionPolicy,
         })
         .from(shiftInstances)
         .innerJoin(
@@ -218,7 +219,17 @@ export const professionalsRouter = router({
             ON pa.professional_id = p.id
             AND pa.institution_id = ${ctx.institutionId}
             AND pa.hospital_id = ${shift.hospitalId}
-            AND (pa.sector_id IS NULL OR pa.sector_id = ${shift.sectorId})
+            AND (
+              (
+                ${shift.admissionPolicy} = 'QUALIFICATION_ALLOWLIST'
+                AND pa.sector_id = ${shift.sectorId}
+              )
+              OR
+              (
+                ${shift.admissionPolicy} <> 'QUALIFICATION_ALLOWLIST'
+                AND (pa.sector_id IS NULL OR pa.sector_id = ${shift.sectorId})
+              )
+            )
             AND pa.can_access = true
           INNER JOIN shift_instances target_shift
             ON target_shift.id = ${input.shiftInstanceId}

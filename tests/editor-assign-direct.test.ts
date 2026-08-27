@@ -4,10 +4,13 @@ import {
   hospitals,
   institutions,
   managerScope,
+  medicalSpecialties,
   monthlyRosters,
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContextAllowedQualifications,
+  scheduleContexts,
   sectors,
   auditTrail,
   shiftAuditLog,
@@ -28,6 +31,8 @@ describe("editor.assignDirect", () => {
   let managerProfessionalId: number;
   let targetProfessionalId: number;
   let shiftInstanceId: number;
+  let anesthesiaSpecialtyId: number;
+  let scheduleContextId: number;
 
   beforeAll(async () => {
     db = await getDb();
@@ -63,6 +68,34 @@ describe("editor.assignDirect", () => {
       })
       .$returningId();
     sectorId = sector.id;
+
+    const [anesthesia] = await db
+      .insert(medicalSpecialties)
+      .values({
+        code: `ASSIGN_DIRECT_ANESTHESIA_${stamp}`,
+        name: `Assign Direct Anestesia ${stamp}`,
+        sourceVersion: "TEST",
+        active: true,
+        sortOrder: 1,
+      })
+      .$returningId();
+    anesthesiaSpecialtyId = anesthesia.id;
+
+    const [scheduleContext] = await db
+      .insert(scheduleContexts)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        admissionPolicy: "QUALIFICATION_ALLOWLIST",
+        active: true,
+      })
+      .$returningId();
+    scheduleContextId = scheduleContext.id;
+    await db.insert(scheduleContextAllowedQualifications).values({
+      scheduleContextId,
+      medicalSpecialtyId: anesthesiaSpecialtyId,
+    });
 
     const [managerUser] = await db
       .insert(users)
@@ -104,6 +137,8 @@ describe("editor.assignDirect", () => {
         name: `Assign Direct Doctor ${stamp}`,
         role: "Médico",
         userRole: "USER",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
+        specialty: "Anestesiologia",
       })
       .$returningId();
     targetProfessionalId = targetProfessional.id;
@@ -154,6 +189,7 @@ describe("editor.assignDirect", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `Assign Direct Shift ${stamp}`,
         startAt,
         endAt,
@@ -186,6 +222,19 @@ describe("editor.assignDirect", () => {
     if (shiftInstanceId) {
       await db.delete(shiftInstances).where(eq(shiftInstances.id, shiftInstanceId));
     }
+    if (scheduleContextId) {
+      await db
+        .delete(scheduleContextAllowedQualifications)
+        .where(
+          eq(
+            scheduleContextAllowedQualifications.scheduleContextId,
+            scheduleContextId,
+          ),
+        );
+      await db
+        .delete(scheduleContexts)
+        .where(eq(scheduleContexts.id, scheduleContextId));
+    }
     const professionalIds = [managerProfessionalId, targetProfessionalId].filter(
       (id): id is number => typeof id === "number",
     );
@@ -203,6 +252,11 @@ describe("editor.assignDirect", () => {
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
+    if (anesthesiaSpecialtyId) {
+      await db
+        .delete(medicalSpecialties)
+        .where(eq(medicalSpecialties.id, anesthesiaSpecialtyId));
+    }
     const userIds = [managerUserId, targetUserId].filter((id): id is number => typeof id === "number");
     if (userIds.length > 0) {
       await db.delete(users).where(inArray(users.id, userIds));
@@ -333,7 +387,7 @@ describe("editor.assignDirect", () => {
         .where(eq(users.id, targetUserId));
       await db
         .update(professionals)
-        .set({ specialty: "Cardiologia" })
+        .set({ medicalSpecialtyId: null })
         .where(eq(professionals.id, targetProfessionalId));
       await db
         .update(shiftInstances)
@@ -359,12 +413,58 @@ describe("editor.assignDirect", () => {
         .where(eq(users.id, targetUserId));
       await db
         .update(professionals)
-        .set({ specialty: null })
+        .set({ medicalSpecialtyId: anesthesiaSpecialtyId })
         .where(eq(professionals.id, targetProfessionalId));
       await db
         .update(shiftInstances)
         .set({ specialty: null })
         .where(eq(shiftInstances.id, shiftInstanceId));
+    }
+  });
+
+  it("bloqueia bypass de alocação direta com acesso só hospitalar", async () => {
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    await db
+      .delete(professionalAccess)
+      .where(eq(professionalAccess.professionalId, targetProfessionalId));
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: targetProfessionalId,
+      hospitalId,
+      sectorId: null,
+      canAccess: true,
+    });
+
+    try {
+      await expect(
+        caller.assignDirect({
+          shiftInstanceId,
+          professionalId: targetProfessionalId,
+          assignmentType: "ON_DUTY",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    } finally {
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.professionalId, targetProfessionalId));
+      await db.insert(professionalAccess).values({
+        institutionId,
+        professionalId: targetProfessionalId,
+        hospitalId,
+        sectorId,
+        canAccess: true,
+      });
     }
   });
 
