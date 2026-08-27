@@ -242,6 +242,58 @@ export function describeScheduleContext(
   };
 }
 
+function agendaScheduleContextPolicyRank(
+  policy: ScheduleContextAdmissionPolicy,
+): number {
+  if (policy === "QUALIFICATION_ALLOWLIST") return 0;
+  if (
+    policy === "ALL_CFM_SPECIALTIES" ||
+    policy === "ALL_CFM_EXCEPT_GENERALIST"
+  ) {
+    return 1;
+  }
+  return 2;
+}
+
+/** Uma linha da Agenda por hospital+setor; prioriza o contexto unificado. */
+export function pickCanonicalAgendaScheduleContext(
+  candidates: readonly AuthorizedScheduleContext[],
+): AuthorizedScheduleContext {
+  if (candidates.length === 1) return candidates[0]!;
+  const sorted = [...candidates].sort((left, right) => {
+    const rankDiff =
+      agendaScheduleContextPolicyRank(left.admissionPolicy) -
+      agendaScheduleContextPolicyRank(right.admissionPolicy);
+    if (rankDiff !== 0) return rankDiff;
+    return left.id - right.id;
+  });
+  const picked = sorted[0]!;
+  if (picked.canManage || !candidates.some((candidate) => candidate.canManage)) {
+    return picked;
+  }
+  return { ...picked, canManage: true };
+}
+
+export function dedupeAuthorizedScheduleContextsForAgenda(
+  contexts: readonly AuthorizedScheduleContext[],
+): AuthorizedScheduleContext[] {
+  const groups = new Map<string, AuthorizedScheduleContext[]>();
+  for (const context of contexts) {
+    const key = `${context.hospitalId}:${context.sectorId}`;
+    const list = groups.get(key) ?? [];
+    list.push(context);
+    groups.set(key, list);
+  }
+  return [...groups.values()]
+    .map(pickCanonicalAgendaScheduleContext)
+    .sort(
+      (left, right) =>
+        left.hospitalName.localeCompare(right.hospitalName, "pt-BR") ||
+        left.sectorName.localeCompare(right.sectorName, "pt-BR") ||
+        left.id - right.id,
+    );
+}
+
 export function filterScheduleContextsForActor(input: {
   actor: Pick<
     TenantActor,
@@ -294,13 +346,7 @@ export function filterScheduleContextsForActor(input: {
     authorized = [];
   }
 
-  return authorized.sort(
-    (left, right) =>
-      left.hospitalName.localeCompare(right.hospitalName, "pt-BR") ||
-      left.sectorName.localeCompare(right.sectorName, "pt-BR") ||
-      left.qualificationName.localeCompare(right.qualificationName, "pt-BR") ||
-      left.id - right.id,
-  );
+  return dedupeAuthorizedScheduleContextsForAgenda(authorized);
 }
 
 export function requireSingleLegacyScheduleContext<T extends { id: number }>(

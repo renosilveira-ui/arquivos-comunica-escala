@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  dedupeAuthorizedScheduleContextsForAgenda,
   describeScheduleContext,
   filterScheduleContextsForActor,
   parseScheduleContextIds,
+  pickCanonicalAgendaScheduleContext,
   projectEffectiveScheduleContextIds,
   qualificationMatches,
   requireSingleLegacyScheduleContext,
   resolveShiftScheduleContextReadGrant,
   type ActiveScheduleContext,
+  type AuthorizedScheduleContext,
 } from "../server/schedule-contexts";
 
 function context(
@@ -391,6 +394,125 @@ describe("política canônica de contextos de escala", () => {
 
     expect(denied).toEqual([]);
     expect(hidden).toEqual([]);
+  });
+
+  it("colapsa contextos legados PINNED_QUALIFICATION da Agenda para um card por setor", () => {
+    const recoverySectorId = 301;
+    const legacyContexts = [
+      {
+        ...context(1, recoverySectorId, 10),
+        sectorName: "Sala de Recuperação",
+        medicalSpecialtyName: "Clínica médica",
+      },
+      {
+        ...context(2, recoverySectorId, 11),
+        sectorName: "Sala de Recuperação",
+        medicalSpecialtyName: "Anestesiologia",
+      },
+      {
+        ...context(3, recoverySectorId, 12),
+        sectorName: "Sala de Recuperação",
+        medicalSpecialtyName: "Medicina intensiva",
+      },
+    ];
+    const result = filterScheduleContextsForActor({
+      actor: {
+        institutionId: 1,
+        professionalId: null,
+        roleInInstitution: "GESTOR_PLUS",
+        isGlobalAdmin: false,
+      },
+      contexts: legacyContexts,
+      professional: null,
+      accesses: [],
+      managerScopes: [],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe(1);
+    expect(result[0]?.displayName).toBe(
+      "Hospital São Carlos — Sala de Recuperação — Clínica médica",
+    );
+  });
+
+  it("prefere QUALIFICATION_ALLOWLIST canônico quando coexistem contextos legados", () => {
+    const recoverySectorId = 301;
+    const allowlist: ActiveScheduleContext = {
+      ...context(100, recoverySectorId, null),
+      sectorName: "Sala de Recuperação",
+      medicalSpecialtyCode: null,
+      medicalSpecialtyName: null,
+      operationalProfileCode: null,
+      admissionPolicy: "QUALIFICATION_ALLOWLIST",
+      allowedQualifications: [
+        { medicalSpecialtyId: 10, operationalProfileCode: null },
+        { medicalSpecialtyId: 11, operationalProfileCode: null },
+      ],
+    };
+    const legacyPinned = {
+      ...context(2, recoverySectorId, 11),
+      sectorName: "Sala de Recuperação",
+      admissionPolicy: "PINNED_QUALIFICATION" as const,
+      medicalSpecialtyName: "Anestesiologia",
+    };
+    const result = filterScheduleContextsForActor({
+      actor: userActor,
+      contexts: [allowlist, legacyPinned],
+      professional: {
+        medicalSpecialtyId: 11,
+        operationalProfileCode: null,
+      },
+      accesses: [
+        {
+          institutionId: 1,
+          professionalId: 55,
+          hospitalId: 100,
+          sectorId: recoverySectorId,
+          canAccess: true,
+        },
+      ],
+      managerScopes: [],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe(100);
+    expect(result[0]?.admissionPolicy).toBe("QUALIFICATION_ALLOWLIST");
+    expect(result[0]?.displayName).toBe(
+      "Hospital São Carlos — Sala de Recuperação",
+    );
+  });
+
+  it("preserva canManage ao colapsar contextos do mesmo setor", () => {
+    const recoverySectorId = 301;
+    const managedLegacy = describeScheduleContext(
+      {
+        ...context(2, recoverySectorId, 11),
+        sectorName: "Sala de Recuperação",
+        medicalSpecialtyName: "Anestesiologia",
+      },
+      true,
+    );
+    const unmanagedLegacy = describeScheduleContext(
+      {
+        ...context(1, recoverySectorId, 10),
+        sectorName: "Sala de Recuperação",
+        medicalSpecialtyName: "Clínica médica",
+      },
+      false,
+    );
+    const picked = pickCanonicalAgendaScheduleContext([
+      unmanagedLegacy,
+      managedLegacy,
+    ]);
+
+    expect(picked.id).toBe(1);
+    expect(picked.canManage).toBe(true);
+    expect(
+      dedupeAuthorizedScheduleContextsForAgenda([
+        unmanagedLegacy,
+        managedLegacy,
+      ] as AuthorizedScheduleContext[]),
+    ).toEqual([{ ...picked, canManage: true }]);
   });
 
   it("admite especialista CFM em Emergência e UTI, e bloqueia generalista na UTI", () => {
