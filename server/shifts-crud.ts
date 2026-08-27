@@ -58,6 +58,11 @@ import {
   resolveScheduleContextForShiftCreation,
 } from "./schedule-contexts";
 import { pickShiftTemplatesForSector } from "../lib/shift-template-options";
+import { buildShiftTimestamps as buildHospitalShiftTimestamps } from "../lib/hospital-time";
+import {
+  planOpenMonthShifts,
+  type OpenMonthShiftsMode,
+} from "../lib/open-month-shifts";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -169,6 +174,24 @@ const calendarReplicationInput = z.object({
 });
 
 type CalendarReplicationInput = z.infer<typeof calendarReplicationInput>;
+
+const openMonthShiftsInput = z.object({
+  hospitalId: z.number().int().positive(),
+  sectorId: z.number().int().positive(),
+  scheduleContextId: z.number().int().positive().optional(),
+  yearMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+  mode: z.enum([
+    "all-applicable",
+    "nights-only",
+    "weekends-only",
+    "custom",
+  ]),
+  templateNames: z.array(z.enum(["Manhã", "Tarde", "Noite"])).max(3).optional(),
+  dryRun: z.boolean().optional().default(false),
+  reason: z.string().max(500).optional(),
+});
+
+type OpenMonthShiftsInput = z.infer<typeof openMonthShiftsInput>;
 
 /** Instante UTC da meia-noite local (-03:00) de um dia "YYYY-MM-DD". */
 function localDayStart(date: string): Date {
@@ -1116,6 +1139,242 @@ async function replicateMonthCalendar(
     }, { db: tx as any, strict: true });
   }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
   return summary;
+}
+
+/**
+ * Abre os plantões vagos do mês (Sala de Recuperação): não copia o mês
+ * anterior e não aloca. Idempotente pela chave label+início+fim.
+ */
+async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
+  const actor = await getTenantActorFromContext(ctx as any);
+  assertCanManageInstitutionSchedule(actor);
+  await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
+
+  let planned: ReturnType<typeof planOpenMonthShifts>;
+  try {
+    planned = planOpenMonthShifts({
+      yearMonth: input.yearMonth,
+      mode: input.mode as OpenMonthShiftsMode,
+      templateNames: input.templateNames,
+    });
+  } catch (err) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: (err as Error).message,
+    });
+  }
+  if (!planned.length) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Nenhum plantão se encaixa neste recorte do mês.",
+    });
+  }
+
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await assertInstitutionHierarchy(
+    {
+      institutionId: ctx.institutionId,
+      hospitalId: input.hospitalId,
+      sectorId: input.sectorId,
+    },
+    { db },
+  );
+
+  const templates = await db
+    .select()
+    .from(shiftTemplates)
+    .where(
+      and(
+        eq(shiftTemplates.institutionId, ctx.institutionId),
+        eq(shiftTemplates.hospitalId, input.hospitalId),
+        eq(shiftTemplates.isActive, true),
+      ),
+    );
+  const picked = pickShiftTemplatesForSector(
+    templates,
+    input.hospitalId,
+    input.sectorId,
+  );
+  const templateByName = new Map<string, (typeof picked)[number]>();
+  for (const template of picked) {
+    if (!templateByName.has(template.name)) templateByName.set(template.name, template);
+  }
+  const missing = [
+    ...new Set(planned.map((slot) => slot.template.name)),
+  ].filter((name) => !templateByName.has(name));
+  if (missing.length) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message:
+        missing.length === 1
+          ? `Não há modelo de horário “${missing[0]}” neste setor. Cadastre o horário antes de abrir os turnos.`
+          : `Não há modelos de horário (${missing.join(", ")}) neste setor. Cadastre os horários antes de abrir os turnos.`,
+    });
+  }
+
+  const context = await resolveScheduleContextForShiftCreation({
+    institutionId: ctx.institutionId,
+    scheduleContextId: input.scheduleContextId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    templateSectorId: picked[0]?.sectorId ?? null,
+    db,
+  });
+  for (const template of templateByName.values()) {
+    if (template.sectorId != null && template.sectorId !== context.sectorId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "O template informado pertence a outro setor.",
+      });
+    }
+  }
+
+  const candidates = planned.map((slot) => {
+    const template = templateByName.get(slot.template.name)!;
+    const [startAt, endAt] = buildHospitalShiftTimestamps(
+      slot.dayKey,
+      clockFromTemplate(template.startTime),
+      clockFromTemplate(template.endTime),
+    );
+    return {
+      label: template.name,
+      startAt,
+      endAt,
+      institutionId: ctx.institutionId,
+      hospitalId: input.hospitalId,
+      sectorId: context.sectorId,
+      scheduleContextId: context.id,
+      specialty: context.qualificationName,
+    };
+  });
+  for (const candidate of candidates) assertCanEditScheduleDate(actor, candidate.startAt);
+
+  const targetWindow = monthWindowBrt(input.yearMonth);
+  const loadExisting = async (tx: typeof db) =>
+    tx
+      .select({
+        id: shiftInstances.id,
+        institutionId: shiftInstances.institutionId,
+        hospitalId: shiftInstances.hospitalId,
+        sectorId: shiftInstances.sectorId,
+        scheduleContextId: shiftInstances.scheduleContextId,
+        startAt: shiftInstances.startAt,
+        endAt: shiftInstances.endAt,
+        label: shiftInstances.label,
+      })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, ctx.institutionId),
+          eq(shiftInstances.hospitalId, input.hospitalId),
+          eq(shiftInstances.sectorId, input.sectorId),
+          gte(shiftInstances.startAt, targetWindow.start),
+          lt(shiftInstances.startAt, targetWindow.end),
+        ),
+      );
+
+  const existingKeys = new Set((await loadExisting(db)).map((row) => naturalKey(row)));
+  const toCreate = candidates.filter(
+    (candidate) => !existingKeys.has(naturalKey(candidate)),
+  );
+  const skipped = candidates.length - toCreate.length;
+  const summary = {
+    created: toCreate.length,
+    skipped,
+    planned: candidates.length,
+    mode: input.mode,
+    yearMonth: input.yearMonth,
+    dryRun: input.dryRun,
+  };
+  if (input.dryRun || toCreate.length === 0) return summary;
+
+  return db.transaction(async (tx) => {
+    await lockMonthsForUpdate(tx, [
+      {
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        date: targetWindow.start,
+      },
+    ]);
+    await assertMonthsEditableForUpdate(
+      tx,
+      { user: { id: ctx.user.id } },
+      [
+        {
+          institutionId: ctx.institutionId,
+          hospitalId: input.hospitalId,
+          date: targetWindow.start,
+          reason: input.reason,
+        },
+      ],
+    );
+    await assertManagerScopeAccessForUpdate(
+      tx,
+      actor,
+      ctx.user.sessionVersion,
+      input.hospitalId,
+      input.sectorId,
+      toCreate.map((candidate) => candidate.startAt),
+    );
+
+    const currentKeys = new Set(
+      (await loadExisting(tx as unknown as typeof db)).map((row) => naturalKey(row)),
+    );
+    let created = 0;
+    let skippedNow = skipped;
+    for (const candidate of toCreate) {
+      if (currentKeys.has(naturalKey(candidate))) {
+        skippedNow += 1;
+        continue;
+      }
+      await tx.insert(shiftInstances).values({
+        institutionId: candidate.institutionId,
+        hospitalId: candidate.hospitalId,
+        sectorId: candidate.sectorId,
+        scheduleContextId: candidate.scheduleContextId,
+        label: candidate.label,
+        specialty: candidate.specialty,
+        startAt: candidate.startAt,
+        endAt: candidate.endAt,
+        status: "VAGO",
+        createdBy: ctx.user.id,
+      });
+      created += 1;
+      currentKeys.add(naturalKey(candidate));
+    }
+    await recordAudit(
+      {
+        actorUserId: ctx.user.id,
+        actorRole: actor.roleInInstitution,
+        actorName: ctx.user.name ?? undefined,
+        action: "SHIFT_CREATED",
+        entityType: "SHIFT_INSTANCE",
+        entityId: 0,
+        description: `Abriu ${created} plantões vagos em ${input.yearMonth}.`,
+        metadata: {
+          openMonthShifts: true,
+          created,
+          skipped: skippedNow,
+          mode: input.mode,
+          yearMonth: input.yearMonth,
+          sectorId: input.sectorId,
+        },
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+      },
+      { db: tx as any, strict: true },
+    );
+    return {
+      created,
+      skipped: skippedNow,
+      planned: candidates.length,
+      mode: input.mode,
+      yearMonth: input.yearMonth,
+      dryRun: false,
+    };
+  }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 }
 
 export const shiftsRouter = router({
@@ -2768,6 +3027,10 @@ export const shiftsRouter = router({
   replicateMonthCalendar: protectedProcedure
     .input(calendarReplicationInput)
     .mutation(async ({ ctx, input }) => replicateMonthCalendar(ctx, input)),
+
+  openMonthShifts: protectedProcedure
+    .input(openMonthShiftsInput)
+    .mutation(async ({ ctx, input }) => openMonthShifts(ctx, input)),
 
   // Compatibilidade: wrapper fino sobre replicateRange (semana).
   replicateWeek: protectedProcedure

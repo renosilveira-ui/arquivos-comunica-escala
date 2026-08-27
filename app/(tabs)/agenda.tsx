@@ -28,6 +28,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { ManagerActionsMenu } from "@/components/agenda/ManagerActionsMenu";
+import { OpenMonthShiftsButton } from "@/components/agenda/OpenMonthShiftsButton";
 import { MobileDayList } from "@/components/agenda/MobileDayList";
 import { NextShiftCard } from "@/components/agenda/NextShiftCard";
 import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
@@ -48,12 +49,10 @@ import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
 import { AppButton } from "@/components/ui/AppButton";
 import {
   buildAgendaMonthPickerOptions,
-  calendarOpenOriginFromPreviousMonth,
   countShiftsInMonth,
-  emptyMonthCalendarDescription,
   monthKeyOf,
-  sourceMonthForCalendarTarget,
 } from "@/lib/agenda-month-navigation";
+import { openMonthShiftsDescription } from "@/lib/open-month-shifts";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -623,6 +622,18 @@ export default function AgendaScreen() {
                 monthKey={visibleMonthKey}
                 onEdit={() => selectMonth(visibleMonthKey)}
               >
+                <OpenMonthShiftsButton
+                  monthKey={visibleMonthKey}
+                  monthName={monthNamePt(visibleMonthKey)}
+                  selectedContext={{
+                    hospitalId: selectedManagerContext.hospitalId,
+                    sectorId: selectedManagerContext.sectorId,
+                    scheduleContextId: selectedManagerContext.id,
+                  }}
+                  onChanged={() => {
+                    refetch();
+                  }}
+                />
                 <ManagerActionsMenu
                   variant="strip"
                   institutionId={activeInstitutionId ?? null}
@@ -826,7 +837,6 @@ export default function AgendaScreen() {
             {canCreateShift && selectedManagerContext ? (
               <EmptyMonthCalendarAction
                 monthKey={visibleMonthKey}
-                institutionId={activeInstitutionId ?? null}
                 selectedContext={selectedManagerContext}
                 onChanged={() => {
                   refetch();
@@ -842,7 +852,6 @@ export default function AgendaScreen() {
             !isLoading ? (
               <EmptyMonthCalendarAction
                 monthKey={visibleMonthKey}
-                institutionId={activeInstitutionId ?? null}
                 selectedContext={selectedManagerContext}
                 onChanged={() => {
                   refetch();
@@ -1070,28 +1079,14 @@ function ManagerMonthActions({
 
 function EmptyMonthCalendarAction({
   monthKey,
-  institutionId,
   selectedContext,
   onChanged,
 }: {
   monthKey: string;
-  institutionId: number | null;
   selectedContext: ScheduleContextOption;
   onChanged: () => void;
 }) {
   const month = monthNamePt(monthKey);
-  const previousMonth = sourceMonthForCalendarTarget(monthKey);
-  const { data: previousMonthShifts } = trpc.shifts.hasMonthShifts.useQuery(
-    {
-      hospitalId: selectedContext.hospitalId,
-      sectorId: selectedContext.sectorId,
-      yearMonth: previousMonth,
-    },
-    { staleTime: 60_000 },
-  );
-  const origin = calendarOpenOriginFromPreviousMonth(
-    previousMonthShifts?.hasShifts,
-  );
   return (
     <View
       style={{
@@ -1114,14 +1109,12 @@ function EmptyMonthCalendarAction({
         Ainda não há plantões em {month}
       </Text>
       <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-        {emptyMonthCalendarDescription(origin)}
+        {openMonthShiftsDescription()}
       </Text>
-      <ManagerActionsMenu
-        variant="empty-state"
-        institutionId={institutionId}
-        period={{ kind: "month", monthKey }}
-        calendarTargetMonth={monthKey}
-        selectedScheduleContext={{
+      <OpenMonthShiftsButton
+        monthKey={monthKey}
+        monthName={month}
+        selectedContext={{
           hospitalId: selectedContext.hospitalId,
           sectorId: selectedContext.sectorId,
           scheduleContextId: selectedContext.id,

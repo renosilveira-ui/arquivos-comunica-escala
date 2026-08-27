@@ -107,16 +107,16 @@ describe("wiring do calendário mensal na Agenda", () => {
     expect(agenda).toContain("buildAgendaMonthPickerOptions");
     expect(agenda).toContain("countShiftsInMonth");
     expect(agenda).toContain("Editar e alocar em");
-    expect(agenda).toContain("calendarTargetMonth=");
-    expect(agenda).toContain('variant="empty-state"');
+    expect(agenda).toContain("OpenMonthShiftsButton");
+    expect(agenda).toContain("openMonthShiftsDescription");
     expect(agenda).toContain("selectedContext?.canManage");
     expect(agenda).toContain("EmptyMonthCalendarAction");
+    expect(agenda.split("<OpenMonthShiftsButton").length - 1).toBe(2);
     expect(menu).toContain("sourceMonthForCalendarTarget");
     expect(menu).toContain("requestedCalendarTargetMonth");
     expect(menu).toContain("Abrir calendário de");
     expect(menu).toContain('variant === "empty-state"');
-    expect(agenda).toContain("emptyMonthCalendarDescription");
-    expect(agenda).toContain("calendarOpenOriginFromPreviousMonth");
+    expect(agenda).not.toContain("emptyMonthCalendarDescription");
     expect(agenda).not.toContain(
       "Abra o calendário deste mês a partir da escala anterior",
     );
