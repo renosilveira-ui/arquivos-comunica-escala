@@ -306,6 +306,7 @@ export const professionalInstitutions = mysqlTable(
     institutionId: int("institution_id")
       .notNull()
       .references(() => institutions.id, { onDelete: "cascade" }),
+    /** Migração manual: drizzle/migrations/manual/2026-08-27-professional-institutions-role.sql */
     roleInInstitution: userRoleEnum.notNull().default("USER"),
     isPrimary: boolean("is_primary").notNull().default(false),
     active: boolean("active").notNull().default(true),
