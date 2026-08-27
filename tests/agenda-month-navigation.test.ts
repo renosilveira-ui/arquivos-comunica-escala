@@ -111,6 +111,7 @@ describe("wiring do calendário mensal na Agenda", () => {
     expect(agenda).toContain("openMonthShiftsDescription");
     expect(agenda).toContain("selectedContext?.canManage");
     expect(agenda).toContain("EmptyMonthCalendarAction");
+    expect(agenda.split("<OpenMonthShiftsButton").length - 1).toBe(2);
     expect(menu).toContain("sourceMonthForCalendarTarget");
     expect(menu).toContain("requestedCalendarTargetMonth");
     expect(menu).toContain("Abrir calendário de");

@@ -136,4 +136,15 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("theme.colors");
     expect(button).not.toMatch(/#[0-9A-Fa-f]{3,8}/);
   });
+
+  it("mantém o botão visível quando o mês já tem plantões", () => {
+    const agenda = readFileSync("app/(tabs)/agenda.tsx", "utf8");
+    const filledMonthBlock = agenda.slice(
+      agenda.indexOf("selectedMonthShiftCount > 0"),
+      agenda.indexOf(") : canCreateShift ?"),
+    );
+
+    expect(filledMonthBlock).toContain("OpenMonthShiftsButton");
+    expect(agenda.split("<OpenMonthShiftsButton").length - 1).toBe(2);
+  });
 });

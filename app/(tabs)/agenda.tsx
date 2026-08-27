@@ -622,6 +622,18 @@ export default function AgendaScreen() {
                 monthKey={visibleMonthKey}
                 onEdit={() => selectMonth(visibleMonthKey)}
               >
+                <OpenMonthShiftsButton
+                  monthKey={visibleMonthKey}
+                  monthName={monthNamePt(visibleMonthKey)}
+                  selectedContext={{
+                    hospitalId: selectedManagerContext.hospitalId,
+                    sectorId: selectedManagerContext.sectorId,
+                    scheduleContextId: selectedManagerContext.id,
+                  }}
+                  onChanged={() => {
+                    refetch();
+                  }}
+                />
                 <ManagerActionsMenu
                   variant="strip"
                   institutionId={activeInstitutionId ?? null}
