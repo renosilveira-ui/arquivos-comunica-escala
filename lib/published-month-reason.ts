@@ -1,10 +1,11 @@
 export type MonthlyRosterStatus = "DRAFT" | "PUBLISHED" | "LOCKED";
 
 /**
- * PUBLISHED/LOCKED é o status de `monthly_rosters` no par hospital+mês,
- * independente de existirem `shift_instances`. Mês publicado e vazio
- * ainda está sendo montado: o motivo de auditoria só entra quando já
- * há plantão (ou quando o mês está LOCKED).
+ * Motivo de auditoria só para edição destrutiva de plantão já existente
+ * (mover/atualizar em edit-shift). Criar vago / abrir o mês NUNCA pede
+ * motivo em PUBLISHED — montar a escala é trabalho normal do gestor.
+ *
+ * LOCKED continua exigindo motivo. PUBLISHED vazio também não pede.
  */
 export function requiresPublishedMonthReason(
   status: MonthlyRosterStatus | undefined,

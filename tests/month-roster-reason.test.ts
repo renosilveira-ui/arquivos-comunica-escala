@@ -10,7 +10,7 @@ describe("motivo de mês publicado", () => {
     expect(validatePublishedMonthReason("PUBLISHED", "", false)).toBeNull();
   });
 
-  it("PUBLISHED com turnos e LOCKED exigem motivo de 5 caracteres", () => {
+  it("PUBLISHED com turnos e LOCKED exigem motivo só na edição destrutiva", () => {
     expect(requiresPublishedMonthReason("PUBLISHED", true)).toBe(true);
     expect(requiresPublishedMonthReason("LOCKED", false)).toBe(true);
     expect(validatePublishedMonthReason("PUBLISHED", "ok", true)).toMatch(

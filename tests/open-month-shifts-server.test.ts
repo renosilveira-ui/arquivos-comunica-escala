@@ -371,6 +371,63 @@ describe("shifts.openMonthShifts", () => {
     expect(rows.every((row) => row.label === "Manhã")).toBe(true);
   });
 
+  it("mês PUBLISHED com plantões já existentes continua sem motivo", async () => {
+    const first = await callerFor(managerUserId, "manager").openMonthShifts({
+      hospitalId,
+      sectorId,
+      scheduleContextId,
+      yearMonth: "2027-03",
+      mode: "custom",
+      templateNames: ["Manhã"],
+    });
+    expect(first.created).toBeGreaterThan(0);
+    await db!
+      .insert(monthlyRosters)
+      .values({
+        institutionId,
+        hospitalId,
+        yearMonth: "2027-03",
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
+    const second = await callerFor(managerUserId, "manager").openMonthShifts({
+      hospitalId,
+      sectorId,
+      scheduleContextId,
+      yearMonth: "2027-03",
+      mode: "custom",
+      templateNames: ["Tarde"],
+    });
+    expect(second.created).toBeGreaterThan(0);
+    expect(second.skipped).toBe(0);
+    const rows = await countMonth("2027-03");
+    expect(rows.some((row) => row.label === "Manhã")).toBe(true);
+    expect(rows.some((row) => row.label === "Tarde")).toBe(true);
+  });
+
+  it("mês LOCKED sem motivo falha mesmo para Gestor+", async () => {
+    await db!.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: "2027-04",
+      status: "LOCKED",
+    });
+    await expect(
+      callerFor(managerUserId, "manager").openMonthShifts({
+        hospitalId,
+        sectorId,
+        scheduleContextId,
+        yearMonth: "2027-04",
+        mode: "custom",
+        templateNames: ["Manhã"],
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringMatching(/motivo/),
+    });
+    expect(await countMonth("2027-04")).toHaveLength(0);
+  });
+
   it("sem modelos de horário explica o bloqueio", async () => {
     await expect(
       callerFor(managerUserId, "manager").openMonthShifts({

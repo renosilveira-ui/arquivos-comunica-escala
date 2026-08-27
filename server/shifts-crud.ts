@@ -188,7 +188,6 @@ const openMonthShiftsInput = z.object({
   ]),
   templateNames: z.array(z.enum(["Manhã", "Tarde", "Noite"])).max(3).optional(),
   dryRun: z.boolean().optional().default(false),
-  reason: z.string().max(500).optional(),
 });
 
 type OpenMonthShiftsInput = z.infer<typeof openMonthShiftsInput>;
@@ -1105,9 +1104,16 @@ async function replicateMonthCalendar(
 
   await db.transaction(async (tx) => {
     await lockMonthsForUpdate(tx, [{ institutionId: ctx.institutionId, hospitalId: input.hospitalId, date: targetWindow.start }]);
-    await assertMonthsEditableForUpdate(tx, { user: { id: ctx.user.id } }, [{
-      institutionId: ctx.institutionId, hospitalId: input.hospitalId, date: targetWindow.start,
-    }]);
+    await assertMonthsEditableForUpdate(
+      tx,
+      { user: { id: ctx.user.id } },
+      [{
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        date: targetWindow.start,
+      }],
+      { kind: "vacantCreate" },
+    );
     await assertManagerScopeAccessForUpdate(
       tx, actor, ctx.user.sessionVersion, input.hospitalId, input.sectorId,
       candidates.map((candidate) => candidate.startAt),
@@ -1305,9 +1311,9 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
           institutionId: ctx.institutionId,
           hospitalId: input.hospitalId,
           date: targetWindow.start,
-          reason: input.reason,
         },
       ],
+      { kind: "vacantCreate" },
     );
     await assertManagerScopeAccessForUpdate(
       tx,
@@ -1392,7 +1398,7 @@ export const shiftsRouter = router({
           shiftTemplateId: z.number().int(),
           scheduleContextId: z.number().int().positive().optional(),
           sectorId: z.number().int().optional(),
-          /** Obrigatório (≥ 5 caracteres) para Gestor+ criar em mês PUBLISHED/LOCKED. */
+          /** Só entra em LOCKED (Gestor+). Criar vago em PUBLISHED não exige motivo. */
           reason: z.string().max(500).optional(),
         })
         .merge(modalityFields),
@@ -1462,6 +1468,7 @@ export const shiftsRouter = router({
           template.hospitalId,
           startAt,
           input.reason,
+          { kind: "vacantCreate" },
         );
         const activeContext = await resolveScheduleContextForShiftCreation({
           institutionId: ctx.institutionId,
