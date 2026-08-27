@@ -6,6 +6,7 @@ import {
   dayKeyBrt,
   dayWindowBrt,
   mondayOfKey,
+  monthWindowBrt,
   weekdayOfKey,
   yearMonthBrt,
 } from "./local-time";
@@ -154,6 +155,18 @@ const replicateRangeInput = z.object({
 });
 
 type ReplicateRangeInput = z.infer<typeof replicateRangeInput>;
+
+const calendarReplicationInput = z.object({
+  hospitalId: z.number().int().positive(),
+  sectorId: z.number().int().positive().optional(),
+  sourceMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+  targetMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+  rule: z.enum(["FULL", "REMOVE_WEEKENDS", "REMOVE_NIGHTS", "REMOVE_DAYS", "CUSTOM"]),
+  includeShiftIds: z.array(z.number().int().positive()).max(500).optional(),
+  dryRun: z.boolean().optional().default(false),
+});
+
+type CalendarReplicationInput = z.infer<typeof calendarReplicationInput>;
 
 /** Instante UTC da meia-noite local (-03:00) de um dia "YYYY-MM-DD". */
 function localDayStart(date: string): Date {
@@ -784,6 +797,154 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
     );
   }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
+  return summary;
+}
+
+function localHourBrt(date: Date): number {
+  return new Date(date.getTime() - 3 * 60 * 60 * 1000).getUTCHours();
+}
+
+function isNightShiftBrt(startAt: Date): boolean {
+  const hour = localHourBrt(startAt);
+  return hour >= 18 || hour < 6;
+}
+
+function selectCalendarReplicationCandidates(
+  shifts: readonly (typeof shiftInstances.$inferSelect)[],
+  input: CalendarReplicationInput,
+) {
+  if (input.rule === "CUSTOM") {
+    const selected = new Set(input.includeShiftIds ?? []);
+    if (selected.size === 0) {
+      if (input.dryRun) return shifts;
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Selecione ao menos um turno para a cópia personalizada.",
+      });
+    }
+    const validIds = new Set(shifts.map((shift) => shift.id));
+    if ([...selected].some((id) => !validIds.has(id))) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "A seleção personalizada contém turno fora do mês de origem.",
+      });
+    }
+    return shifts.filter((shift) => selected.has(shift.id));
+  }
+  return shifts.filter((shift) => {
+    if (input.rule === "REMOVE_WEEKENDS") {
+      const weekday = weekdayOfKey(dayKeyBrt(shift.startAt));
+      return weekday !== 0 && weekday !== 6;
+    }
+    if (input.rule === "REMOVE_NIGHTS") return !isNightShiftBrt(shift.startAt);
+    if (input.rule === "REMOVE_DAYS") return isNightShiftBrt(shift.startAt);
+    return true;
+  });
+}
+
+/**
+ * Cria um calendário mensal explicitamente escolhido, sempre sem alocações.
+ * Esta rota não reutiliza o comportamento legado de replicateRange, que pode
+ * copiar alocações e tolera destino parcialmente preenchido.
+ */
+async function replicateMonthCalendar(
+  ctx: ReplicateCtx,
+  input: CalendarReplicationInput,
+) {
+  const actor = await getTenantActorFromContext(ctx as any);
+  assertCanManageInstitutionSchedule(actor);
+  await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
+  if (input.sourceMonth === input.targetMonth) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Origem e destino não podem ser o mesmo mês." });
+  }
+
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const sourceWindow = monthWindowBrt(input.sourceMonth);
+  const targetWindow = monthWindowBrt(input.targetMonth);
+  const sourceShifts = await db.select().from(shiftInstances).where(and(
+    eq(shiftInstances.institutionId, ctx.institutionId),
+    eq(shiftInstances.hospitalId, input.hospitalId),
+    ...(input.sectorId ? [eq(shiftInstances.sectorId, input.sectorId)] : []),
+    gte(shiftInstances.startAt, sourceWindow.start),
+    lt(shiftInstances.startAt, sourceWindow.end),
+  ));
+  if (!sourceShifts.length) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Nenhum turno encontrado no mês de origem." });
+  }
+  for (const shift of sourceShifts) {
+    await assertInstitutionHierarchy({
+      institutionId: shift.institutionId, hospitalId: shift.hospitalId, sectorId: shift.sectorId,
+    }, { db });
+    await assertActiveScheduleContextTopology({
+      institutionId: shift.institutionId, hospitalId: shift.hospitalId,
+      sectorId: shift.sectorId, scheduleContextId: shift.scheduleContextId, db,
+    });
+  }
+  const selected = selectCalendarReplicationCandidates(sourceShifts, input);
+  const offsetDays = Math.round(
+    (firstMondayOnOrAfter(targetWindow.start).getTime() - firstMondayOnOrAfter(sourceWindow.start).getTime()) / DAY_MS,
+  );
+  const candidates = selected.map((source) => ({
+    source, startAt: addDays(source.startAt, offsetDays), endAt: addDays(source.endAt, offsetDays),
+  })).filter((candidate) => candidate.startAt >= targetWindow.start && candidate.startAt < targetWindow.end);
+  for (const candidate of candidates) assertCanEditScheduleDate(actor, candidate.startAt);
+
+  const existingTarget = async (tx: typeof db) => tx.select({ id: shiftInstances.id }).from(shiftInstances).where(and(
+    eq(shiftInstances.institutionId, ctx.institutionId),
+    eq(shiftInstances.hospitalId, input.hospitalId),
+    ...(input.sectorId ? [eq(shiftInstances.sectorId, input.sectorId)] : []),
+    gte(shiftInstances.startAt, targetWindow.start),
+    lt(shiftInstances.startAt, targetWindow.end),
+  ));
+  const existing = await existingTarget(db);
+  if (existing.length) {
+    throw new TRPCError({ code: "CONFLICT", message: "O mês de destino já contém turnos. Nenhuma cópia foi feita." });
+  }
+  const summary = {
+    created: candidates.length,
+    sourceCount: sourceShifts.length,
+    rule: input.rule,
+    targetMonth: input.targetMonth,
+    candidates: candidates.map((candidate) => ({
+      sourceShiftId: candidate.source.id, label: candidate.source.label,
+      startAt: candidate.startAt.toISOString(), endAt: candidate.endAt.toISOString(),
+    })),
+    dryRun: input.dryRun,
+  };
+  if (input.dryRun) return summary;
+
+  await db.transaction(async (tx) => {
+    await lockMonthsForUpdate(tx, [{ institutionId: ctx.institutionId, hospitalId: input.hospitalId, date: targetWindow.start }]);
+    await assertMonthsEditableForUpdate(tx, { user: { id: ctx.user.id } }, [{
+      institutionId: ctx.institutionId, hospitalId: input.hospitalId, date: targetWindow.start,
+    }]);
+    await assertManagerScopeAccessForUpdate(
+      tx, actor, ctx.user.sessionVersion, input.hospitalId, input.sectorId,
+      candidates.map((candidate) => candidate.startAt),
+    );
+    if ((await existingTarget(tx as unknown as typeof db)).length) {
+      throw new TRPCError({ code: "CONFLICT", message: "O mês de destino foi preenchido durante a cópia. Atualize e tente novamente." });
+    }
+    for (const candidate of candidates) {
+      await tx.insert(shiftInstances).values({
+        institutionId: candidate.source.institutionId, hospitalId: candidate.source.hospitalId,
+        sectorId: candidate.source.sectorId, scheduleContextId: candidate.source.scheduleContextId,
+        label: candidate.source.label, specialty: candidate.source.specialty,
+        startAt: candidate.startAt, endAt: candidate.endAt, status: "VAGO",
+        modality: candidate.source.modality, coverageType: candidate.source.coverageType,
+        paymentModel: candidate.source.paymentModel, productivityCapBrl: candidate.source.productivityCapBrl,
+        createdBy: ctx.user.id,
+      });
+    }
+    await recordAudit({
+      actorUserId: ctx.user.id, actorRole: actor.roleInInstitution, actorName: ctx.user.name ?? undefined,
+      action: "SHIFT_CREATED", entityType: "SHIFT_INSTANCE", entityId: 0,
+      description: `Criou ${candidates.length} turnos vagos em ${input.targetMonth} a partir de ${input.sourceMonth}.`,
+      metadata: { calendarReplication: true, ...summary, sourceMonth: input.sourceMonth, sectorId: input.sectorId },
+      institutionId: ctx.institutionId, hospitalId: input.hospitalId, sectorId: input.sectorId,
+    }, { db: tx as any, strict: true });
+  }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
   return summary;
 }
 
@@ -2394,6 +2555,10 @@ export const shiftsRouter = router({
   replicateRange: protectedProcedure
     .input(replicateRangeInput)
     .mutation(async ({ ctx, input }) => replicateRange(ctx, input)),
+
+  replicateMonthCalendar: protectedProcedure
+    .input(calendarReplicationInput)
+    .mutation(async ({ ctx, input }) => replicateMonthCalendar(ctx, input)),
 
   // Compatibilidade: wrapper fino sobre replicateRange (semana).
   replicateWeek: protectedProcedure
