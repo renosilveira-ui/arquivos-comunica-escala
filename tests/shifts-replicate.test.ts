@@ -867,6 +867,50 @@ describe("shifts.replicateRange", () => {
     expect(locked.status).toBe("LOCKED");
   });
 
+  it("cria calendário mensal sem alocações e aplica filtros no relógio BRT", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    const noWeekends = await caller.replicateMonthCalendar({
+      hospitalId, sectorId, sourceMonth: "2026-09", targetMonth: "2033-01",
+      rule: "REMOVE_WEEKENDS", dryRun: true,
+    });
+    expect(noWeekends.candidates.every((candidate) =>
+      localWeekday(new Date(candidate.startAt)) !== 0 && localWeekday(new Date(candidate.startAt)) !== 6,
+    )).toBe(true);
+
+    const custom = await caller.replicateMonthCalendar({
+      hospitalId, sectorId, sourceMonth: "2026-09", targetMonth: "2033-02",
+      rule: "CUSTOM", includeShiftIds: [createdShiftIds[1]],
+    });
+    expect(custom.created).toBe(1);
+    const [copy] = await db!.select().from(shiftInstances).where(and(
+      eq(shiftInstances.institutionId, institutionId),
+      eq(shiftInstances.label, "Noite"),
+      gte(shiftInstances.startAt, at("2033-02-01", "00:00:00")),
+      lt(shiftInstances.startAt, at("2033-03-01", "00:00:00")),
+    ));
+    expect(copy.status).toBe("VAGO");
+    expect((await db!.select().from(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, copy.id)))).toHaveLength(0);
+  });
+
+  it("rejeita mês alvo com turno em outro setor sem sobrescrever", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    await db!.insert(shiftInstances).values({
+      institutionId,
+      hospitalId,
+      sectorId: reverseSectorId,
+      scheduleContextId: reverseScheduleContextId,
+      label: "Já existente em outro setor",
+      startAt: at("2033-03-01", "08:00:00"), endAt: at("2033-03-01", "14:00:00"),
+      status: "VAGO", createdBy: managerUserId,
+    });
+    await expect(caller.replicateMonthCalendar({
+      hospitalId, sectorId, sourceMonth: "2026-09", targetMonth: "2033-03", rule: "FULL",
+    })).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "O mês de destino deste hospital já contém turnos. Nenhuma cópia foi feita.",
+    });
+  });
+
   it("médico comum não pode replicar", async () => {
     const caller = callerFor(doctorUserId, "doctor");
     await expect(

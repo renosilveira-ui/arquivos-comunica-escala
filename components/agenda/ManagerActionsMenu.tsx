@@ -77,7 +77,10 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
   const [step, setStep] = useState<Step>("menu");
   const [hospitalId, setHospitalId] = useState<number | null>(null);
   const [includeAssignments, setIncludeAssignments] = useState(false);
-  const [preview, setPreview] = useState<{ created: number; skipped: number; outOfRange: number } | null>(null);
+  const [targetMonth, setTargetMonth] = useState<string | null>(null);
+  const [calendarRule, setCalendarRule] = useState<"FULL" | "REMOVE_WEEKENDS" | "REMOVE_NIGHTS" | "REMOVE_DAYS" | "CUSTOM">("FULL");
+  const [selectedShiftIds, setSelectedShiftIds] = useState<number[]>([]);
+  const [preview, setPreview] = useState<{ created: number; skipped?: number; outOfRange?: number; candidates?: { sourceShiftId: number; label: string; startAt: string }[] } | null>(null);
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
 
@@ -97,9 +100,10 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
   );
 
   const replicate = trpc.shifts.replicateRange.useMutation();
+  const replicateMonthCalendar = trpc.shifts.replicateMonthCalendar.useMutation();
   const publish = trpc.shifts.publish.useMutation();
   const lock = trpc.shifts.lock.useMutation();
-  const busy = replicate.isPending || publish.isPending || lock.isPending;
+  const busy = replicate.isPending || replicateMonthCalendar.isPending || publish.isPending || lock.isPending;
 
   const replicateInput = useMemo(() => {
     if (!hospitalId) return null;
@@ -121,12 +125,19 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
     period.kind === "week"
       ? `semana ${weekLabel(addDaysKey(period.weekStart, 7))}`
       : monthLabel(nextMonthKey(period.monthKey));
+  const calendarTargetMonth = targetMonth ?? nextMonthKey(monthKey);
+
+  useEffect(() => {
+    if (period.kind === "month") setTargetMonth(nextMonthKey(period.monthKey));
+  }, [period]);
 
   function close() {
     setOpen(false);
     setStep("menu");
     setPreview(null);
     setIncludeAssignments(false);
+    setCalendarRule("FULL");
+    setSelectedShiftIds([]);
   }
 
   function openMenu() {
@@ -138,8 +149,18 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
     if (!replicateInput) return;
     setStep("busy");
     try {
-      const r = await replicate.mutateAsync({ ...replicateInput, dryRun: true });
+      const r: any = period.kind === "month"
+        ? await replicateMonthCalendar.mutateAsync({
+            hospitalId: replicateInput.hospitalId,
+            sourceMonth: monthKey,
+            targetMonth: calendarTargetMonth,
+            rule: calendarRule,
+            includeShiftIds: calendarRule === "CUSTOM" ? selectedShiftIds : undefined,
+            dryRun: true,
+          })
+        : await replicate.mutateAsync({ ...replicateInput, dryRun: true });
       setPreview({ created: r.created, skipped: r.skipped, outOfRange: r.outOfRange });
+      if ("candidates" in r) setPreview({ created: r.created, candidates: r.candidates });
       setStep("replicate");
     } catch (err) {
       feedback.error((err as Error).message);
@@ -151,14 +172,22 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
     if (!replicateInput) return;
     setStep("busy");
     try {
-      const r = await replicate.mutateAsync({ ...replicateInput, includeAssignments, dryRun: false });
+      const r: any = period.kind === "month"
+        ? await replicateMonthCalendar.mutateAsync({
+            hospitalId: replicateInput.hospitalId,
+            sourceMonth: monthKey,
+            targetMonth: calendarTargetMonth,
+            rule: calendarRule,
+            includeShiftIds: calendarRule === "CUSTOM" ? selectedShiftIds : undefined,
+          })
+        : await replicate.mutateAsync({ ...replicateInput, includeAssignments, dryRun: false });
       await utils.shifts.listAgenda.invalidate();
       onChanged?.();
       const parts = [`${r.created} turno${r.created === 1 ? "" : "s"} criado${r.created === 1 ? "" : "s"}`];
       if (r.skipped) parts.push(`${r.skipped} já existia${r.skipped === 1 ? "" : "m"}`);
       if (includeAssignments) parts.push(`${r.assignmentsCopied} alocaç${r.assignmentsCopied === 1 ? "ão" : "ões"} copiada${r.assignmentsCopied === 1 ? "" : "s"}`);
       if (r.conflicts) parts.push(`${r.conflicts} com conflito ficaram vagos`);
-      feedback.success(`Replicado para ${targetLabel}: ${parts.join(" · ")}.`);
+      feedback.success(`Replicado para ${period.kind === "month" ? monthLabel(calendarTargetMonth) : targetLabel}: ${parts.join(" · ")}.`);
       close();
     } catch (err) {
       feedback.error((err as Error).message);
@@ -309,33 +338,45 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
             ) : step === "replicate" && preview ? (
               <View style={{ gap: theme.space[4] }}>
                 <Text style={{ ...theme.text.bodyLg, color: theme.colors.textPrimary }}>
-                  Copiar a {sourceLabel} para a {targetLabel}:
+                  Copiar a {sourceLabel} para a {period.kind === "month" ? monthLabel(calendarTargetMonth) : targetLabel}:
                 </Text>
                 <View style={{ gap: theme.space[1] }}>
                   <Text style={{ ...theme.text.body, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
                     {preview.created} turno{preview.created === 1 ? "" : "s"} novo{preview.created === 1 ? "" : "s"}
                   </Text>
-                  {preview.skipped > 0 ? (
+                  {(preview.skipped ?? 0) > 0 ? (
                     <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
                       {preview.skipped} já exist{preview.skipped === 1 ? "e" : "em"} e não ser{preview.skipped === 1 ? "á" : "ão"} duplicado{preview.skipped === 1 ? "" : "s"}
                     </Text>
                   ) : null}
-                  {preview.outOfRange > 0 ? (
+                  {(preview.outOfRange ?? 0) > 0 ? (
                     <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
                       {preview.outOfRange} cai{preview.outOfRange === 1 ? "" : "em"} fora do mês de destino e fica{preview.outOfRange === 1 ? "" : "m"} de fora
                     </Text>
                   ) : null}
                 </View>
-                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: theme.space[3] }}>
-                  <Text style={{ ...theme.text.body, color: theme.colors.textPrimary, flex: 1 }}>
-                    Copiar também as alocações (quem não tiver conflito)
-                  </Text>
-                  <Switch
-                    value={includeAssignments}
-                    onValueChange={setIncludeAssignments}
-                    trackColor={{ true: theme.colors.primary, false: theme.colors.border }}
-                  />
-                </View>
+                {period.kind === "month" && calendarRule === "CUSTOM" && preview.candidates ? (
+                  <View style={{ gap: theme.space[2] }}>
+                    <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>Selecione os turnos que entram no novo mês.</Text>
+                    <ScrollView style={{ maxHeight: theme.space[32] }}>
+                      {preview.candidates.map((candidate) => {
+                        const selected = selectedShiftIds.includes(candidate.sourceShiftId);
+                        return <Pressable key={candidate.sourceShiftId} onPress={() => setSelectedShiftIds((ids) => selected ? ids.filter((id) => id !== candidate.sourceShiftId) : [...ids, candidate.sourceShiftId])} style={{ minHeight: theme.space[10], justifyContent: "center", paddingHorizontal: theme.space[3], borderRadius: theme.radius.md, borderWidth: 1, borderColor: selected ? theme.colors.primary : theme.colors.border, backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface, marginBottom: theme.space[1] }}>
+                          <Text style={{ ...theme.text.body, color: theme.colors.textPrimary }}>{selected ? "✓ " : ""}{candidate.label} · {candidate.startAt.slice(0, 10)}</Text>
+                        </Pressable>;
+                      })}
+                    </ScrollView>
+                  </View>
+                ) : period.kind === "week" ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: theme.space[3] }}>
+                    <Text style={{ ...theme.text.body, color: theme.colors.textPrimary, flex: 1 }}>
+                      Copiar também as alocações (quem não tiver conflito)
+                    </Text>
+                    <Switch value={includeAssignments} onValueChange={setIncludeAssignments} trackColor={{ true: theme.colors.primary, false: theme.colors.border }} />
+                  </View>
+                ) : (
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>Os novos turnos serão criados vagos; nenhuma alocação será copiada.</Text>
+                )}
                 <View style={{ flexDirection: "row", gap: theme.space[3] }}>
                   <View style={{ flex: 1 }}>
                     <AppButton title="Voltar" variant="secondary" onPress={() => setStep("menu")} />
@@ -344,7 +385,7 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
                     <AppButton
                       title={preview.created === 0 ? "Nada a copiar" : "Confirmar cópia"}
                       onPress={confirmReplicate}
-                      disabled={preview.created === 0 || busy}
+                      disabled={preview.created === 0 || busy || (period.kind === "month" && calendarRule === "CUSTOM" && selectedShiftIds.length === 0)}
                     />
                   </View>
                 </View>
@@ -365,10 +406,45 @@ export function ManagerActionsMenu({ institutionId, period, onChanged, variant =
                   </Text>
                 </View>
 
+                {period.kind === "month" ? (
+                  <View style={{ gap: theme.space[2], paddingVertical: theme.space[2] }}>
+                    <Text style={{ ...theme.text.body, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
+                      Novo calendário mensal
+                    </Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={{ flexDirection: "row", gap: theme.space[2] }}>
+                        {[nextMonthKey(monthKey), nextMonthKey(nextMonthKey(monthKey)), nextMonthKey(nextMonthKey(nextMonthKey(monthKey)))].map((key) => {
+                          const selected = key === calendarTargetMonth;
+                          return (
+                            <Pressable key={key} onPress={() => setTargetMonth(key)} style={{ minHeight: theme.space[10], justifyContent: "center", paddingHorizontal: theme.space[3], borderRadius: theme.radius.full, borderWidth: 1, borderColor: selected ? theme.colors.primary : theme.colors.border, backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface }}>
+                              <Text style={{ ...theme.text.caption, fontWeight: theme.weight.semibold, color: selected ? theme.colors.primary : theme.colors.textPrimary }}>{monthLabel(key)}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </ScrollView>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={{ flexDirection: "row", gap: theme.space[2] }}>
+                        {([
+                          ["FULL", "Mês inteiro"],
+                          ["REMOVE_WEEKENDS", "Sem fins de semana"],
+                          ["REMOVE_NIGHTS", "Sem noturnos"],
+                          ["REMOVE_DAYS", "Sem diurnos"],
+                          ["CUSTOM", "Personalizado"],
+                        ] as const).map(([rule, label]) => {
+                          const selected = calendarRule === rule;
+                          return <Pressable key={rule} onPress={() => { setCalendarRule(rule); setSelectedShiftIds([]); }} style={{ minHeight: theme.space[10], justifyContent: "center", paddingHorizontal: theme.space[3], borderRadius: theme.radius.full, borderWidth: 1, borderColor: selected ? theme.colors.primary : theme.colors.border, backgroundColor: selected ? theme.colors.primarySoft : theme.colors.surface }}>
+                            <Text style={{ ...theme.text.caption, fontWeight: theme.weight.semibold, color: selected ? theme.colors.primary : theme.colors.textPrimary }}>{label}</Text>
+                          </Pressable>;
+                        })}
+                      </View>
+                    </ScrollView>
+                  </View>
+                ) : null}
                 <MenuItem
                   icon={<CopyPlus size={20} color={theme.colors.primary} />}
-                  title={period.kind === "week" ? "Replicar esta semana para a próxima" : "Replicar este mês para o próximo"}
-                  subtitle={`${sourceLabel} → ${targetLabel}`}
+                  title={period.kind === "week" ? "Replicar esta semana para a próxima" : "Pré-visualizar novo calendário"}
+                  subtitle={period.kind === "week" ? `${sourceLabel} → ${targetLabel}` : `${sourceLabel} → ${monthLabel(calendarTargetMonth)}`}
                   onPress={startReplicate}
                   disabled={!hospitalId}
                 />
