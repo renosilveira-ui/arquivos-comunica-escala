@@ -235,11 +235,11 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     const legacyBranch = block(
       writeGuard,
       "if (candidate.scheduleContextId === null)",
-      "} else {",
+      "await assertProfessionalEligibleForScheduleContext",
     );
     const structuredBranch = block(
       writeGuard,
-      "} else {",
+      "await assertProfessionalEligibleForScheduleContext",
       "let activeSchedule",
     );
     expect(legacyBranch).toContain("assertSpecialtyCompatible");

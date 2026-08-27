@@ -39,6 +39,12 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(assumable).toContain("qualificationMatches");
     expect(assumable).toContain('roleInInstitution === "GESTOR_MEDICO"');
     expect(assumable).toContain('roleInInstitution === "GESTOR_PLUS"');
+    expect(assumable).toContain("if (scoped) return true");
+    const eligible = source.slice(
+      source.indexOf("export async function assertProfessionalEligibleForScheduleContext"),
+      source.indexOf("export async function assertActiveScheduleContextTopology"),
+    );
+    expect(eligible).toContain("pendingNamedInviteCoversScale");
   });
 
   it("catálogos, contadores e profissionais alocáveis usam a mesma fronteira", () => {
@@ -48,7 +54,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
       source.match(/listAuthorizedScheduleContexts\(actor, db\)/g)?.length,
     ).toBeGreaterThanOrEqual(3);
     expect(source).toContain("pi.user_id = p.user_id");
-    expect(source).toContain("pi.role_in_institution AS roleInInstitution");
+    expect(source).toContain("COALESCE(pi.role_in_institution, 'USER') AS roleInInstitution");
     expect(source).not.toContain("pi.user_role");
     expect(source).toContain("u.approval_status = 'APPROVED'");
     expect(source).toContain("u.deleted_at IS NULL");
@@ -56,7 +62,10 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("sc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
     expect(source).toContain("schedule_context_allowed_qualifications");
     expect(source).toContain("LEFT JOIN manager_scope mgr");
-    expect(source).toContain("pa.id IS NOT NULL OR mgr.id IS NOT NULL");
+    expect(source).toContain("LEFT JOIN professional_institutions pi");
+    expect(source).toContain("LEFT JOIN schedule_invites pending_invite");
+    expect(source).toContain("pending_invite.id IS NOT NULL");
+    expect(source).toContain("OR mgr.id IS NOT NULL");
   });
 
   it("replicação rejeita fonte sem contexto ativo e topologia composta", () => {

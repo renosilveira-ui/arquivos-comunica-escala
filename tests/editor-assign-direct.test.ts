@@ -11,6 +11,7 @@ import {
   professionals,
   scheduleContextAllowedQualifications,
   scheduleContexts,
+  scheduleInvites,
   sectors,
   auditTrail,
   shiftAuditLog,
@@ -18,6 +19,11 @@ import {
   shiftInstances,
   users,
 } from "../drizzle/schema";
+import {
+  generateScheduleInviteCode,
+  hashScheduleInviteCode,
+  normalizeScheduleInviteCode,
+} from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
 
@@ -599,5 +605,122 @@ describe("editor.assignDirect", () => {
         ),
       );
     expect(auditRowsAfterRetry).toHaveLength(1);
+  });
+
+  it("aloca o GESTOR_MEDICO da escala pelo manager_scope, sem professional_access", async () => {
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    const result = await caller.assignDirect({
+      shiftInstanceId,
+      professionalId: managerProfessionalId,
+      assignmentType: "ON_DUTY",
+      reason: "Gestor no plantão",
+    });
+    expect(result.ok).toBe(true);
+
+    const assignments = await db
+      .select()
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId),
+          eq(shiftAssignmentsV2.professionalId, managerProfessionalId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    expect(assignments).toHaveLength(1);
+  });
+
+  it("aloca convidado com e-mail enviado e convite ainda não resgatado", async () => {
+    const stamp = Date.now();
+    const [inviteeUser] = await db
+      .insert(users)
+      .values({
+        name: `Assign Pending Invitee ${stamp}`,
+        email: `assign-pending-invitee-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "doctor",
+        approvalStatus: "APPROVED",
+      })
+      .$returningId();
+    const [inviteeProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: inviteeUser.id,
+        name: `Assign Pending Invitee ${stamp}`,
+        role: "Médico",
+        userRole: "USER",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
+        specialty: "Anestesiologia",
+      })
+      .$returningId();
+    await db.insert(scheduleInvites).values({
+      institutionId,
+      hospitalId,
+      sectorId,
+      codeHash: hashScheduleInviteCode(
+        normalizeScheduleInviteCode(generateScheduleInviteCode()),
+      ),
+      createdByUserId: managerUserId,
+      invitedUserId: inviteeUser.id,
+      maxRedemptions: 1,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    try {
+      const result = await caller.assignDirect({
+        shiftInstanceId,
+        professionalId: inviteeProfessional.id,
+        assignmentType: "ON_DUTY",
+        reason: "Convite pendente",
+      });
+      expect(result.ok).toBe(true);
+
+      const [membership] = await db
+        .select({ active: professionalInstitutions.active })
+        .from(professionalInstitutions)
+        .where(
+          eq(professionalInstitutions.professionalId, inviteeProfessional.id),
+        );
+      expect(membership?.active).toBe(true);
+    } finally {
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.professionalId, inviteeProfessional.id));
+      await db
+        .delete(professionalInstitutions)
+        .where(
+          eq(professionalInstitutions.professionalId, inviteeProfessional.id),
+        );
+      await db
+        .delete(scheduleInvites)
+        .where(eq(scheduleInvites.invitedUserId, inviteeUser.id));
+      await db
+        .delete(professionals)
+        .where(eq(professionals.id, inviteeProfessional.id));
+      await db.delete(users).where(eq(users.id, inviteeUser.id));
+    }
   });
 });

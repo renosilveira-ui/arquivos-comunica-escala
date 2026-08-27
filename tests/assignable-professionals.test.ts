@@ -40,6 +40,11 @@ describe("professionals.listAssignableForShift", () => {
   let hospitalWideProfessionalId: number;
   let crossSectorProfessionalId: number;
   let inviteeProfessionalId: number;
+  let pendingHouseProfessionalId: number;
+  let pendingWaitingProfessionalId: number;
+  let pendingGestorInviteeProfessionalId: number;
+  let unqualifiedGestorProfessionalId: number;
+  let revokedInviteProfessionalId: number;
   let shiftInstanceId: number;
   let scheduleContextId: number;
   let anesthesiaId: number;
@@ -150,6 +155,41 @@ describe("professionals.listAssignableForShift", () => {
     await db
       .delete(professionalInstitutions)
       .where(eq(professionalInstitutions.professionalId, inviteeProfessionalId));
+
+    const pendingHouse = await createUserProfessional(stamp, "PendingHouse");
+    pendingHouseProfessionalId = pendingHouse.professionalId;
+
+    const pendingWaiting = await createUserProfessional(stamp, "PendingWaiting");
+    pendingWaitingProfessionalId = pendingWaiting.professionalId;
+    await db
+      .delete(professionalInstitutions)
+      .where(
+        eq(
+          professionalInstitutions.professionalId,
+          pendingWaitingProfessionalId,
+        ),
+      );
+
+    const pendingGestor = await createUserProfessional(
+      stamp,
+      "PendingGestor",
+      "GESTOR_MEDICO",
+    );
+    pendingGestorInviteeProfessionalId = pendingGestor.professionalId;
+
+    const unqualifiedGestor = await createUserProfessional(
+      stamp,
+      "UnqualifiedGestor",
+      "GESTOR_MEDICO",
+    );
+    unqualifiedGestorProfessionalId = unqualifiedGestor.professionalId;
+    await db
+      .update(professionals)
+      .set({ medicalSpecialtyId: null, operationalProfileCode: null })
+      .where(eq(professionals.id, unqualifiedGestorProfessionalId));
+
+    const revokedInvitee = await createUserProfessional(stamp, "RevokedInvite");
+    revokedInviteProfessionalId = revokedInvitee.professionalId;
     const [otherSector] = await db
       .insert(sectors)
       .values({
@@ -161,13 +201,22 @@ describe("professionals.listAssignableForShift", () => {
       })
       .$returningId();
 
-    await db.insert(managerScope).values({
-      institutionId,
-      managerProfessionalId,
-      hospitalId,
-      sectorId,
-      active: true,
-    });
+    await db.insert(managerScope).values([
+      {
+        institutionId,
+        managerProfessionalId,
+        hospitalId,
+        sectorId,
+        active: true,
+      },
+      {
+        institutionId,
+        managerProfessionalId: unqualifiedGestorProfessionalId,
+        hospitalId,
+        sectorId,
+        active: true,
+      },
+    ]);
 
     await db.insert(professionalAccess).values([
       { institutionId, professionalId: availableProfessionalId, hospitalId, sectorId, canAccess: true },
@@ -224,9 +273,62 @@ describe("professionals.listAssignableForShift", () => {
         },
       });
     });
+
+    const pendingExpires = new Date(Date.now() + 86_400_000);
+    await db.insert(scheduleInvites).values([
+      {
+        institutionId,
+        hospitalId,
+        sectorId,
+        codeHash: hashScheduleInviteCode(
+          normalizeScheduleInviteCode(generateScheduleInviteCode()),
+        ),
+        createdByUserId: managerUserId,
+        invitedUserId: pendingHouse.userId,
+        maxRedemptions: 1,
+        expiresAt: pendingExpires,
+      },
+      {
+        institutionId,
+        hospitalId,
+        sectorId,
+        codeHash: hashScheduleInviteCode(
+          normalizeScheduleInviteCode(generateScheduleInviteCode()),
+        ),
+        createdByUserId: managerUserId,
+        invitedUserId: pendingWaiting.userId,
+        maxRedemptions: 1,
+        expiresAt: pendingExpires,
+      },
+      {
+        institutionId,
+        hospitalId,
+        sectorId,
+        codeHash: hashScheduleInviteCode(
+          normalizeScheduleInviteCode(generateScheduleInviteCode()),
+        ),
+        createdByUserId: managerUserId,
+        invitedUserId: pendingGestor.userId,
+        maxRedemptions: 1,
+        expiresAt: pendingExpires,
+      },
+      {
+        institutionId,
+        hospitalId,
+        sectorId,
+        codeHash: hashScheduleInviteCode(
+          normalizeScheduleInviteCode(generateScheduleInviteCode()),
+        ),
+        createdByUserId: managerUserId,
+        invitedUserId: revokedInvitee.userId,
+        maxRedemptions: 1,
+        expiresAt: pendingExpires,
+        revokedAt: new Date(),
+      },
+    ]);
   });
 
-  it("inclui GESTOR_MEDICO com scope e convite resgatado; allowlist exige acesso setorial", async () => {
+  it("inclui gestor, acesso, resgatado e convite pendente (casa e sala de espera)", async () => {
     const caller = appRouter.createCaller({
       user: {
         id: managerUserId,
@@ -246,9 +348,14 @@ describe("professionals.listAssignableForShift", () => {
     expect(ids).toContain(availableProfessionalId);
     expect(ids).toContain(managerProfessionalId);
     expect(ids).toContain(inviteeProfessionalId);
+    expect(ids).toContain(pendingHouseProfessionalId);
+    expect(ids).toContain(pendingWaitingProfessionalId);
+    expect(ids).toContain(pendingGestorInviteeProfessionalId);
+    expect(ids).toContain(unqualifiedGestorProfessionalId);
     expect(ids).not.toContain(assignedProfessionalId);
     expect(ids).not.toContain(hospitalWideProfessionalId);
     expect(ids).not.toContain(crossSectorProfessionalId);
+    expect(ids).not.toContain(revokedInviteProfessionalId);
     expect(rows.find((row: { id: number }) => row.id === availableProfessionalId)).toMatchObject({
       id: availableProfessionalId,
       name: expect.any(String),
