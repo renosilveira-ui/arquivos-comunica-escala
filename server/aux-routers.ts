@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { router, protectedProcedure, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { rowsFromExecute } from "./_core/db-results";
 import { dayWindowBrt, monthWindowBrt } from "./local-time";
 import { eq, and, gte, isNull, sql, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -193,10 +194,15 @@ export const professionalsRouter = router({
 
       await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
 
-      // Plantonista = vínculo ativo + (acesso setorial/hospitalar OU
-      // manager_scope neste setor) + qualificação da allowlist.
-      // GESTOR_MEDICO da escala também é médico: users.role=manager não
-      // o exclui. Sem professional_access ele ainda entra pelo scope.
+      // Plantonista visível = conta aprovada + profissional + (
+      //   acesso setorial OU manager_scope OU convite nominal pendente
+      // ). E-mail enviado ≠ resgate: o convite ainda não grava
+      // professional_access. Sala de espera (sem vínculo ativo) entra se
+      // o convite foi emitido para ela. GESTOR_MEDICO da escala entra
+      // pelo scope mesmo sem especialidade da allowlist; o papel USER
+      // não é exigido. Qualificação da allowlist vale para acesso e
+      // convite; o gestor da escala não precisa dela.
+      const now = new Date();
       const result = await db.execute<{
         id: number;
         name: string;
@@ -208,17 +214,17 @@ export const professionalsRouter = router({
             p.id,
             p.name,
             p.role,
-            pi.role_in_institution AS roleInInstitution
+            COALESCE(pi.role_in_institution, 'USER') AS roleInInstitution
           FROM professionals p
-          INNER JOIN professional_institutions pi
-            ON pi.professional_id = p.id
-            AND pi.user_id = p.user_id
-            AND pi.institution_id = ${ctx.institutionId}
-            AND pi.active = true
           INNER JOIN users u
             ON u.id = p.user_id
             AND u.approval_status = 'APPROVED'
             AND u.deleted_at IS NULL
+          LEFT JOIN professional_institutions pi
+            ON pi.professional_id = p.id
+            AND pi.user_id = p.user_id
+            AND pi.institution_id = ${ctx.institutionId}
+            AND pi.active = true
           LEFT JOIN professional_access pa
             ON pa.professional_id = p.id
             AND pa.institution_id = ${ctx.institutionId}
@@ -241,6 +247,14 @@ export const professionalsRouter = router({
             AND mgr.hospital_id = ${shift.hospitalId}
             AND (mgr.sector_id IS NULL OR mgr.sector_id = ${shift.sectorId})
             AND mgr.active = true
+          LEFT JOIN schedule_invites pending_invite
+            ON pending_invite.institution_id = ${ctx.institutionId}
+            AND pending_invite.hospital_id = ${shift.hospitalId}
+            AND pending_invite.sector_id = ${shift.sectorId}
+            AND pending_invite.invited_user_id = p.user_id
+            AND pending_invite.revoked_at IS NULL
+            AND pending_invite.expires_at > ${now}
+            AND pending_invite.redeemed_count < pending_invite.max_redemptions
           INNER JOIN shift_instances target_shift
             ON target_shift.id = ${input.shiftInstanceId}
             AND target_shift.institution_id = ${ctx.institutionId}
@@ -260,8 +274,18 @@ export const professionalsRouter = router({
             AND sa.shift_instance_id = ${input.shiftInstanceId}
             AND sa.is_active = true
           WHERE sa.id IS NULL
-            AND (pa.id IS NOT NULL OR mgr.id IS NOT NULL)
             AND (
+              pa.id IS NOT NULL
+              OR mgr.id IS NOT NULL
+              OR pending_invite.id IS NOT NULL
+            )
+            AND (
+              pi.id IS NOT NULL
+              OR pending_invite.id IS NOT NULL
+            )
+            AND (
+              mgr.id IS NOT NULL
+              OR
               (
                 sc.admission_policy = 'ALL_CFM_SPECIALTIES'
                 AND p.medical_specialty_id IS NOT NULL
@@ -320,17 +344,16 @@ export const professionalsRouter = router({
           ORDER BY p.name ASC
         `,
       );
-      const rows =
-        (result as any).rows ||
-        (Array.isArray(result) && Array.isArray(result[0])
-          ? result[0]
-          : result);
-      return rows.map((row: any) => ({
+      return rowsFromExecute<{
+        id: number;
+        name: string;
+        role: string;
+        roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
+      }>(result).map((row) => ({
         id: Number(row.id),
         name: String(row.name),
         role: String(row.role),
-        roleInInstitution: row.roleInInstitution as
-          "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS",
+        roleInInstitution: row.roleInInstitution,
       }));
     }),
 

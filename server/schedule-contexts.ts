@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -10,6 +10,7 @@ import {
   professionals,
   scheduleContextAllowedQualifications,
   scheduleContexts,
+  scheduleInvites,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -182,6 +183,39 @@ export function managerScopeCoversContext(
     scope.hospitalId === context.hospitalId &&
     (scope.sectorId === null || scope.sectorId === context.sectorId)
   );
+}
+
+/**
+ * Convite nominal enviado e ainda não resgatado (e-mail saiu, código
+ * válido). Não é professional_access — o resgate é que grava o setor.
+ * O gestor precisa ver e alocar essa pessoa na hora.
+ */
+export async function pendingNamedInviteCoversScale(
+  db: ContextDb,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    userId: number;
+    now?: Date;
+  },
+): Promise<boolean> {
+  const [invite] = await db
+    .select({ id: scheduleInvites.id })
+    .from(scheduleInvites)
+    .where(
+      and(
+        eq(scheduleInvites.institutionId, input.institutionId),
+        eq(scheduleInvites.hospitalId, input.hospitalId),
+        eq(scheduleInvites.sectorId, input.sectorId),
+        eq(scheduleInvites.invitedUserId, input.userId),
+        isNull(scheduleInvites.revokedAt),
+        gt(scheduleInvites.expiresAt, input.now ?? new Date()),
+        sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
+      ),
+    )
+    .limit(1);
+  return Boolean(invite);
 }
 
 export function describeScheduleContext(
@@ -1016,16 +1050,20 @@ export async function listAssumableScheduleContextIds(
       ? await loadManagerScopes(database, institutionId, professionalId)
       : [];
   return contexts
-    .filter(
-      (context) =>
+    .filter((context) => {
+      const scoped = scopes.some((scope) =>
+        managerScopeCoversContext(scope, professionalId, context),
+      );
+      // Gestor da escala entra pelo scope, mesmo sem especialidade da
+      // allowlist. USER continua exigindo qualificação + acesso setorial.
+      if (scoped) return true;
+      return (
         qualificationMatches(professional.qualification, context) &&
-        (accesses.some((access) =>
+        accesses.some((access) =>
           accessCoversContext(access, professionalId, context),
-        ) ||
-          scopes.some((scope) =>
-            managerScopeCoversContext(scope, professionalId, context),
-          )),
-    )
+        )
+      );
+    })
     .map((context) => context.id);
 }
 
@@ -1073,12 +1111,39 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
     input.professionalId,
     database,
   );
-  if (!ids.includes(input.scheduleContextId)) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Profissional sem acesso ou qualificação para esta escala.",
-    });
+  if (ids.includes(input.scheduleContextId)) {
+    return;
   }
+
+  const [context] = await selectActiveScheduleContexts(
+    database,
+    input.institutionId,
+    { id: input.scheduleContextId },
+  );
+  const [professional] = context
+    ? await database
+        .select({ userId: professionals.userId })
+        .from(professionals)
+        .where(eq(professionals.id, input.professionalId))
+        .limit(1)
+    : [];
+  if (
+    context &&
+    professional &&
+    (await pendingNamedInviteCoversScale(database, {
+      institutionId: input.institutionId,
+      hospitalId: context.hospitalId,
+      sectorId: context.sectorId,
+      userId: professional.userId,
+    }))
+  ) {
+    return;
+  }
+
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "Profissional sem acesso ou qualificação para esta escala.",
+  });
 }
 
 export async function assertActiveScheduleContextTopology(input: {

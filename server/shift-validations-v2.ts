@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   hospitals,
+  managerScope,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -17,6 +18,7 @@ import { assertInstitutionHierarchy } from "./_core/tenant";
 import {
   assertActiveScheduleContextTopology,
   assertProfessionalEligibleForScheduleContext,
+  pendingNamedInviteCoversScale,
 } from "./schedule-contexts";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -67,6 +69,62 @@ function assignmentConflict(message: string): TRPCError {
 
 function assignmentForbidden(message: string): TRPCError {
   return new TRPCError({ code: "FORBIDDEN", message });
+}
+
+async function managerScopeCoversAssignment(
+  tx: AssignmentWriteTx,
+  input: {
+    professionalId: number;
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+  },
+): Promise<boolean> {
+  const [scope] = await tx
+    .select({ id: managerScope.id })
+    .from(managerScope)
+    .where(
+      and(
+        eq(managerScope.managerProfessionalId, input.professionalId),
+        eq(managerScope.institutionId, input.institutionId),
+        eq(managerScope.hospitalId, input.hospitalId),
+        or(
+          isNull(managerScope.sectorId),
+          eq(managerScope.sectorId, input.sectorId),
+        ),
+        eq(managerScope.active, true),
+      ),
+    )
+    .limit(1);
+  return Boolean(scope);
+}
+
+async function assignmentCoveredWithoutSectorAccess(
+  tx: AssignmentWriteTx,
+  input: {
+    professionalId: number;
+    userId: number;
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+  },
+): Promise<boolean> {
+  if (
+    await managerScopeCoversAssignment(tx, {
+      professionalId: input.professionalId,
+      institutionId: input.institutionId,
+      hospitalId: input.hospitalId,
+      sectorId: input.sectorId,
+    })
+  ) {
+    return true;
+  }
+  return pendingNamedInviteCoversScale(tx, {
+    institutionId: input.institutionId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    userId: input.userId,
+  });
 }
 
 function windowsOverlap(
@@ -323,26 +381,62 @@ export async function assertAssignmentWritesAllowedForUpdate(
     const key = `${professional.id}|${professional.userId}|${candidate.institutionId}`;
     if (membershipCache.has(key)) continue;
     const [snapshot] = await tx
-      .select({ id: professionalInstitutions.id })
+      .select({
+        id: professionalInstitutions.id,
+        active: professionalInstitutions.active,
+      })
       .from(professionalInstitutions)
       .where(
         and(
           eq(professionalInstitutions.professionalId, professional.id),
           eq(professionalInstitutions.userId, professional.userId),
           eq(professionalInstitutions.institutionId, candidate.institutionId),
-          eq(professionalInstitutions.active, true),
         ),
       )
       .orderBy(professionalInstitutions.id)
       .limit(1);
-    if (!snapshot) {
+    let membershipId = snapshot?.id;
+    if (!snapshot || !snapshot.active) {
+      const invited = await pendingNamedInviteCoversScale(tx, {
+        institutionId: candidate.institutionId,
+        hospitalId: candidate.hospitalId,
+        sectorId: candidate.sectorId,
+        userId: professional.userId,
+      });
+      if (!invited) {
+        throw assignmentForbidden(
+          "Profissional sem vínculo canônico ativo nesta instituição.",
+        );
+      }
+      if (snapshot) {
+        await tx
+          .update(professionalInstitutions)
+          .set({ active: true })
+          .where(eq(professionalInstitutions.id, snapshot.id));
+        membershipId = snapshot.id;
+      } else {
+        const [created] = await tx
+          .insert(professionalInstitutions)
+          .values({
+            professionalId: professional.id,
+            userId: professional.userId,
+            institutionId: candidate.institutionId,
+            roleInInstitution: "USER",
+            isPrimary: true,
+            active: true,
+          })
+          .$returningId();
+        membershipId = created.id;
+      }
+    }
+    if (membershipId === undefined) {
       throw assignmentForbidden(
         "Profissional sem vínculo canônico ativo nesta instituição.",
       );
     }
     membershipCache.add(key);
     membershipLocks.push({
-      id: snapshot.id,
+      id: membershipId,
       key,
       professionalId: professional.id,
       userId: professional.userId,
@@ -421,9 +515,20 @@ export async function assertAssignmentWritesAllowedForUpdate(
       .orderBy(professionalAccess.id)
       .limit(1);
     if (!snapshot) {
-      throw assignmentForbidden(
-        "Profissional sem acesso ativo ao hospital/setor do plantão.",
-      );
+      const covered = await assignmentCoveredWithoutSectorAccess(tx, {
+        professionalId: professional.id,
+        userId: professional.userId,
+        institutionId: candidate.institutionId,
+        hospitalId: candidate.hospitalId,
+        sectorId: candidate.sectorId,
+      });
+      if (!covered) {
+        throw assignmentForbidden(
+          "Profissional sem acesso ativo ao hospital/setor do plantão.",
+        );
+      }
+      accessCache.add(key);
+      continue;
     }
     accessCache.add(key);
     accessLocks.push({
