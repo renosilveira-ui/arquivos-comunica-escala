@@ -8,8 +8,22 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const schema = readFileSync(
+  new URL("../drizzle/schema.ts", import.meta.url),
+  "utf8",
+);
 
 describe("migration manual de role_in_institution", () => {
+  it("o schema Drizzle declara a coluna com o nome canônico, não o do enum user_role", () => {
+    expect(schema).toContain('mysqlEnum("role_in_institution"');
+    expect(schema).toContain(
+      "roleInInstitution: roleInInstitutionEnum.notNull().default(\"USER\")",
+    );
+    expect(schema).not.toMatch(
+      /roleInInstitution:\s*userRoleEnum/,
+    );
+  });
+
   it("é aditiva, rerodável e cobre professionals.user_role", () => {
     expect(migration).toContain("role_in_institution");
     expect(migration).toContain("user_role");

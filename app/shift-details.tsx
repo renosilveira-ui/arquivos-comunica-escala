@@ -21,6 +21,7 @@ import * as Haptics from "expo-haptics";
 import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus, Trash2 } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
+import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
 
 const ICON_BOX_SIZE = theme.space[10] + theme.space[2];
@@ -325,13 +326,7 @@ export default function ShiftDetailsScreen() {
           ? "Vago"
           : "Pendente";
   const isWide = width >= theme.spacing.contentMaxWidth;
-  const timeRange = `${startDate.toLocaleTimeString("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  })}–${endDate.toLocaleTimeString("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  })}`;
+  const timeRange = formatHospitalTimeRange(startDate, endDate);
   const durationHours = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60));
 
   return (

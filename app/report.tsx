@@ -11,6 +11,7 @@ import * as Haptics from "expo-haptics";
 import { ChevronLeft, FileText, Download, Calendar } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
+import { formatHospitalTime, formatHospitalTimeRange } from "@/lib/hospital-time";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale/pt-BR";
 import { toLocalISODateString } from "@/lib/datetime-utils";
@@ -73,7 +74,7 @@ export default function ReportScreen() {
       }))
     : (apiShifts || []).map((item) => {
         const start = new Date(item.startAt);
-        const hour = start.getHours();
+        const hour = Number(formatHospitalTime(start).slice(0, 2));
         const turnLabel = hour >= 7 && hour < 13 ? "Manhã" : hour >= 13 && hour < 19 ? "Tarde" : "Noite";
         const status: UnifiedShift["status"] =
           item.status === "OCUPADO" ? "confirmada" : item.status === "PENDENTE" ? "pendente" : "cancelada";
@@ -334,15 +335,7 @@ export default function ReportScreen() {
                           </Badge>
                         </View>
                         <Text className="text-sm" style={{ color: theme.colors.textMuted }}>
-                          {startDate.toLocaleTimeString("pt-BR", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}{" "}
-                          -{" "}
-                          {endDate.toLocaleTimeString("pt-BR", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
+                          {formatHospitalTimeRange(startDate, endDate)}
                         </Text>
                       </TintedGlassCard>
                     );

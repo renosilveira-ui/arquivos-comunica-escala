@@ -270,6 +270,17 @@ export const confirmationRouter = router({
           AND p.user_id != ${current.original.userId}
           AND (
             (
+              sc.admission_policy = 'ALL_CFM_SPECIALTIES'
+              AND p.medical_specialty_id IS NOT NULL
+            )
+            OR
+            (
+              sc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
+              AND p.medical_specialty_id IS NOT NULL
+              AND p.operational_profile_code IS NULL
+            )
+            OR
+            (
               sc.medical_specialty_id IS NOT NULL
               AND ms.id IS NOT NULL
               AND p.medical_specialty_id = sc.medical_specialty_id
@@ -278,6 +289,26 @@ export const confirmationRouter = router({
             (
               sc.operational_profile_code IS NOT NULL
               AND p.operational_profile_code = sc.operational_profile_code
+            )
+            OR
+            (
+              sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+              AND EXISTS (
+                SELECT 1
+                  FROM schedule_context_allowed_qualifications aq
+                 WHERE aq.schedule_context_id = sc.id
+                   AND (
+                     (
+                       aq.medical_specialty_id IS NOT NULL
+                       AND p.medical_specialty_id = aq.medical_specialty_id
+                     )
+                     OR
+                     (
+                       aq.operational_profile_code IS NOT NULL
+                       AND p.operational_profile_code = aq.operational_profile_code
+                     )
+                   )
+              )
             )
           )
           AND NOT EXISTS (

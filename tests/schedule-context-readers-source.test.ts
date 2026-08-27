@@ -33,9 +33,13 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
       source.match(/listAuthorizedScheduleContexts\(actor, db\)/g)?.length,
     ).toBeGreaterThanOrEqual(3);
     expect(source).toContain("pi.user_id = p.user_id");
+    expect(source).toContain("pi.role_in_institution AS roleInInstitution");
+    expect(source).not.toContain("pi.user_role");
     expect(source).toContain("u.approval_status = 'APPROVED'");
     expect(source).toContain("u.deleted_at IS NULL");
     expect(source).toContain("conflict_shift.start_at < target_shift.end_at");
+    expect(source).toContain("sc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
+    expect(source).toContain("schedule_context_allowed_qualifications");
   });
 
   it("replicação rejeita fonte sem contexto ativo e topologia composta", () => {

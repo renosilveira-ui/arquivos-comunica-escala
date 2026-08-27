@@ -3,6 +3,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
 import { toLocalISODateString } from "@/lib/datetime-utils";
+import { formatHospitalTime } from "@/lib/hospital-time";
 import { useState, useCallback } from "react";
 import { Briefcase, Clock, MapPin, Building2, Calendar } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
@@ -95,8 +96,8 @@ export default function VacanciesScreen() {
     return {
       id: v.shiftInstanceId,
       date: new Date(v.startAt),
-      startTime: new Date(v.startAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-      endTime: new Date(v.endAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      startTime: formatHospitalTime(v.startAt),
+      endTime: formatHospitalTime(v.endAt),
       shift: v.label,
       sector: v.sectorName,
       hospital: v.hospitalName,
