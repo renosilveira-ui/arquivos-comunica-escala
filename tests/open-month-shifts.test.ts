@@ -133,8 +133,19 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("useActionFeedback");
     expect(button).not.toContain("Alert.alert");
     expect(button).not.toContain("includeAssignments");
+    expect(button).not.toContain("PublishedMonthReasonField");
+    expect(button).not.toContain("motivo");
+    expect(button).not.toMatch(/\breason\b/);
     expect(button).toContain("theme.colors");
     expect(button).not.toMatch(/#[0-9A-Fa-f]{3,8}/);
+  });
+
+  it("criar plantão avulso não pede nem envia motivo", () => {
+    const createShift = readFileSync("app/create-shift.tsx", "utf8");
+    expect(createShift).not.toContain("PublishedMonthReasonField");
+    expect(createShift).not.toContain("validatePublishedMonthReason");
+    expect(createShift).not.toContain("usePublishedMonthRoster");
+    expect(createShift).not.toMatch(/reason:\s/);
   });
 
   it("mantém o botão visível quando o mês já tem plantões", () => {

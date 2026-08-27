@@ -51,13 +51,6 @@ import {
   groupScheduleContexts,
   scheduleContextMutationFields,
 } from "@/lib/schedule-context-selection";
-import { PublishedMonthReasonField } from "@/components/shifts/PublishedMonthReasonField";
-import {
-  requiresPublishedMonthReason,
-  usePublishedMonthRoster,
-  validatePublishedMonthReason,
-} from "@/hooks/use-published-month-roster";
-
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
 type CoverageType = "URGENCIA_EMERGENCIA" | "ELETIVAS";
@@ -186,7 +179,6 @@ export default function CreateShiftScreen() {
   const [repeatEndDate, setRepeatEndDate] = useState("");
 
   const [notes, setNotes] = useState("");
-  const [editReason, setEditReason] = useState("");
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
   const [modality, setModality] = useState<Modality>("PLANTAO");
@@ -244,11 +236,6 @@ export default function CreateShiftScreen() {
   const selectedTemplate = availableTemplates.find(
     (template) => template.id === selectedTemplateId,
   );
-  const { data: monthRoster, hasShifts: monthHasShifts } =
-    usePublishedMonthRoster(
-      selectedScheduleContext?.hospitalId ?? selectedHospitalId,
-      selectedDate,
-    );
 
   useEffect(() => {
     if (!selectedScheduleContext) return;
@@ -289,10 +276,6 @@ export default function CreateShiftScreen() {
       selectScheduleContext(options[0].id);
     }
   }, [selectScheduleContext, selectedScheduleContext, selectedSector]);
-
-  useEffect(() => {
-    setEditReason("");
-  }, [selectedDate, selectedHospitalId, selectedScheduleContext?.hospitalId]);
 
   useEffect(() => {
     if (!availableTemplates.length) {
@@ -430,19 +413,8 @@ export default function CreateShiftScreen() {
       return;
     }
 
-    const reasonError = validatePublishedMonthReason(
-      monthRoster?.status,
-      editReason,
-      monthHasShifts,
-    );
-    if (reasonError) {
-      showFormError(reasonError);
-      return;
-    }
-
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    const trimmedReason = editReason.trim();
     createShift.mutate({
       date: selectedDate,
       shiftTemplateId: selectedTemplate.id,
@@ -454,7 +426,6 @@ export default function CreateShiftScreen() {
         paymentModel === "FIXO_PRODUTIVIDADE_TETO" && productivityCapBrl
           ? productivityCapBrl
           : null,
-      ...(trimmedReason ? { reason: trimmedReason } : {}),
     });
   };
 
@@ -974,20 +945,6 @@ export default function CreateShiftScreen() {
                 style={[styles.textInput, styles.notesInput]}
               />
             </FormSection>
-
-            {requiresPublishedMonthReason(monthRoster?.status, monthHasShifts) ? (
-              <FormSection title="Escala publicada">
-                <PublishedMonthReasonField
-                  value={editReason}
-                  onChangeText={(text) => {
-                    setFormError(null);
-                    setEditReason(text);
-                  }}
-                  rosterStatus={monthRoster?.status}
-                  hasShifts={monthHasShifts}
-                />
-              </FormSection>
-            ) : null}
 
             <TouchableOpacity
               onPress={handleCreateShift}

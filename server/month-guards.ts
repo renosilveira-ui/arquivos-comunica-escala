@@ -43,6 +43,18 @@ export type EditableMonthTarget = MonthLockTarget & {
   reason?: string;
 };
 
+/**
+ * `vacantCreate`: abrir/gerar plantões vagos (create, openMonthShifts,
+ * replicateMonthCalendar). Não é override de escala oficial — PUBLISHED
+ * segue sem Gestor+ e sem motivo, com 0 ou N plantões já existentes.
+ * LOCKED continua exigindo Gestor+ e motivo.
+ *
+ * `edit` (padrão): alocar/desalocar/mover/atualizar plantão existente.
+ * PUBLISHED vazio ainda é montagem; PUBLISHED com conteúdo e LOCKED
+ * exigem Gestor+ e motivo de auditoria.
+ */
+export type MonthEditKind = "edit" | "vacantCreate";
+
 export type OfficialRosterStatus = "PUBLISHED" | "LOCKED";
 
 type LockedMonthRow = MonthLockTarget & {
@@ -260,12 +272,15 @@ async function monthHasShiftInstances(
  * PUBLISHED sem nenhum `shift_instance` no hospital+mês não é escala
  * oficial em produção: o gestor monta o primeiro calendário como se o
  * roster ainda fosse DRAFT (sem Gestor+ e sem motivo de 5 caracteres).
- * LOCKED continua trancado mesmo vazio.
+ * Criar plantões vagos (`kind: "vacantCreate"`) também não é override —
+ * o calendário ainda está sendo preenchido, mesmo com turnos já
+ * existentes. LOCKED continua trancado mesmo vazio.
  */
 export async function assertMonthsEditableForUpdate(
   tx: MonthLockDb,
   ctx: { user: { id: number } },
   targets: readonly EditableMonthTarget[],
+  options?: { kind?: MonthEditKind },
 ): Promise<void> {
   const reasons = new Map(
     targets.map((target) => [
@@ -320,6 +335,9 @@ export async function assertMonthsEditableForUpdate(
 
   for (const roster of rosters) {
     if (roster.status === "DRAFT") continue;
+    if (roster.status === "PUBLISHED" && options?.kind === "vacantCreate") {
+      continue;
+    }
     const emptyPublished =
       roster.status === "PUBLISHED" &&
       !(await monthHasShiftInstances(
@@ -375,10 +393,14 @@ export async function assertMonthEditableForUpdate(
   hospitalId: number,
   date: Date,
   reason?: string,
+  options?: { kind?: MonthEditKind },
 ): Promise<void> {
-  await assertMonthsEditableForUpdate(tx, ctx, [
-    { institutionId, hospitalId, date, reason },
-  ]);
+  await assertMonthsEditableForUpdate(
+    tx,
+    ctx,
+    [{ institutionId, hospitalId, date, reason }],
+    options,
+  );
 }
 
 /**
