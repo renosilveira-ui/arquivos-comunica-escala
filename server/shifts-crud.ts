@@ -57,6 +57,7 @@ import {
   listAuthorizedScheduleContexts,
   resolveScheduleContextForShiftCreation,
 } from "./schedule-contexts";
+import { pickShiftTemplatesForSector } from "../lib/shift-template-options";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -159,6 +160,7 @@ type ReplicateRangeInput = z.infer<typeof replicateRangeInput>;
 const calendarReplicationInput = z.object({
   hospitalId: z.number().int().positive(),
   sectorId: z.number().int().positive().optional(),
+  scheduleContextId: z.number().int().positive().optional(),
   sourceMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
   targetMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
   rule: z.enum(["FULL", "REMOVE_WEEKENDS", "REMOVE_NIGHTS", "REMOVE_DAYS", "CUSTOM"]),
@@ -842,10 +844,158 @@ function selectCalendarReplicationCandidates(
   });
 }
 
+function dayKeysInMonth(yearMonth: string): string[] {
+  const [year, month] = yearMonth.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const days: string[] = [];
+  for (let day = 1; day <= lastDay; day++) {
+    days.push(
+      `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    );
+  }
+  return days;
+}
+
+function clockFromTemplate(value: unknown): string {
+  if (typeof value === "string") {
+    const clock = value.length === 5 ? `${value}:00` : value;
+    return clock.slice(0, 8);
+  }
+  if (value instanceof Date) {
+    return [
+      String(value.getUTCHours()).padStart(2, "0"),
+      String(value.getUTCMinutes()).padStart(2, "0"),
+      String(value.getUTCSeconds()).padStart(2, "0"),
+    ].join(":");
+  }
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: "Modelo de horário com hora inválida.",
+  });
+}
+
+type MonthCalendarWriteCandidate = {
+  sourceShiftId: number;
+  label: string;
+  startAt: Date;
+  endAt: Date;
+  institutionId: number;
+  hospitalId: number;
+  sectorId: number;
+  scheduleContextId: number | null;
+  specialty: string | null;
+  modality?: (typeof shiftInstances.$inferSelect)["modality"];
+  coverageType?: (typeof shiftInstances.$inferSelect)["coverageType"];
+  paymentModel?: (typeof shiftInstances.$inferSelect)["paymentModel"];
+  productivityCapBrl?: (typeof shiftInstances.$inferSelect)["productivityCapBrl"];
+};
+
+function applyCalendarMonthRule<T extends { startAt: Date }>(
+  candidates: readonly T[],
+  rule: CalendarReplicationInput["rule"],
+): T[] {
+  return candidates.filter((candidate) => {
+    if (rule === "REMOVE_WEEKENDS") {
+      const weekday = weekdayOfKey(dayKeyBrt(candidate.startAt));
+      return weekday !== 0 && weekday !== 6;
+    }
+    if (rule === "REMOVE_NIGHTS") return !isNightShiftBrt(candidate.startAt);
+    if (rule === "REMOVE_DAYS") return isNightShiftBrt(candidate.startAt);
+    return true;
+  });
+}
+
+async function buildTemplateMonthCandidates(
+  ctx: ReplicateCtx,
+  input: CalendarReplicationInput,
+): Promise<MonthCalendarWriteCandidate[]> {
+  if (!input.sectorId) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "Selecione um setor para criar o primeiro calendário a partir dos modelos de horário.",
+    });
+  }
+  if (input.rule === "CUSTOM") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "Sem escala anterior, escolha um modelo de mês (mês inteiro, sem fins de semana…).",
+    });
+  }
+
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const templates = await db
+    .select()
+    .from(shiftTemplates)
+    .where(
+      and(
+        eq(shiftTemplates.institutionId, ctx.institutionId),
+        eq(shiftTemplates.hospitalId, input.hospitalId),
+        eq(shiftTemplates.isActive, true),
+      ),
+    );
+  const picked = pickShiftTemplatesForSector(
+    templates,
+    input.hospitalId,
+    input.sectorId,
+  );
+  if (!picked.length) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message:
+        "Não há modelos de horário neste setor. Cadastre os horários antes de abrir o primeiro mês.",
+    });
+  }
+
+  const context = await resolveScheduleContextForShiftCreation({
+    institutionId: ctx.institutionId,
+    scheduleContextId: input.scheduleContextId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    templateSectorId: picked[0].sectorId ?? null,
+    db,
+  });
+  for (const template of picked) {
+    if (template.sectorId != null && template.sectorId !== context.sectorId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "O template informado pertence a outro setor.",
+      });
+    }
+  }
+
+  const raw: MonthCalendarWriteCandidate[] = [];
+  for (const dayKey of dayKeysInMonth(input.targetMonth)) {
+    for (const template of picked) {
+      const [startAt, endAt] = buildShiftTimestamps(
+        dayKey,
+        clockFromTemplate(template.startTime),
+        clockFromTemplate(template.endTime),
+      );
+      raw.push({
+        sourceShiftId: template.id,
+        label: template.name,
+        startAt,
+        endAt,
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: context.sectorId,
+        scheduleContextId: context.id,
+        specialty: context.qualificationName,
+      });
+    }
+  }
+  return applyCalendarMonthRule(raw, input.rule);
+}
+
 /**
  * Cria um calendário mensal explicitamente escolhido, sempre sem alocações.
- * Esta rota não reutiliza o comportamento legado de replicateRange, que pode
- * copiar alocações e tolera destino parcialmente preenchido.
+ * Sem escala no mês de origem (primeiro mês da instituição), usa os modelos
+ * de horário do setor. Esta rota não reutiliza o comportamento legado de
+ * replicateRange, que pode copiar alocações e tolera destino parcialmente
+ * preenchido.
  */
 async function replicateMonthCalendar(
   ctx: ReplicateCtx,
@@ -854,9 +1004,6 @@ async function replicateMonthCalendar(
   const actor = await getTenantActorFromContext(ctx as any);
   assertCanManageInstitutionSchedule(actor);
   await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
-  if (input.sourceMonth === input.targetMonth) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Origem e destino não podem ser o mesmo mês." });
-  }
 
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -869,25 +1016,44 @@ async function replicateMonthCalendar(
     gte(shiftInstances.startAt, sourceWindow.start),
     lt(shiftInstances.startAt, sourceWindow.end),
   ));
-  if (!sourceShifts.length) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "Nenhum turno encontrado no mês de origem." });
+  const origin = sourceShifts.length > 0 ? "previous-month" : "templates";
+  if (origin === "previous-month" && input.sourceMonth === input.targetMonth) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Origem e destino não podem ser o mesmo mês." });
   }
-  for (const shift of sourceShifts) {
-    await assertInstitutionHierarchy({
-      institutionId: shift.institutionId, hospitalId: shift.hospitalId, sectorId: shift.sectorId,
-    }, { db });
-    await assertActiveScheduleContextTopology({
-      institutionId: shift.institutionId, hospitalId: shift.hospitalId,
-      sectorId: shift.sectorId, scheduleContextId: shift.scheduleContextId, db,
-    });
+
+  let candidates: MonthCalendarWriteCandidate[];
+  if (origin === "templates") {
+    candidates = await buildTemplateMonthCandidates(ctx, input);
+  } else {
+    for (const shift of sourceShifts) {
+      await assertInstitutionHierarchy({
+        institutionId: shift.institutionId, hospitalId: shift.hospitalId, sectorId: shift.sectorId,
+      }, { db });
+      await assertActiveScheduleContextTopology({
+        institutionId: shift.institutionId, hospitalId: shift.hospitalId,
+        sectorId: shift.sectorId, scheduleContextId: shift.scheduleContextId, db,
+      });
+    }
+    const selected = selectCalendarReplicationCandidates(sourceShifts, input);
+    const offsetDays = Math.round(
+      (firstMondayOnOrAfter(targetWindow.start).getTime() - firstMondayOnOrAfter(sourceWindow.start).getTime()) / DAY_MS,
+    );
+    candidates = selected.map((source) => ({
+      sourceShiftId: source.id,
+      label: source.label,
+      startAt: addDays(source.startAt, offsetDays),
+      endAt: addDays(source.endAt, offsetDays),
+      institutionId: source.institutionId,
+      hospitalId: source.hospitalId,
+      sectorId: source.sectorId,
+      scheduleContextId: source.scheduleContextId,
+      specialty: source.specialty,
+      modality: source.modality,
+      coverageType: source.coverageType,
+      paymentModel: source.paymentModel,
+      productivityCapBrl: source.productivityCapBrl,
+    })).filter((candidate) => candidate.startAt >= targetWindow.start && candidate.startAt < targetWindow.end);
   }
-  const selected = selectCalendarReplicationCandidates(sourceShifts, input);
-  const offsetDays = Math.round(
-    (firstMondayOnOrAfter(targetWindow.start).getTime() - firstMondayOnOrAfter(sourceWindow.start).getTime()) / DAY_MS,
-  );
-  const candidates = selected.map((source) => ({
-    source, startAt: addDays(source.startAt, offsetDays), endAt: addDays(source.endAt, offsetDays),
-  })).filter((candidate) => candidate.startAt >= targetWindow.start && candidate.startAt < targetWindow.end);
   for (const candidate of candidates) assertCanEditScheduleDate(actor, candidate.startAt);
 
   const existingTarget = async (tx: typeof db) => tx.select({ id: shiftInstances.id }).from(shiftInstances).where(and(
@@ -903,10 +1069,11 @@ async function replicateMonthCalendar(
   const summary = {
     created: candidates.length,
     sourceCount: sourceShifts.length,
+    origin,
     rule: input.rule,
     targetMonth: input.targetMonth,
     candidates: candidates.map((candidate) => ({
-      sourceShiftId: candidate.source.id, label: candidate.source.label,
+      sourceShiftId: candidate.sourceShiftId, label: candidate.label,
       startAt: candidate.startAt.toISOString(), endAt: candidate.endAt.toISOString(),
     })),
     dryRun: input.dryRun,
@@ -927,19 +1094,23 @@ async function replicateMonthCalendar(
     }
     for (const candidate of candidates) {
       await tx.insert(shiftInstances).values({
-        institutionId: candidate.source.institutionId, hospitalId: candidate.source.hospitalId,
-        sectorId: candidate.source.sectorId, scheduleContextId: candidate.source.scheduleContextId,
-        label: candidate.source.label, specialty: candidate.source.specialty,
+        institutionId: candidate.institutionId, hospitalId: candidate.hospitalId,
+        sectorId: candidate.sectorId, scheduleContextId: candidate.scheduleContextId,
+        label: candidate.label, specialty: candidate.specialty,
         startAt: candidate.startAt, endAt: candidate.endAt, status: "VAGO",
-        modality: candidate.source.modality, coverageType: candidate.source.coverageType,
-        paymentModel: candidate.source.paymentModel, productivityCapBrl: candidate.source.productivityCapBrl,
+        ...(candidate.modality !== undefined ? { modality: candidate.modality } : {}),
+        ...(candidate.coverageType !== undefined ? { coverageType: candidate.coverageType } : {}),
+        ...(candidate.paymentModel !== undefined ? { paymentModel: candidate.paymentModel } : {}),
+        ...(candidate.productivityCapBrl !== undefined ? { productivityCapBrl: candidate.productivityCapBrl } : {}),
         createdBy: ctx.user.id,
       });
     }
     await recordAudit({
       actorUserId: ctx.user.id, actorRole: actor.roleInInstitution, actorName: ctx.user.name ?? undefined,
       action: "SHIFT_CREATED", entityType: "SHIFT_INSTANCE", entityId: 0,
-      description: `Criou ${candidates.length} turnos vagos em ${input.targetMonth} a partir de ${input.sourceMonth}.`,
+      description: origin === "templates"
+        ? `Criou ${candidates.length} turnos vagos em ${input.targetMonth} a partir dos modelos de horário.`
+        : `Criou ${candidates.length} turnos vagos em ${input.targetMonth} a partir de ${input.sourceMonth}.`,
       metadata: { calendarReplication: true, ...summary, sourceMonth: input.sourceMonth, sectorId: input.sectorId },
       institutionId: ctx.institutionId, hospitalId: input.hospitalId, sectorId: input.sectorId,
     }, { db: tx as any, strict: true });
@@ -2510,6 +2681,45 @@ export const shiftsRouter = router({
         publishedAt: roster?.publishedAt ?? null,
         lockedAt: roster?.lockedAt ?? null,
       };
+    }),
+
+  hasMonthShifts: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int().positive(),
+        sectorId: z.number().int().positive(),
+        yearMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      await assertInstitutionHierarchy(
+        {
+          institutionId: ctx.institutionId,
+          hospitalId: input.hospitalId,
+          sectorId: input.sectorId,
+        },
+        { db },
+      );
+      const window = monthWindowBrt(input.yearMonth);
+      const [row] = await db
+        .select({ id: shiftInstances.id })
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.institutionId, ctx.institutionId),
+            eq(shiftInstances.hospitalId, input.hospitalId),
+            eq(shiftInstances.sectorId, input.sectorId),
+            gte(shiftInstances.startAt, window.start),
+            lt(shiftInstances.startAt, window.end),
+          ),
+        )
+        .limit(1);
+      return { hasShifts: !!row };
     }),
 
   // ------------------------------------------------------------------

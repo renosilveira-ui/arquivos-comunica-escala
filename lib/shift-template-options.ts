@@ -21,6 +21,42 @@ export function formatShiftTemplateTimeRange(template: ShiftTemplateOption): str
   return `${toTimeLabel(template.startTime)} - ${toTimeLabel(template.endTime)}`;
 }
 
+function sortTemplatesByPriority(
+  templates: ShiftTemplateOption[],
+): ShiftTemplateOption[] {
+  return [...templates].sort((a, b) => {
+    const priorityDiff = (a.priority ?? 0) - (b.priority ?? 0);
+    if (priorityDiff !== 0) return priorityDiff;
+    return a.name.localeCompare(b.name, "pt-BR");
+  });
+}
+
+/**
+ * Modelos do setor, se existirem; senão, os gerais do hospital.
+ * Usado para abrir o primeiro mês sem escala anterior.
+ */
+export function pickShiftTemplatesForSector(
+  templates: ShiftTemplateOption[] | undefined,
+  hospitalId: number,
+  sectorId: number,
+): ShiftTemplateOption[] {
+  if (!templates?.length) return [];
+  const hospital = Number(hospitalId);
+  const sector = Number(sectorId);
+  const sectorTemplates = templates.filter(
+    (template) =>
+      Number(template.hospitalId) === hospital &&
+      Number(template.sectorId) === sector,
+  );
+  if (sectorTemplates.length > 0) return sortTemplatesByPriority(sectorTemplates);
+  return sortTemplatesByPriority(
+    templates.filter(
+      (template) =>
+        Number(template.hospitalId) === hospital && template.sectorId == null,
+    ),
+  );
+}
+
 export function getShiftTemplatesForSector(
   templates: ShiftTemplateOption[] | undefined,
   sectors: SectorOption[] | undefined,

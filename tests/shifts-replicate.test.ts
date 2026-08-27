@@ -19,6 +19,7 @@ import {
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
+  shiftTemplates,
   users,
 } from "../drizzle/schema";
 import {
@@ -250,6 +251,7 @@ describe("shifts.replicateRange", () => {
     await db.delete(managerScope).where(eq(managerScope.institutionId, institutionId));
     await db.delete(professionalInstitutions).where(eq(professionalInstitutions.institutionId, institutionId));
     await db.delete(professionals).where(inArray(professionals.id, [managerProfessionalId, doctorProfessionalId]));
+    await db.delete(shiftTemplates).where(eq(shiftTemplates.institutionId, institutionId));
     await db.delete(scheduleContexts).where(inArray(scheduleContexts.id, [scheduleContextId, reverseScheduleContextId]));
     await db.delete(sectors).where(inArray(sectors.id, [sectorId, reverseSectorId]));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
@@ -981,6 +983,121 @@ describe("shifts.replicateRange", () => {
     })).rejects.toMatchObject({
       code: "CONFLICT",
       message: "O mês de destino deste hospital já contém turnos. Nenhuma cópia foi feita.",
+    });
+  });
+
+  it("hasMonthShifts distingue mês vazio de mês com plantão", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    await expect(
+      caller.hasMonthShifts({ hospitalId, sectorId, yearMonth: "2026-09" }),
+    ).resolves.toEqual({ hasShifts: true });
+    await expect(
+      caller.hasMonthShifts({ hospitalId, sectorId, yearMonth: "2034-01" }),
+    ).resolves.toEqual({ hasShifts: false });
+  });
+
+  it("primeiro mês sem escala anterior cria calendário a partir dos modelos", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    await db!.insert(shiftTemplates).values([
+      {
+        institutionId,
+        hospitalId,
+        sectorId,
+        name: "Manhã",
+        startTime: "07:00:00",
+        endTime: "13:00:00",
+        isActive: true,
+        priority: 10,
+      },
+      {
+        institutionId,
+        hospitalId,
+        sectorId,
+        name: "Tarde",
+        startTime: "13:00:00",
+        endTime: "19:00:00",
+        isActive: true,
+        priority: 20,
+      },
+    ]);
+
+    const preview = await caller.replicateMonthCalendar({
+      hospitalId,
+      sectorId,
+      scheduleContextId,
+      sourceMonth: "2034-01",
+      targetMonth: "2034-02",
+      rule: "REMOVE_WEEKENDS",
+      dryRun: true,
+    });
+    expect(preview.origin).toBe("templates");
+    expect(preview.sourceCount).toBe(0);
+    expect(preview.created).toBeGreaterThan(0);
+    expect(
+      preview.candidates.every(
+        (candidate) =>
+          localWeekday(new Date(candidate.startAt)) !== 0 &&
+          localWeekday(new Date(candidate.startAt)) !== 6,
+      ),
+    ).toBe(true);
+
+    const created = await caller.replicateMonthCalendar({
+      hospitalId,
+      sectorId,
+      scheduleContextId,
+      sourceMonth: "2034-01",
+      targetMonth: "2034-02",
+      rule: "REMOVE_WEEKENDS",
+    });
+    expect(created.origin).toBe("templates");
+    expect(created.created).toBe(preview.created);
+    const rows = await db!
+      .select({ id: shiftInstances.id, status: shiftInstances.status })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, institutionId),
+          gte(shiftInstances.startAt, at("2034-02-01", "00:00:00")),
+          lt(shiftInstances.startAt, at("2034-03-01", "00:00:00")),
+        ),
+      );
+    expect(rows).toHaveLength(preview.created);
+    expect(rows.every((row) => row.status === "VAGO")).toBe(true);
+  });
+
+  it("primeiro mês sem modelos de horário explica o bloqueio", async () => {
+    await expect(
+      callerFor(managerUserId, "manager").replicateMonthCalendar({
+        hospitalId,
+        sectorId: reverseSectorId,
+        scheduleContextId: reverseScheduleContextId,
+        sourceMonth: "2034-03",
+        targetMonth: "2034-04",
+        rule: "FULL",
+        dryRun: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message:
+        "Não há modelos de horário neste setor. Cadastre os horários antes de abrir o primeiro mês.",
+    });
+  });
+
+  it("sem escala anterior não aceita cópia personalizada", async () => {
+    await expect(
+      callerFor(managerUserId, "manager").replicateMonthCalendar({
+        hospitalId,
+        sectorId,
+        scheduleContextId,
+        sourceMonth: "2034-05",
+        targetMonth: "2034-06",
+        rule: "CUSTOM",
+        includeShiftIds: [createdShiftIds[0]],
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message:
+        "Sem escala anterior, escolha um modelo de mês (mês inteiro, sem fins de semana…).",
     });
   });
 

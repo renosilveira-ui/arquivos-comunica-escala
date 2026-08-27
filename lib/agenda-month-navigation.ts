@@ -21,6 +21,55 @@ export function sourceMonthForCalendarTarget(targetMonth: string): string {
   return previousMonthKey(targetMonth);
 }
 
+/** Origem do primeiro calendário de um mês ainda sem plantões. */
+export type CalendarOpenOrigin = "previous-month" | "templates";
+
+export function calendarOpenOriginFromPreviousMonth(
+  hasPreviousMonthShifts: boolean | undefined,
+): CalendarOpenOrigin {
+  return hasPreviousMonthShifts === true ? "previous-month" : "templates";
+}
+
+export function emptyMonthCalendarDescription(
+  origin: CalendarOpenOrigin,
+): string {
+  return origin === "previous-month"
+    ? "Crie o calendário deste mês a partir da escala anterior para alocar os profissionais."
+    : "Crie o calendário deste mês a partir dos modelos de horário para começar a alocar os profissionais.";
+}
+
+export function calendarOpenBaseHint(
+  targetLabel: string,
+  sourceLabel: string,
+  origin: CalendarOpenOrigin,
+): string {
+  return origin === "previous-month"
+    ? `Destino: ${targetLabel}. Base: ${sourceLabel}.`
+    : `Destino: ${targetLabel}. Sem escala anterior — usa os modelos de horário.`;
+}
+
+export function calendarOpenPreviewTitle(
+  sourceLabel: string,
+  targetLabel: string,
+  origin: CalendarOpenOrigin,
+): string {
+  return origin === "previous-month"
+    ? `Copiar ${sourceLabel} para ${targetLabel}:`
+    : `Criar o calendário de ${targetLabel} a partir dos modelos de horário:`;
+}
+
+export function calendarOpenConfirmTitle(
+  created: number,
+  origin: CalendarOpenOrigin,
+): string {
+  if (created === 0) {
+    return origin === "previous-month" ? "Nada a copiar" : "Nada a criar";
+  }
+  return origin === "previous-month"
+    ? "Confirmar cópia"
+    : "Confirmar calendário";
+}
+
 /**
  * Sempre inclui o mês anterior, o corrente e os dois seguintes.
  * Chaves extras (mês atualmente em tela) entram sem duplicar.
