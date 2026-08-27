@@ -198,10 +198,9 @@ export const professionalsRouter = router({
       //   acesso setorial OU manager_scope OU convite nominal pendente
       // ). E-mail enviado ≠ resgate: o convite ainda não grava
       // professional_access. Sala de espera (sem vínculo ativo) entra se
-      // o convite foi emitido para ela. GESTOR_MEDICO da escala entra
-      // pelo scope mesmo sem especialidade da allowlist; o papel USER
-      // não é exigido. Qualificação da allowlist vale para acesso e
-      // convite; o gestor da escala não precisa dela.
+      // o convite foi emitido para ela. Especialidade / allowlist NÃO
+      // filtra alocação — quem tem acesso, scope ou convite aparece,
+      // inclusive GESTOR_MEDICO sem especialidade.
       const now = new Date();
       const result = await db.execute<{
         id: number;
@@ -266,9 +265,6 @@ export const professionalsRouter = router({
             AND sc.hospital_id = ${shift.hospitalId}
             AND sc.sector_id = ${shift.sectorId}
             AND sc.active = true
-          LEFT JOIN medical_specialties ms
-            ON ms.id = sc.medical_specialty_id
-            AND ms.active = true
           LEFT JOIN shift_assignments_v2 sa
             ON sa.professional_id = p.id
             AND sa.shift_instance_id = ${input.shiftInstanceId}
@@ -282,51 +278,6 @@ export const professionalsRouter = router({
             AND (
               pi.id IS NOT NULL
               OR pending_invite.id IS NOT NULL
-            )
-            AND (
-              mgr.id IS NOT NULL
-              OR
-              (
-                sc.admission_policy = 'ALL_CFM_SPECIALTIES'
-                AND p.medical_specialty_id IS NOT NULL
-              )
-              OR
-              (
-                sc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
-                AND p.medical_specialty_id IS NOT NULL
-                AND p.operational_profile_code IS NULL
-              )
-              OR
-              (
-                sc.medical_specialty_id IS NOT NULL
-                AND ms.id IS NOT NULL
-                AND p.medical_specialty_id = sc.medical_specialty_id
-              )
-              OR
-              (
-                sc.operational_profile_code IS NOT NULL
-                AND p.operational_profile_code = sc.operational_profile_code
-              )
-              OR
-              (
-                sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-                AND EXISTS (
-                  SELECT 1
-                    FROM schedule_context_allowed_qualifications aq
-                   WHERE aq.schedule_context_id = sc.id
-                     AND (
-                       (
-                         aq.medical_specialty_id IS NOT NULL
-                         AND p.medical_specialty_id = aq.medical_specialty_id
-                       )
-                       OR
-                       (
-                         aq.operational_profile_code IS NOT NULL
-                         AND p.operational_profile_code = aq.operational_profile_code
-                       )
-                     )
-                )
-              )
             )
             AND NOT EXISTS (
               SELECT 1

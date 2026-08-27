@@ -56,25 +56,13 @@ function fakeSelectDb(rowsByTable: RowsQueue) {
 function twoContextsSameSectorDb() {
   return fakeSelectDb(
     new Map([
-      // 1) lock exato do contexto B; 2) catálogo ativo do tenant.
+      // 1) lock do contexto B; 2) catálogo do contexto B (especialidade
+      // diferente do profissional — alocação ignora essa diferença).
       [
         scheduleContexts,
         [
           [{ id: 202 }],
           [
-            {
-              id: 201,
-              institutionId: 1,
-              hospitalId: 10,
-              hospitalName: "Hospital São Carlos",
-              sectorId: 20,
-              sectorName: "Sala de Recuperação",
-              medicalSpecialtyId: 100,
-              medicalSpecialtyCode: "ANESTESIOLOGIA",
-              medicalSpecialtyName: "Qualificação exibida",
-              operationalProfileCode: null,
-              active: true,
-            },
             {
               id: 202,
               institutionId: 1,
@@ -84,9 +72,9 @@ function twoContextsSameSectorDb() {
               sectorName: "Sala de Recuperação",
               medicalSpecialtyId: 200,
               medicalSpecialtyCode: "CLINICA_MEDICA",
-              // Mesmo texto proposital: a autorização não pode usá-lo.
               medicalSpecialtyName: "Qualificação exibida",
               operationalProfileCode: null,
+              admissionPolicy: "PINNED_QUALIFICATION",
               active: true,
             },
           ],
@@ -94,7 +82,7 @@ function twoContextsSameSectorDb() {
       ],
       [
         professionals,
-        [[{ medicalSpecialtyId: 100, operationalProfileCode: null }]],
+        [[{ userId: 9, medicalSpecialtyId: 100, operationalProfileCode: null }]],
       ],
       [
         professionalAccess,
@@ -135,24 +123,60 @@ function expectGuardBeforeWrite(
 }
 
 describe("elegibilidade canônica em toda escrita de alocação", () => {
-  it("nega contexto B com mesmo hospital/setor/texto do A antes da escrita", async () => {
+  it("aceita contexto B com acesso setorial mesmo com especialidade diferente", async () => {
     const db = twoContextsSameSectorDb();
     let writes = 0;
 
-    await expect(
-      (async () => {
-        await assertProfessionalEligibleForScheduleContext({
-          institutionId: 1,
-          professionalId: 55,
-          scheduleContextId: 202,
-          db: db as any,
-          lockForShare: true,
-        });
-        writes += 1;
-      })(),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await assertProfessionalEligibleForScheduleContext({
+      institutionId: 1,
+      professionalId: 55,
+      scheduleContextId: 202,
+      db: db as any,
+      lockForShare: true,
+    });
+    writes += 1;
 
-    expect(writes).toBe(0);
+    expect(writes).toBe(1);
+  });
+
+  it("nega alocação sem acesso, scope ou convite pendente", async () => {
+    const db = fakeSelectDb(
+      new Map([
+        [
+          scheduleContexts,
+          [
+            [{ id: 202 }],
+            [
+              {
+                id: 202,
+                institutionId: 1,
+                hospitalId: 10,
+                hospitalName: "Hospital São Carlos",
+                sectorId: 20,
+                sectorName: "Sala de Recuperação",
+                medicalSpecialtyId: null,
+                medicalSpecialtyCode: null,
+                medicalSpecialtyName: null,
+                operationalProfileCode: null,
+                admissionPolicy: "QUALIFICATION_ALLOWLIST",
+                active: true,
+              },
+            ],
+          ],
+        ],
+        [professionals, [[{ userId: 9 }]]],
+      ]),
+    );
+
+    await expect(
+      assertProfessionalEligibleForScheduleContext({
+        institutionId: 1,
+        professionalId: 55,
+        scheduleContextId: 202,
+        db: db as any,
+        lockForShare: true,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("aliases textuais conflitantes não anulam a qualificação estruturada", () => {

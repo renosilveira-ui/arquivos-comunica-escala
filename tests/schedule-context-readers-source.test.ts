@@ -45,6 +45,10 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
       source.indexOf("export async function assertActiveScheduleContextTopology"),
     );
     expect(eligible).toContain("pendingNamedInviteCoversScale");
+    expect(eligible).toContain("accessCoversContext");
+    expect(eligible).toContain("managerScopeCoversContext");
+    expect(eligible).not.toContain("qualificationMatches");
+    expect(eligible).not.toContain("listAssumableScheduleContextIds");
   });
 
   it("catálogos, contadores e profissionais alocáveis usam a mesma fronteira", () => {
@@ -59,8 +63,11 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("u.approval_status = 'APPROVED'");
     expect(source).toContain("u.deleted_at IS NULL");
     expect(source).toContain("conflict_shift.start_at < target_shift.end_at");
-    expect(source).toContain("sc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
-    expect(source).toContain("schedule_context_allowed_qualifications");
+    expect(source).toContain(
+      "${shift.admissionPolicy} = 'QUALIFICATION_ALLOWLIST'",
+    );
+    expect(source).not.toContain("schedule_context_allowed_qualifications");
+    expect(source).not.toContain("p.medical_specialty_id = aq.medical_specialty_id");
     expect(source).toContain("LEFT JOIN manager_scope mgr");
     expect(source).toContain("LEFT JOIN professional_institutions pi");
     expect(source).toContain("LEFT JOIN schedule_invites pending_invite");

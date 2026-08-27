@@ -4,6 +4,7 @@ import {
   hospitals,
   institutions,
   managerScope,
+  medicalSpecialties,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -45,11 +46,21 @@ describe("professionals.listAssignableForShift", () => {
   let pendingGestorInviteeProfessionalId: number;
   let unqualifiedGestorProfessionalId: number;
   let revokedInviteProfessionalId: number;
+  let clinicaMedicaProfessionalId: number;
+  let geneticaProfessionalId: number;
   let shiftInstanceId: number;
   let scheduleContextId: number;
   let anesthesiaId: number;
 
-  async function createUserProfessional(stamp: number, label: string, roleInInstitution = "USER") {
+  async function createUserProfessional(
+    stamp: number,
+    label: string,
+    roleInInstitution = "USER",
+    qualification: {
+      medicalSpecialtyId: number | null;
+      specialty: string | null;
+    } = { medicalSpecialtyId: anesthesiaId, specialty: "Anestesiologia" },
+  ) {
     const [user] = await db
       .insert(users)
       .values({
@@ -68,8 +79,8 @@ describe("professionals.listAssignableForShift", () => {
         name: `Assignable ${label} ${stamp}`,
         role: "Médico",
         userRole: roleInInstitution as "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS",
-        medicalSpecialtyId: anesthesiaId,
-        specialty: "Anestesiologia",
+        medicalSpecialtyId: qualification.medicalSpecialtyId,
+        specialty: qualification.specialty,
       })
       .$returningId();
 
@@ -120,6 +131,26 @@ describe("professionals.listAssignableForShift", () => {
       .$returningId();
     sectorId = sector.id;
     anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    const [clinicaSpecialty] = await db
+      .insert(medicalSpecialties)
+      .values({
+        code: `ASSIGNABLE_CLINICA_MEDICA_${stamp}`,
+        name: "Clínica Médica",
+        sourceVersion: "TEST",
+        active: true,
+        sortOrder: 10,
+      })
+      .$returningId();
+    const [geneticaSpecialty] = await db
+      .insert(medicalSpecialties)
+      .values({
+        code: `ASSIGNABLE_GENETICA_${stamp}`,
+        name: "Genética Médica",
+        sourceVersion: "TEST",
+        active: true,
+        sortOrder: 11,
+      })
+      .$returningId();
     scheduleContextId = await openTestScale(db, {
       institutionId,
       hospitalId,
@@ -181,12 +212,26 @@ describe("professionals.listAssignableForShift", () => {
       stamp,
       "UnqualifiedGestor",
       "GESTOR_MEDICO",
+      { medicalSpecialtyId: null, specialty: null },
     );
     unqualifiedGestorProfessionalId = unqualifiedGestor.professionalId;
-    await db
-      .update(professionals)
-      .set({ medicalSpecialtyId: null, operationalProfileCode: null })
-      .where(eq(professionals.id, unqualifiedGestorProfessionalId));
+
+    const clinicaMedica = await createUserProfessional(
+      stamp,
+      "ClinicaMedica",
+      "USER",
+      {
+        medicalSpecialtyId: clinicaSpecialty.id,
+        specialty: "Clínica Médica",
+      },
+    );
+    clinicaMedicaProfessionalId = clinicaMedica.professionalId;
+
+    const genetica = await createUserProfessional(stamp, "Genetica", "USER", {
+      medicalSpecialtyId: geneticaSpecialty.id,
+      specialty: "Genética Médica",
+    });
+    geneticaProfessionalId = genetica.professionalId;
 
     const revokedInvitee = await createUserProfessional(stamp, "RevokedInvite");
     revokedInviteProfessionalId = revokedInvitee.professionalId;
@@ -223,6 +268,8 @@ describe("professionals.listAssignableForShift", () => {
       { institutionId, professionalId: assignedProfessionalId, hospitalId, sectorId, canAccess: true },
       { institutionId, professionalId: hospitalWideProfessionalId, hospitalId, sectorId: null, canAccess: true },
       { institutionId, professionalId: crossSectorProfessionalId, hospitalId, sectorId: otherSector.id, canAccess: true },
+      { institutionId, professionalId: clinicaMedicaProfessionalId, hospitalId, sectorId, canAccess: true },
+      { institutionId, professionalId: geneticaProfessionalId, hospitalId, sectorId, canAccess: true },
     ]);
 
     const [shift] = await db
@@ -328,7 +375,7 @@ describe("professionals.listAssignableForShift", () => {
     ]);
   });
 
-  it("inclui gestor, acesso, resgatado e convite pendente (casa e sala de espera)", async () => {
+  it("inclui gestor, acesso, especialidade fora da allowlist e convite pendente", async () => {
     const caller = appRouter.createCaller({
       user: {
         id: managerUserId,
@@ -352,6 +399,8 @@ describe("professionals.listAssignableForShift", () => {
     expect(ids).toContain(pendingWaitingProfessionalId);
     expect(ids).toContain(pendingGestorInviteeProfessionalId);
     expect(ids).toContain(unqualifiedGestorProfessionalId);
+    expect(ids).toContain(clinicaMedicaProfessionalId);
+    expect(ids).toContain(geneticaProfessionalId);
     expect(ids).not.toContain(assignedProfessionalId);
     expect(ids).not.toContain(hospitalWideProfessionalId);
     expect(ids).not.toContain(crossSectorProfessionalId);

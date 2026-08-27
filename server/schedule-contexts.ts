@@ -1054,8 +1054,9 @@ export async function listAssumableScheduleContextIds(
       const scoped = scopes.some((scope) =>
         managerScopeCoversContext(scope, professionalId, context),
       );
-      // Gestor da escala entra pelo scope, mesmo sem especialidade da
-      // allowlist. USER continua exigindo qualificação + acesso setorial.
+      // listAssumable = vagas que o próprio plantonista vê. Qualificação
+      // ainda vale aqui. Alocação pelo gestor (assert + picker) não filtra
+      // especialidade — ver assertProfessionalEligibleForScheduleContext.
       if (scoped) return true;
       return (
         qualificationMatches(professional.qualification, context) &&
@@ -1106,43 +1107,80 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
       });
     }
   }
-  const ids = await listAssumableScheduleContextIds(
-    input.institutionId,
-    input.professionalId,
-    database,
-  );
-  if (ids.includes(input.scheduleContextId)) {
-    return;
-  }
-
   const [context] = await selectActiveScheduleContexts(
     database,
     input.institutionId,
     { id: input.scheduleContextId },
   );
-  const [professional] = context
-    ? await database
-        .select({ userId: professionals.userId })
-        .from(professionals)
-        .where(eq(professionals.id, input.professionalId))
-        .limit(1)
-    : [];
+  if (!context) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala inexistente, inativa ou fora do tenant ativo.",
+    });
+  }
+
+  const [professional] = await database
+    .select({ userId: professionals.userId })
+    .from(professionals)
+    .where(eq(professionals.id, input.professionalId))
+    .limit(1);
+  if (!professional) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso para esta escala.",
+    });
+  }
+
+  // Alocação não filtra por especialidade / QUALIFICATION_ALLOWLIST.
+  // Vale acesso setorial, manager_scope ou convite nominal pendente.
+  const scopes = await loadManagerScopes(
+    database,
+    input.institutionId,
+    input.professionalId,
+  );
   if (
-    context &&
-    professional &&
-    (await pendingNamedInviteCoversScale(database, {
+    scopes.some((scope) =>
+      managerScopeCoversContext(scope, input.professionalId, context),
+    )
+  ) {
+    return;
+  }
+
+  const accesses = await loadProfessionalAccesses(
+    database,
+    input.institutionId,
+    input.professionalId,
+  );
+  if (
+    accesses.some((access) => {
+      if (!accessCoversContext(access, input.professionalId, context)) {
+        return false;
+      }
+      // Escala com allowlist exige acesso setorial exato — igual ao picker.
+      // Acesso só hospitalar não aloca.
+      if (context.admissionPolicy === "QUALIFICATION_ALLOWLIST") {
+        return access.sectorId === context.sectorId;
+      }
+      return true;
+    })
+  ) {
+    return;
+  }
+
+  if (
+    await pendingNamedInviteCoversScale(database, {
       institutionId: input.institutionId,
       hospitalId: context.hospitalId,
       sectorId: context.sectorId,
       userId: professional.userId,
-    }))
+    })
   ) {
     return;
   }
 
   throw new TRPCError({
     code: "FORBIDDEN",
-    message: "Profissional sem acesso ou qualificação para esta escala.",
+    message: "Profissional sem acesso para esta escala.",
   });
 }
 
