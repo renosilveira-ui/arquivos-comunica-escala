@@ -32,6 +32,11 @@ import {
   canLoadEditShift,
   resolveEditShiftPermissionState,
 } from "@/lib/permission-screen-state";
+import { PublishedMonthReasonField } from "@/components/shifts/PublishedMonthReasonField";
+import {
+  usePublishedMonthRoster,
+  validatePublishedMonthReason,
+} from "@/hooks/use-published-month-roster";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -98,6 +103,7 @@ export default function EditShiftScreen() {
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
   const [notes, setNotes] = useState("");
+  const [editReason, setEditReason] = useState("");
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
   const [modality, setModality] = useState<Modality>("PLANTAO");
@@ -122,6 +128,10 @@ export default function EditShiftScreen() {
     { id: shiftId },
     { enabled: canLoadEditShift(permissionState, !!shiftId) },
   );
+  const { data: monthRoster } = usePublishedMonthRoster(
+    shiftData?.hospitalId,
+    startDate || undefined,
+  );
   const utils = trpc.useUtils();
 
   // Mutation para atualizar escala
@@ -136,6 +146,10 @@ export default function EditShiftScreen() {
       uiAlert("Erro", error.message || "Erro ao atualizar escala");
     },
   });
+
+  useEffect(() => {
+    setEditReason("");
+  }, [shiftId, startDate, shiftData?.hospitalId]);
 
   // Carregar dados da escala no formulário
   useEffect(() => {
@@ -295,7 +309,18 @@ export default function EditShiftScreen() {
       return;
     }
 
+    const reasonError = validatePublishedMonthReason(
+      monthRoster?.status,
+      editReason,
+    );
+    if (reasonError) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      uiAlert("Atenção", reasonError);
+      return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const trimmedReason = editReason.trim();
     updateShift.mutate({
       id: shiftId,
       startAt: startDateTime.toISOString(),
@@ -307,6 +332,7 @@ export default function EditShiftScreen() {
         paymentModel === "FIXO_PRODUTIVIDADE_TETO" && productivityCapBrl
           ? productivityCapBrl
           : null,
+      ...(trimmedReason ? { reason: trimmedReason } : {}),
     });
   };
 
@@ -950,6 +976,27 @@ export default function EditShiftScreen() {
               }}
             />
           </TintedGlassCard>
+
+          {monthRoster?.status === "PUBLISHED" ||
+          monthRoster?.status === "LOCKED" ? (
+            <TintedGlassCard variant="light">
+              <Text
+                style={{
+                  fontSize: 18,
+                  fontWeight: "600",
+                  color: theme.colors.textPrimary,
+                  marginBottom: 16,
+                }}
+              >
+                Escala publicada
+              </Text>
+              <PublishedMonthReasonField
+                value={editReason}
+                onChangeText={setEditReason}
+                rosterStatus={monthRoster.status}
+              />
+            </TintedGlassCard>
+          ) : null}
 
           {/* Botões de Ação */}
           <View style={{ flexDirection: "row", gap: 12 }}>
