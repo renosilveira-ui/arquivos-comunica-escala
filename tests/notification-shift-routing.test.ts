@@ -98,4 +98,53 @@ describe("roteamento de push para o plantão exato", () => {
     expect(setActiveInstitutionId).not.toHaveBeenCalled();
     expect(navigateToShiftDetails).not.toHaveBeenCalled();
   });
+
+  it("troca o tenant e abre Trocas quando a oferta de plantão chega", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 22, revision: 3 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "swap_offer",
+          institutionId: 11,
+          shiftInstanceId: 404,
+          swapRequestId: 7,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => {
+            calls.push("allowed");
+            return [11, 22];
+          },
+          setActiveInstitutionId: async (institutionId) => {
+            calls.push(`set:${institutionId}`);
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          navigateToTrocas: () => {
+            calls.push(`trocas:tenant:${activeTenant.institutionId}`);
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual([
+      "allowed",
+      "set:11",
+      "invalidate",
+      "trocas:tenant:11",
+    ]);
+  });
 });

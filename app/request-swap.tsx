@@ -101,7 +101,10 @@ export default function RequestSwapScreen() {
   const feedback = useActionFeedback();
   const offerMutation = trpc.swaps.offer.useMutation({
     onSuccess: async () => {
-      await utils.swaps.list.invalidate();
+      await Promise.all([
+        utils.swaps.list.invalidate(),
+        utils.swaps.listAvailable.invalidate(),
+      ]);
       feedback.success(
         type === "SWAP" ? "Troca oferecida. Você será avisado da resposta." : "Repasse oferecido. Você será avisado da resposta.",
       );

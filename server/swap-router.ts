@@ -40,7 +40,9 @@ import {
   assertActiveScheduleContextTopology,
   assertProfessionalEligibleForScheduleContext,
   listAssumableScheduleContextIds,
+  listAuthorizedScheduleContexts,
 } from "./schedule-contexts";
+import { enqueueSwapOfferSignals } from "./swap-offer-signal";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -1889,6 +1891,12 @@ export const swapRouter = router({
             message: "Oferta criada sem snapshot transacional de retorno",
           });
         }
+        await enqueueSwapOfferSignals({
+          db: tx,
+          swap: created,
+          offererName: locked.source.professional.name,
+          shiftLabel: locked.source.shift.label,
+        });
         return created;
       });
     }),
@@ -2641,16 +2649,24 @@ export const swapRouter = router({
         actor.professionalId,
         db,
       );
+      const managedContextIds = isInstitutionManager(actor)
+        ? (await listAuthorizedScheduleContexts(actor, db))
+            .filter((context) => context.canManage)
+            .map((context) => context.id)
+        : [];
+      const visibleContextIds = [
+        ...new Set([...assumableContextIds, ...managedContextIds]),
+      ];
       if (
         input.scheduleContextId !== undefined &&
-        !assumableContextIds.includes(input.scheduleContextId)
+        !visibleContextIds.includes(input.scheduleContextId)
       ) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Escala fora do acesso ou qualificação do profissional.",
         });
       }
-      if (assumableContextIds.length === 0) return [];
+      if (visibleContextIds.length === 0) return [];
 
       const result = await db.execute(sql`
         SELECT
@@ -2793,75 +2809,115 @@ export const swapRouter = router({
               AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
           )
           AND fsi.schedule_context_id IN (${sql.join(
-            assumableContextIds.map((id) => sql`${id}`),
+            visibleContextIds.map((id) => sql`${id}`),
             sql`, `,
           )})
           AND (
-            (
-              fsc.admission_policy = 'ALL_CFM_SPECIALTIES'
-              AND ap.medical_specialty_id IS NOT NULL
-              AND fp.medical_specialty_id IS NOT NULL
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_mgr
+              WHERE actor_mgr.manager_professional_id = ap.id
+                AND actor_mgr.institution_id = fsi.institution_id
+                AND actor_mgr.hospital_id = fsi.hospital_id
+                AND (actor_mgr.sector_id IS NULL OR actor_mgr.sector_id = fsi.sector_id)
+                AND actor_mgr.active = 1
             )
             OR
             (
-              fsc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
-              AND ap.medical_specialty_id IS NOT NULL
-              AND fp.medical_specialty_id IS NOT NULL
-              AND ap.operational_profile_code IS NULL
-              AND fp.operational_profile_code IS NULL
-            )
-            OR
-            (
-              fsc.medical_specialty_id IS NOT NULL
-              AND fms.id IS NOT NULL
-              AND ap.medical_specialty_id = fsc.medical_specialty_id
-              AND fp.medical_specialty_id = fsc.medical_specialty_id
-            )
-            OR
-            (
-              fsc.operational_profile_code IS NOT NULL
-              AND ap.operational_profile_code = fsc.operational_profile_code
-              AND fp.operational_profile_code = fsc.operational_profile_code
-            )
-            OR
-            (
-              fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-              AND EXISTS (
-                SELECT 1
-                  FROM schedule_context_allowed_qualifications aq
-                 WHERE aq.schedule_context_id = fsc.id
-                   AND (
-                     (
-                       aq.medical_specialty_id IS NOT NULL
-                       AND ap.medical_specialty_id = aq.medical_specialty_id
-                       AND fp.medical_specialty_id = aq.medical_specialty_id
+              (
+                fsc.admission_policy = 'ALL_CFM_SPECIALTIES'
+                AND ap.medical_specialty_id IS NOT NULL
+              )
+              OR
+              (
+                fsc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
+                AND ap.medical_specialty_id IS NOT NULL
+                AND ap.operational_profile_code IS NULL
+              )
+              OR
+              (
+                fsc.medical_specialty_id IS NOT NULL
+                AND fms.id IS NOT NULL
+                AND ap.medical_specialty_id = fsc.medical_specialty_id
+              )
+              OR
+              (
+                fsc.operational_profile_code IS NOT NULL
+                AND ap.operational_profile_code = fsc.operational_profile_code
+              )
+              OR
+              (
+                fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                AND EXISTS (
+                  SELECT 1
+                    FROM schedule_context_allowed_qualifications aq
+                   WHERE aq.schedule_context_id = fsc.id
+                     AND (
+                       (
+                         aq.medical_specialty_id IS NOT NULL
+                         AND ap.medical_specialty_id = aq.medical_specialty_id
+                       )
+                       OR
+                       (
+                         aq.operational_profile_code IS NOT NULL
+                         AND ap.operational_profile_code = aq.operational_profile_code
+                       )
                      )
-                     OR
-                     (
-                       aq.operational_profile_code IS NOT NULL
-                       AND ap.operational_profile_code = aq.operational_profile_code
-                       AND fp.operational_profile_code = aq.operational_profile_code
-                     )
-                   )
+                )
               )
             )
           )
-          AND EXISTS (
-            SELECT 1
-            FROM professional_access actor_source_access
-            WHERE actor_source_access.institution_id = fsi.institution_id
-              AND actor_source_access.professional_id = ap.id
-              AND actor_source_access.hospital_id = fsi.hospital_id
-              AND actor_source_access.can_access = 1
-              AND (actor_source_access.sector_id IS NULL OR actor_source_access.sector_id = fsi.sector_id)
+          AND (
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_source_scope
+              WHERE actor_source_scope.manager_professional_id = ap.id
+                AND actor_source_scope.institution_id = fsi.institution_id
+                AND actor_source_scope.hospital_id = fsi.hospital_id
+                AND (actor_source_scope.sector_id IS NULL OR actor_source_scope.sector_id = fsi.sector_id)
+                AND actor_source_scope.active = 1
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM professional_access actor_source_access
+              WHERE actor_source_access.institution_id = fsi.institution_id
+                AND actor_source_access.professional_id = ap.id
+                AND actor_source_access.hospital_id = fsi.hospital_id
+                AND actor_source_access.can_access = 1
+                AND (actor_source_access.sector_id IS NULL OR actor_source_access.sector_id = fsi.sector_id)
+            )
           )
           AND (
-            NULLIF(TRIM(fsi.specialty), '') IS NULL
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_specialty_scope
+              WHERE actor_specialty_scope.manager_professional_id = ap.id
+                AND actor_specialty_scope.institution_id = fsi.institution_id
+                AND actor_specialty_scope.hospital_id = fsi.hospital_id
+                AND (actor_specialty_scope.sector_id IS NULL OR actor_specialty_scope.sector_id = fsi.sector_id)
+                AND actor_specialty_scope.active = 1
+            )
+            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
             OR NULLIF(TRIM(fp.specialty), '') IS NULL
             OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(fp.specialty))
           )
           AND (
-            NULLIF(TRIM(fsi.specialty), '') IS NULL
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_peer_specialty_scope
+              WHERE actor_peer_specialty_scope.manager_professional_id = ap.id
+                AND actor_peer_specialty_scope.institution_id = fsi.institution_id
+                AND actor_peer_specialty_scope.hospital_id = fsi.hospital_id
+                AND (actor_peer_specialty_scope.sector_id IS NULL OR actor_peer_specialty_scope.sector_id = fsi.sector_id)
+                AND actor_peer_specialty_scope.active = 1
+            )
+            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
             OR NULLIF(TRIM(ap.specialty), '') IS NULL
             OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(ap.specialty))
           )
@@ -2912,14 +2968,26 @@ export const swapRouter = router({
                   AND target_duplicate.is_active = 1
                   AND target_duplicate.id != tsa.id
               )
-              AND EXISTS (
-                SELECT 1
-                FROM professional_access actor_target_access
-                WHERE actor_target_access.institution_id = tsi.institution_id
-                  AND actor_target_access.professional_id = ap.id
-                  AND actor_target_access.hospital_id = tsi.hospital_id
-                  AND actor_target_access.can_access = 1
-                  AND (actor_target_access.sector_id IS NULL OR actor_target_access.sector_id = tsi.sector_id)
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_target_scope
+                  WHERE actor_target_scope.manager_professional_id = ap.id
+                    AND actor_target_scope.institution_id = tsi.institution_id
+                    AND actor_target_scope.hospital_id = tsi.hospital_id
+                    AND (actor_target_scope.sector_id IS NULL OR actor_target_scope.sector_id = tsi.sector_id)
+                    AND actor_target_scope.active = 1
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM professional_access actor_target_access
+                  WHERE actor_target_access.institution_id = tsi.institution_id
+                    AND actor_target_access.professional_id = ap.id
+                    AND actor_target_access.hospital_id = tsi.hospital_id
+                    AND actor_target_access.can_access = 1
+                    AND (actor_target_access.sector_id IS NULL OR actor_target_access.sector_id = tsi.sector_id)
+                )
               )
               AND EXISTS (
                 SELECT 1

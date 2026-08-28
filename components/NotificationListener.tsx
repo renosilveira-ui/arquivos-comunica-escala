@@ -71,6 +71,7 @@ export type NotificationRoutingDependencies = Readonly<{
   invalidateQueries: () => Promise<void>;
   navigateToConfirmation: (confirmationToken: string) => void;
   navigateToAgenda: () => void;
+  navigateToTrocas?: () => void;
   navigateToShiftDetails?: (shiftInstanceId: number) => void;
   openComunica: (
     institutionId: number,
@@ -304,6 +305,26 @@ export async function routeNotificationData(
       return result.ok;
     }
 
+    case "swap_offer": {
+      const alignedSnapshot = await alignNotificationTenant(
+        data,
+        dependencies,
+        isCurrent,
+      );
+      if (
+        !alignedSnapshot ||
+        !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)
+      ) {
+        return false;
+      }
+      if (dependencies.navigateToTrocas) {
+        dependencies.navigateToTrocas();
+      } else {
+        dependencies.navigateToAgenda();
+      }
+      return true;
+    }
+
     case "duty_auto_confirmed":
     case "manager_confirmation_escalation":
     case "replacement_accepted":
@@ -431,6 +452,7 @@ export function NotificationListener() {
         });
       },
       navigateToAgenda: () => router.push("/(tabs)/agenda" as any),
+      navigateToTrocas: () => router.push("/(tabs)/trocas" as any),
       navigateToShiftDetails: (shiftInstanceId) =>
         router.push({
           pathname: "/shift-details" as any,

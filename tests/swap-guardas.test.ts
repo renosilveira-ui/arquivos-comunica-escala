@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import { getDb } from "../server/db";
-import { hospitals, institutions, monthlyRosters, professionals, sectors, shiftAssignmentsV2, shiftInstances, swapRequests } from "../drizzle/schema";
+import { hospitals, institutions, monthlyRosters, notifications, professionals, sectors, shiftAssignmentsV2, shiftInstances, swapRequests } from "../drizzle/schema";
 import { swapRouter } from "../server/swap-router";
 import { yearMonthBrt } from "../server/local-time";
 
@@ -46,6 +46,7 @@ describe("swaps: guardas de alocação ativa, oferta única e tipo preservado", 
       .from(shiftInstances)
       .where(and(eq(shiftInstances.institutionId, institutionId), like(shiftInstances.label, `${PREFIX}%`)));
     for (const s of old) {
+      await db.delete(notifications).where(eq(notifications.shiftInstanceId, s.id));
       await db.delete(swapRequests).where(eq(swapRequests.fromShiftInstanceId, s.id));
       await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, s.id));
       await db.delete(shiftInstances).where(eq(shiftInstances.id, s.id));
