@@ -47,6 +47,7 @@ describe("sinal de oferta de plantão", () => {
   let offerer: Identity;
   let peer: Identity;
   let gestor: Identity;
+  let plus: Identity;
   const userIds: number[] = [];
   const professionalIds: number[] = [];
   const stamp = Date.now();
@@ -61,7 +62,7 @@ describe("sinal de oferta de plantão", () => {
   async function createIdentity(
     label: string,
     input: {
-      roleInInstitution: "USER" | "GESTOR_MEDICO";
+      roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
       medicalSpecialtyId: number | null;
       specialty: string | null;
       withAccess?: boolean;
@@ -257,6 +258,12 @@ describe("sinal de oferta de plantão", () => {
       sectorId,
       active: true,
     });
+    plus = await createIdentity("plus", {
+      roleInInstitution: "GESTOR_PLUS",
+      medicalSpecialtyId: null,
+      specialty: null,
+      withAccess: false,
+    });
   });
 
   beforeEach(async () => {
@@ -317,6 +324,7 @@ describe("sinal de oferta de plantão", () => {
       source.indexOf("async function requireCanonicalShiftOccupant"),
     );
     expect(receive).toContain("findManagerScopeId");
+    expect(receive).toContain("GESTOR_PLUS");
     expect(receive).toContain("assertProfessionalQualifiedForShift");
   });
 
@@ -412,6 +420,21 @@ describe("sinal de oferta de plantão", () => {
     expect(rejected?.status).toBe("REJECTED_BY_PEER");
   });
 
+  it("GESTOR_PLUS sem professional_access nem manager_scope aceita a cessão visível", async () => {
+    const shift = await createOccupiedShift(offerer, 7, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+
+    const available = await callerFor(plus).listAvailable({});
+    expect(available.map((row) => Number(row.id))).toContain(Number(created.id));
+    await expect(
+      callerFor(plus).accept({ swapRequestId: Number(created.id) }),
+    ).resolves.toEqual({ ok: true });
+  });
+
   it("plantonista sem professional_access não aceita a cessão", async () => {
     const outsider = await createIdentity("outsider", {
       roleInInstitution: "USER",
@@ -475,12 +498,15 @@ describe("sinal de oferta de plantão", () => {
       .where(eq(notifications.institutionId, institutionId));
 
     const userIdsSignaled = rows.map((row) => row.userId).sort((a, b) => a - b);
-    expect(userIdsSignaled).toEqual([peer.userId, gestor.userId].sort((a, b) => a - b));
+    expect(userIdsSignaled).toEqual(
+      [peer.userId, gestor.userId, plus.userId].sort((a, b) => a - b),
+    );
     expect(rows.every((row) => row.title === "Oferta de plantão")).toBe(true);
     expect(rows.map((row) => row.dedupKey)).toEqual(
       expect.arrayContaining([
         `swap-offer:${created.id}:${peer.userId}`,
         `swap-offer:${created.id}:${gestor.userId}`,
+        `swap-offer:${created.id}:${plus.userId}`,
       ]),
     );
     expect(rows.some((row) => row.userId === offerer.userId)).toBe(false);

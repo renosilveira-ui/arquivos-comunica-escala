@@ -119,6 +119,21 @@ async function assignmentCoveredWithoutSectorAccess(
   ) {
     return true;
   }
+  const [membership] = await tx
+    .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.professionalId, input.professionalId),
+        eq(professionalInstitutions.userId, input.userId),
+        eq(professionalInstitutions.institutionId, input.institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .limit(1);
+  if (membership?.roleInInstitution === "GESTOR_PLUS") {
+    return true;
+  }
   return pendingNamedInviteCoversScale(tx, {
     institutionId: input.institutionId,
     hospitalId: input.hospitalId,

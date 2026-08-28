@@ -675,18 +675,21 @@ async function requireProfessionalCanReceiveShift(
     lockForUpdate: input.lockForUpdate,
   };
   const accessId = await findProfessionalAccessId(db, accessInput);
-  const scopeId = await findManagerScopeId(db, accessInput);
-  if (accessId === null && scopeId === null) {
+  const canManageAsGestorPlus = professional.roleInInstitution === "GESTOR_PLUS";
+  const scopeId = canManageAsGestorPlus
+    ? null
+    : await findManagerScopeId(db, accessInput);
+  if (accessId === null && scopeId === null && !canManageAsGestorPlus) {
     throw topologyDenied(
       professional.roleInInstitution === "GESTOR_MEDICO"
         ? "Gestor sem jurisdição para o hospital/setor do plantão"
         : "Profissional sem acesso ativo ao hospital/setor do plantão",
     );
   }
-  // Gestor com manager_scope já entra na lista e na alocação sem
-  // professional_access. Aceitar/recusar usa a mesma regra; especialidade
-  // não filtra gestão. GESTOR_PLUS sem scope continua no caminho de ACL.
-  if (scopeId !== null) {
+  // listAvailable já mostra a oferta a GESTOR_PLUS e a GESTOR_MEDICO com
+  // manager_scope, sem professional_access. Aceitar/recusar usa a mesma
+  // regra; especialidade não filtra gestão.
+  if (scopeId !== null || canManageAsGestorPlus) {
     if (input.shift.scheduleContextId !== null) {
       await assertActiveScheduleContextTopology({
         institutionId: input.shift.institutionId,
