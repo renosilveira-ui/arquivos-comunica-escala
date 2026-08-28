@@ -967,7 +967,7 @@ describe("shifts.replicateRange", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("rejeita mês alvo com turno em outro setor sem sobrescrever", async () => {
+  it("permite replicar mês alvo quando outro setor já tem turnos", async () => {
     const caller = callerFor(managerUserId, "manager");
     await db!.insert(shiftInstances).values({
       institutionId,
@@ -978,11 +978,38 @@ describe("shifts.replicateRange", () => {
       startAt: at("2033-03-01", "08:00:00"), endAt: at("2033-03-01", "14:00:00"),
       status: "VAGO", createdBy: managerUserId,
     });
-    await expect(caller.replicateMonthCalendar({
+    const result = await caller.replicateMonthCalendar({
       hospitalId, sectorId, sourceMonth: "2026-09", targetMonth: "2033-03", rule: "FULL",
+    });
+    expect(result.created).toBeGreaterThan(0);
+    const sectorShifts = await db!.select({ id: shiftInstances.id }).from(shiftInstances).where(
+      and(
+        eq(shiftInstances.institutionId, institutionId),
+        eq(shiftInstances.hospitalId, hospitalId),
+        eq(shiftInstances.sectorId, sectorId),
+        gte(shiftInstances.startAt, at("2033-03-01", "00:00:00")),
+        lt(shiftInstances.startAt, at("2033-04-01", "00:00:00")),
+      ),
+    );
+    expect(sectorShifts.length).toBeGreaterThan(0);
+  });
+
+  it("rejeita mês alvo com turno no mesmo setor", async () => {
+    const caller = callerFor(managerUserId, "manager");
+    await db!.insert(shiftInstances).values({
+      institutionId,
+      hospitalId,
+      sectorId,
+      scheduleContextId,
+      label: "Já existente no mesmo setor",
+      startAt: at("2033-07-01", "08:00:00"), endAt: at("2033-07-01", "14:00:00"),
+      status: "VAGO", createdBy: managerUserId,
+    });
+    await expect(caller.replicateMonthCalendar({
+      hospitalId, sectorId, sourceMonth: "2026-09", targetMonth: "2033-07", rule: "FULL",
     })).rejects.toMatchObject({
       code: "CONFLICT",
-      message: "O mês de destino deste hospital já contém turnos. Nenhuma cópia foi feita.",
+      message: "O mês de destino deste setor já contém turnos. Nenhuma cópia foi feita.",
     });
   });
 
