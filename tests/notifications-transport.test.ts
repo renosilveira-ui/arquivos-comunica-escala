@@ -293,6 +293,10 @@ describe("transporte tipado de push Expo", () => {
     });
     expect(result).not.toHaveProperty("success");
     expect(result.message).toContain("receipts pendentes");
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(sent.channelId).toBe("escalas-default");
+    expect(sent.sound).toBe("default");
+    expect(sent.priority).toBe("high");
   });
 
   it("HTTP 200 com ticket error é falha terminal e remove DeviceNotRegistered", async () => {
