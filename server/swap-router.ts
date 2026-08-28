@@ -14,6 +14,7 @@ import {
   professionals,
   professionalInstitutions,
   professionalAccess,
+  managerScope,
   users,
   institutions,
   monthlyRosters,
@@ -371,7 +372,7 @@ async function assertPublishedSwapMonthsForUpdate(
   }
 }
 
-async function requireProfessionalAccess(
+async function findProfessionalAccessId(
   db: any,
   input: {
     institutionId: number;
@@ -380,7 +381,7 @@ async function requireProfessionalAccess(
     sectorId: number;
     lockForUpdate?: boolean;
   },
-): Promise<number> {
+): Promise<number | null> {
   const query = db
     .select({ id: professionalAccess.id })
     .from(professionalAccess)
@@ -399,12 +400,57 @@ async function requireProfessionalAccess(
     .orderBy(professionalAccess.id)
     .limit(1);
   const rows = input.lockForUpdate ? await query.for("update") : await query;
-  if (!rows[0]) {
+  return rows[0]?.id ?? null;
+}
+
+async function findManagerScopeId(
+  db: any,
+  input: {
+    institutionId: number;
+    professionalId: number;
+    hospitalId: number;
+    sectorId: number;
+    lockForUpdate?: boolean;
+  },
+): Promise<number | null> {
+  const query = db
+    .select({ id: managerScope.id })
+    .from(managerScope)
+    .where(
+      and(
+        eq(managerScope.institutionId, input.institutionId),
+        eq(managerScope.managerProfessionalId, input.professionalId),
+        eq(managerScope.hospitalId, input.hospitalId),
+        or(
+          isNull(managerScope.sectorId),
+          eq(managerScope.sectorId, input.sectorId),
+        ),
+        eq(managerScope.active, true),
+      ),
+    )
+    .orderBy(managerScope.id)
+    .limit(1);
+  const rows = input.lockForUpdate ? await query.for("update") : await query;
+  return rows[0]?.id ?? null;
+}
+
+async function requireProfessionalAccess(
+  db: any,
+  input: {
+    institutionId: number;
+    professionalId: number;
+    hospitalId: number;
+    sectorId: number;
+    lockForUpdate?: boolean;
+  },
+): Promise<number> {
+  const accessId = await findProfessionalAccessId(db, input);
+  if (accessId === null) {
     throw topologyDenied(
       "Profissional sem acesso ativo ao hospital/setor do plantão",
     );
   }
-  return rows[0].id;
+  return accessId;
 }
 
 async function requireCanonicalShift(
@@ -621,13 +667,37 @@ async function requireProfessionalCanReceiveShift(
   },
 ): Promise<CanonicalProfessional> {
   const professional = await requireCanonicalProfessional(db, input);
-  await requireProfessionalAccess(db, {
+  const accessInput = {
     institutionId: input.institutionId,
     professionalId: input.professionalId,
     hospitalId: input.shift.hospitalId,
     sectorId: input.shift.sectorId,
     lockForUpdate: input.lockForUpdate,
-  });
+  };
+  const accessId = await findProfessionalAccessId(db, accessInput);
+  const scopeId = await findManagerScopeId(db, accessInput);
+  if (accessId === null && scopeId === null) {
+    throw topologyDenied(
+      professional.roleInInstitution === "GESTOR_MEDICO"
+        ? "Gestor sem jurisdição para o hospital/setor do plantão"
+        : "Profissional sem acesso ativo ao hospital/setor do plantão",
+    );
+  }
+  // Gestor com manager_scope já entra na lista e na alocação sem
+  // professional_access. Aceitar/recusar usa a mesma regra; especialidade
+  // não filtra gestão. GESTOR_PLUS sem scope continua no caminho de ACL.
+  if (scopeId !== null) {
+    if (input.shift.scheduleContextId !== null) {
+      await assertActiveScheduleContextTopology({
+        institutionId: input.shift.institutionId,
+        hospitalId: input.shift.hospitalId,
+        sectorId: input.shift.sectorId,
+        scheduleContextId: input.shift.scheduleContextId,
+        db,
+      });
+    }
+    return professional;
+  }
   await assertProfessionalQualifiedForShift(
     db,
     input.shift,

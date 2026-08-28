@@ -68,7 +68,8 @@ describe("sinal de oferta de plantão", () => {
     },
   ): Promise<Identity> {
     const name = `offer-signal-${stamp}-${label}`;
-    const role = input.roleInInstitution === "GESTOR_MEDICO" ? "manager" : "doctor";
+    const role =
+      input.roleInInstitution === "USER" ? "doctor" : "manager";
     const [user] = await db
       .insert(users)
       .values({
@@ -311,6 +312,12 @@ describe("sinal de oferta de plantão", () => {
     expect(listAvailable).not.toContain(
       "AND fp.medical_specialty_id = aq.medical_specialty_id",
     );
+    const receive = source.slice(
+      source.indexOf("async function requireProfessionalCanReceiveShift"),
+      source.indexOf("async function requireCanonicalShiftOccupant"),
+    );
+    expect(receive).toContain("findManagerScopeId");
+    expect(receive).toContain("assertProfessionalQualifiedForShift");
   });
 
   it("mostra a cessão ao colega com outra especialidade da allowlist", async () => {
@@ -335,6 +342,118 @@ describe("sinal de oferta de plantão", () => {
 
     const available = await callerFor(gestor).listAvailable({});
     expect(available.map((row) => Number(row.id))).toContain(Number(created.id));
+  });
+
+  it("GESTOR_MEDICO sem professional_access aceita e o dono efetua a cessão", async () => {
+    const shift = await createOccupiedShift(offerer, 5, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+
+    await expect(
+      callerFor(gestor).accept({ swapRequestId: Number(created.id) }),
+    ).resolves.toEqual({ ok: true });
+
+    const [accepted] = await db
+      .select({
+        status: swapRequests.status,
+        toProfessionalId: swapRequests.toProfessionalId,
+        toUserId: swapRequests.toUserId,
+      })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, Number(created.id)))
+      .limit(1);
+    expect(accepted?.status).toBe("ACCEPTED");
+    expect(accepted?.toProfessionalId).toBe(gestor.professionalId);
+    expect(accepted?.toUserId).toBe(gestor.userId);
+
+    await expect(
+      callerFor(offerer).approveByOwner({ swapRequestId: Number(created.id) }),
+    ).resolves.toEqual({ ok: true });
+
+    const assignments = await db
+      .select({
+        professionalId: shiftAssignmentsV2.professionalId,
+        isActive: shiftAssignmentsV2.isActive,
+      })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, shift.shiftId));
+    expect(
+      assignments.some(
+        (row) => row.professionalId === gestor.professionalId && row.isActive,
+      ),
+    ).toBe(true);
+    expect(
+      assignments.some(
+        (row) => row.professionalId === offerer.professionalId && row.isActive,
+      ),
+    ).toBe(false);
+  });
+
+  it("GESTOR_MEDICO sem professional_access recusa a cessão visível", async () => {
+    const shift = await createOccupiedShift(offerer, 6, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+
+    await expect(
+      callerFor(gestor).reject({ swapRequestId: Number(created.id) }),
+    ).resolves.toEqual({ ok: true });
+
+    const [rejected] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, Number(created.id)))
+      .limit(1);
+    expect(rejected?.status).toBe("REJECTED_BY_PEER");
+  });
+
+  it("plantonista sem professional_access não aceita a cessão", async () => {
+    const outsider = await createIdentity("outsider", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: clinicaId,
+      specialty: "Clínica Médica",
+      withAccess: false,
+    });
+    const shift = await createOccupiedShift(offerer, 8, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+
+    await expect(
+      callerFor(outsider).accept({ swapRequestId: Number(created.id) }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
+  });
+
+  it("GESTOR_MEDICO sem manager_scope nem professional_access não aceita", async () => {
+    const unscope = await createIdentity("unscope", {
+      roleInInstitution: "GESTOR_MEDICO",
+      medicalSpecialtyId: null,
+      specialty: null,
+      withAccess: false,
+    });
+    const shift = await createOccupiedShift(offerer, 9, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+
+    await expect(
+      callerFor(unscope).accept({ swapRequestId: Number(created.id) }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Gestor sem jurisdição para o hospital/setor do plantão",
+    });
   });
 
   it("grava sinal para o destinatário direcionado e para o gestor da escala", async () => {
