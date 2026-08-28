@@ -45,6 +45,11 @@ import {
   type ScheduleContextAccessOption,
 } from "@/components/ScheduleContextAccessPicker";
 import { formatDateTimeBR } from "@/lib/datetime";
+import { ManagerScopePicker } from "@/components/ManagerScopePicker";
+import {
+  managerScopeRequiredError,
+  type ManagerScopeDraft,
+} from "@/lib/manager-scope-admin";
 import {
   INSTITUTION_ROLE_LABELS,
   type InstitutionRole,
@@ -74,6 +79,7 @@ interface AdminUser {
     medicalSpecialtyCode?: string | null;
     operationalProfileCode?: string | null;
     scheduleContextIds: number[];
+    managerScopes?: ManagerScopeDraft[];
   } | null;
 }
 
@@ -176,11 +182,15 @@ function qualificationFromApi(input: {
 function CreateUserModal({
   visible,
   scheduleContexts,
+  hospitals,
+  sectors,
   onClose,
   onCreated,
 }: {
   visible: boolean;
   scheduleContexts: ScheduleContextAccessOption[];
+  hospitals: { id: number; name: string }[];
+  sectors: { id: number; name: string; hospitalId: number }[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -194,6 +204,7 @@ function CreateUserModal({
   const [qualification, setQualification] =
     useState<ProfessionalQualificationSelection | null>(null);
   const [scheduleContextIds, setScheduleContextIds] = useState<number[]>([]);
+  const [managerScopes, setManagerScopes] = useState<ManagerScopeDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -205,6 +216,7 @@ function CreateUserModal({
     setRoleInInstitution("USER");
     setQualification(null);
     setScheduleContextIds([]);
+    setManagerScopes([]);
     setError("");
   };
 
@@ -225,6 +237,14 @@ function CreateUserModal({
       setError("Selecione ao menos uma escala e setor");
       return;
     }
+    if (
+      roleInInstitution === "GESTOR_MEDICO" &&
+      managerScopes.length === 0 &&
+      hospitals.length !== 1
+    ) {
+      setError(managerScopeRequiredError());
+      return;
+    }
     setLoading(true);
     setError("");
     const res = await adminFetch<{ user?: unknown; error?: string }>(
@@ -241,6 +261,9 @@ function CreateUserModal({
             professionalRole === "doctor" ? qualification : null,
           ),
           ...(professionalRole === "doctor" ? { scheduleContextIds } : {}),
+          ...(roleInInstitution === "GESTOR_MEDICO"
+            ? { managerScopes }
+            : {}),
         }),
       },
     );
@@ -509,6 +532,18 @@ function CreateUserModal({
             ))}
           </View>
 
+          {roleInInstitution === "GESTOR_MEDICO" ? (
+            <View style={{ marginBottom: 20 }}>
+              <ManagerScopePicker
+                hospitals={hospitals}
+                sectors={sectors}
+                value={managerScopes}
+                onChange={setManagerScopes}
+                required
+              />
+            </View>
+          ) : null}
+
           {error ? (
             <Text
               style={{
@@ -560,12 +595,16 @@ function EditUserModal({
   visible,
   user: editUser,
   scheduleContexts,
+  hospitals,
+  sectors,
   onClose,
   onUpdated,
 }: {
   visible: boolean;
   user: AdminUser | null;
   scheduleContexts: ScheduleContextAccessOption[];
+  hospitals: { id: number; name: string }[];
+  sectors: { id: number; name: string; hospitalId: number }[];
   onClose: () => void;
   onUpdated: () => void;
 }) {
@@ -576,6 +615,7 @@ function EditUserModal({
   const [qualification, setQualification] =
     useState<ProfessionalQualificationSelection | null>(null);
   const [scheduleContextIds, setScheduleContextIds] = useState<number[]>([]);
+  const [managerScopes, setManagerScopes] = useState<ManagerScopeDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   // Senha temporária (frente A3): mostrada UMA vez após "Redefinir senha".
@@ -598,6 +638,7 @@ function EditUserModal({
           }),
         );
         setScheduleContextIds(editUser.professional?.scheduleContextIds ?? []);
+        setManagerScopes(editUser.professional?.managerScopes ?? []);
         setError("");
         setTempPassword(null);
         setCopied(false);
@@ -664,6 +705,14 @@ function EditUserModal({
       setError("Selecione ao menos uma escala e setor");
       return;
     }
+    if (
+      roleInInstitution === "GESTOR_MEDICO" &&
+      managerScopes.length === 0 &&
+      hospitals.length !== 1
+    ) {
+      setError(managerScopeRequiredError());
+      return;
+    }
     setLoading(true);
     setError("");
     const res = await adminFetch<{ user?: unknown; error?: string }>(
@@ -676,6 +725,10 @@ function EditUserModal({
           roleInInstitution,
           ...qualificationPayload(isDoctor ? qualification : null),
           ...(isDoctor ? { scheduleContextIds } : {}),
+          ...(roleInInstitution === "GESTOR_MEDICO" ||
+          roleInInstitution === "USER"
+            ? { managerScopes }
+            : {}),
         }),
       },
     );
@@ -864,6 +917,18 @@ function EditUserModal({
             ))}
           </View>
 
+          {roleInInstitution === "GESTOR_MEDICO" ? (
+            <View style={{ marginBottom: 20 }}>
+              <ManagerScopePicker
+                hospitals={hospitals}
+                sectors={sectors}
+                value={managerScopes}
+                onChange={setManagerScopes}
+                required
+              />
+            </View>
+          ) : null}
+
           {error ? (
             <Text
               style={{
@@ -1040,6 +1105,12 @@ export default function AdminScreen() {
   const [scheduleContexts, setScheduleContexts] = useState<
     ScheduleContextAccessOption[]
   >([]);
+  const [hospitals, setHospitals] = useState<{ id: number; name: string }[]>(
+    [],
+  );
+  const [sectors, setSectors] = useState<
+    { id: number; name: string; hospitalId: number }[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1083,9 +1154,13 @@ export default function AdminScreen() {
     try {
       const res = await adminFetch<{
         contexts: ScheduleContextAccessOption[];
+        hospitals?: { id: number; name: string }[];
+        sectors?: { id: number; name: string; hospitalId: number }[];
       }>("/api/admin/schedule-contexts");
       if (res.ok && res.data?.contexts) {
         setScheduleContexts(res.data.contexts);
+        setHospitals(res.data.hospitals ?? []);
+        setSectors(res.data.sectors ?? []);
       }
     } catch (err) {
       console.error("[AdminScreen] fetchScheduleContexts error:", err);
@@ -1806,6 +1881,8 @@ export default function AdminScreen() {
       <CreateUserModal
         visible={showCreate}
         scheduleContexts={scheduleContexts}
+        hospitals={hospitals}
+        sectors={sectors}
         onClose={() => setShowCreate(false)}
         onCreated={fetchUsers}
       />
@@ -1813,6 +1890,8 @@ export default function AdminScreen() {
         visible={!!editTarget}
         user={editTarget}
         scheduleContexts={scheduleContexts}
+        hospitals={hospitals}
+        sectors={sectors}
         onClose={() => setEditTarget(null)}
         onUpdated={fetchUsers}
       />
