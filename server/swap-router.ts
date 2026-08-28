@@ -1715,11 +1715,32 @@ async function applySwapAssignmentTransfer(
   return approvedVersion;
 }
 
+function leftoverHealReviewer(
+  topology: SwapTransferTopology,
+): SwapTransferReviewer {
+  return {
+    professional: topology.recipient,
+    auditRole: topology.recipient.roleInInstitution,
+  };
+}
+
+function isExpectedLeftoverHealDenial(error: unknown): boolean {
+  return (
+    error instanceof TRPCError &&
+    (error.code === "CONFLICT" ||
+      error.code === "BAD_REQUEST" ||
+      error.code === "FORBIDDEN" ||
+      error.code === "NOT_FOUND")
+  );
+}
+
 /**
  * Efetua um swap/cessão/transfer residual em ACCEPTED.
  * O fluxo canônico novo completa no `accept` (PENDING → APPROVED).
  * Este caminho existe só para candidaturas antigas que ficaram
- * aguardando o dono.
+ * aguardando o dono: listagem e novo aceite completam sozinhos
+ * (mesma escrita endurecida do TAKE). `approveByOwner` legado
+ * ainda pode chamar com `requireOwner`.
  */
 async function effectuateApprovedSwap(
   db: any,
@@ -1728,6 +1749,10 @@ async function effectuateApprovedSwap(
   expectedSessionVersion: number | undefined,
   note: string | undefined,
   description: string,
+  options: {
+    approvalPath?: "TAKE" | "OWNER";
+    requireOwner?: boolean;
+  } = {},
 ): Promise<void> {
   if (swap.expiresAt && swap.expiresAt.getTime() < Date.now()) {
     throw new TRPCError({
@@ -1816,12 +1841,23 @@ async function effectuateApprovedSwap(
       topology.toTuple?.shift ?? null,
       "Topologia do plantão mudou durante a efetivação",
     );
-    const reviewer = await requireCurrentSwapOwner(
-      tx,
-      actor,
-      currentSwap,
-      expectedSessionVersion,
-    );
+    const reviewer = options.requireOwner
+      ? await requireCurrentSwapOwner(
+          tx,
+          actor,
+          currentSwap,
+          expectedSessionVersion,
+        )
+      : leftoverHealReviewer(topology);
+    if (!options.requireOwner && actor.professionalId) {
+      await requireCanonicalProfessional(tx, {
+        institutionId: currentSwap.institutionId,
+        professionalId: actor.professionalId,
+        userId: actor.userId,
+        lockForUpdate: true,
+        expectedSessionVersion,
+      });
+    }
     await assertAssignmentWritesAllowedForUpdate(
       tx,
       assignmentWriteCandidatesForSwap(
@@ -1844,9 +1880,82 @@ async function effectuateApprovedSwap(
       reviewer,
       note,
       description,
-      approvalPath: "OWNER",
+      approvalPath: options.approvalPath ?? "OWNER",
     });
   }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
+}
+
+/**
+ * Completa ACCEPTED residual com a mesma escrita do TAKE.
+ * Quem pode ver a solicitação (dono, candidato ou gestor da escala)
+ * dispara a efetivação; o dono não precisa aprovar.
+ */
+async function healLeftoverAcceptedSwap(
+  db: any,
+  swap: SwapRow,
+  actor: TenantActor,
+  expectedSessionVersion: number | undefined,
+): Promise<void> {
+  if (swap.status === "APPROVED") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Esta solicitação já foi efetivada ou cancelada.",
+    });
+  }
+  if (swap.status !== "ACCEPTED") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Esta solicitação já foi efetivada ou cancelada.",
+    });
+  }
+  const acceptAudit = auditNames(swap.type, "ACCEPTED");
+  await effectuateApprovedSwap(
+    db,
+    swap,
+    actor,
+    expectedSessionVersion,
+    undefined,
+    `${acceptAudit.label} residual efetivada automaticamente`,
+    { approvalPath: "TAKE", requireOwner: false },
+  );
+}
+
+async function healReadableAcceptedLeftovers(
+  db: any,
+  actor: TenantActor,
+  swaps: SwapRow[],
+  expectedSessionVersion: number | undefined,
+): Promise<Set<number>> {
+  const healedIds = new Set<number>();
+  for (const swap of swaps) {
+    if (swap.status !== "ACCEPTED") continue;
+    try {
+      await healLeftoverAcceptedSwap(
+        db,
+        swap,
+        actor,
+        expectedSessionVersion,
+      );
+      healedIds.add(swap.id);
+    } catch (error) {
+      if (!isExpectedLeftoverHealDenial(error)) throw error;
+      const [current] = await db
+        .select({
+          id: swapRequests.id,
+          status: swapRequests.status,
+        })
+        .from(swapRequests)
+        .where(
+          and(
+            eq(swapRequests.id, swap.id),
+            eq(swapRequests.institutionId, swap.institutionId),
+          ),
+        )
+        .limit(1);
+      if (current?.status === "APPROVED") healedIds.add(swap.id);
+    }
+  }
+  return healedIds;
 }
 
 // ─── router ─────────────────────────────────────────────────────────────────
@@ -2138,6 +2247,23 @@ export const swapRouter = router({
           code: "NOT_FOUND",
           message: "Solicitação não encontrada",
         });
+
+      if (swap.status === "APPROVED") {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Esta solicitação já foi efetivada ou cancelada.",
+        });
+      }
+      if (swap.status === "ACCEPTED") {
+        await assertActorCanReadSwap(actor, swap);
+        await healLeftoverAcceptedSwap(
+          db,
+          swap,
+          actor,
+          expectedSessionVersion,
+        );
+        return { ok: true };
+      }
 
       const preflight = await requirePendingSwapForRecipient(
         db,
@@ -2450,6 +2576,7 @@ export const swapRouter = router({
         expectedSessionVersion,
         input.note,
         `${ownerAudit.label} #${swap.id} aprovada pelo dono do plantão`,
+        { approvalPath: "OWNER", requireOwner: true },
       );
 
       return { ok: true };
@@ -2558,7 +2685,8 @@ export const swapRouter = router({
   //   "OFFERER"  — apenas as solicitações onde sou o ofertante (A).
   //   "RECEIVER" — onde sou o aceitante (B).
   //   "ANY"      — comportamento legado: qualquer envolvimento (default).
-  // awaitingMyApproval fica só para ACCEPTED residual (fluxo antigo).
+  // awaitingMyApproval só sobrevive se o residual ACCEPTED não puder
+  // ser efetivado automaticamente ao listar.
   list: protectedProcedure
     .input(
       z.object({
@@ -2578,6 +2706,7 @@ export const swapRouter = router({
         });
 
       const userId = ctx.user!.id;
+      const expectedSessionVersion = ctx.user!.sessionVersion;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
       if (!actor.professionalId)
@@ -2663,18 +2792,23 @@ export const swapRouter = router({
               ),
             )
         : [];
-      const readableIds = new Set(
-        (await filterReadableSwaps(db, actor, candidateSwaps)).map(
-          (swap) => swap.id,
-        ),
+      const readableSwaps = await filterReadableSwaps(db, actor, candidateSwaps);
+      const readableIds = new Set(readableSwaps.map((swap) => swap.id));
+      const healedIds = await healReadableAcceptedLeftovers(
+        db,
+        actor,
+        readableSwaps,
+        expectedSessionVersion,
       );
 
       return data
         .filter((r: any) => readableIds.has(Number(r.id)))
-        .map((r: any) => ({
+        .map((r: any) => {
+          const status = healedIds.has(Number(r.id)) ? "APPROVED" : r.status;
+          return {
           id: r.id,
           type: r.type,
-          status: r.status,
+          status,
           reason: r.reason,
           reviewNote: r.reviewNote,
           expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
@@ -2711,13 +2845,13 @@ export const swapRouter = router({
               }
             : null,
           reviewerName: r.reviewerName ?? null,
-          // True quando o usuário logado é o ofertante e a candidatura
-          // está aguardando aprovação dele (approveByOwner). A tela
-          // "Minhas ofertas" usa esse flag pra filtrar/destacar o que
-          // exige ação imediata sem precisar comparar fromUserId no client.
+          // Residual ACCEPTED some ao carregar a lista (heal automático).
+          // Sem botão de aprovação: o flag fica só se a efetivação
+          // residual não puder completar (expirada, conflito, etc.).
           awaitingMyApproval:
-            r.status === "ACCEPTED" && r.fromUserId === userId,
-        }));
+            status === "ACCEPTED" && r.fromUserId === userId,
+          };
+        });
     }),
 
   // ── getById ───────────────────────────────────────────────────────────────

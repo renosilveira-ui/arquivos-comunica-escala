@@ -177,6 +177,31 @@ describe("take em um passo: quem assume leva o plantão", () => {
     return { shiftId: shift.id, assignmentId: assignment.id };
   }
 
+  async function insertLeftoverAccepted(
+    candidate: Identity,
+    dayOffset: number,
+  ): Promise<{ swapId: number; shiftId: number }> {
+    const shift = await createOccupiedShift(offerer, dayOffset, "Clínica Médica");
+    const [swap] = await db
+      .insert(swapRequests)
+      .values({
+        type: "CESSAO",
+        status: "ACCEPTED",
+        fromProfessionalId: offerer.professionalId,
+        fromUserId: offerer.userId,
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+        toProfessionalId: candidate.professionalId,
+        toUserId: candidate.userId,
+        institutionId,
+        hospitalId,
+        sectorId,
+        expiresAt: at(dayOffset + 2, 8),
+      })
+      .$returningId();
+    return { swapId: swap.id, shiftId: shift.shiftId };
+  }
+
   async function expectTransferred(
     swapId: number,
     shiftId: number,
@@ -412,7 +437,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
       callerFor(peerTwo).accept({ swapRequestId: Number(created.id) }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
-      message: "Esta oferta já foi respondida por outra pessoa.",
+      message: "Esta solicitação já foi efetivada ou cancelada.",
     });
     await expectTransferred(Number(created.id), shift.shiftId, peer);
   });
@@ -457,5 +482,50 @@ describe("take em um passo: quem assume leva o plantão", () => {
         }),
       ]),
     );
+  });
+
+  it("ACCEPTED residual com GESTOR sem ACL completa ao dono listar Minhas ofertas", async () => {
+    const leftover = await insertLeftoverAccepted(gestor, 6);
+    const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
+    const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
+    expect(row?.status).toBe("APPROVED");
+    expect(row?.awaitingMyApproval).toBe(false);
+    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+  });
+
+  it("ACCEPTED residual com GESTOR sem ACL completa ao candidato listar", async () => {
+    const leftover = await insertLeftoverAccepted(gestor, 7);
+    const receiverRows = await callerFor(gestor).list({ role: "RECEIVER" });
+    const row = receiverRows.find((item) => Number(item.id) === leftover.swapId);
+    expect(row?.status).toBe("APPROVED");
+    expect(row?.awaitingMyApproval).toBe(false);
+    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+  });
+
+  it("accept de novo em ACCEPTED residual com GESTOR sem ACL completa sem 500", async () => {
+    const leftover = await insertLeftoverAccepted(gestor, 8);
+    await expect(
+      callerFor(gestor).accept({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ ok: true });
+    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+  });
+
+  it("list de já APPROVED é no-op e accept devolve CONFLICT em português", async () => {
+    const leftover = await insertLeftoverAccepted(gestor, 9);
+    await callerFor(offerer).list({ role: "OFFERER" });
+    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+
+    const again = await callerFor(offerer).list({ role: "OFFERER" });
+    expect(again.find((item) => Number(item.id) === leftover.swapId)?.status).toBe(
+      "APPROVED",
+    );
+
+    await expect(
+      callerFor(gestor).accept({ swapRequestId: leftover.swapId }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "Esta solicitação já foi efetivada ou cancelada.",
+    });
+    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
   });
 });

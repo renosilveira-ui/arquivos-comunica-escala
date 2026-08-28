@@ -18,7 +18,7 @@ import { formatHospitalTimeRange } from "@/lib/hospital-time";
  * Fluxo do usuário:
  *   - Acessa via Perfil → "Suas candidaturas".
  *   - "Histórico recente": APPROVED (assumiu o plantão), EXPIRED, etc.
- *     ACCEPTED residual do fluxo antigo aparece aqui, sem pedir aprovação.
+ *     ACCEPTED residual do fluxo antigo é efetivado ao listar.
  */
 
 type SwapType = "SWAP" | "TRANSFER" | "CESSAO";
