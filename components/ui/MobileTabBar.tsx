@@ -8,9 +8,10 @@ import { type BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { VoiceCommandButton } from "@/components/VoiceCommandButton";
+import { isHiddenByNavigator, MOBILE_TAB_NAMES } from "@/lib/mobile-tab-bar";
 import { theme } from "@/lib/theme";
 
-const MOBILE_TAB_NAMES = new Set(["agenda", "trocas", "vacancies", "profile"]);
+const MOBILE_TAB_NAME_SET = new Set<string>(MOBILE_TAB_NAMES);
 
 function tabLabel(
   options: BottomTabBarProps["descriptors"][string]["options"],
@@ -21,22 +22,6 @@ function tabLabel(
   return fallback;
 }
 
-function isHiddenByNavigator(
-  options: BottomTabBarProps["descriptors"][string]["options"],
-): boolean {
-  if ((options as { href?: unknown }).href === null) return true;
-  const itemStyle = options.tabBarItemStyle;
-  if (
-    itemStyle &&
-    typeof itemStyle === "object" &&
-    "display" in itemStyle &&
-    itemStyle.display === "none"
-  ) {
-    return true;
-  }
-  return false;
-}
-
 export function MobileTabBar({
   state,
   descriptors,
@@ -44,7 +29,7 @@ export function MobileTabBar({
 }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const visible = state.routes.filter((route) => {
-    if (!MOBILE_TAB_NAMES.has(route.name)) return false;
+    if (!MOBILE_TAB_NAME_SET.has(route.name)) return false;
     return !isHiddenByNavigator(descriptors[route.key].options);
   });
   const showVoice = Platform.OS !== "web";

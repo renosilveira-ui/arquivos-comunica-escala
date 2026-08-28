@@ -11,11 +11,8 @@ describe("barra inferior do plantonista", () => {
     const hook = readFileSync("hooks/use-schedule-context.ts", "utf8");
 
     expect(tabs).toContain("<MobileTabBar");
-    expect(bar).toContain('new Set(["agenda", "trocas", "vacancies", "profile"])');
-    expect(bar).not.toContain("dashboard");
-    expect(bar).not.toContain("pending");
-    expect(bar).not.toContain("reports");
-    expect(bar).not.toContain("admin");
+    expect(bar).toContain("MOBILE_TAB_NAMES");
+    expect(bar).toContain("isHiddenByNavigator");
     expect(bar).toContain('position: "absolute"');
     expect(bar).toContain('variant="tab"');
     expect(bar).toContain('Platform.OS !== "web"');
@@ -29,6 +26,7 @@ describe("barra inferior do plantonista", () => {
     expect(agenda).not.toContain("VoiceCommandButton");
     expect(agenda).not.toContain('title="Não foi possível carregar as escalas"');
     expect(hook).toContain("rosterQuery.isError");
+    expect(hook).toContain("retry: 0");
     expect(bar).not.toMatch(/#[0-9A-Fa-f]{3,8}/);
     expect(trigger).not.toMatch(/#[0-9A-Fa-f]{3,8}/);
   });

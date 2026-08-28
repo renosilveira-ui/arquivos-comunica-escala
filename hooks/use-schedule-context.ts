@@ -31,6 +31,9 @@ export function useScheduleContext({
   const rosterQuery = trpc.scheduleContexts.listReadable.useQuery(undefined, {
     enabled: enabled && visibility === "roster",
     staleTime: 60_000,
+    // Servidor antigo responde 404. Sem retry o fallback listMine entra
+    // no primeiro erro em vez de esperar a fila padrão do React Query.
+    retry: 0,
   });
   // Servidor antigo sem listReadable não pode apagar a Agenda: cai no
   // listMine (setores que o médico já pratica / gere).
