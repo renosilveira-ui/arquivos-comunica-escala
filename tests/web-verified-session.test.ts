@@ -59,6 +59,38 @@ describe("receipt VERIFIED web sobrevive a remount do AuthProvider", () => {
     ).toBeNull();
   });
 
+  it("alinha sequence stale ou à frente do módulo sem descartar a snapshot", async () => {
+    const mod = await loadModule("web");
+    const ticket = { generation: 4 };
+    const user = { id: 7, name: "Ana" };
+    mod.rememberPreservedWebVerifiedSession({
+      user,
+      ticket,
+      sequence: 11,
+    });
+
+    expect(mod.alignPreservedWebVerifiedSessionSequence(0)).toBe(11);
+    expect(
+      mod.readPreservedWebVerifiedSession({
+        isTransportCurrent: () => true,
+        isEpochCurrent: () => true,
+      }),
+    ).toEqual({ user, ticket, sequence: 11 });
+
+    expect(mod.alignPreservedWebVerifiedSessionSequence(14)).toBe(14);
+    expect(
+      mod.readPreservedWebVerifiedSession({
+        isTransportCurrent: () => true,
+        isEpochCurrent: () => true,
+      }),
+    ).toEqual({ user, ticket, sequence: 14 });
+  });
+
+  it("nativo não alinha — sequence do módulo permanece intacta", async () => {
+    const mod = await loadModule("ios");
+    expect(mod.alignPreservedWebVerifiedSessionSequence(3)).toBe(3);
+  });
+
   it("logout/revogação apaga a snapshot — remount não ressuscita a conta", async () => {
     const mod = await loadModule("web");
     mod.rememberPreservedWebVerifiedSession({

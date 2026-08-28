@@ -39,6 +39,7 @@ import {
 import { appSessionEpoch, type SessionEpochTicket } from "@/lib/session-epoch";
 import { onSessionUnauthorized } from "@/lib/session-events";
 import {
+  alignPreservedWebVerifiedSessionSequence,
   clearPreservedWebVerifiedSession,
   readPreservedWebVerifiedSession,
   rememberPreservedWebVerifiedSession,
@@ -234,12 +235,15 @@ function readRestoredWebVerifiedSession(): {
     isEpochCurrent: (ticket) => appSessionEpoch.isCurrent(ticket),
   });
   if (!preserved) return null;
+  latestAuthRefetchSequence = alignPreservedWebVerifiedSessionSequence(
+    latestAuthRefetchSequence,
+  );
   return {
     user: preserved.user,
     sessionValidation: verifiedSessionValidation(
       preserved.user.id,
       preserved.ticket,
-      preserved.sequence,
+      latestAuthRefetchSequence,
     ),
   };
 }
@@ -698,6 +702,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
       } else {
         durableSession = true;
+        const snapshot = verifiedSessionSnapshotRef.current;
+        const currentUser = sessionUserRef.current;
+        if (snapshot && currentUser) {
+          verifiedSessionSnapshotRef.current = {
+            userId: currentUser.id,
+            ticket: snapshot.ticket,
+            sequence: requestSequence,
+          };
+          setSessionValidation(
+            verifiedSessionValidation(
+              currentUser.id,
+              snapshot.ticket,
+              requestSequence,
+            ),
+          );
+        }
       }
       const isLatestRequest = () =>
         workflowSignal?.aborted !== true &&
@@ -1116,8 +1136,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // espera e reaparece sob o cookie B.
       if (!preservedVerifiedSession) {
         closeAsyncSessionAdmission();
+        // Fecha a prova síncrona já na intenção. Soft refetch (receipt
+        // VERIFIED ainda válida) não incrementa aqui: o bump pré-lock
+        // deixava `isCurrent()` falso enquanto outra aba detinha o lock
+        // e, se /me falhasse, o gate ficava preso para sempre.
+        ++latestAuthRefetchSequence;
       }
-      ++latestAuthRefetchSequence;
       return Auth.runExclusiveWebSessionMutation((workflowSignal) =>
         performRefetchInsideWebLock(
           requestEpoch,
@@ -1352,13 +1376,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, [refetch]);
 
-  // On mount, a identidade só é publicada depois de /me validar a sessão.
-  // O cache nativo não é prova de sessão: senha/conta podem ter sido revogadas
-  // enquanto o app estava fechado, e o storage local também pode ter falhado.
-  // Remount web (foco/Expo) herda a receipt VERIFIED do processo — um /me
-  // automático aqui era o logout instantâneo ao trocar de aba.
+  // Cold start sempre consulta /me. Remount web com receipt VERIFIED herdada
+  // também consulta, mas em modo soft: performRefetch preserva VERIFIED e
+  // não vai para CHECKING/logout (regressão #287/#288). Pular o /me para
+  // sempre deixava `latestAuthRefetchSequence` stale — o gate institucional
+  // nunca completava e toques de push eram descartados.
   useEffect(() => {
-    if (restoredWebSessionRef.current) return;
     void refetch();
   }, [refetch]);
 

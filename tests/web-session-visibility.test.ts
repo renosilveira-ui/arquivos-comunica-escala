@@ -60,15 +60,24 @@ describe("sessão web sob troca rápida de aba", () => {
     expect(block).toContain("markTransientRevalidationUnavailable");
     expect(block).toContain("sessão não revalidada");
     expect(block).toContain("isLatestRequest() && !preservedVerifiedSession");
+    expect(block).toContain("verifiedSessionValidation(");
+    expect(block).toContain("requestSequence");
   });
 
-  it("AuthProvider web restaura VERIFIED no remount e não refetch /me automaticamente", () => {
+  it("AuthProvider web restaura VERIFIED no remount e refetch /me em modo soft", () => {
     const auth = readFileSync("hooks/use-auth.ts", "utf8");
     expect(auth).toContain("readPreservedWebVerifiedSession");
     expect(auth).toContain("rememberPreservedWebVerifiedSession");
     expect(auth).toContain("clearPreservedWebVerifiedSession");
-    expect(auth).toContain("if (restoredWebSessionRef.current) return");
+    expect(auth).toContain("alignPreservedWebVerifiedSessionSequence");
     expect(auth).toContain("readRestoredWebVerifiedSession");
+    expect(auth).not.toContain("if (restoredWebSessionRef.current) return");
+    const mountEffect = auth.slice(
+      auth.indexOf("Cold start sempre consulta /me"),
+      auth.indexOf("Auth.subscribeExternalWebSessionInvalidation"),
+    );
+    expect(mountEffect).toContain("void refetch()");
+    expect(mountEffect).not.toContain("return;");
   });
 
   it("background nativo fecha gate e visible online só revalida handshake institucional", () => {
