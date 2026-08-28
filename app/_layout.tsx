@@ -54,6 +54,7 @@ import {
 import {
   applyTenantAuthorizationActivityPatch,
   initialTenantAuthorizationActivityForPlatform,
+  isNativeAppSessionVisible,
   shouldAttachNativeSessionGateLifecycle,
 } from "@/lib/web-session-lifecycle";
 import {
@@ -337,7 +338,7 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
   const initialActivity = useMemo<TenantAuthorizationActivity>(
     () =>
       initialTenantAuthorizationActivityForPlatform(Platform.OS, {
-        visible: AppState.currentState === "active",
+        visible: isNativeAppSessionVisible(AppState.currentState),
         // Nativo: assume online até o NetInfo negar. Começar offline bloqueava
         // o handshake pós-login no Android enquanto o probe demorava ou falhava.
         online: true,
@@ -395,14 +396,12 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
         subjectKey: subjectKeyOf(currentSubjectRef.current),
       });
     } else if (transition.action === "REVALIDATE") {
-      // Reconnect de rede nativo exige /me fresco. No web o patch é no-op:
-      // aba escondida, freeze e flap de NetInfo não revalidam sessão.
-      if (patch.online === true) {
-        void refetch();
-      }
+      // Reconnect/volta ao foreground só reabre o handshake institucional.
+      // Um `/me` aqui era o equivalente nativo do #287: o NetInfo do Android
+      // flapava no seletor de apps e o 401 seguinte mandava para o login.
     }
     setActivity(transition.state);
-  }, [queryClient, refetch]);
+  }, [queryClient]);
 
   useEffect(() => {
     // Web: visibilitychange/pagehide/freeze/pageshow/NetInfo/online não
@@ -415,7 +414,7 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     // visual até um evento de lifecycle/rede fica explicitamente fora do SLA
     // desta frente; resume/reconnect sempre reatesta antes de reabrir a UI.
     const appStateSubscription = AppState.addEventListener("change", (nextState) => {
-      updateActivity({ visible: nextState === "active" });
+      updateActivity({ visible: isNativeAppSessionVisible(nextState) });
     });
     const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
       updateActivity({

@@ -1845,6 +1845,32 @@ describe("cache do token de sessão", () => {
     await expect(restarted.getSessionToken()).resolves.toBe("token-B");
   });
 
+  it("miss transitório do SecureStore não apaga admissão em memória — resume Android", async () => {
+    const secureStorage = availableStorage();
+    const markerStorage = availableStorage();
+    const auth = await loadAuth(secureStorage, markerStorage);
+    await admitSessionToken(auth, "token-B", NEXT_USER_ID);
+    await expect(auth.getAdmittedSessionUserId()).resolves.toBe(NEXT_USER_ID);
+
+    const token = secureStorage.values.get(TOKEN_KEY);
+    const admission = secureStorage.values.get(ADMISSION_KEY);
+    expect(token).toBe("token-B");
+    expect(admission).toMatch(/^committed:v3:/);
+
+    // Keystore Android devolve vazio no resume; o disco real ainda tem a prova.
+    secureStorage.getItem.mockImplementation(async () => null);
+    await expect(auth.getAdmittedSessionUserId()).resolves.toBe(NEXT_USER_ID);
+    await expect(auth.getSessionToken()).resolves.toBe("token-B");
+
+    // Cold start sem memória e sem disco: aí sim não há sessão.
+    vi.resetModules();
+    const emptySecure = availableStorage();
+    const emptyMarker = availableStorage();
+    const restarted = await loadAuth(emptySecure, emptyMarker);
+    await expect(restarted.getAdmittedSessionUserId()).resolves.toBeNull();
+    await expect(restarted.getSessionToken()).resolves.toBeNull();
+  });
+
   it("userId adulterado em uma metade PENDING invalida o binding inteiro", async () => {
     const secureStorage = availableStorage();
     const markerStorage = availableStorage();

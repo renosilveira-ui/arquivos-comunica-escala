@@ -864,14 +864,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               : null
             : await Auth.getAdmittedSessionUserId();
         const persistedUserId = await Auth.getPersistedUserId();
-        if (
-          durableExpectedUserId !== null ||
-          (Platform.OS === "web" && persistedUserId !== null)
-        ) {
+        if (durableExpectedUserId !== null || persistedUserId !== null) {
           durableSession = true;
-          // Refetch soft (foco/aba) não pode derrubar VERIFIED para CHECKING:
-          // o gate institucional trata isso como perda de prova e o 401
-          // seguinte, sem cookie, encerrava a sessão no desktop.
+          // Refetch soft (foco/aba/resume Android) não pode derrubar VERIFIED
+          // para CHECKING: o gate institucional trata isso como perda de prova
+          // e o 401 seguinte encerrava a sessão.
           if (isLatestRequest() && !preservedVerifiedSession) {
             setSessionValidation(
               unprovenSessionValidation("CHECKING", requestSequence, true),
@@ -883,8 +880,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           durableExpectedUserId === null &&
           expectedUserId === undefined
         ) {
-          // Snapshot conclusivamente limpa: não há transporte para consultar.
-          // Ainda limpa cache/tenant sem criar um terceiro bump depois da lease.
+          // Disco nativo vazio só é logout quando também não há identidade
+          // persistida nem receipt VERIFIED em memória. No Android o
+          // SecureStore/Keystore devolve null no resume — isso não apaga a
+          // conta nem manda para o formulário de login.
+          if (preservedVerifiedSession || persistedUserId !== null) {
+            markTransientRevalidationUnavailable();
+            return "UNAVAILABLE";
+          }
           try {
             await endSession(requestEpoch, false, false, true);
           } catch (error) {
@@ -1376,11 +1379,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, [refetch]);
 
-  // Cold start sempre consulta /me. Remount web com receipt VERIFIED herdada
-  // também consulta, mas em modo soft: performRefetch preserva VERIFIED e
-  // não vai para CHECKING/logout (regressão #287/#288). Pular o /me para
-  // sempre deixava `latestAuthRefetchSequence` stale — o gate institucional
-  // nunca completava e toques de push eram descartados.
+  // Cold start sempre consulta /me. Remount com receipt VERIFIED herdada
+  // (web e nativo) também consulta, mas em modo soft: performRefetch
+  // preserva VERIFIED e não vai para CHECKING/logout (regressão #287/#288
+  // e o resume Android). Pular o /me para sempre deixava
+  // `latestAuthRefetchSequence` stale — o gate institucional nunca
+  // completava e toques de push eram descartados.
   useEffect(() => {
     void refetch();
   }, [refetch]);

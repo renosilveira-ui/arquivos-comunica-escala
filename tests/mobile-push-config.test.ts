@@ -2,6 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("build nativo de push", () => {
+  it("app.config declara expo-secure-store fora do Auto Backup Android", () => {
+    const source = readFileSync("app.config.ts", "utf8");
+    expect(source).toContain('"expo-secure-store"');
+    expect(source).toContain("configureAndroidBackup: true");
+  });
+
   it("app.config declara o plugin expo-notifications", () => {
     const source = readFileSync("app.config.ts", "utf8");
     expect(source).toContain('"expo-notifications"');

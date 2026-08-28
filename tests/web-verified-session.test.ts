@@ -12,11 +12,12 @@ describe("receipt VERIFIED web sobrevive a remount do AuthProvider", () => {
     vi.doUnmock("react-native");
   });
 
-  it("nativo não preserva — remount não herda identidade", async () => {
+  it("nativo preserva VERIFIED — remount Android não cai no login", async () => {
     const mod = await loadModule("ios");
     const ticket = { generation: 4 };
+    const user = { id: 7, name: "Ana" };
     mod.rememberPreservedWebVerifiedSession({
-      user: { id: 7 },
+      user,
       ticket,
       sequence: 11,
     });
@@ -25,7 +26,7 @@ describe("receipt VERIFIED web sobrevive a remount do AuthProvider", () => {
         isTransportCurrent: () => true,
         isEpochCurrent: () => true,
       }),
-    ).toBeNull();
+    ).toEqual({ user, ticket, sequence: 11 });
   });
 
   it("web devolve a snapshot só enquanto transporte e epoch são atuais", async () => {
@@ -86,9 +87,14 @@ describe("receipt VERIFIED web sobrevive a remount do AuthProvider", () => {
     ).toEqual({ user, ticket, sequence: 14 });
   });
 
-  it("nativo não alinha — sequence do módulo permanece intacta", async () => {
+  it("nativo alinha sequence no remount — o gate não fica stale", async () => {
     const mod = await loadModule("ios");
-    expect(mod.alignPreservedWebVerifiedSessionSequence(3)).toBe(3);
+    mod.rememberPreservedWebVerifiedSession({
+      user: { id: 7 },
+      ticket: { generation: 4 },
+      sequence: 11,
+    });
+    expect(mod.alignPreservedWebVerifiedSessionSequence(3)).toBe(11);
   });
 
   it("logout/revogação apaga a snapshot — remount não ressuscita a conta", async () => {

@@ -22,6 +22,16 @@ export function shouldAttachNativeSessionGateLifecycle(
   return platform !== "web";
 }
 
+/**
+ * Android dispara `inactive` no seletor de apps, overlay de notificação e
+ * transição de Activity. Tratar isso como hidden fechava o gate, limpava o
+ * cache e — com flap de NetInfo — disparava um `/me` que expulsava o
+ * usuário para o login. Só `background` é ausência real do app.
+ */
+export function isNativeAppSessionVisible(appState: string): boolean {
+  return appState !== "background";
+}
+
 export function initialTenantAuthorizationActivityForPlatform(
   platform: string,
   native: Pick<TenantAuthorizationActivity, "visible" | "online">,
