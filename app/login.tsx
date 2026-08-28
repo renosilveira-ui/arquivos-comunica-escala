@@ -34,7 +34,7 @@ export default function LoginScreen() {
     setErrorMsg(null);
     setSubmitting(true);
     try {
-      const result = await login(email.trim(), password);
+      const result = await login(email.trim(), password.trim());
       if (result.ok || result.admissionPending) {
         router.replace("/(tabs)");
       } else {

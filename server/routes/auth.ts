@@ -118,6 +118,12 @@ function mapProfessionalRoleToLabel(role: ProfessionalRole): string {
 export const authRouter = Router();
 
 const BCRYPT_ROUNDS = 12;
+const EMAIL_ALREADY_REGISTERED =
+  "Este e-mail já tem conta. Entre ou use Esqueci minha senha.";
+
+function hasUsablePasswordHash(hash: string | null | undefined): boolean {
+  return typeof hash === "string" && hash.startsWith("$2") && hash.length >= 50;
+}
 
 function sendSessionBindingProtocolError(
   res: Response,
@@ -274,10 +280,12 @@ authRouter.post(
       throw error;
     }
     const requestFence = sessionFenceSnapshot(req);
-    const { email, password } = req.body as {
+    const { email, password: rawPassword } = req.body as {
       email?: unknown;
       password?: unknown;
     };
+    const password =
+      typeof rawPassword === "string" ? rawPassword.trim() : rawPassword;
 
     if (
       typeof email !== "string" ||
@@ -781,7 +789,7 @@ authRouter.post(
     }
 
     const user = await getUserByEmail(normalizedEmail);
-    if (!user || user.deletedAt || !user.passwordHash || !user.email) {
+    if (!user || user.deletedAt || !user.email) {
       res.json(neutral);
       return;
     }
@@ -808,7 +816,7 @@ authRouter.post(
         if (
           !lockedUser ||
           lockedUser.deletedAt ||
-          !lockedUser.passwordHash ||
+          !lockedUser.email ||
           lockedUser.email !== normalizedEmail ||
           lockedUser.sessionVersion !== user.sessionVersion ||
           lockedUser.passwordHash !== user.passwordHash ||
@@ -2424,7 +2432,7 @@ authRouter.post(
     const {
       name,
       email,
-      password,
+      password: rawPassword,
       role,
       professionalRole,
       roleInInstitution,
@@ -2446,6 +2454,8 @@ authRouter.post(
       scheduleContextIds?: unknown;
       managerScopes?: unknown;
     };
+    const password =
+      typeof rawPassword === "string" ? rawPassword.trim() : rawPassword;
 
     if (
       typeof name !== "string" ||
@@ -2557,10 +2567,14 @@ authRouter.post(
     }
 
     const existing = await getUserByEmail(normalizedEmail);
-    if (existing) {
-      res.status(409).json({ error: "Email já cadastrado" });
+    if (existing?.deletedAt || (existing && hasUsablePasswordHash(existing.passwordHash))) {
+      res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
       return;
     }
+    const existingShellId =
+      existing && !hasUsablePasswordHash(existing.passwordHash)
+        ? existing.id
+        : null;
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     try {
@@ -2611,47 +2625,138 @@ authRouter.post(
               })
             : [];
 
-        const [newUser] = await tx
-          .insert(users)
-          .values({
-            name: normalizedName,
-            email: normalizedEmail,
-            passwordHash,
-            // Papel global administrativo nunca nasce deste fluxo tenant-scoped.
-            role: requestedRoles.professionalRole,
-            loginMethod: "email",
-          })
-          .$returningId();
+        let newUserId: number;
+        if (existingShellId) {
+          const [locked] = await tx
+            .select({
+              id: users.id,
+              passwordHash: users.passwordHash,
+              deletedAt: users.deletedAt,
+            })
+            .from(users)
+            .where(eq(users.id, existingShellId))
+            .limit(1)
+            .for("update");
+          if (
+            !locked ||
+            locked.deletedAt ||
+            hasUsablePasswordHash(locked.passwordHash)
+          ) {
+            throw new RegisterValidationError(409, EMAIL_ALREADY_REGISTERED);
+          }
+          await tx
+            .update(users)
+            .set({
+              name: normalizedName,
+              email: normalizedEmail,
+              passwordHash,
+              loginMethod: "email",
+              role: requestedRoles.professionalRole,
+            })
+            .where(and(eq(users.id, locked.id), isNull(users.deletedAt)));
+          newUserId = locked.id;
+        } else {
+          const [inserted] = await tx
+            .insert(users)
+            .values({
+              name: normalizedName,
+              email: normalizedEmail,
+              passwordHash,
+              // Papel global administrativo nunca nasce deste fluxo tenant-scoped.
+              role: requestedRoles.professionalRole,
+              loginMethod: "email",
+            })
+            .$returningId();
+          newUserId = inserted.id;
+        }
 
-        const [newProfessional] = await tx
-          .insert(professionals)
-          .values({
-            userId: newUser.id,
-            name: normalizedName,
-            role: mapProfessionalRoleToLabel(requestedRoles.professionalRole),
-            // Projeção legada para a build atual; autorização lê exclusivamente PI.
-            userRole: requestedRoles.roleInInstitution,
-            specialty: qualification.legacyLabel,
-            medicalSpecialtyId,
-            operationalProfileCode: qualification.operationalProfileCode,
-          })
-          .$returningId();
+        const [persistedSecret] = await tx
+          .select({ passwordHash: users.passwordHash })
+          .from(users)
+          .where(eq(users.id, newUserId))
+          .limit(1);
+        if (!hasUsablePasswordHash(persistedSecret?.passwordHash)) {
+          throw new Error("password-hash-not-persisted");
+        }
 
-        await tx.insert(professionalInstitutions).values({
-          professionalId: newProfessional.id,
-          userId: newUser.id,
-          institutionId: targetInstitutionId,
-          roleInInstitution: requestedRoles.roleInInstitution,
-          isPrimary: true,
-          active: true,
-        });
+        const [existingProfessional] = await tx
+          .select({ id: professionals.id })
+          .from(professionals)
+          .where(eq(professionals.userId, newUserId))
+          .limit(1);
+        let professionalId = existingProfessional?.id;
+        if (!professionalId) {
+          const [createdProfessional] = await tx
+            .insert(professionals)
+            .values({
+              userId: newUserId,
+              name: normalizedName,
+              role: mapProfessionalRoleToLabel(requestedRoles.professionalRole),
+              // Projeção legada para a build atual; autorização lê exclusivamente PI.
+              userRole: requestedRoles.roleInInstitution,
+              specialty: qualification.legacyLabel,
+              medicalSpecialtyId,
+              operationalProfileCode: qualification.operationalProfileCode,
+            })
+            .$returningId();
+          professionalId = createdProfessional.id;
+        } else {
+          await tx
+            .update(professionals)
+            .set({
+              name: normalizedName,
+              role: mapProfessionalRoleToLabel(requestedRoles.professionalRole),
+              userRole: requestedRoles.roleInInstitution,
+              specialty: qualification.legacyLabel,
+              medicalSpecialtyId,
+              operationalProfileCode: qualification.operationalProfileCode,
+            })
+            .where(eq(professionals.id, professionalId));
+        }
 
+        const [existingMembership] = await tx
+          .select({ id: professionalInstitutions.id })
+          .from(professionalInstitutions)
+          .where(
+            and(
+              eq(professionalInstitutions.userId, newUserId),
+              eq(professionalInstitutions.institutionId, targetInstitutionId),
+            ),
+          )
+          .limit(1);
+        if (!existingMembership) {
+          await tx.insert(professionalInstitutions).values({
+            professionalId,
+            userId: newUserId,
+            institutionId: targetInstitutionId,
+            roleInInstitution: requestedRoles.roleInInstitution,
+            isPrimary: true,
+            active: true,
+          });
+        } else {
+          await tx
+            .update(professionalInstitutions)
+            .set({
+              roleInInstitution: requestedRoles.roleInInstitution,
+              active: true,
+            })
+            .where(eq(professionalInstitutions.id, existingMembership.id));
+        }
+
+        await tx
+          .delete(professionalAccess)
+          .where(
+            and(
+              eq(professionalAccess.professionalId, professionalId),
+              eq(professionalAccess.institutionId, targetInstitutionId),
+            ),
+          );
         for (const access of scheduleContextsToSpecificAccessTargets(
           selectedScheduleContexts,
         )) {
           await tx.insert(professionalAccess).values({
             institutionId: targetInstitutionId,
-            professionalId: newProfessional.id,
+            professionalId,
             hospitalId: access.hospitalId,
             sectorId: access.sectorId,
             canAccess: true,
@@ -2668,7 +2773,7 @@ authRouter.post(
         if (nextScopes.length > 0) {
           await replaceManagerScopesForProfessional(tx, {
             institutionId: targetInstitutionId,
-            professionalId: newProfessional.id,
+            professionalId,
             scopes: nextScopes,
           });
         }
@@ -2676,13 +2781,15 @@ authRouter.post(
         await recordAudit(
           {
             institutionId: targetInstitutionId,
-            action: "USER_CREATED",
+            action: existingShellId ? "USER_UPDATED" : "USER_CREATED",
             entityType: "USER",
-            entityId: newUser.id,
+            entityId: newUserId,
             actorUserId: caller.id,
             actorRole: "GESTOR_PLUS",
             actorName: auditActorName(caller.name),
-            description: `Usuário #${newUser.id} criado pelo usuário #${caller.id}`,
+            description: existingShellId
+              ? `Senha definida para o usuário #${newUserId} pelo usuário #${caller.id}`
+              : `Usuário #${newUserId} criado pelo usuário #${caller.id}`,
             metadata: {
               professionalRole: requestedRoles.professionalRole,
               roleInInstitution: requestedRoles.roleInInstitution,
@@ -2698,7 +2805,7 @@ authRouter.post(
         );
 
         return {
-          id: newUser.id,
+          id: newUserId,
           name: normalizedName,
           email: normalizedEmail,
           role: requestedRoles.professionalRole,
@@ -2731,7 +2838,7 @@ authRouter.post(
             ? (error as { code?: unknown }).code
             : undefined;
       if (code === "ER_DUP_ENTRY") {
-        res.status(409).json({ error: "Email já cadastrado" });
+        res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
         return;
       }
       console.error(
@@ -2782,7 +2889,7 @@ authRouter.post(
     const {
       name,
       email,
-      password,
+      password: rawSignupPassword,
       institutionId,
       inviteCode,
       medicalSpecialtyCode,
@@ -2798,6 +2905,10 @@ authRouter.post(
       operationalProfileCode?: unknown;
       specialty?: unknown;
     };
+    const password =
+      typeof rawSignupPassword === "string"
+        ? rawSignupPassword.trim()
+        : rawSignupPassword;
 
     if (
       typeof name !== "string" ||
@@ -2879,15 +2990,20 @@ authRouter.post(
 
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await getUserByEmail(normalizedEmail);
-    if (existing) {
-      res.status(409).json({ error: "Email já cadastrado" });
+    if (existing?.deletedAt || (existing && hasUsablePasswordHash(existing.passwordHash))) {
+      res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
       return;
     }
+    const existingShellId =
+      existing && !hasUsablePasswordHash(existing.passwordHash)
+        ? existing.id
+        : null;
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const trimmedName = name.trim();
     const qualification = parsedQualification.value;
 
+    let awaitingApproval = hasInstitution;
     try {
       await db.transaction(async (tx) => {
         const lockedInstitution = institution
@@ -2911,6 +3027,32 @@ authRouter.post(
             "Instituição não encontrada ou inativa",
           );
         }
+
+        let existingMembership: { id: number; active: boolean } | undefined;
+        if (existingShellId && lockedInstitution) {
+          existingMembership = (
+            await tx
+              .select({
+                id: professionalInstitutions.id,
+                active: professionalInstitutions.active,
+              })
+              .from(professionalInstitutions)
+              .where(
+                and(
+                  eq(professionalInstitutions.userId, existingShellId),
+                  eq(
+                    professionalInstitutions.institutionId,
+                    lockedInstitution.id,
+                  ),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (existingMembership?.active) {
+            awaitingApproval = false;
+          }
+        }
+        const nextApproval = awaitingApproval ? "PENDING" : "APPROVED";
 
         const medicalSpecialtyId = qualification.medicalSpecialtyCode
           ? (
@@ -2937,49 +3079,118 @@ authRouter.post(
           );
         }
 
-        const [newUser] = await tx
-          .insert(users)
-          .values({
-            name: trimmedName,
-            email: normalizedEmail,
-            passwordHash,
-            role: "doctor",
-            loginMethod: "email",
-            approvalStatus: lockedInstitution ? "PENDING" : "APPROVED",
-          })
-          .$returningId();
-        const [newProfessional] = await tx
-          .insert(professionals)
-          .values({
-            userId: newUser.id,
-            name: trimmedName,
-            role: mapRoleToLabel("doctor"),
-            userRole: "USER",
-            specialty: qualification.legacyLabel,
-            medicalSpecialtyId,
-            operationalProfileCode: qualification.operationalProfileCode,
-          })
-          .$returningId();
+        let newUserId: number;
+        if (existingShellId) {
+          const [locked] = await tx
+            .select({
+              id: users.id,
+              passwordHash: users.passwordHash,
+              deletedAt: users.deletedAt,
+            })
+            .from(users)
+            .where(eq(users.id, existingShellId))
+            .limit(1)
+            .for("update");
+          if (
+            !locked ||
+            locked.deletedAt ||
+            hasUsablePasswordHash(locked.passwordHash)
+          ) {
+            throw new AuthMutationError(409, EMAIL_ALREADY_REGISTERED);
+          }
+          await tx
+            .update(users)
+            .set({
+              name: trimmedName,
+              email: normalizedEmail,
+              passwordHash,
+              loginMethod: "email",
+              role: "doctor",
+              approvalStatus: nextApproval,
+            })
+            .where(and(eq(users.id, locked.id), isNull(users.deletedAt)));
+          newUserId = locked.id;
+        } else {
+          const [inserted] = await tx
+            .insert(users)
+            .values({
+              name: trimmedName,
+              email: normalizedEmail,
+              passwordHash,
+              role: "doctor",
+              loginMethod: "email",
+              approvalStatus: nextApproval,
+            })
+            .$returningId();
+          newUserId = inserted.id;
+        }
+
+        const [persistedSecret] = await tx
+          .select({ passwordHash: users.passwordHash })
+          .from(users)
+          .where(eq(users.id, newUserId))
+          .limit(1);
+        if (!hasUsablePasswordHash(persistedSecret?.passwordHash)) {
+          throw new Error("password-hash-not-persisted");
+        }
+
+        const [existingProfessional] = await tx
+          .select({ id: professionals.id })
+          .from(professionals)
+          .where(eq(professionals.userId, newUserId))
+          .limit(1);
+        let professionalId = existingProfessional?.id;
+        if (!professionalId) {
+          const [createdProfessional] = await tx
+            .insert(professionals)
+            .values({
+              userId: newUserId,
+              name: trimmedName,
+              role: mapRoleToLabel("doctor"),
+              userRole: "USER",
+              specialty: qualification.legacyLabel,
+              medicalSpecialtyId,
+              operationalProfileCode: qualification.operationalProfileCode,
+            })
+            .$returningId();
+          professionalId = createdProfessional.id;
+        } else {
+          await tx
+            .update(professionals)
+            .set({
+              name: trimmedName,
+              role: mapRoleToLabel("doctor"),
+              userRole: "USER",
+              specialty: qualification.legacyLabel,
+              medicalSpecialtyId,
+              operationalProfileCode: qualification.operationalProfileCode,
+            })
+            .where(eq(professionals.id, professionalId));
+        }
 
         if (lockedInstitution) {
-          await tx.insert(professionalInstitutions).values({
-            professionalId: newProfessional.id,
-            userId: newUser.id,
-            institutionId: lockedInstitution.id,
-            roleInInstitution: "USER",
-            isPrimary: true,
-            active: false,
-          });
+          if (!existingMembership) {
+            await tx.insert(professionalInstitutions).values({
+              professionalId,
+              userId: newUserId,
+              institutionId: lockedInstitution.id,
+              roleInInstitution: "USER",
+              isPrimary: true,
+              active: false,
+            });
+          }
           await recordAudit(
             {
               institutionId: lockedInstitution.id,
-              action: "USER_CREATED",
+              action: existingShellId ? "USER_UPDATED" : "USER_CREATED",
               entityType: "USER",
-              entityId: newUser.id,
-              actorUserId: newUser.id,
+              entityId: newUserId,
+              actorUserId: newUserId,
               actorRole: "doctor",
               actorName: auditActorName(trimmedName),
-              description: `Auto-cadastro do usuário #${newUser.id} na instituição #${lockedInstitution.id} — aguardando aprovação`,
+              description: existingShellId
+                ? `Senha definida no auto-cadastro do usuário #${newUserId} na instituição #${lockedInstitution.id}`
+                : `Auto-cadastro do usuário #${newUserId} na instituição #${lockedInstitution.id} — aguardando aprovação`,
               metadata: {
                 institutionId: lockedInstitution.id,
                 selfSignup: true,
@@ -3006,7 +3217,7 @@ authRouter.post(
             ? (error as { code?: unknown }).code
             : undefined;
       if (code === "ER_DUP_ENTRY") {
-        res.status(409).json({ error: "Email já cadastrado" });
+        res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
         return;
       }
       console.error(
@@ -3021,7 +3232,7 @@ authRouter.post(
 
     res.status(201).json({
       ok: true,
-      pending: hasInstitution,
+      pending: awaitingApproval,
       awaitingScale: !hasInstitution,
     });
   },

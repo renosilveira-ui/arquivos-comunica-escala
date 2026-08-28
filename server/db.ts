@@ -202,8 +202,23 @@ export async function pingDb(timeoutMs = 5000): Promise<DbProbeResult> {
 export async function getUserByEmail(email: string): Promise<User | null> {
   const db = await getDb();
   if (!db) return null;
-  const [user] = await db.select().from(users).where(eq(users.email, email));
-  return user ?? null;
+  const normalized = email.toLowerCase().trim();
+  const [exact] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, normalized))
+    .limit(1);
+  if (exact) return exact;
+  const rows = await db
+    .select()
+    .from(users)
+    .where(sql`lower(${users.email}) = ${normalized}`)
+    .limit(2);
+  if (rows.length === 0) return null;
+  return (
+    rows.find((row) => typeof row.passwordHash === "string" && row.passwordHash.startsWith("$2")) ??
+    rows[0]
+  );
 }
 
 export async function getUserById(id: number): Promise<User | null> {
