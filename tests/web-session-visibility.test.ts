@@ -40,14 +40,43 @@ describe("sessão web sob troca rápida de aba", () => {
     expect(layout).toContain("refetchOnReconnect: false");
   });
 
-  it("reconnect de rede nativo ainda exige /me fresco", () => {
+  it("reconnect de rede nativo não dispara /me — flap do Android deslogava", () => {
     const layout = readFileSync("app/_layout.tsx", "utf8");
     const boundary = layout.slice(
       layout.indexOf("const updateActivity = useCallback"),
       layout.indexOf("useEffect(() => {", layout.indexOf("const updateActivity")),
     );
-    expect(boundary).toContain("patch.online === true");
-    expect(boundary).toContain("void refetch()");
+    expect(boundary).not.toContain("void refetch()");
+    expect(boundary).toContain("equivalente nativo do #287");
+  });
+
+  it("Android só trata background como hidden — inactive do seletor não fecha o gate", () => {
+    const layout = readFileSync("app/_layout.tsx", "utf8");
+    const effect = layout.slice(
+      layout.indexOf("if (!shouldAttachNativeSessionGateLifecycle"),
+      layout.indexOf("useEffect(() => {", layout.indexOf("const coordinator = coordinatorRef.current")),
+    );
+    expect(effect).toContain("isNativeAppSessionVisible(nextState)");
+    expect(effect).not.toContain('visible: nextState === "active"');
+    expect(layout).toContain("isNativeAppSessionVisible(AppState.currentState)");
+  });
+
+  it("refetch nativo com identidade persistida e disco vazio não chama endSession", () => {
+    const auth = readFileSync("hooks/use-auth.ts", "utf8");
+    const start = auth.indexOf(
+      "const persistedUserId = await Auth.getPersistedUserId()",
+    );
+    const block = auth.slice(
+      start,
+      auth.indexOf(
+        "O commit esperado não produziu um binding ADMITTED",
+        start,
+      ),
+    );
+    expect(block).toContain("preservedVerifiedSession || persistedUserId !== null");
+    expect(block).toContain("markTransientRevalidationUnavailable");
+    expect(block).toContain('return "UNAVAILABLE"');
+    expect(block).not.toContain('Platform.OS === "web" && persistedUserId');
   });
 
   it("refetch soft preserva receipt VERIFIED em falha transitória e não cai em CHECKING", () => {

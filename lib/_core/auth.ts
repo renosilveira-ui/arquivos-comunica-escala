@@ -2557,14 +2557,30 @@ export async function admitWebSessionTransport(
 }
 
 /**
- * Identidade durável esperada para o Bearer atualmente admitido. O valor só
- * existe quando uma snapshot saudável prova marker AUSENTE, admission
- * COMMITTED canônica e SHA-256 exato do mesmo Bearer. PENDING, corrupção ou
- * falha de leitura não concedem autoridade de identidade.
+ * Identidade durável esperada para o Bearer atualmente admitido. No disco,
+ * só uma snapshot saudável (marker ausente + COMMITTED bindado) conta.
+ * PENDING, corrupção ou quarentena não concedem identidade. Um disco
+ * limpo com admissão em memória deste processo (resume Android) reusa
+ * essa admissão — miss de Keystore não é logout.
  */
 export async function getAdmittedSessionUserId(): Promise<number | null> {
   const snapshot = await readNativeSessionSnapshot();
-  return admittedBindingFromSnapshot(snapshot)?.expectedUserId ?? null;
+  const fromDisk = admittedBindingFromSnapshot(snapshot)?.expectedUserId ?? null;
+  if (fromDisk !== null) return fromDisk;
+  // Disco limpo após `/me` canônico: no Android o Keystore pode devolver
+  // vazio no resume. A admissão em memória deste processo continua válida
+  // até BEGIN/logout — um miss transitório não é logout.
+  if (
+    isCleanUnauthenticatedSnapshot(snapshot) &&
+    nativeSessionTransportAdmission !== null &&
+    nativeSessionTransportAdmission.version === sessionTokenCacheVersion &&
+    sessionTransportAdmittedUserId !== null &&
+    sessionTransportAdmittedUserId ===
+      nativeSessionTransportAdmission.binding.expectedUserId
+  ) {
+    return sessionTransportAdmittedUserId;
+  }
+  return null;
 }
 
 declare const stagedSessionTokenBrand: unique symbol;

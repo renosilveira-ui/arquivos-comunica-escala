@@ -3,6 +3,7 @@ import { transitionTenantAuthorizationActivity } from "../lib/tenant-authorizati
 import {
   applyTenantAuthorizationActivityPatch,
   initialTenantAuthorizationActivityForPlatform,
+  isNativeAppSessionVisible,
   shouldAttachNativeSessionGateLifecycle,
   WEB_TAB_LIFECYCLE_EVENTS,
 } from "../lib/web-session-lifecycle";
@@ -55,6 +56,12 @@ describe("ciclo de vida da aba web não move o gate de sessão", () => {
     expect(nativeHidden).toEqual(
       transitionTenantAuthorizationActivity(current, { visible: false }),
     );
+  });
+
+  it("inactive do Android continua visível — só background fecha o gate", () => {
+    expect(isNativeAppSessionVisible("active")).toBe(true);
+    expect(isNativeAppSessionVisible("inactive")).toBe(true);
+    expect(isNativeAppSessionVisible("background")).toBe(false);
   });
 
   it("lista os eventos de aba que jamais podem refetch /me ou CLOSE", () => {

@@ -91,6 +91,14 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     [
+      "expo-secure-store",
+      {
+        // Sem o plugin o Auto Backup do Android restaura EncryptedSharedPreferences
+        // sem a chave do Keystore — o token some e o app pede login de novo.
+        configureAndroidBackup: true,
+      },
+    ],
+    [
       "expo-notifications",
       {
         // Sem este plugin o binário TestFlight/Play não recebe APNs/FCM:

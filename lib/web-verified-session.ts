@@ -1,4 +1,3 @@
-import { Platform } from "react-native";
 import type { SessionEpochTicket } from "./session-epoch";
 
 export type PreservedWebVerifiedSession<T extends { id: number }> = Readonly<{
@@ -14,7 +13,6 @@ let preservedWebVerifiedSession: PreservedWebVerifiedSession<{
 export function rememberPreservedWebVerifiedSession<T extends { id: number }>(
   snapshot: PreservedWebVerifiedSession<T>,
 ): void {
-  if (Platform.OS !== "web") return;
   if (!Number.isSafeInteger(snapshot.user.id) || snapshot.user.id <= 0) return;
   preservedWebVerifiedSession = snapshot;
 }
@@ -27,7 +25,6 @@ export function readPreservedWebVerifiedSession<T extends { id: number }>(input:
   isTransportCurrent: (userId: number) => boolean;
   isEpochCurrent: (ticket: SessionEpochTicket) => boolean;
 }): PreservedWebVerifiedSession<T> | null {
-  if (Platform.OS !== "web") return null;
   const snapshot = preservedWebVerifiedSession as PreservedWebVerifiedSession<T> | null;
   if (!snapshot) return null;
   if (!input.isTransportCurrent(snapshot.user.id)) return null;
@@ -36,17 +33,16 @@ export function readPreservedWebVerifiedSession<T extends { id: number }>(input:
 }
 
 /**
- * Remount do AuthProvider (Fast Refresh / layout) pode encontrar a snapshot
- * VERIFIED com sequence atrás de `latestAuthRefetchSequence` — um refetch
- * soft incrementa o módulo sem republicar o receipt — ou à frente, se o
- * módulo do hook recarregou e zerou o contador. Sem alinhar, `isCurrent()`
- * fica falso, o gate institucional nunca abre e toques de push são
- * descartados.
+ * Remount do AuthProvider (Fast Refresh / layout / Activity Android) pode
+ * encontrar a snapshot VERIFIED com sequence atrás de
+ * `latestAuthRefetchSequence` — um refetch soft incrementa o módulo sem
+ * republicar o receipt — ou à frente, se o módulo do hook recarregou e
+ * zerou o contador. Sem alinhar, `isCurrent()` fica falso, o gate
+ * institucional nunca abre e o Android pedia login de novo.
  */
 export function alignPreservedWebVerifiedSessionSequence(
   latestSequence: number,
 ): number {
-  if (Platform.OS !== "web") return latestSequence;
   const snapshot = preservedWebVerifiedSession;
   if (!snapshot) return latestSequence;
   const safeLatest =
