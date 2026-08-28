@@ -34,3 +34,28 @@ export function readPreservedWebVerifiedSession<T extends { id: number }>(input:
   if (!input.isEpochCurrent(snapshot.ticket)) return null;
   return snapshot;
 }
+
+/**
+ * Remount do AuthProvider (Fast Refresh / layout) pode encontrar a snapshot
+ * VERIFIED com sequence atrás de `latestAuthRefetchSequence` — um refetch
+ * soft incrementa o módulo sem republicar o receipt — ou à frente, se o
+ * módulo do hook recarregou e zerou o contador. Sem alinhar, `isCurrent()`
+ * fica falso, o gate institucional nunca abre e toques de push são
+ * descartados.
+ */
+export function alignPreservedWebVerifiedSessionSequence(
+  latestSequence: number,
+): number {
+  if (Platform.OS !== "web") return latestSequence;
+  const snapshot = preservedWebVerifiedSession;
+  if (!snapshot) return latestSequence;
+  const safeLatest =
+    Number.isSafeInteger(latestSequence) && latestSequence >= 0
+      ? latestSequence
+      : 0;
+  const aligned = Math.max(safeLatest, snapshot.sequence);
+  if (aligned !== snapshot.sequence) {
+    preservedWebVerifiedSession = { ...snapshot, sequence: aligned };
+  }
+  return aligned;
+}
