@@ -32,6 +32,7 @@ describe("escala operacional genérica por instituição", () => {
   let hospitalB: number;
   let sectorA: number;
   let sectorB: number;
+  let sectorBOther: number;
   let contextA: number;
   let gestorAUserId: number;
   let gestorAProfessionalId: number;
@@ -136,6 +137,17 @@ describe("escala operacional genérica por instituição", () => {
       })
       .$returningId();
     sectorB = secB.id;
+    const [secBOther] = await db
+      .insert(sectors)
+      .values({
+        institutionId: institutionB,
+        hospitalId: hospitalB,
+        name: `Setor B Outro ${stamp}`,
+        category: "servico",
+        color: "#7C3AED",
+      })
+      .$returningId();
+    sectorBOther = secBOther.id;
 
     const [ctxA] = await db
       .insert(scheduleContexts)
@@ -494,6 +506,49 @@ describe("escala operacional genérica por instituição", () => {
     ).rejects.toMatchObject({
       code: expect.stringMatching(/FORBIDDEN|NOT_FOUND|BAD_REQUEST/),
     });
+  });
+
+  it("gestor com escopo de setor não cria setor novo nem opera outro setor", async () => {
+    const topology = await callerContexts(
+      scopedUserId,
+      "manager",
+      institutionB,
+    ).listManageableTopology();
+    expect(topology).toHaveLength(1);
+    expect(topology[0].id).toBe(hospitalB);
+    expect(topology[0].canCreateSector).toBe(false);
+    expect(topology[0].sectors.map((sector) => sector.id)).toEqual([sectorB]);
+
+    await expect(
+      callerContexts(scopedUserId, "manager", institutionB).ensureDefaultSectorScale({
+        hospitalId: hospitalB,
+        sectorName: "Setor fora do escopo",
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição hospitalar/),
+    });
+
+    await expect(
+      callerContexts(scopedUserId, "manager", institutionB).ensureDefaultSectorScale({
+        hospitalId: hospitalB,
+        sectorId: sectorBOther,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição/),
+    });
+
+    const ensured = await callerContexts(
+      scopedUserId,
+      "manager",
+      institutionB,
+    ).ensureDefaultSectorScale({
+      hospitalId: hospitalB,
+      sectorId: sectorB,
+    });
+    expect(ensured.sectorId).toBe(sectorB);
+    expect(ensured.createdSector).toBe(false);
   });
 
   it("gestor com manager_scope abre o mês sem professional_access", async () => {

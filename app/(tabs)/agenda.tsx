@@ -663,7 +663,7 @@ export default function AgendaScreen() {
             ) : null
           ) : canCreateShift ? (
             <View style={{ gap: theme.space[3] }}>
-              {scope === "geral" ? (
+              {scope === "geral" && scheduleContext.contexts.length > 0 ? (
                 <CreateSectorScaleButton
                   onCreated={({ scheduleContextId }) => {
                     scheduleContext.selectContext(scheduleContextId);

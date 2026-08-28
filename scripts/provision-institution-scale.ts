@@ -5,15 +5,15 @@
  * templates padrão. Não é exclusivo de São Carlos nem exige token HSC.
  *
  * Dry-run:
- *   pnpm provision:institution-scale -- --institution-id 4 --hospital-id 7
+ *   pnpm provision:institution-scale -- --institution-id <id> --hospital-id <id>
  *
  * Aplicar:
- *   pnpm provision:institution-scale -- --institution-id 4 --hospital-id 7 \
+ *   pnpm provision:institution-scale -- --institution-id <id> --hospital-id <id> \
  *     --sector-name "Centro Cirúrgico" --apply
  *
  * Resolver por nome (sem id hardcoded):
- *   --institution-name "Cooperativa dos Médicos de Fortaleza - Unimed" \
- *   --hospital-name "Hospital Regional Unimed" --apply
+ *   --institution-name "<nome da instituição>" \
+ *   --hospital-name "<nome do hospital>" --apply
  */
 import "dotenv/config";
 import { eq } from "drizzle-orm";

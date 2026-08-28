@@ -36,6 +36,9 @@ describe("criar escala do setor — wiring", () => {
     expect(agenda).toContain("EmptyInstitutionScaleState");
     expect(agenda).toContain("createSectorScaleEmptyTitle");
     expect(agenda).toContain("QueryErrorState");
+    expect(agenda).toContain(
+      'scope === "geral" && scheduleContext.contexts.length > 0',
+    );
     expect(button).toContain("ensureDefaultSectorScale");
     expect(button).toContain("listManageableTopology");
     expect(button).toContain("useActionFeedback");
