@@ -24,8 +24,9 @@ import {
   ensureTestAnesthesiaSpecialty,
   openTestScale,
 } from "./helpers/open-test-scale";
+import { TRPCError } from "@trpc/server";
 import { getDb } from "../server/db";
-import { swapRouter } from "../server/swap-router";
+import { isExpectedSwapVisibilityDenial, swapRouter } from "../server/swap-router";
 import { yearMonthBrt } from "../server/local-time";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -326,6 +327,11 @@ describe("sinal de oferta de plantão", () => {
     expect(receive).toContain("findManagerScopeId");
     expect(receive).toContain("GESTOR_PLUS");
     expect(receive).toContain("assertProfessionalQualifiedForShift");
+    const signal = readFileSync("server/swap-offer-signal.ts", "utf8");
+    expect(signal).toContain("SIGNAL_TRACKING_FAILED");
+    expect(signal).toContain("throw error");
+    expect(listAvailable).toContain("actor_directed_scope");
+    expect(listAvailable).toContain("canRespond");
   });
 
   it("mostra a cessão ao colega com outra especialidade da allowlist", async () => {
@@ -337,7 +343,8 @@ describe("sinal de oferta de plantão", () => {
     });
 
     const available = await callerFor(peer).listAvailable({ type: "CESSAO" });
-    expect(available.map((row) => Number(row.id))).toContain(Number(created.id));
+    const row = available.find((item) => Number(item.id) === Number(created.id));
+    expect(row).toMatchObject({ canRespond: true });
   });
 
   it("mostra a cessão ao GESTOR_MEDICO da escala sem professional_access", async () => {
@@ -349,7 +356,8 @@ describe("sinal de oferta de plantão", () => {
     });
 
     const available = await callerFor(gestor).listAvailable({});
-    expect(available.map((row) => Number(row.id))).toContain(Number(created.id));
+    const row = available.find((item) => Number(item.id) === Number(created.id));
+    expect(row).toMatchObject({ canRespond: true });
   });
 
   it("GESTOR_MEDICO sem professional_access aceita e o dono efetua a cessão", async () => {
@@ -429,10 +437,27 @@ describe("sinal de oferta de plantão", () => {
     });
 
     const available = await callerFor(plus).listAvailable({});
-    expect(available.map((row) => Number(row.id))).toContain(Number(created.id));
+    const row = available.find((item) => Number(item.id) === Number(created.id));
+    expect(row).toMatchObject({ canRespond: true });
     await expect(
       callerFor(plus).accept({ swapRequestId: Number(created.id) }),
     ).resolves.toEqual({ ok: true });
+
+    await expect(
+      callerFor(offerer).approveByOwner({ swapRequestId: Number(created.id) }),
+    ).resolves.toEqual({ ok: true });
+    const assignments = await db
+      .select({
+        professionalId: shiftAssignmentsV2.professionalId,
+        isActive: shiftAssignmentsV2.isActive,
+      })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, shift.shiftId));
+    expect(
+      assignments.some(
+        (item) => item.professionalId === plus.professionalId && item.isActive,
+      ),
+    ).toBe(true);
   });
 
   it("plantonista sem professional_access não aceita a cessão", async () => {
@@ -471,6 +496,8 @@ describe("sinal de oferta de plantão", () => {
       fromAssignmentId: shift.assignmentId,
     });
 
+    const available = await callerFor(unscope).listAvailable({});
+    expect(available.map((row) => Number(row.id))).not.toContain(Number(created.id));
     await expect(
       callerFor(unscope).accept({ swapRequestId: Number(created.id) }),
     ).rejects.toMatchObject({
@@ -532,5 +559,78 @@ describe("sinal de oferta de plantão", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.dedupKey).toBe(`swap-offer:${created.id}:${gestor.userId}`);
     expect(rows[0]?.shiftInstanceId).toBe(shift.shiftId);
+  });
+
+  it("oferta direcionada aparece na lista de quem recebeu o sinal", async () => {
+    const shift = await createOccupiedShift(offerer, 10, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+
+    const signaled = await db
+      .select({ userId: notifications.userId })
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    expect(signaled.map((row) => row.userId).sort((a, b) => a - b)).toEqual(
+      [peer.userId, gestor.userId, plus.userId].sort((a, b) => a - b),
+    );
+
+    const peerRow = (await callerFor(peer).listAvailable({})).find(
+      (item) => Number(item.id) === Number(created.id),
+    );
+    expect(peerRow).toMatchObject({ canRespond: true });
+
+    const gestorRow = (await callerFor(gestor).listAvailable({})).find(
+      (item) => Number(item.id) === Number(created.id),
+    );
+    expect(gestorRow).toMatchObject({ canRespond: false });
+
+    const plusRow = (await callerFor(plus).listAvailable({})).find(
+      (item) => Number(item.id) === Number(created.id),
+    );
+    expect(plusRow).toMatchObject({ canRespond: false });
+
+    await expect(
+      callerFor(gestor).accept({ swapRequestId: Number(created.id) }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Esta oferta foi direcionada a outro profissional",
+    });
+    await expect(
+      callerFor(peer).accept({ swapRequestId: Number(created.id) }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("filterReadableSwaps só omite FORBIDDEN/NOT_FOUND", () => {
+    expect(
+      isExpectedSwapVisibilityDenial(
+        new TRPCError({ code: "FORBIDDEN", message: "sem acesso" }),
+      ),
+    ).toBe(true);
+    expect(
+      isExpectedSwapVisibilityDenial(
+        new TRPCError({ code: "NOT_FOUND", message: "sumiu" }),
+      ),
+    ).toBe(true);
+    expect(
+      isExpectedSwapVisibilityDenial(
+        new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isExpectedSwapVisibilityDenial(
+        new TRPCError({
+          code: "CONFLICT",
+          message: "Esta oferta já foi respondida por outra pessoa.",
+        }),
+      ),
+    ).toBe(false);
+    expect(isExpectedSwapVisibilityDenial(new Error("boom"))).toBe(false);
   });
 });

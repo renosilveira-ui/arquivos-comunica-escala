@@ -207,7 +207,8 @@ export default function TabLayout() {
     {},
     { enabled: !!user?.id && showTrocasTab, staleTime: 60_000 },
   );
-  const availableSwapsCount = availableSwaps?.length ?? 0;
+  const availableSwapsCount =
+    availableSwaps?.filter((row) => row.canRespond !== false).length ?? 0;
 
   return (
     <Tabs

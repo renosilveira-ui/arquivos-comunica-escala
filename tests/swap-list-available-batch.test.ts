@@ -520,6 +520,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
         sectorName: `Swap Batch Setor ${stamp}`,
       },
       toShift: null,
+      canRespond: true,
     });
     expect(oneWay.fromShift.startAt.getTime()).toBe(at(10, 8).getTime());
     expect(oneWay.fromShift.endAt.getTime()).toBe(at(10, 14).getTime());

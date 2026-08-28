@@ -89,7 +89,30 @@ type AvailableSwapRow = {
   toShiftEndAt: Date | string | number | null;
   toHospitalName: string | null;
   toSectorName: string | null;
+  toProfessionalId: number | string | null;
+  toUserId: number | string | null;
 };
+
+function listedOfferCanRespond(
+  toProfessionalId: number | string | null | undefined,
+  toUserId: number | string | null | undefined,
+  actorProfessionalId: number | null,
+  actorUserId: number,
+): boolean {
+  if (actorProfessionalId == null) return false;
+  if (toProfessionalId == null && toUserId == null) return true;
+  return (
+    Number(toProfessionalId) === actorProfessionalId &&
+    Number(toUserId) === actorUserId
+  );
+}
+
+export function isExpectedSwapVisibilityDenial(error: unknown): boolean {
+  return (
+    error instanceof TRPCError &&
+    (error.code === "FORBIDDEN" || error.code === "NOT_FOUND")
+  );
+}
 
 function topologyDenied(message: string): TRPCError {
   return new TRPCError({ code: "FORBIDDEN", message });
@@ -1148,7 +1171,7 @@ async function filterReadableSwaps(
       await assertActorCanReadSwap(actor, swap);
       readable.push(swap);
     } catch (error) {
-      if (!(error instanceof TRPCError)) throw error;
+      if (!isExpectedSwapVisibilityDenial(error)) throw error;
     }
   }
   return readable;
@@ -2762,7 +2785,9 @@ export const swapRouter = router({
           tsi.start_at        AS toShiftStartAt,
           tsi.end_at          AS toShiftEndAt,
           th.name             AS toHospitalName,
-          ts.name             AS toSectorName
+          ts.name             AS toSectorName,
+          sr.to_professional_id AS toProfessionalId,
+          sr.to_user_id       AS toUserId
         FROM swap_requests sr
         JOIN institutions inst
           ON inst.id = sr.institution_id
@@ -2858,6 +2883,25 @@ export const swapRouter = router({
           AND (
             (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
             OR (sr.to_professional_id = ${actor.professionalId} AND sr.to_user_id = ${userId})
+            OR (
+              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
+              AND (
+                sr.to_professional_id != ${actor.professionalId}
+                OR sr.to_user_id != ${userId}
+              )
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_directed_scope
+                  WHERE actor_directed_scope.manager_professional_id = ap.id
+                    AND actor_directed_scope.institution_id = fsi.institution_id
+                    AND actor_directed_scope.hospital_id = fsi.hospital_id
+                    AND (actor_directed_scope.sector_id IS NULL OR actor_directed_scope.sector_id = fsi.sector_id)
+                    AND actor_directed_scope.active = 1
+                )
+              )
+            )
           )
           AND fsi.start_at > NOW()
           AND (sr.expires_at IS NULL OR sr.expires_at > NOW())
@@ -2994,16 +3038,37 @@ export const swapRouter = router({
             OR NULLIF(TRIM(ap.specialty), '') IS NULL
             OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(ap.specialty))
           )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM shift_assignments_v2 actor_conflict
-            JOIN shift_instances actor_conflict_shift
-              ON actor_conflict_shift.id = actor_conflict.shift_instance_id
-            WHERE actor_conflict.professional_id = ap.id
-              AND actor_conflict.is_active = 1
-              AND actor_conflict_shift.start_at < fsi.end_at
-              AND actor_conflict_shift.end_at > fsi.start_at
-              AND (sr.type != 'SWAP' OR actor_conflict.id != tsa.id)
+          AND (
+            NOT EXISTS (
+              SELECT 1
+              FROM shift_assignments_v2 actor_conflict
+              JOIN shift_instances actor_conflict_shift
+                ON actor_conflict_shift.id = actor_conflict.shift_instance_id
+              WHERE actor_conflict.professional_id = ap.id
+                AND actor_conflict.is_active = 1
+                AND actor_conflict_shift.start_at < fsi.end_at
+                AND actor_conflict_shift.end_at > fsi.start_at
+                AND (sr.type != 'SWAP' OR actor_conflict.id != tsa.id)
+            )
+            OR (
+              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
+              AND (
+                sr.to_professional_id != ${actor.professionalId}
+                OR sr.to_user_id != ${userId}
+              )
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_conflict_bypass
+                  WHERE actor_conflict_bypass.manager_professional_id = ap.id
+                    AND actor_conflict_bypass.institution_id = fsi.institution_id
+                    AND actor_conflict_bypass.hospital_id = fsi.hospital_id
+                    AND (actor_conflict_bypass.sector_id IS NULL OR actor_conflict_bypass.sector_id = fsi.sector_id)
+                    AND actor_conflict_bypass.active = 1
+                )
+              )
+            )
           )
           AND (
             (
@@ -3093,6 +3158,43 @@ export const swapRouter = router({
                   AND source_target_conflict.id != fsa.id
               )
             )
+            OR
+            (
+              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
+              AND (
+                sr.to_professional_id != ${actor.professionalId}
+                OR sr.to_user_id != ${userId}
+              )
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_directed_type
+                  WHERE actor_directed_type.manager_professional_id = ap.id
+                    AND actor_directed_type.institution_id = fsi.institution_id
+                    AND actor_directed_type.hospital_id = fsi.hospital_id
+                    AND (actor_directed_type.sector_id IS NULL OR actor_directed_type.sector_id = fsi.sector_id)
+                    AND actor_directed_type.active = 1
+                )
+              )
+              AND (
+                (
+                  sr.type IN ('TRANSFER', 'CESSAO')
+                  AND sr.to_shift_instance_id IS NULL
+                  AND sr.to_assignment_id IS NULL
+                )
+                OR
+                (
+                  sr.type = 'SWAP'
+                  AND sr.to_shift_instance_id IS NOT NULL
+                  AND sr.to_shift_instance_id != sr.from_shift_instance_id
+                  AND tsi.id IS NOT NULL
+                  AND tsi.start_at > NOW()
+                  AND th.id IS NOT NULL
+                  AND ts.id IS NOT NULL
+                )
+              )
+            )
           )
           ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
         ORDER BY fsi.start_at ASC, sr.id ASC
@@ -3127,6 +3229,12 @@ export const swapRouter = router({
               sectorName: r.toSectorName!,
             }
           : null,
+        canRespond: listedOfferCanRespond(
+          r.toProfessionalId,
+          r.toUserId,
+          actor.professionalId,
+          userId,
+        ),
       }));
     }),
 });
