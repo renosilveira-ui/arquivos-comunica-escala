@@ -278,14 +278,18 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
       "  assignDirect: protectedProcedure",
       "  markVacant: protectedProcedure",
     );
-    expect(direct).toContain(
-      "scheduleContextId: lockedShift.scheduleContextId",
-    );
+    expect(direct).toContain("scheduleContextId: target.scheduleContextId");
     expectGuardBeforeWrite(
       direct,
       "assertAssignmentWritesAllowedForUpdate",
-      "insert(shiftAssignmentsV2)",
+      "insertDirectAssignment",
     );
+    const insertHelper = block(
+      editor,
+      "async function insertDirectAssignment",
+      "function assertSameAssignmentTarget",
+    );
+    expect(insertHelper).toContain("insert(shiftAssignmentsV2)");
 
     const assume = block(
       routers,

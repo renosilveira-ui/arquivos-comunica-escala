@@ -14,6 +14,7 @@ import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -22,7 +23,13 @@ import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search,
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
-import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
+import {
+  ALLOCATION_REPEAT_OPTIONS,
+  ALLOCATION_REPEAT_SECTION_TITLE,
+  allocationRepeatHint,
+  allocationRepeatToast,
+  type AllocationRepeatRule,
+} from "@/lib/allocation-repeat";
 
 const ICON_BOX_SIZE = theme.space[10] + theme.space[2];
 const PRIMARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 2;
@@ -44,6 +51,8 @@ export default function ShiftDetailsScreen() {
   const [isDemo, setIsDemo] = useState(false);
   const [professionalSearch, setProfessionalSearch] = useState("");
   const [selectedProfessionalId, setSelectedProfessionalId] = useState<number | null>(null);
+  const [repeatRule, setRepeatRule] = useState<AllocationRepeatRule>("none");
+  const feedback = useActionFeedback();
 
   // Verificar modo demo
   useEffect(() => {
@@ -78,35 +87,34 @@ export default function ShiftDetailsScreen() {
     { enabled: !!user?.id && !isDemo && canManageShift && Number.isFinite(shiftId) },
   );
   const assignDirect = trpc.editor.assignDirect.useMutation({
-    onSuccess: async () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    onSuccess: async (result) => {
       setSelectedProfessionalId(null);
       setProfessionalSearch("");
+      setRepeatRule("none");
       await Promise.all([
         utils.shifts.get.invalidate({ id: shiftId }),
         utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
         utils.shifts.listAgenda.invalidate(),
       ]);
-      uiAlert("Profissional alocado", "O plantão foi atualizado com sucesso.");
+      feedback.success(
+        allocationRepeatToast(result.allocatedCount, result.skippedOccupiedCount),
+      );
     },
     onError: (error) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      uiAlert("Não foi possível alocar", error.message || "Tente novamente em instantes.");
+      feedback.error(error.message || "Não foi possível alocar. Tente novamente.");
     },
   });
   const unassignDirect = trpc.editor.unassignDirect.useMutation({
     onSuccess: async () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       await Promise.all([
         utils.shifts.get.invalidate({ id: shiftId }),
         utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
         utils.shifts.listAgenda.invalidate(),
       ]);
-      uiAlert("Alocação removida", "O plantão voltou a ficar disponível para alocação.");
+      feedback.success("Alocação removida. O plantão voltou a ficar disponível.");
     },
     onError: (error) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      uiAlert("Não foi possível remover", error.message || "Tente novamente em instantes.");
+      feedback.error(error.message || "Não foi possível remover. Tente novamente.");
     },
   });
   const filteredAssignableProfessionals = useMemo(() => {
@@ -170,7 +178,7 @@ export default function ShiftDetailsScreen() {
 
   const handleAssignProfessional = () => {
     if (!selectedProfessionalId) {
-      uiAlert("Selecione um profissional", "Escolha quem ficará alocado neste plantão.");
+      feedback.info("Escolha quem ficará alocado neste plantão.");
       return;
     }
     const selectedAssignmentType =
@@ -182,29 +190,27 @@ export default function ShiftDetailsScreen() {
       professionalId: selectedProfessionalId,
       assignmentType: selectedAssignmentType,
       reason: "Alocação direta pela tela de detalhes",
+      repeatRule,
     });
   };
 
-  const handleUnassignProfessional = (assignment: { id?: number; professionalName?: string | null }) => {
+  const handleUnassignProfessional = async (assignment: { id?: number; professionalName?: string | null }) => {
     if (!assignment.id) {
-      uiAlert("Alocação indisponível", "Não foi possível identificar esta alocação.");
+      feedback.error("Não foi possível identificar esta alocação.");
       return;
     }
 
     const professionalName = assignment.professionalName ?? "este profissional";
-    const removeAssignment = () => {
-      unassignDirect.mutate({
-        assignmentId: assignment.id!,
-        reason: "Remoção direta pela tela de detalhes",
-      });
-    };
-
-    uiConfirmDestructive(
+    const confirmed = await feedback.confirmDestructive(
       "Remover alocação",
       `Deseja remover ${professionalName} deste plantão?`,
       "Remover",
-      removeAssignment,
     );
+    if (!confirmed) return;
+    unassignDirect.mutate({
+      assignmentId: assignment.id,
+      reason: "Remoção direta pela tela de detalhes",
+    });
   };
 
   if (!user && !isDemo) {
@@ -495,6 +501,38 @@ export default function ShiftDetailsScreen() {
                       : "Nenhum profissional habilitado disponível para este plantão."}
                   </Text>
                 )}
+
+                <View style={styles.repeatBlock}>
+                  <Text style={styles.repeatTitle}>{ALLOCATION_REPEAT_SECTION_TITLE}</Text>
+                  <View style={styles.repeatGrid}>
+                    {ALLOCATION_REPEAT_OPTIONS.map((option) => {
+                      const selected = option.rule === repeatRule;
+                      return (
+                        <TouchableOpacity
+                          key={option.rule}
+                          activeOpacity={0.78}
+                          accessibilityRole="radio"
+                          accessibilityState={{ selected }}
+                          onPress={() => setRepeatRule(option.rule)}
+                          style={[
+                            styles.repeatChip,
+                            selected ? styles.repeatChipSelected : null,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.repeatChipLabel,
+                              selected ? styles.repeatChipLabelSelected : null,
+                            ]}
+                          >
+                            {option.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  <Text style={styles.repeatHint}>{allocationRepeatHint(repeatRule)}</Text>
+                </View>
 
                 <ActionButton
                   label={assignDirect.isPending ? "Alocando..." : "Alocar profissional"}
@@ -935,6 +973,50 @@ const styles = StyleSheet.create({
   assignableText: {
     flex: 1,
     minWidth: theme.space[0],
+  },
+  repeatBlock: {
+    gap: theme.space[3],
+  },
+  repeatTitle: {
+    ...theme.text.bodyLg,
+    color: theme.colors.textPrimary,
+    fontWeight: theme.weight.semibold,
+  },
+  repeatGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.space[2],
+  },
+  repeatChip: {
+    minHeight: theme.space[14],
+    minWidth: theme.space[14],
+    flexGrow: 1,
+    flexBasis: FIELD_MIN_WIDTH,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    paddingHorizontal: theme.space[3],
+    paddingVertical: theme.space[3],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  repeatChipSelected: {
+    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.primarySoft,
+  },
+  repeatChipLabel: {
+    ...theme.text.body,
+    color: theme.colors.textSecondary,
+    fontWeight: theme.weight.semibold,
+    textAlign: "center",
+  },
+  repeatChipLabelSelected: {
+    color: theme.colors.primary,
+  },
+  repeatHint: {
+    ...theme.text.caption,
+    color: theme.colors.textSecondary,
   },
   personCard: {
     padding: theme.space[4],

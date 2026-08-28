@@ -21,7 +21,15 @@ import {
   ASSIGNMENT_WRITE_TRANSACTION_CONFIG,
   assertAssignmentWritesAllowedForUpdate,
   assertShiftAssignmentCapacityForUpdate,
+  type AssignmentWriteTx,
 } from "./shift-validations-v2";
+import {
+  ALLOCATION_REPEAT_RULES,
+  listActiveAssignmentShiftIds,
+  listRepeatAssignmentCandidates,
+  selectRepeatTargets,
+  type AllocationRepeatRule,
+} from "./allocation-repeat";
 
 type EditorDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
 
@@ -32,6 +40,7 @@ type ShiftTarget = {
   sectorId: number;
   scheduleContextId: number | null;
   specialty: string | null;
+  label: string;
   startAt: Date;
   endAt: Date;
   status: string;
@@ -58,6 +67,7 @@ async function getShiftTarget(
       sectorId: shiftInstances.sectorId,
       scheduleContextId: shiftInstances.scheduleContextId,
       specialty: shiftInstances.specialty,
+      label: shiftInstances.label,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       status: shiftInstances.status,
@@ -119,6 +129,7 @@ async function getAssignmentTarget(
         sectorId: shiftInstances.sectorId,
         scheduleContextId: shiftInstances.scheduleContextId,
         specialty: shiftInstances.specialty,
+        label: shiftInstances.label,
         startAt: shiftInstances.startAt,
         endAt: shiftInstances.endAt,
         status: shiftInstances.status,
@@ -191,6 +202,7 @@ async function getAssignmentTarget(
       sectorId: shiftInstances.sectorId,
       scheduleContextId: shiftInstances.scheduleContextId,
       specialty: shiftInstances.specialty,
+      label: shiftInstances.label,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       status: shiftInstances.status,
@@ -240,6 +252,7 @@ function assertSameShiftTarget(
     authorized.sectorId !== locked.sectorId ||
     authorized.scheduleContextId !== locked.scheduleContextId ||
     authorized.specialty !== locked.specialty ||
+    authorized.label !== locked.label ||
     authorized.status !== locked.status ||
     !sameInstant(authorized.startAt, locked.startAt) ||
     !sameInstant(authorized.endAt, locked.endAt)
@@ -249,6 +262,92 @@ function assertSameShiftTarget(
       message: "O turno mudou enquanto a edição era processada.",
     });
   }
+}
+
+function selectLockedRepeatTargets(
+  source: ShiftTarget,
+  lockedById: Map<number, ShiftTarget>,
+  rule: AllocationRepeatRule,
+): ShiftTarget[] {
+  return selectRepeatTargets(source, [...lockedById.values()], rule);
+}
+
+async function insertDirectAssignment(
+  tx: AssignmentWriteTx,
+  input: {
+    shift: ShiftTarget;
+    professionalId: number;
+    assignmentType: "ON_DUTY" | "BACKUP" | "ON_CALL";
+    reason?: string;
+    userId: number;
+    managerId: number;
+    actorRole: "GESTOR_MEDICO" | "GESTOR_PLUS";
+    actorName?: string;
+    repeatRule: AllocationRepeatRule;
+    isRepeat: boolean;
+  },
+): Promise<number> {
+  const [inserted] = await tx.insert(shiftAssignmentsV2).values({
+    shiftInstanceId: input.shift.id,
+    institutionId: input.shift.institutionId,
+    hospitalId: input.shift.hospitalId,
+    sectorId: input.shift.sectorId,
+    professionalId: input.professionalId,
+    assignmentType: input.assignmentType,
+    status: "OCUPADO",
+    isActive: true,
+    createdBy: input.userId,
+  });
+  await recomputeShiftStatus(tx, input.shift.id);
+  const createdAssignmentId = Number(inserted.insertId);
+  const reason =
+    input.reason ||
+    (input.isRepeat
+      ? `Alocação repetida (${input.repeatRule}): ${input.assignmentType}`
+      : `Alocação direta: ${input.assignmentType}`);
+
+  await auditLog(
+    {
+      event: "SHIFT_ASSIGNED",
+      shiftInstanceId: input.shift.id,
+      institutionId: input.shift.institutionId,
+      professionalId: input.managerId,
+      reason,
+      metadata: {
+        assignmentId: createdAssignmentId,
+        allocatedProfessionalId: input.professionalId,
+        assignmentType: input.assignmentType,
+        repeatRule: input.repeatRule,
+        isRepeat: input.isRepeat,
+      },
+    },
+    { db: tx },
+  );
+  await recordAudit(
+    {
+      action: "ASSIGNMENT_CREATED",
+      entityType: "SHIFT_ASSIGNMENT",
+      entityId: createdAssignmentId,
+      actorUserId: input.userId,
+      actorRole: input.actorRole,
+      actorName: input.actorName,
+      description: input.isRepeat
+        ? `Alocação repetida do profissional #${input.professionalId} no turno #${input.shift.id}`
+        : `Alocação direta do profissional #${input.professionalId} no turno #${input.shift.id}`,
+      institutionId: input.shift.institutionId,
+      shiftInstanceId: input.shift.id,
+      hospitalId: input.shift.hospitalId,
+      sectorId: input.shift.sectorId,
+      toProfessionalId: input.professionalId,
+      metadata: {
+        assignmentType: input.assignmentType,
+        repeatRule: input.repeatRule,
+        isRepeat: input.isRepeat,
+      },
+    },
+    { db: tx, strict: true },
+  );
+  return createdAssignmentId;
 }
 
 function assertSameAssignmentTarget(
@@ -290,10 +389,12 @@ export const editorRouter = router({
         professionalId: z.number(),
         assignmentType: z.enum(["ON_DUTY", "BACKUP", "ON_CALL"]),
         reason: z.string().optional(),
+        repeatRule: z.enum(ALLOCATION_REPEAT_RULES).default("none"),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const { shiftInstanceId, professionalId, assignmentType, reason } = input;
+      const repeatRule: AllocationRepeatRule = input.repeatRule;
       const userId = ctx.user?.id;
       if (!userId) {
         throw new ForbiddenError("Autenticação necessária");
@@ -325,7 +426,7 @@ export const editorRouter = router({
 
       // Guarda mensal, revalidação/CAS do alvo, alocação, status e ambas as
       // trilhas de auditoria formam um único commit.
-      const assignmentId = await db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         await assertMonthEditableForUpdate(
           tx,
           { user: { id: userId } },
@@ -335,12 +436,30 @@ export const editorRouter = router({
           reason,
         );
 
-        const lockedShift = await getShiftTarget(
-          tx,
-          shiftInstanceId,
-          ctx.institutionId,
-          true,
-        );
+        const previewTargets =
+          repeatRule === "none"
+            ? []
+            : await listRepeatAssignmentCandidates(tx, shift, repeatRule);
+        const lockIds = Array.from(
+          new Set([shiftInstanceId, ...previewTargets.map((row) => row.id)]),
+        ).sort((left, right) => left - right);
+
+        const lockedById = new Map<number, ShiftTarget>();
+        for (const id of lockIds) {
+          const locked = await getShiftTarget(tx, id, ctx.institutionId, true);
+          if (!locked) {
+            if (id === shiftInstanceId) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "O turno não está mais disponível.",
+              });
+            }
+            continue;
+          }
+          lockedById.set(id, locked);
+        }
+
+        const lockedShift = lockedById.get(shiftInstanceId);
         if (!lockedShift) {
           throw new TRPCError({
             code: "CONFLICT",
@@ -348,20 +467,33 @@ export const editorRouter = router({
           });
         }
         assertSameShiftTarget(shift, lockedShift);
+
+        const matchingTargets = selectLockedRepeatTargets(
+          lockedShift,
+          lockedById,
+          repeatRule,
+        );
+        const occupiedIds = await listActiveAssignmentShiftIds(tx, lockedShift.institutionId, [
+          ...matchingTargets.map((row) => row.id),
+        ]);
+        const vacantTargets = matchingTargets.filter(
+          (target) => target.status === "VAGO" && !occupiedIds.has(target.id),
+        );
+        const skippedOccupiedCount = matchingTargets.length - vacantTargets.length;
+        const toAssign = [lockedShift, ...vacantTargets];
+
         await assertAssignmentWritesAllowedForUpdate(
           tx,
-          [
-            {
-              professionalId,
-              institutionId: lockedShift.institutionId,
-              hospitalId: lockedShift.hospitalId,
-              sectorId: lockedShift.sectorId,
-              scheduleContextId: lockedShift.scheduleContextId,
-              startAt: lockedShift.startAt,
-              endAt: lockedShift.endAt,
-              requiredSpecialty: lockedShift.specialty,
-            },
-          ],
+          toAssign.map((target) => ({
+            professionalId,
+            institutionId: target.institutionId,
+            hospitalId: target.hospitalId,
+            sectorId: target.sectorId,
+            scheduleContextId: target.scheduleContextId,
+            startAt: target.startAt,
+            endAt: target.endAt,
+            requiredSpecialty: target.specialty,
+          })),
           { additionalProfessionalIds: [managerId] },
         );
         const actorRole = await assertManagerScopeAccessForUpdate(
@@ -370,67 +502,45 @@ export const editorRouter = router({
           ctx.user.sessionVersion,
           lockedShift.hospitalId,
           lockedShift.sectorId,
-          [lockedShift.startAt],
+          toAssign.map((target) => target.startAt),
         );
-        await assertShiftAssignmentCapacityForUpdate(tx, {
-          shiftInstanceId: lockedShift.id,
-          institutionId: lockedShift.institutionId,
-          hospitalId: lockedShift.hospitalId,
-          sectorId: lockedShift.sectorId,
-          activeDelta: 1,
-        });
+        for (const target of toAssign) {
+          await assertShiftAssignmentCapacityForUpdate(tx, {
+            shiftInstanceId: target.id,
+            institutionId: target.institutionId,
+            hospitalId: target.hospitalId,
+            sectorId: target.sectorId,
+            activeDelta: 1,
+          });
+        }
 
-        const [inserted] = await tx.insert(shiftAssignmentsV2).values({
-          shiftInstanceId,
-          institutionId: lockedShift.institutionId,
-          hospitalId: lockedShift.hospitalId,
-          sectorId: lockedShift.sectorId,
-          professionalId,
-          assignmentType,
-          status: "OCUPADO",
-          isActive: true,
-          createdBy: userId,
-        });
-        await recomputeShiftStatus(tx, shiftInstanceId);
-        const createdAssignmentId = Number(inserted.insertId);
-
-        await auditLog(
-          {
-            event: "SHIFT_ASSIGNED",
-            shiftInstanceId,
-            institutionId: lockedShift.institutionId,
-            professionalId: managerId,
-            reason: reason || `Alocação direta: ${assignmentType}`,
-            metadata: {
-              assignmentId: createdAssignmentId,
-              allocatedProfessionalId: professionalId,
-              assignmentType,
-            },
-          },
-          { db: tx },
-        );
-        await recordAudit(
-          {
-            action: "ASSIGNMENT_CREATED",
-            entityType: "SHIFT_ASSIGNMENT",
-            entityId: createdAssignmentId,
-            actorUserId: userId,
+        let sourceAssignmentId = 0;
+        for (const target of toAssign) {
+          const createdAssignmentId = await insertDirectAssignment(tx, {
+            shift: target,
+            professionalId,
+            assignmentType,
+            reason,
+            userId,
+            managerId,
             actorRole,
             actorName: ctx.user.name ?? undefined,
-            description: `Alocação direta do profissional #${professionalId} no turno #${shiftInstanceId}`,
-            institutionId: lockedShift.institutionId,
-            shiftInstanceId,
-            hospitalId: lockedShift.hospitalId,
-            sectorId: lockedShift.sectorId,
-            toProfessionalId: professionalId,
-            metadata: { assignmentType },
-          },
-          { db: tx, strict: true },
-        );
-        return createdAssignmentId;
+            repeatRule,
+            isRepeat: target.id !== shiftInstanceId,
+          });
+          if (target.id === shiftInstanceId) {
+            sourceAssignmentId = createdAssignmentId;
+          }
+        }
+
+        return {
+          assignmentId: sourceAssignmentId,
+          allocatedCount: toAssign.length,
+          skippedOccupiedCount,
+        };
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
-      return { ok: true, assignmentId };
+      return { ok: true, ...result };
     }),
 
   /**
