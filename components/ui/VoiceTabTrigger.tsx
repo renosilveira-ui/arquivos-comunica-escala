@@ -1,9 +1,11 @@
-// Botão central da barra inferior: microfone navy elevado, anel de
-// papel e sombra de floating. Não é aba — é comando.
+// Microfone navy sobreposto no centro da barra. Não é aba — é comando.
+// Sem rótulo visível: a barra já tem 4 destinos; o nome vai no leitor de tela.
 
-import { Pressable, Text, View } from "react-native";
+import { Pressable } from "react-native";
 import { Mic } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+
+const TAB_TRIGGER_SIZE = theme.space[10] + theme.space[1];
 
 export function VoiceTabTrigger({
   onPress,
@@ -19,40 +21,19 @@ export function VoiceTabTrigger({
       accessibilityLabel="Comando de voz"
       accessibilityState={{ busy: listening }}
       style={({ pressed }) => ({
+        width: TAB_TRIGGER_SIZE,
+        height: TAB_TRIGGER_SIZE,
+        borderRadius: theme.radius.full,
+        backgroundColor: listening ? theme.colors.danger : theme.colors.brand,
+        borderWidth: theme.space[1],
+        borderColor: theme.colors.surface,
         alignItems: "center",
-        justifyContent: "flex-end",
-        width: theme.space[20],
-        marginTop: -theme.space[6],
+        justifyContent: "center",
         opacity: pressed ? 0.9 : 1,
+        ...theme.shadow.lg,
       })}
     >
-      <View
-        style={{
-          width: theme.space[14],
-          height: theme.space[14],
-          borderRadius: theme.radius.full,
-          backgroundColor: listening
-            ? theme.colors.danger
-            : theme.colors.brand,
-          borderWidth: 4,
-          borderColor: theme.colors.surface,
-          alignItems: "center",
-          justifyContent: "center",
-          ...theme.shadow.lg,
-        }}
-      >
-        <Mic size={24} color={theme.colors.onDark.text} />
-      </View>
-      <Text
-        style={{
-          ...theme.text.caption,
-          marginTop: theme.space[1],
-          fontWeight: theme.weight.bold,
-          color: listening ? theme.colors.danger : theme.colors.brand,
-        }}
-      >
-        Voz
-      </Text>
+      <Mic size={20} color={theme.colors.onDark.text} />
     </Pressable>
   );
 }

@@ -281,11 +281,7 @@ export default function AgendaScreen() {
       scheduleContextId: selectedAgendaContextId,
     },
     {
-      enabled:
-        !!user?.id &&
-        (scope === "minha" ||
-          scheduleContext.isError ||
-          !scheduleContext.isSelectionHydrating),
+      enabled: !!user?.id,
       // Cold start / oscilação de rede não pode virar tela vazia:
       // retries seguram a maioria; o resto cai no estado de erro abaixo.
       retry: 2,
@@ -576,8 +572,8 @@ export default function AgendaScreen() {
                       color: theme.colors.danger,
                     }}
                   >
-                    Não foi possível listar as escalas da instituição. A visão
-                    geral ainda não carregou quem está nos plantões.
+                    Não foi possível listar os setores. Os plantões do mês
+                    continuam visíveis abaixo.
                   </Text>
                   <TouchableOpacity
                     onPress={() => scheduleContext.refetch()}
@@ -815,15 +811,6 @@ export default function AgendaScreen() {
               </Text>
             </TouchableOpacity>
           </View>
-        ) : scope === "geral" &&
-          !scheduleContext.isSelectionHydrating &&
-          scheduleContext.isError ? (
-          <QueryErrorState
-            title="Não foi possível carregar as escalas"
-            onRetry={() => {
-              void scheduleContext.refetch();
-            }}
-          />
         ) : scope === "geral" &&
           !scheduleContext.isSelectionHydrating &&
           !scheduleContext.isError &&

@@ -206,78 +206,65 @@ function Gallery() {
         </View>
 
         <View style={{ gap: theme.space[3] }}>
-          <SectionHeader title="Barra inferior" subtitle="Comando de voz no centro, elevado sobre as abas do plantonista" />
+          <SectionHeader title="Barra inferior" subtitle="Quatro abas; microfone sobreposto no centro, sem quinto botão" />
           <Surface padded={false}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "flex-end",
-                paddingTop: theme.space[3],
-                paddingBottom: theme.space[3],
-                borderTopWidth: 1,
-                borderTopColor: theme.colors.border,
-              }}
-            >
-              {(
-                [
-                  { label: "Agenda", Icon: CalendarDays, focused: true },
-                  { label: "Trocas", Icon: ArrowRightLeft, focused: false },
-                ] as const
-              ).map((item) => (
-                <View
-                  key={item.label}
-                  style={{
-                    flex: 1,
-                    alignItems: "center",
-                    gap: theme.space[1],
-                    minHeight: theme.space[10] + theme.space[1],
-                    justifyContent: "center",
-                  }}
-                >
-                  <item.Icon
-                    size={22}
-                    color={item.focused ? theme.colors.primary : theme.colors.textMuted}
-                  />
-                  <Text
+            <View style={{ position: "relative" }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingTop: theme.space[2],
+                  paddingBottom: theme.space[2],
+                  borderTopWidth: 1,
+                  borderTopColor: theme.colors.border,
+                }}
+              >
+                {(
+                  [
+                    { label: "Agenda", Icon: CalendarDays, focused: true },
+                    { label: "Trocas", Icon: ArrowRightLeft, focused: false },
+                    { label: "Vagas", Icon: Briefcase, focused: false },
+                    { label: "Perfil", Icon: User, focused: false },
+                  ] as const
+                ).map((item) => (
+                  <View
+                    key={item.label}
                     style={{
-                      ...theme.text.caption,
-                      fontWeight: item.focused ? theme.weight.bold : theme.weight.medium,
-                      color: item.focused ? theme.colors.primary : theme.colors.textMuted,
+                      flex: 1,
+                      alignItems: "center",
+                      gap: theme.space[1],
+                      minHeight: theme.space[10] + theme.space[1],
+                      justifyContent: "center",
                     }}
                   >
-                    {item.label}
-                  </Text>
-                </View>
-              ))}
-              <VoiceTabTrigger onPress={() => feedback.info("Comando de voz")} />
-              {(
-                [
-                  { label: "Vagas", Icon: Briefcase },
-                  { label: "Perfil", Icon: User },
-                ] as const
-              ).map((item) => (
-                <View
-                  key={item.label}
-                  style={{
-                    flex: 1,
-                    alignItems: "center",
-                    gap: theme.space[1],
-                    minHeight: theme.space[10] + theme.space[1],
-                    justifyContent: "center",
-                  }}
-                >
-                  <item.Icon size={22} color={theme.colors.textMuted} />
-                  <Text
-                    style={{
-                      ...theme.text.caption,
-                      fontWeight: theme.weight.medium,
-                      color: theme.colors.textMuted,
-                    }}
-                  >
-                    {item.label}
-                  </Text>
-                </View>
-              ))}
+                    <item.Icon
+                      size={22}
+                      color={item.focused ? theme.colors.primary : theme.colors.textMuted}
+                    />
+                    <Text
+                      style={{
+                        ...theme.text.caption,
+                        fontWeight: item.focused ? theme.weight.bold : theme.weight.medium,
+                        color: item.focused ? theme.colors.primary : theme.colors.textMuted,
+                      }}
+                    >
+                      {item.label}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+              <View
+                pointerEvents="box-none"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  top: theme.space[1],
+                  alignItems: "center",
+                }}
+              >
+                <VoiceTabTrigger onPress={() => feedback.info("Comando de voz")} />
+              </View>
             </View>
           </Surface>
         </View>
