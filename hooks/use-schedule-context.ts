@@ -28,15 +28,23 @@ export function useScheduleContext({
   visibility = "authorized",
 }: UseScheduleContextOptions) {
   const enabled = !!userId && !!institutionId;
-  const authorizedQuery = trpc.scheduleContexts.listMine.useQuery(undefined, {
-    enabled: enabled && visibility === "authorized",
-    staleTime: 60_000,
-  });
   const rosterQuery = trpc.scheduleContexts.listReadable.useQuery(undefined, {
     enabled: enabled && visibility === "roster",
     staleTime: 60_000,
   });
-  const query = visibility === "roster" ? rosterQuery : authorizedQuery;
+  // Servidor antigo sem listReadable não pode apagar a Agenda: cai no
+  // listMine (setores que o médico já pratica / gere).
+  const authorizedQuery = trpc.scheduleContexts.listMine.useQuery(undefined, {
+    enabled:
+      enabled &&
+      (visibility === "authorized" ||
+        (visibility === "roster" && rosterQuery.isError)),
+    staleTime: 60_000,
+  });
+  const query =
+    visibility === "roster" && !rosterQuery.isError
+      ? rosterQuery
+      : authorizedQuery;
   const contexts = useMemo<readonly ScheduleContextOption[]>(
     () => query.data ?? [],
     [query.data],
@@ -130,8 +138,20 @@ export function useScheduleContext({
     [contexts, selectedContextId],
   );
 
+  const refetch = useCallback(async () => {
+    if (visibility === "roster") {
+      const rosterResult = await rosterQuery.refetch();
+      if (rosterResult.error) {
+        return authorizedQuery.refetch();
+      }
+      return rosterResult;
+    }
+    return authorizedQuery.refetch();
+  }, [authorizedQuery, rosterQuery, visibility]);
+
   return {
     ...query,
+    refetch,
     contexts,
     selectedContext,
     selectedContextId,

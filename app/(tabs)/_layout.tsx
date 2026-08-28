@@ -198,10 +198,11 @@ export default function TabLayout() {
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
   // Barra inferior (celular) = experiência do plantonista, para todo
-  // papel: Agenda · Trocas · Vagas · Perfil. Painel, Solicitações e Admin
-  // são ferramentas de gestão — ficam na sidebar do desktop e, no celular,
-  // em Perfil → Gestão (rotas continuam navegáveis; só saem da barra).
-  // Decisão do PO em 2026-08-22.
+  // papel: Agenda · Trocas · Vagas · Perfil. Painel, Solicitações, Relatórios
+  // e Admin ficam na sidebar do desktop e, no celular, em Perfil → Gestão.
+  // O Expo Router remove `href` das options do tabBar customizado — a
+  // allowlist em MobileTabBar é o que impede as 8 abas. Decisão do PO em
+  // 2026-08-22.
   const showManagementTabs = isDesktopWeb;
   const showTrocasTab = !isDesktopWeb || !isManager;
   // Badge da aba Trocas: ofertas que o usuário pode responder.
