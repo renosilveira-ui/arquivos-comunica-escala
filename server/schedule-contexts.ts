@@ -1132,7 +1132,24 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
   }
 
   // Alocação não filtra por especialidade / QUALIFICATION_ALLOWLIST.
-  // Vale acesso setorial, manager_scope ou convite nominal pendente.
+  // Vale GESTOR_PLUS, acesso setorial, manager_scope ou convite nominal pendente.
+  const [membership] = await database
+    .select({
+      roleInInstitution: professionalInstitutions.roleInInstitution,
+    })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.professionalId, input.professionalId),
+        eq(professionalInstitutions.userId, professional.userId),
+        eq(professionalInstitutions.institutionId, input.institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .limit(1);
+  if (membership?.roleInInstitution === "GESTOR_PLUS") {
+    return;
+  }
   const scopes = await loadManagerScopes(
     database,
     input.institutionId,
