@@ -30,7 +30,8 @@ describe("login nativo não trava no BootScreen após credenciais", () => {
       layout.indexOf("function TenantAuthorizationBoundary"),
       layout.indexOf("function AuthGuard"),
     );
-    expect(boundary).toMatch(/online:\s*Platform\.OS === "web"[\s\S]*: true,/);
+    expect(boundary).toContain("initialTenantAuthorizationActivityForPlatform");
+    expect(boundary).toContain("online: true");
     expect(boundary).toContain("updateActivity({ online: true })");
   });
 

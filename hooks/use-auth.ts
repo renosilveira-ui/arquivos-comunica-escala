@@ -38,6 +38,11 @@ import {
 } from "@/lib/push-registration";
 import { appSessionEpoch, type SessionEpochTicket } from "@/lib/session-epoch";
 import { onSessionUnauthorized } from "@/lib/session-events";
+import {
+  clearPreservedWebVerifiedSession,
+  readPreservedWebVerifiedSession,
+  rememberPreservedWebVerifiedSession,
+} from "@/lib/web-verified-session";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
@@ -220,46 +225,95 @@ function verifiedSessionValidation(
   };
 }
 
+function readRestoredWebVerifiedSession(): {
+  user: AuthUser;
+  sessionValidation: SessionValidationState;
+} | null {
+  const preserved = readPreservedWebVerifiedSession<AuthUser>({
+    isTransportCurrent: Auth.isSessionTransportUserCurrent,
+    isEpochCurrent: (ticket) => appSessionEpoch.isCurrent(ticket),
+  });
+  if (!preserved) return null;
+  return {
+    user: preserved.user,
+    sessionValidation: verifiedSessionValidation(
+      preserved.user.id,
+      preserved.ticket,
+      preserved.sequence,
+    ),
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const restoredWebSessionRef = useRef<ReturnType<typeof readRestoredWebVerifiedSession>>(
+    undefined,
+  );
+  if (restoredWebSessionRef.current === undefined) {
+    restoredWebSessionRef.current = readRestoredWebVerifiedSession();
+  }
+  const restoredWebSession = restoredWebSessionRef.current;
+  const [user, setUser] = useState<AuthUser | null>(
+    restoredWebSession?.user ?? null,
+  );
+  const [isLoading, setIsLoading] = useState(restoredWebSession === null);
   const [pushRegistrationRevision, setPushRegistrationRevision] = useState(0);
   const [sessionValidation, setSessionValidation] =
-    useState<SessionValidationState>({
-      status: "CHECKING",
-      sequence: 0,
-    });
+    useState<SessionValidationState>(
+      restoredWebSession?.sessionValidation ?? {
+        status: "CHECKING",
+        sequence: 0,
+      },
+    );
   // Cache de consultas em memória: zerado no login e no logout, aqui, e
   // não no AuthGuard — o guard é REMONTADO a cada troca de usuário
   // (TenantScope) e nunca via a transição.
   const queryClient = useQueryClient();
-  const sessionUserRef = useRef<AuthUser | null>(null);
+  const sessionUserRef = useRef<AuthUser | null>(restoredWebSession?.user ?? null);
   const verifiedSessionSnapshotRef = useRef<{
     userId: number;
     ticket: SessionEpochTicket;
     sequence: number;
-  } | null>(null);
+  } | null>(
+    restoredWebSession && restoredWebSession.sessionValidation.status === "VERIFIED"
+      ? {
+          userId: restoredWebSession.user.id,
+          ticket: restoredWebSession.sessionValidation.ticket,
+          sequence: restoredWebSession.sessionValidation.sequence,
+        }
+      : null,
+  );
 
   useEffect(() => {
     sessionUserRef.current = user;
+    if (user === null) {
+      clearPreservedWebVerifiedSession();
+    }
   }, [user]);
 
   useEffect(() => {
     if (
       sessionValidation.status === "VERIFIED" &&
-      sessionValidation.isCurrent()
+      sessionValidation.isCurrent() &&
+      user !== null &&
+      user.id === sessionValidation.userId
     ) {
       verifiedSessionSnapshotRef.current = {
         userId: sessionValidation.userId,
         ticket: sessionValidation.ticket,
         sequence: sessionValidation.sequence,
       };
+      rememberPreservedWebVerifiedSession({
+        user,
+        ticket: sessionValidation.ticket,
+        sequence: sessionValidation.sequence,
+      });
       return;
     }
     if (sessionValidation.status === "UNAVAILABLE") {
       verifiedSessionSnapshotRef.current = null;
+      clearPreservedWebVerifiedSession();
     }
-  }, [sessionValidation]);
+  }, [sessionValidation, user]);
 
   const closeAsyncSessionAdmission = useCallback(() => {
     Auth.closeSessionTokenTransportAdmission();
@@ -1301,7 +1355,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // On mount, a identidade só é publicada depois de /me validar a sessão.
   // O cache nativo não é prova de sessão: senha/conta podem ter sido revogadas
   // enquanto o app estava fechado, e o storage local também pode ter falhado.
+  // Remount web (foco/Expo) herda a receipt VERIFIED do processo — um /me
+  // automático aqui era o logout instantâneo ao trocar de aba.
   useEffect(() => {
+    if (restoredWebSessionRef.current) return;
     void refetch();
   }, [refetch]);
 
@@ -1311,6 +1368,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Outra aba pode substituir o cookie sem provocar rerender aqui. A
         // notificação local fecha push/cache e invalida qualquer lease/receipt
         // na mesma task; a revalidação aguarda o workflow lock remoto.
+        clearPreservedWebVerifiedSession();
+        restoredWebSessionRef.current = null;
         closeAsyncSessionAdmission();
         sessionMutationState.active = null;
         sessionMutationState.intentGeneration += 1;
