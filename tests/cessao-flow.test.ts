@@ -6,6 +6,7 @@ import {
   hospitals,
   institutions,
   monthlyRosters,
+  notifications,
   professionals,
   sectors,
   shiftAssignmentsV2,
@@ -130,6 +131,7 @@ describe("Cessão sem gestor (approveByOwner)", () => {
     );
     for (const s of oldShifts) {
       await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, s.id));
+      await db.delete(notifications).where(eq(notifications.shiftInstanceId, s.id));
       await db.delete(swapRequests).where(eq(swapRequests.fromShiftInstanceId, s.id));
       await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, s.id));
       await db.delete(shiftInstances).where(eq(shiftInstances.id, s.id));

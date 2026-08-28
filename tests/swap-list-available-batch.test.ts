@@ -5,6 +5,7 @@ import {
   hospitals,
   institutions,
   monthlyRosters,
+  notifications,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -282,6 +283,9 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
 
   beforeEach(async () => {
     await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    await db
       .delete(swapRequests)
       .where(eq(swapRequests.institutionId, institutionId));
     await db
@@ -321,6 +325,9 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
 
   afterAll(async () => {
     if (!db) return;
+    await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
     await db
       .delete(swapRequests)
       .where(eq(swapRequests.institutionId, institutionId));

@@ -6,6 +6,7 @@ import {
   hospitals,
   institutions,
   monthlyRosters,
+  notifications,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -110,6 +111,9 @@ describe("swaps: topologia e identidade fail-closed", () => {
         );
       const swapIds = oldSwaps.map(({ id }) => id);
       await db.delete(auditTrail).where(inArray(auditTrail.shiftInstanceId, shiftIds));
+      await db
+        .delete(notifications)
+        .where(inArray(notifications.shiftInstanceId, shiftIds));
       if (swapIds.length > 0) {
         await db.delete(auditTrail).where(inArray(auditTrail.entityId, swapIds));
       }
