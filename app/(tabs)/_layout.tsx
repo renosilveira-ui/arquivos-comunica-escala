@@ -1,6 +1,7 @@
 import { Tabs } from "expo-router";
-import { BottomTabBar, type BottomTabBarProps } from "@react-navigation/bottom-tabs";
+import { type BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { TabIcon } from "@/components/ui/TabIcon";
+import { MobileTabBar } from "@/components/ui/MobileTabBar";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { Platform, Pressable, Text, View, useWindowDimensions, type ViewStyle } from "react-native";
@@ -213,7 +214,9 @@ export default function TabLayout() {
 
   return (
     <Tabs
-      tabBar={(props) => (isDesktopWeb ? <WebSidebarTabBar {...props} /> : <BottomTabBar {...props} />)}
+      tabBar={(props) =>
+        isDesktopWeb ? <WebSidebarTabBar {...props} /> : <MobileTabBar {...props} />
+      }
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.colors.primary,

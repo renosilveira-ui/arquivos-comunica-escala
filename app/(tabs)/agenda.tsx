@@ -39,7 +39,6 @@ import { SkeletonList } from "@/components/ui/Skeleton";
 import { useTenantState } from "@/lib/tenant-state";
 import { useSsoHandoff } from "@/hooks/use-sso-handoff";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
-import { VoiceCommandButton } from "@/components/VoiceCommandButton";
 import { ScheduleContextSelector } from "@/components/ScheduleContextSelector";
 import { useScheduleContext } from "@/hooks/use-schedule-context";
 import {
@@ -489,11 +488,6 @@ export default function AgendaScreen() {
                   Hoje
                 </Text>
               </TouchableOpacity>
-              {Platform.OS !== "web" ? (
-                <View style={{ marginLeft: 2 }}>
-                  <VoiceCommandButton variant="inline" />
-                </View>
-              ) : null}
             </View>
           </View>
 
