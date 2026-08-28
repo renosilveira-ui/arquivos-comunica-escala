@@ -54,13 +54,13 @@ export default function TrocasScreen() {
             <LinkCard
               icon={<Send size={20} color={theme.colors.primary} />}
               title="Minhas ofertas"
-              subtitle="Plantões que você ofereceu — aprove quem se candidatou"
+              subtitle="Plantões que você ofereceu — quem assumir leva na hora"
               onPress={() => go("/my-offers")}
             />
             <LinkCard
               icon={<Inbox size={20} color={theme.colors.primary} />}
               title="Minhas candidaturas"
-              subtitle="Ofertas e vagas que você pediu — aguardando aprovação"
+              subtitle="Ofertas e vagas que você assumiu ou pediu"
               onPress={() => go("/my-applications")}
             />
             <LinkCard

@@ -13,6 +13,7 @@ import {
   institutions,
   managerScope,
   monthlyRosters,
+  notifications,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -227,6 +228,7 @@ describe("integridade transacional", () => {
     if (shiftIds.length) {
       await db.delete(auditTrail).where(inArray(auditTrail.shiftInstanceId, shiftIds));
       await db.delete(shiftAuditLog).where(inArray(shiftAuditLog.shiftInstanceId, shiftIds));
+      await db.delete(notifications).where(inArray(notifications.shiftInstanceId, shiftIds));
       await db.delete(shiftAssignmentsV2).where(inArray(shiftAssignmentsV2.shiftInstanceId, shiftIds));
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, shiftIds));
     }
@@ -515,17 +517,9 @@ describe("integridade transacional", () => {
     expect(String(failed[0].reason?.message)).toMatch(/respondida por outra pessoa|esperava PENDING/);
 
     const [swap] = await db!.select().from(swapRequests).where(eq(swapRequests.id, swapRequestId));
-    expect(swap.status).toBe("ACCEPTED");
+    expect(swap.status).toBe("APPROVED");
     expect(swap.version).toBe(2);
     expect([bruno.professionalId, carla.professionalId]).toContain(swap.toProfessionalId);
-  });
-
-  it("approveByOwner efetiva a cessão atomicamente e não efetiva duas vezes", async () => {
-    const callerAlice = swapRouter.createCaller(ctxFor(alice, "doctor"));
-    await callerAlice.approveByOwner({ swapRequestId });
-    const [swap] = await db!.select().from(swapRequests).where(eq(swapRequests.id, swapRequestId));
-    expect(swap.status).toBe("APPROVED");
-    expect(swap.version).toBe(3);
 
     const active = await db!
       .select()
@@ -533,9 +527,8 @@ describe("integridade transacional", () => {
       .where(and(eq(shiftAssignmentsV2.shiftInstanceId, swapShiftId), eq(shiftAssignmentsV2.isActive, true)));
     expect(active).toHaveLength(1);
     expect(active[0].professionalId).toBe(swap.toProfessionalId);
-    const [shift] = await db!.select().from(shiftInstances).where(eq(shiftInstances.id, swapShiftId));
-    expect(shift.status).toBe("OCUPADO");
 
+    const callerAlice = swapRouter.createCaller(ctxFor(alice, "doctor"));
     await expect(callerAlice.approveByOwner({ swapRequestId })).rejects.toBeTruthy();
   });
 });

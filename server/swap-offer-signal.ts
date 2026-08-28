@@ -181,3 +181,61 @@ export async function enqueueSwapOfferSignals(
   }
   return persisted;
 }
+
+function takenCopy(type: SwapRow["type"], takerName: string, shiftLabel: string) {
+  if (type === "SWAP") {
+    return {
+      title: "Troca concluída",
+      body: `${takerName} assumiu o plantão ${shiftLabel}. A troca foi concluída.`,
+    };
+  }
+  return {
+    title: "Plantão assumido",
+    body: `${takerName} assumiu o plantão ${shiftLabel}.`,
+  };
+}
+
+/**
+ * Avisa o ofertante de que o plantão foi assumido (sem pedir aprovação).
+ * Mesma transação do aceite — falha de persistência aborta o take.
+ */
+export async function enqueueSwapTakenSignals(input: {
+  db: SignalDb;
+  swap: SwapRow;
+  takerName: string;
+  shiftLabel: string;
+}): Promise<number> {
+  const { db, swap } = input;
+  const ownerUserId = swap.fromUserId;
+  if (!ownerUserId) return 0;
+  const copy = takenCopy(swap.type, input.takerName, input.shiftLabel);
+  try {
+    await enqueueTrackedPushNotification(
+      {
+        institutionId: swap.institutionId,
+        userId: ownerUserId,
+        shiftInstanceId: swap.fromShiftInstanceId,
+        dedupKey: `swap-taken:${swap.id}:${ownerUserId}`,
+        deepLink: "/my-offers",
+        payload: {
+          ...copy,
+          data: {
+            type: "swap_taken",
+            swapRequestId: swap.id,
+            institutionId: swap.institutionId,
+            shiftInstanceId: swap.fromShiftInstanceId,
+            userId: ownerUserId,
+          },
+        },
+      },
+      new Date(),
+      db,
+    );
+    return 1;
+  } catch (error) {
+    console.error(
+      `[SwapTake] SIGNAL_TRACKING_FAILED userId=${JSON.stringify(ownerUserId)} swapId=${JSON.stringify(swap.id)}`,
+    );
+    throw error;
+  }
+}

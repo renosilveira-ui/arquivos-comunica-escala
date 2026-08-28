@@ -272,6 +272,14 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     );
     expect(structuredBranch).toContain("assertActiveScheduleContextTopology");
     expect(structuredBranch).not.toContain("assertSpecialtyCompatible");
+    expect(writeGuard).toContain('if (coverage === "manager")');
+    expect(writeGuard).toContain(
+      "managerCoveredProfessionalIds.add(professional.id)",
+    );
+    expect(validations).toContain(
+      "async function assignmentCoverageWithoutSectorAccess",
+    );
+    expect(validations).toContain('return invited ? "invite" : null');
 
     const direct = block(
       editor,
@@ -354,8 +362,25 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     expectGuardBeforeWrite(
       effectuate,
       "assertAssignmentWritesAllowedForUpdate",
-      "insert(shiftAssignmentsV2)",
+      "applySwapAssignmentTransfer",
     );
+    const accept = block(
+      swap,
+      "  accept: protectedProcedure",
+      "  reject: protectedProcedure",
+    );
+    expectGuardBeforeWrite(
+      accept,
+      "assertAssignmentWritesAllowedForUpdate",
+      "applySwapAssignmentTransfer",
+    );
+    expect(
+      block(
+        swap,
+        "async function writeTransferredAssignments",
+        "async function enqueueSwapCompletionNotifications",
+      ),
+    ).toContain("insert(shiftAssignmentsV2)");
     const swapQualification = block(
       swap,
       "async function assertProfessionalQualifiedForShift",

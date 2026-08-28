@@ -73,7 +73,7 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
   const acceptSwap = trpc.swaps.accept.useMutation({
     onSuccess: async () => {
       await invalidate();
-      feedback.success("Oferta aceita. O dono do plantão ainda precisa aprovar.");
+      feedback.success("Plantão assumido. A escala já foi atualizada.");
     },
     onError: (error) => feedback.error(error.message || "Não foi possível aceitar a oferta."),
     onSettled: () => setActing(null),
@@ -95,8 +95,8 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
       action === "accept" ? "Aceitar esta oferta?" : "Recusar esta oferta?",
       action === "accept"
         ? isSwap
-          ? `Você fica com o plantão de ${swap.fromProfessional.name} e ele fica com o seu, assim que ele aprovar.`
-          : `Você assume o plantão de ${swap.fromProfessional.name} assim que ele aprovar.`
+          ? `Você fica com o plantão de ${swap.fromProfessional.name} e ele fica com o seu.`
+          : `Você assume o plantão de ${swap.fromProfessional.name} agora.`
         : "A oferta some da sua lista.",
       action === "accept" ? "Aceitar" : "Recusar",
     );

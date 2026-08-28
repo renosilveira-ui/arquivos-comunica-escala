@@ -191,7 +191,7 @@ export default function ApproveSwapsScreen() {
               }}
             >
               <Text style={{ color: tab === t ? theme.palette.primary[700] : theme.colors.textPrimary, fontSize: 15, fontWeight: "600" }}>
-                {t === "ACCEPTED" ? "Aguardando ofertante" : "Todos"}
+                {t === "ACCEPTED" ? "Candidaturas antigas" : "Todos"}
               </Text>
               {t === "ACCEPTED" && acceptedCount > 0 && (
                 <View style={{
@@ -307,7 +307,7 @@ export default function ApproveSwapsScreen() {
                 {item.status === "ACCEPTED" && (
                   <View style={{ marginTop: 14, padding: 12, borderRadius: 10, backgroundColor: theme.colors.primarySoft }}>
                     <Text style={{ color: theme.palette.primary[700], fontSize: 13 }}>
-                      Aguardando decisão do profissional que ofertou o plantão. Gestores acompanham o histórico, sem aprovar ou bloquear.
+                      Candidatura antiga do fluxo em três passos. O aceite agora transfere o plantão na hora. Gestores só acompanham o histórico.
                     </Text>
                   </View>
                 )}

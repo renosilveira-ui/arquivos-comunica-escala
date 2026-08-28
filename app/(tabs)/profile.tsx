@@ -510,7 +510,7 @@ export default function ProfileScreen() {
             <Surface padded={false}>
               <ListRow
                 title="Minhas ofertas"
-                subtitle="Plantões que você ofereceu — aprove candidaturas aqui"
+                subtitle="Plantões que você ofereceu — quem assumir leva na hora"
                 Icon={ArrowRightLeft}
                 divided={false}
                 onPress={go("/my-offers")}
@@ -518,7 +518,7 @@ export default function ProfileScreen() {
               />
               <ListRow
                 title="Suas candidaturas"
-                subtitle="Aguardando aprovação do dono do plantão"
+                subtitle="Ofertas e vagas que você assumiu ou pediu"
                 Icon={UserPlus}
                 onPress={go("/my-applications")}
                 accessibilityLabel="Ver suas candidaturas a cessões e trocas"

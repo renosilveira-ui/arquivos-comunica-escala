@@ -1,5 +1,6 @@
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
@@ -11,17 +12,10 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 
 /**
- * Tela "Minhas ofertas" — consome `swaps.list({ role: "OFFERER" })`
- * (PR #64) e `swaps.approveByOwner` (PR #59) para que o ofertante
- * (A) aprove a candidatura sem precisar passar por gestor.
- *
- * Fluxo:
- *   - "Aguardando sua aprovação": status=ACCEPTED, awaitingMyApproval=true.
- *     Render destacado + CTA "Aprovar".
- *   - "Em andamento": demais (PENDING aguardando candidato, ou já APPROVED/
- *     CANCELLED para histórico recente).
- *
- * Acesso: link em /profile (também roteável diretamente via /my-offers).
+ * Tela "Minhas ofertas" — consome `swaps.list({ role: "OFFERER" })`.
+ * Quem assume transfere o plantão no aceite; o dono acompanha e pode
+ * cancelar PENDING ou uma candidatura antiga em ACCEPTED que não
+ * completou. Sem botão de aprovar.
  */
 
 type SwapType = "SWAP" | "TRANSFER" | "CESSAO";
@@ -41,9 +35,9 @@ const TYPE_LABEL: Record<SwapType, string> = {
 };
 
 const STATUS_LABEL: Record<SwapStatus, string> = {
-  PENDING: "Aguardando candidato",
-  ACCEPTED: "Aguardando sua aprovação",
-  APPROVED: "Aprovada",
+  PENDING: "Aguardando quem assuma",
+  ACCEPTED: "Não foi possível assumir",
+  APPROVED: "Assumida",
   REJECTED_BY_PEER: "Recusada pelo profissional",
   REJECTED_BY_MANAGER: "Recusada pelo gestor",
   CANCELLED: "Cancelada",
@@ -63,24 +57,13 @@ export default function MyOffersScreen() {
   const router = useRouter();
 
   // Filtro role=OFFERER (PR #64): só ofertas onde sou o ofertante.
-  const { data, isLoading, refetch } = trpc.swaps.list.useQuery(
+  const { data, isLoading, isError, refetch } = trpc.swaps.list.useQuery(
     { role: "OFFERER" },
     { enabled: !!user?.id },
   );
 
   const utils = trpc.useUtils();
   const feedback = useActionFeedback();
-
-  const approveMutation = trpc.swaps.approveByOwner.useMutation({
-    onSuccess: () => {
-      utils.swaps.list.invalidate();
-      refetch();
-      feedback.success("Candidatura aprovada — o plantão foi transferido.");
-    },
-    onError: (error) => {
-      feedback.error(error.message || "Não foi possível aprovar a candidatura.");
-    },
-  });
 
   const cancelMutation = trpc.swaps.cancel.useMutation({
     onSuccess: () => {
@@ -93,21 +76,12 @@ export default function MyOffersScreen() {
     },
   });
 
-  const handleApprove = async (offer: any) => {
-    const fromShiftSummary = offer.fromShift
-      ? `${offer.fromShift.label} — ${formatDate(new Date(offer.fromShift.startAt))}`
-      : "este plantão";
-    const candidateName = offer.toProfessional?.name ?? "candidato";
-    const confirmed = await confirmAction(
-      `Aprovar candidatura?\n\n${candidateName} assumirá ${fromShiftSummary}.`,
-    );
-    if (!confirmed) return;
-    approveMutation.mutate({ swapRequestId: offer.id });
-  };
-
   const handleCancel = async (offer: any) => {
+    const leftover = offer.status === "ACCEPTED";
     const confirmed = await confirmAction(
-      "Cancelar esta oferta?\n\nA solicitação será removida das suas ofertas em aberto.",
+      leftover
+        ? "Desfazer esta candidatura antiga?\n\nO plantão continua com você e a solicitação deixa de ficar presa."
+        : "Cancelar esta oferta?\n\nA solicitação será removida das suas ofertas em aberto.",
     );
     if (!confirmed) return;
     cancelMutation.mutate({ swapRequestId: offer.id });
@@ -141,15 +115,13 @@ export default function MyOffersScreen() {
     );
   }
 
-  // Cast defensivo enquanto o tipo do tRPC não infere awaitingMyApproval
-  // de forma garantida em todos os clients (PR #64 acabou de pousar).
-  const offers = ((data ?? []) as any[]).map((row) => ({
-    ...row,
-    awaitingMyApproval: !!row.awaitingMyApproval,
-  }));
-
-  const awaitingMyApproval = offers.filter((o) => o.awaitingMyApproval);
-  const others = offers.filter((o) => !o.awaitingMyApproval);
+  const offers = (data ?? []) as any[];
+  const openOffers = offers.filter(
+    (o) => o.status === "PENDING" || o.status === "ACCEPTED",
+  );
+  const history = offers.filter(
+    (o) => o.status !== "PENDING" && o.status !== "ACCEPTED",
+  );
 
   return (
     <ScreenGradient>
@@ -171,6 +143,11 @@ export default function MyOffersScreen() {
               Carregando ofertas...
             </Text>
           </View>
+        ) : isError ? (
+          <QueryErrorState
+            title="Não foi possível carregar as ofertas"
+            onRetry={() => refetch()}
+          />
         ) : offers.length === 0 ? (
           <View className="items-center justify-center py-20">
             <Inbox size={64} color={theme.colors.textMuted} />
@@ -183,38 +160,32 @@ export default function MyOffersScreen() {
           </View>
         ) : (
           <View className="gap-6">
-            {awaitingMyApproval.length > 0 && (
+            {openOffers.length > 0 && (
               <View className="gap-3">
                 <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Aguardando sua aprovação
+                  Em andamento
                 </Text>
-                {awaitingMyApproval.map((offer) => (
+                {openOffers.map((offer) => (
                   <OfferCard
                     key={offer.id}
                     offer={offer}
-                    highlighted
-                    onApprove={() => handleApprove(offer)}
-                    onCancel={null}
-                    isApproving={approveMutation.isPending}
+                    onCancel={
+                      offer.canCancel !== false
+                        ? () => handleCancel(offer)
+                        : null
+                    }
                   />
                 ))}
               </View>
             )}
 
-            {others.length > 0 && (
+            {history.length > 0 && (
               <View className="gap-3">
                 <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Em andamento
+                  Histórico
                 </Text>
-                {others.map((offer) => (
-                  <OfferCard
-                    key={offer.id}
-                    offer={offer}
-                    highlighted={false}
-                    onApprove={null}
-                    onCancel={offer.status === "PENDING" ? () => handleCancel(offer) : null}
-                    isApproving={false}
-                  />
+                {history.map((offer) => (
+                  <OfferCard key={offer.id} offer={offer} onCancel={null} />
                 ))}
               </View>
             )}
@@ -227,16 +198,10 @@ export default function MyOffersScreen() {
 
 function OfferCard({
   offer,
-  highlighted,
-  onApprove,
   onCancel,
-  isApproving,
 }: {
   offer: any;
-  highlighted: boolean;
-  onApprove: (() => void) | null;
   onCancel: (() => void) | null;
-  isApproving: boolean;
 }) {
   const type = (offer.type ?? "TRANSFER") as SwapType;
   const status = (offer.status ?? "PENDING") as SwapStatus;
@@ -251,8 +216,8 @@ function OfferCard({
     <View
       className="rounded-2xl border p-4 gap-3"
       style={{
-        backgroundColor: highlighted ? theme.colors.primarySoft : theme.colors.surface,
-        borderColor: highlighted ? theme.colors.primary : theme.colors.border,
+        backgroundColor: theme.colors.surface,
+        borderColor: theme.colors.border,
       }}
     >
       {/* Cabeçalho: tipo + status */}
@@ -305,17 +270,22 @@ function OfferCard({
         </View>
       )}
 
-      {/* Candidato (quando alguém já aceitou) */}
       {candidateName && (
         <View className="flex-row items-center gap-2">
           <Text className="text-sm" style={{ color: theme.colors.textMuted }}>
-            Candidato:
+            {status === "APPROVED" ? "Assumido por:" : "Profissional:"}
           </Text>
           <Text className="text-sm font-semibold" style={{ color: theme.colors.textPrimary }}>
             {candidateName}
           </Text>
         </View>
       )}
+
+      {offer.reviewNote ? (
+        <Text className="text-xs" style={{ color: theme.colors.textSecondary }}>
+          {offer.reviewNote}
+        </Text>
+      ) : null}
 
       {/* Expira em */}
       {expiresAt && status === "PENDING" && (
@@ -327,28 +297,7 @@ function OfferCard({
         </View>
       )}
 
-      {/* CTA de aprovação (só quando awaitingMyApproval) */}
-      {onApprove && (
-        <TouchableOpacity
-          onPress={onApprove}
-          disabled={isApproving}
-          activeOpacity={0.8}
-          accessibilityRole="button"
-          accessibilityLabel="Aprovar candidatura"
-          className="rounded-xl py-3 items-center justify-center mt-2"
-          style={{ backgroundColor: theme.colors.primary, opacity: isApproving ? 0.6 : 1 }}
-        >
-          {isApproving ? (
-            <ActivityIndicator color={theme.colors.surface} />
-          ) : (
-            <Text className="text-base font-semibold" style={{ color: theme.colors.surface }}>
-              Aprovar candidatura
-            </Text>
-          )}
-        </TouchableOpacity>
-      )}
-
-      {/* Cancelar (só PENDING, sem candidato ainda) */}
+      {/* Cancelar PENDING ou ACCEPTED residual que não completou */}
       {onCancel && (
         <TouchableOpacity
           onPress={onCancel}
@@ -359,7 +308,7 @@ function OfferCard({
           style={{ borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }}
         >
           <Text className="text-sm font-medium" style={{ color: theme.colors.textSecondary }}>
-            Cancelar oferta
+            {status === "ACCEPTED" ? "Desfazer candidatura" : "Cancelar oferta"}
           </Text>
         </TouchableOpacity>
       )}

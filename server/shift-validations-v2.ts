@@ -99,7 +99,11 @@ async function managerScopeCoversAssignment(
   return Boolean(scope);
 }
 
-async function assignmentCoveredWithoutSectorAccess(
+/** Quem cobre escrita sem ACL de setor. Convite pendente libera o
+ *  acesso (assign-direct); só gestor/PLUS/scope pulam especialidade. */
+type AssignmentAccessCoverage = "manager" | "invite";
+
+async function assignmentCoverageWithoutSectorAccess(
   tx: AssignmentWriteTx,
   input: {
     professionalId: number;
@@ -108,7 +112,7 @@ async function assignmentCoveredWithoutSectorAccess(
     hospitalId: number;
     sectorId: number;
   },
-): Promise<boolean> {
+): Promise<AssignmentAccessCoverage | null> {
   if (
     await managerScopeCoversAssignment(tx, {
       professionalId: input.professionalId,
@@ -117,7 +121,7 @@ async function assignmentCoveredWithoutSectorAccess(
       sectorId: input.sectorId,
     })
   ) {
-    return true;
+    return "manager";
   }
   const [membership] = await tx
     .select({ roleInInstitution: professionalInstitutions.roleInInstitution })
@@ -132,14 +136,15 @@ async function assignmentCoveredWithoutSectorAccess(
     )
     .limit(1);
   if (membership?.roleInInstitution === "GESTOR_PLUS") {
-    return true;
+    return "manager";
   }
-  return pendingNamedInviteCoversScale(tx, {
+  const invited = await pendingNamedInviteCoversScale(tx, {
     institutionId: input.institutionId,
     hospitalId: input.hospitalId,
     sectorId: input.sectorId,
     userId: input.userId,
   });
+  return invited ? "invite" : null;
 }
 
 function windowsOverlap(
@@ -483,6 +488,7 @@ export async function assertAssignmentWritesAllowedForUpdate(
   }
 
   const accessCache = new Set<string>();
+  const managerCoveredProfessionalIds = new Set<number>();
   const accessLocks: {
     id: number;
     professionalId: number;
@@ -530,17 +536,24 @@ export async function assertAssignmentWritesAllowedForUpdate(
       .orderBy(professionalAccess.id)
       .limit(1);
     if (!snapshot) {
-      const covered = await assignmentCoveredWithoutSectorAccess(tx, {
+      const coverage = await assignmentCoverageWithoutSectorAccess(tx, {
         professionalId: professional.id,
         userId: professional.userId,
         institutionId: candidate.institutionId,
         hospitalId: candidate.hospitalId,
         sectorId: candidate.sectorId,
       });
-      if (!covered) {
+      if (!coverage) {
         throw assignmentForbidden(
           "Profissional sem acesso ativo ao hospital/setor do plantão.",
         );
+      }
+      // Mesma porta de receive/oferta: GESTOR_PLUS e manager_scope
+      // escrevem a alocação sem especialidade/allowlist. Sem isso o
+      // aceite de um coordenador (Reno/Maurilio) 500 no effectuate.
+      // Convite pendente não é receive — não alarga o skip.
+      if (coverage === "manager") {
+        managerCoveredProfessionalIds.add(professional.id);
       }
       accessCache.add(key);
       continue;
@@ -618,7 +631,19 @@ export async function assertAssignmentWritesAllowedForUpdate(
     // revalidada abaixo contra schedule_context_id. O texto legado pode
     // conter aliases corretos (ex.: Clínica Geral/Médico generalista,
     // Ortopedia/Ortopedia e Traumatologia) e nunca deve negar nem conceder.
-    if (candidate.scheduleContextId === null) {
+    // Gestor com manager_scope/GESTOR_PLUS já passou a porta de receive:
+    // especialidade e allowlist não podem 500/bloquear a efetivação.
+    if (managerCoveredProfessionalIds.has(professional.id)) {
+      if (candidate.scheduleContextId !== null) {
+        await assertActiveScheduleContextTopology({
+          institutionId: candidate.institutionId,
+          hospitalId: candidate.hospitalId,
+          sectorId: candidate.sectorId,
+          scheduleContextId: candidate.scheduleContextId,
+          db: tx,
+        });
+      }
+    } else if (candidate.scheduleContextId === null) {
       assertSpecialtyCompatible(
         candidate.requiredSpecialty,
         professional.specialty,

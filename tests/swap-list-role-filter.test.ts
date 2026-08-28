@@ -15,7 +15,8 @@ import { swapRouter } from "../server/swap-router";
 /**
  * `swaps.list` ganhou:
  *   - filtro `role`: OFFERER / RECEIVER / ANY (default ANY, comportamento legado)
- *   - flag `awaitingMyApproval`: true quando status=ACCEPTED && fromUserId=me.
+ *   - flag `awaitingMyApproval`: sempre false (sem Aprovar candidatura).
+ *     ACCEPTED residual que não completa é cancelado ao listar.
  *
  * Isso destrava a tela "Minhas ofertas" do USER (consome
  * approveByOwner) sem fazer o client filtrar/comparar IDs.
@@ -219,18 +220,21 @@ describe("swaps.list — role filter + awaitingMyApproval", () => {
     expect(ids).not.toContain(pendingFromBId);
   });
 
-  it("awaitingMyApproval=true em ACCEPTED onde sou ofertante, false caso contrário", async () => {
+  it("awaitingMyApproval nunca pede aprovação e residual sem heal não fica preso", async () => {
     const callerA = callerAs(userAId);
     const rowsA = await callerA.list({ role: "OFFERER" });
     const acceptedA = rowsA.find((r) => r.id === acceptedFromAId);
     const pendingA = rowsA.find((r) => r.id === pendingFromAId);
-    expect(acceptedA?.awaitingMyApproval).toBe(true);
+    expect(acceptedA?.awaitingMyApproval).toBe(false);
     expect(pendingA?.awaitingMyApproval).toBe(false);
+    expect(acceptedA?.status).toBe("CANCELLED");
+    expect(acceptedA?.canCancel).toBe(false);
+    expect(pendingA?.canCancel).toBe(true);
 
-    // Para B (que aceitou mas não ofertou), o mesmo swap não está aguardando aprovação dele.
     const callerB = callerAs(userBId);
     const rowsB = await callerB.list({ role: "RECEIVER" });
     const acceptedB = rowsB.find((r) => r.id === acceptedFromAId);
     expect(acceptedB?.awaitingMyApproval).toBe(false);
+    expect(acceptedB?.status).toBe("CANCELLED");
   });
 });
