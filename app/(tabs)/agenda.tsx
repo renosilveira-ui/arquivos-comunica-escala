@@ -403,9 +403,22 @@ export default function AgendaScreen() {
 
   return (
     <ScreenGradient variant="light">
-      {/* Nativo/mobile: frame com rolagem interna (flex evita o colapso de
-          altura zero no iOS). Desktop web: página inteira rolável. */}
-      <ScreenContainer flex={!isDesktop} scrollPage={isDesktop}>
+      {/* Lista no celular: frame + lista interna com flex. Panorama e
+          desktop: página rolável — a folha de mês não pode ser um
+          ScrollView flex:1 sem altura (some no iPhone). */}
+      <ScreenContainer
+        flex={!isDesktop && !isMonthSheet}
+        scrollPage={isDesktop || isMonthSheet}
+        refreshControl={
+          isMonthSheet && !isDesktop ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={theme.colors.primary}
+            />
+          ) : undefined
+        }
+      >
         {/* Cabeçalho único das três vistas (proposta de design 23/08):
             título + navegação de período, "Hoje" e voz; instituição +
             Geral/Minha; trocador de vista de largura cheia; e, só para
@@ -632,6 +645,20 @@ export default function AgendaScreen() {
 
           {canCreateShift && selectedManagerContext ? (
             selectedMonthShiftCount > 0 ? (
+              isMonthSheet && !isDesktop ? (
+                // No celular o cartão com 4 botões comia a folha de mês
+                // (ScrollView filho com flex:1 e altura 0). Ações ficam
+                // na faixa; Editar/Abrir/Criar continuam na Lista.
+                <ManagerActionsMenu
+                  variant="strip"
+                  institutionId={activeInstitutionId ?? null}
+                  period={{ kind: "month", monthKey: visibleMonthKey }}
+                  selectedScheduleContext={selectedManagerContext}
+                  onChanged={() => {
+                    refetch();
+                  }}
+                />
+              ) : (
               <ManagerMonthActions
                 monthKey={visibleMonthKey}
                 onEdit={() => selectMonth(visibleMonthKey)}
@@ -673,6 +700,7 @@ export default function AgendaScreen() {
                   }}
                 />
               </ManagerMonthActions>
+              )
             ) : null
           ) : canCreateShift ? (
             <View style={{ gap: theme.space[3] }}>
@@ -714,8 +742,9 @@ export default function AgendaScreen() {
           ) : null}
         </View>
 
-        {/* Próximo plantão (ou em andamento) — faixa compacta: a pergunta
-            nº 1 do plantonista sem roubar a visão panorâmica da escala. */}
+        {/* Próximo plantão: na Lista. No Panorama do celular a folha de
+            mês é a pergunta — o card aqui empurrava a escala para altura 0. */}
+        {isMonthSheet && !isDesktop ? null : (
         <View style={{ marginBottom: theme.space[3] }}>
           <NextShiftCard
             shift={nextShift ?? null}
@@ -761,6 +790,7 @@ export default function AgendaScreen() {
             }
           />
         </View>
+        )}
 
         {/* Conteúdo */}
         {isLoading && !data ? (
@@ -873,7 +903,12 @@ export default function AgendaScreen() {
             ) : null}
           </View>
         ) : isMonthSheet ? (
-          <View style={{ gap: theme.space[3] }}>
+          <View
+            style={{
+              gap: theme.space[3],
+              paddingBottom: isDesktop ? undefined : theme.space[20],
+            }}
+          >
             {canCreateShift &&
             selectedManagerContext &&
             selectedMonthShiftCount === 0 &&
@@ -890,7 +925,7 @@ export default function AgendaScreen() {
             weeks={weeksForRender}
             monthKey={anchorMonthKey}
             todayKey={todayKey}
-            embedInPage={isDesktop}
+            embedInPage
             offers={dayOffers}
             refreshControl={
               <RefreshControl

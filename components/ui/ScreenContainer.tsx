@@ -1,49 +1,63 @@
-import { ReactNode } from "react";
-import { Platform, ScrollView, View } from "react-native";
+import { type ReactElement, type ReactNode } from "react";
+import { Platform, ScrollView, View, type RefreshControlProps } from "react-native";
 import { theme } from "@/lib/theme";
 
 type ScreenContainerProps = {
   children: ReactNode;
   /**
    * Ocupa toda a altura disponível (flex: 1). OBRIGATÓRIO quando um
-   * filho é ScrollView/lista com flex: 1 (ex.: Agenda): sem isso, no
-   * NATIVO o container tem altura automática e o ScrollView interno
-   * colapsa para altura ZERO — a lista "some" sem erro nenhum. No web
-   * o layout de página disfarça, por isso o bug só aparecia no iPhone.
+   * filho é ScrollView/lista com flex: 1 (ex.: Agenda em Lista): sem
+   * isso, no NATIVO o container tem altura automática e o ScrollView
+   * interno colapsa para altura ZERO — a lista "some" sem erro nenhum.
    */
   flex?: boolean;
   /**
-   * Web/desktop: a TELA INTEIRA vira uma página rolável (cabeçalho rola
-   * junto com o conteúdo), em vez de frame fixo com rolador interno
-   * apertado — "não consigo rolar a tela" no desktop. No nativo é
-   * tratado como flex (o frame app-like é o correto lá).
+   * A tela inteira vira página rolável (cabeçalho rola com o conteúdo).
+   * No Panorama do celular isso é obrigatório: a folha de mês com
+   * ScrollView flex:1 dentro de um pai sem altura some no iPhone.
    */
   scrollPage?: boolean;
+  refreshControl?: ReactElement<RefreshControlProps>;
 };
 
 /**
  * Centers web content and keeps mobile full-width.
  */
-export function ScreenContainer({ children, flex = false, scrollPage = false }: ScreenContainerProps) {
-  if (Platform.OS === "web" && scrollPage) {
-    return (
+export function ScreenContainer({
+  children,
+  flex = false,
+  scrollPage = false,
+  refreshControl,
+}: ScreenContainerProps) {
+  if (scrollPage) {
+    const page = (
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ width: "100%", alignItems: "center" }}
+        contentContainerStyle={
+          Platform.OS === "web"
+            ? { width: "100%", alignItems: "center" }
+            : { flexGrow: 1 }
+        }
         showsVerticalScrollIndicator={false}
+        refreshControl={refreshControl}
       >
-        <View
-          style={{
-            width: "100%",
-            maxWidth: theme.spacing.contentMaxWidth,
-            paddingHorizontal: theme.spacing.screenPadding,
-            paddingVertical: 20,
-          }}
-        >
-          {children}
-        </View>
+        {Platform.OS === "web" ? (
+          <View
+            style={{
+              width: "100%",
+              maxWidth: theme.spacing.contentMaxWidth,
+              paddingHorizontal: theme.spacing.screenPadding,
+              paddingVertical: 20,
+            }}
+          >
+            {children}
+          </View>
+        ) : (
+          children
+        )}
       </ScrollView>
     );
+    return page;
   }
 
   if (Platform.OS === "web") {
