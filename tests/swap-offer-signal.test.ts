@@ -318,6 +318,8 @@ describe("sinal de oferta de plantão", () => {
   it("liga a criação da oferta ao dispatcher de sinal", () => {
     const source = readFileSync("server/swap-router.ts", "utf8");
     expect(source).toContain("enqueueSwapOfferSignals");
+    expect(source).toContain("enqueueSwapTakenSignals");
+    expect(source).toContain("applySwapAssignmentTransfer");
     const listAvailable = source.slice(source.indexOf("listAvailable:"));
     expect(listAvailable).toContain("manager_scope");
     expect(listAvailable).toContain("GESTOR_PLUS");
@@ -397,13 +399,15 @@ describe("sinal de oferta de plantão", () => {
       .from(swapRequests)
       .where(eq(swapRequests.id, Number(created.id)))
       .limit(1);
-    expect(accepted?.status).toBe("ACCEPTED");
+    expect(accepted?.status).toBe("APPROVED");
     expect(accepted?.toProfessionalId).toBe(gestor.professionalId);
     expect(accepted?.toUserId).toBe(gestor.userId);
 
-    await expect(
-      callerFor(offerer).approveByOwner({ swapRequestId: Number(created.id) }),
-    ).resolves.toEqual({ ok: true });
+    const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
+    expect(
+      ownerRows.find((row) => Number(row.id) === Number(created.id))
+        ?.awaitingMyApproval,
+    ).toBe(false);
 
     const assignments = await db
       .select({
@@ -466,9 +470,6 @@ describe("sinal de oferta de plantão", () => {
       callerFor(plus).accept({ swapRequestId: Number(created.id) }),
     ).resolves.toEqual({ ok: true });
 
-    await expect(
-      callerFor(offerer).approveByOwner({ swapRequestId: Number(created.id) }),
-    ).resolves.toEqual({ ok: true });
     const assignments = await db
       .select({
         professionalId: shiftAssignmentsV2.professionalId,

@@ -354,8 +354,25 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     expectGuardBeforeWrite(
       effectuate,
       "assertAssignmentWritesAllowedForUpdate",
-      "insert(shiftAssignmentsV2)",
+      "applySwapAssignmentTransfer",
     );
+    const accept = block(
+      swap,
+      "  accept: protectedProcedure",
+      "  reject: protectedProcedure",
+    );
+    expectGuardBeforeWrite(
+      accept,
+      "assertAssignmentWritesAllowedForUpdate",
+      "applySwapAssignmentTransfer",
+    );
+    expect(
+      block(
+        swap,
+        "async function writeTransferredAssignments",
+        "async function enqueueSwapCompletionNotifications",
+      ),
+    ).toContain("insert(shiftAssignmentsV2)");
     const swapQualification = block(
       swap,
       "async function assertProfessionalQualifiedForShift",

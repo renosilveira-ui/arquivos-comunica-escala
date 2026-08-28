@@ -157,8 +157,8 @@ envolvem o usuário logado, em qualquer dos lados (solicitante ou
 candidato). Filtros de estado (aguardando, aprovada, recusada).
 
 Gestor (médico ou plus) **vê** as solicitações de seu escopo mas
-**não precisa aprovar** trocas/cessões — a aprovação é do dono do
-plantão original. Veja [§6](#6-fluxos-de-cessão-e-troca).
+**não aprova** trocas/cessões — quem assume leva o plantão na hora.
+Veja [§6](#6-fluxos-de-cessão-e-troca).
 
 ### 4.4 Plantões em aberto (renomeado de "Vagas")
 
@@ -269,32 +269,25 @@ Coopanest hospital X). Resolveremos depois com tabela
 1. Profissional **A** abre seu plantão e clica em "Ceder".
 2. A escolhe se a oferta fica visível para todos os profissionais do
    setor ou só para um indivíduo específico.
-3. Profissional **B** vê a oferta em sua aba Solicitações e
-   **candidata-se**.
-4. **A aprova** a candidatura.
-5. Cessão se efetiva: o plantão é reatribuído de A para B.
-6. Sistema dispara notificação para o gestor (apenas log/auditoria,
-   não para aprovação).
+3. Profissional **B** vê a oferta e **assume**. Primeiro elegível
+   ganha; a alocação transfere na hora.
+4. A é avisado de que o plantão foi assumido. Não há tréplica.
+5. Sistema registra auditoria; gestor vê o histórico.
 
 ### Fluxo da troca
 
 1. Profissional **A** abre seu plantão e clica em "Trocar".
 2. A escolhe um plantão alvo (ou define critérios) e indica o que
    quer em troca.
-3. Profissional **B** vê a oferta e candidata-se com seu plantão
-   compatível.
-4. **A aprova** a troca.
-5. Troca se efetiva: A fica com o plantão de B, B com o de A.
-6. Sistema dispara notificação para o gestor (apenas log/auditoria).
+3. Profissional **B** vê a oferta e assume com o plantão dele.
+4. Troca se efetiva na hora: A fica com o plantão de B, B com o de A.
+5. A é avisado. Sistema registra auditoria; gestor vê o histórico.
 
 ### Aprovação não passa pelo gestor
 
-A aprovação é **inteiramente entre A e B**. Gestor mestre/local
-**vê** o histórico (transparência) mas não bloqueia.
-
-**Implicação técnica:** o `swap-router` atual usa
-`assertCanManageInstitutionSchedule` na aprovação — esse gate sai. A
-aprovação passa a ser **a quem ofertou o plantão original**.
+A decisão é **inteiramente entre A e B, em um passo**. Quem oferece
+abre a oferta; quem assume leva o plantão. Gestor mestre/local
+**vê** o histórico (transparência) mas não bloqueia nem confirma.
 
 ### Validação automática
 

@@ -483,6 +483,7 @@ export async function assertAssignmentWritesAllowedForUpdate(
   }
 
   const accessCache = new Set<string>();
+  const managerCoveredProfessionalIds = new Set<number>();
   const accessLocks: {
     id: number;
     professionalId: number;
@@ -542,6 +543,10 @@ export async function assertAssignmentWritesAllowedForUpdate(
           "Profissional sem acesso ativo ao hospital/setor do plantão.",
         );
       }
+      // Mesma porta de receive/oferta: GESTOR_PLUS e manager_scope
+      // escrevem a alocação sem especialidade/allowlist. Sem isso o
+      // aceite de um coordenador (Reno/Maurilio) 500 no effectuate.
+      managerCoveredProfessionalIds.add(professional.id);
       accessCache.add(key);
       continue;
     }
@@ -618,7 +623,19 @@ export async function assertAssignmentWritesAllowedForUpdate(
     // revalidada abaixo contra schedule_context_id. O texto legado pode
     // conter aliases corretos (ex.: Clínica Geral/Médico generalista,
     // Ortopedia/Ortopedia e Traumatologia) e nunca deve negar nem conceder.
-    if (candidate.scheduleContextId === null) {
+    // Gestor com manager_scope/GESTOR_PLUS já passou a porta de receive:
+    // especialidade e allowlist não podem 500/bloquear a efetivação.
+    if (managerCoveredProfessionalIds.has(professional.id)) {
+      if (candidate.scheduleContextId !== null) {
+        await assertActiveScheduleContextTopology({
+          institutionId: candidate.institutionId,
+          hospitalId: candidate.hospitalId,
+          sectorId: candidate.sectorId,
+          scheduleContextId: candidate.scheduleContextId,
+          db: tx,
+        });
+      }
+    } else if (candidate.scheduleContextId === null) {
       assertSpecialtyCompatible(
         candidate.requiredSpecialty,
         professional.specialty,

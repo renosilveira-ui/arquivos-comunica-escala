@@ -17,8 +17,8 @@ import { formatHospitalTimeRange } from "@/lib/hospital-time";
  *
  * Fluxo do usuário:
  *   - Acessa via Perfil → "Suas candidaturas".
- *   - "Aguardando aprovação do dono": status=ACCEPTED, esperando A.
- *   - "Histórico recente": APPROVED (entrou no plantão), EXPIRED, etc.
+ *   - "Histórico recente": APPROVED (assumiu o plantão), EXPIRED, etc.
+ *     ACCEPTED residual do fluxo antigo aparece aqui, sem pedir aprovação.
  */
 
 type SwapType = "SWAP" | "TRANSFER" | "CESSAO";
@@ -41,8 +41,8 @@ const TYPE_LABEL: Record<SwapType, string> = {
 
 const STATUS_LABEL: Record<SwapStatus, string> = {
   PENDING: "Aguardando candidato",
-  ACCEPTED: "Aguardando aprovação do dono",
-  APPROVED: "Aprovada — você assumiu o plantão",
+  ACCEPTED: "Candidatura antiga",
+  APPROVED: "Você assumiu o plantão",
   REJECTED_BY_PEER: "Recusada",
   REJECTED_BY_MANAGER: "Recusada pelo gestor",
   CANCELLED: "Cancelada pelo ofertante",
@@ -106,8 +106,7 @@ export default function MyApplicationsScreen() {
 
   const applications = (data ?? []) as any[];
   const vacancyRequests = vacancyRequestsData ?? [];
-  const awaitingOwner = applications.filter((a) => a.status === "ACCEPTED");
-  const others = applications.filter((a) => a.status !== "ACCEPTED");
+  const others = applications;
   const hasNoApplications = applications.length === 0 && vacancyRequests.length === 0;
 
   return (
@@ -157,17 +156,6 @@ export default function MyApplicationsScreen() {
                 </Text>
                 {vacancyRequests.map((request) => (
                   <VacancyRequestCard key={request.assignmentId} request={request} />
-                ))}
-              </View>
-            )}
-
-            {awaitingOwner.length > 0 && (
-              <View className="gap-3">
-                <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Aguardando aprovação do dono
-                </Text>
-                {awaitingOwner.map((a) => (
-                  <ApplicationCard key={a.id} application={a} highlighted />
                 ))}
               </View>
             )}

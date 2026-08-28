@@ -44,7 +44,10 @@ import {
   listAssumableScheduleContextIds,
   listAuthorizedScheduleContexts,
 } from "./schedule-contexts";
-import { enqueueSwapOfferSignals } from "./swap-offer-signal";
+import {
+  enqueueSwapOfferSignals,
+  enqueueSwapTakenSignals,
+} from "./swap-offer-signal";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -1107,7 +1110,7 @@ async function requirePendingSwapForRecipient(
   if (swap.status !== "PENDING") {
     throw new TRPCError({
       code: "CONFLICT",
-      message: `Status atual é ${swap.status}, esperava PENDING`,
+      message: "Esta oferta já foi respondida por outra pessoa.",
     });
   }
   if (swap.expiresAt && swap.expiresAt.getTime() < Date.now()) {
@@ -1489,17 +1492,234 @@ async function assertNoSwapTimeConflicts(
   });
 }
 
+type SwapTransferTopology = {
+  source: CanonicalAssignmentTuple;
+  recipient: CanonicalProfessional;
+  toTuple: CanonicalAssignmentTuple | null;
+};
+
+type SwapTransferReviewer = {
+  professional: CanonicalProfessional;
+  auditRole: string;
+};
+
+async function deactivateActiveAssignment(
+  tx: any,
+  tuple: CanonicalAssignmentTuple,
+  label: string,
+): Promise<void> {
+  const [done] = await tx
+    .update(shiftAssignmentsV2)
+    .set({ isActive: false })
+    .where(
+      and(
+        eq(shiftAssignmentsV2.id, tuple.assignmentId),
+        eq(shiftAssignmentsV2.shiftInstanceId, tuple.shift.id),
+        eq(shiftAssignmentsV2.institutionId, tuple.shift.institutionId),
+        eq(shiftAssignmentsV2.hospitalId, tuple.shift.hospitalId),
+        eq(shiftAssignmentsV2.sectorId, tuple.shift.sectorId),
+        eq(shiftAssignmentsV2.professionalId, tuple.professional.professionalId),
+        eq(shiftAssignmentsV2.isActive, true),
+      ),
+    );
+  if (!done.affectedRows) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `A alocação ${label} já foi alterada por outra ação — esta oferta não pode mais ser efetivada.`,
+    });
+  }
+}
+
+async function writeTransferredAssignments(
+  tx: any,
+  currentSwap: SwapRow,
+  topology: SwapTransferTopology,
+  actor: TenantActor,
+): Promise<void> {
+  if (isOneWay(currentSwap.type)) {
+    await deactivateActiveAssignment(tx, topology.source, "de origem");
+    await tx.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: topology.source.shift.id,
+      institutionId: topology.source.shift.institutionId,
+      hospitalId: topology.source.shift.hospitalId,
+      sectorId: topology.source.shift.sectorId,
+      professionalId: topology.recipient.professionalId,
+      assignmentType: topology.source.assignmentType,
+      status: "OCUPADO",
+      isActive: true,
+      createdBy: actor.userId,
+    });
+    return;
+  }
+  if (!topology.toTuple)
+    throw topologyDenied("Troca sem alocação de contrapartida canônica");
+  await deactivateActiveAssignment(tx, topology.source, "de origem");
+  await deactivateActiveAssignment(tx, topology.toTuple, "do colega");
+  await tx.insert(shiftAssignmentsV2).values({
+    shiftInstanceId: topology.toTuple.shift.id,
+    institutionId: topology.toTuple.shift.institutionId,
+    hospitalId: topology.toTuple.shift.hospitalId,
+    sectorId: topology.toTuple.shift.sectorId,
+    professionalId: topology.source.professional.professionalId,
+    assignmentType: topology.toTuple.assignmentType,
+    status: "OCUPADO",
+    isActive: true,
+    createdBy: actor.userId,
+  });
+  await tx.insert(shiftAssignmentsV2).values({
+    shiftInstanceId: topology.source.shift.id,
+    institutionId: topology.source.shift.institutionId,
+    hospitalId: topology.source.shift.hospitalId,
+    sectorId: topology.source.shift.sectorId,
+    professionalId: topology.recipient.professionalId,
+    assignmentType: topology.source.assignmentType,
+    status: "OCUPADO",
+    isActive: true,
+    createdBy: actor.userId,
+  });
+}
+
+async function enqueueSwapCompletionNotifications(
+  tx: any,
+  currentSwap: SwapRow,
+  topology: SwapTransferTopology,
+  approvedVersion: number,
+  takerName: string,
+): Promise<void> {
+  await enqueueComunicaSwapApproved({
+    swapId: currentSwap.id,
+    swapVersion: approvedVersion,
+    institutionId: currentSwap.institutionId,
+    shiftInstanceId: currentSwap.fromShiftInstanceId,
+    recipientRole: "FROM",
+    targetUserId: topology.source.professional.userId,
+    targetEmail: topology.source.professional.email,
+    db: tx,
+  });
+  await enqueueComunicaSwapApproved({
+    swapId: currentSwap.id,
+    swapVersion: approvedVersion,
+    institutionId: currentSwap.institutionId,
+    shiftInstanceId: currentSwap.fromShiftInstanceId,
+    recipientRole: "TO",
+    targetUserId: topology.recipient.userId,
+    targetEmail: topology.recipient.email,
+    db: tx,
+  });
+  await enqueueSwapTakenSignals({
+    db: tx,
+    swap: {
+      ...currentSwap,
+      toProfessionalId: topology.recipient.professionalId,
+      toUserId: topology.recipient.userId,
+    },
+    takerName,
+    shiftLabel: topology.source.shift.label,
+  });
+}
+
 /**
- * Efetua um swap/cessão/transfer já em estado ACCEPTED. Roda
- * revalidação H1/H2 (anti-overlap), reatribui as assignments e marca a
- * solicitação como APPROVED.
- *
- * Chamado exclusivamente pelo fluxo canônico do dono-do-plantão
- * (`approveByOwner`), conforme docs/product/escala-ux.md §6.
- *
- * Pré-condições: swap.status === "ACCEPTED" e
- * swap.toProfessionalId/toUserId já preenchidos. O caller deve
- * validar antes.
+ * Reatribui as alocações e marca a solicitação como APPROVED.
+ * Usado pelo aceite (PENDING → APPROVED no mesmo take) e pelo
+ * `approveByOwner` legado (ACCEPTED residual).
+ */
+async function applySwapAssignmentTransfer(
+  tx: any,
+  input: {
+    currentSwap: SwapRow;
+    expectedStatus: "PENDING" | "ACCEPTED";
+    topology: SwapTransferTopology;
+    actor: TenantActor;
+    reviewer: SwapTransferReviewer;
+    note?: string;
+    description: string;
+    approvalPath: "TAKE" | "OWNER";
+    extraUpdate?: {
+      toProfessionalId: number;
+      toUserId: number;
+      toAssignmentId: number | null;
+    };
+  },
+): Promise<number> {
+  const { currentSwap, topology, actor, reviewer } = input;
+  await writeTransferredAssignments(tx, currentSwap, topology, actor);
+
+  const conflictMessage =
+    input.expectedStatus === "PENDING"
+      ? "Esta oferta já foi respondida por outra pessoa."
+      : "Esta solicitação já foi efetivada ou cancelada.";
+  const [done] = await tx
+    .update(swapRequests)
+    .set({
+      status: "APPROVED",
+      reviewedByUserId: actor.userId,
+      reviewedAt: new Date(),
+      reviewNote: input.note ?? null,
+      version: currentSwap.version + 1,
+      ...(input.extraUpdate ?? {}),
+    })
+    .where(
+      and(
+        eq(swapRequests.id, currentSwap.id),
+        eq(swapRequests.institutionId, currentSwap.institutionId),
+        eq(swapRequests.status, input.expectedStatus),
+        eq(swapRequests.version, currentSwap.version),
+      ),
+    );
+  if (!done.affectedRows) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: conflictMessage,
+    });
+  }
+  await recomputeShiftStatus(tx, topology.source.shift.id);
+  if (topology.toTuple) {
+    await recomputeShiftStatus(tx, topology.toTuple.shift.id);
+  }
+  const auditPhase =
+    input.approvalPath === "TAKE" ? "ACCEPTED" : "APPROVED_BY_OWNER";
+  const names = auditNames(currentSwap.type, auditPhase);
+  await recordAudit(
+    {
+      action: names.action,
+      entityType: names.entityType,
+      entityId: currentSwap.id,
+      actorUserId: actor.userId,
+      actorRole: reviewer.auditRole,
+      actorName: reviewer.professional.name,
+      description: input.description,
+      fromProfessionalId: currentSwap.fromProfessionalId,
+      toProfessionalId:
+        input.extraUpdate?.toProfessionalId ??
+        currentSwap.toProfessionalId ??
+        undefined,
+      fromUserId: currentSwap.fromUserId,
+      toUserId:
+        input.extraUpdate?.toUserId ?? currentSwap.toUserId ?? undefined,
+      shiftInstanceId: currentSwap.fromShiftInstanceId,
+      hospitalId: currentSwap.hospitalId,
+      sectorId: currentSwap.sectorId ?? undefined,
+      institutionId: currentSwap.institutionId,
+      metadata: { note: input.note, approvalPath: input.approvalPath },
+    },
+    { db: tx, strict: true },
+  );
+  const approvedVersion = currentSwap.version + 1;
+  await enqueueSwapCompletionNotifications(
+    tx,
+    currentSwap,
+    topology,
+    approvedVersion,
+    topology.recipient.name,
+  );
+  return approvedVersion;
+}
+
+/**
+ * Efetua um swap/cessão/transfer residual em ACCEPTED.
+ * O fluxo canônico novo completa no `accept` (PENDING → APPROVED).
+ * Este caminho existe só para candidaturas antigas que ficaram
+ * aguardando o dono.
  */
 async function effectuateApprovedSwap(
   db: any,
@@ -1537,36 +1757,6 @@ async function effectuateApprovedSwap(
       date: preflight.toTuple.shift.startAt,
     });
   }
-
-  const deactivateActive = async (
-    tx: any,
-    tuple: CanonicalAssignmentTuple,
-    label: string,
-  ) => {
-    const [done] = await tx
-      .update(shiftAssignmentsV2)
-      .set({ isActive: false })
-      .where(
-        and(
-          eq(shiftAssignmentsV2.id, tuple.assignmentId),
-          eq(shiftAssignmentsV2.shiftInstanceId, tuple.shift.id),
-          eq(shiftAssignmentsV2.institutionId, tuple.shift.institutionId),
-          eq(shiftAssignmentsV2.hospitalId, tuple.shift.hospitalId),
-          eq(shiftAssignmentsV2.sectorId, tuple.shift.sectorId),
-          eq(
-            shiftAssignmentsV2.professionalId,
-            tuple.professional.professionalId,
-          ),
-          eq(shiftAssignmentsV2.isActive, true),
-        ),
-      );
-    if (!done.affectedRows) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: `A alocação ${label} já foi alterada por outra ação — esta oferta não pode mais ser efetivada.`,
-      });
-    }
-  };
 
   return db.transaction(async (tx: any) => {
     const [currentSwap] = await tx
@@ -1646,118 +1836,15 @@ async function effectuateApprovedSwap(
         ],
       },
     );
-    if (isOneWay(currentSwap.type)) {
-      await deactivateActive(tx, topology.source, "de origem");
-
-      await tx.insert(shiftAssignmentsV2).values({
-        shiftInstanceId: topology.source.shift.id,
-        institutionId: topology.source.shift.institutionId,
-        hospitalId: topology.source.shift.hospitalId,
-        sectorId: topology.source.shift.sectorId,
-        professionalId: topology.recipient.professionalId,
-        assignmentType: topology.source.assignmentType,
-        status: "OCUPADO",
-        isActive: true,
-        createdBy: actor.userId,
-      });
-    } else {
-      if (!topology.toTuple)
-        throw topologyDenied("Troca sem alocação de contrapartida canônica");
-      await deactivateActive(tx, topology.source, "de origem");
-      await deactivateActive(tx, topology.toTuple, "do colega");
-      await tx.insert(shiftAssignmentsV2).values({
-        shiftInstanceId: topology.toTuple.shift.id,
-        institutionId: topology.toTuple.shift.institutionId,
-        hospitalId: topology.toTuple.shift.hospitalId,
-        sectorId: topology.toTuple.shift.sectorId,
-        professionalId: topology.source.professional.professionalId,
-        assignmentType: topology.toTuple.assignmentType,
-        status: "OCUPADO",
-        isActive: true,
-        createdBy: actor.userId,
-      });
-      await tx.insert(shiftAssignmentsV2).values({
-        shiftInstanceId: topology.source.shift.id,
-        institutionId: topology.source.shift.institutionId,
-        hospitalId: topology.source.shift.hospitalId,
-        sectorId: topology.source.shift.sectorId,
-        professionalId: topology.recipient.professionalId,
-        assignmentType: topology.source.assignmentType,
-        status: "OCUPADO",
-        isActive: true,
-        createdBy: actor.userId,
-      });
-    }
-
-    const [done] = await tx
-      .update(swapRequests)
-      .set({
-        status: "APPROVED",
-        reviewedByUserId: actor.userId,
-        reviewedAt: new Date(),
-        reviewNote: note ?? null,
-        version: currentSwap.version + 1,
-      })
-      .where(
-        and(
-          eq(swapRequests.id, currentSwap.id),
-          eq(swapRequests.institutionId, currentSwap.institutionId),
-          eq(swapRequests.status, "ACCEPTED"),
-          eq(swapRequests.version, currentSwap.version),
-        ),
-      );
-    if (!done.affectedRows) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "Esta solicitação já foi efetivada ou cancelada.",
-      });
-    }
-    await recomputeShiftStatus(tx, topology.source.shift.id);
-    if (topology.toTuple) {
-      await recomputeShiftStatus(tx, topology.toTuple.shift.id);
-    }
-    const names = auditNames(currentSwap.type, "APPROVED_BY_OWNER");
-    await recordAudit(
-      {
-        action: names.action,
-        entityType: names.entityType,
-        entityId: currentSwap.id,
-        actorUserId: actor.userId,
-        actorRole: reviewer.auditRole,
-        actorName: reviewer.professional.name,
-        description,
-        fromProfessionalId: currentSwap.fromProfessionalId,
-        toProfessionalId: currentSwap.toProfessionalId ?? undefined,
-        fromUserId: currentSwap.fromUserId,
-        toUserId: currentSwap.toUserId ?? undefined,
-        shiftInstanceId: currentSwap.fromShiftInstanceId,
-        hospitalId: currentSwap.hospitalId,
-        sectorId: currentSwap.sectorId ?? undefined,
-        institutionId: currentSwap.institutionId,
-        metadata: { note, approvalPath: "OWNER" },
-      },
-      { db: tx, strict: true },
-    );
-    const approvedVersion = currentSwap.version + 1;
-    await enqueueComunicaSwapApproved({
-      swapId: currentSwap.id,
-      swapVersion: approvedVersion,
-      institutionId: currentSwap.institutionId,
-      shiftInstanceId: currentSwap.fromShiftInstanceId,
-      recipientRole: "FROM",
-      targetUserId: topology.source.professional.userId,
-      targetEmail: topology.source.professional.email,
-      db: tx,
-    });
-    await enqueueComunicaSwapApproved({
-      swapId: currentSwap.id,
-      swapVersion: approvedVersion,
-      institutionId: currentSwap.institutionId,
-      shiftInstanceId: currentSwap.fromShiftInstanceId,
-      recipientRole: "TO",
-      targetUserId: topology.recipient.userId,
-      targetEmail: topology.recipient.email,
-      db: tx,
+    await applySwapAssignmentTransfer(tx, {
+      currentSwap,
+      expectedStatus: "ACCEPTED",
+      topology,
+      actor,
+      reviewer,
+      note,
+      description,
+      approvalPath: "OWNER",
     });
   }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 }
@@ -2019,6 +2106,8 @@ export const swapRouter = router({
     }),
 
   // ── accept ────────────────────────────────────────────────────────────────
+  // Um passo: quem assume transfere a alocação na mesma transação
+  // (PENDING → APPROVED). Não deixa o dono com "Aprovar candidatura".
   accept: protectedProcedure
     .input(z.object({ swapRequestId: z.number() }))
     .mutation(async ({ input, ctx }) => {
@@ -2029,7 +2118,6 @@ export const swapRouter = router({
           message: "DB unavailable",
         });
 
-      const userId = ctx.user!.id;
       const expectedSessionVersion = ctx.user!.sessionVersion;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
@@ -2152,51 +2240,28 @@ export const swapRouter = router({
             ],
           },
         );
-        const [accepted] = await tx
-          .update(swapRequests)
-          .set({
-            status: "ACCEPTED",
+        const acceptAudit = auditNames(current.type, "ACCEPTED");
+        await applySwapAssignmentTransfer(tx, {
+          currentSwap: current,
+          expectedStatus: "PENDING",
+          topology: {
+            source: locked.source,
+            recipient: locked.professional,
+            toTuple: locked.toTuple,
+          },
+          actor,
+          reviewer: {
+            professional: locked.professional,
+            auditRole: locked.professional.roleInInstitution,
+          },
+          description: `${acceptAudit.label} assumida pelo profissional #${locked.professional.professionalId}`,
+          approvalPath: "TAKE",
+          extraUpdate: {
             toProfessionalId: locked.professional.professionalId,
             toUserId: locked.professional.userId,
             toAssignmentId: locked.toTuple?.assignmentId ?? null,
-            version: current.version + 1,
-          })
-          .where(
-            and(
-              eq(swapRequests.id, current.id),
-              eq(swapRequests.institutionId, current.institutionId),
-              eq(swapRequests.status, "PENDING"),
-              eq(swapRequests.version, current.version),
-            ),
-          );
-        if (!accepted.affectedRows) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "Esta oferta já foi respondida por outra pessoa.",
-          });
-        }
-
-        const acceptAudit = auditNames(current.type, "ACCEPTED");
-        await recordAudit(
-          {
-            action: acceptAudit.action,
-            entityType: acceptAudit.entityType,
-            entityId: current.id,
-            actorUserId: userId,
-            actorRole: locked.professional.roleInInstitution,
-            actorName: locked.professional.name,
-            description: `${acceptAudit.label} aceita pelo profissional #${locked.professional.professionalId}`,
-            fromProfessionalId: current.fromProfessionalId,
-            toProfessionalId: locked.professional.professionalId,
-            fromUserId: current.fromUserId,
-            toUserId: userId,
-            shiftInstanceId: current.fromShiftInstanceId,
-            hospitalId: current.hospitalId,
-            sectorId: current.sectorId ?? undefined,
-            institutionId: current.institutionId,
           },
-          { db: tx, strict: true },
-        );
+        });
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       return { ok: true };
@@ -2323,15 +2388,10 @@ export const swapRouter = router({
     }),
 
   // ── approveByOwner ───────────────────────────────────────────────────────
-  // Fluxo canônico per docs/product/escala-ux.md §6: a aprovação de
-  // cessão/troca é responsabilidade do dono do plantão original (A),
-  // não do gestor. Gestor só vê o histórico (transparência).
-  //
-  // Pré-condições:
-  //   - swap.status === "ACCEPTED" (alguém já se candidatou)
-  //   - swap.fromUserId === ctx.user.id (caller é o dono que ofertou)
-  //
-  // Revalida H1/H2, reatribui as assignments e audita a decisão do dono.
+  // Caminho residual para candidaturas antigas em ACCEPTED.
+  // O fluxo novo completa no `accept`. Pré-condições:
+  //   - swap.status === "ACCEPTED"
+  //   - swap.fromUserId === ctx.user.id
   approveByOwner: protectedProcedure
     .input(
       z.object({
@@ -2496,11 +2556,9 @@ export const swapRouter = router({
   // ── list ──────────────────────────────────────────────────────────────────
   // role:
   //   "OFFERER"  — apenas as solicitações onde sou o ofertante (A).
-  //                Útil para a tela "Minhas ofertas" do USER consumir
-  //                approveByOwner sobre candidaturas em ACCEPTED.
-  //   "RECEIVER" — onde sou o aceitante (B). Útil para acompanhar o
-  //                que ofereci aceitar e tá no fluxo.
+  //   "RECEIVER" — onde sou o aceitante (B).
   //   "ANY"      — comportamento legado: qualquer envolvimento (default).
+  // awaitingMyApproval fica só para ACCEPTED residual (fluxo antigo).
   list: protectedProcedure
     .input(
       z.object({
