@@ -271,6 +271,26 @@ describe("fence linearizável da sessão web", () => {
     await expect(sdk.verifySession(malformed)).resolves.toBeNull();
   });
 
+  it("/me sem cookie devolve 401 sem prova de credencial apresentada", async () => {
+    const me = await request(app).get("/api/auth/me");
+    expect(me.status).toBe(401);
+    expect(me.body).toEqual({
+      error: "Não autenticado",
+      credentialPresented: false,
+    });
+  });
+
+  it("/me com cookie rejeitado confirma que a credencial chegou", async () => {
+    const me = await request(app)
+      .get("/api/auth/me")
+      .set("Cookie", "session=token-invalido");
+    expect(me.status).toBe(401);
+    expect(me.body).toEqual({
+      error: "Não autenticado",
+      credentialPresented: true,
+    });
+  });
+
   it("/me publica a proof do cookie realmente autenticado quando Bearer vazio cai no cookie", async () => {
     const login = await request(app)
       .post("/api/auth/login")

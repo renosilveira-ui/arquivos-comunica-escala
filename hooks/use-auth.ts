@@ -795,7 +795,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           (Platform.OS === "web" && persistedUserId !== null)
         ) {
           durableSession = true;
-          if (isLatestRequest()) {
+          // Refetch soft (foco/aba) não pode derrubar VERIFIED para CHECKING:
+          // o gate institucional trata isso como perda de prova e o 401
+          // seguinte, sem cookie, encerrava a sessão no desktop.
+          if (isLatestRequest() && !preservedVerifiedSession) {
             setSessionValidation(
               unprovenSessionValidation("CHECKING", requestSequence, true),
             );

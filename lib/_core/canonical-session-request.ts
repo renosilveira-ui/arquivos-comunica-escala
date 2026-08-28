@@ -12,6 +12,28 @@ export type CanonicalSessionRequestResult<T> = Readonly<{
   credentialPresented: boolean;
 }>;
 
+/**
+ * Prova de que o servidor recusou uma credencial realmente recebida.
+ * Abort/rede nunca conta: o fetch não completou. Na web, `credentials:
+ * include` só pede o cookie — só o body do `/me` confirma se ele chegou.
+ */
+export function resolveCredentialPresented(input: {
+  requestCompleted: boolean;
+  nativeAuthorizationAttached: boolean;
+  webCredentialsIncluded: boolean;
+  responseData: unknown;
+}): boolean {
+  if (!input.requestCompleted) return false;
+  if (input.nativeAuthorizationAttached) return true;
+  if (!input.webCredentialsIncluded) return false;
+  return (
+    typeof input.responseData === "object" &&
+    input.responseData !== null &&
+    (input.responseData as { credentialPresented?: unknown })
+      .credentialPresented === true
+  );
+}
+
 export async function requestCanonicalSession<T>(input: {
   expectedUserId?: number;
   nativeToken?: string;
@@ -25,8 +47,8 @@ export async function requestCanonicalSession<T>(input: {
   if (Platform.OS !== "web" && input.nativeToken) {
     headers.Authorization = `Bearer ${input.nativeToken}`;
   }
-  const credentialPresented =
-    Platform.OS === "web" || headers.Authorization !== undefined;
+  const nativeAuthorizationAttached = headers.Authorization !== undefined;
+  const webCredentialsIncluded = Platform.OS === "web";
   const workflowSignal = getActiveWebSessionWorkflowSignal();
   const deadline = withRequestDeadline(workflowSignal ?? undefined);
   try {
@@ -46,10 +68,25 @@ export async function requestCanonicalSession<T>(input: {
       ok: response.ok,
       status: response.status,
       data,
-      credentialPresented,
+      credentialPresented: resolveCredentialPresented({
+        requestCompleted: true,
+        nativeAuthorizationAttached,
+        webCredentialsIncluded,
+        responseData: data,
+      }),
     };
   } catch {
-    return { ok: false, status: 0, data: null, credentialPresented };
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      credentialPresented: resolveCredentialPresented({
+        requestCompleted: false,
+        nativeAuthorizationAttached,
+        webCredentialsIncluded,
+        responseData: null,
+      }),
+    };
   } finally {
     deadline.cleanup();
   }
