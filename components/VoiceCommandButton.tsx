@@ -24,6 +24,7 @@ import { Mic, X, Check } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { VoiceTabTrigger } from "@/components/ui/VoiceTabTrigger";
 
 type Phase =
   | "idle"
@@ -46,7 +47,9 @@ interface ResolvedAction {
   timeRange: string;
 }
 
-export function VoiceCommandButton({ variant = "fab" }: { variant?: "fab" | "inline" } = {}) {
+export function VoiceCommandButton({
+  variant = "fab",
+}: { variant?: "fab" | "inline" | "tab" } = {}) {
   const [visible, setVisible] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [transcript, setTranscript] = useState("");
@@ -192,10 +195,14 @@ export function VoiceCommandButton({ variant = "fab" }: { variant?: "fab" | "inl
 
   return (
     <>
-      {variant === "inline" ? (
-        // No cabeçalho da Agenda (proposta de design 23/08): o microfone é
-        // comando, não ação primária — sai do canto flutuante, onde cobria
-        // o fim do mês, e vira ícone ao lado de "Hoje".
+      {variant === "tab" ? (
+        <VoiceTabTrigger
+          onPress={open}
+          listening={visible && phase === "listening"}
+        />
+      ) : variant === "inline" ? (
+        // Cabeçalho da Agenda (legado): o microfone no meio da barra
+        // inferior é o comando principal no celular.
         <TouchableOpacity
           onPress={open}
           activeOpacity={0.8}

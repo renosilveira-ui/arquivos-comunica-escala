@@ -20,7 +20,8 @@ import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
 import { ShiftRowCard } from "@/components/agenda/ShiftRowCard";
 import { CalendarFrame, CalendarLegend, DayNumeral, DayRule } from "@/components/agenda/CalendarSheet";
 import { ListRow } from "@/components/ui/ListRow";
-import { Inbox, KeyRound, LayoutDashboard, LogOut } from "lucide-react-native";
+import { ArrowRightLeft, Briefcase, CalendarDays, Inbox, KeyRound, LayoutDashboard, LogOut, User } from "lucide-react-native";
+import { VoiceTabTrigger } from "@/components/ui/VoiceTabTrigger";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { BootScreen } from "@/components/BootScreen";
 import { theme } from "@/lib/theme";
@@ -202,6 +203,83 @@ function Gallery() {
             <AppButton title="lg" size="lg" fullWidth={false} onPress={() => feedback.info("lg")} />
             <AppButton title="perigo" variant="danger" fullWidth={false} onPress={() => feedback.info("danger")} />
           </View>
+        </View>
+
+        <View style={{ gap: theme.space[3] }}>
+          <SectionHeader title="Barra inferior" subtitle="Comando de voz no centro, elevado sobre as abas do plantonista" />
+          <Surface padded={false}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "flex-end",
+                paddingTop: theme.space[3],
+                paddingBottom: theme.space[3],
+                borderTopWidth: 1,
+                borderTopColor: theme.colors.border,
+              }}
+            >
+              {(
+                [
+                  { label: "Agenda", Icon: CalendarDays, focused: true },
+                  { label: "Trocas", Icon: ArrowRightLeft, focused: false },
+                ] as const
+              ).map((item) => (
+                <View
+                  key={item.label}
+                  style={{
+                    flex: 1,
+                    alignItems: "center",
+                    gap: theme.space[1],
+                    minHeight: theme.space[10] + theme.space[1],
+                    justifyContent: "center",
+                  }}
+                >
+                  <item.Icon
+                    size={22}
+                    color={item.focused ? theme.colors.primary : theme.colors.textMuted}
+                  />
+                  <Text
+                    style={{
+                      ...theme.text.caption,
+                      fontWeight: item.focused ? theme.weight.bold : theme.weight.medium,
+                      color: item.focused ? theme.colors.primary : theme.colors.textMuted,
+                    }}
+                  >
+                    {item.label}
+                  </Text>
+                </View>
+              ))}
+              <VoiceTabTrigger onPress={() => feedback.info("Comando de voz")} />
+              {(
+                [
+                  { label: "Vagas", Icon: Briefcase },
+                  { label: "Perfil", Icon: User },
+                ] as const
+              ).map((item) => (
+                <View
+                  key={item.label}
+                  style={{
+                    flex: 1,
+                    alignItems: "center",
+                    gap: theme.space[1],
+                    minHeight: theme.space[10] + theme.space[1],
+                    justifyContent: "center",
+                  }}
+                >
+                  <item.Icon size={22} color={theme.colors.textMuted} />
+                  <Text
+                    style={{
+                      ...theme.text.caption,
+                      fontWeight: theme.weight.medium,
+                      color: theme.colors.textMuted,
+                    }}
+                  >
+                    {item.label}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </Surface>
         </View>
 
         <View style={{ gap: theme.space[3] }}>
