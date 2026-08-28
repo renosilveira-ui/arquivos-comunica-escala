@@ -29,6 +29,7 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { ManagerActionsMenu } from "@/components/agenda/ManagerActionsMenu";
 import { OpenMonthShiftsButton } from "@/components/agenda/OpenMonthShiftsButton";
+import { CreateSectorScaleButton } from "@/components/agenda/CreateSectorScaleButton";
 import { MobileDayList } from "@/components/agenda/MobileDayList";
 import { NextShiftCard } from "@/components/agenda/NextShiftCard";
 import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
@@ -47,12 +48,20 @@ import {
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
 import { AppButton } from "@/components/ui/AppButton";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
   buildAgendaMonthPickerOptions,
   countShiftsInMonth,
   monthKeyOf,
 } from "@/lib/agenda-month-navigation";
 import { openMonthShiftsDescription } from "@/lib/open-month-shifts";
+import {
+  createSectorScaleDoctorHint,
+  createSectorScaleEmptyDescription,
+  createSectorScaleEmptyTitle,
+  createSectorScaleNoHospitalDescription,
+  createSectorScaleNoHospitalTitle,
+} from "@/lib/create-sector-scale";
 
 /**
  * Agenda — tela unificada (substitui as antigas /calendar e /weekly).
@@ -634,6 +643,13 @@ export default function AgendaScreen() {
                     refetch();
                   }}
                 />
+                <CreateSectorScaleButton
+                  onCreated={({ scheduleContextId }) => {
+                    scheduleContext.selectContext(scheduleContextId);
+                    void scheduleContext.refetch();
+                    refetch();
+                  }}
+                />
                 <ManagerActionsMenu
                   variant="strip"
                   institutionId={activeInstitutionId ?? null}
@@ -646,21 +662,32 @@ export default function AgendaScreen() {
               </ManagerMonthActions>
             ) : null
           ) : canCreateShift ? (
-            <ManagerActionsMenu
-              variant="strip"
-              institutionId={activeInstitutionId ?? null}
-              period={
-                isMonthSheet
-                  ? { kind: "month", monthKey: anchorMonthKey }
-                  : { kind: "week", weekStart: anchorWeekStart }
-              }
-              selectedScheduleContext={
-                scope === "geral" ? scheduleContext.selectedContext : null
-              }
-              onChanged={() => {
-                refetch();
-              }}
-            />
+            <View style={{ gap: theme.space[3] }}>
+              {scope === "geral" && scheduleContext.contexts.length > 0 ? (
+                <CreateSectorScaleButton
+                  onCreated={({ scheduleContextId }) => {
+                    scheduleContext.selectContext(scheduleContextId);
+                    void scheduleContext.refetch();
+                    refetch();
+                  }}
+                />
+              ) : null}
+              <ManagerActionsMenu
+                variant="strip"
+                institutionId={activeInstitutionId ?? null}
+                period={
+                  isMonthSheet
+                    ? { kind: "month", monthKey: anchorMonthKey }
+                    : { kind: "week", weekStart: anchorWeekStart }
+                }
+                selectedScheduleContext={
+                  scope === "geral" ? scheduleContext.selectedContext : null
+                }
+                onChanged={() => {
+                  refetch();
+                }}
+              />
+            </View>
           ) : null}
         </View>
 
@@ -763,39 +790,25 @@ export default function AgendaScreen() {
           </View>
         ) : scope === "geral" &&
           !scheduleContext.isSelectionHydrating &&
+          scheduleContext.isError ? (
+          <QueryErrorState
+            title="Não foi possível carregar as escalas"
+            onRetry={() => {
+              void scheduleContext.refetch();
+            }}
+          />
+        ) : scope === "geral" &&
+          !scheduleContext.isSelectionHydrating &&
           !scheduleContext.isError &&
           scheduleContext.contexts.length === 0 ? (
-          <View
-            style={{
-              alignItems: "center",
-              paddingVertical: theme.space[10],
-              paddingHorizontal: theme.space[6],
-              gap: theme.space[3],
+          <EmptyInstitutionScaleState
+            canCreateShift={canCreateShift}
+            onCreated={({ scheduleContextId }) => {
+              scheduleContext.selectContext(scheduleContextId);
+              void scheduleContext.refetch();
+              refetch();
             }}
-          >
-            <Building2 size={40} color={theme.colors.textDisabled} />
-            <Text
-              style={{
-                fontSize: 15,
-                fontWeight: "600",
-                color: theme.colors.textPrimary,
-                textAlign: "center",
-              }}
-            >
-              Nenhuma escala configurada para você
-            </Text>
-            <Text
-              style={{
-                fontSize: 13,
-                color: theme.colors.textSecondary,
-                textAlign: "center",
-                lineHeight: 19,
-              }}
-            >
-              Solicite ao gestor a liberação do hospital, setor e qualificação
-              corretos para o seu vínculo.
-            </Text>
-          </View>
+          />
         ) : data && selectedMonthShiftCount === 0 && !isMonthSheet ? (
           // Período genuinamente sem plantões: dizer com todas as letras
           // (e lembrar QUAL instituição está sendo consultada) em vez de
@@ -1073,6 +1086,76 @@ function ManagerMonthActions({
         fullWidth
       />
       {children}
+    </View>
+  );
+}
+
+function EmptyInstitutionScaleState({
+  canCreateShift,
+  onCreated,
+}: {
+  canCreateShift: boolean;
+  onCreated: (result: { scheduleContextId: number }) => void;
+}) {
+  const topology = trpc.scheduleContexts.listManageableTopology.useQuery(undefined, {
+    enabled: canCreateShift,
+  });
+  const hasHospital = (topology.data?.length ?? 0) > 0;
+
+  return (
+    <View
+      style={{
+        alignItems: "center",
+        paddingVertical: theme.space[10],
+        paddingHorizontal: theme.space[6],
+        gap: theme.space[3],
+        alignSelf: "stretch",
+      }}
+    >
+      <Building2 size={40} color={theme.colors.textDisabled} />
+      {canCreateShift && topology.isError ? (
+        <QueryErrorState
+          title="Não foi possível carregar hospitais e setores"
+          onRetry={() => {
+            void topology.refetch();
+          }}
+        />
+      ) : (
+        <>
+          <Text
+            style={{
+              ...theme.text.bodyLg,
+              fontWeight: theme.weight.semibold,
+              color: theme.colors.textPrimary,
+              textAlign: "center",
+            }}
+          >
+            {canCreateShift
+              ? !topology.isLoading && !hasHospital
+                ? createSectorScaleNoHospitalTitle()
+                : createSectorScaleEmptyTitle()
+              : "Nenhuma escala configurada para você"}
+          </Text>
+          <Text
+            style={{
+              ...theme.text.body,
+              color: theme.colors.textSecondary,
+              textAlign: "center",
+            }}
+          >
+            {canCreateShift
+              ? !topology.isLoading && !hasHospital
+                ? createSectorScaleNoHospitalDescription()
+                : createSectorScaleEmptyDescription()
+              : createSectorScaleDoctorHint()}
+          </Text>
+          {canCreateShift && (hasHospital || topology.isLoading) ? (
+            <View style={{ alignSelf: "stretch" }}>
+              <CreateSectorScaleButton onCreated={onCreated} />
+            </View>
+          ) : null}
+        </>
+      )}
     </View>
   );
 }

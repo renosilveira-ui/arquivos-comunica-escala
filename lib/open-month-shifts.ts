@@ -1,15 +1,16 @@
 /**
  * Abrir os turnos do mês: cria plantões vagos (sem alocar).
  *
- * Regras da Sala de Recuperação: segunda a sexta com manhã, tarde e noite;
- * sábado só manhã e tarde; domingo sem cobertura.
+ * Recorte padrão (quando o setor não declara outro calendário):
+ * segunda a sexta com manhã, tarde e noite; sábado só manhã e tarde;
+ * domingo sem cobertura. Horários vêm dos templates do tenant.
  */
 
 import {
-  SALA_RECUPERACAO_SHIFT_TEMPLATES,
-  salaRecuperacaoCalendarDaysForMonth,
-  type SalaRecuperacaoShiftTemplate,
-} from "./sala-recuperacao-shift-blueprint";
+  DEFAULT_SECTOR_SHIFT_TEMPLATES,
+  defaultCalendarDaysForMonth,
+  type DefaultSectorShiftTemplate,
+} from "./default-sector-shift-blueprint";
 
 export const OPEN_MONTH_SHIFT_MODES = [
   "all-applicable",
@@ -32,7 +33,7 @@ export type OpenMonthShiftTemplateName =
 export type PlannedOpenMonthShift = {
   dayKey: string;
   weekday: number;
-  template: SalaRecuperacaoShiftTemplate;
+  template: DefaultSectorShiftTemplate;
 };
 
 const TEMPLATE_NAME_SET = new Set<string>(OPEN_MONTH_SHIFT_TEMPLATE_NAMES);
@@ -74,10 +75,10 @@ export function planOpenMonthShifts(input: {
     resolveOpenMonthTemplateNames(input.mode, input.templateNames),
   );
   const planned: PlannedOpenMonthShift[] = [];
-  for (const day of salaRecuperacaoCalendarDaysForMonth(input.yearMonth)) {
+  for (const day of defaultCalendarDaysForMonth(input.yearMonth)) {
     if (input.mode === "weekends-only" && day.weekday !== 6) continue;
     for (const template of day.templates) {
-      if (!selected.has(template.name as OpenMonthShiftTemplateName)) continue;
+      if (!selected.has(template.name)) continue;
       planned.push({
         dayKey: day.dayKey,
         weekday: day.weekday,
@@ -129,7 +130,7 @@ export function openMonthShiftsModeHint(mode: OpenMonthShiftsMode): string {
 export function openMonthShiftTemplateChipLabel(
   name: OpenMonthShiftTemplateName,
 ): string {
-  const template = SALA_RECUPERACAO_SHIFT_TEMPLATES.find(
+  const template = DEFAULT_SECTOR_SHIFT_TEMPLATES.find(
     (item) => item.name === name,
   );
   if (!template) return name;

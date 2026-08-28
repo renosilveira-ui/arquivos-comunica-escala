@@ -428,19 +428,30 @@ describe("shifts.openMonthShifts", () => {
     expect(await countMonth("2027-04")).toHaveLength(0);
   });
 
-  it("sem modelos de horário explica o bloqueio", async () => {
-    await expect(
-      callerFor(managerUserId, "manager").openMonthShifts({
-        hospitalId,
-        sectorId: emptySectorId,
-        scheduleContextId: emptyScheduleContextId,
-        yearMonth: "2027-01",
-        mode: "all-applicable",
-      }),
-    ).rejects.toMatchObject({
-      code: "NOT_FOUND",
-      message: expect.stringMatching(/Não há modelo/),
+  it("setor sem modelos recebe o blueprint padrão e abre o mês", async () => {
+    const result = await callerFor(managerUserId, "manager").openMonthShifts({
+      hospitalId,
+      sectorId: emptySectorId,
+      scheduleContextId: emptyScheduleContextId,
+      yearMonth: "2027-01",
+      mode: "all-applicable",
     });
+    expect(result.created).toBeGreaterThan(0);
+    const templates = await db!
+      .select({ name: shiftTemplates.name })
+      .from(shiftTemplates)
+      .where(
+        and(
+          eq(shiftTemplates.institutionId, institutionId),
+          eq(shiftTemplates.hospitalId, hospitalId),
+          eq(shiftTemplates.sectorId, emptySectorId),
+        ),
+      );
+    expect(templates.map((row) => row.name).sort()).toEqual([
+      "Manhã",
+      "Noite",
+      "Tarde",
+    ]);
   });
 
   it("médico comum não pode abrir os turnos", async () => {
