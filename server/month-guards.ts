@@ -579,6 +579,7 @@ export async function publishMonth(
       hospitalId,
       undefined,
       [monthDate],
+      { mode: "any-hospital" },
     );
 
     const [result] = await tx

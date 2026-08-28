@@ -63,7 +63,10 @@ import {
   planOpenMonthShifts,
   type OpenMonthShiftsMode,
 } from "../lib/open-month-shifts";
-import { ensureDefaultShiftTemplates } from "./sector-scale";
+import {
+  ensureDefaultShiftTemplates,
+  planMissingDefaultShiftTemplates,
+} from "./sector-scale";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -1231,9 +1234,27 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
           eq(shiftTemplates.isActive, true),
         ),
       );
-    const indexByName = (rows: typeof templates) => {
+    const indexByName = (
+      rows: {
+        id?: number;
+        hospitalId: number;
+        sectorId: number | null;
+        name: string;
+        startTime: string;
+        endTime: string;
+        priority?: number | null;
+      }[],
+    ) => {
       const picked = pickShiftTemplatesForSector(
-        rows,
+        rows.map((row, index) => ({
+          id: row.id ?? -(index + 1),
+          hospitalId: row.hospitalId,
+          sectorId: row.sectorId,
+          name: row.name,
+          startTime: row.startTime,
+          endTime: row.endTime,
+          priority: row.priority,
+        })),
         input.hospitalId,
         input.sectorId,
       );
@@ -1251,22 +1272,34 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
       ...new Set(planned.map((slot) => slot.template.name)),
     ];
     if (plannedNames.some((name) => !templateByName.has(name))) {
-      await ensureDefaultShiftTemplates(tx, {
-        institutionId: ctx.institutionId,
-        hospitalId: input.hospitalId,
-        sectorId: input.sectorId,
-      });
-      const reloaded = await tx
-        .select()
-        .from(shiftTemplates)
-        .where(
-          and(
-            eq(shiftTemplates.institutionId, ctx.institutionId),
-            eq(shiftTemplates.hospitalId, input.hospitalId),
-            eq(shiftTemplates.isActive, true),
-          ),
-        );
-      ({ picked, templateByName } = indexByName(reloaded));
+      if (input.dryRun) {
+        const virtual = planMissingDefaultShiftTemplates(templates, {
+          institutionId: ctx.institutionId,
+          hospitalId: input.hospitalId,
+          sectorId: input.sectorId,
+        });
+        ({ picked, templateByName } = indexByName([
+          ...templates,
+          ...virtual,
+        ]));
+      } else {
+        await ensureDefaultShiftTemplates(tx, {
+          institutionId: ctx.institutionId,
+          hospitalId: input.hospitalId,
+          sectorId: input.sectorId,
+        });
+        const reloaded = await tx
+          .select()
+          .from(shiftTemplates)
+          .where(
+            and(
+              eq(shiftTemplates.institutionId, ctx.institutionId),
+              eq(shiftTemplates.hospitalId, input.hospitalId),
+              eq(shiftTemplates.isActive, true),
+            ),
+          );
+        ({ picked, templateByName } = indexByName(reloaded));
+      }
     }
     const missing = plannedNames.filter((name) => !templateByName.has(name));
     if (missing.length) {
@@ -2937,7 +2970,9 @@ export const shiftsRouter = router({
           message: "institutionId inválido para tenant ativo",
         });
       }
-      await assertManagerScopeAccess(actor, input.hospitalId);
+      await assertManagerScopeAccess(actor, input.hospitalId, undefined, {
+        mode: "any-hospital",
+      });
       await publishMonth(
         input.institutionId,
         input.hospitalId,

@@ -44,9 +44,10 @@ export function CreateSectorScaleButton({ onCreated }: Props) {
   );
   const ensureScale = trpc.scheduleContexts.ensureDefaultSectorScale.useMutation();
 
+  const hospitals = topology.data?.hospitals;
   const selectedHospital = useMemo(
-    () => topology.data?.find((hospital) => hospital.id === hospitalId) ?? null,
-    [topology.data, hospitalId],
+    () => hospitals?.find((hospital) => hospital.id === hospitalId) ?? null,
+    [hospitals, hospitalId],
   );
 
   function close() {
@@ -184,7 +185,7 @@ export function CreateSectorScaleButton({ onCreated }: Props) {
                   >
                     Hospital
                   </Text>
-                  {(topology.data ?? []).map((hospital) => {
+                  {(hospitals ?? []).map((hospital) => {
                     const selected = hospitalId === hospital.id;
                     return (
                       <Pressable

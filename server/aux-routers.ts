@@ -27,6 +27,7 @@ import {
   getTenantActorFromContext,
 } from "./_core/policy";
 import { listAuthorizedScheduleContexts } from "./schedule-contexts";
+import { listManageableTopology } from "./sector-scale";
 
 // ─── professionals ────────────────────────────────────────────────────────────
 
@@ -368,10 +369,6 @@ export const hospitalsRouter = router({
     const db = await getDb();
     if (!db) throw new Error("Database not available");
     const actor = await getTenantActorFromContext(ctx);
-    const contexts = await listAuthorizedScheduleContexts(actor, db);
-    const authorizedHospitalIds = new Set(
-      contexts.map((context) => context.hospitalId),
-    );
     const rows = await db
       .select({
         id: hospitals.id,
@@ -380,6 +377,21 @@ export const hospitalsRouter = router({
       })
       .from(hospitals)
       .where(eq(hospitals.institutionId, ctx.institutionId));
+    if (
+      actor.isGlobalAdmin ||
+      actor.roleInInstitution === "GESTOR_PLUS" ||
+      actor.roleInInstitution === "GESTOR_MEDICO"
+    ) {
+      const topology = await listManageableTopology(db, actor);
+      const authorizedHospitalIds = new Set(
+        topology.hospitals.map((hospital) => hospital.id),
+      );
+      return rows.filter((hospital) => authorizedHospitalIds.has(hospital.id));
+    }
+    const contexts = await listAuthorizedScheduleContexts(actor, db);
+    const authorizedHospitalIds = new Set(
+      contexts.map((context) => context.hospitalId),
+    );
     return rows.filter((hospital) => authorizedHospitalIds.has(hospital.id));
   }),
 });
@@ -391,10 +403,6 @@ export const sectorsRouter = router({
     const db = await getDb();
     if (!db) throw new Error("Database not available");
     const actor = await getTenantActorFromContext(ctx);
-    const contexts = await listAuthorizedScheduleContexts(actor, db);
-    const authorizedSectorIds = new Set(
-      contexts.map((context) => context.sectorId),
-    );
     const rows = await db
       .select({
         id: sectors.id,
@@ -404,6 +412,23 @@ export const sectorsRouter = router({
       })
       .from(sectors)
       .where(eq(sectors.institutionId, ctx.institutionId));
+    if (
+      actor.isGlobalAdmin ||
+      actor.roleInInstitution === "GESTOR_PLUS" ||
+      actor.roleInInstitution === "GESTOR_MEDICO"
+    ) {
+      const topology = await listManageableTopology(db, actor);
+      const authorizedSectorIds = new Set(
+        topology.hospitals.flatMap((hospital) =>
+          hospital.sectors.map((sector) => sector.id),
+        ),
+      );
+      return rows.filter((sector) => authorizedSectorIds.has(sector.id));
+    }
+    const contexts = await listAuthorizedScheduleContexts(actor, db);
+    const authorizedSectorIds = new Set(
+      contexts.map((context) => context.sectorId),
+    );
     return rows.filter((sector) => authorizedSectorIds.has(sector.id));
   }),
 });
@@ -426,7 +451,9 @@ export const filtersRouter = router({
     .query(async ({ ctx, input }) => {
       const actor = await getTenantActorFromContext(ctx);
       assertCanManageInstitutionSchedule(actor);
-      await assertManagerScopeAccess(actor, input.hospitalId);
+      await assertManagerScopeAccess(actor, input.hospitalId, undefined, {
+        mode: "any-hospital",
+      });
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const window = monthWindowBrt(input.yearMonth);

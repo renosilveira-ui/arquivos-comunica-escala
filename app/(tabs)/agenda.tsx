@@ -61,6 +61,8 @@ import {
   createSectorScaleEmptyTitle,
   createSectorScaleNoHospitalDescription,
   createSectorScaleNoHospitalTitle,
+  createSectorScaleNoJurisdictionDescription,
+  createSectorScaleNoJurisdictionTitle,
 } from "@/lib/create-sector-scale";
 
 /**
@@ -1100,7 +1102,12 @@ function EmptyInstitutionScaleState({
   const topology = trpc.scheduleContexts.listManageableTopology.useQuery(undefined, {
     enabled: canCreateShift,
   });
-  const hasHospital = (topology.data?.length ?? 0) > 0;
+  const hospitals = topology.data?.hospitals ?? [];
+  const hasHospital = hospitals.length > 0;
+  const missingJurisdiction =
+    !topology.isLoading &&
+    !hasHospital &&
+    (topology.data?.institutionHasHospitals ?? false);
 
   return (
     <View
@@ -1131,9 +1138,11 @@ function EmptyInstitutionScaleState({
             }}
           >
             {canCreateShift
-              ? !topology.isLoading && !hasHospital
-                ? createSectorScaleNoHospitalTitle()
-                : createSectorScaleEmptyTitle()
+              ? missingJurisdiction
+                ? createSectorScaleNoJurisdictionTitle()
+                : !topology.isLoading && !hasHospital
+                  ? createSectorScaleNoHospitalTitle()
+                  : createSectorScaleEmptyTitle()
               : "Nenhuma escala configurada para você"}
           </Text>
           <Text
@@ -1144,9 +1153,11 @@ function EmptyInstitutionScaleState({
             }}
           >
             {canCreateShift
-              ? !topology.isLoading && !hasHospital
-                ? createSectorScaleNoHospitalDescription()
-                : createSectorScaleEmptyDescription()
+              ? missingJurisdiction
+                ? createSectorScaleNoJurisdictionDescription()
+                : !topology.isLoading && !hasHospital
+                  ? createSectorScaleNoHospitalDescription()
+                  : createSectorScaleEmptyDescription()
               : createSectorScaleDoctorHint()}
           </Text>
           {canCreateShift && (hasHospital || topology.isLoading) ? (

@@ -29,10 +29,16 @@ describe("policy - current month schedule editing", () => {
     ).toThrow(/mês corrente/i);
   });
 
-  it("bloqueia gestor medico em mes futuro", () => {
+  it("permite gestor medico no proximo mes", () => {
     expect(() =>
       assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-06-01T07:00:00-03:00"), now),
-    ).toThrow(/mês corrente/i);
+    ).not.toThrow();
+  });
+
+  it("bloqueia gestor medico em mes+2", () => {
+    expect(() =>
+      assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-07-01T07:00:00-03:00"), now),
+    ).toThrow(/mês corrente ou do próximo/i);
   });
 
   it("permite gestor plus em qualquer mes", () => {

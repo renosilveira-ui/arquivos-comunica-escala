@@ -59,6 +59,22 @@ export type ManageableHospital = {
   sectors: ManageableSector[];
 };
 
+export type ManageableTopology = {
+  hospitals: ManageableHospital[];
+  /** Há hospital cadastrado no tenant — distinto de “o ator não tem escopo”. */
+  institutionHasHospitals: boolean;
+};
+
+export type PlannedDefaultShiftTemplate = {
+  institutionId: number;
+  hospitalId: number;
+  sectorId: number;
+  name: string;
+  startTime: string;
+  endTime: string;
+  priority: number;
+};
+
 function normalizeSectorName(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -112,6 +128,49 @@ function clockFromExisting(value: string): string {
   return clock.slice(0, 8);
 }
 
+export function planMissingDefaultShiftTemplates(
+  existing: readonly {
+    hospitalId: number;
+    sectorId: number | null;
+    name: string;
+    startTime: string;
+    endTime: string;
+    priority: number | null;
+  }[],
+  input: { institutionId: number; hospitalId: number; sectorId: number },
+): PlannedDefaultShiftTemplate[] {
+  // Só o que já é do setor conta. pickShiftTemplatesForSector cai no
+  // hospital quando o setor está vazio; se inserirmos Tarde/Noite do
+  // blueprint, o picker deixa de ver o Manhã hospitalar e a abertura quebra.
+  const sectorRows = existing.filter(
+    (row) => Number(row.sectorId) === Number(input.sectorId),
+  );
+  const hospitalByName = new Map<string, (typeof existing)[number]>();
+  for (const row of existing) {
+    if (row.sectorId != null) continue;
+    if (!hospitalByName.has(row.name)) hospitalByName.set(row.name, row);
+  }
+  const have = new Set(sectorRows.map((row) => row.name));
+  const planned: PlannedDefaultShiftTemplate[] = [];
+  for (const template of DEFAULT_SECTOR_SHIFT_TEMPLATES) {
+    if (have.has(template.name)) continue;
+    const hospital = hospitalByName.get(template.name);
+    planned.push({
+      institutionId: input.institutionId,
+      hospitalId: input.hospitalId,
+      sectorId: input.sectorId,
+      name: template.name,
+      startTime: hospital
+        ? clockFromExisting(hospital.startTime)
+        : template.startTime,
+      endTime: hospital ? clockFromExisting(hospital.endTime) : template.endTime,
+      priority: hospital?.priority ?? template.priority,
+    });
+    have.add(template.name);
+  }
+  return planned;
+}
+
 export async function ensureDefaultShiftTemplates(
   db: ScaleConn,
   input: { institutionId: number; hospitalId: number; sectorId: number },
@@ -134,38 +193,20 @@ export async function ensureDefaultShiftTemplates(
         eq(shiftTemplates.isActive, true),
       ),
     );
-  // Só o que já é do setor conta. pickShiftTemplatesForSector cai no
-  // hospital quando o setor está vazio; se inserirmos Tarde/Noite do
-  // blueprint, o picker deixa de ver o Manhã hospitalar e a abertura quebra.
-  const sectorRows = existing.filter(
-    (row) => Number(row.sectorId) === Number(input.sectorId),
-  );
-  const hospitalByName = new Map<string, (typeof existing)[number]>();
-  for (const row of existing) {
-    if (row.sectorId != null) continue;
-    if (!hospitalByName.has(row.name)) hospitalByName.set(row.name, row);
-  }
-  const have = new Set(sectorRows.map((row) => row.name));
-  let created = 0;
-  for (const template of DEFAULT_SECTOR_SHIFT_TEMPLATES) {
-    if (have.has(template.name)) continue;
-    const hospital = hospitalByName.get(template.name);
+  const missing = planMissingDefaultShiftTemplates(existing, input);
+  for (const template of missing) {
     await db.insert(shiftTemplates).values({
-      institutionId: input.institutionId,
-      hospitalId: input.hospitalId,
-      sectorId: input.sectorId,
+      institutionId: template.institutionId,
+      hospitalId: template.hospitalId,
+      sectorId: template.sectorId,
       name: template.name,
-      startTime: hospital
-        ? clockFromExisting(hospital.startTime)
-        : template.startTime,
-      endTime: hospital ? clockFromExisting(hospital.endTime) : template.endTime,
+      startTime: template.startTime,
+      endTime: template.endTime,
       isActive: true,
-      priority: hospital?.priority ?? template.priority,
+      priority: template.priority,
     });
-    created += 1;
-    have.add(template.name);
   }
-  return created;
+  return missing.length;
 }
 
 async function findActiveSectorContextId(
@@ -369,7 +410,7 @@ export function actorCanManageSector(
 export async function listManageableTopology(
   db: ScaleConn,
   actor: TenantActor,
-): Promise<ManageableHospital[]> {
+): Promise<ManageableTopology> {
   const [hospitalRows, sectorRows, contextRows, scopes] = await Promise.all([
     db
       .select({ id: hospitals.id, name: hospitals.name })
@@ -404,26 +445,29 @@ export async function listManageableTopology(
     contextRows.map((row) => `${row.hospitalId}:${row.sectorId}`),
   );
 
-  return hospitalRows
-    .filter((hospital) => actorCanManageHospital(actor, hospital.id, scopes))
-    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
-    .map((hospital) => ({
-      id: hospital.id,
-      name: hospital.name,
-      canCreateSector: actorCanCreateSectorInHospital(actor, hospital.id, scopes),
-      sectors: sectorRows
-        .filter(
-          (sector) =>
-            sector.hospitalId === hospital.id &&
-            actorCanManageSector(actor, hospital.id, sector.id, scopes),
-        )
-        .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
-        .map((sector) => ({
-          id: sector.id,
-          name: sector.name,
-          hospitalId: hospital.id,
-          hasSchedule: scheduled.has(`${hospital.id}:${sector.id}`),
-        })),
-    }));
+  return {
+    institutionHasHospitals: hospitalRows.length > 0,
+    hospitals: hospitalRows
+      .filter((hospital) => actorCanManageHospital(actor, hospital.id, scopes))
+      .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+      .map((hospital) => ({
+        id: hospital.id,
+        name: hospital.name,
+        canCreateSector: actorCanCreateSectorInHospital(actor, hospital.id, scopes),
+        sectors: sectorRows
+          .filter(
+            (sector) =>
+              sector.hospitalId === hospital.id &&
+              actorCanManageSector(actor, hospital.id, sector.id, scopes),
+          )
+          .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+          .map((sector) => ({
+            id: sector.id,
+            name: sector.name,
+            hospitalId: hospital.id,
+            hasSchedule: scheduled.has(`${hospital.id}:${sector.id}`),
+          })),
+      })),
+  };
 }
 

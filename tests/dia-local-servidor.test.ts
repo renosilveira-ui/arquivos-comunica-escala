@@ -28,7 +28,7 @@ import {
 } from "./helpers/open-test-scale";
 import { calendarRouter } from "../server/calendar";
 import { getDb } from "../server/db";
-import { addDaysToKey, dayKeyBrt, dayWindowBrt, mondayOfKey, monthWindowBrt, weekdayOfKey, yearMonthBrt } from "../server/local-time";
+import { addDaysToKey, addMonthsYearMonth, dayKeyBrt, dayWindowBrt, mondayOfKey, monthWindowBrt, weekdayOfKey, yearMonthBrt } from "../server/local-time";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
 
@@ -55,6 +55,9 @@ describe("local-time: helpers puros", () => {
     expect(weekdayOfKey("2026-08-23")).toBe(0); // domingo
     expect(mondayOfKey("2026-08-23")).toBe("2026-08-17");
     expect(mondayOfKey("2026-08-17")).toBe("2026-08-17");
+    expect(addMonthsYearMonth("2026-08", 1)).toBe("2026-09");
+    expect(addMonthsYearMonth("2026-12", 1)).toBe("2027-01");
+    expect(addMonthsYearMonth("2026-01", -1)).toBe("2025-12");
   });
 });
 

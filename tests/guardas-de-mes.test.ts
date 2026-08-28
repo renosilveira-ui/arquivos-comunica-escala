@@ -1,8 +1,8 @@
 // tests/guardas-de-mes.test.ts — auditoria 22/08, achados M1, M2 (mês) e M10.
 //
-// Todo ponto de escrita respeita a janela do mês corrente (GESTOR_MEDICO) e
-// o estado PUBLISHED/LOCKED do roster — inclusive a auto-criação do
-// calendário, o assumir-vaga e a lista de vagas.
+// Todo ponto de escrita respeita a janela do mês corrente e do próximo
+// (GESTOR_MEDICO) e o estado PUBLISHED/LOCKED do roster — inclusive a
+// auto-criação do calendário, o assumir-vaga e a lista de vagas.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
@@ -64,7 +64,15 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     const [y, m] = currentYm.split("-").map(Number);
     return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
   })();
+  const plus2Ym = (() => {
+    const [y, m] = currentYm.split("-").map(Number);
+    const nm = m + 2;
+    return nm > 12
+      ? `${y + 1}-${String(nm - 12).padStart(2, "0")}`
+      : `${y}-${String(nm).padStart(2, "0")}`;
+  })();
   const nextMonthStart = new Date(`${nextYm}-10T07:00:00-03:00`);
+  const plus2Start = new Date(`${plus2Ym}-10T07:00:00-03:00`);
 
   const ctxFor = (userId: number, role: "manager" | "doctor") =>
     ({ user: { id: userId, role, name: "T", email: `${userId}@test.local`, sessionVersion: 1 }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
@@ -884,11 +892,11 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     }
   });
 
-  it("M2: GESTOR_MEDICO não puxa turno de outro mês para o corrente", async () => {
-    const future = await insertShift(nextMonthStart, "future");
+  it("M2: GESTOR_MEDICO não puxa turno de mês+2 para o corrente", async () => {
+    const future = await insertShift(plus2Start, "future");
     await expect(asMedico().update({ id: future, startAt: currentStart.toISOString() })).rejects.toMatchObject({ code: "FORBIDDEN" });
     const [row] = await db.select({ startAt: shiftInstances.startAt }).from(shiftInstances).where(eq(shiftInstances.id, future));
-    expect(yearMonthBrt(row.startAt)).toBe(nextYm);
+    expect(yearMonthBrt(row.startAt)).toBe(plus2Ym);
   });
 
   it("M2: PUBLISHED sem turnos não exige motivo — status do roster é independente do calendário", async () => {
