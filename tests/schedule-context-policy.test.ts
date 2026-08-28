@@ -3,6 +3,7 @@ import {
   dedupeAuthorizedScheduleContextsForAgenda,
   describeScheduleContext,
   filterScheduleContextsForActor,
+  filterScheduleContextsForRosterRead,
   parseScheduleContextIds,
   pickCanonicalAgendaScheduleContext,
   projectEffectiveScheduleContextIds,
@@ -76,6 +77,70 @@ describe("política canônica de contextos de escala", () => {
     expect(result.map((row) => row.id)).toEqual([1, 2]);
     expect(result.every((row) => row.canManage === false)).toBe(true);
     expect(result[0].displayName).toContain("Hospital São Carlos");
+  });
+
+  it("panorama Geral mostra todos os setores do tenant sem conceder gestão nem vazar outro tenant", () => {
+    const result = filterScheduleContextsForRosterRead({
+      actor: userActor,
+      contexts: [
+        context(1, 101),
+        context(2, 102),
+        context(3, 103),
+        context(9, 901, 10, 2),
+      ],
+      professional: {
+        medicalSpecialtyId: 10,
+        operationalProfileCode: null,
+      },
+      accesses: [
+        {
+          institutionId: 1,
+          professionalId: 55,
+          hospitalId: 100,
+          sectorId: 101,
+          canAccess: true,
+        },
+      ],
+      managerScopes: [],
+    });
+
+    expect(result.map((row) => row.id)).toEqual([1, 2, 3]);
+    expect(result.every((row) => row.canManage === false)).toBe(true);
+  });
+
+  it("panorama legível preserva canManage só onde o gestor já podia gerir", () => {
+    const result = filterScheduleContextsForRosterRead({
+      actor: { ...userActor, roleInInstitution: "GESTOR_MEDICO" },
+      contexts: [context(1, 101), context(2, 102), context(3, 103)],
+      professional: {
+        medicalSpecialtyId: 10,
+        operationalProfileCode: null,
+      },
+      accesses: [
+        {
+          institutionId: 1,
+          professionalId: 55,
+          hospitalId: 100,
+          sectorId: 102,
+          canAccess: true,
+        },
+      ],
+      managerScopes: [
+        {
+          institutionId: 1,
+          managerProfessionalId: 55,
+          hospitalId: 100,
+          sectorId: 101,
+          active: true,
+        },
+      ],
+    });
+
+    expect(result.map(({ id, canManage }) => ({ id, canManage }))).toEqual([
+      { id: 1, canManage: true },
+      { id: 2, canManage: false },
+      { id: 3, canManage: false },
+    ]);
   });
 
   it("usa o ID exato da especialidade, nunca o texto exibido", () => {

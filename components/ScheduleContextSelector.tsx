@@ -20,6 +20,8 @@ type ScheduleContextSelectorProps = Readonly<{
   onSelect: (contextId: number | null) => void;
   loading?: boolean;
   disabled?: boolean;
+  allContextsLabel?: string;
+  allContextsSubtitle?: string;
 }>;
 
 export function ScheduleContextSelector({
@@ -28,6 +30,8 @@ export function ScheduleContextSelector({
   onSelect,
   loading = false,
   disabled = false,
+  allContextsLabel = "Todos os meus setores",
+  allContextsSubtitle = "Visão geral das escalas que você pode acessar",
 }: ScheduleContextSelectorProps) {
   const [open, setOpen] = useState(false);
   const selected =
@@ -38,7 +42,7 @@ export function ScheduleContextSelector({
     ? "Carregando escalas..."
     : contexts.length === 0
       ? "Nenhuma escala disponível"
-      : (selected?.displayName ?? "Todos os meus setores");
+      : (selected?.displayName ?? allContextsLabel);
 
   const close = () => setOpen(false);
   const choose = (contextId: number | null) => {
@@ -167,8 +171,8 @@ export function ScheduleContextSelector({
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={{ gap: theme.space[2] }}>
                 <ContextOption
-                  title="Todos os meus setores"
-                  subtitle="Visão geral das escalas que você pode acessar"
+                  title={allContextsLabel}
+                  subtitle={allContextsSubtitle}
                   selected={selectedContextId === null}
                   onPress={() => choose(null)}
                 />

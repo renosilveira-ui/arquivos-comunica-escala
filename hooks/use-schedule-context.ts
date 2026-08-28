@@ -6,25 +6,37 @@ import {
   resolveScheduleContextId,
   scheduleContextStorageKey,
   type ScheduleContextOption,
+  type ScheduleContextVisibility,
 } from "@/lib/schedule-context-selection";
 
 type UseScheduleContextOptions = Readonly<{
   userId: number | null | undefined;
   institutionId: number | null | undefined;
+  visibility?: ScheduleContextVisibility;
 }>;
 
 /**
  * Contexto operacional da escala. A chave é account + tenant scoped para um
  * médico não herdar a última escala de outra conta ou instituição no aparelho.
+ *
+ * visibility "roster" alimenta o panorama Geral com todas as escalas
+ * ativas do tenant (só leitura). "authorized" permanece para criar/gerir.
  */
 export function useScheduleContext({
   userId,
   institutionId,
+  visibility = "authorized",
 }: UseScheduleContextOptions) {
-  const query = trpc.scheduleContexts.listMine.useQuery(undefined, {
-    enabled: !!userId && !!institutionId,
+  const enabled = !!userId && !!institutionId;
+  const authorizedQuery = trpc.scheduleContexts.listMine.useQuery(undefined, {
+    enabled: enabled && visibility === "authorized",
     staleTime: 60_000,
   });
+  const rosterQuery = trpc.scheduleContexts.listReadable.useQuery(undefined, {
+    enabled: enabled && visibility === "roster",
+    staleTime: 60_000,
+  });
+  const query = visibility === "roster" ? rosterQuery : authorizedQuery;
   const contexts = useMemo<readonly ScheduleContextOption[]>(
     () => query.data ?? [],
     [query.data],
@@ -34,7 +46,7 @@ export function useScheduleContext({
     : null;
   const storageKey =
     userId && institutionId
-      ? scheduleContextStorageKey(userId, institutionId)
+      ? scheduleContextStorageKey(userId, institutionId, visibility)
       : null;
   const [selectedContextId, setSelectedContextId] = useState<number | null>(
     null,
