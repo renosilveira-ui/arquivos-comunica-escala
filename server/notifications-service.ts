@@ -292,6 +292,10 @@ async function submitExpoPushTicket(
         data: payload.data ?? {},
         sound: "default",
         priority: "high",
+        // Precisa coincidir com o plugin expo-notifications e o canal runtime
+        // (escalas-default). Sem channelId o Android cai no canal "default" e
+        // o LED/importância configurados no app não valem.
+        channelId: "escalas-default",
       }),
       signal: AbortSignal.timeout(EXPO_HTTP_TIMEOUT_MS),
     });

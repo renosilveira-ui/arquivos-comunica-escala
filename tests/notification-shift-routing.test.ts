@@ -147,4 +147,91 @@ describe("roteamento de push para o plantão exato", () => {
       "trocas:tenant:11",
     ]);
   });
+
+  it("abre Minhas ofertas quando o plantão foi assumido", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 22, revision: 1 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "swap_taken",
+          institutionId: 11,
+          shiftInstanceId: 88,
+          swapRequestId: 3,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => {
+            calls.push("allowed");
+            return [11, 22];
+          },
+          setActiveInstitutionId: async (institutionId) => {
+            calls.push(`set:${institutionId}`);
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          navigateToTrocas: () => {
+            calls.push("trocas");
+          },
+          navigateToMyOffers: () => {
+            calls.push(`offers:tenant:${activeTenant.institutionId}`);
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual([
+      "allowed",
+      "set:11",
+      "invalidate",
+      "offers:tenant:11",
+    ]);
+  });
+
+  it("cai em Trocas quando swap_taken chega sem navigateToMyOffers", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 11, revision: 1 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "swap_taken",
+          institutionId: 11,
+          shiftInstanceId: 88,
+          swapRequestId: 3,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: async () => undefined,
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          navigateToTrocas: () => {
+            calls.push("trocas");
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual(["invalidate", "trocas"]);
+  });
 });

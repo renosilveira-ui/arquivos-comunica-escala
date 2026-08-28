@@ -20,6 +20,9 @@ import {
   isPushRegistrationAdmissionCurrent,
 } from "@/lib/push-registration";
 
+/** Marca navy (`theme.palette.brand[500]` / plugin expo-notifications). Sem import de theme: testes SSO mockam react-native sem Platform.select. */
+const ANDROID_NOTIFICATION_COLOR = "#01304A";
+
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -382,11 +385,11 @@ async function registerForPushNotificationsAsync(
   if (!isCurrent()) return undefined;
   if (Platform.OS === "android") {
     if (!isCurrent()) return undefined;
-    await Notifications.setNotificationChannelAsync("default", {
-      name: "default",
+    await Notifications.setNotificationChannelAsync("escalas-default", {
+      name: "Plantões e ofertas",
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
-      lightColor: "#4DA3FF",
+      lightColor: ANDROID_NOTIFICATION_COLOR,
     });
     if (!isCurrent()) return undefined;
   }

@@ -1,6 +1,9 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
+/** Marca navy (`theme.palette.brand[500]` / plugin expo-notifications). Sem import de theme: testes SSO mockam react-native sem Platform.select. */
+const ANDROID_NOTIFICATION_COLOR = "#01304A";
+
 // Configurar comportamento das notificações
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -25,11 +28,11 @@ export async function requestNotificationPermissions(): Promise<boolean> {
   }
 
   if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('default', {
-      name: 'Escalas Hospitalares',
+    await Notifications.setNotificationChannelAsync('escalas-default', {
+      name: 'Plantões e ofertas',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#4DA3FF',
+      lightColor: ANDROID_NOTIFICATION_COLOR,
     });
   }
 

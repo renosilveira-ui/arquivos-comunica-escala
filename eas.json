@@ -21,7 +21,8 @@
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://escalas-staging.onrender.com"
-      }
+      },
+      "autoIncrement": true
     },
     "production": {
       "distribution": "store",
@@ -38,6 +39,14 @@
     }
   },
   "submit": {
+    "preview": {
+      "ios": {
+        "ascAppId": "6802868138"
+      },
+      "android": {
+        "track": "internal"
+      }
+    },
     "production": {
       "ios": {
         "ascAppId": "6802868138"

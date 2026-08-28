@@ -29,7 +29,7 @@ Termos que aparecem várias vezes neste documento:
 - **Internal Testing (Play Store):** equivalente da Google. Permite
   até 100 testadores via link.
 - **Bundle Identifier / Package:** identificador único do app no mundo
-  Apple/Android. Hoje vale `app.escalas.staging` (provisório).
+  Apple/Android. Hoje vale `com.comunicamais.escalas`.
 - **Apple ID:** a conta Apple de cada anestesista. Cada tester precisa
   ter uma — sem isso, não consegue receber convite TestFlight.
 
@@ -186,8 +186,8 @@ Caminho:
      preferir).
    - **Primary Language:** Portuguese (Brazil).
    - **Bundle ID:** selecionar o que aparece na lista
-     (`app.escalas.staging` — criado automaticamente pelo EAS no passo
-     1.3).
+     (`com.comunicamais.escalas` — criado automaticamente pelo EAS no
+     passo 1.3).
    - **SKU:** algo único interno, ex.: `escalas-piloto-2026`.
 4. Salvar. O app aparece em "My Apps" como um card com status
    "Prepare for Submission".
@@ -402,15 +402,17 @@ Faltou rodar o `eas init` (Fase 1.2). Rodar e comitar a mudança no
   TestFlight + APK direto. Submissão pública vem depois da validação,
   e exige assets adicionais (screenshots, descrição, política de
   privacidade). Ver `mobile-deploy.md` seção "3. Publicação em stores".
-- **Push notifications.** Hoje o app pede a permissão Android
-  (`POST_NOTIFICATIONS`) mas não há backend de push configurado.
-  Quando precisarmos, será um PR separado (Firebase / APNs tokens).
+- **Push notifications.** O backend enfileira Expo Push (oferta, plantão
+  assumido, confirmação de plantão). O binário nativo precisa do plugin
+  `expo-notifications` em `app.config.ts` (canal `escalas-default`,
+  `enableBackgroundRemoteNotifications`) e de um dispositivo físico com
+  token registrado. Sem `EXPO_TOKEN` no CI, o `eas build` / `eas submit`
+  não roda daqui. Versão de distribuição atual: `1.0.1`.
 - **Code signing avançado** (certificados manuais, perfis de
   enterprise distribution, etc.). EAS faz tudo automático — não
   precisamos mexer nesse nível.
-- **Bundle ID definitivo.** Hoje vale `app.escalas.staging`.
-  Antes de publicar em loja pública, decidir o nome final
-  (cooperativa? hospital? entidade nova?). Ver `mobile-deploy.md`.
+- **Bundle ID.** Vale `com.comunicamais.escalas` (app App Store Connect
+  `6802868138`). Não trocar: um ID novo cria outro app na Apple.
 
 ---
 
