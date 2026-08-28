@@ -15,6 +15,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { usePermissions } from "@/hooks/use-permissions";
 import { apiFetch } from "@/lib/_core/api";
 import {
@@ -207,6 +208,7 @@ function CreateUserModal({
   const [managerScopes, setManagerScopes] = useState<ManagerScopeDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const { success } = useActionFeedback();
 
   const reset = () => {
     setName("");
@@ -269,6 +271,9 @@ function CreateUserModal({
     );
     setLoading(false);
     if (res.ok) {
+      success(
+        "Profissional cadastrado. Ele entra com este e-mail e a senha definida aqui.",
+      );
       reset();
       onCreated();
       onClose();

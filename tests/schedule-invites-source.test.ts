@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 describe("wiring fail-closed dos convites nominais", () => {
   it("o cadastro público não resgata convite e a conta sem instituição nasce aprovada", () => {
     const source = readFileSync("server/routes/auth.ts", "utf8");
-    expect(source).toContain('approvalStatus: lockedInstitution ? "PENDING" : "APPROVED"');
+    expect(source).toContain('const nextApproval = awaitingApproval ? "PENDING" : "APPROVED"');
+    expect(source).toContain("approvalStatus: nextApproval");
+    expect(source).toContain("let awaitingApproval = hasInstitution");
     expect(source).toContain("O cadastro não usa código de convite");
     expect(source).toContain('"/redeem-invite"');
     expect(source).toContain("ScheduleInviteError");
