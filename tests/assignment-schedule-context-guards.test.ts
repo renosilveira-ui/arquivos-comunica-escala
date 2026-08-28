@@ -272,6 +272,14 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     );
     expect(structuredBranch).toContain("assertActiveScheduleContextTopology");
     expect(structuredBranch).not.toContain("assertSpecialtyCompatible");
+    expect(writeGuard).toContain('if (coverage === "manager")');
+    expect(writeGuard).toContain(
+      "managerCoveredProfessionalIds.add(professional.id)",
+    );
+    expect(validations).toContain(
+      "async function assignmentCoverageWithoutSectorAccess",
+    );
+    expect(validations).toContain('return invited ? "invite" : null');
 
     const direct = block(
       editor,

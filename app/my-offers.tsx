@@ -1,5 +1,6 @@
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
@@ -12,8 +13,9 @@ import { formatHospitalTimeRange } from "@/lib/hospital-time";
 
 /**
  * Tela "Minhas ofertas" — consome `swaps.list({ role: "OFFERER" })`.
- * Quem assume transfere o plantão no aceite; o dono só acompanha e
- * pode cancelar enquanto a oferta está PENDING.
+ * Quem assume transfere o plantão no aceite; o dono acompanha e pode
+ * cancelar PENDING ou uma candidatura antiga em ACCEPTED que não
+ * completou. Sem botão de aprovar.
  */
 
 type SwapType = "SWAP" | "TRANSFER" | "CESSAO";
@@ -34,7 +36,7 @@ const TYPE_LABEL: Record<SwapType, string> = {
 
 const STATUS_LABEL: Record<SwapStatus, string> = {
   PENDING: "Aguardando quem assuma",
-  ACCEPTED: "Candidatura antiga",
+  ACCEPTED: "Não foi possível assumir",
   APPROVED: "Assumida",
   REJECTED_BY_PEER: "Recusada pelo profissional",
   REJECTED_BY_MANAGER: "Recusada pelo gestor",
@@ -55,7 +57,7 @@ export default function MyOffersScreen() {
   const router = useRouter();
 
   // Filtro role=OFFERER (PR #64): só ofertas onde sou o ofertante.
-  const { data, isLoading, refetch } = trpc.swaps.list.useQuery(
+  const { data, isLoading, isError, refetch } = trpc.swaps.list.useQuery(
     { role: "OFFERER" },
     { enabled: !!user?.id },
   );
@@ -75,8 +77,11 @@ export default function MyOffersScreen() {
   });
 
   const handleCancel = async (offer: any) => {
+    const leftover = offer.status === "ACCEPTED";
     const confirmed = await confirmAction(
-      "Cancelar esta oferta?\n\nA solicitação será removida das suas ofertas em aberto.",
+      leftover
+        ? "Desfazer esta candidatura antiga?\n\nO plantão continua com você e a solicitação deixa de ficar presa."
+        : "Cancelar esta oferta?\n\nA solicitação será removida das suas ofertas em aberto.",
     );
     if (!confirmed) return;
     cancelMutation.mutate({ swapRequestId: offer.id });
@@ -111,8 +116,12 @@ export default function MyOffersScreen() {
   }
 
   const offers = (data ?? []) as any[];
-  const openOffers = offers.filter((o) => o.status === "PENDING");
-  const history = offers.filter((o) => o.status !== "PENDING");
+  const openOffers = offers.filter(
+    (o) => o.status === "PENDING" || o.status === "ACCEPTED",
+  );
+  const history = offers.filter(
+    (o) => o.status !== "PENDING" && o.status !== "ACCEPTED",
+  );
 
   return (
     <ScreenGradient>
@@ -134,6 +143,11 @@ export default function MyOffersScreen() {
               Carregando ofertas...
             </Text>
           </View>
+        ) : isError ? (
+          <QueryErrorState
+            title="Não foi possível carregar as ofertas"
+            onRetry={() => refetch()}
+          />
         ) : offers.length === 0 ? (
           <View className="items-center justify-center py-20">
             <Inbox size={64} color={theme.colors.textMuted} />
@@ -155,7 +169,11 @@ export default function MyOffersScreen() {
                   <OfferCard
                     key={offer.id}
                     offer={offer}
-                    onCancel={() => handleCancel(offer)}
+                    onCancel={
+                      offer.canCancel !== false
+                        ? () => handleCancel(offer)
+                        : null
+                    }
                   />
                 ))}
               </View>
@@ -263,6 +281,12 @@ function OfferCard({
         </View>
       )}
 
+      {offer.reviewNote ? (
+        <Text className="text-xs" style={{ color: theme.colors.textSecondary }}>
+          {offer.reviewNote}
+        </Text>
+      ) : null}
+
       {/* Expira em */}
       {expiresAt && status === "PENDING" && (
         <View className="flex-row items-center gap-1">
@@ -273,7 +297,7 @@ function OfferCard({
         </View>
       )}
 
-      {/* Cancelar (só PENDING, sem candidato ainda) */}
+      {/* Cancelar PENDING ou ACCEPTED residual que não completou */}
       {onCancel && (
         <TouchableOpacity
           onPress={onCancel}
@@ -284,7 +308,7 @@ function OfferCard({
           style={{ borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }}
         >
           <Text className="text-sm font-medium" style={{ color: theme.colors.textSecondary }}>
-            Cancelar oferta
+            {status === "ACCEPTED" ? "Desfazer candidatura" : "Cancelar oferta"}
           </Text>
         </TouchableOpacity>
       )}

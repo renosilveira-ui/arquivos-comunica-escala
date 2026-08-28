@@ -510,6 +510,22 @@ describe("take em um passo: quem assume leva o plantão", () => {
     await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
   });
 
+  async function expectStillOwnedByOfferer(shiftId: number) {
+    const assignments = await db
+      .select({
+        professionalId: shiftAssignmentsV2.professionalId,
+        isActive: shiftAssignmentsV2.isActive,
+      })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftId));
+    expect(
+      assignments.some(
+        (row) =>
+          row.professionalId === offerer.professionalId && row.isActive,
+      ),
+    ).toBe(true);
+  }
+
   it("list de já APPROVED é no-op e accept devolve CONFLICT em português", async () => {
     const leftover = await insertLeftoverAccepted(gestor, 9);
     await callerFor(offerer).list({ role: "OFFERER" });
@@ -527,5 +543,119 @@ describe("take em um passo: quem assume leva o plantão", () => {
       message: "Esta solicitação já foi efetivada ou cancelada.",
     });
     await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+  });
+
+  it("ACCEPTED residual expirada cancela ao listar e o plantão fica com o dono", async () => {
+    const leftover = await insertLeftoverAccepted(gestor, 10);
+    await db
+      .update(swapRequests)
+      .set({ expiresAt: new Date(Date.now() - 60 * 60_000) })
+      .where(eq(swapRequests.id, leftover.swapId));
+
+    const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
+    const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
+    expect(row?.status).toBe("CANCELLED");
+    expect(row?.awaitingMyApproval).toBe(false);
+    expect(row?.canCancel).toBe(false);
+    expect(row?.reviewNote).toMatch(/expirou/);
+
+    const [swap] = await db
+      .select({ status: swapRequests.status, reviewNote: swapRequests.reviewNote })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId))
+      .limit(1);
+    expect(swap).toMatchObject({
+      status: "CANCELLED",
+      reviewNote: expect.stringMatching(/expirou/),
+    });
+    await expectStillOwnedByOfferer(leftover.shiftId);
+  });
+
+  it("ACCEPTED residual com mês não publicado cancela ao listar", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 11);
+    const [shift] = await db
+      .select({ startAt: shiftInstances.startAt })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, leftover.shiftId))
+      .limit(1);
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
+    expect(shift).toBeDefined();
+
+    const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
+    const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
+    expect(row?.status).toBe("CANCELLED");
+    expect(row?.canCancel).toBe(false);
+    expect(row?.reviewNote).toMatch(/escala do mês|publicad|trancad|acesso/);
+    await expectStillOwnedByOfferer(leftover.shiftId);
+  });
+
+  it("ACCEPTED residual com conflito de horário cancela ao listar", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 12);
+    await createOccupiedShift(peer, 12, "Anestesiologia");
+
+    const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
+    const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
+    expect(row?.status).toBe("CANCELLED");
+    expect(row?.canCancel).toBe(false);
+    expect(row?.reviewNote).toMatch(/conflito de horário/);
+    await expectStillOwnedByOfferer(leftover.shiftId);
+  });
+
+  it("dono cancela ACCEPTED residual que ainda não listou", async () => {
+    const leftover = await insertLeftoverAccepted(gestor, 13);
+    await expect(
+      callerFor(offerer).cancel({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ ok: true });
+    const [swap] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId))
+      .limit(1);
+    expect(swap?.status).toBe("CANCELLED");
+    await expectStillOwnedByOfferer(leftover.shiftId);
+  });
+
+  it("candidato cancela ACCEPTED residual que não pode completar", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 14);
+    await db
+      .update(swapRequests)
+      .set({ expiresAt: new Date(Date.now() - 60 * 60_000) })
+      .where(eq(swapRequests.id, leftover.swapId));
+
+    await expect(
+      callerFor(peer).cancel({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ ok: true });
+    const [swap] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId))
+      .limit(1);
+    expect(swap?.status).toBe("CANCELLED");
+    await expectStillOwnedByOfferer(leftover.shiftId);
+  });
+
+  it("accept de ACCEPTED residual que não pode completar desfaz e devolve o erro", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 15);
+    await db
+      .update(swapRequests)
+      .set({ expiresAt: new Date(Date.now() - 60 * 60_000) })
+      .where(eq(swapRequests.id, leftover.swapId));
+
+    await expect(
+      callerFor(peer).accept({ swapRequestId: leftover.swapId }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringMatching(/expirad/),
+    });
+    const [swap] = await db
+      .select({ status: swapRequests.status, reviewNote: swapRequests.reviewNote })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId))
+      .limit(1);
+    expect(swap?.status).toBe("CANCELLED");
+    expect(swap?.reviewNote).toMatch(/expirou/);
+    await expectStillOwnedByOfferer(leftover.shiftId);
   });
 });

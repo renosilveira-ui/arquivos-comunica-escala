@@ -18,7 +18,8 @@ import { formatHospitalTimeRange } from "@/lib/hospital-time";
  * Fluxo do usuário:
  *   - Acessa via Perfil → "Suas candidaturas".
  *   - "Histórico recente": APPROVED (assumiu o plantão), EXPIRED, etc.
- *     ACCEPTED residual do fluxo antigo é efetivado ao listar.
+ *     ACCEPTED residual efetiva ao listar; se não puder completar,
+ *     cancela com motivo — sem pedir aprovação do dono.
  */
 
 type SwapType = "SWAP" | "TRANSFER" | "CESSAO";
@@ -327,6 +328,12 @@ function ApplicationCard({
           </Text>
         </View>
       )}
+
+      {application.reviewNote ? (
+        <Text className="text-xs" style={{ color: theme.colors.textSecondary }}>
+          {application.reviewNote}
+        </Text>
+      ) : null}
 
       {/* Expira em (apenas enquanto aguardando) */}
       {expiresAt && status === "ACCEPTED" && (
