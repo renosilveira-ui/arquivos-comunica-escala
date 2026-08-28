@@ -56,6 +56,8 @@ export default defineConfig({
       "tests/auth-provider-races.test.ts",
       "tests/auth-logout-persistence.test.ts",
       "tests/web-session-visibility.test.ts",
+      "tests/web-session-lifecycle.test.ts",
+      "tests/web-verified-session.test.ts",
       "tests/institution-roles.test.ts",
     ],
   },

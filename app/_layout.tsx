@@ -52,6 +52,11 @@ import {
   isNetInfoOnline,
 } from "@/lib/request-deadline";
 import {
+  applyTenantAuthorizationActivityPatch,
+  initialTenantAuthorizationActivityForPlatform,
+  shouldAttachNativeSessionGateLifecycle,
+} from "@/lib/web-session-lifecycle";
+import {
   fenceQueryCachePersistence,
   startQueryCachePersistence,
 } from "@/lib/query-persist";
@@ -60,7 +65,6 @@ import {
   runTenantAuthorizationAttempt,
   tenantAuthorityMatchesMembership,
   TenantAuthorizationCoordinator,
-  transitionTenantAuthorizationActivity,
   type AuthorizedInstitution,
   type TenantAuthorizationActivity,
   type TenantAuthorizationReceipt,
@@ -330,17 +334,16 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     userId: -1,
     tenant: { institutionId: null, revision: -1 },
   });
-  const initialActivity = useMemo<TenantAuthorizationActivity>(() => ({
-    visible: Platform.OS === "web"
-      ? typeof document === "undefined" || document.visibilityState !== "hidden"
-      : AppState.currentState === "active",
-    // Nativo: assume online até o NetInfo negar. Começar offline bloqueava o
-    // handshake pós-login no Android enquanto o probe demorava ou falhava.
-    online: Platform.OS === "web"
-      ? typeof navigator === "undefined" || navigator.onLine
-      : true,
-    revision: 0,
-  }), []);
+  const initialActivity = useMemo<TenantAuthorizationActivity>(
+    () =>
+      initialTenantAuthorizationActivityForPlatform(Platform.OS, {
+        visible: AppState.currentState === "active",
+        // Nativo: assume online até o NetInfo negar. Começar offline bloqueava
+        // o handshake pós-login no Android enquanto o probe demorava ou falhava.
+        online: true,
+      }),
+    [],
+  );
   const activityRef = useRef(initialActivity);
   const [activity, setActivity] = useState(initialActivity);
 
@@ -374,7 +377,11 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
   const updateActivity = useCallback((
     patch: Partial<Pick<TenantAuthorizationActivity, "visible" | "online">>,
   ) => {
-    const transition = transitionTenantAuthorizationActivity(activityRef.current, patch);
+    const transition = applyTenantAuthorizationActivityPatch(
+      activityRef.current,
+      patch,
+      Platform.OS,
+    );
     if (transition.action === "NONE") return;
     activityRef.current = transition.state;
 
@@ -388,8 +395,8 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
         subjectKey: subjectKeyOf(currentSubjectRef.current),
       });
     } else if (transition.action === "REVALIDATE") {
-      // Reconnect de rede exige /me fresco. Trocar de aba no web não passa
-      // por CLOSE/REVALIDATE — o foco só refetch a sessão sem derrubar o gate.
+      // Reconnect de rede nativo exige /me fresco. No web o patch é no-op:
+      // aba escondida, freeze e flap de NetInfo não revalidam sessão.
       if (patch.online === true) {
         void refetch();
       }
@@ -398,14 +405,16 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
   }, [queryClient, refetch]);
 
   useEffect(() => {
+    // Web: visibilitychange/pagehide/freeze/pageshow/NetInfo/online não
+    // entram no gate. #287 ainda refetchava /me ao voltar à aba e deixava
+    // NetInfo fechar o gate quando o Network Information API flapava.
+    if (!shouldAttachNativeSessionGateLifecycle(Platform.OS)) return undefined;
+
     // Sem polling contínuo: revogação ocorrida enquanto o app permanece
     // foreground/online segue bloqueada no backend por request. O residual
     // visual até um evento de lifecycle/rede fica explicitamente fora do SLA
     // desta frente; resume/reconnect sempre reatesta antes de reabrir a UI.
     const appStateSubscription = AppState.addEventListener("change", (nextState) => {
-      // AppState web é visibilitychange. Fechar o gate ao esconder a aba
-      // limpava o cache, reabria handshake e um /me 401 sem cookie deslogava.
-      if (Platform.OS === "web") return;
       updateActivity({ visible: nextState === "active" });
     });
     const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
@@ -422,30 +431,11 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
       updateActivity({ online: true });
     });
 
-    const handleVisibility = () => {
-      if (document.visibilityState !== "visible") return;
-      // Nunca envia visible:false: esconder a aba no desktop não é background.
-      updateActivity({ visible: true });
-      void refetch();
-    };
-    const handleOnline = () => updateActivity({ online: true });
-    const handleOffline = () => updateActivity({ online: false });
-    if (Platform.OS === "web" && typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", handleVisibility);
-      globalThis.addEventListener?.("online", handleOnline);
-      globalThis.addEventListener?.("offline", handleOffline);
-    }
-
     return () => {
       appStateSubscription.remove();
       netInfoUnsubscribe();
-      if (Platform.OS === "web" && typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", handleVisibility);
-        globalThis.removeEventListener?.("online", handleOnline);
-        globalThis.removeEventListener?.("offline", handleOffline);
-      }
     };
-  }, [refetch, updateActivity]);
+  }, [updateActivity]);
 
   useEffect(() => {
     const coordinator = coordinatorRef.current;
@@ -836,9 +826,10 @@ export default function RootLayout() {
         }),
         defaultOptions: {
           queries: {
-            // Disable automatic refetching on window focus for mobile
+            // Foco/reconnect no desktop não pode 401 e emitir UNAUTHORIZED
+            // (o listener de sessão chamaria /me e o #287 ainda deslogava).
             refetchOnWindowFocus: false,
-            // Retry failed requests once
+            refetchOnReconnect: false,
             retry: 1,
           },
         },
