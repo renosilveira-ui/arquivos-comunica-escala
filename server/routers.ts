@@ -348,7 +348,10 @@ const shiftAssignmentsRouter = router({
       );
 
       if (shift.status !== "VAGO") {
-        throw new Error(`Turno não está disponível (status: ${shift.status})`);
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Este plantão não está vago.",
+        });
       }
 
       // Transação + guarda otimista: dois médicos assumindo a mesma vaga

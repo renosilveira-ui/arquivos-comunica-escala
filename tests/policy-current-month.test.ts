@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertCanCreateHospital,
   assertCanEditScheduleDate,
   type TenantActor,
 } from "../server/_core/policy";
@@ -29,10 +30,16 @@ describe("policy - current month schedule editing", () => {
     ).toThrow(/mês corrente/i);
   });
 
-  it("bloqueia gestor medico em mes futuro", () => {
+  it("permite gestor medico no proximo mes", () => {
     expect(() =>
       assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-06-01T07:00:00-03:00"), now),
-    ).toThrow(/mês corrente/i);
+    ).not.toThrow();
+  });
+
+  it("bloqueia gestor medico em mes+2", () => {
+    expect(() =>
+      assertCanEditScheduleDate(actor("GESTOR_MEDICO"), new Date("2026-07-01T07:00:00-03:00"), now),
+    ).toThrow(/mês corrente ou do próximo/i);
   });
 
   it("permite gestor plus em qualquer mes", () => {
@@ -51,5 +58,16 @@ describe("policy - current month schedule editing", () => {
     expect(() =>
       assertCanEditScheduleDate(actor("USER"), new Date("2026-05-13T07:00:00-03:00"), now),
     ).toThrow(/gestores/i);
+  });
+});
+
+describe("policy - cadastrar hospital", () => {
+  it("permite Gestor+ e admin; recusa gestor de setor e plantonista", () => {
+    expect(() => assertCanCreateHospital(actor("GESTOR_PLUS"))).not.toThrow();
+    expect(() => assertCanCreateHospital(actor("USER", true))).not.toThrow();
+    expect(() => assertCanCreateHospital(actor("GESTOR_MEDICO"))).toThrow(
+      /Gestor\+|administrador/i,
+    );
+    expect(() => assertCanCreateHospital(actor("USER"))).toThrow(/gestores/i);
   });
 });

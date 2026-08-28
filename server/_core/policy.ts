@@ -8,7 +8,7 @@ import {
   professionals,
   users,
 } from "../../drizzle/schema";
-import { yearMonthBrt } from "../local-time";
+import { addMonthsYearMonth, yearMonthBrt } from "../local-time";
 import type { TrpcContext } from "./context";
 import { assertInstitutionHierarchy } from "./tenant";
 
@@ -182,29 +182,68 @@ export function assertCanManageInstitutionSchedule(actor: TenantActor): void {
   });
 }
 
+/**
+ * Cadastrar hospital é catálogo da instituição, não jurisdição de escala.
+ * GESTOR_MEDICO (mesmo com escopo hospital-wide) opera hospital existente;
+ * só GESTOR_PLUS e admin criam o nó. Sem isto o próximo tenant não abre
+ * calendário — Unimed só escapa porque o seed já tem o hospital.
+ */
+export function assertCanCreateHospital(actor: TenantActor): void {
+  if (actor.isGlobalAdmin) return;
+  if (actor.roleInInstitution === "GESTOR_PLUS") return;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message:
+      actor.roleInInstitution === "GESTOR_MEDICO"
+        ? "Apenas o Gestor+ ou o administrador da instituição podem cadastrar hospital."
+        : "Apenas gestores da instituição podem cadastrar hospital.",
+  });
+}
+
 export function isSameCalendarMonth(date: Date, now: Date): boolean {
   // Mês no relógio do hospital (-03:00), não no fuso do servidor (UTC).
   return yearMonthBrt(date) === yearMonthBrt(now);
 }
 
+/** GESTOR_MEDICO opera o mês corrente e o imediatamente seguinte (−03:00). */
+export function isCurrentOrNextCalendarMonth(date: Date, now: Date): boolean {
+  const target = yearMonthBrt(date);
+  const current = yearMonthBrt(now);
+  return target === current || target === addMonthsYearMonth(current, 1);
+}
+
+const GESTOR_MEDICO_MONTH_WINDOW_MESSAGE =
+  "Gestor de hospital só pode editar escala do mês corrente ou do próximo.";
+
 export function assertCanEditScheduleDate(actor: TenantActor, date: Date, now = new Date()): void {
   assertCanManageInstitutionSchedule(actor);
   if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") return;
-  if (actor.roleInInstitution === "GESTOR_MEDICO" && isSameCalendarMonth(date, now)) return;
+  if (actor.roleInInstitution === "GESTOR_MEDICO" && isCurrentOrNextCalendarMonth(date, now)) {
+    return;
+  }
 
   throw new TRPCError({
     code: "FORBIDDEN",
-    message: "Gestor de hospital só pode editar escala do mês corrente",
+    message: GESTOR_MEDICO_MONTH_WINDOW_MESSAGE,
   });
 }
+
+/**
+ * `exact`: hospital inteiro (sector null) ou o setor informado.
+ * `any-hospital`: qualquer jurisdição naquele hospital — publicar e
+ * trancar o mês do hospital é a mesma cadeia operacional de abrir o setor.
+ */
+export type ManagerScopeMode = "exact" | "any-hospital";
 
 export async function assertManagerScopeAccess(
   actor: TenantActor,
   hospitalId: number,
   sectorId?: number,
+  options?: { mode?: ManagerScopeMode },
 ): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const mode = options?.mode ?? "exact";
 
   await assertInstitutionHierarchy(
     { institutionId: actor.institutionId, hospitalId, sectorId },
@@ -238,6 +277,8 @@ export async function assertManagerScopeAccess(
     });
   }
 
+  if (mode === "any-hospital") return;
+
   const hasHospitalScope = scopes.some((s) => s.sectorId === null);
   const hasSectorScope =
     typeof sectorId === "number" ? scopes.some((s) => s.sectorId === sectorId) : false;
@@ -267,6 +308,7 @@ export async function assertManagerScopeAccessForUpdate(
   hospitalId: number,
   sectorId: number | undefined,
   dates: readonly Date[] = [],
+  options?: { mode?: ManagerScopeMode },
 ): Promise<"GESTOR_MEDICO" | "GESTOR_PLUS"> {
   await assertInstitutionHierarchy(
     { institutionId: actor.institutionId, hospitalId, sectorId },
@@ -363,32 +405,40 @@ export async function assertManagerScopeAccessForUpdate(
     });
   }
   for (const date of dates) {
-    if (role === "GESTOR_MEDICO" && !isSameCalendarMonth(date, new Date())) {
+    if (role === "GESTOR_MEDICO" && !isCurrentOrNextCalendarMonth(date, new Date())) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "Gestor de hospital só pode editar escala do mês corrente",
+        message: GESTOR_MEDICO_MONTH_WINDOW_MESSAGE,
       });
     }
   }
   if (role === "GESTOR_PLUS") return role;
 
+  const mode = options?.mode ?? "exact";
+  const scopeFilter =
+    mode === "any-hospital"
+      ? and(
+          eq(managerScope.institutionId, actor.institutionId),
+          eq(managerScope.managerProfessionalId, actor.professionalId),
+          eq(managerScope.hospitalId, hospitalId),
+          eq(managerScope.active, true),
+        )
+      : and(
+          eq(managerScope.institutionId, actor.institutionId),
+          eq(managerScope.managerProfessionalId, actor.professionalId),
+          eq(managerScope.hospitalId, hospitalId),
+          or(
+            isNull(managerScope.sectorId),
+            typeof sectorId === "number"
+              ? eq(managerScope.sectorId, sectorId)
+              : isNull(managerScope.sectorId),
+          ),
+          eq(managerScope.active, true),
+        );
   const scopeQuery = tx
     .select({ id: managerScope.id })
     .from(managerScope)
-    .where(
-      and(
-        eq(managerScope.institutionId, actor.institutionId),
-        eq(managerScope.managerProfessionalId, actor.professionalId),
-        eq(managerScope.hospitalId, hospitalId),
-        or(
-          isNull(managerScope.sectorId),
-          typeof sectorId === "number"
-            ? eq(managerScope.sectorId, sectorId)
-            : isNull(managerScope.sectorId),
-        ),
-        eq(managerScope.active, true),
-      ),
-    )
+    .where(scopeFilter)
     .limit(1);
   const [scope] = await scopeQuery.for("update");
   if (!scope) {

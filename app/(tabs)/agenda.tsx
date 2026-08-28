@@ -29,6 +29,7 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { ManagerActionsMenu } from "@/components/agenda/ManagerActionsMenu";
 import { OpenMonthShiftsButton } from "@/components/agenda/OpenMonthShiftsButton";
+import { CreateHospitalButton } from "@/components/agenda/CreateHospitalButton";
 import { CreateSectorScaleButton } from "@/components/agenda/CreateSectorScaleButton";
 import { MobileDayList } from "@/components/agenda/MobileDayList";
 import { NextShiftCard } from "@/components/agenda/NextShiftCard";
@@ -56,11 +57,18 @@ import {
 } from "@/lib/agenda-month-navigation";
 import { openMonthShiftsDescription } from "@/lib/open-month-shifts";
 import {
+  canCreateInstitutionHospital,
+  createHospitalEmptyDescription,
+  createHospitalEmptyTitle,
+} from "@/lib/create-hospital";
+import {
   createSectorScaleDoctorHint,
   createSectorScaleEmptyDescription,
   createSectorScaleEmptyTitle,
   createSectorScaleNoHospitalDescription,
   createSectorScaleNoHospitalTitle,
+  createSectorScaleNoJurisdictionDescription,
+  createSectorScaleNoJurisdictionTitle,
 } from "@/lib/create-sector-scale";
 
 /**
@@ -189,7 +197,7 @@ function shiftBorderColor(status: string): string {
 // ─── Componente principal ────────────────────────────────────────────
 export default function AgendaScreen() {
   const { user } = useAuth();
-  const { can } = usePermissions();
+  const { can, isGlobalAdmin, roleInInstitution } = usePermissions();
   const { activeInstitutionId, clearInstitutionSelection } = useTenantState();
   const { data: myInstitutions } =
     trpc.professionals.listMyInstitutions.useQuery(undefined, {
@@ -197,6 +205,10 @@ export default function AgendaScreen() {
       staleTime: 60_000,
     });
   const canCreateShift = can("create:shift");
+  const canCreateHospital = canCreateInstitutionHospital({
+    isGlobalAdmin,
+    roleInInstitution,
+  });
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isDesktop = Platform.OS === "web" && width >= MOBILE_BREAKPOINT;
@@ -650,6 +662,14 @@ export default function AgendaScreen() {
                     refetch();
                   }}
                 />
+                {canCreateHospital ? (
+                  <CreateHospitalButton
+                    onCreated={() => {
+                      void scheduleContext.refetch();
+                      refetch();
+                    }}
+                  />
+                ) : null}
                 <ManagerActionsMenu
                   variant="strip"
                   institutionId={activeInstitutionId ?? null}
@@ -664,13 +684,23 @@ export default function AgendaScreen() {
           ) : canCreateShift ? (
             <View style={{ gap: theme.space[3] }}>
               {scope === "geral" && scheduleContext.contexts.length > 0 ? (
-                <CreateSectorScaleButton
-                  onCreated={({ scheduleContextId }) => {
-                    scheduleContext.selectContext(scheduleContextId);
-                    void scheduleContext.refetch();
-                    refetch();
-                  }}
-                />
+                <View style={{ gap: theme.space[3] }}>
+                  <CreateSectorScaleButton
+                    onCreated={({ scheduleContextId }) => {
+                      scheduleContext.selectContext(scheduleContextId);
+                      void scheduleContext.refetch();
+                      refetch();
+                    }}
+                  />
+                  {canCreateHospital ? (
+                    <CreateHospitalButton
+                      onCreated={() => {
+                        void scheduleContext.refetch();
+                        refetch();
+                      }}
+                    />
+                  ) : null}
+                </View>
               ) : null}
               <ManagerActionsMenu
                 variant="strip"
@@ -803,6 +833,7 @@ export default function AgendaScreen() {
           scheduleContext.contexts.length === 0 ? (
           <EmptyInstitutionScaleState
             canCreateShift={canCreateShift}
+            canCreateHospital={canCreateHospital}
             onCreated={({ scheduleContextId }) => {
               scheduleContext.selectContext(scheduleContextId);
               void scheduleContext.refetch();
@@ -1092,15 +1123,22 @@ function ManagerMonthActions({
 
 function EmptyInstitutionScaleState({
   canCreateShift,
+  canCreateHospital,
   onCreated,
 }: {
   canCreateShift: boolean;
+  canCreateHospital: boolean;
   onCreated: (result: { scheduleContextId: number }) => void;
 }) {
   const topology = trpc.scheduleContexts.listManageableTopology.useQuery(undefined, {
     enabled: canCreateShift,
   });
-  const hasHospital = (topology.data?.length ?? 0) > 0;
+  const hospitals = topology.data?.hospitals ?? [];
+  const hasHospital = hospitals.length > 0;
+  const missingJurisdiction =
+    !topology.isLoading &&
+    !hasHospital &&
+    (topology.data?.institutionHasHospitals ?? false);
 
   return (
     <View
@@ -1131,9 +1169,13 @@ function EmptyInstitutionScaleState({
             }}
           >
             {canCreateShift
-              ? !topology.isLoading && !hasHospital
-                ? createSectorScaleNoHospitalTitle()
-                : createSectorScaleEmptyTitle()
+              ? missingJurisdiction
+                ? createSectorScaleNoJurisdictionTitle()
+                : !topology.isLoading && !hasHospital
+                  ? canCreateHospital
+                    ? createHospitalEmptyTitle()
+                    : createSectorScaleNoHospitalTitle()
+                  : createSectorScaleEmptyTitle()
               : "Nenhuma escala configurada para você"}
           </Text>
           <Text
@@ -1144,11 +1186,20 @@ function EmptyInstitutionScaleState({
             }}
           >
             {canCreateShift
-              ? !topology.isLoading && !hasHospital
-                ? createSectorScaleNoHospitalDescription()
-                : createSectorScaleEmptyDescription()
+              ? missingJurisdiction
+                ? createSectorScaleNoJurisdictionDescription()
+                : !topology.isLoading && !hasHospital
+                  ? canCreateHospital
+                    ? createHospitalEmptyDescription()
+                    : createSectorScaleNoHospitalDescription()
+                  : createSectorScaleEmptyDescription()
               : createSectorScaleDoctorHint()}
           </Text>
+          {canCreateHospital && !topology.isLoading && !missingJurisdiction ? (
+            <View style={{ alignSelf: "stretch" }}>
+              <CreateHospitalButton />
+            </View>
+          ) : null}
           {canCreateShift && (hasHospital || topology.isLoading) ? (
             <View style={{ alignSelf: "stretch" }}>
               <CreateSectorScaleButton onCreated={onCreated} />

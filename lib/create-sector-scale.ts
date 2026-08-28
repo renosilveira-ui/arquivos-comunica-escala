@@ -26,6 +26,14 @@ export function createSectorScaleNoHospitalDescription(): string {
   return "Peça ao administrador para cadastrar o hospital da instituição. Sem hospital não há calendário para abrir.";
 }
 
+export function createSectorScaleNoJurisdictionTitle(): string {
+  return "Sem permissão para gerir a escala deste hospital";
+}
+
+export function createSectorScaleNoJurisdictionDescription(): string {
+  return "O hospital existe neste vínculo, mas você não tem escopo para operar a escala. Peça o escopo ao administrador.";
+}
+
 export function createSectorScaleConfirmTitle(): string {
   return "Criar escala";
 }

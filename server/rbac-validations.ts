@@ -1,7 +1,7 @@
 import { professionals, managerScope, shiftInstances, professionalInstitutions } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { getDb } from "./db";
-import { yearMonthBrt } from "./local-time";
+import { addMonthsYearMonth, yearMonthBrt } from "./local-time";
 
 /**
  * Validações RBAC + Jurisdição + Janela Temporal
@@ -186,11 +186,16 @@ export async function checkEditWindow(
     return { canEdit: false, isRetroactive, reason: "Usuários não podem editar turnos retroativos" };
   }
 
-  if (yearMonthBrt(shiftDate) !== yearMonthBrt(new Date())) {
+  const targetMonth = yearMonthBrt(shiftDate);
+  const currentMonth = yearMonthBrt(new Date());
+  if (
+    targetMonth !== currentMonth &&
+    targetMonth !== addMonthsYearMonth(currentMonth, 1)
+  ) {
     return {
       canEdit: false,
       isRetroactive,
-      reason: "Gestor de hospital só pode editar escala do mês corrente",
+      reason: "Gestor de hospital só pode editar escala do mês corrente ou do próximo.",
     };
   }
 

@@ -376,9 +376,10 @@ describe("escala operacional genérica por instituição", () => {
       "manager",
       institutionB,
     ).listManageableTopology();
-    expect(topology).toHaveLength(1);
-    expect(topology[0].id).toBe(hospitalB);
-    expect(topology[0].sectors[0]?.hasSchedule).toBe(false);
+    expect(topology.institutionHasHospitals).toBe(true);
+    expect(topology.hospitals).toHaveLength(1);
+    expect(topology.hospitals[0].id).toBe(hospitalB);
+    expect(topology.hospitals[0].sectors[0]?.hasSchedule).toBe(false);
 
     const ensured = await callerContexts(
       gestorBUserId,
@@ -683,10 +684,13 @@ describe("escala operacional genérica por instituição", () => {
       "manager",
       institutionB,
     ).listManageableTopology();
-    expect(topology).toHaveLength(1);
-    expect(topology[0].id).toBe(hospitalB);
-    expect(topology[0].canCreateSector).toBe(false);
-    expect(topology[0].sectors.map((sector) => sector.id)).toEqual([sectorB]);
+    expect(topology.institutionHasHospitals).toBe(true);
+    expect(topology.hospitals).toHaveLength(1);
+    expect(topology.hospitals[0].id).toBe(hospitalB);
+    expect(topology.hospitals[0].canCreateSector).toBe(false);
+    expect(topology.hospitals[0].sectors.map((sector) => sector.id)).toEqual([
+      sectorB,
+    ]);
 
     await expect(
       callerContexts(scopedUserId, "manager", institutionB).ensureDefaultSectorScale({

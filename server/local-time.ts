@@ -33,11 +33,19 @@ export function dayWindowBrt(dayKey: string): { start: Date; end: Date } {
   return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
 }
 
+/** Soma meses civis em uma chave "YYYY-MM" (aritmética pura, sem Date). */
+export function addMonthsYearMonth(yearMonth: string, delta: number): string {
+  const [year, month] = yearMonth.split("-").map(Number);
+  const total = year * 12 + (month - 1) + delta;
+  const nextYear = Math.floor(total / 12);
+  const nextMonth = ((total % 12) + 12) % 12;
+  return `${nextYear}-${String(nextMonth + 1).padStart(2, "0")}`;
+}
+
 /** Janela [início, fim) de um mês "YYYY-MM" no relógio do hospital. */
 export function monthWindowBrt(yearMonth: string): { start: Date; end: Date } {
-  const [y, m] = yearMonth.split("-").map(Number);
   const start = new Date(`${yearMonth}-01T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`);
-  const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+  const next = addMonthsYearMonth(yearMonth, 1);
   return { start, end: new Date(`${next}-01T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`) };
 }
 

@@ -4,6 +4,9 @@ import {
   createSectorScaleButtonTitle,
   createSectorScaleEmptyDescription,
   createSectorScaleEmptyTitle,
+  createSectorScaleNoHospitalTitle,
+  createSectorScaleNoJurisdictionDescription,
+  createSectorScaleNoJurisdictionTitle,
   createSectorScaleToast,
 } from "@/lib/create-sector-scale";
 
@@ -16,6 +19,15 @@ describe("criar escala do setor — copy", () => {
     expect(createSectorScaleEmptyDescription()).toMatch(/mesmo caminho/);
     expect(createSectorScaleToast("Centro Cirúrgico")).toBe(
       "Escala de Centro Cirúrgico pronta. Agora você pode abrir os turnos do mês.",
+    );
+    expect(createSectorScaleNoHospitalTitle()).toBe(
+      "Nenhum hospital neste vínculo",
+    );
+    expect(createSectorScaleNoJurisdictionTitle()).toBe(
+      "Sem permissão para gerir a escala deste hospital",
+    );
+    expect(createSectorScaleNoJurisdictionDescription()).toMatch(
+      /peça o escopo ao administrador/i,
     );
   });
 });
@@ -35,6 +47,10 @@ describe("criar escala do setor — wiring", () => {
     expect(agenda).toContain("CreateSectorScaleButton");
     expect(agenda).toContain("EmptyInstitutionScaleState");
     expect(agenda).toContain("createSectorScaleEmptyTitle");
+    expect(agenda).toContain("createSectorScaleNoJurisdictionTitle");
+    expect(agenda).toContain("institutionHasHospitals");
+    expect(button).toContain("topology.data?.hospitals");
+    expect(agenda).toContain("topology.data?.hospitals");
     expect(agenda).toContain("QueryErrorState");
     expect(agenda).toContain(
       'scope === "geral" && scheduleContext.contexts.length > 0',
