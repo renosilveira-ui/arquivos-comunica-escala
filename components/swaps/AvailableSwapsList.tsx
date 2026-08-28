@@ -38,6 +38,7 @@ export interface AvailableSwap {
     hospitalName: string;
     sectorName: string;
   } | null;
+  canRespond?: boolean;
 }
 
 interface Props {
@@ -227,24 +228,30 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
               </Text>
             ) : null}
 
-            <View style={{ flexDirection: "row", gap: theme.space[3], marginTop: theme.space[1] }}>
-              <ActionButton
-                label="Aceitar"
-                icon={<Check size={18} color={theme.colors.onDark.text} />}
-                tone="success"
-                loading={mine && acting?.action === "accept"}
-                disabled={busy}
-                onPress={() => handle(sw, "accept")}
-              />
-              <ActionButton
-                label="Recusar"
-                icon={<X size={18} color={theme.colors.textPrimary} />}
-                tone="neutral"
-                loading={mine && acting?.action === "reject"}
-                disabled={busy}
-                onPress={() => handle(sw, "reject")}
-              />
-            </View>
+            {sw.canRespond === false ? (
+              <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
+                Oferta direcionada a outro profissional. Aguardando a resposta.
+              </Text>
+            ) : (
+              <View style={{ flexDirection: "row", gap: theme.space[3], marginTop: theme.space[1] }}>
+                <ActionButton
+                  label="Aceitar"
+                  icon={<Check size={18} color={theme.colors.onDark.text} />}
+                  tone="success"
+                  loading={mine && acting?.action === "accept"}
+                  disabled={busy}
+                  onPress={() => handle(sw, "accept")}
+                />
+                <ActionButton
+                  label="Recusar"
+                  icon={<X size={18} color={theme.colors.textPrimary} />}
+                  tone="neutral"
+                  loading={mine && acting?.action === "reject"}
+                  disabled={busy}
+                  onPress={() => handle(sw, "reject")}
+                />
+              </View>
+            )}
           </View>
         );
       })}

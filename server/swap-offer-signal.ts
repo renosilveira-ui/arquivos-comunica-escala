@@ -168,10 +168,15 @@ export async function enqueueSwapOfferSignals(
         db,
       );
       persisted += 1;
-    } catch {
+    } catch (error) {
+      // O outbox entra na mesma transação da oferta. Engolir a falha
+      // deixaria a oferta gravada e o push/inbox sumidos — o produto
+      // mentiria que o outro lado foi avisado. A rede Expo roda depois,
+      // no worker; aqui só a persistência da intenção pode falhar.
       console.error(
         `[SwapOffer] SIGNAL_TRACKING_FAILED userId=${JSON.stringify(userId)} swapId=${JSON.stringify(swap.id)}`,
       );
+      throw error;
     }
   }
   return persisted;
