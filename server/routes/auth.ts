@@ -66,6 +66,12 @@ import {
   scheduleContextsToSpecificAccessTargets,
   ScheduleContextAclError,
 } from "../schedule-contexts";
+import { parseManagerScopes } from "../../lib/manager-scope-admin";
+import {
+  ManagerScopeAdminError,
+  replaceManagerScopesForProfessional,
+  resolveManagerScopesForRole,
+} from "../manager-scope-write";
 import {
   parseInviteCode,
   redeemScheduleInviteInTransaction,
@@ -2426,6 +2432,7 @@ authRouter.post(
       operationalProfileCode,
       specialty,
       scheduleContextIds,
+      managerScopes,
     } = req.body as {
       name?: unknown;
       email?: unknown;
@@ -2437,6 +2444,7 @@ authRouter.post(
       operationalProfileCode?: unknown;
       specialty?: unknown;
       scheduleContextIds?: unknown;
+      managerScopes?: unknown;
     };
 
     if (
@@ -2515,6 +2523,16 @@ authRouter.post(
         return;
       }
       throw error;
+    }
+
+    let requestedManagerScopes: ReturnType<typeof parseManagerScopes>;
+    try {
+      requestedManagerScopes = parseManagerScopes(managerScopes);
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : "managerScopes inválido",
+      });
+      return;
     }
 
     const normalizedEmail = email.toLowerCase().trim();
@@ -2640,6 +2658,21 @@ authRouter.post(
           });
         }
 
+        const nextScopes = await resolveManagerScopesForRole({
+          db: tx,
+          institutionId: targetInstitutionId,
+          role: requestedRoles.roleInInstitution,
+          requested: requestedManagerScopes,
+          existing: [],
+        });
+        if (nextScopes.length > 0) {
+          await replaceManagerScopesForProfessional(tx, {
+            institutionId: targetInstitutionId,
+            professionalId: newProfessional.id,
+            scopes: nextScopes,
+          });
+        }
+
         await recordAudit(
           {
             institutionId: targetInstitutionId,
@@ -2684,6 +2717,10 @@ authRouter.post(
         return;
       }
       if (error instanceof ScheduleContextAclError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      if (error instanceof ManagerScopeAdminError) {
         res.status(error.status).json({ error: error.message });
         return;
       }

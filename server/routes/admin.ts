@@ -50,6 +50,14 @@ import {
   scheduleContextsToSpecificAccessTargets,
   ScheduleContextAclError,
 } from "../schedule-contexts";
+import { parseManagerScopes } from "../../lib/manager-scope-admin";
+import {
+  loadActiveManagerScopes,
+  listTenantHospitalsAndSectors,
+  ManagerScopeAdminError,
+  replaceManagerScopesForProfessional,
+  resolveManagerScopesForRole,
+} from "../manager-scope-write";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -1003,6 +1011,12 @@ function sendScheduleContextAclError(res: Response, error: unknown): boolean {
   return true;
 }
 
+function sendManagerScopeAdminError(res: Response, error: unknown): boolean {
+  if (!(error instanceof ManagerScopeAdminError)) return false;
+  res.status(error.status).json({ error: error.message });
+  return true;
+}
+
 function affectedRows(result: unknown): number {
   if (Array.isArray(result)) {
     const header = result[0] as { affectedRows?: unknown } | undefined;
@@ -1071,6 +1085,7 @@ adminRouter.get(
       institutionId,
       db,
     );
+    const topology = await listTenantHospitalsAndSectors(db, institutionId);
     res.json({
       contexts: contexts.map((context) => ({
         id: context.id,
@@ -1083,6 +1098,8 @@ adminRouter.get(
         qualificationName: context.qualificationName,
         displayName: context.displayName,
       })),
+      hospitals: topology.hospitals,
+      sectors: topology.sectors,
     });
   },
 );
@@ -1156,6 +1173,12 @@ adminRouter.get(
       })
       .from(professionalAccess)
       .where(eq(professionalAccess.institutionId, institutionId));
+    const scopesByProfessional = await loadActiveManagerScopes(db, {
+      institutionId,
+      professionalIds: allUsers
+        .map((row) => row.professionalId)
+        .filter((id): id is number => typeof id === "number"),
+    });
 
     const result = allUsers.map((row) => ({
       id: row.id,
@@ -1187,6 +1210,7 @@ adminRouter.get(
               contexts: activeContexts,
               accesses: accessRows,
             }),
+            managerScopes: scopesByProfessional.get(row.professionalId) ?? [],
           }
         : null,
     }));
@@ -1232,6 +1256,7 @@ adminRouter.put(
       medicalSpecialtyCode,
       operationalProfileCode,
       scheduleContextIds,
+      managerScopes,
     } = req.body as {
       name?: unknown;
       email?: unknown;
@@ -1241,6 +1266,7 @@ adminRouter.put(
       medicalSpecialtyCode?: unknown;
       operationalProfileCode?: unknown;
       scheduleContextIds?: unknown;
+      managerScopes?: unknown;
     };
 
     const normalizedName = typeof name === "string" ? name.trim() : undefined;
@@ -1333,6 +1359,16 @@ adminRouter.put(
     const requestedInstitutionRole =
       explicitInstitutionRole ?? legacyInstitutionRole;
 
+    let requestedManagerScopes: ReturnType<typeof parseManagerScopes>;
+    try {
+      requestedManagerScopes = parseManagerScopes(managerScopes);
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : "managerScopes inválido",
+      });
+      return;
+    }
+
     // Build update object
     const updates: { name?: string; email?: string } = {};
     if (normalizedName !== undefined) updates.name = normalizedName;
@@ -1342,7 +1378,8 @@ adminRouter.put(
       Object.keys(updates).length === 0 &&
       !qualificationUpdateRequested &&
       scheduleContextIds === undefined &&
-      requestedInstitutionRole === undefined
+      requestedInstitutionRole === undefined &&
+      requestedManagerScopes === undefined
     ) {
       res.status(400).json({ error: "Nenhum campo para atualizar" });
       return;
@@ -1576,6 +1613,29 @@ adminRouter.put(
               const nextRole =
                 requestedInstitutionRole ?? target.roleInInstitution;
               const roleChanged = nextRole !== target.roleInInstitution;
+              const existingScopes =
+                (
+                  await loadActiveManagerScopes(tx, {
+                    institutionId,
+                    professionalIds: [target.professionalId],
+                  })
+                ).get(target.professionalId) ?? [];
+              const nextScopes = await resolveManagerScopesForRole({
+                db: tx,
+                institutionId,
+                role: nextRole,
+                requested: requestedManagerScopes,
+                existing: existingScopes,
+              });
+              const scopesChanged =
+                JSON.stringify(nextScopes) !== JSON.stringify(existingScopes);
+              if (scopesChanged) {
+                await replaceManagerScopesForProfessional(tx, {
+                  institutionId,
+                  professionalId: target.professionalId,
+                  scopes: nextScopes,
+                });
+              }
               if (roleChanged) {
                 const roleUpdate = await tx
                   .update(professionalInstitutions)
@@ -1605,6 +1665,7 @@ adminRouter.put(
                 ...(qualificationUpdateRequested ? ["qualification"] : []),
                 ...(shouldRewriteScheduleAccess ? ["scheduleContexts"] : []),
                 ...(roleChanged ? ["roleInInstitution"] : []),
+                ...(scopesChanged ? ["managerScopes"] : []),
               ];
 
               await recordAudit(
@@ -1655,6 +1716,7 @@ adminRouter.put(
       resultingInstitutionRole = result.nextRole;
     } catch (error) {
       if (sendScheduleContextAclError(res, error)) return;
+      if (sendManagerScopeAdminError(res, error)) return;
       if (sendAdminTenantError(res, error)) return;
       throw error;
     }
