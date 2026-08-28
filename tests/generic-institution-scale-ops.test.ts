@@ -475,6 +475,175 @@ describe("escala operacional genérica por instituição", () => {
     ]);
   });
 
+  it("hospital com templates gerais ainda abre o mês completo do setor", async () => {
+    await db!.insert(shiftTemplates).values([
+      {
+        institutionId: institutionA,
+        hospitalId: hospitalA,
+        sectorId: null,
+        name: "Manhã",
+        startTime: "07:00:00",
+        endTime: "13:00:00",
+        isActive: true,
+        priority: 10,
+      },
+      {
+        institutionId: institutionA,
+        hospitalId: hospitalA,
+        sectorId: null,
+        name: "Tarde",
+        startTime: "13:00:00",
+        endTime: "19:00:00",
+        isActive: true,
+        priority: 20,
+      },
+      {
+        institutionId: institutionA,
+        hospitalId: hospitalA,
+        sectorId: null,
+        name: "Noite",
+        startTime: "19:00:00",
+        endTime: "07:00:00",
+        isActive: true,
+        priority: 30,
+      },
+      {
+        institutionId: institutionB,
+        hospitalId: hospitalB,
+        sectorId: null,
+        name: "Manhã",
+        startTime: "08:00:00",
+        endTime: "14:00:00",
+        isActive: true,
+        priority: 15,
+      },
+    ]);
+
+    const ensuredA = await callerContexts(
+      gestorAUserId,
+      "manager",
+      institutionA,
+    ).ensureDefaultSectorScale({
+      hospitalId: hospitalA,
+      sectorName: "Centro Cirúrgico piloto",
+    });
+    const ensuredB = await callerContexts(
+      gestorBUserId,
+      "manager",
+      institutionB,
+    ).ensureDefaultSectorScale({
+      hospitalId: hospitalB,
+      sectorName: "Setor parcial hospital",
+    });
+    expect(ensuredA.createdSector).toBe(true);
+    expect(ensuredB.createdSector).toBe(true);
+    expect(ensuredA.createdTemplates).toBe(3);
+    expect(ensuredB.createdTemplates).toBe(3);
+
+    const templatesA = await db!
+      .select({
+        name: shiftTemplates.name,
+        sectorId: shiftTemplates.sectorId,
+        startTime: shiftTemplates.startTime,
+      })
+      .from(shiftTemplates)
+      .where(
+        and(
+          eq(shiftTemplates.institutionId, institutionA),
+          eq(shiftTemplates.sectorId, ensuredA.sectorId),
+        ),
+      );
+    const templatesB = await db!
+      .select({
+        name: shiftTemplates.name,
+        sectorId: shiftTemplates.sectorId,
+        startTime: shiftTemplates.startTime,
+      })
+      .from(shiftTemplates)
+      .where(
+        and(
+          eq(shiftTemplates.institutionId, institutionB),
+          eq(shiftTemplates.sectorId, ensuredB.sectorId),
+        ),
+      );
+    expect(templatesA.map((row) => row.name).sort()).toEqual([
+      "Manhã",
+      "Noite",
+      "Tarde",
+    ]);
+    expect(templatesB.map((row) => row.name).sort()).toEqual([
+      "Manhã",
+      "Noite",
+      "Tarde",
+    ]);
+    expect(
+      String(
+        templatesB.find((row) => row.name === "Manhã")?.startTime ?? "",
+      ).startsWith("08:00"),
+    ).toBe(true);
+    expect(
+      String(
+        templatesB.find((row) => row.name === "Tarde")?.startTime ?? "",
+      ).startsWith("13:00"),
+    ).toBe(true);
+
+    const yearMonth = "2027-03";
+    const expected = planOpenMonthShifts({
+      yearMonth,
+      mode: "all-applicable",
+    }).length;
+    const openedA = await callerShifts(
+      gestorAUserId,
+      "manager",
+      institutionA,
+    ).openMonthShifts({
+      hospitalId: hospitalA,
+      sectorId: ensuredA.sectorId,
+      scheduleContextId: ensuredA.scheduleContextId,
+      yearMonth,
+      mode: "all-applicable",
+    });
+    const openedB = await callerShifts(
+      gestorBUserId,
+      "manager",
+      institutionB,
+    ).openMonthShifts({
+      hospitalId: hospitalB,
+      sectorId: ensuredB.sectorId,
+      scheduleContextId: ensuredB.scheduleContextId,
+      yearMonth,
+      mode: "all-applicable",
+    });
+    expect(openedA.created).toBe(expected);
+    expect(openedB.created).toBe(expected);
+    const rowsA = await countMonth(institutionA, ensuredA.sectorId, yearMonth);
+    const rowsB = await countMonth(institutionB, ensuredB.sectorId, yearMonth);
+    expect(rowsA).toHaveLength(expected);
+    expect(rowsB).toHaveLength(expected);
+    expect(rowsA.every((row) => row.status === "VAGO")).toBe(true);
+    expect(rowsB.every((row) => row.status === "VAGO")).toBe(true);
+    expect(
+      rowsA.some(
+        (row) =>
+          row.label === "Manhã" &&
+          row.startAt.getTime() === at("2027-03-01", "07:00:00").getTime(),
+      ),
+    ).toBe(true);
+    expect(
+      rowsB.some(
+        (row) =>
+          row.label === "Manhã" &&
+          row.startAt.getTime() === at("2027-03-01", "08:00:00").getTime(),
+      ),
+    ).toBe(true);
+    expect(await countMonth(institutionA, ensuredB.sectorId, yearMonth)).toHaveLength(
+      0,
+    );
+    expect(await countMonth(institutionB, ensuredA.sectorId, yearMonth)).toHaveLength(
+      0,
+    );
+  });
+
   it("gestor A não abre o mês da instituição B", async () => {
     const [contextB] = await db!
       .select({ id: scheduleContexts.id })

@@ -13,7 +13,6 @@ import {
   DEFAULT_SECTOR_COLOR,
   DEFAULT_SECTOR_SHIFT_TEMPLATES,
 } from "../lib/default-sector-shift-blueprint";
-import { pickShiftTemplatesForSector } from "../lib/shift-template-options";
 import {
   hospitals,
   managerScope,
@@ -108,6 +107,11 @@ async function findSectorByName(
   );
 }
 
+function clockFromExisting(value: string): string {
+  const clock = value.length === 5 ? `${value}:00` : value;
+  return clock.slice(0, 8);
+}
+
 export async function ensureDefaultShiftTemplates(
   db: ScaleConn,
   input: { institutionId: number; hospitalId: number; sectorId: number },
@@ -130,24 +134,33 @@ export async function ensureDefaultShiftTemplates(
         eq(shiftTemplates.isActive, true),
       ),
     );
-  const picked = pickShiftTemplatesForSector(
-    existing,
-    input.hospitalId,
-    input.sectorId,
+  // Só o que já é do setor conta. pickShiftTemplatesForSector cai no
+  // hospital quando o setor está vazio; se inserirmos Tarde/Noite do
+  // blueprint, o picker deixa de ver o Manhã hospitalar e a abertura quebra.
+  const sectorRows = existing.filter(
+    (row) => Number(row.sectorId) === Number(input.sectorId),
   );
-  const have = new Set(picked.map((row) => row.name));
+  const hospitalByName = new Map<string, (typeof existing)[number]>();
+  for (const row of existing) {
+    if (row.sectorId != null) continue;
+    if (!hospitalByName.has(row.name)) hospitalByName.set(row.name, row);
+  }
+  const have = new Set(sectorRows.map((row) => row.name));
   let created = 0;
   for (const template of DEFAULT_SECTOR_SHIFT_TEMPLATES) {
     if (have.has(template.name)) continue;
+    const hospital = hospitalByName.get(template.name);
     await db.insert(shiftTemplates).values({
       institutionId: input.institutionId,
       hospitalId: input.hospitalId,
       sectorId: input.sectorId,
       name: template.name,
-      startTime: template.startTime,
-      endTime: template.endTime,
+      startTime: hospital
+        ? clockFromExisting(hospital.startTime)
+        : template.startTime,
+      endTime: hospital ? clockFromExisting(hospital.endTime) : template.endTime,
       isActive: true,
-      priority: template.priority,
+      priority: hospital?.priority ?? template.priority,
     });
     created += 1;
     have.add(template.name);

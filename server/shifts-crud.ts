@@ -1189,101 +1189,9 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
     { db },
   );
 
-  const loadTemplates = async () =>
-    db
-      .select()
-      .from(shiftTemplates)
-      .where(
-        and(
-          eq(shiftTemplates.institutionId, ctx.institutionId),
-          eq(shiftTemplates.hospitalId, input.hospitalId),
-          eq(shiftTemplates.isActive, true),
-        ),
-      );
-
-  let templates = await loadTemplates();
-  let picked = pickShiftTemplatesForSector(
-    templates,
-    input.hospitalId,
-    input.sectorId,
-  );
-  let templateByName = new Map<string, (typeof picked)[number]>();
-  for (const template of picked) {
-    if (!templateByName.has(template.name)) templateByName.set(template.name, template);
-  }
-  const missingNames = [
-    ...new Set(planned.map((slot) => slot.template.name)),
-  ].filter((name) => !templateByName.has(name));
-  if (missingNames.length) {
-    await ensureDefaultShiftTemplates(db, {
-      institutionId: ctx.institutionId,
-      hospitalId: input.hospitalId,
-      sectorId: input.sectorId,
-    });
-    templates = await loadTemplates();
-    picked = pickShiftTemplatesForSector(
-      templates,
-      input.hospitalId,
-      input.sectorId,
-    );
-    templateByName = new Map();
-    for (const template of picked) {
-      if (!templateByName.has(template.name)) {
-        templateByName.set(template.name, template);
-      }
-    }
-  }
-  const missing = [
-    ...new Set(planned.map((slot) => slot.template.name)),
-  ].filter((name) => !templateByName.has(name));
-  if (missing.length) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message:
-        "Não há modelo de horário neste setor. Crie a escala do setor para gerar os turnos padrão.",
-    });
-  }
-
-  const context = await resolveScheduleContextForShiftCreation({
-    institutionId: ctx.institutionId,
-    scheduleContextId: input.scheduleContextId,
-    hospitalId: input.hospitalId,
-    sectorId: input.sectorId,
-    templateSectorId: picked[0]?.sectorId ?? null,
-    db,
-  });
-  for (const template of templateByName.values()) {
-    if (template.sectorId != null && template.sectorId !== context.sectorId) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "O template informado pertence a outro setor.",
-      });
-    }
-  }
-
-  const candidates = planned.map((slot) => {
-    const template = templateByName.get(slot.template.name)!;
-    const [startAt, endAt] = buildHospitalShiftTimestamps(
-      slot.dayKey,
-      clockFromTemplate(template.startTime),
-      clockFromTemplate(template.endTime),
-    );
-    return {
-      label: template.name,
-      startAt,
-      endAt,
-      institutionId: ctx.institutionId,
-      hospitalId: input.hospitalId,
-      sectorId: context.sectorId,
-      scheduleContextId: context.id,
-      specialty: context.qualificationName,
-    };
-  });
-  for (const candidate of candidates) assertCanEditScheduleDate(actor, candidate.startAt);
-
   const targetWindow = monthWindowBrt(input.yearMonth);
-  const loadExisting = async (tx: typeof db) =>
-    tx
+  const loadExisting = async (conn: typeof db) =>
+    conn
       .select({
         id: shiftInstances.id,
         institutionId: shiftInstances.institutionId,
@@ -1305,22 +1213,121 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
         ),
       );
 
-  const existingKeys = new Set((await loadExisting(db)).map((row) => naturalKey(row)));
-  const toCreate = candidates.filter(
-    (candidate) => !existingKeys.has(naturalKey(candidate)),
-  );
-  const skipped = candidates.length - toCreate.length;
-  const summary = {
-    created: toCreate.length,
-    skipped,
-    planned: candidates.length,
-    mode: input.mode,
-    yearMonth: input.yearMonth,
-    dryRun: input.dryRun,
-  };
-  if (input.dryRun || toCreate.length === 0) return summary;
-
   return db.transaction(async (tx) => {
+    const templates = await tx
+      .select()
+      .from(shiftTemplates)
+      .where(
+        and(
+          eq(shiftTemplates.institutionId, ctx.institutionId),
+          eq(shiftTemplates.hospitalId, input.hospitalId),
+          eq(shiftTemplates.isActive, true),
+        ),
+      );
+    const indexByName = (rows: typeof templates) => {
+      const picked = pickShiftTemplatesForSector(
+        rows,
+        input.hospitalId,
+        input.sectorId,
+      );
+      const templateByName = new Map<string, (typeof picked)[number]>();
+      for (const template of picked) {
+        if (!templateByName.has(template.name)) {
+          templateByName.set(template.name, template);
+        }
+      }
+      return { picked, templateByName };
+    };
+
+    let { picked, templateByName } = indexByName(templates);
+    const plannedNames = [
+      ...new Set(planned.map((slot) => slot.template.name)),
+    ];
+    if (plannedNames.some((name) => !templateByName.has(name))) {
+      await ensureDefaultShiftTemplates(tx, {
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+      });
+      const reloaded = await tx
+        .select()
+        .from(shiftTemplates)
+        .where(
+          and(
+            eq(shiftTemplates.institutionId, ctx.institutionId),
+            eq(shiftTemplates.hospitalId, input.hospitalId),
+            eq(shiftTemplates.isActive, true),
+          ),
+        );
+      ({ picked, templateByName } = indexByName(reloaded));
+    }
+    const missing = plannedNames.filter((name) => !templateByName.has(name));
+    if (missing.length) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message:
+          "Não há modelo de horário neste setor. Crie a escala do setor para gerar os turnos padrão.",
+      });
+    }
+
+    const context = await resolveScheduleContextForShiftCreation({
+      institutionId: ctx.institutionId,
+      scheduleContextId: input.scheduleContextId,
+      hospitalId: input.hospitalId,
+      sectorId: input.sectorId,
+      templateSectorId: picked[0]?.sectorId ?? null,
+      db: tx,
+    });
+    for (const template of templateByName.values()) {
+      if (template.sectorId != null && template.sectorId !== context.sectorId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O template informado pertence a outro setor.",
+        });
+      }
+    }
+
+    const candidates = planned.map((slot) => {
+      const template = templateByName.get(slot.template.name)!;
+      const [startAt, endAt] = buildHospitalShiftTimestamps(
+        slot.dayKey,
+        clockFromTemplate(template.startTime),
+        clockFromTemplate(template.endTime),
+      );
+      return {
+        label: template.name,
+        startAt,
+        endAt,
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: context.sectorId,
+        scheduleContextId: context.id,
+        specialty: context.qualificationName,
+      };
+    });
+    for (const candidate of candidates) {
+      assertCanEditScheduleDate(actor, candidate.startAt);
+    }
+
+    const existingKeys = new Set(
+      (await loadExisting(tx as unknown as typeof db)).map((row) =>
+        naturalKey(row),
+      ),
+    );
+    const toCreate = candidates.filter(
+      (candidate) => !existingKeys.has(naturalKey(candidate)),
+    );
+    const skipped = candidates.length - toCreate.length;
+    const summary = {
+      created: toCreate.length,
+      skipped,
+      planned: candidates.length,
+      mode: input.mode,
+      yearMonth: input.yearMonth,
+      dryRun: input.dryRun,
+    };
+    if (input.dryRun || toCreate.length === 0) return summary;
+
     await lockMonthsForUpdate(tx, [
       {
         institutionId: ctx.institutionId,
@@ -1350,7 +1357,9 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
     );
 
     const currentKeys = new Set(
-      (await loadExisting(tx as unknown as typeof db)).map((row) => naturalKey(row)),
+      (await loadExisting(tx as unknown as typeof db)).map((row) =>
+        naturalKey(row),
+      ),
     );
     let created = 0;
     let skippedNow = skipped;
