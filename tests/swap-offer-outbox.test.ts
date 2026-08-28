@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { enqueueSwapOfferSignals } from "../server/swap-offer-signal";
+import {
+  enqueueSwapOfferSignals,
+  enqueueSwapTakenSignals,
+} from "../server/swap-offer-signal";
 import type { swapRequests } from "../drizzle/schema";
 
 const enqueueTrackedPushNotification = vi.hoisted(() => vi.fn());
@@ -105,5 +108,35 @@ describe("outbox de sinal de oferta", () => {
       `[SwapOffer] SIGNAL_TRACKING_FAILED userId=${JSON.stringify(22)} swapId=${JSON.stringify(91)}`,
     );
     errorSpy.mockRestore();
+  });
+
+  it("enfileira o aviso de plantão assumido para o ofertante", async () => {
+    enqueueTrackedPushNotification.mockResolvedValue({
+      notificationId: 2,
+      status: "PENDING",
+      phase: "QUEUED",
+    });
+    const persisted = await enqueueSwapTakenSignals({
+      db: emptySelectDb() as never,
+      swap: offerRow(),
+      takerName: "Reno",
+      shiftLabel: "Manhã",
+    });
+    expect(persisted).toBe(1);
+    expect(enqueueTrackedPushNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        institutionId: 3,
+        userId: 11,
+        shiftInstanceId: 7,
+        dedupKey: "swap-taken:91:11",
+        deepLink: "/my-offers",
+        payload: expect.objectContaining({
+          title: "Plantão assumido",
+          body: "Reno assumiu o plantão Manhã.",
+        }),
+      }),
+      expect.any(Date),
+      expect.anything(),
+    );
   });
 });

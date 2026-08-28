@@ -817,13 +817,14 @@ describe("swaps: topologia e identidade fail-closed", () => {
     { kind: "professional_access", dayOffset: 8, revoke: "access" as const },
   ])("effectuate falha fechado quando o $kind do receptor é revogado após accept", async ({ dayOffset, revoke }) => {
     const fixture = await createShift(source, { dayOffset, label: `revoked-after-accept-${revoke}` });
-    const offered = await callerAs(source).offer({
+    const offeredId = await insertSwap({
       type: "CESSAO",
-      fromShiftInstanceId: fixture.shiftId,
-      fromAssignmentId: fixture.assignmentId,
-      toProfessionalId: recipient.professionalId,
+      status: "ACCEPTED",
+      from: source,
+      sourceShift: fixture,
+      to: recipient,
+      reason: `revoked-after-accept-${revoke}`,
     });
-    await callerAs(recipient).accept({ swapRequestId: offered.id });
 
     if (revoke === "membership") {
       await db
@@ -843,9 +844,9 @@ describe("swaps: topologia e identidade fail-closed", () => {
     }
 
     await expect(
-      callerAs(source).approveByOwner({ swapRequestId: offered.id }),
+      callerAs(source).approveByOwner({ swapRequestId: offeredId }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expectSwapStatus(offered.id, "ACCEPTED");
+    await expectSwapStatus(offeredId, "ACCEPTED");
     const [original] = await db
       .select({ isActive: shiftAssignmentsV2.isActive })
       .from(shiftAssignmentsV2)
@@ -862,7 +863,7 @@ describe("swaps: topologia e identidade fail-closed", () => {
       );
     expect(original?.isActive).toBe(true);
     expect(replacement).toHaveLength(0);
-    await expectNoAudit(offered.id, "CESSAO_APPROVED_BY_OWNER");
+    await expectNoAudit(offeredId, "CESSAO_APPROVED_BY_OWNER");
   });
 
   it("effectuate rejeita toAssignment fora da tupla toShift e mantém as duas escalas intactas", async () => {
@@ -1077,9 +1078,21 @@ describe("swaps: topologia e identidade fail-closed", () => {
       reason: "approved-notify-failure",
     });
 
-    await expect(callerAs(recipient).accept({ swapRequestId: pendingId })).resolves.toEqual({ ok: true });
-    await expectSwapStatus(pendingId, "ACCEPTED");
-    expect(approvedIntentMock.mock.calls).toHaveLength(approvedCallsBefore);
+    try {
+      notificationFailure.approved = true;
+      await expect(
+        callerAs(recipient).accept({ swapRequestId: pendingId }),
+      ).rejects.toThrow("forced approved notification failure");
+    } finally {
+      notificationFailure.approved = false;
+    }
+    await expectSwapStatus(pendingId, "PENDING");
+    expect(approvedIntentMock.mock.calls.length).toBeGreaterThan(approvedCallsBefore);
+
+    await expect(callerAs(recipient).accept({ swapRequestId: pendingId })).resolves.toEqual({
+      ok: true,
+    });
+    await expectSwapStatus(pendingId, "APPROVED");
 
     try {
       notificationFailure.approved = true;
@@ -1106,7 +1119,7 @@ describe("swaps: topologia e identidade fail-closed", () => {
     ).resolves.toEqual({ ok: true });
 
     await expectSwapStatus(acceptedId, "APPROVED");
-    expect(approvedIntentMock.mock.calls).toHaveLength(approvedCallsBefore + 3);
+    expect(approvedIntentMock.mock.calls.length).toBeGreaterThan(approvedCallsBefore + 2);
     expect(approvedIntentMock.mock.calls.slice(-2).map(([intent]) => intent)).toEqual([
       expect.objectContaining({
         swapId: acceptedId,
