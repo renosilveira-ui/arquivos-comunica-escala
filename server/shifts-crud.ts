@@ -63,6 +63,7 @@ import {
   planOpenMonthShifts,
   type OpenMonthShiftsMode,
 } from "../lib/open-month-shifts";
+import { ensureDefaultShiftTemplates } from "./sector-scale";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -1148,8 +1149,9 @@ async function replicateMonthCalendar(
 }
 
 /**
- * Abre os plantões vagos do mês (Sala de Recuperação): não copia o mês
- * anterior e não aloca. Idempotente pela chave label+início+fim.
+ * Abre os plantões vagos do mês a partir dos templates do setor.
+ * Sem modelos, cria o blueprint padrão (manhã/tarde/noite) e segue.
+ * Idempotente pela chave label+início+fim. Tenant = ctx.institutionId.
  */
 async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
   const actor = await getTenantActorFromContext(ctx as any);
@@ -1187,24 +1189,49 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
     { db },
   );
 
-  const templates = await db
-    .select()
-    .from(shiftTemplates)
-    .where(
-      and(
-        eq(shiftTemplates.institutionId, ctx.institutionId),
-        eq(shiftTemplates.hospitalId, input.hospitalId),
-        eq(shiftTemplates.isActive, true),
-      ),
-    );
-  const picked = pickShiftTemplatesForSector(
+  const loadTemplates = async () =>
+    db
+      .select()
+      .from(shiftTemplates)
+      .where(
+        and(
+          eq(shiftTemplates.institutionId, ctx.institutionId),
+          eq(shiftTemplates.hospitalId, input.hospitalId),
+          eq(shiftTemplates.isActive, true),
+        ),
+      );
+
+  let templates = await loadTemplates();
+  let picked = pickShiftTemplatesForSector(
     templates,
     input.hospitalId,
     input.sectorId,
   );
-  const templateByName = new Map<string, (typeof picked)[number]>();
+  let templateByName = new Map<string, (typeof picked)[number]>();
   for (const template of picked) {
     if (!templateByName.has(template.name)) templateByName.set(template.name, template);
+  }
+  const missingNames = [
+    ...new Set(planned.map((slot) => slot.template.name)),
+  ].filter((name) => !templateByName.has(name));
+  if (missingNames.length) {
+    await ensureDefaultShiftTemplates(db, {
+      institutionId: ctx.institutionId,
+      hospitalId: input.hospitalId,
+      sectorId: input.sectorId,
+    });
+    templates = await loadTemplates();
+    picked = pickShiftTemplatesForSector(
+      templates,
+      input.hospitalId,
+      input.sectorId,
+    );
+    templateByName = new Map();
+    for (const template of picked) {
+      if (!templateByName.has(template.name)) {
+        templateByName.set(template.name, template);
+      }
+    }
   }
   const missing = [
     ...new Set(planned.map((slot) => slot.template.name)),
@@ -1213,9 +1240,7 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
     throw new TRPCError({
       code: "NOT_FOUND",
       message:
-        missing.length === 1
-          ? `Não há modelo de horário “${missing[0]}” neste setor. Cadastre o horário antes de abrir os turnos.`
-          : `Não há modelos de horário (${missing.join(", ")}) neste setor. Cadastre os horários antes de abrir os turnos.`,
+        "Não há modelo de horário neste setor. Crie a escala do setor para gerar os turnos padrão.",
     });
   }
 

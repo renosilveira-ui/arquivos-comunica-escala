@@ -42,6 +42,8 @@ import {
   users,
 } from "../drizzle/schema";
 import { resolveSslConfig } from "../server/_core/db-ssl";
+import { DEFAULT_SECTOR_SHIFT_TEMPLATES } from "../lib/default-sector-shift-blueprint";
+import { ensureDefaultSectorScale } from "../server/sector-scale";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -59,21 +61,17 @@ const INSTITUTION = {
 
 const HOSPITAL_NAME = "Hospital Regional Unimed";
 
-const SECTORS: Array<{
+const SECTORS: {
   name: string;
   category: "internacao" | "cirurgico" | "servico";
   color: string;
-}> = [
+}[] = [
   { name: "Centro Cirúrgico", category: "cirurgico", color: "#2563EB" },
   { name: "Sala de Recuperação", category: "cirurgico", color: "#16A34A" },
   { name: "Setor de Imagem", category: "servico", color: "#A855F7" },
 ];
 
-const SHIFT_TEMPLATES = [
-  { name: "Manhã", startTime: "07:00:00", endTime: "13:00:00", priority: 10 },
-  { name: "Tarde", startTime: "13:00:00", endTime: "19:00:00", priority: 20 },
-  { name: "Noite", startTime: "19:00:00", endTime: "07:00:00", priority: 30 },
-] as const;
+const SHIFT_TEMPLATES = DEFAULT_SECTOR_SHIFT_TEMPLATES;
 
 const ADMIN = {
   email: "renosilveira@gmail.com",
@@ -346,6 +344,20 @@ async function main() {
       priority: template.priority,
     });
     console.log(`✓ Shift template "${template.name}" created`);
+  }
+
+  // 9. Escala operacional de cada setor (mesmo caminho da Agenda)
+  for (let i = 0; i < sectorIds.length; i++) {
+    const sectorId = sectorIds[i]!;
+    const sectorName = SECTORS[i]!.name;
+    const result = await ensureDefaultSectorScale(db as never, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
+    console.log(
+      `✓ Escala de "${sectorName}" pronta (contexto=${result.scheduleContextId})`,
+    );
   }
 
   // -------------------------------------------------------------------------

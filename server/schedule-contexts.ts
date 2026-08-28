@@ -18,9 +18,16 @@ import {
 } from "../drizzle/schema";
 import { isGeneralistOperationalProfile } from "../lib/medical-specialties";
 import type { ScheduleContextAdmissionPolicy } from "../lib/sao-carlos-schedule-blueprint";
-import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
+import {
+  assertCanManageInstitutionSchedule,
+  assertManagerScopeAccess,
+  getTenantActorFromContext,
+  type TenantActor,
+} from "./_core/policy";
 import { protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
+import { ensureDefaultSectorScale, listManageableTopology } from "./sector-scale";
+import { z } from "zod";
 
 export type AllowedScheduleContextQualification = {
   medicalSpecialtyId: number | null;
@@ -1318,4 +1325,71 @@ export const scheduleContextsRouter = router({
     const actor = await getTenantActorFromContext(ctx);
     return listAuthorizedScheduleContexts(actor);
   }),
+
+  /**
+   * Hospitais e setores que o gestor pode operar — mesmo sem escala
+   * já aberta. Sem isso, Unimed (e qualquer tenant novo) some da Agenda.
+   */
+  listManageableTopology: protectedProcedure.query(async ({ ctx }) => {
+    const actor = await getTenantActorFromContext(ctx);
+    assertCanManageInstitutionSchedule(actor);
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    return listManageableTopology(db, actor);
+  }),
+
+  /**
+   * Cria (ou reaproveita) setor + contexto + templates padrão.
+   * Mesmo caminho para São Carlos, Unimed ou qualquer outra instituição.
+   */
+  ensureDefaultSectorScale: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int().positive(),
+        sectorId: z.number().int().positive().optional(),
+        sectorName: z
+          .string()
+          .trim()
+          .min(2, "Informe o nome do setor (pelo menos 2 caracteres).")
+          .max(255)
+          .optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      if (input.sectorId) {
+        await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
+      } else {
+        await assertManagerScopeAccess(actor, input.hospitalId);
+      }
+      if (!input.sectorId && !input.sectorName) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Informe o setor para criar a escala.",
+        });
+      }
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const result = await ensureDefaultSectorScale(db, {
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+        sectorName: input.sectorName,
+      });
+      const [opened] = await selectActiveScheduleContexts(db, ctx.institutionId, {
+        id: result.scheduleContextId,
+      });
+      return {
+        hospitalId: result.hospitalId,
+        hospitalName: result.hospitalName,
+        sectorId: result.sectorId,
+        sectorName: result.sectorName,
+        scheduleContextId: result.scheduleContextId,
+        createdSector: result.createdSector,
+        createdContext: result.createdContext,
+        createdTemplates: result.createdTemplates,
+        context: opened ? describeScheduleContext(opened, true) : null,
+      };
+    }),
 });
