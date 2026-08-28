@@ -8,6 +8,7 @@ import Constants from "expo-constants";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { profileRoleBadgeLabel } from "@/lib/institution-roles";
+import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
 
 function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const { user } = useAuth();
@@ -207,7 +208,8 @@ export default function TabLayout() {
     {},
     { enabled: !!user?.id && showTrocasTab, staleTime: 60_000 },
   );
-  const availableSwapsCount = availableSwaps?.length ?? 0;
+  const availableSwapsCount =
+    availableSwaps?.filter((row) => listedSwapIsActionable(row)).length ?? 0;
 
   return (
     <Tabs

@@ -14,6 +14,7 @@ import {
   shiftAssignmentsV2,
   shiftInstances,
   swapRequests,
+  swapRequestDismissals,
   users,
 } from "../drizzle/schema";
 import {
@@ -286,6 +287,9 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
       .delete(notifications)
       .where(eq(notifications.institutionId, institutionId));
     await db
+      .delete(swapRequestDismissals)
+      .where(eq(swapRequestDismissals.institutionId, institutionId));
+    await db
       .delete(swapRequests)
       .where(eq(swapRequests.institutionId, institutionId));
     await db
@@ -328,6 +332,9 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
     await db
       .delete(notifications)
       .where(eq(notifications.institutionId, institutionId));
+    await db
+      .delete(swapRequestDismissals)
+      .where(eq(swapRequestDismissals.institutionId, institutionId));
     await db
       .delete(swapRequests)
       .where(eq(swapRequests.institutionId, institutionId));
@@ -520,6 +527,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
         sectorName: `Swap Batch Setor ${stamp}`,
       },
       toShift: null,
+      canRespond: true,
     });
     expect(oneWay.fromShift.startAt.getTime()).toBe(at(10, 8).getTime());
     expect(oneWay.fromShift.endAt.getTime()).toBe(at(10, 14).getTime());

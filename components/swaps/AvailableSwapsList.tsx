@@ -14,6 +14,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
 
 export interface AvailableSwap {
   id: number;
@@ -38,6 +39,9 @@ export interface AvailableSwap {
     hospitalName: string;
     sectorName: string;
   } | null;
+  toProfessionalId?: number | null;
+  toUserId?: number | null;
+  canRespond?: boolean;
 }
 
 interface Props {
@@ -227,24 +231,30 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
               </Text>
             ) : null}
 
-            <View style={{ flexDirection: "row", gap: theme.space[3], marginTop: theme.space[1] }}>
-              <ActionButton
-                label="Aceitar"
-                icon={<Check size={18} color={theme.colors.onDark.text} />}
-                tone="success"
-                loading={mine && acting?.action === "accept"}
-                disabled={busy}
-                onPress={() => handle(sw, "accept")}
-              />
-              <ActionButton
-                label="Recusar"
-                icon={<X size={18} color={theme.colors.textPrimary} />}
-                tone="neutral"
-                loading={mine && acting?.action === "reject"}
-                disabled={busy}
-                onPress={() => handle(sw, "reject")}
-              />
-            </View>
+            {!listedSwapIsActionable(sw) ? (
+              <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
+                Oferta direcionada a outro profissional. Aguardando a resposta.
+              </Text>
+            ) : (
+              <View style={{ flexDirection: "row", gap: theme.space[3], marginTop: theme.space[1] }}>
+                <ActionButton
+                  label="Aceitar"
+                  icon={<Check size={18} color={theme.colors.onDark.text} />}
+                  tone="success"
+                  loading={mine && acting?.action === "accept"}
+                  disabled={busy}
+                  onPress={() => handle(sw, "accept")}
+                />
+                <ActionButton
+                  label="Recusar"
+                  icon={<X size={18} color={theme.colors.textPrimary} />}
+                  tone="neutral"
+                  loading={mine && acting?.action === "reject"}
+                  disabled={busy}
+                  onPress={() => handle(sw, "reject")}
+                />
+              </View>
+            )}
           </View>
         );
       })}

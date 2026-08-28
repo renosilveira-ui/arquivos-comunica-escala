@@ -15,6 +15,7 @@ import {
   shiftAssignmentsV2,
   shiftInstances,
   swapRequests,
+  swapRequestDismissals,
   users,
 } from "../drizzle/schema";
 import {
@@ -116,6 +117,9 @@ describe("swaps: topologia e identidade fail-closed", () => {
         .where(inArray(notifications.shiftInstanceId, shiftIds));
       if (swapIds.length > 0) {
         await db.delete(auditTrail).where(inArray(auditTrail.entityId, swapIds));
+        await db
+          .delete(swapRequestDismissals)
+          .where(inArray(swapRequestDismissals.swapRequestId, swapIds));
       }
       await db
         .delete(swapRequests)
