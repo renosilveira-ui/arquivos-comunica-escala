@@ -640,6 +640,8 @@ export async function publishMonth(
 /**
  * Tranca um mês PUBLISHED → LOCKED.
  * Preenche locked_at, locked_by_user_id e incrementa version.
+ * Jurisdição: a mesma de publicar (`any-hospital`) — hospital-wide
+ * ou qualquer setor daquele hospital. Janela do GESTOR_MEDICO inalterada.
  */
 export async function lockMonth(
   institutionId: number,
@@ -683,6 +685,7 @@ export async function lockMonth(
       hospitalId,
       undefined,
       [monthDate],
+      { mode: "any-hospital" },
     );
     const [result] = await tx
       .update(monthlyRosters)

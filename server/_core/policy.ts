@@ -182,6 +182,24 @@ export function assertCanManageInstitutionSchedule(actor: TenantActor): void {
   });
 }
 
+/**
+ * Cadastrar hospital é catálogo da instituição, não jurisdição de escala.
+ * GESTOR_MEDICO (mesmo com escopo hospital-wide) opera hospital existente;
+ * só GESTOR_PLUS e admin criam o nó. Sem isto o próximo tenant não abre
+ * calendário — Unimed só escapa porque o seed já tem o hospital.
+ */
+export function assertCanCreateHospital(actor: TenantActor): void {
+  if (actor.isGlobalAdmin) return;
+  if (actor.roleInInstitution === "GESTOR_PLUS") return;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message:
+      actor.roleInInstitution === "GESTOR_MEDICO"
+        ? "Apenas o Gestor+ ou o administrador da instituição podem cadastrar hospital."
+        : "Apenas gestores da instituição podem cadastrar hospital.",
+  });
+}
+
 export function isSameCalendarMonth(date: Date, now: Date): boolean {
   // Mês no relógio do hospital (-03:00), não no fuso do servidor (UTC).
   return yearMonthBrt(date) === yearMonthBrt(now);
@@ -212,8 +230,8 @@ export function assertCanEditScheduleDate(actor: TenantActor, date: Date, now = 
 
 /**
  * `exact`: hospital inteiro (sector null) ou o setor informado.
- * `any-hospital`: qualquer jurisdição naquele hospital — publicar o mês
- * do hospital é a mesma cadeia operacional de abrir o setor.
+ * `any-hospital`: qualquer jurisdição naquele hospital — publicar e
+ * trancar o mês do hospital é a mesma cadeia operacional de abrir o setor.
  */
 export type ManagerScopeMode = "exact" | "any-hospital";
 

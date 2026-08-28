@@ -3084,7 +3084,9 @@ export const shiftsRouter = router({
           message: "institutionId inválido para tenant ativo",
         });
       }
-      await assertManagerScopeAccess(actor, input.hospitalId);
+      await assertManagerScopeAccess(actor, input.hospitalId, undefined, {
+        mode: "any-hospital",
+      });
       await lockMonth(
         input.institutionId,
         input.hospitalId,

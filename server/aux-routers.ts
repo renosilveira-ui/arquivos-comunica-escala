@@ -22,6 +22,7 @@ import {
 } from "../drizzle/schema";
 import {
   actorCapabilities,
+  assertCanCreateHospital,
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
   getTenantActorFromContext,
@@ -394,6 +395,40 @@ export const hospitalsRouter = router({
     );
     return rows.filter((hospital) => authorizedHospitalIds.has(hospital.id));
   }),
+
+  /**
+   * Cadastra um hospital no tenant ativo. Sem isto a terceira instituição
+   * não abre calendário — o seed da Unimed não é produto.
+   */
+  create: protectedProcedure
+    .input(
+      z.object({
+        name: z
+          .string()
+          .trim()
+          .min(2, "Informe o nome do hospital (pelo menos 2 caracteres).")
+          .max(255, "Nome do hospital é longo demais."),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanCreateHospital(actor);
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const name = input.name.trim().replace(/\s+/g, " ");
+      const [inserted] = await db
+        .insert(hospitals)
+        .values({
+          institutionId: ctx.institutionId,
+          name,
+        })
+        .$returningId();
+      return {
+        id: inserted.id,
+        name,
+        institutionId: ctx.institutionId,
+      };
+    }),
 });
 
 // ─── sectors ─────────────────────────────────────────────────────────────────

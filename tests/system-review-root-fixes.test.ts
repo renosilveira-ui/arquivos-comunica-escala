@@ -55,6 +55,8 @@ describe("system review — correções de raiz", () => {
   let medicoBProId: number;
   let doctorAUserId: number;
   let doctorAProId: number;
+  let plusAUserId: number;
+  let plusAProId: number;
 
   const currentYm = yearMonthBrt(new Date());
   const nextYm = addMonthsYearMonth(currentYm, 1);
@@ -197,7 +199,7 @@ describe("system review — correções de raiz", () => {
     async function person(
       tag: string,
       institutionId: number,
-      roleInInstitution: "GESTOR_MEDICO" | "USER",
+      roleInInstitution: "GESTOR_MEDICO" | "GESTOR_PLUS" | "USER",
     ) {
       const [u] = await db
         .insert(users)
@@ -240,6 +242,9 @@ describe("system review — correções de raiz", () => {
     const doctorA = await person("doctor-a", institutionA, "USER");
     doctorAUserId = doctorA.userId;
     doctorAProId = doctorA.proId;
+    const plusA = await person("plus-a", institutionA, "GESTOR_PLUS");
+    plusAUserId = plusA.userId;
+    plusAProId = plusA.proId;
 
     await db.insert(managerScope).values([
       {
@@ -319,6 +324,7 @@ describe("system review — correções de raiz", () => {
           medicoA2ProId,
           medicoBProId,
           doctorAProId,
+          plusAProId,
         ]),
       );
     await db.delete(sectors).where(inArray(sectors.institutionId, tenantIds));
@@ -332,6 +338,7 @@ describe("system review — correções de raiz", () => {
           medicoA2UserId,
           medicoBUserId,
           doctorAUserId,
+          plusAUserId,
         ]),
       );
   });
@@ -627,5 +634,122 @@ describe("system review — correções de raiz", () => {
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
+  });
+
+  it("8: gestor de setor tranca o mês do próprio hospital e não o de outro", async () => {
+    const published = await callerShifts(
+      medicoAUserId,
+      "manager",
+      institutionA,
+    ).publish({
+      institutionId: institutionA,
+      hospitalId: hospitalA,
+      yearMonth: currentYm,
+    });
+    expect(published).toEqual({ ok: true });
+
+    const locked = await callerShifts(
+      medicoAUserId,
+      "manager",
+      institutionA,
+    ).lock({
+      institutionId: institutionA,
+      hospitalId: hospitalA,
+      yearMonth: currentYm,
+    });
+    expect(locked).toEqual({ ok: true });
+    const [roster] = await db
+      .select({ status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionA),
+          eq(monthlyRosters.hospitalId, hospitalA),
+          eq(monthlyRosters.yearMonth, currentYm),
+        ),
+      );
+    expect(roster?.status).toBe("LOCKED");
+
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).lock({
+        institutionId: institutionA,
+        hospitalId: hospitalA2,
+        yearMonth: currentYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição/),
+    });
+
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).lock({
+        institutionId: institutionB,
+        hospitalId: hospitalB,
+        yearMonth: currentYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+  });
+
+  it("9: Gestor+ cria hospital no próprio tenant; gestor médico e tenant B não", async () => {
+    const created = await callerApp(
+      plusAUserId,
+      "manager",
+      institutionA,
+    ).hospitals.create({
+      name: "  Hospital Novo da Instituição  ",
+    });
+    expect(created.institutionId).toBe(institutionA);
+    expect(created.name).toBe("Hospital Novo da Instituição");
+    expect(created.id).toBeGreaterThan(0);
+
+    const contexts = await db
+      .select({ id: scheduleContexts.id })
+      .from(scheduleContexts)
+      .where(
+        and(
+          eq(scheduleContexts.institutionId, institutionA),
+          eq(scheduleContexts.hospitalId, created.id),
+        ),
+      );
+    expect(contexts).toHaveLength(0);
+
+    const topology = await callerContexts(
+      plusAUserId,
+      "manager",
+      institutionA,
+    ).listManageableTopology();
+    const createdHospital = topology.hospitals.find((row) => row.id === created.id);
+    expect(createdHospital).toMatchObject({
+      id: created.id,
+      name: "Hospital Novo da Instituição",
+      sectors: [],
+    });
+    expect(createdHospital?.canCreateSector).toBe(true);
+
+    await expect(
+      callerApp(medicoAUserId, "manager", institutionA).hospitals.create({
+        name: "Hospital do gestor de setor",
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/Gestor\+|administrador/),
+    });
+
+    await expect(
+      callerApp(plusAUserId, "manager", institutionB).hospitals.create({
+        name: "Hospital no tenant B",
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+
+    const foreignTopology = await callerContexts(
+      medicoBUserId,
+      "manager",
+      institutionB,
+    ).listManageableTopology();
+    expect(foreignTopology.hospitals.map((row) => row.id)).not.toContain(created.id);
   });
 });

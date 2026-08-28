@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertCanCreateHospital,
   assertCanEditScheduleDate,
   type TenantActor,
 } from "../server/_core/policy";
@@ -57,5 +58,16 @@ describe("policy - current month schedule editing", () => {
     expect(() =>
       assertCanEditScheduleDate(actor("USER"), new Date("2026-05-13T07:00:00-03:00"), now),
     ).toThrow(/gestores/i);
+  });
+});
+
+describe("policy - cadastrar hospital", () => {
+  it("permite Gestor+ e admin; recusa gestor de setor e plantonista", () => {
+    expect(() => assertCanCreateHospital(actor("GESTOR_PLUS"))).not.toThrow();
+    expect(() => assertCanCreateHospital(actor("USER", true))).not.toThrow();
+    expect(() => assertCanCreateHospital(actor("GESTOR_MEDICO"))).toThrow(
+      /Gestor\+|administrador/i,
+    );
+    expect(() => assertCanCreateHospital(actor("USER"))).toThrow(/gestores/i);
   });
 });
