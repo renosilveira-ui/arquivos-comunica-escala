@@ -241,6 +241,7 @@ export default function AgendaScreen() {
   const scheduleContext = useScheduleContext({
     userId: user?.id,
     institutionId: activeInstitutionId,
+    visibility: "roster",
   });
   // "Minha" sempre agrega as alocações do médico em todos os setores. O
   // seletor limita somente a visão Geral.
@@ -562,6 +563,8 @@ export default function AgendaScreen() {
                 onSelect={scheduleContext.selectContext}
                 loading={scheduleContext.isSelectionHydrating}
                 disabled={scheduleContext.isError}
+                allContextsLabel="Todos os setores"
+                allContextsSubtitle="Quem está de plantão em toda a instituição"
               />
               {scheduleContext.isError ? (
                 <View
@@ -579,8 +582,8 @@ export default function AgendaScreen() {
                       color: theme.colors.danger,
                     }}
                   >
-                    Não foi possível listar seus setores. A visão geral segue
-                    protegida pelas permissões da instituição.
+                    Não foi possível listar as escalas da instituição. A visão
+                    geral ainda não carregou quem está nos plantões.
                   </Text>
                   <TouchableOpacity
                     onPress={() => scheduleContext.refetch()}

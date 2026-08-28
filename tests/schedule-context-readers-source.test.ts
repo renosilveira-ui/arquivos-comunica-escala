@@ -18,7 +18,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
 
     expect(source).toContain("assertActorCanReadShiftScheduleContext");
     expect(source).toContain(
-      "authorizedContextIds.has(activeScheduleContextId)",
+      "readableContextIds.has(activeScheduleContextId)",
     );
     expect(source).toContain(
       "assignment.professionalId === actor.professionalId",

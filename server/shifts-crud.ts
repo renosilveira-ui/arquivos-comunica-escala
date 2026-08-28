@@ -54,7 +54,7 @@ import { assertInstitutionHierarchy } from "./_core/tenant";
 import {
   assertActorCanReadShiftScheduleContext,
   assertActiveScheduleContextTopology,
-  listAuthorizedScheduleContexts,
+  listReadableScheduleContexts,
   resolveScheduleContextForShiftCreation,
 } from "./schedule-contexts";
 import { pickShiftTemplatesForSector } from "../lib/shift-template-options";
@@ -2143,16 +2143,13 @@ export const shiftsRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const actor = await getTenantActorFromContext(ctx);
-      const authorizedContexts = await listAuthorizedScheduleContexts(
-        actor,
-        db,
-      );
-      const authorizedContextIds = new Set(
-        authorizedContexts.map((context) => context.id),
+      const readableContexts = await listReadableScheduleContexts(actor, db);
+      const readableContextIds = new Set(
+        readableContexts.map((context) => context.id),
       );
       if (
         input.scheduleContextId !== undefined &&
-        !authorizedContextIds.has(input.scheduleContextId)
+        !readableContextIds.has(input.scheduleContextId)
       ) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -2292,7 +2289,7 @@ export const shiftsRouter = router({
           }
           if (
             activeScheduleContextId !== null &&
-            authorizedContextIds.has(activeScheduleContextId)
+            readableContextIds.has(activeScheduleContextId)
           ) {
             return true;
           }
@@ -2318,7 +2315,8 @@ export const shiftsRouter = router({
   // (semana → dia → grupo hospital+setor+contexto) — pronto pra renderizar sem
   // pós-processamento no cliente.
   //
-  // - scope = "geral": shifts dos contextos autorizados no período
+  // - scope = "geral": plantões das escalas ativas do tenant (quem está
+  //   alocado). Praticar/gerir continua na allowlist.
   // - scope = "minha": filtra onde o profissional do user logado está
   //   ativo em alguma assignment
   //
@@ -2338,17 +2336,14 @@ export const shiftsRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const actor = await getTenantActorFromContext(ctx);
-      const authorizedContexts = await listAuthorizedScheduleContexts(
-        actor,
-        db,
-      );
-      const authorizedContextsById = new Map(
-        authorizedContexts.map((context) => [context.id, context] as const),
+      const readableContexts = await listReadableScheduleContexts(actor, db);
+      const readableContextsById = new Map(
+        readableContexts.map((context) => [context.id, context] as const),
       );
       if (
         input.scope === "geral" &&
         input.scheduleContextId !== undefined &&
-        !authorizedContextsById.has(input.scheduleContextId)
+        !readableContextsById.has(input.scheduleContextId)
       ) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -2611,7 +2606,7 @@ export const shiftsRouter = router({
         if (input.scope === "geral") {
           return (
             r.scheduleContextId !== null &&
-            authorizedContextsById.has(r.scheduleContextId)
+            readableContextsById.has(r.scheduleContextId)
           );
         }
         const my = assignByShift.get(r.id) ?? [];
@@ -2681,7 +2676,7 @@ export const shiftsRouter = router({
             scheduleContextId: r.scheduleContextId,
             qualificationName:
               (r.scheduleContextId !== null
-                ? authorizedContextsById.get(r.scheduleContextId)
+                ? readableContextsById.get(r.scheduleContextId)
                     ?.qualificationName
                 : null) ??
               r.specialty ??

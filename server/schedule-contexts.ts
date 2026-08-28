@@ -390,6 +390,39 @@ export function filterScheduleContextsForActor(input: {
   return dedupeAuthorizedScheduleContextsForAgenda(authorized);
 }
 
+/**
+ * Leitura do panorama Geral: qualquer membro ativo do tenant vê as
+ * escalas ativas da instituição (quem está no plantão). canManage e
+ * prática continuam na allowlist — isto não concede professional_access
+ * nem mutação.
+ */
+export function filterScheduleContextsForRosterRead(input: {
+  actor: Pick<
+    TenantActor,
+    "institutionId" | "professionalId" | "roleInInstitution" | "isGlobalAdmin"
+  >;
+  contexts: ActiveScheduleContext[];
+  professional: ProfessionalQualification | null;
+  accesses: ScheduleContextAccess[];
+  managerScopes: ScheduleContextManagerScope[];
+}): AuthorizedScheduleContext[] {
+  const authorizedById = new Map(
+    filterScheduleContextsForActor(input).map(
+      (context) => [context.id, context] as const,
+    ),
+  );
+  const tenantContexts = input.contexts.filter(
+    (context) =>
+      context.active && context.institutionId === input.actor.institutionId,
+  );
+  return dedupeAuthorizedScheduleContextsForAgenda(
+    tenantContexts.map(
+      (context) =>
+        authorizedById.get(context.id) ?? describeScheduleContext(context, false),
+    ),
+  );
+}
+
 export function requireSingleLegacyScheduleContext<T extends { id: number }>(
   candidates: T[],
 ): T {
@@ -581,9 +614,9 @@ export function resolveShiftScheduleContextReadGrant(input: {
 }
 
 /**
- * Política compartilhada dos leitores de turno. A regra normal é um contexto
- * ativo coberto por manager_scope ou por ACL + qualificação; a única exceção
- * é a própria alocação ativa e canônica.
+ * Política compartilhada dos leitores de turno. Qualquer membro do
+ * tenant lê escalas ativas da instituição (panorama Geral). A exceção
+ * estreita da própria alocação cobre plantão sem contexto classificado.
  */
 export async function assertActorCanReadShiftScheduleContext(input: {
   actor: TenantActor;
@@ -604,7 +637,7 @@ export async function assertActorCanReadShiftScheduleContext(input: {
     input.actor,
     input.shift,
   );
-  const contexts = await listAuthorizedScheduleContexts(input.actor, database);
+  const contexts = await listReadableScheduleContexts(input.actor, database);
   const grant = resolveShiftScheduleContextReadGrant({
     shift: input.shift,
     ownActiveAssignment,
@@ -988,12 +1021,15 @@ async function loadManagerScopes(
     );
 }
 
-export async function listAuthorizedScheduleContexts(
+async function loadActorScheduleContextPolicy(
   actor: TenantActor,
-  db?: ContextDb,
-): Promise<AuthorizedScheduleContext[]> {
-  const database = db ?? (await getDb());
-  if (!database) throw new Error("Database not available");
+  database: ContextDb,
+): Promise<{
+  contexts: ActiveScheduleContext[];
+  professional: ProfessionalQualification | null;
+  accesses: ScheduleContextAccess[];
+  managerScopes: ScheduleContextManagerScope[];
+}> {
   const contexts = await selectActiveScheduleContexts(
     database,
     actor.institutionId,
@@ -1018,13 +1054,30 @@ export async function listAuthorizedScheduleContexts(
           actor.professionalId,
         )
       : [];
+  return { contexts, professional, accesses, managerScopes };
+}
 
+export async function listAuthorizedScheduleContexts(
+  actor: TenantActor,
+  db?: ContextDb,
+): Promise<AuthorizedScheduleContext[]> {
+  const database = db ?? (await getDb());
+  if (!database) throw new Error("Database not available");
   return filterScheduleContextsForActor({
     actor,
-    contexts,
-    professional,
-    accesses,
-    managerScopes,
+    ...(await loadActorScheduleContextPolicy(actor, database)),
+  });
+}
+
+export async function listReadableScheduleContexts(
+  actor: TenantActor,
+  db?: ContextDb,
+): Promise<AuthorizedScheduleContext[]> {
+  const database = db ?? (await getDb());
+  if (!database) throw new Error("Database not available");
+  return filterScheduleContextsForRosterRead({
+    actor,
+    ...(await loadActorScheduleContextPolicy(actor, database)),
   });
 }
 
@@ -1324,6 +1377,12 @@ export const scheduleContextsRouter = router({
   listMine: protectedProcedure.query(async ({ ctx }) => {
     const actor = await getTenantActorFromContext(ctx);
     return listAuthorizedScheduleContexts(actor);
+  }),
+
+  /** Escalas ativas do tenant para o panorama Geral — só leitura. */
+  listReadable: protectedProcedure.query(async ({ ctx }) => {
+    const actor = await getTenantActorFromContext(ctx);
+    return listReadableScheduleContexts(actor);
   }),
 
   /**

@@ -27,13 +27,19 @@ export type ScheduleContextHospitalGroup = Readonly<{
   sectors: readonly ScheduleContextSectorGroup[];
 }>;
 
+export type ScheduleContextVisibility = "authorized" | "roster";
+
 const STORAGE_PREFIX = "escala.schedule-context.v1";
+const ROSTER_STORAGE_PREFIX = "escala.schedule-context.roster.v1";
 
 export function scheduleContextStorageKey(
   userId: number,
   institutionId: number,
+  visibility: ScheduleContextVisibility = "authorized",
 ): string {
-  return `${STORAGE_PREFIX}.${userId}.${institutionId}`;
+  const prefix =
+    visibility === "roster" ? ROSTER_STORAGE_PREFIX : STORAGE_PREFIX;
+  return `${prefix}.${userId}.${institutionId}`;
 }
 
 export function parseStoredScheduleContextId(
@@ -50,7 +56,7 @@ export function parseStoredScheduleContextId(
  * - nenhum contexto: não há escala selecionável;
  * - um contexto: seleção automática, sem passo desnecessário;
  * - vários: restaura somente um id ainda autorizado; caso contrário a UI
- *   permanece em "Todos os meus setores" até a pessoa escolher.
+ *   permanece em "Todos os setores" até a pessoa escolher.
  */
 export function resolveScheduleContextId(
   contexts: readonly Pick<ScheduleContextOption, "id">[],

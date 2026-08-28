@@ -182,4 +182,80 @@ describe("scheduleContexts.listMine no appRouter", () => {
       result.every((row) => row.qualificationCode === "CLINICA_MEDICA"),
     ).toBe(true);
   });
+
+  it("listReadable inclui escalas do tenant que o USER não pratica", async () => {
+    mocks.getDb.mockResolvedValue(
+      fakeSelectDb(
+        new Map([
+          [
+            scheduleContexts,
+            [
+              {
+                id: 1,
+                institutionId: 1,
+                hospitalId: 100,
+                hospitalName: "Hospital São Carlos",
+                sectorId: 101,
+                sectorName: "Emergência",
+                medicalSpecialtyId: 10,
+                medicalSpecialtyCode: "CLINICA_MEDICA",
+                medicalSpecialtyName: "Clínica médica",
+                operationalProfileCode: null,
+                active: true,
+              },
+              {
+                id: 3,
+                institutionId: 1,
+                hospitalId: 100,
+                hospitalName: "Hospital São Carlos",
+                sectorId: 103,
+                sectorName: "UTI",
+                medicalSpecialtyId: 11,
+                medicalSpecialtyCode: "MEDICINA_INTENSIVA",
+                medicalSpecialtyName: "Medicina intensiva",
+                operationalProfileCode: null,
+                active: true,
+              },
+            ],
+          ],
+          [
+            professionals,
+            [{ medicalSpecialtyId: 10, operationalProfileCode: null }],
+          ],
+          [
+            professionalAccess,
+            [
+              {
+                institutionId: 1,
+                professionalId: 55,
+                hospitalId: 100,
+                sectorId: 101,
+                canAccess: true,
+              },
+            ],
+          ],
+          [managerScope, []],
+        ]),
+      ),
+    );
+
+    const caller = appRouter.createCaller({
+      user: {
+        id: 5,
+        role: "doctor",
+        name: "Médico teste",
+        email: "medico@test.local",
+        sessionVersion: 1,
+      },
+      institutionId: 1,
+      allowedInstitutionIds: [1],
+    } as any);
+
+    const mine = await caller.scheduleContexts.listMine();
+    const readable = await caller.scheduleContexts.listReadable();
+
+    expect(mine.map((row) => row.id)).toEqual([1]);
+    expect(readable.map((row) => row.id)).toEqual([1, 3]);
+    expect(readable.every((row) => row.canManage === false)).toBe(true);
+  });
 });

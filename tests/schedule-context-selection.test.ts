@@ -72,6 +72,12 @@ describe("seleção de contexto de escala", () => {
     expect(scheduleContextStorageKey(9, 5)).not.toBe(
       scheduleContextStorageKey(9, 4),
     );
+    expect(scheduleContextStorageKey(9, 4, "roster")).toBe(
+      "escala.schedule-context.roster.v1.9.4",
+    );
+    expect(scheduleContextStorageKey(9, 4, "roster")).not.toBe(
+      scheduleContextStorageKey(9, 4),
+    );
   });
 
   it("aplica a regra 0 vazio, 1 automático e vários com último válido", () => {
@@ -127,6 +133,8 @@ describe("wiring da UI multi-setorial", () => {
     const createShift = readFileSync("app/create-shift.tsx", "utf8");
 
     expect(agenda).toContain("<ScheduleContextSelector");
+    expect(agenda).toContain('visibility: "roster"');
+    expect(agenda).toContain("Todos os setores");
     expect(agenda).toContain("scheduleContextId: selectedAgendaContextId");
     expect(agenda).toContain("Nenhuma escala configurada para você");
     expect(agenda).toContain("scheduleContext.contexts.length === 0");
