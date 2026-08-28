@@ -20,6 +20,7 @@ import {
   AuthenticationInfrastructureError,
   sdk,
   sessionFenceSnapshot,
+  requestPresentedSessionCredential,
 } from "../_core/sdk";
 import { COOKIE_NAME, SESSION_FENCE_COOKIE_NAME } from "../../shared/const.js";
 import { recordAudit } from "../audit-trail";
@@ -129,6 +130,13 @@ function sendAuthenticationInfrastructureError(
     code: error.code,
   });
   return true;
+}
+
+function sendUnauthenticated(req: Request, res: Response): void {
+  res.status(401).json({
+    error: "Não autenticado",
+    credentialPresented: requestPresentedSessionCredential(req),
+  });
 }
 
 type LogoutRevocationProof = "ROTATED" | "ALREADY_INVALID";
@@ -2080,7 +2088,7 @@ authRouter.get("/me", async (req: Request, res: Response): Promise<void> => {
     const sessionBindingVersion =
       sdk.sessionBindingVersionForAuthenticatedRequest(req);
     if (!sessionInstance) {
-      res.status(401).json({ error: "Não autenticado" });
+      sendUnauthenticated(req, res);
       return;
     }
     res.json({
@@ -2104,10 +2112,14 @@ authRouter.get("/me", async (req: Request, res: Response): Promise<void> => {
       error instanceof ExpectedUserConstraintError ||
       error instanceof SessionInstanceConstraintError
     ) {
-      res.status(error.status).json({ error: error.message, code: error.code });
+      res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+        credentialPresented: true,
+      });
       return;
     }
-    res.status(401).json({ error: "Não autenticado" });
+    sendUnauthenticated(req, res);
   }
 });
 

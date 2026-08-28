@@ -388,9 +388,8 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
         subjectKey: subjectKeyOf(currentSubjectRef.current),
       });
     } else if (transition.action === "REVALIDATE") {
-      // Reconnect de rede exige /me fresco. Voltar à aba só reabre o handshake
-      // institucional — refetch de sessão aqui derrubava VERIFIED em 401/abort
-      // transitório ao trocar de aba por ~1s no desktop.
+      // Reconnect de rede exige /me fresco. Trocar de aba no web não passa
+      // por CLOSE/REVALIDATE — o foco só refetch a sessão sem derrubar o gate.
       if (patch.online === true) {
         void refetch();
       }
@@ -404,6 +403,9 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     // visual até um evento de lifecycle/rede fica explicitamente fora do SLA
     // desta frente; resume/reconnect sempre reatesta antes de reabrir a UI.
     const appStateSubscription = AppState.addEventListener("change", (nextState) => {
+      // AppState web é visibilitychange. Fechar o gate ao esconder a aba
+      // limpava o cache, reabria handshake e um /me 401 sem cookie deslogava.
+      if (Platform.OS === "web") return;
       updateActivity({ visible: nextState === "active" });
     });
     const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
@@ -421,7 +423,10 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     });
 
     const handleVisibility = () => {
-      updateActivity({ visible: document.visibilityState !== "hidden" });
+      if (document.visibilityState !== "visible") return;
+      // Nunca envia visible:false: esconder a aba no desktop não é background.
+      updateActivity({ visible: true });
+      void refetch();
     };
     const handleOnline = () => updateActivity({ online: true });
     const handleOffline = () => updateActivity({ online: false });
@@ -440,7 +445,7 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
         globalThis.removeEventListener?.("offline", handleOffline);
       }
     };
-  }, [updateActivity]);
+  }, [refetch, updateActivity]);
 
   useEffect(() => {
     const coordinator = coordinatorRef.current;

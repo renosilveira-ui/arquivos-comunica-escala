@@ -415,6 +415,48 @@ describe("cache do token de sessão", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("401 web sem prova de cookie no body não invalida a sessão", async () => {
+    const storage = availableStorage();
+    const auth = await loadAuth(storage, storage, "web");
+    const fetchMock = vi.fn(async () => {
+      return new Response(JSON.stringify({ error: "Não autenticado" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(auth.validateCanonicalSession(DEFAULT_USER_ID)).resolves.toEqual({
+      user: null,
+      sessionInvalid: false,
+      networkOrServerError: true,
+    });
+  });
+
+  it("401 web só invalida a sessão quando o servidor confirma o cookie", async () => {
+    const storage = availableStorage();
+    const auth = await loadAuth(storage, storage, "web");
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          error: "Não autenticado",
+          credentialPresented: true,
+        }),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(auth.validateCanonicalSession(DEFAULT_USER_ID)).resolves.toEqual({
+      user: null,
+      sessionInvalid: true,
+      networkOrServerError: false,
+    });
+  });
+
   it("401 só prova sessão inválida quando o `/me` recebeu o Bearer esperado", async () => {
     const secureStorage = availableStorage();
     const markerStorage = availableStorage();
@@ -4504,10 +4546,16 @@ describe("cache do token de sessão", () => {
       "fetch",
       vi.fn(
         async () =>
-          new Response(JSON.stringify({ error: "unauthorized" }), {
-            status: 401,
-            headers: { "Content-Type": "application/json" },
-          }),
+          new Response(
+            JSON.stringify({
+              error: "unauthorized",
+              credentialPresented: true,
+            }),
+            {
+              status: 401,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
       ),
     );
 

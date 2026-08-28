@@ -131,6 +131,22 @@ function digestSessionFence(value: string | undefined): string {
   return hash.digest("base64url");
 }
 
+/** Cookie ou Bearer não vazio chegou nesta Request — não é prova de validade. */
+export function requestPresentedSessionCredential(req: Request): boolean {
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    if (authHeader.slice("Bearer ".length).trim()) return true;
+  }
+  const rawHeader = req.headers.cookie;
+  if (!rawHeader) return false;
+  try {
+    const token = parseCookieHeader(rawHeader)[COOKIE_NAME];
+    return typeof token === "string" && token.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Snapshot imutável do fence recebido nesta requisição. */
 export function sessionFenceSnapshot(req: Request): SessionFenceSnapshot {
   const rawHeader = req.headers.cookie;

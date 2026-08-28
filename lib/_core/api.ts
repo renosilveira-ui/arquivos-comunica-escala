@@ -15,6 +15,7 @@ import {
   type SessionBindingState,
 } from "./session-binding-protocol";
 import { getActiveWebSessionWorkflowSignal } from "./web-session-workflow";
+import { resolveCredentialPresented } from "./canonical-session-request";
 import { withRequestDeadline } from "../request-deadline";
 import { getActiveInstitutionId } from "../tenant-state";
 import type {
@@ -32,10 +33,10 @@ type ApiFetchResult<T> = {
   data: T | null;
   error?: string;
   /**
-   * Prova local de que o request saiu pelo canal autenticado. No nativo isto
-   * significa um Bearer efetivamente anexado; no web, `credentials: include`
-   * enviou o cookie corrente ao mesmo origin. Um 401 nativo sem esta prova
-   * não autoriza apagar a única credencial local.
+   * Prova de que uma credencial realmente chegou ao servidor. No nativo isto
+   * é um Bearer anexado num fetch que completou. Na web, `credentials:
+   * include` só pede o cookie — só o `/me` (ou body equivalente) confirma
+   * se ele foi recebido. Abort/rede nunca autoriza logout.
    */
   credentialPresented: boolean;
 };
@@ -330,9 +331,9 @@ async function apiFetchInternal<T>(
     }
   }
 
-  const credentialPresented =
-    (Platform.OS === "web" && transportMode !== "public") ||
-    Boolean(headers.Authorization);
+  const nativeAuthorizationAttached = Boolean(headers.Authorization);
+  const webCredentialsIncluded =
+    Platform.OS === "web" && transportMode !== "public";
 
   if (
     transportMode === "normal" &&
@@ -369,7 +370,12 @@ async function apiFetchInternal<T>(
       ok: res.ok,
       status: res.status,
       data,
-      credentialPresented,
+      credentialPresented: resolveCredentialPresented({
+        requestCompleted: true,
+        nativeAuthorizationAttached,
+        webCredentialsIncluded,
+        responseData: data,
+      }),
     };
   } catch (error) {
     const message =
@@ -381,7 +387,12 @@ async function apiFetchInternal<T>(
       status: 0,
       data: null,
       error: message,
-      credentialPresented,
+      credentialPresented: resolveCredentialPresented({
+        requestCompleted: false,
+        nativeAuthorizationAttached,
+        webCredentialsIncluded,
+        responseData: null,
+      }),
     };
   } finally {
     requestAbort.cleanup();
