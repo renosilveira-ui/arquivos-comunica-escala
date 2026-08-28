@@ -14,6 +14,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
 
 export interface AvailableSwap {
   id: number;
@@ -38,6 +39,8 @@ export interface AvailableSwap {
     hospitalName: string;
     sectorName: string;
   } | null;
+  toProfessionalId?: number | null;
+  toUserId?: number | null;
   canRespond?: boolean;
 }
 
@@ -228,7 +231,7 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
               </Text>
             ) : null}
 
-            {sw.canRespond === false ? (
+            {!listedSwapIsActionable(sw) ? (
               <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
                 Oferta direcionada a outro profissional. Aguardando a resposta.
               </Text>

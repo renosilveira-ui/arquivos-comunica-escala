@@ -9,6 +9,7 @@ import {
 import { eq, and, or, isNull, sql, inArray } from "drizzle-orm";
 import {
   swapRequests,
+  swapRequestDismissals,
   shiftInstances,
   shiftAssignmentsV2,
   professionals,
@@ -105,6 +106,18 @@ function listedOfferCanRespond(
     Number(toProfessionalId) === actorProfessionalId &&
     Number(toUserId) === actorUserId
   );
+}
+
+function isOpenSwapOffer(swap: Pick<SwapRow, "toProfessionalId" | "toUserId">): boolean {
+  return swap.toProfessionalId === null && swap.toUserId === null;
+}
+
+function isMysqlDuplicateKey(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if ("code" in error && (error as { code?: unknown }).code === "ER_DUP_ENTRY") {
+    return true;
+  }
+  return "cause" in error && isMysqlDuplicateKey((error as { cause?: unknown }).cause);
 }
 
 export function isExpectedSwapVisibilityDenial(error: unknown): boolean {
@@ -457,25 +470,6 @@ async function findManagerScopeId(
   return rows[0]?.id ?? null;
 }
 
-async function requireProfessionalAccess(
-  db: any,
-  input: {
-    institutionId: number;
-    professionalId: number;
-    hospitalId: number;
-    sectorId: number;
-    lockForUpdate?: boolean;
-  },
-): Promise<number> {
-  const accessId = await findProfessionalAccessId(db, input);
-  if (accessId === null) {
-    throw topologyDenied(
-      "Profissional sem acesso ativo ao hospital/setor do plantão",
-    );
-  }
-  return accessId;
-}
-
 async function requireCanonicalShift(
   db: any,
   input: {
@@ -568,19 +562,46 @@ async function requireCanonicalAssignmentTuple(
 ): Promise<CanonicalAssignmentTuple> {
   const shift = await requireCanonicalShift(db, input);
   const professional = await requireCanonicalProfessional(db, input);
-  await requireProfessionalAccess(db, {
+  // Mesma porta de receive: ACL, manager_scope ou GESTOR_PLUS.
+  // Sem isso o gestor alocado na escala (Maurilio) não oferta o
+  // próprio plantão — a tupla já exige que ele seja o ocupante.
+  const accessInput = {
     institutionId: shift.institutionId,
     professionalId: professional.professionalId,
     hospitalId: shift.hospitalId,
     sectorId: shift.sectorId,
     lockForUpdate: input.lockForUpdate,
-  });
-  await assertProfessionalQualifiedForShift(
-    db,
-    shift,
-    professional,
-    input.lockForUpdate === true,
-  );
+  };
+  const accessId = await findProfessionalAccessId(db, accessInput);
+  const canManageAsGestorPlus = professional.roleInInstitution === "GESTOR_PLUS";
+  const scopeId = canManageAsGestorPlus
+    ? null
+    : await findManagerScopeId(db, accessInput);
+  if (accessId === null && scopeId === null && !canManageAsGestorPlus) {
+    throw topologyDenied(
+      professional.roleInInstitution === "GESTOR_MEDICO"
+        ? "Gestor sem jurisdição para o hospital/setor do plantão"
+        : "Profissional sem acesso ativo ao hospital/setor do plantão",
+    );
+  }
+  if (scopeId !== null || canManageAsGestorPlus) {
+    if (shift.scheduleContextId !== null) {
+      await assertActiveScheduleContextTopology({
+        institutionId: shift.institutionId,
+        hospitalId: shift.hospitalId,
+        sectorId: shift.sectorId,
+        scheduleContextId: shift.scheduleContextId,
+        db,
+      });
+    }
+  } else {
+    await assertProfessionalQualifiedForShift(
+      db,
+      shift,
+      professional,
+      input.lockForUpdate === true,
+    );
+  }
 
   const canonicalTupleConditions = [
     eq(shiftAssignmentsV2.shiftInstanceId, shift.id),
@@ -2222,9 +2243,56 @@ export const swapRouter = router({
           true,
           expectedSessionVersion,
         );
-        await transitionSwapStatusForUpdate(tx, current, ["PENDING"], {
-          status: "REJECTED_BY_PEER",
-        });
+
+        if (isOpenSwapOffer(current)) {
+          const [alreadyDismissed] = await tx
+            .select({ id: swapRequestDismissals.id })
+            .from(swapRequestDismissals)
+            .where(
+              and(
+                eq(swapRequestDismissals.swapRequestId, current.id),
+                eq(swapRequestDismissals.institutionId, current.institutionId),
+                eq(swapRequestDismissals.userId, userId),
+              ),
+            )
+            .limit(1);
+          if (alreadyDismissed) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Você já recusou esta oferta.",
+            });
+          }
+          try {
+            const [inserted] = await tx
+              .insert(swapRequestDismissals)
+              .values({
+                swapRequestId: current.id,
+                institutionId: current.institutionId,
+                userId,
+                professionalId: recipient.professional.professionalId,
+              })
+              .$returningId();
+            if (!inserted?.id) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Você já recusou esta oferta.",
+              });
+            }
+          } catch (error) {
+            if (error instanceof TRPCError) throw error;
+            if (isMysqlDuplicateKey(error)) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Você já recusou esta oferta.",
+              });
+            }
+            throw error;
+          }
+        } else {
+          await transitionSwapStatusForUpdate(tx, current, ["PENDING"], {
+            status: "REJECTED_BY_PEER",
+          });
+        }
 
         const rejectAudit = auditNames(current.type, "REJECTED");
         await recordAudit(
@@ -2235,7 +2303,9 @@ export const swapRouter = router({
             actorUserId: userId,
             actorRole: recipient.professional.roleInInstitution,
             actorName: recipient.professional.name,
-            description: `Solicitação #${current.id} rejeitada pelo profissional`,
+            description: isOpenSwapOffer(current)
+              ? `Solicitação #${current.id} recusada só para o profissional; a oferta aberta permanece`
+              : `Solicitação #${current.id} rejeitada pelo profissional`,
             fromProfessionalId: current.fromProfessionalId,
             toProfessionalId: recipient.professional.professionalId,
             fromUserId: current.fromUserId,
@@ -2916,14 +2986,33 @@ export const swapRouter = router({
               AND source_duplicate.is_active = 1
               AND source_duplicate.id != fsa.id
           )
-          AND EXISTS (
+          AND NOT EXISTS (
             SELECT 1
-            FROM professional_access source_access
-            WHERE source_access.institution_id = fsi.institution_id
-              AND source_access.professional_id = fp.id
-              AND source_access.hospital_id = fsi.hospital_id
-              AND source_access.can_access = 1
-              AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
+            FROM swap_request_dismissals actor_dismissal
+            WHERE actor_dismissal.swap_request_id = sr.id
+              AND actor_dismissal.institution_id = sr.institution_id
+              AND actor_dismissal.user_id = ${userId}
+          )
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM professional_access source_access
+              WHERE source_access.institution_id = fsi.institution_id
+                AND source_access.professional_id = fp.id
+                AND source_access.hospital_id = fsi.hospital_id
+                AND source_access.can_access = 1
+                AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
+            )
+            OR fpi.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope source_scope
+              WHERE source_scope.manager_professional_id = fp.id
+                AND source_scope.institution_id = fsi.institution_id
+                AND source_scope.hospital_id = fsi.hospital_id
+                AND (source_scope.sector_id IS NULL OR source_scope.sector_id = fsi.sector_id)
+                AND source_scope.active = 1
+            )
           )
           AND fsi.schedule_context_id IN (${sql.join(
             visibleContextIds.map((id) => sql`${id}`),
@@ -3229,6 +3318,9 @@ export const swapRouter = router({
               sectorName: r.toSectorName!,
             }
           : null,
+        toProfessionalId:
+          r.toProfessionalId == null ? null : Number(r.toProfessionalId),
+        toUserId: r.toUserId == null ? null : Number(r.toUserId),
         canRespond: listedOfferCanRespond(
           r.toProfessionalId,
           r.toUserId,

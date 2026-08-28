@@ -1224,6 +1224,43 @@ export const swapRequests = mysqlTable(
   }),
 );
 
+/**
+ * Recusa individual de oferta ABERTA (sem destinatário).
+ * A linha some da lista de quem recusou; a solicitação permanece PENDING
+ * para os demais elegíveis. Oferta direcionada não usa esta tabela —
+ * fecha com REJECTED_BY_PEER.
+ * Migração: drizzle/migrations/manual/2026-08-28-swap-request-dismissals.sql
+ */
+export const swapRequestDismissals = mysqlTable(
+  "swap_request_dismissals",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    swapRequestId: int("swap_request_id")
+      .notNull()
+      .references(() => swapRequests.id, { onDelete: "cascade" }),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id),
+    professionalId: int("professional_id")
+      .notNull()
+      .references(() => professionals.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    uniqSwapDismissalActor: unique("uniq_swap_dismissal_actor").on(
+      table.swapRequestId,
+      table.userId,
+    ),
+    idxSwapDismissalInstitution: index("idx_swap_dismissal_institution").on(
+      table.institutionId,
+      table.swapRequestId,
+    ),
+  }),
+);
+
 // ========================================
 // CONFIRMAÇÃO DE PRESENÇA PRÉ-PLANTÃO
 // ========================================
@@ -1410,6 +1447,7 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   monthlyRosters: many(monthlyRosters),
   auditTrails: many(auditTrail),
   swapRequests: many(swapRequests),
+  swapRequestDismissals: many(swapRequestDismissals),
   dutyConfirmations: many(dutyConfirmations),
 }));
 
@@ -1629,7 +1667,7 @@ export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
   }),
 }));
 
-export const swapRequestsRelations = relations(swapRequests, ({ one }) => ({
+export const swapRequestsRelations = relations(swapRequests, ({ one, many }) => ({
   institution: one(institutions, {
     fields: [swapRequests.institutionId],
     references: [institutions.id],
@@ -1650,4 +1688,27 @@ export const swapRequestsRelations = relations(swapRequests, ({ one }) => ({
     fields: [swapRequests.toProfessionalId],
     references: [professionals.id],
   }),
+  dismissals: many(swapRequestDismissals),
 }));
+
+export const swapRequestDismissalsRelations = relations(
+  swapRequestDismissals,
+  ({ one }) => ({
+    swapRequest: one(swapRequests, {
+      fields: [swapRequestDismissals.swapRequestId],
+      references: [swapRequests.id],
+    }),
+    institution: one(institutions, {
+      fields: [swapRequestDismissals.institutionId],
+      references: [institutions.id],
+    }),
+    user: one(users, {
+      fields: [swapRequestDismissals.userId],
+      references: [users.id],
+    }),
+    professional: one(professionals, {
+      fields: [swapRequestDismissals.professionalId],
+      references: [professionals.id],
+    }),
+  }),
+);
