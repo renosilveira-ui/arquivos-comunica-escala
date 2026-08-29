@@ -35,3 +35,11 @@ export function sessionAuthCookies(
     return `${session}; ${fence}`;
   }
 }
+
+/** Extrai cookies de autenticação de uma resposta de login (padrão dos testes). */
+export function cookieOfFromLogin(
+  res: SupertestResponse,
+  carryFenceFrom?: string,
+): string {
+  return sessionAuthCookies(res, carryFenceFrom);
+}

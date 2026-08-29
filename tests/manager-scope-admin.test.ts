@@ -20,6 +20,8 @@ import {
   parseManagerScopes,
 } from "../lib/manager-scope-admin";
 
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 const STAMP = Date.now();
 const PASSWORD = "SenhaAdmin123";
 
@@ -133,11 +135,7 @@ describe("manager-scope-admin: admin concede escopo", () => {
       .post("/api/auth/login")
       .send({ email: adminEmail, password: PASSWORD });
     expect(login.status).toBe(200);
-    const setCookie = login.headers["set-cookie"];
-    adminCookie =
-      (Array.isArray(setCookie) ? setCookie : [setCookie]).find((entry: string) =>
-        entry?.startsWith("session="),
-      ) ?? "";
+    adminCookie = sessionAuthCookies(login);
     expect(adminCookie).not.toBe("");
   });
 
