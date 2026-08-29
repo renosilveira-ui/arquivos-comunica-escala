@@ -1,10 +1,29 @@
 import axios, { isAxiosError, type AxiosError } from "axios";
 import { Router, type Request, type Response } from "express";
+import type { User } from "../../drizzle/schema";
 import { sdk } from "../_core/sdk";
 
 export const hospitalAlertRouter = Router();
 
 const TIMEOUT_MS = 8_000;
+const EXTERNAL_USER_PREFIX = "shiftsapp:";
+
+/** Identidade upstream derivada do usuário autenticado no Escala+ (não do cliente). */
+export function ownedExternalUserId(userId: number): string {
+  return `${EXTERNAL_USER_PREFIX}${userId}`;
+}
+
+export function withServerIntegrationIdentity(
+  body: Record<string, unknown>,
+  userId: number,
+  organizationId: string,
+): Record<string, unknown> {
+  return {
+    ...body,
+    externalUserId: ownedExternalUserId(userId),
+    organizationId,
+  };
+}
 
 type HospitalAlertConfig = {
   baseUrl: string;
@@ -44,13 +63,12 @@ function mapProxyError(error: unknown): { status: number; error: string } {
 async function requireAuthenticatedUser(
   req: Request,
   res: Response,
-): Promise<boolean> {
+): Promise<User | null> {
   try {
-    await sdk.authenticateRequest(req);
-    return true;
+    return await sdk.authenticateRequest(req);
   } catch {
     res.status(401).json({ error: "Não autenticado" });
-    return false;
+    return null;
   }
 }
 
@@ -61,16 +79,22 @@ function integrationUnavailable(res: Response): void {
 hospitalAlertRouter.post(
   "/sync-user",
   async (req: Request, res: Response): Promise<void> => {
-    if (!(await requireAuthenticatedUser(req, res))) return;
+    const user = await requireAuthenticatedUser(req, res);
+    if (!user) return;
     const config = resolveHospitalAlertConfig();
     if (!config) {
       integrationUnavailable(res);
       return;
     }
+    const upstreamBody = withServerIntegrationIdentity(
+      (req.body ?? {}) as Record<string, unknown>,
+      user.id,
+      config.organizationId,
+    );
     try {
       const response = await axios.post(
         `${config.baseUrl}/api/trpc/auth.syncUser`,
-        req.body,
+        upstreamBody,
         {
           headers: integrationHeaders(config),
           timeout: TIMEOUT_MS,
@@ -87,16 +111,22 @@ hospitalAlertRouter.post(
 hospitalAlertRouter.post(
   "/shifts/start",
   async (req: Request, res: Response): Promise<void> => {
-    if (!(await requireAuthenticatedUser(req, res))) return;
+    const user = await requireAuthenticatedUser(req, res);
+    if (!user) return;
     const config = resolveHospitalAlertConfig();
     if (!config) {
       integrationUnavailable(res);
       return;
     }
+    const upstreamBody = withServerIntegrationIdentity(
+      (req.body ?? {}) as Record<string, unknown>,
+      user.id,
+      config.organizationId,
+    );
     try {
       const response = await axios.post(
         `${config.baseUrl}/api/trpc/shifts.start`,
-        req.body,
+        upstreamBody,
         {
           headers: integrationHeaders(config),
           timeout: TIMEOUT_MS,
@@ -113,16 +143,22 @@ hospitalAlertRouter.post(
 hospitalAlertRouter.post(
   "/shifts/end",
   async (req: Request, res: Response): Promise<void> => {
-    if (!(await requireAuthenticatedUser(req, res))) return;
+    const user = await requireAuthenticatedUser(req, res);
+    if (!user) return;
     const config = resolveHospitalAlertConfig();
     if (!config) {
       integrationUnavailable(res);
       return;
     }
+    const upstreamBody = withServerIntegrationIdentity(
+      (req.body ?? {}) as Record<string, unknown>,
+      user.id,
+      config.organizationId,
+    );
     try {
       const response = await axios.post(
         `${config.baseUrl}/api/trpc/shifts.end`,
-        req.body,
+        upstreamBody,
         {
           headers: integrationHeaders(config),
           timeout: TIMEOUT_MS,
@@ -139,20 +175,15 @@ hospitalAlertRouter.post(
 hospitalAlertRouter.get(
   "/status",
   async (req: Request, res: Response): Promise<void> => {
-    if (!(await requireAuthenticatedUser(req, res))) return;
+    const user = await requireAuthenticatedUser(req, res);
+    if (!user) return;
     const config = resolveHospitalAlertConfig();
     if (!config) {
       integrationUnavailable(res);
       return;
     }
-    const externalUserId = String(req.query.externalUserId ?? "").trim();
-    const organizationId = String(
-      req.query.organizationId ?? config.organizationId,
-    ).trim();
-    if (!externalUserId) {
-      res.status(400).json({ error: "externalUserId é obrigatório" });
-      return;
-    }
+    const externalUserId = ownedExternalUserId(user.id);
+    const organizationId = config.organizationId;
     try {
       const response = await axios.get(
         `${config.baseUrl}/api/trpc/integration.getStatus`,
