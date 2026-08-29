@@ -46,6 +46,9 @@ import {
   registerPushToken,
   sendPushNotification,
 } from "../server/notifications-service";
+import { mailer } from "../server/mailer";
+import { extractTemporaryPasswordFromMail } from "./helpers/temporary-password-mail";
+import { sessionAuthCookies } from "./helpers/session-cookies";
 
 const STAMP = Date.now();
 const PASSWORD = "SenhaAdmin123";
@@ -410,11 +413,7 @@ describe("admin: papel institucional isolado por tenant", () => {
         password: PASSWORD,
       });
     expect(refreshed.status).toBe(200);
-    const setCookie = refreshed.headers["set-cookie"];
-    cookie =
-      (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
-        (entry: string) => entry?.startsWith("session="),
-      ) ?? "";
+    cookie = sessionAuthCookies(refreshed);
     expect(cookie).not.toBe("");
     return response!;
   }
@@ -553,9 +552,7 @@ describe("admin: papel institucional isolado por tenant", () => {
         password: PASSWORD,
       });
     expect(login.status).toBe(200);
-    const setCookie = login.headers["set-cookie"];
-    const arr = Array.isArray(setCookie) ? setCookie : [setCookie];
-    cookie = arr.find((entry: string) => entry.startsWith("session=")) ?? "";
+    cookie = sessionAuthCookies(login);
     expect(cookie).not.toBe("");
 
     const secondLogin = await request(app)
@@ -565,12 +562,7 @@ describe("admin: papel institucional isolado por tenant", () => {
         password: PASSWORD,
       });
     expect(secondLogin.status).toBe(200);
-    const secondSetCookie = secondLogin.headers["set-cookie"];
-    const secondCookies = Array.isArray(secondSetCookie)
-      ? secondSetCookie
-      : [secondSetCookie];
-    secondAdminCookie =
-      secondCookies.find((entry: string) => entry.startsWith("session=")) ?? "";
+    secondAdminCookie = sessionAuthCookies(secondLogin);
     expect(secondAdminCookie).not.toBe("");
   });
 
@@ -916,6 +908,10 @@ describe("admin: papel institucional isolado por tenant", () => {
       })
       .mockResolvedValue(expoTicketResponse("ticket-unexpected-after-reset"));
     vi.stubGlobal("fetch", fetchMock);
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      delivered: false,
+      provider: "console",
+    });
     let resetSettled = false;
     let resetPromise: Promise<SupertestResponse> | undefined;
     try {
@@ -949,10 +945,12 @@ describe("admin: papel institucional isolado por tenant", () => {
       });
       const reset = await resetPromise;
       expect(reset.status).toBe(200);
-      expect(reset.body).toMatchObject({
-        ok: true,
-        temporaryPassword: expect.any(String),
-      });
+      expect(reset.body).toMatchObject({ ok: true });
+      expect(reset.body.temporaryPassword).toBeUndefined();
+      expect(
+        extractTemporaryPasswordFromMail(sendMailSpy.mock.calls, targetEmail),
+      ).toHaveLength(12);
+      sendMailSpy.mockRestore();
       await expect(
         db
           .select({ id: pushTokens.id })
@@ -1254,12 +1252,7 @@ describe("admin: papel institucional isolado por tenant", () => {
       .post("/api/auth/login")
       .send({ email: targetEmail, password: PASSWORD });
     expect(targetLogin.status).toBe(200);
-    const targetSetCookie = targetLogin.headers["set-cookie"];
-    const targetCookies = Array.isArray(targetSetCookie)
-      ? targetSetCookie
-      : [targetSetCookie];
-    const targetCookie =
-      targetCookies.find((entry: string) => entry.startsWith("session=")) ?? "";
+    const targetCookie = sessionAuthCookies(targetLogin);
     expect(targetCookie).not.toBe("");
     await db.insert(pushTokens).values([
       {
@@ -1684,11 +1677,7 @@ describe("admin: papel institucional isolado por tenant", () => {
       .post("/api/auth/login")
       .send({ email: pending.email, password: PASSWORD });
     expect(login.status).toBe(200);
-    const setCookie = login.headers["set-cookie"];
-    const pendingCookie =
-      (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
-        (entry: string) => entry?.startsWith("session="),
-      ) ?? "";
+    const pendingCookie = sessionAuthCookies(login);
     const pendingSessionInstance = await sessionInstanceOf(pendingCookie);
 
     const [approve, deletion] = await raceHttpAfterUserLockGate(
@@ -1746,11 +1735,7 @@ describe("admin: papel institucional isolado por tenant", () => {
       .post("/api/auth/login")
       .send({ email: pending.email, password: PASSWORD });
     expect(login.status).toBe(200);
-    const setCookie = login.headers["set-cookie"];
-    const pendingCookie =
-      (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
-        (entry: string) => entry?.startsWith("session="),
-      ) ?? "";
+    const pendingCookie = sessionAuthCookies(login);
     const pendingSessionInstance = await sessionInstanceOf(pendingCookie);
 
     const [rejection, deletion] = await raceHttpAfterUserLockGate(
@@ -2003,6 +1988,10 @@ describe("admin: papel institucional isolado por tenant", () => {
       expiresAt: new Date(Date.now() + 30 * 60 * 1000),
     });
 
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      delivered: false,
+      provider: "console",
+    });
     const responses = await Promise.all([
       request(app)
         .post(`/api/admin/users/${targetId}/reset-password`)
@@ -2019,7 +2008,13 @@ describe("admin: papel institucional isolado por tenant", () => {
     ]);
     const success = responses.find((response) => response.status === 200)!;
     const conflict = responses.find((response) => response.status === 409)!;
-    expect(success.body.temporaryPassword).toHaveLength(12);
+    const tempPassword = extractTemporaryPasswordFromMail(
+      sendMailSpy.mock.calls,
+      targetEmail,
+    );
+    sendMailSpy.mockRestore();
+    expect(tempPassword).toHaveLength(12);
+    expect(success.body.temporaryPassword).toBeUndefined();
     expect(conflict.body.temporaryPassword).toBeUndefined();
 
     const [target] = await db
@@ -2032,7 +2027,7 @@ describe("admin: papel institucional isolado por tenant", () => {
       .where(eq(users.id, targetId));
     expect(
       await bcrypt.compare(
-        success.body.temporaryPassword,
+        tempPassword,
         target.passwordHash!,
       ),
     ).toBe(true);
@@ -2066,6 +2061,10 @@ describe("admin: papel institucional isolado por tenant", () => {
       .where(inArray(users.id, [adminId, secondAdminId]));
     const before = new Map(beforeRows.map((row) => [row.id, row]));
 
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      delivered: false,
+      provider: "console",
+    });
     const [first, second] = await Promise.all([
       request(app)
         .post(`/api/admin/users/${secondAdminId}/reset-password`)
@@ -2083,6 +2082,15 @@ describe("admin: papel institucional isolado por tenant", () => {
         ? { response: first, targetId: secondAdminId }
         : { response: second, targetId: adminId };
     const loserTargetId = winner.targetId === adminId ? secondAdminId : adminId;
+    const winnerEmail =
+      winner.targetId === secondAdminId
+        ? `rolesync-admin-2-${STAMP}@test.local`
+        : `rolesync-admin-${STAMP}@test.local`;
+    const winnerTempPassword = extractTemporaryPasswordFromMail(
+      sendMailSpy.mock.calls,
+      winnerEmail,
+    );
+    sendMailSpy.mockRestore();
     const afterRows = await db
       .select({
         id: users.id,
@@ -2095,7 +2103,7 @@ describe("admin: papel institucional isolado por tenant", () => {
 
     expect(
       await bcrypt.compare(
-        winner.response.body.temporaryPassword,
+        winnerTempPassword,
         after.get(winner.targetId)!.passwordHash!,
       ),
     ).toBe(true);

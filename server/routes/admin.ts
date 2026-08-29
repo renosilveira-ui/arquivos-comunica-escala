@@ -31,6 +31,7 @@ import { AuthenticationInfrastructureError, sdk } from "../_core/sdk";
 import { SessionInstanceConstraintError } from "../_core/session-instance";
 import { ExpectedUserConstraintError } from "../_core/expected-user";
 import { recordAudit } from "../audit-trail";
+import { mailer } from "../mailer";
 import type { OperationalProfileCode } from "../../lib/medical-specialties";
 import { parseTenantIdHeader } from "../_core/tenant";
 import {
@@ -1742,8 +1743,8 @@ adminRouter.put(
 //
 // Gera uma senha legível de 12 caracteres (sem 0/O/1/l/I), grava o hash
 // e liga must_change_password: no próximo login o app obriga a troca.
-// A senha em claro é devolvida UMA vez na resposta — não é persistida
-// nem logada.
+// A senha em claro é enviada por e-mail ao usuário — não é devolvida
+// na API nem persistida em texto puro.
 // ---------------------------------------------------------------------------
 
 const TEMP_PASSWORD_ALPHABET =
@@ -1894,7 +1895,28 @@ adminRouter.post(
       throw error;
     }
 
-    res.json({ ok: true, temporaryPassword });
+    const targetEmail = targetSnapshot.email?.trim();
+    if (targetEmail) {
+      const firstName = (targetSnapshot.userName ?? "usuário")
+        .trim()
+        .split(/\s+/)[0];
+      await mailer.sendMail({
+        to: targetEmail,
+        subject: "Escala+ — senha temporária",
+        text: [
+          `Olá, ${firstName}.`,
+          "",
+          "Um administrador redefiniu a senha da sua conta no Escala+.",
+          "Use a senha temporária abaixo no próximo login (será obrigatório escolher uma nova senha):",
+          "",
+          temporaryPassword,
+          "",
+          "Se você não esperava esta alteração, entre em contato com o administrador da sua escala.",
+        ].join("\n"),
+      });
+    }
+
+    res.json({ ok: true });
   },
 );
 
