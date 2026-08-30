@@ -30,6 +30,7 @@ import {
   selectRepeatTargets,
   type AllocationRepeatRule,
 } from "./allocation-repeat";
+import { enqueueShiftAssignedPush } from "./assignment-push-signal";
 
 type EditorDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
 
@@ -347,6 +348,19 @@ async function insertDirectAssignment(
     },
     { db: tx, strict: true },
   );
+  await enqueueShiftAssignedPush({
+    db: tx,
+    assignmentId: createdAssignmentId,
+    professionalId: input.professionalId,
+    shift: {
+      id: input.shift.id,
+      institutionId: input.shift.institutionId,
+      hospitalId: input.shift.hospitalId,
+      sectorId: input.shift.sectorId,
+      startAt: input.shift.startAt,
+      endAt: input.shift.endAt,
+    },
+  });
   return createdAssignmentId;
 }
 

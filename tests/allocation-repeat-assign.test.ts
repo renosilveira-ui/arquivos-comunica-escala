@@ -15,6 +15,7 @@ import {
   shiftAuditLog,
   shiftInstances,
   users,
+  notifications,
 } from "../drizzle/schema";
 import {
   ensureTestAnesthesiaSpecialty,
@@ -337,6 +338,9 @@ describe("editor.assignDirect com regra de repetição", () => {
       await db
         .delete(shiftAuditLog)
         .where(inArray(shiftAuditLog.shiftInstanceId, createdShiftIds));
+      await db
+        .delete(notifications)
+        .where(inArray(notifications.shiftInstanceId, createdShiftIds));
       await db
         .delete(shiftAssignmentsV2)
         .where(inArray(shiftAssignmentsV2.shiftInstanceId, createdShiftIds));

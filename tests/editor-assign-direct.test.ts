@@ -18,6 +18,7 @@ import {
   shiftAssignmentsV2,
   shiftInstances,
   users,
+  notifications,
 } from "../drizzle/schema";
 import {
   generateScheduleInviteCode,
@@ -26,6 +27,7 @@ import {
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
+import { enqueueShiftAssignedPush } from "../server/assignment-push-signal";
 
 describe("editor.assignDirect", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
@@ -210,6 +212,9 @@ describe("editor.assignDirect", () => {
     await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId));
     await db.delete(shiftAuditLog).where(eq(shiftAuditLog.shiftInstanceId, shiftInstanceId));
     await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    await db
       .delete(shiftAssignmentsV2)
       .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId));
     await db
@@ -220,6 +225,7 @@ describe("editor.assignDirect", () => {
 
   afterAll(async () => {
     if (!db) return;
+    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
     await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId));
     await db.delete(shiftAuditLog).where(eq(shiftAuditLog.shiftInstanceId, shiftInstanceId));
     await db
@@ -307,6 +313,56 @@ describe("editor.assignDirect", () => {
       .from(shiftInstances)
       .where(eq(shiftInstances.id, shiftInstanceId));
     expect(shift?.status).toBe("OCUPADO");
+
+    const [pushIntent] = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    expect(pushIntent).toMatchObject({
+      userId: targetUserId,
+      institutionId,
+      shiftInstanceId,
+      status: "PENDING",
+      dedupKey: `shift-assigned:${shiftInstanceId}:${targetProfessionalId}:${assignments[0].id}`,
+    });
+    const receipt = pushIntent.providerReceipt as {
+      payloadData?: Record<string, unknown>;
+    };
+    expect(receipt.payloadData).toMatchObject({
+      type: "shift_assigned",
+      shiftInstanceId,
+      assignmentId: assignments[0].id,
+      professionalId: targetProfessionalId,
+      userId: targetUserId,
+      institutionId,
+    });
+    expect(pushIntent.title).toBe("Novo plantão na sua escala");
+    expect(pushIntent.body).toMatch(/Você foi escalado/);
+    expect(pushIntent.body).not.toMatch(/token=|password/i);
+
+    const [shiftRow] = await db
+      .select()
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftInstanceId));
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId: assignments[0].id,
+      professionalId: targetProfessionalId,
+      shift: {
+        id: shiftRow.id,
+        institutionId: shiftRow.institutionId,
+        hospitalId: shiftRow.hospitalId,
+        sectorId: shiftRow.sectorId,
+        startAt: shiftRow.startAt,
+        endAt: shiftRow.endAt,
+      },
+    });
+    expect(
+      await db
+        .select({ id: notifications.id })
+        .from(notifications)
+        .where(eq(notifications.institutionId, institutionId)),
+    ).toHaveLength(1);
   });
 
   it("bloqueia duplicidade do mesmo profissional no mesmo plantão", async () => {
@@ -359,6 +415,12 @@ describe("editor.assignDirect", () => {
         ),
       );
     expect(assignments).toHaveLength(1);
+    expect(
+      await db
+        .select({ id: notifications.id })
+        .from(notifications)
+        .where(eq(notifications.institutionId, institutionId)),
+    ).toHaveLength(0);
   });
 
   it("revalida conta aprovada do profissional alvo", async () => {
@@ -576,6 +638,9 @@ describe("editor.assignDirect", () => {
             geneticaProfessional.id,
           ]),
         );
+      await db
+        .delete(notifications)
+        .where(inArray(notifications.userId, [clinicaUser.id, geneticaUser.id]));
       await db
         .delete(users)
         .where(inArray(users.id, [clinicaUser.id, geneticaUser.id]));
@@ -882,6 +947,9 @@ describe("editor.assignDirect", () => {
       await db
         .delete(professionals)
         .where(eq(professionals.id, inviteeProfessional.id));
+      await db
+        .delete(notifications)
+        .where(eq(notifications.userId, inviteeUser.id));
       await db.delete(users).where(eq(users.id, inviteeUser.id));
     }
   });
