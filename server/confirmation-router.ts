@@ -22,6 +22,7 @@ import {
   enqueueDutySync,
   type DutySyncExternalSubjectBinding,
 } from "./sso/duty-sync";
+import { getDutySyncLocalStatusForConfirmation } from "./sso/duty-sync-status";
 import {
   dutyShiftSnapshot,
   requireValidDutyConfirmation,
@@ -46,6 +47,55 @@ import {
 } from "./schedule-contexts";
 
 type ConfirmationDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+async function assertDutySyncLocalStatusAccess(
+  db: ConfirmationDb,
+  input: {
+    confirmationId: number;
+    institutionId: number;
+    userId: number;
+  },
+): Promise<{ outboxUserId: number }> {
+  const [conf] = await db
+    .select({
+      userId: dutyConfirmations.userId,
+      replacementUserId: dutyConfirmations.replacementUserId,
+    })
+    .from(dutyConfirmations)
+    .where(
+      and(
+        eq(dutyConfirmations.id, input.confirmationId),
+        eq(dutyConfirmations.institutionId, input.institutionId),
+      ),
+    )
+    .limit(1);
+  if (!conf) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Confirmação não encontrada",
+    });
+  }
+
+  const actorKind =
+    conf.userId === input.userId
+      ? "ORIGINAL" as const
+      : conf.replacementUserId === input.userId
+        ? "REPLACEMENT" as const
+        : null;
+  if (!actorKind) {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+  if (
+    actorKind === "REPLACEMENT" &&
+    conf.replacementUserId !== input.userId
+  ) {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+
+  return {
+    outboxUserId: actorKind === "REPLACEMENT" ? input.userId : conf.userId,
+  };
+}
 
 const expoPushTokenInput = z
   .string()
@@ -337,6 +387,29 @@ export const confirmationRouter = router({
     }),
 
   /**
+   * Estado local do outbox duty-sync para uma confirmação.
+   * Lê apenas notifications do Escala+ — sem consulta ao Comunica+.
+   */
+  getDutySyncLocalStatus: protectedProcedure
+    .input(z.object({ confirmationId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+      const { outboxUserId } = await assertDutySyncLocalStatusAccess(db, {
+        confirmationId: input.confirmationId,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+
+      return getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: input.confirmationId,
+        institutionId: ctx.institutionId,
+        userId: outboxUserId,
+      });
+    }),
+
+  /**
    * Retorna confirmação pendente para o usuário logado (se houver).
    * Usado pelo frontend para exibir tela de confirmação.
    */
@@ -480,7 +553,12 @@ export const confirmationRouter = router({
       triggerAutoSso(conf.id).catch(() =>
         console.error(`[Confirmation] AUTO_SSO_FAILED confirmation=${conf.id}`),
       );
-      return { ok: true, status: "CONFIRMED" as const };
+      const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: conf.id,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+      return { ok: true, status: "CONFIRMED" as const, dutySyncLocal };
     }),
 
   /**
@@ -583,7 +661,12 @@ export const confirmationRouter = router({
         );
       });
 
-      return { ok: true, status: "DECLINED" as const };
+      const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: conf.id,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+      return { ok: true, status: "DECLINED" as const, dutySyncLocal };
     }),
 
   /**
@@ -1034,7 +1117,12 @@ export const confirmationRouter = router({
         ),
       );
 
-      return { ok: true, status: "REPLACEMENT_CONFIRMED" as const };
+      const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: conf.id,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+      return { ok: true, status: "REPLACEMENT_CONFIRMED" as const, dutySyncLocal };
     }),
 
   /**

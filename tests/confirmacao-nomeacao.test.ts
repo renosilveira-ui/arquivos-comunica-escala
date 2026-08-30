@@ -519,7 +519,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         confirmationRouter
           .createCaller(ctx(titularUserId))
           .confirm({ confirmationToken: conf.confirmationToken }),
-      ).resolves.toEqual({ ok: true, status: "CONFIRMED" });
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "CONFIRMED",
+        dutySyncLocal: expect.objectContaining({ scope: "escala_outbox" }),
+      });
       const [stored] = await db
         .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)
@@ -559,7 +563,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
             confirmationToken: conf.confirmationToken,
             reason: "Indisponível",
           }),
-      ).resolves.toEqual({ ok: true, status: "DECLINED" });
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "DECLINED",
+        dutySyncLocal: expect.objectContaining({ scope: "escala_outbox" }),
+      });
       const [stored] = await db
         .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)
@@ -596,7 +604,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         confirmationRouter
           .createCaller(ctx(subUserId))
           .acceptNomination({ confirmationToken: conf.confirmationToken }),
-      ).resolves.toEqual({ ok: true, status: "REPLACEMENT_CONFIRMED" });
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "REPLACEMENT_CONFIRMED",
+        dutySyncLocal: expect.objectContaining({ scope: "escala_outbox" }),
+      });
       const [stored] = await db
         .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)
@@ -645,7 +657,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         confirmationRouter
           .createCaller(ctx(titularUserId))
           .confirm({ confirmationToken: conf.confirmationToken }),
-      ).resolves.toEqual({ ok: true, status: "CONFIRMED" });
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "CONFIRMED",
+        dutySyncLocal: expect.objectContaining({ scope: "escala_outbox" }),
+      });
       const [stored] = await db
         .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)
@@ -691,7 +707,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
             confirmationToken: conf.confirmationToken,
             reason: "Indisponível",
           }),
-      ).resolves.toEqual({ ok: true, status: "DECLINED" });
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "DECLINED",
+        dutySyncLocal: expect.objectContaining({ scope: "escala_outbox" }),
+      });
       const [stored] = await db
         .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)
@@ -737,7 +757,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         confirmationRouter
           .createCaller(ctx(subUserId))
           .acceptNomination({ confirmationToken: conf.confirmationToken }),
-      ).resolves.toEqual({ ok: true, status: "REPLACEMENT_CONFIRMED" });
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "REPLACEMENT_CONFIRMED",
+        dutySyncLocal: expect.objectContaining({ scope: "escala_outbox" }),
+      });
       const [stored] = await db
         .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)

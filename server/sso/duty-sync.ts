@@ -34,6 +34,7 @@ import { resolveTrustedSsoTargetUrl } from "./url-policy";
 
 const TOKEN_TTL_SEC = 90;
 const DUTY_SYNC_VERSION = 1 as const;
+export { DUTY_SYNC_VERSION };
 const DUTY_SYNC_FETCH_TIMEOUT_MS = 15_000;
 const DUTY_SYNC_LEASE_MARGIN_MS = 15_000;
 const DUTY_SYNC_LEASE_MS =
