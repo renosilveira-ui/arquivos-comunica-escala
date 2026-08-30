@@ -92,7 +92,8 @@ export async function processIntegrationQueue(): Promise<{
         }
         
         // Verificar se é erro fatal de payload (400, 404)
-        const isFatalPayloadError = result.httpStatus && [400, 404].includes(result.httpStatus);
+        const isFatalPayloadError = result.httpStatus &&
+          [400, 404, 410].includes(result.httpStatus);
         
         if (isFatalPayloadError) {
           await Queue.markFatalError(item.id, result.error || "Erro fatal");

@@ -27,7 +27,6 @@ import {
   UserPlus,
   Check,
   KeyRound,
-  Copy,
 } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { confirmAction } from "@/lib/ui/confirm";
@@ -623,10 +622,9 @@ function EditUserModal({
   const [managerScopes, setManagerScopes] = useState<ManagerScopeDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // Senha temporária (frente A3): mostrada UMA vez após "Redefinir senha".
+  // Redefinição de senha (frente A3): enviada por e-mail ao usuário.
   const [resetting, setResetting] = useState(false);
-  const [tempPassword, setTempPassword] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
 
   // Populate when modal opens or editUser changes
   useFocusEffect(
@@ -645,8 +643,7 @@ function EditUserModal({
         setScheduleContextIds(editUser.professional?.scheduleContextIds ?? []);
         setManagerScopes(editUser.professional?.managerScopes ?? []);
         setError("");
-        setTempPassword(null);
-        setCopied(false);
+        setResetSuccess(false);
       }
     }, [visible, editUser]),
   );
@@ -654,19 +651,18 @@ function EditUserModal({
   const handleResetPassword = async () => {
     if (!editUser) return;
     const confirmed = await confirmAction(
-      `Redefinir a senha de ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual deixa de valer. Uma senha temporária será exibida uma única vez e o usuário terá que trocá-la no próximo login.`,
+      `Redefinir a senha de ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual deixa de valer. Uma senha temporária será enviada por e-mail e o usuário terá que trocá-la no próximo login.`,
     );
     if (!confirmed) return;
     setResetting(true);
     setError("");
     try {
       const res = await adminFetch<{
-        temporaryPassword?: string;
+        ok?: boolean;
         error?: string;
       }>(`/api/admin/users/${editUser.id}/reset-password`, { method: "POST" });
-      if (res.ok && res.data?.temporaryPassword) {
-        setTempPassword(res.data.temporaryPassword);
-        setCopied(false);
+      if (res.ok && res.data?.ok) {
+        setResetSuccess(true);
       } else {
         setError(res.data?.error ?? "Erro ao redefinir senha");
       }
@@ -674,24 +670,6 @@ function EditUserModal({
       setError("Erro ao redefinir senha");
     } finally {
       setResetting(false);
-    }
-  };
-
-  const handleCopyTempPassword = async () => {
-    if (!tempPassword) return;
-    // Sem expo-clipboard no projeto: no web usa a Clipboard API; no
-    // nativo o texto é selecionável (pressionar e segurar → copiar).
-    if (
-      Platform.OS === "web" &&
-      typeof navigator !== "undefined" &&
-      navigator.clipboard
-    ) {
-      try {
-        await navigator.clipboard.writeText(tempPassword);
-        setCopied(true);
-      } catch {
-        setCopied(false);
-      }
     }
   };
 
@@ -982,7 +960,7 @@ function EditUserModal({
               gap: theme.space[3],
             }}
           >
-            {tempPassword ? (
+            {resetSuccess ? (
               <View
                 style={{
                   backgroundColor: theme.colors.warningSoft,
@@ -997,60 +975,10 @@ function EditUserModal({
                     color: theme.colors.textSecondary,
                   }}
                 >
-                  Senha temporária — anote agora, ela não será exibida de novo.
-                  O usuário terá que trocá-la no próximo login.
+                  Senha temporária enviada por e-mail para{" "}
+                  {editUser.email ?? "o usuário"}. A senha atual deixou de valer
+                  e será obrigatório trocá-la no próximo login.
                 </Text>
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: theme.space[2],
-                  }}
-                >
-                  <Text
-                    selectable
-                    accessibilityLabel={`Senha temporária: ${tempPassword}`}
-                    style={{
-                      flex: 1,
-                      fontFamily: theme.fontFamily.mono,
-                      ...theme.text.title,
-                      fontWeight: theme.weight.bold,
-                      color: theme.colors.textPrimary,
-                      letterSpacing: 1,
-                    }}
-                  >
-                    {tempPassword}
-                  </Text>
-                  {Platform.OS === "web" ? (
-                    <TouchableOpacity
-                      onPress={handleCopyTempPassword}
-                      accessibilityRole="button"
-                      accessibilityLabel="Copiar senha temporária"
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: theme.space[1],
-                        backgroundColor: theme.colors.surface,
-                        borderWidth: 1,
-                        borderColor: theme.colors.border,
-                        borderRadius: theme.borderRadius.button,
-                        paddingHorizontal: theme.space[3],
-                        paddingVertical: theme.space[2],
-                      }}
-                    >
-                      <Copy size={16} color={theme.colors.textSecondary} />
-                      <Text
-                        style={{
-                          ...theme.text.body,
-                          fontWeight: theme.weight.semibold,
-                          color: theme.colors.textSecondary,
-                        }}
-                      >
-                        {copied ? "Copiado" : "Copiar"}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : null}
-                </View>
               </View>
             ) : (
               <TouchableOpacity

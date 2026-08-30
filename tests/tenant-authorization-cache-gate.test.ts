@@ -102,7 +102,7 @@ describe("gate fresco de autorização antes do cache tenant-bound", () => {
     ).toBe(true);
   });
 
-  it("mantém Listener fora do subtree bloqueado e gateia Integration + Stack", () => {
+  it("mantém Listener fora do subtree bloqueado e gateia Stack", () => {
     const layout = readFileSync("app/_layout.tsx", "utf8");
     const tree = layout.slice(
       layout.indexOf("<TenantScope>"),
@@ -111,14 +111,12 @@ describe("gate fresco de autorização antes do cache tenant-bound", () => {
     const listener = tree.indexOf("<NotificationListener />");
     const boundary = tree.indexOf("<TenantAuthorizationBoundary>");
     const guard = tree.indexOf("<AuthGuard>");
-    const integration = tree.indexOf("<IntegrationManagerProvider>");
     const stack = tree.indexOf("<Stack screenOptions");
 
     expect(listener).toBeGreaterThanOrEqual(0);
     expect(listener).toBeLessThan(boundary);
     expect(boundary).toBeLessThan(guard);
-    expect(guard).toBeLessThan(integration);
-    expect(integration).toBeLessThan(stack);
+    expect(guard).toBeLessThan(stack);
   });
 
   it("background/offline fecha e visible/reconnect exige nova attestation", () => {

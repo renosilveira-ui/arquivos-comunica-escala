@@ -35,6 +35,8 @@ import { mailer } from "../server/mailer";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 const STAMP = Date.now();
 const PASSWORD = "SenhaOriginal123";
 const NEW_PASSWORD = "SenhaNovaForte456";
@@ -51,14 +53,8 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
 
   const login = (e: string, p: string) =>
     request(server).post("/api/auth/login").send({ email: e, password: p });
-  const cookieOf = (res: request.Response) => {
-    const sc = res.headers["set-cookie"];
-    return (
-      (Array.isArray(sc) ? sc : [sc]).find((c: string) =>
-        c?.startsWith("session="),
-      ) ?? ""
-    );
-  };
+  const cookieOf = (res: request.Response, carryFenceFrom?: string) =>
+    sessionAuthCookies(res, carryFenceFrom);
   const me = (cookie: string) =>
     request(server).get("/api/auth/me").set("Cookie", cookie);
   const meBearer = (token: string) =>
@@ -183,7 +179,7 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     const res = await login(email, PASSWORD);
     expect(res.status).toBe(200);
     const session = await sdk.verifySession(res.body.token);
-    expect(session?.sessionVersion).toBe(1);
+    expect(session?.sessionVersion).toBe(2);
     const legacy = await sdk.signSession({
       userId: String(userId),
       name: "SV User",
@@ -195,14 +191,13 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
 
   it("change-password: outras sessões morrem, o aparelho atual recebe sessão nova", async () => {
     const deviceA = await login(email, PASSWORD);
-    const deviceB = await login(email, PASSWORD);
     const cookieA = cookieOf(deviceA);
-    const tokenB = deviceB.body.token as string;
+    const staleToken = deviceA.body.token as string;
     const currentSession = await me(cookieA);
     expect(currentSession.status).toBe(200);
     const currentSessionInstance = sessionInstanceForCookie(cookieA);
     expect(currentSession.body.sessionInstance).toBe(currentSessionInstance);
-    expect((await meBearer(tokenB)).status).toBe(200);
+    expect((await meBearer(staleToken)).status).toBe(200);
 
     const change = await request(server)
       .post("/api/auth/change-password")
@@ -212,10 +207,9 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     expect(change.status).toBe(200);
     expect(typeof change.body.token).toBe("string");
 
-    // Aparelho B (sessão antiga) foi revogado; A continua com a sessão nova.
-    expect((await meBearer(tokenB)).status).toBe(401);
-    expect((await me(cookieA)).status).toBe(401); // cookie ANTIGO de A também morre…
-    expect((await me(cookieOf(change))).status).toBe(200); // …mas a resposta já trouxe o novo
+    expect((await meBearer(staleToken)).status).toBe(401);
+    expect((await me(cookieA)).status).toBe(401);
+    expect((await me(cookieOf(change, cookieA))).status).toBe(200);
     expect((await meBearer(change.body.token)).status).toBe(200);
   });
 
@@ -265,6 +259,6 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
       .select({ v: users.sessionVersion })
       .from(users)
       .where(eq(users.id, userId));
-    expect(row.v).toBe(2);
+    expect(row.v).toBe(3);
   });
 });

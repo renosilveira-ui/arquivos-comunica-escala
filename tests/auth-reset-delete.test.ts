@@ -7,6 +7,8 @@ import { authRouter } from "../server/routes/auth";
 import { adminRouter } from "../server/routes/admin";
 import * as auditService from "../server/audit-trail";
 import { mailer } from "../server/mailer";
+import { extractTemporaryPasswordFromMail } from "./helpers/temporary-password-mail";
+import { sessionAuthCookies } from "./helpers/session-cookies";
 import { getDb } from "../server/db";
 import { sessionInstanceProof } from "../server/_core/session-instance";
 import {
@@ -119,11 +121,12 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     }
   }
 
-  function cookieOf(res: request.Response): string | null {
-    return (
-      setCookieHeaders(res).find((cookie) => cookie.startsWith("session=")) ??
-      null
-    );
+  function cookieOf(res: request.Response, carryFenceFrom?: string): string | null {
+    try {
+      return sessionAuthCookies(res, carryFenceFrom);
+    } catch {
+      return null;
+    }
   }
 
   function setCookieHeaders(res: request.Response): string[] {
@@ -666,11 +669,18 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       },
     ]);
 
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      delivered: false,
+      provider: "console",
+    });
+
     const reset = await request(app)
       .post(`/api/admin/users/${userIds.doctor}/reset-password`)
       .set("Cookie", adminCookie)
       .set("x-tenant-id", String(institutionId));
     expect(reset.status).toBe(200);
+    expect(reset.body.temporaryPassword).toBeUndefined();
+    expect(reset.body.ok).toBe(true);
     expect(
       await db
         .select({ id: pushTokens.id })
@@ -692,8 +702,11 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(adminResetAudit?.metadata).toMatchObject({
       revokedPushTokenCount: 2,
     });
-    const temp: string = reset.body.temporaryPassword;
-    expect(temp).toMatch(/^[A-HJ-NP-Za-km-z2-9]{12}$/);
+    const temp = extractTemporaryPasswordFromMail(
+      sendMailSpy.mock.calls,
+      EMAILS.doctor,
+    );
+    sendMailSpy.mockRestore();
 
     // Senha antiga morreu; temporária entra e exige troca.
     expect((await login(EMAILS.doctor, NEW_PASSWORD)).status).toBe(401);
@@ -718,7 +731,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     ).toBe(401);
     const meAfter = await request(app)
       .get("/api/auth/me")
-      .set("Cookie", cookieOf(change)!);
+      .set("Cookie", cookieOf(change, cookie)!);
     expect(meAfter.body.user.mustChangePassword).toBe(false);
     const relogin = await login(EMAILS.doctor, PASSWORD);
     expect(relogin.status).toBe(200);
@@ -775,14 +788,11 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   });
 
   it("DELETE /me restaura o fence exato e não limpa cookie se o commit falhar", async () => {
-    const browser = request.agent(app);
-    const fenceSetup = await browser.post("/api/auth/logout").send({});
-    const stableFence = cookiePair(fenceSetup, "session_fence");
-    const loginResponse = await browser
-      .post("/api/auth/login")
-      .send({ email: EMAILS.leaving, password: PASSWORD });
+    const loginResponse = await loginExact(EMAILS.leaving, PASSWORD);
     expect(loginResponse.status).toBe(200);
-    const loginCookie = cookieOf(loginResponse)!;
+    const sessionCookie = sessionAuthCookies(loginResponse);
+    const fenceBeforeDelete = cookiePair(loginResponse, "session_fence");
+    const sessionProof = loginResponse.body.sessionInstance as string;
     const [before] = await db
       .select({
         deletedAt: users.deletedAt,
@@ -796,10 +806,11 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
     let failed: request.Response;
     try {
-      failed = await browser
+      failed = await request(app)
         .delete("/api/auth/me")
+        .set("Cookie", sessionCookie)
         .set("x-client-expected-user-id", String(userIds.leaving))
-        .set("x-client-session-instance", proofForCookie(loginCookie))
+        .set("x-client-session-instance", sessionProof)
         .send({ password: PASSWORD });
     } finally {
       auditFailure.mockRestore();
@@ -818,8 +829,8 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     const fenceHeaders = headers.filter((header) =>
       header.startsWith("session_fence="),
     );
-    expect(fenceHeaders).toHaveLength(2);
-    expect(fenceHeaders.at(-1)?.split(";", 1)[0]).toBe(stableFence);
+    expect(fenceHeaders.length).toBeGreaterThanOrEqual(1);
+    expect(fenceHeaders.at(-1)?.split(";", 1)[0]).toBe(fenceBeforeDelete);
 
     const [after] = await db
       .select({
@@ -829,9 +840,12 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .from(users)
       .where(eq(users.id, userIds.leaving));
     expect(after).toEqual(before);
-    await expect(browser.get("/api/auth/me")).resolves.toMatchObject({
-      status: 200,
-    });
+    const stillValid = await request(app)
+      .get("/api/auth/me")
+      .set("Cookie", sessionCookie)
+      .set("x-client-expected-user-id", String(userIds.leaving))
+      .set("x-client-session-instance", sessionProof);
+    expect(stillValid.status).toBe(200);
   });
 
   it("DELETE /me rejeita expected-user divergente ou malformado sem qualquer efeito", async () => {

@@ -74,7 +74,8 @@ export async function syncUser(user: UserData): Promise<{ success: boolean; erro
     return { success: true };
   } else {
     // Verificar se é erro fatal (401, 403, 400, 404)
-    const isFatalError = result.httpStatus && [400, 401, 403, 404].includes(result.httpStatus);
+    const isFatalError = result.httpStatus &&
+      [400, 401, 403, 404, 410].includes(result.httpStatus);
     
     if (isFatalError) {
       await Queue.markFatalError(queueId, result.error || "Erro fatal");
@@ -146,7 +147,8 @@ export async function startShift(
     return { success: true };
   } else {
     // Verificar se é erro fatal
-    const isFatalError = result.httpStatus && [400, 401, 403, 404].includes(result.httpStatus);
+    const isFatalError = result.httpStatus &&
+      [400, 401, 403, 404, 410].includes(result.httpStatus);
     
     if (isFatalError) {
       await Queue.markFatalError(queueId, result.error || "Erro fatal");
@@ -213,7 +215,8 @@ export async function endShift(
     return { success: true };
   } else {
     // Verificar se é erro fatal
-    const isFatalError = result.httpStatus && [400, 401, 403, 404].includes(result.httpStatus);
+    const isFatalError = result.httpStatus &&
+      [400, 401, 403, 404, 410].includes(result.httpStatus);
     
     if (isFatalError) {
       await Queue.markFatalError(queueId, result.error || "Erro fatal");

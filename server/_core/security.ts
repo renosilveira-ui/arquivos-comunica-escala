@@ -184,8 +184,22 @@ export function createAuthRateLimit(
   });
 }
 
+export function createSignupRateLimit(
+  options: RateLimitOptions = {},
+): RequestHandler {
+  if (options.disabled) return (_req, _res, next) => next();
+  return expressRateLimit({
+    windowMs: options.windowMs ?? 15 * 60 * 1000,
+    max: options.max ?? 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      error: "Muitas tentativas de cadastro. Tente novamente mais tarde.",
+    },
+  });
+}
+
 /**
- * Soft global limit applied to all routes except health checks. Designed to
  * absorb burst traffic and block scrapers without affecting normal usage.
  *
  * Default: 200 requests per minute per IP.

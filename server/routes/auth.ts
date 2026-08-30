@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "node:crypto";
 import { parse as parseCookieHeader } from "cookie";
-import { and, asc, desc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { getDb, getUserByEmail } from "../db";
 import {
   users,
@@ -20,6 +20,7 @@ import {
   AuthenticationInfrastructureError,
   sdk,
   sessionFenceSnapshot,
+  sessionFenceDigestForValue,
   requestPresentedSessionCredential,
 } from "../_core/sdk";
 import { COOKIE_NAME, SESSION_FENCE_COOKIE_NAME } from "../../shared/const.js";
@@ -121,6 +122,18 @@ const BCRYPT_ROUNDS = 12;
 const EMAIL_ALREADY_REGISTERED =
   "Este e-mail já tem conta. Entre ou use Esqueci minha senha.";
 
+function sendNeutralSignupAccepted(
+  res: Response,
+  hasInstitution: boolean,
+): void {
+  // Anti-enumeração: mesma forma para cadastro novo e e-mail já existente.
+  res.status(201).json({
+    ok: true,
+    pending: hasInstitution,
+    awaitingScale: !hasInstitution,
+  });
+}
+
 function hasUsablePasswordHash(hash: string | null | undefined): boolean {
   return typeof hash === "string" && hash.startsWith("$2") && hash.length >= 50;
 }
@@ -168,14 +181,12 @@ function sendLogoutRevocationProof(
   });
 }
 
-function rotateBrowserSessionFence(req: Request, res: Response): void {
+function rotateBrowserSessionFence(req: Request, res: Response): string {
   const { domain: _configuredDomain, ...hostOnlyOptions } =
     resolveSetCookieOptions(req);
-  res.cookie(
-    SESSION_FENCE_COOKIE_NAME,
-    randomBytes(32).toString("base64url"),
-    hostOnlyOptions,
-  );
+  const nextValue = randomBytes(32).toString("base64url");
+  res.cookie(SESSION_FENCE_COOKIE_NAME, nextValue, hostOnlyOptions);
+  return nextValue;
 }
 
 function restoreBrowserSessionFence(
@@ -215,6 +226,14 @@ class AuthMutationError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/** Signup com e-mail já cadastrado — resposta neutra fora da transação. */
+class SignupDuplicateEmailError extends Error {
+  constructor(readonly hasInstitution: boolean) {
+    super("signup_duplicate_email");
+    this.name = "SignupDuplicateEmailError";
   }
 }
 
@@ -279,7 +298,6 @@ authRouter.post(
       }
       throw error;
     }
-    const requestFence = sessionFenceSnapshot(req);
     const { email, password: rawPassword } = req.body as {
       email?: unknown;
       password?: unknown;
@@ -312,21 +330,52 @@ authRouter.post(
       return;
     }
 
-    const token = await sdk.createSessionToken(String(user.id), {
-      name: user.name ?? "",
-      sessionVersion: user.sessionVersion,
-      sessionFenceDigest: requestFence.digest,
+    const db = await getDb();
+    if (!db) {
+      res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+
+    // Invalida sessões anteriores e gira o fence do navegador no mesmo login.
+    const loginFenceValue = rotateBrowserSessionFence(req, res);
+    const loginFence = sessionFenceDigestForValue(loginFenceValue);
+    await db
+      .update(users)
+      .set({ sessionVersion: sql`${users.sessionVersion} + 1` })
+      .where(eq(users.id, user.id));
+    const [freshUser] = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        role: users.role,
+        approvalStatus: users.approvalStatus,
+        mustChangePassword: users.mustChangePassword,
+        sessionVersion: users.sessionVersion,
+      })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+    if (!freshUser) {
+      res.status(500).json({ error: "Falha ao iniciar sessão" });
+      return;
+    }
+
+    const token = await sdk.createSessionToken(String(freshUser.id), {
+      name: freshUser.name ?? "",
+      sessionVersion: freshUser.sessionVersion,
+      sessionFenceDigest: loginFence.digest,
       sessionBindingVersion: sessionBindingVersion ?? undefined,
     });
     res.cookie(COOKIE_NAME, token, resolveSetCookieOptions(req));
     res.json({
       user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        approvalStatus: user.approvalStatus,
-        mustChangePassword: user.mustChangePassword,
+        id: freshUser.id,
+        name: freshUser.name,
+        email: freshUser.email,
+        role: freshUser.role,
+        approvalStatus: freshUser.approvalStatus,
+        mustChangePassword: freshUser.mustChangePassword,
       },
       token,
       ...(sessionBindingVersion === SESSION_BINDING_VERSION
@@ -3026,7 +3075,7 @@ authRouter.post(
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await getUserByEmail(normalizedEmail);
     if (existing?.deletedAt || (existing && hasUsablePasswordHash(existing.passwordHash))) {
-      res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
+      sendNeutralSignupAccepted(res, hasInstitution);
       return;
     }
     const existingShellId =
@@ -3131,7 +3180,7 @@ authRouter.post(
             locked.deletedAt ||
             hasUsablePasswordHash(locked.passwordHash)
           ) {
-            throw new AuthMutationError(409, EMAIL_ALREADY_REGISTERED);
+            throw new SignupDuplicateEmailError(hasInstitution);
           }
           await tx
             .update(users)
@@ -3237,7 +3286,13 @@ authRouter.post(
         }
       });
     } catch (error) {
+      if (error instanceof SignupDuplicateEmailError) {
+        return sendNeutralSignupAccepted(res, error.hasInstitution);
+      }
       if (error instanceof AuthMutationError) {
+        if (error.status === 409) {
+          return sendNeutralSignupAccepted(res, hasInstitution);
+        }
         res.status(error.status).json({ error: error.message });
         return;
       }
@@ -3252,8 +3307,7 @@ authRouter.post(
             ? (error as { code?: unknown }).code
             : undefined;
       if (code === "ER_DUP_ENTRY") {
-        res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
-        return;
+        return sendNeutralSignupAccepted(res, hasInstitution);
       }
       console.error(
         "[signup] Falha transacional",
