@@ -57,8 +57,14 @@ export default function ConfirmDutyScreen() {
   });
 
   const confirmMutation = trpc.confirmations.confirm.useMutation({
-    onSuccess: () => {
-      feedback.success("Plantão confirmado. Seu login no Comunica+ será automático.");
+    onSuccess: (data) => {
+      const syncHint =
+        data.dutySyncLocal?.status === "failed"
+          ? " A sincronização com o Comunica+ será reprocessada."
+          : "";
+      feedback.success(
+        `Plantão confirmado. Seu login no Comunica+ será automático.${syncHint}`,
+      );
       router.replace("/(tabs)/agenda" as any);
     },
     onError: (err) => {

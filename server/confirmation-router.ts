@@ -22,6 +22,7 @@ import {
   enqueueDutySync,
   type DutySyncExternalSubjectBinding,
 } from "./sso/duty-sync";
+import { getDutySyncLocalStatusForConfirmation } from "./sso/duty-sync-status";
 import {
   dutyShiftSnapshot,
   requireValidDutyConfirmation,
@@ -337,6 +338,50 @@ export const confirmationRouter = router({
     }),
 
   /**
+   * Estado local do outbox duty-sync para uma confirmação.
+   * Lê apenas notifications do Escala+ — sem consulta ao Comunica+.
+   */
+  getDutySyncLocalStatus: protectedProcedure
+    .input(z.object({ confirmationId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+      const [conf] = await db
+        .select({
+          id: dutyConfirmations.id,
+          userId: dutyConfirmations.userId,
+          replacementUserId: dutyConfirmations.replacementUserId,
+        })
+        .from(dutyConfirmations)
+        .where(
+          and(
+            eq(dutyConfirmations.id, input.confirmationId),
+            eq(dutyConfirmations.institutionId, ctx.institutionId),
+          ),
+        )
+        .limit(1);
+      if (!conf) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Confirmação não encontrada",
+        });
+      }
+      const isActor =
+        conf.userId === ctx.user.id ||
+        conf.replacementUserId === ctx.user.id;
+      if (!isActor) {
+        throw new TRPCError({ code: "FORBIDDEN" });
+      }
+
+      return getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: conf.id,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+    }),
+
+  /**
    * Retorna confirmação pendente para o usuário logado (se houver).
    * Usado pelo frontend para exibir tela de confirmação.
    */
@@ -480,7 +525,12 @@ export const confirmationRouter = router({
       triggerAutoSso(conf.id).catch(() =>
         console.error(`[Confirmation] AUTO_SSO_FAILED confirmation=${conf.id}`),
       );
-      return { ok: true, status: "CONFIRMED" as const };
+      const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: conf.id,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+      return { ok: true, status: "CONFIRMED" as const, dutySyncLocal };
     }),
 
   /**
@@ -583,7 +633,12 @@ export const confirmationRouter = router({
         );
       });
 
-      return { ok: true, status: "DECLINED" as const };
+      const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: conf.id,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+      return { ok: true, status: "DECLINED" as const, dutySyncLocal };
     }),
 
   /**
@@ -1034,7 +1089,12 @@ export const confirmationRouter = router({
         ),
       );
 
-      return { ok: true, status: "REPLACEMENT_CONFIRMED" as const };
+      const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: conf.id,
+        institutionId: ctx.institutionId,
+        userId: ctx.user.id,
+      });
+      return { ok: true, status: "REPLACEMENT_CONFIRMED" as const, dutySyncLocal };
     }),
 
   /**
