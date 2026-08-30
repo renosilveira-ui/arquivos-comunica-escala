@@ -4,7 +4,12 @@
  */
 
 import { apiFetch } from "./_core/api";
-import { HOSPITAL_ALERT_CONFIG } from "./hospitalAlertConfig";
+import {
+  HOSPITAL_ALERT_CONFIG,
+  isLegacyHospitalAlertOutboundBlocked,
+  LEGACY_HOSPITAL_ALERT_BLOCKED_CODE,
+  LEGACY_HOSPITAL_ALERT_BLOCKED_HTTP_STATUS,
+} from "./hospitalAlertConfig";
 
 export interface HospitalAlertResponse<T = unknown> {
   ok: boolean;
@@ -68,6 +73,14 @@ export interface IntegrationStatus {
   };
   serverTime: string;
   version: string;
+}
+
+function legacyContractBlockedResponse<T>(): HospitalAlertResponse<T> {
+  return {
+    ok: false,
+    error: LEGACY_HOSPITAL_ALERT_BLOCKED_CODE,
+    httpStatus: LEGACY_HOSPITAL_ALERT_BLOCKED_HTTP_STATUS,
+  };
 }
 
 async function proxyRequest<T>(
@@ -142,6 +155,9 @@ async function executeWithRetry<T>(
 export async function syncUser(
   payload: SyncUserPayload,
 ): Promise<HospitalAlertResponse> {
+  if (isLegacyHospitalAlertOutboundBlocked()) {
+    return legacyContractBlockedResponse();
+  }
   return executeWithRetry(() =>
     proxyRequest("/sync-user", { method: "POST", body: payload }),
   );
@@ -150,6 +166,9 @@ export async function syncUser(
 export async function startShift(
   payload: StartShiftPayload,
 ): Promise<HospitalAlertResponse> {
+  if (isLegacyHospitalAlertOutboundBlocked()) {
+    return legacyContractBlockedResponse();
+  }
   return executeWithRetry(() =>
     proxyRequest("/shifts/start", { method: "POST", body: payload }),
   );
@@ -158,6 +177,9 @@ export async function startShift(
 export async function endShift(
   payload: EndShiftPayload,
 ): Promise<HospitalAlertResponse> {
+  if (isLegacyHospitalAlertOutboundBlocked()) {
+    return legacyContractBlockedResponse();
+  }
   return executeWithRetry(() =>
     proxyRequest("/shifts/end", { method: "POST", body: payload }),
   );
@@ -167,6 +189,9 @@ export async function getIntegrationStatus(
   externalUserId: string,
   organizationId: string = HOSPITAL_ALERT_CONFIG.ORGANIZATION_ID,
 ): Promise<HospitalAlertResponse<IntegrationStatus>> {
+  if (isLegacyHospitalAlertOutboundBlocked()) {
+    return legacyContractBlockedResponse();
+  }
   const query = new URLSearchParams({
     externalUserId,
     organizationId,

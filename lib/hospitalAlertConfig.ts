@@ -28,8 +28,21 @@ export const HOSPITAL_ALERT_CONFIG = {
   },
 } as const;
 
+/** HTTP 410 — contrato legado congelado (ADR-001 / duty-sync V1). */
+export const LEGACY_HOSPITAL_ALERT_BLOCKED_HTTP_STATUS = 410;
+
+export const LEGACY_HOSPITAL_ALERT_BLOCKED_CODE = "LEGACY_CONTRACT_FROZEN";
+
 export function isHospitalAlertIntegrationEnabled(): boolean {
   return process.env.EXPO_PUBLIC_HOSPITAL_ALERT_ENABLED === "true";
+}
+
+/**
+ * O contrato tRPC Hospital Alert não existe no Comunica+ atual.
+ * Chamadas de saída permanecem bloqueadas até remoção da superfície legada.
+ */
+export function isLegacyHospitalAlertOutboundBlocked(): boolean {
+  return true;
 }
 
 export function validateConfig(): { valid: boolean; errors: string[] } {
