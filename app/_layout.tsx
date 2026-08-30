@@ -40,7 +40,6 @@ import {
   TenantStateProvider,
   useTenantState,
 } from "@/lib/tenant-state";
-import { IntegrationManagerProvider } from "@/components/IntegrationManagerProvider";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NotificationListener } from "@/components/NotificationListener";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
@@ -862,7 +861,6 @@ export default function RootLayout() {
                 <NotificationListener />
                 <TenantAuthorizationBoundary>
                   <AuthGuard>
-                    <IntegrationManagerProvider>
                       {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
                       {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
                       {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
@@ -876,7 +874,6 @@ export default function RootLayout() {
                         <Stack.Screen name="oauth/callback" />
                       </Stack>
                       <StatusBar style="auto" />
-                    </IntegrationManagerProvider>
                   </AuthGuard>
                 </TenantAuthorizationBoundary>
               </TenantScope>
