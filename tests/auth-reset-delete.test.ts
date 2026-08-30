@@ -385,6 +385,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
       .mockResolvedValue({ delivered: false, transport: "console" });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const unknown = await request(app)
       .post("/api/auth/forgot-password")
@@ -420,12 +421,116 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
 
     spy.mockRestore();
+    errors.mockRestore();
+  });
+
+  it("forgot-password com entrega ok deixa o token utilizável", async () => {
+    const spy = vi
+      .spyOn(mailer, "sendMail")
+      .mockResolvedValue({ delivered: true, transport: "resend" });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await request(app)
+      .post("/api/auth/forgot-password")
+      .send({ email: EMAILS.busy });
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true });
+
+    const [row] = await db
+      .select({ usedAt: passwordResets.usedAt })
+      .from(passwordResets)
+      .where(
+        and(
+          eq(passwordResets.userId, userIds.busy),
+          isNull(passwordResets.usedAt),
+        ),
+      );
+    expect(row).toBeTruthy();
+    expect(errors.mock.calls.flat().join(" ")).not.toMatch(
+      /token=|reset-password/,
+    );
+    spy.mockRestore();
+    errors.mockRestore();
+  });
+
+  it("forgot-password com falha de entrega não deixa token utilizável", async () => {
+    const spy = vi
+      .spyOn(mailer, "sendMail")
+      .mockResolvedValue({
+        delivered: false,
+        transport: "resend",
+        error: "HTTP 503",
+      });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await request(app)
+      .post("/api/auth/forgot-password")
+      .send({ email: EMAILS.leaving });
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+    const token = spy.mock.calls[0][0].text.match(
+      /reset-password\?token=([0-9a-f]{64})/,
+    )![1];
+
+    const [row] = await db
+      .select({ usedAt: passwordResets.usedAt })
+      .from(passwordResets)
+      .where(eq(passwordResets.userId, userIds.leaving));
+    expect(row?.usedAt).toBeTruthy();
+
+    const reset = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token, newPassword: "SenhaNaoDeveriaPassar999" });
+    expect(reset.status).toBe(400);
+    expect(reset.body.error).toMatch(/inválido ou expirado/i);
+
+    const logged = errors.mock.calls.flat().join(" ");
+    expect(logged).toContain("token recém-emitido revogado");
+    expect(logged).not.toContain(token);
+    expect(logged).not.toContain("reset-password?token=");
+    spy.mockRestore();
+    errors.mockRestore();
+  });
+
+  it("resposta pública continua indistinguível entre inexistente, entrega ok e falha de transporte", async () => {
+    const spy = vi.spyOn(mailer, "sendMail");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const unknown = await request(app)
+      .post("/api/auth/forgot-password")
+      .send({ email: `nao-existe-indist-${STAMP}@test.local` });
+    expect(spy).not.toHaveBeenCalled();
+
+    spy.mockResolvedValueOnce({ delivered: true, transport: "resend" });
+    const delivered = await request(app)
+      .post("/api/auth/forgot-password")
+      .send({ email: EMAILS.admin });
+    spy.mockResolvedValueOnce({
+      delivered: false,
+      transport: "resend",
+      error: "TIMEOUT",
+    });
+    const failed = await request(app)
+      .post("/api/auth/forgot-password")
+      .send({ email: EMAILS.admin });
+
+    expect(unknown.body).toEqual({ ok: true });
+    expect(delivered.body).toEqual({ ok: true });
+    expect(failed.body).toEqual({ ok: true });
+    expect(unknown.status).toBe(200);
+    expect(delivered.status).toBe(200);
+    expect(failed.status).toBe(200);
+    expect(JSON.stringify(unknown.body)).toBe(JSON.stringify(delivered.body));
+    expect(JSON.stringify(delivered.body)).toBe(JSON.stringify(failed.body));
+    spy.mockRestore();
+    errors.mockRestore();
   });
 
   it("token do e-mail → reset-password → login com senha nova; token não pode ser reutilizado", async () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+      .mockResolvedValue({ delivered: true, transport: "resend" });
 
     await request(app)
       .post("/api/auth/forgot-password")
@@ -503,7 +608,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   it("token expirado é rejeitado", async () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+      .mockResolvedValue({ delivered: true, transport: "resend" });
     await request(app)
       .post("/api/auth/forgot-password")
       .send({ email: EMAILS.doctor });

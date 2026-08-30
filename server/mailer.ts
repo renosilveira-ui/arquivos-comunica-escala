@@ -2,8 +2,8 @@
 //
 // Sem dependência nova: quando RESEND_API_KEY existe, usa a API HTTP da
 // Resend via fetch (remetente MAIL_FROM). Sem a chave (dev/staging), o
-// conteúdo é logado no console — o link de redefinição aparece no log
-// do servidor, suficiente para testar o fluxo ponta a ponta.
+// conteúdo é logado no console e delivered=false — callers fail-closed
+// (convite, forgot-password). O log local não prova entrega.
 //
 // `mailer.sendMail` é chamado via o objeto (e não como função solta) de
 // propósito: permite `vi.spyOn(mailer, "sendMail")` nos testes para
@@ -24,6 +24,13 @@ export interface MailResult {
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Escala+ <no-reply@escalas.app>";
+/** Teto da chamada HTTP à Resend. Sem retry nesta frente. */
+export const MAIL_HTTP_TIMEOUT_MS = 15_000;
+
+function isTimeoutOrAbort(err: unknown): boolean {
+  return err instanceof Error &&
+    (err.name === "AbortError" || err.name === "TimeoutError");
+}
 
 async function sendViaResend(apiKey: string, from: string, msg: MailMessage): Promise<MailResult> {
   try {
@@ -40,17 +47,21 @@ async function sendViaResend(apiKey: string, from: string, msg: MailMessage): Pr
         text: msg.text,
         ...(msg.html ? { html: msg.html } : {}),
       }),
+      signal: AbortSignal.timeout(MAIL_HTTP_TIMEOUT_MS),
     });
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error(`[mailer] Resend respondeu ${res.status}: ${body.slice(0, 300)}`);
+      // Não ecoa o corpo da Resend: pode espelhar destinatário/assunto.
+      console.error(`[mailer] Resend respondeu ${res.status}`);
       return { delivered: false, transport: "resend", error: `HTTP ${res.status}` };
     }
     return { delivered: true, transport: "resend" };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[mailer] Falha ao chamar Resend:", message);
-    return { delivered: false, transport: "resend", error: message };
+    if (isTimeoutOrAbort(err)) {
+      console.error("[mailer] Timeout ao chamar Resend");
+      return { delivered: false, transport: "resend", error: "TIMEOUT" };
+    }
+    console.error("[mailer] Falha ao chamar Resend");
+    return { delivered: false, transport: "resend", error: "NETWORK_ERROR" };
   }
 }
 
