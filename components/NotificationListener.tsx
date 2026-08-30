@@ -353,6 +353,7 @@ export async function routeNotificationData(
     case "replacement_accepted":
     case "replacement_declined":
     case "shift_assigned":
+    case "shift_unassigned":
     case "shift_reminder": {
       const shiftInstanceId = parseNotificationShiftInstanceId(
         data.shiftInstanceId,

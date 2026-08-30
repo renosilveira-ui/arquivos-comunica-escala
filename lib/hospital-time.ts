@@ -23,6 +23,14 @@ export function formatHospitalTime(date: Date | string): string {
   return `${String(w.getUTCHours()).padStart(2, "0")}:${String(w.getUTCMinutes()).padStart(2, "0")}`;
 }
 
+/** dd/MM/yyyy no relógio do hospital. */
+export function formatHospitalDate(date: Date | string): string {
+  const w = asWallClock(toDate(date));
+  const day = String(w.getUTCDate()).padStart(2, "0");
+  const month = String(w.getUTCMonth() + 1).padStart(2, "0");
+  return `${day}/${month}/${w.getUTCFullYear()}`;
+}
+
 /** Faixa HH:mm–HH:mm no relógio do hospital. */
 export function formatHospitalTimeRange(
   startAt: Date | string,

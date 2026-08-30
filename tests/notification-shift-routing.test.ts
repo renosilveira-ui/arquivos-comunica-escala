@@ -267,4 +267,37 @@ describe("roteamento de push para o plantão exato", () => {
 
     expect(calls).toEqual(["invalidate", "shift:404"]);
   });
+
+  it("remoção abre o plantão exato", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 11, revision: 1 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "shift_unassigned",
+          institutionId: 11,
+          shiftInstanceId: 404,
+          assignmentId: 9,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: async () => undefined,
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: vi.fn(),
+          navigateToShiftDetails: (shiftInstanceId) => {
+            calls.push(`shift:${shiftInstanceId}`);
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual(["invalidate", "shift:404"]);
+  });
 });
