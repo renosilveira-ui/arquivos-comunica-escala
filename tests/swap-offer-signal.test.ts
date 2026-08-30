@@ -320,7 +320,10 @@ describe("sinal de oferta de plantão", () => {
     expect(source).toContain("enqueueSwapOfferSignals");
     expect(source).toContain("enqueueSwapTakenSignals");
     expect(source).toContain("applySwapAssignmentTransfer");
-    const listAvailable = source.slice(source.indexOf("listAvailable:"));
+    const listAvailable = source.slice(
+      source.indexOf("async function queryListAvailableRows"),
+      source.indexOf("async function countActionableSwapOffers"),
+    );
     expect(listAvailable).toContain("manager_scope");
     expect(listAvailable).toContain("GESTOR_PLUS");
     expect(listAvailable).toContain(

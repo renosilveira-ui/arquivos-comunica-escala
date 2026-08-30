@@ -360,6 +360,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
     await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
+    await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
   });
 
