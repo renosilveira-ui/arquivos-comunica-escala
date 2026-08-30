@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { transitionTenantAuthorizationActivity } from "../lib/tenant-authorization";
 import {
   applyTenantAuthorizationActivityPatch,
   initialTenantAuthorizationActivityForPlatform,
   isNativeAppSessionVisible,
   shouldAttachNativeSessionGateLifecycle,
+  shouldSoftRevalidateNativeSessionOnForeground,
   WEB_TAB_LIFECYCLE_EVENTS,
 } from "../lib/web-session-lifecycle";
 
@@ -27,10 +27,10 @@ describe("ciclo de vida da aba web não move o gate de sessão", () => {
         visible: false,
         online: true,
       }),
-    ).toEqual({ visible: false, online: true, revision: 0 });
+    ).toEqual({ visible: true, online: true, revision: 0 });
   });
 
-  it("esconder a aba, freeze e flap de rede no web são no-op — o nativo ainda fecha", () => {
+  it("esconder a aba, freeze e flap de rede no web são no-op — o nativo também não fecha o gate", () => {
     const current = { visible: true, online: true, revision: 3 };
 
     expect(
@@ -52,16 +52,20 @@ describe("ciclo de vida da aba web não move o gate de sessão", () => {
       { visible: false },
       "ios",
     );
-    expect(nativeHidden.action).toBe("CLOSE");
-    expect(nativeHidden).toEqual(
-      transitionTenantAuthorizationActivity(current, { visible: false }),
-    );
+    expect(nativeHidden.action).toBe("NONE");
+    expect(nativeHidden.state).toEqual(current);
   });
 
-  it("inactive do Android continua visível — só background fecha o gate", () => {
+  it("inactive do Android continua visível — só background conta como hidden", () => {
     expect(isNativeAppSessionVisible("active")).toBe(true);
     expect(isNativeAppSessionVisible("inactive")).toBe(true);
     expect(isNativeAppSessionVisible("background")).toBe(false);
+  });
+
+  it("só o nativo revalida /me ao voltar do segundo plano", () => {
+    expect(shouldSoftRevalidateNativeSessionOnForeground("web")).toBe(false);
+    expect(shouldSoftRevalidateNativeSessionOnForeground("ios")).toBe(true);
+    expect(shouldSoftRevalidateNativeSessionOnForeground("android")).toBe(true);
   });
 
   it("lista os eventos de aba que jamais podem refetch /me ou CLOSE", () => {

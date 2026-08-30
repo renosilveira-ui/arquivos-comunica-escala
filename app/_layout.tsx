@@ -55,6 +55,7 @@ import {
   initialTenantAuthorizationActivityForPlatform,
   isNativeAppSessionVisible,
   shouldAttachNativeSessionGateLifecycle,
+  shouldSoftRevalidateNativeSessionOnForeground,
 } from "@/lib/web-session-lifecycle";
 import {
   fenceQueryCachePersistence,
@@ -337,7 +338,7 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
   const initialActivity = useMemo<TenantAuthorizationActivity>(
     () =>
       initialTenantAuthorizationActivityForPlatform(Platform.OS, {
-        visible: isNativeAppSessionVisible(AppState.currentState),
+        visible: true,
         // Nativo: assume online até o NetInfo negar. Começar offline bloqueava
         // o handshake pós-login no Android enquanto o probe demorava ou falhava.
         online: true,
@@ -408,12 +409,21 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     // NetInfo fechar o gate quando o Network Information API flapava.
     if (!shouldAttachNativeSessionGateLifecycle(Platform.OS)) return undefined;
 
-    // Sem polling contínuo: revogação ocorrida enquanto o app permanece
-    // foreground/online segue bloqueada no backend por request. O residual
-    // visual até um evento de lifecycle/rede fica explicitamente fora do SLA
-    // desta frente; resume/reconnect sempre reatesta antes de reabrir a UI.
+    // Segundo plano nativo não fecha o gate nem zera o cache: isso desmontava
+    // o Stack e o médico via a tela de login, embora o token ainda estivesse
+    // no disco (force-close relogava). Revogação real: /me soft no resume e
+    // 401 do tRPC. Flap de NetInfo também não move o gate (#287 nativo).
+    let nativeWasBackground = !isNativeAppSessionVisible(AppState.currentState);
     const appStateSubscription = AppState.addEventListener("change", (nextState) => {
-      updateActivity({ visible: isNativeAppSessionVisible(nextState) });
+      const inBackground = !isNativeAppSessionVisible(nextState);
+      if (
+        shouldSoftRevalidateNativeSessionOnForeground(Platform.OS) &&
+        nativeWasBackground &&
+        !inBackground
+      ) {
+        void refetch();
+      }
+      nativeWasBackground = inBackground;
     });
     const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
       updateActivity({
@@ -433,7 +443,7 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
       appStateSubscription.remove();
       netInfoUnsubscribe();
     };
-  }, [updateActivity]);
+  }, [refetch, updateActivity]);
 
   useEffect(() => {
     const coordinator = coordinatorRef.current;
@@ -717,6 +727,15 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return <Redirect href={"/select-institution" as any} />;
   }
   if (activeInstitutionId !== null && pathname === "/select-institution") {
+    return <Redirect href="/(tabs)" />;
+  }
+
+  if (
+    pathname === "/login" ||
+    pathname === "/signup" ||
+    pathname === "/forgot-password" ||
+    pathname === "/reset-password"
+  ) {
     return <Redirect href="/(tabs)" />;
   }
 
