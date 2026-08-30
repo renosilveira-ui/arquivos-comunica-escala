@@ -48,6 +48,55 @@ import {
 
 type ConfirmationDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
+async function assertDutySyncLocalStatusAccess(
+  db: ConfirmationDb,
+  input: {
+    confirmationId: number;
+    institutionId: number;
+    userId: number;
+  },
+): Promise<{ outboxUserId: number }> {
+  const [conf] = await db
+    .select({
+      userId: dutyConfirmations.userId,
+      replacementUserId: dutyConfirmations.replacementUserId,
+    })
+    .from(dutyConfirmations)
+    .where(
+      and(
+        eq(dutyConfirmations.id, input.confirmationId),
+        eq(dutyConfirmations.institutionId, input.institutionId),
+      ),
+    )
+    .limit(1);
+  if (!conf) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Confirmação não encontrada",
+    });
+  }
+
+  const actorKind =
+    conf.userId === input.userId
+      ? "ORIGINAL" as const
+      : conf.replacementUserId === input.userId
+        ? "REPLACEMENT" as const
+        : null;
+  if (!actorKind) {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+  if (
+    actorKind === "REPLACEMENT" &&
+    conf.replacementUserId !== input.userId
+  ) {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+
+  return {
+    outboxUserId: actorKind === "REPLACEMENT" ? input.userId : conf.userId,
+  };
+}
+
 const expoPushTokenInput = z
   .string()
   .min(1)
@@ -347,37 +396,16 @@ export const confirmationRouter = router({
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-      const [conf] = await db
-        .select({
-          id: dutyConfirmations.id,
-          userId: dutyConfirmations.userId,
-          replacementUserId: dutyConfirmations.replacementUserId,
-        })
-        .from(dutyConfirmations)
-        .where(
-          and(
-            eq(dutyConfirmations.id, input.confirmationId),
-            eq(dutyConfirmations.institutionId, ctx.institutionId),
-          ),
-        )
-        .limit(1);
-      if (!conf) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Confirmação não encontrada",
-        });
-      }
-      const isActor =
-        conf.userId === ctx.user.id ||
-        conf.replacementUserId === ctx.user.id;
-      if (!isActor) {
-        throw new TRPCError({ code: "FORBIDDEN" });
-      }
-
-      return getDutySyncLocalStatusForConfirmation(db, {
-        confirmationId: conf.id,
+      const { outboxUserId } = await assertDutySyncLocalStatusAccess(db, {
+        confirmationId: input.confirmationId,
         institutionId: ctx.institutionId,
         userId: ctx.user.id,
+      });
+
+      return getDutySyncLocalStatusForConfirmation(db, {
+        confirmationId: input.confirmationId,
+        institutionId: ctx.institutionId,
+        userId: outboxUserId,
       });
     }),
 

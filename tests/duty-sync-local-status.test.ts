@@ -64,7 +64,8 @@ describe("mapDutySyncNotificationRow", () => {
         },
       }),
     ).toMatchObject({
-      status: "delivered",
+      status: "outbox_processed",
+      scope: "escala_outbox",
       action: "CONFIRM",
       updatedAt: "2033-07-01T09:05:00.000Z",
     });
@@ -191,6 +192,7 @@ describe("duty-sync local status outbox", () => {
     });
 
     expect(status).toMatchObject({
+      scope: "escala_outbox",
       status: "pending",
       action: "CONFIRM",
       confirmationId,
@@ -213,6 +215,7 @@ describe("duty-sync local status outbox", () => {
     await expect(
       caller.getDutySyncLocalStatus({ confirmationId }),
     ).resolves.toMatchObject({
+      scope: "escala_outbox",
       status: "pending",
       action: "CONFIRM",
       confirmationId,

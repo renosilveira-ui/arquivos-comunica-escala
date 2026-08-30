@@ -5,13 +5,17 @@ import { DUTY_SYNC_VERSION } from "./duty-sync";
 
 export const DUTY_SYNC_NOTIFICATION_TITLE = "Duty roster sync";
 
+/** Escopo explícito: outbox local do Escala+; não implica efeito semântico no Comunica+. */
+export const DUTY_SYNC_LOCAL_STATUS_SCOPE = "escala_outbox" as const;
+
 export type DutySyncLocalDeliveryStatus =
   | "pending"
-  | "delivered"
+  | "outbox_processed"
   | "failed"
   | "none";
 
 export type DutySyncLocalStatus = {
+  scope: typeof DUTY_SYNC_LOCAL_STATUS_SCOPE;
   status: DutySyncLocalDeliveryStatus;
   action: "CONFIRM" | "WITHDRAW" | null;
   confirmationId: number | null;
@@ -32,6 +36,7 @@ type DutySyncNotificationRow = {
 };
 
 const EMPTY_STATUS: DutySyncLocalStatus = {
+  scope: DUTY_SYNC_LOCAL_STATUS_SCOPE,
   status: "none",
   action: null,
   confirmationId: null,
@@ -72,7 +77,7 @@ export function mapDutySyncNotificationRow(
     row.body === "CONFIRM" || row.body === "WITHDRAW" ? row.body : null;
   const status: DutySyncLocalDeliveryStatus =
     row.status === "SENT"
-      ? "delivered"
+      ? "outbox_processed"
       : row.status === "FAILED"
         ? "failed"
         : "pending";
@@ -87,6 +92,7 @@ export function mapDutySyncNotificationRow(
         : null;
 
   return {
+    scope: DUTY_SYNC_LOCAL_STATUS_SCOPE,
     status,
     action,
     confirmationId,
