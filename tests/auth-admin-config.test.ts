@@ -30,6 +30,7 @@ import { getDb } from "../server/db";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 import * as auditService from "../server/audit-trail";
+import { sessionAuthCookies } from "./helpers/session-cookies";
 
 const STAMP = Date.now();
 const PASSWORD = "SenhaAdmin123";
@@ -172,11 +173,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/login")
       .send({ email: `aac-admin-${STAMP}@test.local`, password: PASSWORD });
     expect(login.status).toBe(200);
-    const sc = login.headers["set-cookie"];
-    cookie =
-      (Array.isArray(sc) ? sc : [sc]).find((c: string) =>
-        c.startsWith("session="),
-      ) ?? "";
+    cookie = sessionAuthCookies(login);
     expect(cookie).not.toBe("");
   });
 
@@ -652,11 +649,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
     const actorLogin = await request(app)
       .post("/api/auth/login")
       .send({ email: actorEmail, password: "SenhaNova123" });
-    const actorSetCookie = actorLogin.headers["set-cookie"];
-    const actorCookie =
-      (Array.isArray(actorSetCookie) ? actorSetCookie : [actorSetCookie]).find(
-        (item: string) => item?.startsWith("session="),
-      ) ?? "";
+    const actorCookie = sessionAuthCookies(actorLogin);
     expect(actorCookie).not.toBe("");
 
     const childEmail = `aac-contextual-child-${STAMP}@test.local`;
@@ -817,12 +810,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
     const poisonedLogin = await request(app)
       .post("/api/auth/login")
       .send({ email: poisonedEmail, password: PASSWORD });
-    const poisonedSetCookie = poisonedLogin.headers["set-cookie"];
-    const poisonedCookie =
-      (Array.isArray(poisonedSetCookie)
-        ? poisonedSetCookie
-        : [poisonedSetCookie]
-      ).find((item: string) => item?.startsWith("session=")) ?? "";
+    const poisonedCookie = sessionAuthCookies(poisonedLogin);
     const deniedEmail = `aac-poisoned-target-${STAMP}@test.local`;
     const denied = await request(app)
       .post("/api/auth/register")
@@ -890,11 +878,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .post("/api/auth/login")
       .send({ email: orphanEmail, password: PASSWORD });
     expect(login.status).toBe(200);
-    const setCookie = login.headers["set-cookie"];
-    const orphanCookie =
-      (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
-        (item: string) => item?.startsWith("session="),
-      ) ?? "";
+    const orphanCookie = sessionAuthCookies(login);
     expect(
       (await request(app).get("/api/auth/me").set("Cookie", orphanCookie))
         .status,

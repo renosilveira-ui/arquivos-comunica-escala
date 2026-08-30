@@ -15,6 +15,8 @@ import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 import { getDb } from "../server/db";
 
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 const STAMP = Date.now();
 const PASSWORD = "SenhaRecent123";
 
@@ -105,10 +107,7 @@ describe("admin recent-registrations", () => {
       .post("/api/auth/login")
       .send({ email: `arr-admin-${STAMP}@test.local`, password: PASSWORD });
     expect(login.status).toBe(200);
-    const setCookie = login.headers["set-cookie"];
-    cookie = (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
-      (item: string) => item?.startsWith("session="),
-    ) ?? "";
+    cookie = sessionAuthCookies(login);
   });
 
   afterAll(async () => {

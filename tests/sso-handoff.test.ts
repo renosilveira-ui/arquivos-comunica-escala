@@ -11,7 +11,8 @@
 //      handoffToken + targetUrl; x-tenant-id de instituição alheia → 403.
 //   3. launch-code: one-time (segundo resgate falha), expirado falha.
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 import { and, eq, inArray } from "drizzle-orm";
 import { DrizzleQueryError } from "drizzle-orm/errors";
 import bcrypt from "bcryptjs";
@@ -155,7 +156,11 @@ describe("SSO handoff e launch-code", () => {
   }
 
   function proofForCookie(sessionCookie: string): string {
-    const token = sessionCookie.split(";", 1)[0]?.slice("session=".length);
+    const sessionPair = sessionCookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("session="));
+    const token = sessionPair?.slice("session=".length);
     if (!token) throw new Error("Cookie de sessão SSO inválido");
     return sessionInstanceProof(token);
   }
@@ -291,12 +296,7 @@ describe("SSO handoff e launch-code", () => {
         .post("/api/auth/login")
         .send({ email, password: PASSWORD });
       expect(res.status).toBe(200);
-      const sc = res.headers["set-cookie"];
-      return (
-        (Array.isArray(sc) ? sc : [sc]).find((c: string) =>
-          c?.startsWith("session="),
-        ) ?? ""
-      );
+      return sessionAuthCookies(res);
     };
     cookie = await login(`sso-medico-${STAMP}@test.local`);
     orphanCookie = await login(`sso-orfao-${STAMP}@test.local`);
@@ -557,12 +557,7 @@ describe("SSO handoff e launch-code", () => {
         password: PASSWORD,
       });
     expect(secondLogin.status).toBe(200);
-    const setCookie = secondLogin.headers["set-cookie"];
-    const secondCookie = (
-      Array.isArray(setCookie) ? setCookie : [setCookie]
-    ).find((candidate: string | undefined) =>
-      candidate?.startsWith("session="),
-    );
+    const secondCookie = sessionAuthCookies(secondLogin);
     expect(secondCookie).toBeTruthy();
     expect(proofForCookie(secondCookie!)).not.toBe(proofForCookie(cookie));
     const before = await issuanceCounts();
@@ -581,6 +576,7 @@ describe("SSO handoff e launch-code", () => {
       });
     }
     expect(await issuanceCounts()).toEqual(before);
+    cookie = secondCookie!;
   });
 
   it("JWT exact-v1 cookie sem proof bloqueia generate e launch-code com 428 sem emissão", async () => {

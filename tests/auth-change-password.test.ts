@@ -28,6 +28,8 @@ import {
  *      nova funciona, login com antiga falha
  */
 
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 const TEST_EMAIL = "auth-change-password-test@example.com";
 const ORIGINAL_PASSWORD = "OriginalPass123";
 const NEW_PASSWORD = "NewSecurePass456";
@@ -128,10 +130,11 @@ describe("auth.changePassword endpoint", () => {
       .post("/api/auth/login")
       .send({ email: TEST_EMAIL, password });
     if (res.status !== 200) return null;
-    const setCookie = res.headers["set-cookie"];
-    if (!setCookie) return null;
-    const arr = Array.isArray(setCookie) ? setCookie : [setCookie];
-    return arr.find((c) => c.startsWith("session=")) ?? null;
+    try {
+      return sessionAuthCookies(res);
+    } catch {
+      return null;
+    }
   }
 
   async function loginExactAndGetResponse(password: string) {
@@ -156,13 +159,11 @@ describe("auth.changePassword endpoint", () => {
   ): Promise<string | null> {
     const response = await loginExactAndGetResponse(password);
     if (response.status !== 200) return null;
-    const setCookie = response.headers["set-cookie"];
-    const cookies = Array.isArray(setCookie)
-      ? setCookie
-      : setCookie
-        ? [setCookie]
-        : [];
-    return cookies.find((cookie) => cookie.startsWith("session=")) ?? null;
+    try {
+      return sessionAuthCookies(response);
+    } catch {
+      return null;
+    }
   }
 
   function proofForCookie(cookie: string): string {
@@ -171,7 +172,11 @@ describe("auth.changePassword endpoint", () => {
   }
 
   function tokenForCookie(cookie: string): string {
-    const token = cookie.split(";", 1)[0]?.slice("session=".length);
+    const sessionPair = cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("session="));
+    const token = sessionPair?.slice("session=".length);
     if (!token) throw new Error("Token de sessão ausente no cookie de teste");
     return token;
   }
@@ -217,13 +222,7 @@ describe("auth.changePassword endpoint", () => {
           sessionBindingVersion: null,
         },
       );
-      const legacySetCookie = legacy.headers["set-cookie"];
-      const legacyCookie = (
-        Array.isArray(legacySetCookie) ? legacySetCookie : [legacySetCookie]
-      ).find(
-        (candidate): candidate is string =>
-          typeof candidate === "string" && candidate.startsWith("session="),
-      );
+      const legacyCookie = sessionAuthCookies(legacy);
       const oldClientRotation = await request(app)
         .post("/api/auth/change-password")
         .set("Cookie", legacyCookie!)
@@ -533,11 +532,7 @@ describe("auth.changePassword endpoint", () => {
 
   it("happy path: persiste novo hash + nova senha funciona + antiga não", async () => {
     const exactLogin = await loginExactAndGetResponse(ORIGINAL_PASSWORD);
-    const setCookie = exactLogin.headers["set-cookie"];
-    const cookie = (Array.isArray(setCookie) ? setCookie : [setCookie]).find(
-      (candidate): candidate is string =>
-        typeof candidate === "string" && candidate.startsWith("session="),
-    );
+    const cookie = sessionAuthCookies(exactLogin);
     expect(cookie).toBeTruthy();
     expect(exactLogin.body.sessionBinding).toEqual({
       capability: "exact-v1",

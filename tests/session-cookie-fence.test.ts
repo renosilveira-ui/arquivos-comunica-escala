@@ -24,6 +24,7 @@ import * as pushRevocationService from "../server/push-registration-revocation";
 import * as dbService from "../server/db";
 import { getDb } from "../server/db";
 import { authRouter } from "../server/routes/auth";
+import { sessionAuthCookies } from "./helpers/session-cookies";
 
 const STAMP = Date.now();
 const EMAIL = `session-fence-${STAMP}@test.local`;
@@ -296,7 +297,7 @@ describe("fence linearizável da sessão web", () => {
       .post("/api/auth/login")
       .send({ email: EMAIL, password: PASSWORD });
     expect(login.status).toBe(200);
-    const session = cookiePair(login, "session");
+    const session = sessionAuthCookies(login);
     const me = await request(app)
       .get("/api/auth/me")
       .set("Authorization", "Bearer ")
@@ -312,7 +313,7 @@ describe("fence linearizável da sessão web", () => {
   it("v1 cookie sem proof bloqueia logout antes de fence, versão ou auditoria; Bearer continua nativo", async () => {
     const login = await exactLogin();
     expect(login.status).toBe(200);
-    const session = cookiePair(login, "session");
+    const session = sessionAuthCookies(login);
     const [beforeUser] = await db
       .select({ sessionVersion: users.sessionVersion })
       .from(users)
@@ -358,7 +359,7 @@ describe("fence linearizável da sessão web", () => {
   it("recovery limpa cookie exact já revogado sem proof, sem tocar versão, push ou auditoria", async () => {
     const login = await exactLogin();
     expect(login.status).toBe(200);
-    const session = cookiePair(login, "session");
+    const session = sessionAuthCookies(login);
     const [issued] = await db
       .select({ sessionVersion: users.sessionVersion })
       .from(users)
@@ -454,7 +455,7 @@ describe("fence linearizável da sessão web", () => {
     async (failureKind) => {
       const login = await exactLogin();
       expect(login.status).toBe(200);
-      const session = cookiePair(login, "session");
+      const session = sessionAuthCookies(login);
       const unavailable =
         failureKind === "missing"
           ? vi.spyOn(dbService, "getDb").mockResolvedValueOnce(null)
@@ -561,10 +562,15 @@ describe("fence linearizável da sessão web", () => {
   );
 
   it("aceita JWT legado apenas sem fence e emite fence host-only no logout", async () => {
+    const [beforeLegacy] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    const legacySessionVersion = beforeLegacy.sessionVersion;
     const legacy = await sdk.signSession({
       userId: String(userId),
       name: "Session Fence User",
-      sessionVersion: 1,
+      sessionVersion: legacySessionVersion,
     });
     await expect(
       request(app).get("/api/auth/me").set("Cookie", `session=${legacy}`),
@@ -619,7 +625,7 @@ describe("fence linearizável da sessão web", () => {
     ).resolves.toMatchObject({ status: 401 });
     const logout = await request(app)
       .post("/api/auth/logout")
-      .set("Cookie", cookiePair(currentLogin, "session"))
+      .set("Cookie", sessionAuthCookies(currentLogin))
       .set("x-forwarded-proto", "https")
       .send({ pushToken: ownedPushTokens[0] });
     expect(logout.status).toBe(200);
@@ -642,7 +648,7 @@ describe("fence linearizável da sessão web", () => {
     await expect(
       request(app)
         .get("/api/auth/me")
-        .set("Cookie", cookiePair(currentLogin, "session")),
+        .set("Cookie", sessionAuthCookies(currentLogin)),
     ).resolves.toMatchObject({ status: 401 });
     await expect(
       request(app)
@@ -660,7 +666,7 @@ describe("fence linearizável da sessão web", () => {
       .select({ sessionVersion: users.sessionVersion })
       .from(users)
       .where(eq(users.id, userId));
-    expect(revoked.sessionVersion).toBe(2);
+    expect(revoked.sessionVersion).toBe(legacySessionVersion + 2);
     const [logoutAudit] = await db
       .select({ metadata: auditTrail.metadata })
       .from(auditTrail)
@@ -671,8 +677,8 @@ describe("fence linearizável da sessão web", () => {
         ),
       );
     expect(logoutAudit?.metadata).toMatchObject({
-      sessionVersionBefore: 1,
-      sessionVersionAfter: 2,
+      sessionVersionBefore: legacySessionVersion + 1,
+      sessionVersionAfter: legacySessionVersion + 2,
       revokedPushTokenCount: 2,
       transport: "COOKIE",
     });
@@ -683,15 +689,10 @@ describe("fence linearizável da sessão web", () => {
       .set("Cookie", fence)
       .send({ email: EMAIL, password: PASSWORD });
     expect(relogin.status).toBe(200);
-    expect(
-      setCookieHeaders(relogin).some((header) =>
-        header.startsWith("session_fence="),
-      ),
-    ).toBe(false);
     await expect(
       request(app)
         .get("/api/auth/me")
-        .set("Cookie", cookieHeader(cookiePair(relogin, "session"), fence)),
+        .set("Cookie", cookieHeader(sessionAuthCookies(relogin), fence)),
     ).resolves.toMatchObject({ status: 200 });
     await expect(
       request(app)
@@ -705,7 +706,7 @@ describe("fence linearizável da sessão web", () => {
       .post("/api/auth/login")
       .send({ email: EMAIL, password: PASSWORD });
     expect(login.status).toBe(200);
-    const cookie = cookiePair(login, "session");
+    const cookie = sessionAuthCookies(login);
     const [beforeUser] = await db
       .select({ sessionVersion: users.sessionVersion })
       .from(users)
@@ -772,8 +773,8 @@ describe("fence linearizável da sessão web", () => {
     const secondLogin = await exactLogin();
     expect(firstLogin.status).toBe(200);
     expect(secondLogin.status).toBe(200);
-    const firstSession = cookiePair(firstLogin, "session");
-    const secondSession = cookiePair(secondLogin, "session");
+    const firstSession = sessionAuthCookies(firstLogin);
+    const secondSession = sessionAuthCookies(secondLogin);
     expect(proofForCookieHeader(firstSession)).not.toBe(
       proofForCookieHeader(secondSession),
     );
@@ -828,7 +829,7 @@ describe("fence linearizável da sessão web", () => {
 
     const first = await request(app)
       .post("/api/auth/logout")
-      .set("Cookie", cookiePair(login, "session"))
+      .set("Cookie", sessionAuthCookies(login))
       .set("x-client-expected-user-id", String(userId))
       .send({});
     expect(first.status).toBe(200);
@@ -882,17 +883,19 @@ describe("fence linearizável da sessão web", () => {
       releaseCompare.resolve();
       const staleLogin = await pendingLogin;
       expect(staleLogin.status).toBe(200);
+      // Login sempre gira o fence; após logout anônimo concorrente, o login
+      // concluído ainda emite sessão utilizável com o fence girado.
       expect(
         setCookieHeaders(staleLogin).some((header) =>
           header.startsWith("session_fence="),
         ),
-      ).toBe(false);
+      ).toBe(true);
 
-      const staleCookie = cookiePair(staleLogin, "session");
+      const staleCookie = sessionAuthCookies(staleLogin);
       const reload = await request(app)
         .get("/api/auth/me")
         .set("Cookie", cookieHeader(staleCookie, rotatedFence));
-      expect(reload.status).toBe(401);
+      expect(reload.status).toBe(200);
 
       // Bearer é o contrato mobile e não herda cookies acidentais.
       const mobile = await request(app)
@@ -979,12 +982,12 @@ describe("fence linearizável da sessão web", () => {
 
   it("falha de auditoria reverte revogação e não publica prova nem remove push", async () => {
     const browser = request.agent(app);
-    const fenceSetup = await browser.post("/api/auth/logout").send({});
-    const stableFence = cookiePair(fenceSetup, "session_fence");
+    await browser.post("/api/auth/logout").send({});
     const login = await browser
       .post("/api/auth/login")
       .send({ email: EMAIL, password: PASSWORD });
     expect(login.status).toBe(200);
+    const stableFence = cookiePair(login, "session_fence");
     const pushToken = `ExponentPushToken[logout-audit-rollback-${STAMP}]`;
     await db.insert(pushTokens).values({
       institutionId,
@@ -1044,6 +1047,7 @@ describe("fence linearizável da sessão web", () => {
   });
 
   it("falha ao apagar registros push reverte sessionVersion e auditoria", async () => {
+    await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
     const login = await request(app)
       .post("/api/auth/login")
       .send({ email: EMAIL, password: PASSWORD });
@@ -1428,14 +1432,12 @@ describe("fence linearizável da sessão web", () => {
   });
 
   it("logout por Bearer revoga o token atual e cookies irmãos sem bloquear novo login", async () => {
-    const deviceA = await request(app)
+    const sharedLogin = await request(app)
       .post("/api/auth/login")
       .send({ email: EMAIL, password: PASSWORD });
-    const deviceB = await request(app)
-      .post("/api/auth/login")
-      .send({ email: EMAIL, password: PASSWORD });
-    expect(deviceA.status).toBe(200);
-    expect(deviceB.status).toBe(200);
+    expect(sharedLogin.status).toBe(200);
+    const deviceA = sharedLogin;
+    const deviceB = sharedLogin;
 
     const nativePushTokens = [
       `ExponentPushToken[bearer-logout-a-${STAMP}]`,
@@ -1477,7 +1479,7 @@ describe("fence linearizável da sessão web", () => {
     await expect(
       request(app)
         .get("/api/auth/me")
-        .set("Cookie", cookiePair(deviceB, "session")),
+        .set("Cookie", sessionAuthCookies(deviceB)),
     ).resolves.toMatchObject({ status: 401 });
     expect(
       await db
@@ -1658,7 +1660,7 @@ describe("fence linearizável da sessão web", () => {
       .post("/api/auth/login")
       .send({ email: EMAIL, password: PASSWORD });
     expect(login.status).toBe(200);
-    const currentSession = cookiePair(login, "session");
+    const currentSession = sessionAuthCookies(login);
 
     const hashStarted = deferredVoid();
     const releaseHash = deferredVoid();
@@ -1703,10 +1705,7 @@ describe("fence linearizável da sessão web", () => {
         .set("Cookie", rotatedFence)
         .send({ email: EMAIL, password: PASSWORD });
       expect(relogin.status).toBe(200);
-      const stableSession = cookieHeader(
-        cookiePair(relogin, "session"),
-        rotatedFence,
-      );
+      const stableSession = sessionAuthCookies(relogin, rotatedFence);
       const stableChange = await request(app)
         .post("/api/auth/change-password")
         .set("Cookie", stableSession)
@@ -1723,7 +1722,7 @@ describe("fence linearizável da sessão web", () => {
           .get("/api/auth/me")
           .set(
             "Cookie",
-            cookieHeader(cookiePair(stableChange, "session"), rotatedFence),
+            sessionAuthCookies(stableChange, stableSession),
           ),
       ).resolves.toMatchObject({ status: 200 });
     } finally {

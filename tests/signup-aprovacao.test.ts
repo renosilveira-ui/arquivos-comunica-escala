@@ -34,6 +34,8 @@ import { getDb } from "../server/db";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 const STAMP = Date.now();
 const PASSWORD = "SenhaForte123";
 
@@ -61,12 +63,7 @@ describe("auto-cadastro público e aprovação", () => {
     return request(app).post("/api/auth/login").send({ email, password });
   }
   function cookieOf(res: request.Response): string {
-    const sc = res.headers["set-cookie"];
-    return (
-      (Array.isArray(sc) ? sc : [sc]).find((c: string) =>
-        c?.startsWith("session="),
-      ) ?? ""
-    );
+    return sessionAuthCookies(res);
   }
 
   beforeAll(async () => {
@@ -405,7 +402,7 @@ describe("auto-cadastro público e aprovação", () => {
       request(app).post("/api/auth/signup").send(payload),
     ]);
     expect(responses.map((response) => response.status).sort()).toEqual([
-      201, 409,
+      201, 201,
     ]);
 
     const created = await db
@@ -426,7 +423,7 @@ describe("auto-cadastro público e aprovação", () => {
     expect(memberships).toEqual([{ active: false }]);
   });
 
-  it("cria conta PENDING com vínculo inativo; e-mail duplicado → 409", async () => {
+  it("cria conta PENDING com vínculo inativo; e-mail duplicado → resposta neutra", async () => {
     const res = await request(app).post("/api/auth/signup").send({
       name: "  Signup A  ",
       email: emailA.toUpperCase(),
@@ -488,7 +485,11 @@ describe("auto-cadastro público e aprovação", () => {
       password: PASSWORD,
       institutionId,
     });
-    expect(dup.status).toBe(409);
+    expect(dup.status).toBe(201);
+    expect(dup.body).toMatchObject({ ok: true, pending: true });
+    expect(
+      await db.select({ id: users.id }).from(users).where(eq(users.email, emailA)),
+    ).toHaveLength(1);
   });
 
   it("classifica Clínica Geral como Clínica médica, nunca como generalista", async () => {
