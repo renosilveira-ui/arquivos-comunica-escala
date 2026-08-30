@@ -175,6 +175,29 @@ export function accessCoversContext(
   );
 }
 
+/**
+ * ACL de professional_access para um ScheduleContext. Em
+ * QUALIFICATION_ALLOWLIST exige sectorId exato — acesso hospital-wide
+ * (sectorId = null) não cobre o setor. Contextos legados preservam o
+ * comportamento hospital-wide de accessCoversContext.
+ */
+export function accessCoversScheduleContext(
+  access: ScheduleContextAccess,
+  professionalId: number,
+  context: Pick<
+    ActiveScheduleContext,
+    "institutionId" | "hospitalId" | "sectorId" | "admissionPolicy"
+  >,
+): boolean {
+  if (!accessCoversContext(access, professionalId, context)) {
+    return false;
+  }
+  if (context.admissionPolicy === "QUALIFICATION_ALLOWLIST") {
+    return access.sectorId === context.sectorId;
+  }
+  return true;
+}
+
 export function managerScopeCoversContext(
   scope: ScheduleContextManagerScope,
   professionalId: number,
@@ -902,7 +925,7 @@ export function projectEffectiveScheduleContextIds(input: {
         context.institutionId === input.institutionId &&
         qualificationMatches(input.qualification, context) &&
         input.accesses.some((access) =>
-          accessCoversContext(access, input.professionalId, context),
+          accessCoversScheduleContext(access, input.professionalId, context),
         ),
     )
     .map((context) => context.id);
@@ -1122,7 +1145,7 @@ export async function listAssumableScheduleContextIds(
       return (
         qualificationMatches(professional.qualification, context) &&
         accesses.some((access) =>
-          accessCoversContext(access, professionalId, context),
+          accessCoversScheduleContext(access, professionalId, context),
         )
       );
     })
@@ -1230,17 +1253,9 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
     input.professionalId,
   );
   if (
-    accesses.some((access) => {
-      if (!accessCoversContext(access, input.professionalId, context)) {
-        return false;
-      }
-      // Escala com allowlist exige acesso setorial exato — igual ao picker.
-      // Acesso só hospitalar não aloca.
-      if (context.admissionPolicy === "QUALIFICATION_ALLOWLIST") {
-        return access.sectorId === context.sectorId;
-      }
-      return true;
-    })
+    accesses.some((access) =>
+      accessCoversScheduleContext(access, input.professionalId, context),
+    )
   ) {
     return;
   }

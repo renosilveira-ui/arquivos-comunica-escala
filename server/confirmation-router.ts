@@ -301,18 +301,28 @@ export const confirmationRouter = router({
           ON u.id = p.user_id
          AND u.approval_status = 'APPROVED'
          AND u.deleted_at IS NULL
-        INNER JOIN professional_access pa
-          ON pa.professional_id = p.id
-         AND pa.institution_id = ${current.shift.institutionId}
-         AND pa.hospital_id = ${current.shift.hospitalId}
-         AND pa.can_access = true
-         AND (pa.sector_id IS NULL OR pa.sector_id = ${current.shift.sectorId})
         INNER JOIN schedule_contexts sc
           ON sc.id = ${current.shift.scheduleContextId}
          AND sc.institution_id = ${current.shift.institutionId}
          AND sc.hospital_id = ${current.shift.hospitalId}
          AND sc.sector_id = ${current.shift.sectorId}
          AND sc.active = true
+        INNER JOIN professional_access pa
+          ON pa.professional_id = p.id
+         AND pa.institution_id = ${current.shift.institutionId}
+         AND pa.hospital_id = ${current.shift.hospitalId}
+         AND pa.can_access = true
+         AND (
+           (
+             sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+             AND pa.sector_id = ${current.shift.sectorId}
+           )
+           OR
+           (
+             sc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
+             AND (pa.sector_id IS NULL OR pa.sector_id = ${current.shift.sectorId})
+           )
+         )
         LEFT JOIN medical_specialties ms
           ON ms.id = sc.medical_specialty_id
          AND ms.active = true

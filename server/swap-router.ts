@@ -2310,6 +2310,12 @@ async function queryListAvailableRows(
           ON ts.id = tsi.sector_id
          AND ts.institution_id = tsi.institution_id
          AND ts.hospital_id = tsi.hospital_id
+        LEFT JOIN schedule_contexts tsc
+          ON tsc.id = tsi.schedule_context_id
+         AND tsc.institution_id = tsi.institution_id
+         AND tsc.hospital_id = tsi.hospital_id
+         AND tsc.sector_id = tsi.sector_id
+         AND tsc.active = 1
         LEFT JOIN shift_assignments_v2 tsa
           ON sr.type = 'SWAP'
          AND tsa.shift_instance_id = tsi.id
@@ -2378,7 +2384,17 @@ async function queryListAvailableRows(
                 AND source_access.professional_id = fp.id
                 AND source_access.hospital_id = fsi.hospital_id
                 AND source_access.can_access = 1
-                AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
+                AND (
+                  (
+                    fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                    AND source_access.sector_id = fsi.sector_id
+                  )
+                  OR
+                  (
+                    fsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
+                    AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
+                  )
+                )
             )
             OR fpi.role_in_institution = 'GESTOR_PLUS'
             OR EXISTS (
@@ -2469,7 +2485,17 @@ async function queryListAvailableRows(
                 AND actor_source_access.professional_id = ap.id
                 AND actor_source_access.hospital_id = fsi.hospital_id
                 AND actor_source_access.can_access = 1
-                AND (actor_source_access.sector_id IS NULL OR actor_source_access.sector_id = fsi.sector_id)
+                AND (
+                  (
+                    fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                    AND actor_source_access.sector_id = fsi.sector_id
+                  )
+                  OR
+                  (
+                    fsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
+                    AND (actor_source_access.sector_id IS NULL OR actor_source_access.sector_id = fsi.sector_id)
+                  )
+                )
             )
           )
           AND (
@@ -2590,7 +2616,17 @@ async function queryListAvailableRows(
                     AND actor_target_access.professional_id = ap.id
                     AND actor_target_access.hospital_id = tsi.hospital_id
                     AND actor_target_access.can_access = 1
-                    AND (actor_target_access.sector_id IS NULL OR actor_target_access.sector_id = tsi.sector_id)
+                    AND (
+                      (
+                        tsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                        AND actor_target_access.sector_id = tsi.sector_id
+                      )
+                      OR
+                      (
+                        tsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
+                        AND (actor_target_access.sector_id IS NULL OR actor_target_access.sector_id = tsi.sector_id)
+                      )
+                    )
                 )
               )
               AND EXISTS (
@@ -2600,7 +2636,17 @@ async function queryListAvailableRows(
                   AND source_target_access.professional_id = fp.id
                   AND source_target_access.hospital_id = tsi.hospital_id
                   AND source_target_access.can_access = 1
-                  AND (source_target_access.sector_id IS NULL OR source_target_access.sector_id = tsi.sector_id)
+                  AND (
+                    (
+                      tsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                      AND source_target_access.sector_id = tsi.sector_id
+                    )
+                    OR
+                    (
+                      tsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
+                      AND (source_target_access.sector_id IS NULL OR source_target_access.sector_id = tsi.sector_id)
+                    )
+                  )
               )
               AND (
                 NULLIF(TRIM(tsi.specialty), '') IS NULL

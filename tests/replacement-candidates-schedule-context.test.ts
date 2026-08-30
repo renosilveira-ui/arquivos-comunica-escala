@@ -65,6 +65,11 @@ describe("candidatos a substituição por scheduleContext canônico", () => {
       "pi.institution_id = ${current.shift.institutionId}",
     );
     expect(reader).toContain("pa.can_access = true");
+    expect(reader).toContain("sc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
+    expect(reader).toContain("pa.sector_id = ${current.shift.sectorId}");
+    expect(reader).toContain(
+      "sc.admission_policy <> 'QUALIFICATION_ALLOWLIST'",
+    );
     expect(reader).toContain(
       "pa.sector_id IS NULL OR pa.sector_id = ${current.shift.sectorId}",
     );
