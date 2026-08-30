@@ -28,6 +28,7 @@ import {
 import { getDb } from "../server/db";
 import { authRouter } from "../server/routes/auth";
 import * as pushDelivery from "../server/push-delivery";
+import * as scheduleInviteResponseSignalHelpers from "../server/schedule-invite-response-signal-helpers";
 import {
   ensureTestAnesthesiaSpecialty,
   openTestScale,
@@ -466,6 +467,90 @@ describe("push de convite aceito", () => {
     expect(rows).toHaveLength(0);
   });
 
+  async function expectSuccessfulRedeemAfterSignalFailure(input: {
+    creatorUserId: number;
+    invitee: Identity;
+  }) {
+    const { inviteId, code } = await createInvite(
+      institutionA,
+      hospitalA,
+      sectorA,
+      input.creatorUserId,
+      input.invitee.userId,
+    );
+    const session = await login(input.invitee.email);
+    const joined = await redeemInvite(code, cookieOf(session));
+    expect(joined.status).toBe(200);
+    expect(joined.body.ok).toBe(true);
+
+    const [inviteRow] = await db
+      .select({ redeemedCount: scheduleInvites.redeemedCount })
+      .from(scheduleInvites)
+      .where(eq(scheduleInvites.id, inviteId));
+    expect(inviteRow?.redeemedCount).toBe(1);
+
+    const [access] = await db
+      .select({ canAccess: professionalAccess.canAccess })
+      .from(professionalAccess)
+      .where(eq(professionalAccess.professionalId, input.invitee.professionalId));
+    expect(access?.canAccess).toBe(true);
+    return inviteId;
+  }
+
+  it("mantém resgate commitado quando a resolução do destinatário falha", async () => {
+    const localCreator = await createIdentity("resolve-fail-creator", institutionA, {
+      roleInInstitution: "GESTOR_MEDICO",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+    });
+    const localInvitee = await createIdentity("resolve-fail-invitee", institutionA, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+      withAccess: false,
+    });
+    const spy = vi
+      .spyOn(scheduleInviteResponseSignalHelpers, "resolveInviteAcceptedRecipientUserId")
+      .mockRejectedValue(new Error("forced resolve failure"));
+    try {
+      await expectSuccessfulRedeemAfterSignalFailure({
+        creatorUserId: localCreator.userId,
+        invitee: localInvitee,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    const rows = await notificationRowsForUsers([localCreator.userId]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("mantém resgate commitado quando o carregamento do nome falha", async () => {
+    const localCreator = await createIdentity("name-fail-creator", institutionA, {
+      roleInInstitution: "GESTOR_MEDICO",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+    });
+    const localInvitee = await createIdentity("name-fail-invitee", institutionA, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+      withAccess: false,
+    });
+    const spy = vi
+      .spyOn(scheduleInviteResponseSignalHelpers, "loadInvitedProfessionalName")
+      .mockRejectedValue(new Error("forced name failure"));
+    try {
+      await expectSuccessfulRedeemAfterSignalFailure({
+        creatorUserId: localCreator.userId,
+        invitee: localInvitee,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    const rows = await notificationRowsForUsers([localCreator.userId]);
+    expect(rows).toHaveLength(0);
+  });
+
   it("mantém resgate commitado quando o outbox falha", async () => {
     const localCreator = await createIdentity("outbox-creator", institutionA, {
       roleInInstitution: "GESTOR_MEDICO",
@@ -478,39 +563,19 @@ describe("push de convite aceito", () => {
       sectorId: sectorA,
       withAccess: false,
     });
-    const { inviteId, code } = await createInvite(
-      institutionA,
-      hospitalA,
-      sectorA,
-      localCreator.userId,
-      localInvitee.userId,
-    );
     const spy = vi
       .spyOn(pushDelivery, "enqueueTrackedPushNotification")
       .mockRejectedValue(new Error("forced outbox failure"));
     try {
-      const session = await login(localInvitee.email);
-      const joined = await redeemInvite(code, cookieOf(session));
-      expect(joined.status).toBe(200);
-      expect(joined.body.ok).toBe(true);
-
-      const [inviteRow] = await db
-        .select({ redeemedCount: scheduleInvites.redeemedCount })
-        .from(scheduleInvites)
-        .where(eq(scheduleInvites.id, inviteId));
-      expect(inviteRow?.redeemedCount).toBe(1);
-
-      const [access] = await db
-        .select({ canAccess: professionalAccess.canAccess })
-        .from(professionalAccess)
-        .where(eq(professionalAccess.professionalId, localInvitee.professionalId));
-      expect(access?.canAccess).toBe(true);
-
-      const rows = await notificationRowsForUsers([localCreator.userId]);
-      expect(rows).toHaveLength(0);
+      await expectSuccessfulRedeemAfterSignalFailure({
+        creatorUserId: localCreator.userId,
+        invitee: localInvitee,
+      });
     } finally {
       spy.mockRestore();
     }
+    const rows = await notificationRowsForUsers([localCreator.userId]);
+    expect(rows).toHaveLength(0);
   });
 
   it("segunda tentativa de resgate não cria segundo push", async () => {

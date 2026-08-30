@@ -1,9 +1,13 @@
-import { and, eq, isNull } from "drizzle-orm";
-import {
-  professionalInstitutions,
-  users,
-} from "../drizzle/schema";
 import { enqueueTrackedPushNotification } from "./push-delivery";
+import {
+  loadInvitedProfessionalName,
+  resolveInviteAcceptedRecipientUserId,
+} from "./schedule-invite-response-signal-helpers";
+
+export {
+  loadInvitedProfessionalName,
+  resolveInviteAcceptedRecipientUserId,
+} from "./schedule-invite-response-signal-helpers";
 
 export const INVITE_ACCEPTED_PUSH_TYPE = "invite_accepted";
 
@@ -20,51 +24,6 @@ export type ScheduleInviteAcceptedSignalInput = {
   createdByUserId: number;
   invitedUserId: number;
 };
-
-async function resolveInviteAcceptedRecipientUserId(
-  db: SignalDb,
-  input: {
-    institutionId: number;
-    createdByUserId: number;
-    invitedUserId: number;
-  },
-): Promise<number | null> {
-  if (input.createdByUserId === input.invitedUserId) return null;
-
-  const [row] = await db
-    .select({ userId: users.id })
-    .from(users)
-    .innerJoin(
-      professionalInstitutions,
-      and(
-        eq(professionalInstitutions.userId, users.id),
-        eq(professionalInstitutions.institutionId, input.institutionId),
-        eq(professionalInstitutions.active, true),
-      ),
-    )
-    .where(
-      and(
-        eq(users.id, input.createdByUserId),
-        eq(users.approvalStatus, "APPROVED"),
-        isNull(users.deletedAt),
-      ),
-    )
-    .limit(1);
-  return row?.userId ?? null;
-}
-
-async function loadInvitedProfessionalName(
-  db: SignalDb,
-  invitedUserId: number,
-): Promise<string> {
-  const [row] = await db
-    .select({ name: users.name })
-    .from(users)
-    .where(eq(users.id, invitedUserId))
-    .limit(1);
-  const name = row?.name?.trim();
-  return name || "Profissional";
-}
 
 function inviteAcceptedCopy(
   professionalName: string,
@@ -84,7 +43,7 @@ function inviteAcceptedCopy(
 
 /**
  * Best-effort após commit do resgate: avisa somente o gestor que emitiu o
- * convite nominal. Falha de outbox não desfaz o aceite.
+ * convite nominal. Qualquer falha nesta fase não desfaz o aceite.
  */
 export async function enqueueScheduleInviteAcceptedSignal(
   input: ScheduleInviteAcceptedSignalInput,
@@ -99,26 +58,26 @@ export async function enqueueScheduleInviteAcceptedSignal(
     invitedUserId,
   } = input;
 
-  const recipientUserId = await resolveInviteAcceptedRecipientUserId(db, {
-    institutionId,
-    createdByUserId,
-    invitedUserId,
-  });
-  if (recipientUserId == null) {
-    console.error(
-      `[ScheduleInviteAccepted] DESTINATARIO_AUSENTE scheduleInviteId=${JSON.stringify(scheduleInviteId)}`,
-    );
-    return 0;
-  }
-
-  const professionalName = await loadInvitedProfessionalName(db, invitedUserId);
-  const copy = inviteAcceptedCopy(professionalName, {
-    hospitalName: input.hospitalName?.trim() || null,
-    sectorName: input.sectorName?.trim() || null,
-  });
-  const dedupKey = `schedule-invite:${scheduleInviteId}:accepted:${createdByUserId}`;
-
   try {
+    const recipientUserId = await resolveInviteAcceptedRecipientUserId(db, {
+      institutionId,
+      createdByUserId,
+      invitedUserId,
+    });
+    if (recipientUserId == null) {
+      console.error(
+        `[ScheduleInviteAccepted] DESTINATARIO_AUSENTE scheduleInviteId=${JSON.stringify(scheduleInviteId)}`,
+      );
+      return 0;
+    }
+
+    const professionalName = await loadInvitedProfessionalName(db, invitedUserId);
+    const copy = inviteAcceptedCopy(professionalName, {
+      hospitalName: input.hospitalName?.trim() || null,
+      sectorName: input.sectorName?.trim() || null,
+    });
+    const dedupKey = `schedule-invite:${scheduleInviteId}:accepted:${createdByUserId}`;
+
     await enqueueTrackedPushNotification(
       {
         institutionId,

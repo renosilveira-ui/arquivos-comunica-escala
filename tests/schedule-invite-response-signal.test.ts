@@ -135,6 +135,60 @@ describe("sinal de convite aceito", () => {
     expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
   });
 
+  it("não propaga falha ao resolver destinatário", async () => {
+    const db = {
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: async () => {
+                throw new Error("forced resolve failure");
+              },
+            }),
+          }),
+          where: () => ({
+            limit: async () => [{ name: "Dra. Ana Silva" }],
+          }),
+        }),
+      }),
+    };
+
+    await expect(
+      enqueueScheduleInviteAcceptedSignal({
+        db: db as never,
+        ...baseInput(),
+      }),
+    ).resolves.toBe(0);
+    expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
+  });
+
+  it("não propaga falha ao carregar nome do convidado", async () => {
+    const db = {
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: async () => [{ userId: 42 }],
+            }),
+          }),
+          where: () => ({
+            limit: async () => {
+              throw new Error("forced name failure");
+            },
+          }),
+        }),
+      }),
+    };
+
+    await expect(
+      enqueueScheduleInviteAcceptedSignal({
+        db: db as never,
+        ...baseInput(),
+      }),
+    ).resolves.toBe(0);
+    expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
+  });
+
   it("não propaga falha de persistência do outbox", async () => {
     enqueueTrackedPushNotification.mockRejectedValue(new Error("forced outbox failure"));
     const db = selectDb([
