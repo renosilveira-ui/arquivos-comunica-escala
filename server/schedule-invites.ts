@@ -132,6 +132,9 @@ export async function redeemScheduleInviteInTransaction(
   sectorId: number;
   hospitalName: string;
   sectorName: string;
+  scheduleInviteId: number;
+  createdByUserId: number;
+  invitedUserId: number;
 }> {
   const now = input.now ?? new Date();
   const codeHash = hashScheduleInviteCode(input.code);
@@ -326,6 +329,9 @@ export async function redeemScheduleInviteInTransaction(
     sectorId: invite.sectorId,
     hospitalName: hospital.name,
     sectorName: sector.name,
+    scheduleInviteId: invite.id,
+    createdByUserId: invite.createdByUserId,
+    invitedUserId: invite.invitedUserId!,
   };
 }
 
