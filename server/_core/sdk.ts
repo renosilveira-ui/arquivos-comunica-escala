@@ -1,6 +1,6 @@
 import {
   COOKIE_NAME,
-  ONE_YEAR_MS,
+  SESSION_MAX_AGE_MS,
   SESSION_FENCE_COOKIE_NAME,
 } from "../../shared/const.js";
 import { ForbiddenError } from "../../shared/_core/errors.js";
@@ -129,6 +129,15 @@ function digestSessionFence(value: string | undefined): string {
   hash.update(value === undefined ? "0:" : "1:");
   if (value !== undefined) hash.update(value);
   return hash.digest("base64url");
+}
+
+export function sessionFenceDigestForValue(
+  value: string | undefined,
+): SessionFenceSnapshot {
+  return {
+    present: value !== undefined,
+    digest: digestSessionFence(value),
+  };
 }
 
 /** Cookie ou Bearer não vazio chegou nesta Request — não é prova de validade. */
@@ -338,7 +347,7 @@ class SDKServer {
       throw new TypeError("Unsupported sessionBindingVersion");
     }
     const issuedAt = Date.now();
-    const expiresInMs = options.expiresInMs ?? ONE_YEAR_MS;
+    const expiresInMs = options.expiresInMs ?? SESSION_MAX_AGE_MS;
     const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
     const secretKey = this.getSessionSecret();
 

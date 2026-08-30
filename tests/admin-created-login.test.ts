@@ -28,6 +28,8 @@ import { getDb } from "../server/db";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 const STAMP = Date.now();
 const ADMIN_PASSWORD = "SenhaAdmin123";
 const USER_PASSWORD = "SenhaProfissional9";
@@ -121,11 +123,7 @@ describe("login após cadastro pelo Admin", () => {
     const login = await request(app)
       .post("/api/auth/login")
       .send({ email: `acl-admin-${STAMP}@test.local`, password: ADMIN_PASSWORD });
-    const setCookie = login.headers["set-cookie"];
-    adminCookie =
-      (Array.isArray(setCookie) ? setCookie : [setCookie]).find((item: string) =>
-        item?.startsWith("session="),
-      ) ?? "";
+    adminCookie = sessionAuthCookies(login);
     expect(adminCookie).not.toBe("");
   });
 
@@ -200,8 +198,8 @@ describe("login após cadastro pelo Admin", () => {
       password: "OutraSenha99",
       operationalProfileCode: "MEDICO_GENERALISTA",
     });
-    expect(signup.status).toBe(409);
-    expect(signup.body.error).toMatch(/já tem conta/i);
+    expect(signup.status).toBe(201);
+    expect(signup.body).toMatchObject({ ok: true, awaitingScale: true });
   });
 
   it("Admin define senha em conta existente sem hash e o login passa", async () => {

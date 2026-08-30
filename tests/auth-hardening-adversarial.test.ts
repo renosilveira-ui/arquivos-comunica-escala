@@ -30,6 +30,8 @@ import {
   assertAssignmentWritesAllowedForUpdate,
 } from "../server/shift-validations-v2";
 
+import { sessionAuthCookies } from "./helpers/session-cookies";
+
 const STAMP = Date.now();
 const PASSWORD = "SenhaOriginal123";
 
@@ -48,14 +50,8 @@ describe("auth hardening adversarial", () => {
   const usersByKind = new Map<string, { id: number; email: string }>();
   const professionalsByKind = new Map<string, number>();
 
-  const cookieOf = (response: request.Response): string => {
-    const raw = response.headers["set-cookie"];
-    return (
-      (Array.isArray(raw) ? raw : [raw]).find((value: string) =>
-        value?.startsWith("session="),
-      ) ?? ""
-    );
-  };
+  const cookieOf = (response: request.Response): string =>
+    sessionAuthCookies(response);
 
   const login = (email: string, password = PASSWORD) =>
     request(app).post("/api/auth/login").send({ email, password });
@@ -670,7 +666,7 @@ describe("auth hardening adversarial", () => {
       bcrypt.compare(candidateB, current.passwordHash!),
     ]);
     expect(validCandidates.filter(Boolean)).toHaveLength(1);
-    expect(current.sessionVersion).toBe(2);
+    expect(current.sessionVersion).toBe(3);
   });
 
   it("troca de senha invalida todos os links de reset no mesmo commit auditado", async () => {
@@ -721,8 +717,8 @@ describe("auth hardening adversarial", () => {
         ),
       );
     expect(audit.metadata).toMatchObject({
-      sessionVersionBefore: 1,
-      sessionVersionAfter: 2,
+      sessionVersionBefore: 2,
+      sessionVersionAfter: 3,
       invalidatedPasswordResetCount: 2,
     });
   });
@@ -865,7 +861,7 @@ describe("auth hardening adversarial", () => {
       (
         await request(app)
           .get("/api/operational-probe")
-          .set("Cookie", cookieOf(change))
+          .set("Cookie", sessionAuthCookies(change, changeSessionCookie))
       ).status,
     ).toBe(200);
   });

@@ -1,16 +1,12 @@
 /**
- * Cliente de integração com HospitalAlert
- * Gerencia chamadas à API do HospitalAlert com retry, backoff e fila offline
+ * Cliente de integração com Hospital Alert via proxy autenticado do Escala+.
+ * Nenhuma API key ou URL upstream trafega no bundle do app.
  */
 
-import axios, { AxiosError } from "axios";
+import { apiFetch } from "./_core/api";
 import { HOSPITAL_ALERT_CONFIG } from "./hospitalAlertConfig";
 
-// ============================================================================
-// TYPES
-// ============================================================================
-
-export interface HospitalAlertResponse<T = any> {
+export interface HospitalAlertResponse<T = unknown> {
   ok: boolean;
   data?: T;
   error?: string;
@@ -74,170 +70,110 @@ export interface IntegrationStatus {
   version: string;
 }
 
-// ============================================================================
-// HTTP CLIENT
-// ============================================================================
+async function proxyRequest<T>(
+  path: string,
+  options: { method?: "GET" | "POST"; body?: unknown } = {},
+): Promise<HospitalAlertResponse<T>> {
+  const method = options.method ?? "POST";
+  const result = await apiFetch<{ ok?: boolean; data?: T; error?: string }>(
+    `/api/integrations/hospital-alert${path}`,
+    {
+      method,
+      ...(options.body !== undefined
+        ? { body: JSON.stringify(options.body) }
+        : {}),
+      headers: { "Content-Type": "application/json" },
+    },
+  );
 
-/**
- * Cria headers padrão para requisições ao HospitalAlert
- */
-function getHeaders(): Record<string, string> {
+  if (!result.ok || !result.data) {
+    return {
+      ok: false,
+      error: result.error ?? result.data?.error ?? "Falha na integração",
+      httpStatus: result.status,
+    };
+  }
+
+  if (result.data.ok === false) {
+    return {
+      ok: false,
+      error: result.data.error ?? "Falha na integração",
+      httpStatus: result.status,
+    };
+  }
+
   return {
-    "Authorization": `Bearer ${HOSPITAL_ALERT_CONFIG.API_KEY}`,
-    "X-Organization-Id": HOSPITAL_ALERT_CONFIG.ORGANIZATION_ID,
-    "Content-Type": "application/json",
+    ok: true,
+    data: result.data.data as T,
+    httpStatus: result.status,
   };
 }
 
-/**
- * Determina se um erro HTTP deve ser retried
- */
-function shouldRetry(error: AxiosError): boolean {
-  if (!error.response) {
-    // Network error, timeout, etc
-    return true;
-  }
-  
-  const status = error.response.status;
-  
-  // Retry em erros transitórios
-  if (status >= 500) return true; // 5xx
-  if (status === 429) return true; // Rate limit
-  if (status === 408) return true; // Request timeout
-  
-  // Não retry em erros de cliente
-  if (status === 400) return false; // Bad request
-  if (status === 401) return false; // Unauthorized
-  if (status === 403) return false; // Forbidden
-  if (status === 404) return false; // Not found
-  
+function shouldRetry(status?: number): boolean {
+  if (status === undefined) return true;
+  if (status >= 500) return true;
+  if (status === 429 || status === 408) return true;
   return false;
 }
 
-/**
- * Executa requisição HTTP com retry e backoff
- */
 async function executeWithRetry<T>(
-  fn: () => Promise<T>,
-  attempts: number = HOSPITAL_ALERT_CONFIG.RETRY.ATTEMPTS
+  fn: () => Promise<HospitalAlertResponse<T>>,
+  attempts: number = HOSPITAL_ALERT_CONFIG.RETRY.ATTEMPTS,
 ): Promise<HospitalAlertResponse<T>> {
-  let lastError: Error | null = null;
-  
+  let last: HospitalAlertResponse<T> = { ok: false, error: "Erro desconhecido" };
+
   for (let i = 0; i < attempts; i++) {
-    try {
-      const data = await fn();
-      return {
-        ok: true,
-        data,
-        httpStatus: 200,
-      };
-    } catch (error) {
-      lastError = error as Error;
-      
-      // Se não deve retry, retorna erro imediatamente
-      if (error instanceof AxiosError && !shouldRetry(error)) {
-        return {
-          ok: false,
-          error: error.response?.data?.message || error.message,
-          httpStatus: error.response?.status,
-        };
-      }
-      
-      // Se não é a última tentativa, aguarda backoff
-      if (i < attempts - 1) {
-        const backoffMs = HOSPITAL_ALERT_CONFIG.RETRY.BACKOFF_MS[i] || 10000;
-        await new Promise(resolve => setTimeout(resolve, backoffMs));
-      }
+    last = await fn();
+    if (last.ok || !shouldRetry(last.httpStatus)) {
+      return last;
+    }
+    if (i < attempts - 1) {
+      const backoffMs =
+        HOSPITAL_ALERT_CONFIG.RETRY.BACKOFF_MS[i] ??
+        HOSPITAL_ALERT_CONFIG.RETRY.BACKOFF_MS.at(-1) ??
+        10_000;
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
     }
   }
-  
-  // Todas as tentativas falharam
-  return {
-    ok: false,
-    error: lastError?.message || "Erro desconhecido após múltiplas tentativas",
-    httpStatus: lastError instanceof AxiosError ? lastError.response?.status : undefined,
-  };
+
+  return last;
 }
 
-// ============================================================================
-// API FUNCTIONS
-// ============================================================================
-
-/**
- * Sincroniza dados do usuário com HospitalAlert
- */
-export async function syncUser(payload: SyncUserPayload): Promise<HospitalAlertResponse> {
-  console.log("[HospitalAlertClient] syncUser:", payload.externalUserId);
-  
-  return executeWithRetry(async () => {
-    const response = await axios.post(
-      `${HOSPITAL_ALERT_CONFIG.BASE_URL}/api/trpc/auth.syncUser`,
-      payload,
-      { 
-        headers: getHeaders(),
-        timeout: HOSPITAL_ALERT_CONFIG.TIMEOUT_MS,
-      }
-    );
-    return response.data;
-  });
+export async function syncUser(
+  payload: SyncUserPayload,
+): Promise<HospitalAlertResponse> {
+  return executeWithRetry(() =>
+    proxyRequest("/sync-user", { method: "POST", body: payload }),
+  );
 }
 
-/**
- * Inicia plantão no HospitalAlert
- */
-export async function startShift(payload: StartShiftPayload): Promise<HospitalAlertResponse> {
-  console.log("[HospitalAlertClient] startShift:", payload.externalUserId);
-  
-  return executeWithRetry(async () => {
-    const response = await axios.post(
-      `${HOSPITAL_ALERT_CONFIG.BASE_URL}/api/trpc/shifts.start`,
-      payload,
-      { 
-        headers: getHeaders(),
-        timeout: HOSPITAL_ALERT_CONFIG.TIMEOUT_MS,
-      }
-    );
-    return response.data;
-  });
+export async function startShift(
+  payload: StartShiftPayload,
+): Promise<HospitalAlertResponse> {
+  return executeWithRetry(() =>
+    proxyRequest("/shifts/start", { method: "POST", body: payload }),
+  );
 }
 
-/**
- * Finaliza plantão no HospitalAlert
- */
-export async function endShift(payload: EndShiftPayload): Promise<HospitalAlertResponse> {
-  console.log("[HospitalAlertClient] endShift:", payload.externalUserId);
-  
-  return executeWithRetry(async () => {
-    const response = await axios.post(
-      `${HOSPITAL_ALERT_CONFIG.BASE_URL}/api/trpc/shifts.end`,
-      payload,
-      { 
-        headers: getHeaders(),
-        timeout: HOSPITAL_ALERT_CONFIG.TIMEOUT_MS,
-      }
-    );
-    return response.data;
-  });
+export async function endShift(
+  payload: EndShiftPayload,
+): Promise<HospitalAlertResponse> {
+  return executeWithRetry(() =>
+    proxyRequest("/shifts/end", { method: "POST", body: payload }),
+  );
 }
 
-/**
- * Busca status da integração com HospitalAlert
- */
 export async function getIntegrationStatus(
   externalUserId: string,
-  organizationId: string = HOSPITAL_ALERT_CONFIG.ORGANIZATION_ID
+  organizationId: string = HOSPITAL_ALERT_CONFIG.ORGANIZATION_ID,
 ): Promise<HospitalAlertResponse<IntegrationStatus>> {
-  console.log("[HospitalAlertClient] getIntegrationStatus:", externalUserId);
-  
-  return executeWithRetry(async () => {
-    const response = await axios.get(
-      `${HOSPITAL_ALERT_CONFIG.BASE_URL}/api/trpc/integration.getStatus`,
-      {
-        params: { externalUserId, organizationId },
-        headers: getHeaders(),
-        timeout: HOSPITAL_ALERT_CONFIG.TIMEOUT_MS,
-      }
-    );
-    return response.data;
+  const query = new URLSearchParams({
+    externalUserId,
+    organizationId,
   });
+  return executeWithRetry(() =>
+    proxyRequest<IntegrationStatus>(`/status?${query.toString()}`, {
+      method: "GET",
+    }),
+  );
 }
