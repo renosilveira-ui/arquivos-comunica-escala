@@ -54,6 +54,19 @@ export function MobileTabBar({
           const label = tabLabel(options, route.name);
           const color = focused ? theme.colors.primary : theme.colors.textMuted;
           const badge = options.tabBarBadge;
+          const badgeStyle = options.tabBarBadgeStyle;
+          const badgeBackground =
+            badgeStyle && typeof badgeStyle === "object" && "backgroundColor" in badgeStyle
+              ? String(badgeStyle.backgroundColor)
+              : theme.colors.danger;
+          const badgeTextColor =
+            badgeStyle && typeof badgeStyle === "object" && "color" in badgeStyle
+              ? String(badgeStyle.color)
+              : theme.colors.onDark.text;
+          const accessibilityLabel =
+            badge !== undefined && badge !== null
+              ? `${label}, ${badge} pendência${Number(badge) === 1 ? "" : "s"}`
+              : label;
 
           return (
             <Pressable
@@ -70,7 +83,7 @@ export function MobileTabBar({
               }}
               accessibilityRole="button"
               accessibilityState={{ selected: focused }}
-              accessibilityLabel={label}
+              accessibilityLabel={accessibilityLabel}
               style={{
                 flex: 1,
                 minHeight: theme.space[10] + theme.space[1],
@@ -92,7 +105,7 @@ export function MobileTabBar({
                       height: theme.space[4],
                       paddingHorizontal: theme.space[1],
                       borderRadius: theme.radius.full,
-                      backgroundColor: theme.colors.primary,
+                      backgroundColor: badgeBackground,
                       alignItems: "center",
                       justifyContent: "center",
                     }}
@@ -101,7 +114,7 @@ export function MobileTabBar({
                       style={{
                         ...theme.text.caption,
                         fontWeight: theme.weight.bold,
-                        color: theme.colors.onDark.text,
+                        color: badgeTextColor,
                       }}
                     >
                       {String(badge)}
