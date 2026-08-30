@@ -6,16 +6,20 @@ import {
   sectors,
   users,
 } from "../drizzle/schema";
-import { formatHospitalTimeRange } from "../lib/hospital-time";
+import {
+  formatHospitalDate,
+  formatHospitalTimeRange,
+} from "../lib/hospital-time";
 import { enqueueTrackedPushNotification } from "./push-delivery";
 
 export const SHIFT_ASSIGNED_PUSH_TYPE = "shift_assigned";
+export const SHIFT_UNASSIGNED_PUSH_TYPE = "shift_unassigned";
 
 type SignalDb = NonNullable<
   Parameters<typeof enqueueTrackedPushNotification>[2]
 >;
 
-export type ShiftAssignedPushInput = {
+export type AssignmentLifecyclePushInput = {
   db: SignalDb;
   assignmentId: number;
   professionalId: number;
@@ -29,13 +33,9 @@ export type ShiftAssignedPushInput = {
   };
 };
 
-/** Calendário do hospital (UTC−03:00), sem depender do fuso do servidor. */
-function formatHospitalDate(date: Date): string {
-  const wall = new Date(date.getTime() - 3 * 60 * 60 * 1000);
-  const day = String(wall.getUTCDate()).padStart(2, "0");
-  const month = String(wall.getUTCMonth() + 1).padStart(2, "0");
-  return `${day}/${month}/${wall.getUTCFullYear()}`;
-}
+export type ShiftAssignedPushInput = AssignmentLifecyclePushInput;
+
+type AssignmentLifecycleKind = "assigned" | "unassigned";
 
 async function resolveAssignedUserId(
   db: SignalDb,
@@ -99,6 +99,7 @@ async function loadPlaceNames(
 }
 
 function assignmentCopy(
+  kind: AssignmentLifecycleKind,
   place: { hospitalName: string | null; sectorName: string | null },
   startAt: Date,
   endAt: Date,
@@ -106,22 +107,32 @@ function assignmentCopy(
   const sector = place.sectorName ?? "setor";
   const date = formatHospitalDate(startAt);
   const hours = formatHospitalTimeRange(startAt, endAt);
+  if (kind === "assigned") {
+    const body = place.hospitalName
+      ? `Você foi escalado em ${place.hospitalName} · ${sector}, ${date}, ${hours}.`
+      : `Você foi escalado para ${sector}, ${date}, ${hours}.`;
+    return {
+      title: "Novo plantão na sua escala",
+      body,
+    };
+  }
   const body = place.hospitalName
-    ? `Você foi escalado em ${place.hospitalName} · ${sector}, ${date}, ${hours}.`
-    : `Você foi escalado para ${sector}, ${date}, ${hours}.`;
+    ? `Você não está mais alocado no plantão de ${place.hospitalName} · ${sector}, ${date}, ${hours}.`
+    : `Você não está mais alocado no plantão de ${sector}, ${date}, ${hours}.`;
   return {
-    title: "Novo plantão na sua escala",
+    title: "Alteração na sua escala",
     body,
   };
 }
 
 /**
- * Persiste o push de alocação na mesma transação do assignment.
+ * Persiste o push de ciclo de alocação na mesma transação do assignment.
  * Destinatário sai do profissional persistido + PI ativa no tenant do plantão.
  * Sem token Expo a intenção fica PENDING; a alocação não depende da rede.
  */
-export async function enqueueShiftAssignedPush(
-  input: ShiftAssignedPushInput,
+async function enqueueAssignmentLifecyclePush(
+  kind: AssignmentLifecycleKind,
+  input: AssignmentLifecyclePushInput,
 ): Promise<number> {
   const { db, shift, professionalId, assignmentId } = input;
   const userId = await resolveAssignedUserId(
@@ -137,8 +148,10 @@ export async function enqueueShiftAssignedPush(
   }
 
   const place = await loadPlaceNames(db, shift);
-  const copy = assignmentCopy(place, shift.startAt, shift.endAt);
-  const dedupKey = `shift-assigned:${shift.id}:${professionalId}:${assignmentId}`;
+  const copy = assignmentCopy(kind, place, shift.startAt, shift.endAt);
+  const type =
+    kind === "assigned" ? SHIFT_ASSIGNED_PUSH_TYPE : SHIFT_UNASSIGNED_PUSH_TYPE;
+  const dedupKey = `shift-${kind}:${shift.id}:${professionalId}:${assignmentId}`;
 
   try {
     await enqueueTrackedPushNotification(
@@ -151,12 +164,12 @@ export async function enqueueShiftAssignedPush(
         payload: {
           ...copy,
           data: {
-            type: SHIFT_ASSIGNED_PUSH_TYPE,
+            type,
             institutionId: shift.institutionId,
             shiftInstanceId: shift.id,
             assignmentId,
             professionalId,
-            userId,
+            ...(kind === "assigned" ? { userId } : {}),
           },
         },
       },
@@ -170,4 +183,16 @@ export async function enqueueShiftAssignedPush(
     );
     throw error;
   }
+}
+
+export async function enqueueShiftAssignedPush(
+  input: AssignmentLifecyclePushInput,
+): Promise<number> {
+  return enqueueAssignmentLifecyclePush("assigned", input);
+}
+
+export async function enqueueShiftUnassignedPush(
+  input: AssignmentLifecyclePushInput,
+): Promise<number> {
+  return enqueueAssignmentLifecyclePush("unassigned", input);
 }

@@ -20,6 +20,7 @@ import {
   shiftAuditLog,
   shiftInstances,
   users,
+  notifications,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { dayKeyBrt } from "../server/local-time";
@@ -172,6 +173,7 @@ describe("status do turno derivado das alocações", () => {
   });
 
   beforeEach(async () => {
+    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
     await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId));
     await db.delete(shiftAuditLog).where(eq(shiftAuditLog.shiftInstanceId, shiftInstanceId));
     await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId));
@@ -179,6 +181,7 @@ describe("status do turno derivado das alocações", () => {
   });
 
   afterAll(async () => {
+    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
     await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftInstanceId));
     await db.delete(shiftAuditLog).where(eq(shiftAuditLog.shiftInstanceId, shiftInstanceId));
     await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.shiftInstanceId, shiftInstanceId));

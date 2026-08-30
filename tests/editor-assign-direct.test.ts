@@ -27,7 +27,7 @@ import {
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
-import { enqueueShiftAssignedPush } from "../server/assignment-push-signal";
+import { enqueueShiftAssignedPush, enqueueShiftUnassignedPush } from "../server/assignment-push-signal";
 
 describe("editor.assignDirect", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
@@ -832,6 +832,141 @@ describe("editor.assignDirect", () => {
         ),
       );
     expect(auditRowsAfterRetry).toHaveLength(1);
+
+    const unassignedIntents = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    const removalIntents = unassignedIntents.filter((row) => {
+      const receipt = row.providerReceipt as {
+        payloadData?: Record<string, unknown>;
+      };
+      return receipt.payloadData?.type === "shift_unassigned";
+    });
+    expect(removalIntents).toHaveLength(1);
+    expect(removalIntents[0]).toMatchObject({
+      userId: targetUserId,
+      institutionId,
+      shiftInstanceId,
+      status: "PENDING",
+      dedupKey: `shift-unassigned:${shiftInstanceId}:${targetProfessionalId}:${assignment.assignmentId}`,
+      deepLink: `/shift-details?id=${shiftInstanceId}`,
+    });
+    expect(removalIntents[0].userId).not.toBe(managerUserId);
+    const removalReceipt = removalIntents[0].providerReceipt as {
+      payloadData?: Record<string, unknown>;
+    };
+    expect(removalReceipt.payloadData).toMatchObject({
+      type: "shift_unassigned",
+      shiftInstanceId,
+      assignmentId: assignment.assignmentId,
+      professionalId: targetProfessionalId,
+      institutionId,
+    });
+    expect(removalReceipt.payloadData).not.toHaveProperty("userId");
+    expect(removalIntents[0].title).toBe("Alteração na sua escala");
+    expect(removalIntents[0].body).toMatch(/Você não está mais alocado no plantão/);
+    expect(removalIntents[0].body).toMatch(/\d{2}:\d{2}–\d{2}:\d{2}/);
+    expect(removalIntents[0].body).not.toMatch(/token=|password/i);
+
+    const [shiftRow] = await db
+      .select()
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftInstanceId));
+    await enqueueShiftUnassignedPush({
+      db,
+      assignmentId: assignment.assignmentId,
+      professionalId: targetProfessionalId,
+      shift: {
+        id: shiftRow.id,
+        institutionId: shiftRow.institutionId,
+        hospitalId: shiftRow.hospitalId,
+        sectorId: shiftRow.sectorId,
+        startAt: shiftRow.startAt,
+        endAt: shiftRow.endAt,
+      },
+    });
+    expect(
+      (
+        await db
+          .select()
+          .from(notifications)
+          .where(eq(notifications.institutionId, institutionId))
+      ).filter((row) => {
+        const receipt = row.providerReceipt as {
+          payloadData?: Record<string, unknown>;
+        };
+        return receipt.payloadData?.type === "shift_unassigned";
+      }),
+    ).toHaveLength(1);
+  });
+
+  it("remove alocação sem push quando o profissional não tem PI ativa no tenant", async () => {
+    const caller = editorRouter.createCaller({
+      user: {
+        id: managerUserId,
+        role: "manager",
+        name: "Assign Direct Manager",
+        email: "manager@test.local",
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    } as any);
+
+    const assignment = await caller.assignDirect({
+      shiftInstanceId,
+      professionalId: targetProfessionalId,
+      assignmentType: "ON_DUTY",
+      reason: "Alocar antes de revogar o vínculo",
+    });
+
+    await db
+      .update(professionalInstitutions)
+      .set({ active: false })
+      .where(
+        and(
+          eq(professionalInstitutions.professionalId, targetProfessionalId),
+          eq(professionalInstitutions.institutionId, institutionId),
+        ),
+      );
+
+    try {
+      const result = await caller.unassignDirect({
+        assignmentId: assignment.assignmentId,
+        reason: "Remoção sem destinatário eletrônico",
+      });
+      expect(result.ok).toBe(true);
+
+      const [row] = await db
+        .select({ isActive: shiftAssignmentsV2.isActive })
+        .from(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.id, assignment.assignmentId));
+      expect(row?.isActive).toBe(false);
+
+      const removalIntents = (
+        await db
+          .select()
+          .from(notifications)
+          .where(eq(notifications.institutionId, institutionId))
+      ).filter((item) => {
+        const receipt = item.providerReceipt as {
+          payloadData?: Record<string, unknown>;
+        };
+        return receipt.payloadData?.type === "shift_unassigned";
+      });
+      expect(removalIntents).toHaveLength(0);
+    } finally {
+      await db
+        .update(professionalInstitutions)
+        .set({ active: true })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, targetProfessionalId),
+            eq(professionalInstitutions.institutionId, institutionId),
+          ),
+        );
+    }
   });
 
   it("aloca o GESTOR_MEDICO da escala pelo manager_scope, sem professional_access", async () => {

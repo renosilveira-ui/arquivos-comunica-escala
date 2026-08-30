@@ -30,7 +30,10 @@ import {
   selectRepeatTargets,
   type AllocationRepeatRule,
 } from "./allocation-repeat";
-import { enqueueShiftAssignedPush } from "./assignment-push-signal";
+import {
+  enqueueShiftAssignedPush,
+  enqueueShiftUnassignedPush,
+} from "./assignment-push-signal";
 
 type EditorDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
 
@@ -812,6 +815,15 @@ export const editorRouter = router({
           lockedAssignment.sectorId,
           [lockedAssignment.startAt],
         );
+        const removedProfessionalId = lockedAssignment.professionalId;
+        const removedShift = {
+          id: lockedAssignment.id,
+          institutionId: lockedAssignment.institutionId,
+          hospitalId: lockedAssignment.hospitalId,
+          sectorId: lockedAssignment.sectorId,
+          startAt: lockedAssignment.startAt,
+          endAt: lockedAssignment.endAt,
+        };
 
         const [deactivated] = await tx
           .update(shiftAssignmentsV2)
@@ -881,6 +893,13 @@ export const editorRouter = router({
           },
           { db: tx, strict: true },
         );
+
+        await enqueueShiftUnassignedPush({
+          db: tx,
+          assignmentId,
+          professionalId: removedProfessionalId,
+          shift: removedShift,
+        });
       });
 
       return { ok: true };
