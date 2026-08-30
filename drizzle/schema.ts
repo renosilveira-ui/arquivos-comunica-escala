@@ -645,6 +645,10 @@ export const scheduleInvites = mysqlTable(
     redeemedCount: int("redeemed_count").notNull().default(0),
     expiresAt: timestamp("expires_at").notNull(),
     revokedAt: timestamp("revoked_at"),
+    declinedAt: timestamp("declined_at"),
+    declinedByUserId: int("declined_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

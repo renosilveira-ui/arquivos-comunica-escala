@@ -75,10 +75,14 @@ import {
 } from "../manager-scope-write";
 import {
   parseInviteCode,
+  declineScheduleInviteInTransaction,
   redeemScheduleInviteInTransaction,
   ScheduleInviteError,
 } from "../schedule-invites";
-import { enqueueScheduleInviteAcceptedSignal } from "../schedule-invite-response-signal";
+import {
+  enqueueScheduleInviteAcceptedSignal,
+  enqueueScheduleInviteDeclinedSignal,
+} from "../schedule-invite-response-signal";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -3420,6 +3424,72 @@ authRouter.post(
       }
       console.error("[redeem-invite] Falha transacional");
       res.status(500).json({ error: "Falha ao entrar na escala. Tente novamente." });
+    }
+  },
+);
+
+// POST /api/auth/decline-invite — profissional recusa convite nominal.
+authRouter.post(
+  "/decline-invite",
+  async (req: Request, res: Response): Promise<void> => {
+    let authUser: User;
+    try {
+      authUser = await sdk.authenticateRequest(req);
+    } catch {
+      res.status(401).json({ error: "Autenticação necessária" });
+      return;
+    }
+
+    let parsedInvite: string;
+    try {
+      parsedInvite = parseInviteCode(
+        (req.body as { inviteCode?: unknown })?.inviteCode,
+      );
+    } catch (error) {
+      if (error instanceof ScheduleInviteError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+
+    const db = await getDb();
+    if (!db) {
+      res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+
+    try {
+      const declined = await db.transaction(async (tx) =>
+        declineScheduleInviteInTransaction(tx, {
+          code: parsedInvite,
+          userId: authUser.id,
+        }),
+      );
+      await enqueueScheduleInviteDeclinedSignal({
+        db,
+        scheduleInviteId: declined.scheduleInviteId,
+        institutionId: declined.institutionId,
+        hospitalId: declined.hospitalId,
+        sectorId: declined.sectorId,
+        hospitalName: declined.hospitalName,
+        sectorName: declined.sectorName,
+        createdByUserId: declined.createdByUserId,
+        invitedUserId: declined.invitedUserId,
+      });
+      res.json({
+        ok: true,
+        institutionId: declined.institutionId,
+        hospitalName: declined.hospitalName,
+        sectorName: declined.sectorName,
+      });
+    } catch (error) {
+      if (error instanceof ScheduleInviteError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      console.error("[decline-invite] Falha transacional");
+      res.status(500).json({ error: "Falha ao recusar o convite. Tente novamente." });
     }
   },
 );

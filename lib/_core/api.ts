@@ -804,6 +804,39 @@ export const authApi = {
     };
   },
 
+  async declineInvite(
+    inviteCode: string,
+  ): Promise<{
+    ok: boolean;
+    institutionId?: number;
+    hospitalName?: string;
+    sectorName?: string;
+    error?: string;
+  }> {
+    const res = await apiFetchInternal<{
+      ok?: boolean;
+      institutionId?: number;
+      hospitalName?: string;
+      sectorName?: string;
+      error?: string;
+    }>("/api/auth/decline-invite", {
+      method: "POST",
+      body: JSON.stringify({ inviteCode }),
+    });
+    if (res.ok && res.data?.ok) {
+      return {
+        ok: true,
+        institutionId: res.data.institutionId,
+        hospitalName: res.data.hospitalName,
+        sectorName: res.data.sectorName,
+      };
+    }
+    return {
+      ok: false,
+      error: (res.data as any)?.error ?? res.error ?? "Convite inválido",
+    };
+  },
+
   /**
    * Change own password. Requires current password (anti-CSRF /
    * anti-stolen-token mitigation) + new password.

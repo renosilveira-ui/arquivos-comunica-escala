@@ -254,6 +254,7 @@ export const professionalsRouter = router({
             AND pending_invite.sector_id = ${shift.sectorId}
             AND pending_invite.invited_user_id = p.user_id
             AND pending_invite.revoked_at IS NULL
+            AND pending_invite.declined_at IS NULL
             AND pending_invite.expires_at > ${now}
             AND pending_invite.redeemed_count < pending_invite.max_redemptions
           INNER JOIN shift_instances target_shift

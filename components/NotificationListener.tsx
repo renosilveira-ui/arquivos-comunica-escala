@@ -349,7 +349,8 @@ export async function routeNotificationData(
       return true;
     }
 
-    case "invite_accepted": {
+    case "invite_accepted":
+    case "invite_declined": {
       const alignedSnapshot = await alignNotificationTenant(
         data,
         dependencies,

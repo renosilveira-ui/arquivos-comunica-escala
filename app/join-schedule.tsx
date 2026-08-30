@@ -9,16 +9,19 @@ import { authApi } from "@/lib/_core/api";
 import { trpc } from "@/lib/trpc";
 import { uiAlert } from "@/lib/ui/alert";
 import { useTenantState } from "@/lib/tenant-state";
+import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 export default function JoinScheduleScreen() {
   const router = useRouter();
   const utils = trpc.useUtils();
+  const feedback = useActionFeedback();
   const { setActiveInstitutionId } = useTenantState();
   const params = useLocalSearchParams<{ invite?: string }>();
   const initialInvite =
     typeof params.invite === "string" ? params.invite : "";
   const [code, setCode] = useState(initialInvite);
   const [submitting, setSubmitting] = useState(false);
+  const [declined, setDeclined] = useState(false);
 
   const handleJoin = async (raw = code) => {
     if (!raw.trim()) {
@@ -46,6 +49,33 @@ export default function JoinScheduleScreen() {
           ? `Você entrou em ${result.hospitalName} — ${result.sectorName}.`
           : "O convite foi aceito.",
       );
+      router.replace("/(tabs)");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!code.trim()) {
+      uiAlert("Convite", "Cole o convite que chegou no seu e-mail.");
+      return;
+    }
+    const confirmed = await feedback.confirmDestructive(
+      "Recusar convite",
+      "Tem certeza que deseja recusar este convite?",
+      "Recusar",
+    );
+    if (!confirmed) return;
+
+    setSubmitting(true);
+    try {
+      const result = await authApi.declineInvite(code.trim());
+      if (!result.ok) {
+        feedback.error(result.error ?? "Não foi possível recusar o convite.");
+        return;
+      }
+      setDeclined(true);
+      feedback.success("Convite recusado.");
       router.replace("/(tabs)");
     } finally {
       setSubmitting(false);
@@ -94,6 +124,7 @@ export default function JoinScheduleScreen() {
           autoCorrect={false}
           placeholder="ABCD-EFGH"
           placeholderTextColor={theme.colors.textMuted}
+          editable={!declined}
           style={{
             backgroundColor: theme.colors.surface,
             borderRadius: 10,
@@ -111,8 +142,18 @@ export default function JoinScheduleScreen() {
           onPress={() => {
             void handleJoin();
           }}
-          disabled={submitting}
+          disabled={submitting || declined}
           fullWidth
+        />
+        <AppButton
+          title={submitting ? "Recusando..." : "Recusar convite"}
+          variant="secondary"
+          onPress={() => {
+            void handleDecline();
+          }}
+          disabled={submitting || declined}
+          fullWidth
+          style={{ marginTop: theme.space[2] }}
         />
         {submitting ? (
           <View style={{ marginTop: theme.space[3] }}>
