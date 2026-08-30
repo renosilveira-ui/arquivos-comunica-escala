@@ -78,6 +78,7 @@ import {
   redeemScheduleInviteInTransaction,
   ScheduleInviteError,
 } from "../schedule-invites";
+import { enqueueScheduleInviteAcceptedSignal } from "../schedule-invite-response-signal";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -3394,6 +3395,17 @@ authRouter.post(
             operationalProfileCode: professional.operationalProfileCode,
           },
         });
+      });
+      await enqueueScheduleInviteAcceptedSignal({
+        db,
+        scheduleInviteId: joined.scheduleInviteId,
+        institutionId: joined.institutionId,
+        hospitalId: joined.hospitalId,
+        sectorId: joined.sectorId,
+        hospitalName: joined.hospitalName,
+        sectorName: joined.sectorName,
+        createdByUserId: joined.createdByUserId,
+        invitedUserId: joined.invitedUserId,
       });
       res.json({
         ok: true,

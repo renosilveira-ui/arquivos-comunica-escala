@@ -235,6 +235,57 @@ describe("roteamento de push para o plantão exato", () => {
     expect(calls).toEqual(["invalidate", "trocas"]);
   });
 
+  it("abre Convites da escala quando o convite nominal é aceito", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 22, revision: 3 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "invite_accepted",
+          institutionId: 11,
+          scheduleInviteId: 55,
+          hospitalId: 3,
+          sectorId: 4,
+          invitedUserId: 99,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => {
+            calls.push("allowed");
+            return [11, 22];
+          },
+          setActiveInstitutionId: async (institutionId) => {
+            calls.push(`set:${institutionId}`);
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          navigateToScheduleInvites: () => {
+            calls.push(`schedule-invites:tenant:${activeTenant.institutionId}`);
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual([
+      "allowed",
+      "set:11",
+      "invalidate",
+      "schedule-invites:tenant:11",
+    ]);
+  });
+
   it("alocação abre o plantão exato", async () => {
     const calls: string[] = [];
     let activeTenant = { institutionId: 11, revision: 1 };

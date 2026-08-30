@@ -20,6 +20,7 @@ import {
   hospitals,
   institutions,
   medicalSpecialties,
+  notifications,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -295,6 +296,9 @@ describe("auto-cadastro público e aprovação", () => {
     await db
       .delete(hospitals)
       .where(inArray(hospitals.id, [hospitalA, hospitalB]));
+    await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     await db
       .delete(institutions)
