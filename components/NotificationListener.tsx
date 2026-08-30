@@ -352,6 +352,7 @@ export async function routeNotificationData(
     case "manager_confirmation_escalation":
     case "replacement_accepted":
     case "replacement_declined":
+    case "shift_assigned":
     case "shift_reminder": {
       const shiftInstanceId = parseNotificationShiftInstanceId(
         data.shiftInstanceId,
