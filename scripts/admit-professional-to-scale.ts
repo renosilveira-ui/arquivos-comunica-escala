@@ -1,20 +1,26 @@
 /**
- * Admite um médico da sala de espera numa escala (instituição + hospital +
- * setor), gravando o mesmo par de linhas que o resgate do convite nominal:
- * professional_institutions + professional_access setorial.
+ * Atalho excepcional: libera um médico já cadastrado numa escala
+ * (instituição + hospital + setor), gravando o mesmo par de linhas que o
+ * resgate do convite nominal — professional_institutions +
+ * professional_access setorial.
+ *
+ * Caminho normal do produto: o gestor envia convite nominal e o médico
+ * resgata. A especialidade NÃO concede escala. Este script existe só para
+ * casos pontuais (convite expirado, e-mail perdido, correção operacional)
+ * em que o PO autoriza gravar o acesso direto.
  *
  * Uso (dry-run):
  *   DATABASE_URL='mysql://...' DATABASE_SSL=require \
  *     pnpm exec tsx scripts/admit-professional-to-scale.ts \
  *       --email ananda.arruda@gmail.com \
  *       --hospital "Hospital São Carlos" \
- *       --sector "Sala de Recuperação"
+ *       --sector "TRR" --sector "Emergência" --sector "UTI"
  *
  * Gravar:
  *   ... --apply
  *
  * Sem --apply só mostra o plano. Idempotente: vínculo e acesso já
- * existentes não são duplicados.
+ * existentes não são duplicados. Não consulta especialidade / allowlist.
  */
 import "dotenv/config";
 import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
@@ -24,7 +30,7 @@ import { resolveSslConfig } from "../server/_core/db-ssl";
 type Args = {
   email: string;
   hospitalName: string;
-  sectorName: string;
+  sectorNames: string[];
   apply: boolean;
 };
 
@@ -70,7 +76,7 @@ type AccessRow = RowDataPacket & {
 function parseArgs(argv: string[]): Args {
   let email: string | undefined;
   let hospitalName: string | undefined;
-  let sectorName: string | undefined;
+  const sectorNames: string[] = [];
   let apply = false;
 
   for (let i = 2; i < argv.length; i++) {
@@ -78,18 +84,26 @@ function parseArgs(argv: string[]): Args {
     if (arg === "--apply") apply = true;
     else if (arg === "--email") email = argv[++i];
     else if (arg === "--hospital") hospitalName = argv[++i];
-    else if (arg === "--sector") sectorName = argv[++i];
-    else throw new Error(`Argumento desconhecido: ${arg}`);
+    else if (arg === "--sector") {
+      const value = argv[++i];
+      if (!value?.trim()) throw new Error("Informe --sector");
+      sectorNames.push(value.trim());
+    } else throw new Error(`Argumento desconhecido: ${arg}`);
   }
 
   if (!email?.trim()) throw new Error("Informe --email");
   if (!hospitalName?.trim()) throw new Error("Informe --hospital");
-  if (!sectorName?.trim()) throw new Error("Informe --sector");
+  if (sectorNames.length === 0) throw new Error("Informe ao menos um --sector");
+
+  const uniqueSectors = [...new Set(sectorNames)];
+  if (uniqueSectors.length !== sectorNames.length) {
+    throw new Error("Há --sector repetido");
+  }
 
   return {
     email: email.trim().toLowerCase(),
     hospitalName: hospitalName.trim(),
-    sectorName: sectorName.trim(),
+    sectorNames: uniqueSectors,
     apply,
   };
 }
@@ -135,7 +149,7 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
   professionalId: number;
   institutionId: number;
   hospitalId: number;
-  sectorId: number;
+  sectorIds: number[];
 }> {
   const args = parseArgs(argv);
   const conn = await mysql.createConnection(buildConnectionOptions());
@@ -194,18 +208,22 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
       );
     }
 
-    const sector = await one<SectorRow>(
-      conn,
-      `SELECT id, name, institution_id AS institutionId, hospital_id AS hospitalId
-       FROM sectors
-       WHERE name = ? AND hospital_id = ? AND institution_id = ?
-       LIMIT 1`,
-      [args.sectorName, hospital.id, hospital.institutionId],
-    );
-    if (!sector) {
-      throw new Error(
-        `Setor "${args.sectorName}" não encontrado em ${hospital.name}`,
+    const sectors: SectorRow[] = [];
+    for (const sectorName of args.sectorNames) {
+      const sector = await one<SectorRow>(
+        conn,
+        `SELECT id, name, institution_id AS institutionId, hospital_id AS hospitalId
+         FROM sectors
+         WHERE name = ? AND hospital_id = ? AND institution_id = ?
+         LIMIT 1`,
+        [sectorName, hospital.id, hospital.institutionId],
       );
+      if (!sector) {
+        throw new Error(
+          `Setor "${sectorName}" não encontrado em ${hospital.name}`,
+        );
+      }
+      sectors.push(sector);
     }
 
     const membership = await one<MembershipRow>(
@@ -229,21 +247,29 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
       );
     }
 
-    const access = await one<AccessRow>(
-      conn,
-      `SELECT id, can_access AS canAccess
-       FROM professional_access
-       WHERE professional_id = ?
-         AND institution_id = ?
-         AND hospital_id = ?
-         AND sector_id = ?
-       LIMIT 1`,
-      [professional.id, hospital.institutionId, hospital.id, sector.id],
-    );
+    const sectorPlans = [];
+    for (const sector of sectors) {
+      const access = await one<AccessRow>(
+        conn,
+        `SELECT id, can_access AS canAccess
+         FROM professional_access
+         WHERE professional_id = ?
+           AND institution_id = ?
+           AND hospital_id = ?
+           AND sector_id = ?
+         LIMIT 1`,
+        [professional.id, hospital.institutionId, hospital.id, sector.id],
+      );
+      sectorPlans.push({
+        sector,
+        access,
+        needAccess: !access || !access.canAccess,
+      });
+    }
 
     const needMembership = !membership || !membership.active;
-    const needAccess = !access || !access.canAccess;
-    const alreadyInScale = !needMembership && !needAccess;
+    const alreadyInScale =
+      !needMembership && sectorPlans.every((row) => !row.needAccess);
 
     const plan = {
       userId: user.id,
@@ -254,11 +280,15 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
       institutionName: hospital.institutionName,
       hospitalId: hospital.id,
       hospitalName: hospital.name,
-      sectorId: sector.id,
-      sectorName: sector.name,
       needMembership,
-      needAccess,
       alreadyInScale,
+      exceptionalBypassOfInvite: true,
+      specialtyNotUsed: true,
+      sectors: sectorPlans.map((row) => ({
+        sectorId: row.sector.id,
+        sectorName: row.sector.name,
+        needAccess: row.needAccess,
+      })),
     };
     console.log("[admit-to-scale] plano:");
     console.log(JSON.stringify(plan, null, 2));
@@ -272,7 +302,7 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
         professionalId: professional.id,
         institutionId: hospital.institutionId,
         hospitalId: hospital.id,
-        sectorId: sector.id,
+        sectorIds: sectors.map((sector) => sector.id),
       };
     }
 
@@ -285,7 +315,7 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
         professionalId: professional.id,
         institutionId: hospital.institutionId,
         hospitalId: hospital.id,
-        sectorId: sector.id,
+        sectorIds: sectors.map((sector) => sector.id),
       };
     }
 
@@ -301,12 +331,11 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
          WHERE si.invited_user_id = ?
            AND si.institution_id = ?
            AND si.hospital_id = ?
-           AND si.sector_id = ?
          ORDER BY si.id DESC
          LIMIT 1
        )
        LIMIT 1`,
-      [user.id, hospital.institutionId, hospital.id, sector.id],
+      [user.id, hospital.institutionId, hospital.id],
     );
     const actorUserId = actor?.id ?? user.id;
     const actorRole =
@@ -333,45 +362,54 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
         );
       }
 
-      if (!access) {
+      for (const row of sectorPlans) {
+        if (!row.needAccess) continue;
+        if (!row.access) {
+          await conn.execute(
+            `INSERT INTO professional_access
+               (institution_id, professional_id, hospital_id, sector_id, can_access)
+             VALUES (?, ?, ?, ?, TRUE)`,
+            [
+              hospital.institutionId,
+              professional.id,
+              hospital.id,
+              row.sector.id,
+            ],
+          );
+        } else {
+          await conn.execute(
+            `UPDATE professional_access
+             SET can_access = TRUE
+             WHERE id = ? AND professional_id = ? AND can_access = FALSE`,
+            [row.access.id, professional.id],
+          );
+        }
+
         await conn.execute(
-          `INSERT INTO professional_access
-             (institution_id, professional_id, hospital_id, sector_id, can_access)
-           VALUES (?, ?, ?, ?, TRUE)`,
-          [hospital.institutionId, professional.id, hospital.id, sector.id],
-        );
-      } else if (!access.canAccess) {
-        await conn.execute(
-          `UPDATE professional_access
-           SET can_access = TRUE
-           WHERE id = ? AND professional_id = ? AND can_access = FALSE`,
-          [access.id, professional.id],
+          `INSERT INTO audit_trail
+             (actor_user_id, actor_role, actor_name, action, entity_type, entity_id,
+              description, metadata, institution_id, hospital_id, sector_id)
+           VALUES (?, ?, ?, 'USER_UPDATED', 'USER', ?,
+                   ?, ?, ?, ?, ?)`,
+          [
+            actorUserId,
+            actorRole,
+            "admit-professional-to-scale",
+            user.id,
+            `Acesso operacional excepcional (sem convite) concedido à escala ${hospital.name} / ${row.sector.name}`,
+            JSON.stringify({
+              professionalId: professional.id,
+              hospitalId: hospital.id,
+              sectorId: row.sector.id,
+              source: "admit-professional-to-scale",
+              bypass: "invite",
+            }),
+            hospital.institutionId,
+            hospital.id,
+            row.sector.id,
+          ],
         );
       }
-
-      await conn.execute(
-        `INSERT INTO audit_trail
-           (actor_user_id, actor_role, actor_name, action, entity_type, entity_id,
-            description, metadata, institution_id, hospital_id, sector_id)
-         VALUES (?, ?, ?, 'USER_UPDATED', 'USER', ?,
-                 ?, ?, ?, ?, ?)`,
-        [
-          actorUserId,
-          actorRole,
-          "admit-professional-to-scale",
-          user.id,
-          `Acesso operacional concedido à escala ${hospital.name} / ${sector.name}`,
-          JSON.stringify({
-            professionalId: professional.id,
-            hospitalId: hospital.id,
-            sectorId: sector.id,
-            source: "admit-professional-to-scale",
-          }),
-          hospital.institutionId,
-          hospital.id,
-          sector.id,
-        ],
-      );
 
       await conn.commit();
     } catch (error) {
@@ -387,7 +425,7 @@ export async function admitProfessionalToScale(argv = process.argv): Promise<{
       professionalId: professional.id,
       institutionId: hospital.institutionId,
       hospitalId: hospital.id,
-      sectorId: sector.id,
+      sectorIds: sectors.map((sector) => sector.id),
     };
   } finally {
     await conn.end();

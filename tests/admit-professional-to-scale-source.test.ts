@@ -9,6 +9,7 @@ describe("admit-professional-to-scale", () => {
     expect(source).toContain("--email");
     expect(source).toContain("--hospital");
     expect(source).toContain("--sector");
+    expect(source).toContain("Informe ao menos um --sector");
     expect(source).toContain('timezone: "Z"');
     expect(source).toContain("beginTransaction");
     expect(source).toContain("INSERT INTO professional_institutions");
@@ -20,10 +21,15 @@ describe("admit-professional-to-scale", () => {
     expect(source).not.toContain("passwordHash");
   });
 
-  it("recusa médico preso a outra casa e não gera código de convite", () => {
-    expect(source).toContain("já tem vínculo ativo em outra instituição");
-    expect(source).toContain("created_by_user_id");
+  it("é atalho excepcional de convite e ignora especialidade", () => {
+    expect(source).toContain("A especialidade NÃO concede escala");
+    expect(source).toContain("Não consulta especialidade / allowlist");
+    expect(source).toContain("specialtyNotUsed");
+    expect(source).toContain("bypass: \"invite\"");
+    expect(source).not.toContain("qualificationMatches");
+    expect(source).not.toContain("medical_specialty_id");
     expect(source).not.toContain("generateScheduleInviteCode");
     expect(source).not.toContain("INSERT INTO schedule_invites");
+    expect(source).toContain("já tem vínculo ativo em outra instituição");
   });
 });
