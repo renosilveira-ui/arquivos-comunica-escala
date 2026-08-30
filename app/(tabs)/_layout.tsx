@@ -248,6 +248,8 @@ export default function TabLayout() {
   const swapOffersPending = actionableSwapCount?.swapOffers ?? 0;
   const swapBadge = navigationBadgeValue(swapOffersPending);
   const trocasTabBadge = showTrocasTab ? swapBadge : undefined;
+  // Desktop gestor: Trocas oculta; aceitar/recusar fica em Solicitações
+  // (pending.tsx → AvailableSwapsList, fluxo peer A↔B — não approveByManager).
   const pendingTabBadge =
     showManagementTabs && canApproveAssignments && !showTrocasTab ? swapBadge : undefined;
   const attentionBadgeStyle = {
