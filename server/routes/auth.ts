@@ -681,6 +681,34 @@ function hashResetToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/**
+ * Marca o token recém-emitido como usado quando o correio não entregou.
+ * Guarda por hash + usedAt IS NULL: se o reset venceu a corrida, não reabre.
+ * Reusa o `db` do caller (não chama getDb de novo) e devolve se o UPDATE
+ * chegou a ser executado — o log não pode afirmar revogação sem isso.
+ */
+async function revokeFreshPasswordResetToken(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  userId: number,
+  tokenHash: string,
+): Promise<boolean> {
+  try {
+    await db
+      .update(passwordResets)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(passwordResets.userId, userId),
+          eq(passwordResets.tokenHash, tokenHash),
+          isNull(passwordResets.usedAt),
+        ),
+      );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type AuditMembershipSnapshot = {
   membershipId: number;
   professionalId: number;
@@ -918,20 +946,39 @@ authRouter.post(
 
       if (delivery) {
         const link = `${publicBaseUrl}/reset-password?token=${token}`;
-        await mailer.sendMail({
-          to: delivery.email,
-          subject: "Escala+ — redefinir sua senha",
-          text: [
-            `Olá, ${delivery.firstName}.`,
-            "",
-            "Recebemos um pedido para redefinir a senha da sua conta no Escala+.",
-            "Abra o link abaixo para escolher uma nova senha (válido por 30 minutos):",
-            "",
-            link,
-            "",
-            "Se você não pediu isso, ignore este e-mail — sua senha continua a mesma.",
-          ].join("\n"),
-        });
+        let delivered = false;
+        try {
+          const mailResult = await mailer.sendMail({
+            to: delivery.email,
+            subject: "Escala+ — redefinir sua senha",
+            text: [
+              `Olá, ${delivery.firstName}.`,
+              "",
+              "Recebemos um pedido para redefinir a senha da sua conta no Escala+.",
+              "Abra o link abaixo para escolher uma nova senha (válido por 30 minutos):",
+              "",
+              link,
+              "",
+              "Se você não pediu isso, ignore este e-mail — sua senha continua a mesma.",
+            ].join("\n"),
+          });
+          delivered = mailResult.delivered;
+        } catch {
+          // sendMail hoje devolve delivered=false em vez de lançar; se passar
+          // a lançar, o token recém-gravado não pode ficar utilizável.
+        }
+        if (!delivered) {
+          const revoked = await revokeFreshPasswordResetToken(
+            db,
+            user.id,
+            tokenHash,
+          );
+          console.error(
+            revoked
+              ? "[forgot-password] E-mail não entregue; token recém-emitido revogado"
+              : "[forgot-password] E-mail não entregue; revogação do token recém-emitido não confirmada",
+          );
+        }
       }
     } catch (error) {
       // The public response is deliberately indistinguishable for missing
