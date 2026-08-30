@@ -48,6 +48,7 @@ export default defineConfig({
       "tests/schedule-context-allowlist-migration.test.ts",
       "tests/consolidate-unified-sector-contexts-migration.test.ts",
       "tests/provision-sala-recuperacao-source.test.ts",
+      "tests/admit-professional-to-scale-source.test.ts",
       "tests/hospital-time.test.ts",
       "tests/sala-recuperacao-shift-blueprint.test.ts",
       "tests/open-month-shifts.test.ts",
