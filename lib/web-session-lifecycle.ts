@@ -23,10 +23,20 @@ export function shouldAttachNativeSessionGateLifecycle(
 }
 
 /**
+ * Só o nativo revalida `/me` ao voltar do segundo plano. A aba web já é
+ * tratada em #287: foco/visibility jamais disparam esse pedido.
+ */
+export function shouldSoftRevalidateNativeSessionOnForeground(
+  platform: string,
+): boolean {
+  return platform !== "web";
+}
+
+/**
  * Android dispara `inactive` no seletor de apps, overlay de notificação e
- * transição de Activity. Tratar isso como hidden fechava o gate, limpava o
- * cache e — com flap de NetInfo — disparava um `/me` que expulsava o
- * usuário para o login. Só `background` é ausência real do app.
+ * transição de Activity. Só `background` é ausência real do app — e mesmo
+ * assim não fecha o gate: limpar cache/desmontar o Stack no segundo plano
+ * mandava o médico ao login, enquanto o force-close relogava do disco.
  */
 export function isNativeAppSessionVisible(appState: string): boolean {
   return appState !== "background";
@@ -40,23 +50,21 @@ export function initialTenantAuthorizationActivityForPlatform(
     return { visible: true, online: true, revision: 0 };
   }
   return {
-    visible: native.visible,
+    visible: true,
     online: native.online,
     revision: 0,
   };
 }
 
 /**
- * No web o lifecycle da aba e flaps de NetInfo/online nunca movem o gate.
- * Background nativo continua CLOSE; reconnect nativo continua REVALIDATE.
+ * Nem a aba web nem o segundo plano nativo movem o gate. CLOSE/clear no
+ * background desmontava o navigator e o médico via login; a revogação real
+ * continua no `/me` soft do resume e no 401 do tRPC.
  */
 export function applyTenantAuthorizationActivityPatch(
   current: TenantAuthorizationActivity,
-  patch: Partial<Pick<TenantAuthorizationActivity, "visible" | "online">>,
-  platform: string,
+  _patch: Partial<Pick<TenantAuthorizationActivity, "visible" | "online">>,
+  _platform: string,
 ): ReturnType<typeof transitionTenantAuthorizationActivity> {
-  if (platform === "web") {
-    return { state: current, action: "NONE" };
-  }
-  return transitionTenantAuthorizationActivity(current, patch);
+  return { state: current, action: "NONE" };
 }

@@ -23,15 +23,16 @@ describe("sessão web sob troca rápida de aba", () => {
     expect(boundary).not.toMatch(/addEventListener\?\.\(\"offline\"/);
   });
 
-  it("voltar à aba não refetch /me — #287 ainda disparava o request que deslogava", () => {
+  it("voltar à aba web não refetch /me — #287 ainda disparava o request que deslogava", () => {
     const layout = readFileSync("app/_layout.tsx", "utf8");
-    const effect = layout.slice(
+    expect(layout).toContain("shouldAttachNativeSessionGateLifecycle");
+    expect(layout).toContain("shouldSoftRevalidateNativeSessionOnForeground");
+    const webGuard = layout.slice(
       layout.indexOf("if (!shouldAttachNativeSessionGateLifecycle"),
-      layout.indexOf("useEffect(() => {", layout.indexOf("const coordinator = coordinatorRef.current")),
+      layout.indexOf("let nativeWasBackground"),
     );
-    expect(effect).not.toContain("void refetch()");
-    expect(effect).not.toContain("updateActivity({ visible: true })");
-    expect(effect).not.toContain("visible: false");
+    expect(webGuard).toContain("return undefined");
+    expect(webGuard).not.toContain("void refetch()");
   });
 
   it("QueryClient não refetch no foco nem no reconnect", () => {
@@ -50,14 +51,15 @@ describe("sessão web sob troca rápida de aba", () => {
     expect(boundary).toContain("equivalente nativo do #287");
   });
 
-  it("Android só trata background como hidden — inactive do seletor não fecha o gate", () => {
+  it("Android só trata background como hidden — inactive do seletor não revalida", () => {
     const layout = readFileSync("app/_layout.tsx", "utf8");
     const effect = layout.slice(
       layout.indexOf("if (!shouldAttachNativeSessionGateLifecycle"),
       layout.indexOf("useEffect(() => {", layout.indexOf("const coordinator = coordinatorRef.current")),
     );
     expect(effect).toContain("isNativeAppSessionVisible(nextState)");
-    expect(effect).not.toContain('visible: nextState === "active"');
+    expect(effect).toContain("void refetch()");
+    expect(effect).not.toContain("updateActivity({ visible:");
     expect(layout).toContain("isNativeAppSessionVisible(AppState.currentState)");
   });
 
@@ -109,8 +111,12 @@ describe("sessão web sob troca rápida de aba", () => {
     expect(mountEffect).not.toContain("return;");
   });
 
-  it("background nativo fecha gate e visible online só revalida handshake institucional", () => {
+  it("background nativo não fecha o gate — resume só revalida /me em modo soft", () => {
     let activity = { visible: true, online: true, revision: 0 };
+    expect(
+      applyTenantAuthorizationActivityPatch(activity, { visible: false }, "ios")
+        .action,
+    ).toBe("NONE");
     const hidden = transitionTenantAuthorizationActivity(activity, {
       visible: false,
     });
@@ -125,7 +131,7 @@ describe("sessão web sob troca rápida de aba", () => {
     expect(visibleAgain.state.online).toBe(true);
   });
 
-  it("os mesmos patches no web não fecham o gate — regressão do #287", () => {
+  it("os mesmos patches no web e no nativo não fecham o gate — regressão do #287", () => {
     const activity = { visible: true, online: true, revision: 2 };
     expect(
       applyTenantAuthorizationActivityPatch(activity, { visible: false }, "web")
@@ -133,6 +139,14 @@ describe("sessão web sob troca rápida de aba", () => {
     ).toBe("NONE");
     expect(
       applyTenantAuthorizationActivityPatch(activity, { online: false }, "web")
+        .action,
+    ).toBe("NONE");
+    expect(
+      applyTenantAuthorizationActivityPatch(activity, { visible: false }, "ios")
+        .action,
+    ).toBe("NONE");
+    expect(
+      applyTenantAuthorizationActivityPatch(activity, { online: false }, "android")
         .action,
     ).toBe("NONE");
   });
