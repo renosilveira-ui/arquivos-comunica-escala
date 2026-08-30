@@ -35,7 +35,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     );
     const assumable = source.slice(start, end);
     expect(assumable).toContain("managerScopeCoversContext");
-    expect(assumable).toContain("accessCoversContext");
+    expect(assumable).toContain("accessCoversScheduleContext");
     expect(assumable).toContain("qualificationMatches");
     expect(assumable).toContain('roleInInstitution === "GESTOR_MEDICO"');
     expect(assumable).toContain('roleInInstitution === "GESTOR_PLUS"');
@@ -46,7 +46,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     );
     expect(eligible).toContain("pendingNamedInviteCoversScale");
     expect(source).toContain("isNull(scheduleInvites.declinedAt)");
-    expect(eligible).toContain("accessCoversContext");
+    expect(eligible).toContain("accessCoversScheduleContext");
     expect(eligible).toContain("managerScopeCoversContext");
     expect(eligible).not.toContain("qualificationMatches");
     expect(eligible).not.toContain("listAssumableScheduleContextIds");
