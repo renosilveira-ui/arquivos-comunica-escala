@@ -42,6 +42,7 @@ export default defineConfig({
       "tests/schedule-invites-router.test.ts",
       "tests/schedule-invites-source.test.ts",
       "tests/schedule-invites-named-migration.test.ts",
+      "tests/schedule-invite-decline-migration.test.ts",
       "tests/professional-institutions-role-migration.test.ts",
       "tests/schedule-context-allowlist-migration.test.ts",
       "tests/consolidate-unified-sector-contexts-migration.test.ts",

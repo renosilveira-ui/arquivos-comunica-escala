@@ -217,6 +217,7 @@ export async function pendingNamedInviteCoversScale(
         eq(scheduleInvites.sectorId, input.sectorId),
         eq(scheduleInvites.invitedUserId, input.userId),
         isNull(scheduleInvites.revokedAt),
+        isNull(scheduleInvites.declinedAt),
         gt(scheduleInvites.expiresAt, input.now ?? new Date()),
         sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
       ),

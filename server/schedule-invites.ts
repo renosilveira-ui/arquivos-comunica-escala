@@ -58,6 +58,18 @@ type InviteDb = Pick<
   "select" | "insert" | "update"
 >;
 
+function updateAffectedRows(result: unknown): number {
+  if (result && typeof result === "object" && "affectedRows" in result) {
+    return Number((result as { affectedRows?: number }).affectedRows);
+  }
+  if (Array.isArray(result)) {
+    return Number(
+      (result[0] as { affectedRows?: number } | undefined)?.affectedRows,
+    );
+  }
+  return 0;
+}
+
 export async function peekScheduleInviteInstitution(
   db: InviteDb,
   code: string,
@@ -69,6 +81,7 @@ export async function peekScheduleInviteInstitution(
       institutionId: scheduleInvites.institutionId,
       expiresAt: scheduleInvites.expiresAt,
       revokedAt: scheduleInvites.revokedAt,
+      declinedAt: scheduleInvites.declinedAt,
       redeemedCount: scheduleInvites.redeemedCount,
       maxRedemptions: scheduleInvites.maxRedemptions,
     })
@@ -78,6 +91,7 @@ export async function peekScheduleInviteInstitution(
   if (
     !invite ||
     invite.revokedAt ||
+    invite.declinedAt ||
     invite.expiresAt.getTime() <= now.getTime() ||
     invite.redeemedCount >= invite.maxRedemptions
   ) {
@@ -147,6 +161,7 @@ export async function redeemScheduleInviteInTransaction(
   if (
     !invite ||
     invite.revokedAt ||
+    invite.declinedAt ||
     invite.expiresAt.getTime() <= now.getTime() ||
     invite.redeemedCount >= invite.maxRedemptions
   ) {
@@ -287,19 +302,11 @@ export async function redeemScheduleInviteInTransaction(
       and(
         eq(scheduleInvites.id, invite.id),
         isNull(scheduleInvites.revokedAt),
+        isNull(scheduleInvites.declinedAt),
         sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
       ),
     );
-  const affected =
-    increment && typeof increment === "object" && "affectedRows" in increment
-      ? Number((increment as { affectedRows?: number }).affectedRows)
-      : Array.isArray(increment)
-        ? Number(
-            (increment[0] as { affectedRows?: number } | undefined)
-              ?.affectedRows,
-          )
-        : 0;
-  if (affected !== 1) {
+  if (updateAffectedRows(increment) !== 1) {
     throw new ScheduleInviteError(400, "Convite inválido ou expirado");
   }
 
@@ -332,6 +339,147 @@ export async function redeemScheduleInviteInTransaction(
     scheduleInviteId: invite.id,
     createdByUserId: invite.createdByUserId,
     invitedUserId: invite.invitedUserId!,
+  };
+}
+
+export async function declineScheduleInviteInTransaction(
+  tx: InviteDb,
+  input: {
+    code: string;
+    userId: number;
+    now?: Date;
+  },
+): Promise<{
+  institutionId: number;
+  hospitalId: number;
+  sectorId: number;
+  hospitalName: string;
+  sectorName: string;
+  scheduleInviteId: number;
+  createdByUserId: number;
+  invitedUserId: number;
+}> {
+  const now = input.now ?? new Date();
+  const codeHash = hashScheduleInviteCode(input.code);
+  const [invite] = await tx
+    .select()
+    .from(scheduleInvites)
+    .where(eq(scheduleInvites.codeHash, codeHash))
+    .limit(1)
+    .for("update");
+  if (!invite) {
+    throw new ScheduleInviteError(400, "Convite inválido ou expirado");
+  }
+  if (invite.declinedAt) {
+    throw new ScheduleInviteError(400, "Este convite já foi recusado");
+  }
+  if (
+    invite.revokedAt ||
+    invite.expiresAt.getTime() <= now.getTime() ||
+    invite.redeemedCount >= invite.maxRedemptions
+  ) {
+    throw new ScheduleInviteError(400, "Convite inválido ou expirado");
+  }
+  if (!invite.invitedUserId || invite.invitedUserId !== input.userId) {
+    throw new ScheduleInviteError(
+      403,
+      "Este convite não foi emitido para a sua conta",
+    );
+  }
+
+  const [sector] = await tx
+    .select({
+      id: sectors.id,
+      name: sectors.name,
+      institutionId: sectors.institutionId,
+      hospitalId: sectors.hospitalId,
+    })
+    .from(sectors)
+    .where(
+      and(
+        eq(sectors.id, invite.sectorId),
+        eq(sectors.institutionId, invite.institutionId),
+        eq(sectors.hospitalId, invite.hospitalId),
+      ),
+    )
+    .limit(1)
+    .for("share");
+  const [hospital] = await tx
+    .select({ id: hospitals.id, name: hospitals.name })
+    .from(hospitals)
+    .where(
+      and(
+        eq(hospitals.id, invite.hospitalId),
+        eq(hospitals.institutionId, invite.institutionId),
+      ),
+    )
+    .limit(1)
+    .for("share");
+  if (!sector || !hospital) {
+    throw new ScheduleInviteError(400, "Convite inválido ou expirado");
+  }
+
+  const declined = await tx
+    .update(scheduleInvites)
+    .set({
+      declinedAt: now,
+      declinedByUserId: input.userId,
+    })
+    .where(
+      and(
+        eq(scheduleInvites.id, invite.id),
+        isNull(scheduleInvites.revokedAt),
+        isNull(scheduleInvites.declinedAt),
+        sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
+        sql`${scheduleInvites.expiresAt} > ${now}`,
+      ),
+    );
+  if (updateAffectedRows(declined) !== 1) {
+    const [current] = await tx
+      .select({
+        declinedAt: scheduleInvites.declinedAt,
+        redeemedCount: scheduleInvites.redeemedCount,
+        maxRedemptions: scheduleInvites.maxRedemptions,
+      })
+      .from(scheduleInvites)
+      .where(eq(scheduleInvites.id, invite.id))
+      .limit(1);
+    if (current?.declinedAt) {
+      throw new ScheduleInviteError(400, "Este convite já foi recusado");
+    }
+    throw new ScheduleInviteError(400, "Convite inválido ou expirado");
+  }
+
+  await recordAudit(
+    {
+      institutionId: invite.institutionId,
+      action: "USER_UPDATED",
+      entityType: "USER",
+      entityId: input.userId,
+      actorUserId: input.userId,
+      actorRole: "doctor",
+      description: "Convite nominal recusado",
+      metadata: {
+        scheduleInviteId: invite.id,
+        institutionId: invite.institutionId,
+        hospitalId: invite.hospitalId,
+        sectorId: invite.sectorId,
+      },
+      hospitalId: invite.hospitalId,
+      sectorId: invite.sectorId,
+    },
+    { db: tx, strict: true },
+  );
+
+  return {
+    institutionId: invite.institutionId,
+    hospitalId: invite.hospitalId,
+    sectorId: invite.sectorId,
+    hospitalName: hospital.name,
+    sectorName: sector.name,
+    scheduleInviteId: invite.id,
+    createdByUserId: invite.createdByUserId,
+    invitedUserId: invite.invitedUserId,
   };
 }
 
@@ -409,6 +557,7 @@ export const scheduleInvitesRouter = router({
         and(
           eq(scheduleInvites.institutionId, actor.institutionId),
           isNull(scheduleInvites.revokedAt),
+          isNull(scheduleInvites.declinedAt),
         ),
       );
     return rows.filter((row) =>
@@ -707,6 +856,7 @@ export const scheduleInvitesRouter = router({
               eq(scheduleInvites.sectorId, input.sectorId),
               eq(scheduleInvites.invitedUserId, invitee.userId),
               isNull(scheduleInvites.revokedAt),
+              isNull(scheduleInvites.declinedAt),
               sql`${scheduleInvites.id} <> ${inserted.id}`,
               sql`${scheduleInvites.redeemedCount} = 0`,
             ),

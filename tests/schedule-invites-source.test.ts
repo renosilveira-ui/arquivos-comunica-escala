@@ -9,6 +9,8 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).toContain("let awaitingApproval = hasInstitution");
     expect(source).toContain("O cadastro não usa código de convite");
     expect(source).toContain('"/redeem-invite"');
+    expect(source).toContain('"/decline-invite"');
+    expect(source).toContain("declineScheduleInviteInTransaction");
     expect(source).toContain("ScheduleInviteError");
     expect(source).not.toContain("peekScheduleInviteInstitution");
   });
@@ -20,6 +22,8 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).toContain("Sua especialidade não é aceita nesta escala");
     expect(source).toContain("Você já está nesta escala");
     expect(source).toContain("Convite inválido ou expirado");
+    expect(source).toContain("Este convite já foi recusado");
+    expect(source).toContain("isNull(scheduleInvites.declinedAt)");
     expect(source).toContain("Este convite não foi emitido para a sua conta");
     expect(source).toContain("invitedUserId");
     expect(source).toContain("assertCanManageSector");
@@ -54,6 +58,10 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(signup).not.toContain("Convite da escala");
     expect(signup).not.toContain("schedule-invite-code");
     expect(join).not.toContain("schedule-invite-code");
+    expect(join).toContain("Recusar convite");
+    expect(join).toContain("confirmDestructive");
+    expect(join).toContain("authApi.declineInvite");
+    expect(join).toContain("setDeclined(true)");
     expect(invites).toContain("scheduleInvites.create");
     expect(invites).toContain("userIds");
     expect(invites).toContain("Buscar por nome");

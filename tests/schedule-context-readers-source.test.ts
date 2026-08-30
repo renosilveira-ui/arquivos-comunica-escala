@@ -45,6 +45,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
       source.indexOf("export async function assertActiveScheduleContextTopology"),
     );
     expect(eligible).toContain("pendingNamedInviteCoversScale");
+    expect(source).toContain("isNull(scheduleInvites.declinedAt)");
     expect(eligible).toContain("accessCoversContext");
     expect(eligible).toContain("managerScopeCoversContext");
     expect(eligible).not.toContain("qualificationMatches");
@@ -72,6 +73,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("LEFT JOIN professional_institutions pi");
     expect(source).toContain("LEFT JOIN schedule_invites pending_invite");
     expect(source).toContain("pending_invite.id IS NOT NULL");
+    expect(source).toContain("pending_invite.declined_at IS NULL");
     expect(source).toContain("OR mgr.id IS NOT NULL");
   });
 

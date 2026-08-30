@@ -15,6 +15,8 @@ describe("schema de convites de escala", () => {
     expect(scheduleInvites.redeemedCount.notNull).toBe(true);
     expect(scheduleInvites.expiresAt.notNull).toBe(true);
     expect(scheduleInvites.revokedAt.notNull).toBe(false);
+    expect(scheduleInvites.declinedAt.notNull).toBe(false);
+    expect(scheduleInvites.declinedByUserId.notNull).toBe(false);
   });
 
   it("guarda só o hash e impede dois convites com o mesmo código", () => {
@@ -39,6 +41,7 @@ describe("schema de convites de escala", () => {
         ["sector_id"],
         ["created_by_user_id"],
         ["invited_user_id"],
+        ["declined_by_user_id"],
         ["institution_id", "hospital_id"],
         ["institution_id", "hospital_id", "sector_id"],
       ]),

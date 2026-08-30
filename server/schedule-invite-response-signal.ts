@@ -10,6 +10,7 @@ export {
 } from "./schedule-invite-response-signal-helpers";
 
 export const INVITE_ACCEPTED_PUSH_TYPE = "invite_accepted";
+export const INVITE_DECLINED_PUSH_TYPE = "invite_declined";
 
 type SignalDb = NonNullable<Parameters<typeof enqueueTrackedPushNotification>[2]>;
 
@@ -25,6 +26,24 @@ export type ScheduleInviteAcceptedSignalInput = {
   invitedUserId: number;
 };
 
+export type ScheduleInviteDeclinedSignalInput = ScheduleInviteAcceptedSignalInput;
+
+function inviteDeclinedCopy(
+  professionalName: string,
+  place: { hospitalName: string | null; sectorName: string | null },
+): { title: string; body: string } {
+  if (place.hospitalName && place.sectorName) {
+    return {
+      title: "Convite recusado",
+      body: `${professionalName} recusou o convite para ${place.hospitalName} · ${place.sectorName}.`,
+    };
+  }
+  return {
+    title: "Convite recusado",
+    body: `${professionalName} recusou o convite de escala.`,
+  };
+}
+
 function inviteAcceptedCopy(
   professionalName: string,
   place: { hospitalName: string | null; sectorName: string | null },
@@ -39,6 +58,73 @@ function inviteAcceptedCopy(
     title: "Convite aceito",
     body: `${professionalName} aceitou o convite de escala.`,
   };
+}
+
+/**
+ * Best-effort após commit da recusa: avisa somente o gestor que emitiu o
+ * convite nominal. Qualquer falha nesta fase não desfaz a recusa.
+ */
+export async function enqueueScheduleInviteDeclinedSignal(
+  input: ScheduleInviteDeclinedSignalInput,
+): Promise<number> {
+  const {
+    db,
+    scheduleInviteId,
+    institutionId,
+    hospitalId,
+    sectorId,
+    createdByUserId,
+    invitedUserId,
+  } = input;
+
+  try {
+    const recipientUserId = await resolveInviteAcceptedRecipientUserId(db, {
+      institutionId,
+      createdByUserId,
+      invitedUserId,
+    });
+    if (recipientUserId == null) {
+      console.error(
+        `[ScheduleInviteDeclined] DESTINATARIO_AUSENTE scheduleInviteId=${JSON.stringify(scheduleInviteId)}`,
+      );
+      return 0;
+    }
+
+    const professionalName = await loadInvitedProfessionalName(db, invitedUserId);
+    const copy = inviteDeclinedCopy(professionalName, {
+      hospitalName: input.hospitalName?.trim() || null,
+      sectorName: input.sectorName?.trim() || null,
+    });
+    const dedupKey = `schedule-invite:${scheduleInviteId}:declined:${createdByUserId}`;
+
+    await enqueueTrackedPushNotification(
+      {
+        institutionId,
+        userId: recipientUserId,
+        dedupKey,
+        deepLink: "/schedule-invites",
+        payload: {
+          ...copy,
+          data: {
+            type: INVITE_DECLINED_PUSH_TYPE,
+            institutionId,
+            scheduleInviteId,
+            hospitalId,
+            sectorId,
+            invitedUserId,
+          },
+        },
+      },
+      new Date(),
+      db,
+    );
+    return 1;
+  } catch {
+    console.error(
+      `[ScheduleInviteDeclined] SIGNAL_TRACKING_FAILED scheduleInviteId=${JSON.stringify(scheduleInviteId)}`,
+    );
+    return 0;
+  }
 }
 
 /**
