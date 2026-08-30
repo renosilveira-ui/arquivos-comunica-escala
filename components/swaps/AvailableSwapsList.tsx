@@ -68,7 +68,11 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
   const swaps = (data ?? []) as AvailableSwap[];
 
   const invalidate = () =>
-    Promise.all([utils.swaps.listAvailable.invalidate(), utils.swaps.list.invalidate()]);
+    Promise.all([
+      utils.swaps.listAvailable.invalidate(),
+      utils.swaps.countActionable.invalidate(),
+      utils.swaps.list.invalidate(),
+    ]);
 
   const acceptSwap = trpc.swaps.accept.useMutation({
     onSuccess: async () => {

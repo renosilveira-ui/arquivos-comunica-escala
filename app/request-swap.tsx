@@ -104,6 +104,7 @@ export default function RequestSwapScreen() {
       await Promise.all([
         utils.swaps.list.invalidate(),
         utils.swaps.listAvailable.invalidate(),
+        utils.swaps.countActionable.invalidate(),
       ]);
       feedback.success(
         type === "SWAP" ? "Troca oferecida. Você será avisado da resposta." : "Repasse oferecido. Você será avisado da resposta.",

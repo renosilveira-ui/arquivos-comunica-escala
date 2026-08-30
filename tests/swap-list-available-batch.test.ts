@@ -360,6 +360,7 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
     await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
+    await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
   });
 
@@ -847,5 +848,69 @@ describe("swaps.listAvailable — validação canônica em lote", () => {
           ]),
         ),
     ).toEqual(auditBefore);
+  });
+
+  it("countActionable espelha listAvailable filtrado por canRespond", async () => {
+    const validOneWayShift = await createShift(source, 60);
+    await createOffer(source, validOneWayShift, "count-directed", {
+      toProfessionalId: actor.professionalId,
+      toUserId: actor.userId,
+    });
+    const validSwapSource = await createShift(source, 61, 8, 12);
+    const validSwapTarget = await createShift(actor, 61, 14, 18);
+    await createOffer(source, validSwapSource, "count-swap", {
+      type: "SWAP",
+      toShiftInstanceId: validSwapTarget.shiftId,
+    });
+    const partialRecipientShift = await createShift(source, 62);
+    await createOffer(source, partialRecipientShift, "count-partial-recipient", {
+      toProfessionalId: actor.professionalId,
+      toUserId: null,
+    });
+
+    const rows = await caller().listAvailable({});
+    const expected = rows.filter((row) => row.canRespond).length;
+    await expect(caller().countActionable()).resolves.toEqual({ swapOffers: expected });
+    expect(expected).toBe(2);
+  });
+
+  it("countActionable zera após aceitar ou recusar oferta aberta", async () => {
+    const directedShift = await createShift(source, 63);
+    const directedId = await createOffer(source, directedShift, "count-accept", {
+      toProfessionalId: actor.professionalId,
+      toUserId: actor.userId,
+    });
+    const openShift = await createShift(source, 64);
+    const openId = await createOffer(source, openShift, "count-reject");
+
+    await expect(caller().countActionable()).resolves.toEqual({ swapOffers: 2 });
+    await caller().accept({ swapRequestId: directedId });
+    await expect(caller().countActionable()).resolves.toEqual({ swapOffers: 1 });
+    await caller().reject({ swapRequestId: openId });
+    await expect(caller().countActionable()).resolves.toEqual({ swapOffers: 0 });
+  });
+
+  it("countActionable ignora ofertas expiradas, canceladas e do próprio ofertante", async () => {
+    const expiredShift = await createShift(source, 65);
+    const expiredId = await createOffer(source, expiredShift, "count-expired");
+    await db
+      .update(swapRequests)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(swapRequests.id, expiredId));
+
+    const cancelledShift = await createShift(source, 66);
+    const cancelledId = await createOffer(source, cancelledShift, "count-cancelled");
+    await db
+      .update(swapRequests)
+      .set({ status: "CANCELLED" })
+      .where(eq(swapRequests.id, cancelledId));
+
+    const ownShift = await createShift(actor, 67);
+    await createOffer(actor, ownShift, "count-own-offer");
+
+    const openShift = await createShift(source, 68);
+    await createOffer(source, openShift, "count-open");
+
+    await expect(caller().countActionable()).resolves.toEqual({ swapOffers: 1 });
   });
 });

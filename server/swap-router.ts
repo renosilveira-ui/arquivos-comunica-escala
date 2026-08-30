@@ -48,6 +48,7 @@ import {
   enqueueSwapOfferSignals,
   enqueueSwapTakenSignals,
 } from "./swap-offer-signal";
+import type { TrpcContext } from "./_core/context";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -2123,6 +2124,594 @@ async function healReadableAcceptedLeftovers(
 
 // ─── router ─────────────────────────────────────────────────────────────────
 
+
+const listAvailableInputSchema = z.object({
+  type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
+  scheduleContextId: z.number().int().positive().optional(),
+});
+
+type ListAvailableInput = z.infer<typeof listAvailableInputSchema>;
+
+type ListAvailableRow = {
+  id: number;
+  type: SwapType;
+  reason: string | null;
+  expiresAt: Date | null;
+  createdAt: Date;
+  fromProfessional: { name: string; role: string };
+  fromShift: {
+    id: number;
+    scheduleContextId: number;
+    label: string;
+    startAt: Date;
+    endAt: Date;
+    hospitalName: string;
+    sectorName: string;
+  };
+  toShift: {
+    id: number;
+    label: string;
+    startAt: Date;
+    endAt: Date;
+    hospitalName: string;
+    sectorName: string;
+  } | null;
+  toProfessionalId: number | null;
+  toUserId: number | null;
+  canRespond: boolean;
+};
+
+async function queryListAvailableRows(
+  ctx: TrpcContext,
+  input: ListAvailableInput,
+): Promise<ListAvailableRow[]> {
+      const db = await getDb();
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
+
+      if (!ctx.user || ctx.institutionId == null) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Não autenticado" });
+      }
+
+      const userId = ctx.user.id;
+      const institutionId = ctx.institutionId;
+      const actor = await getTenantActorFromContext(ctx);
+      if (!actor.professionalId)
+        throw topologyDenied("Ator sem identidade profissional canônica");
+      await requireCurrentListAvailableActor(db, {
+        institutionId,
+        professionalId: actor.professionalId,
+        userId,
+        expectedSessionVersion: ctx.user.sessionVersion,
+      });
+      const assumableContextIds = await listAssumableScheduleContextIds(
+        institutionId,
+        actor.professionalId,
+        db,
+      );
+      const managedContextIds = isInstitutionManager(actor)
+        ? (await listAuthorizedScheduleContexts(actor, db))
+            .filter((context) => context.canManage)
+            .map((context) => context.id)
+        : [];
+      const visibleContextIds = [
+        ...new Set([...assumableContextIds, ...managedContextIds]),
+      ];
+      if (
+        input.scheduleContextId !== undefined &&
+        !visibleContextIds.includes(input.scheduleContextId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Escala fora do acesso ou qualificação do profissional.",
+        });
+      }
+      if (visibleContextIds.length === 0) return [];
+
+      const result = await db.execute(sql`
+        SELECT
+          sr.id,
+          sr.type,
+          sr.reason,
+          sr.expires_at       AS expiresAt,
+          sr.created_at       AS createdAt,
+          fp.name             AS fromProfessionalName,
+          fp.role             AS fromProfessionalRole,
+          fsi.id              AS fromShiftInstanceId,
+          fsi.schedule_context_id AS fromScheduleContextId,
+          fsi.label           AS fromShiftLabel,
+          fsi.start_at        AS fromShiftStartAt,
+          fsi.end_at          AS fromShiftEndAt,
+          fh.name             AS fromHospitalName,
+          fs.name             AS fromSectorName,
+          tsi.id              AS toShiftInstanceId,
+          tsi.label           AS toShiftLabel,
+          tsi.start_at        AS toShiftStartAt,
+          tsi.end_at          AS toShiftEndAt,
+          th.name             AS toHospitalName,
+          ts.name             AS toSectorName,
+          sr.to_professional_id AS toProfessionalId,
+          sr.to_user_id       AS toUserId
+        FROM swap_requests sr
+        JOIN institutions inst
+          ON inst.id = sr.institution_id
+         AND inst.is_active = 1
+        JOIN shift_instances fsi
+          ON fsi.id = sr.from_shift_instance_id
+         AND fsi.institution_id = sr.institution_id
+         AND fsi.hospital_id = sr.hospital_id
+         AND fsi.sector_id = sr.sector_id
+        JOIN schedule_contexts fsc
+          ON fsc.id = fsi.schedule_context_id
+         AND fsc.institution_id = fsi.institution_id
+         AND fsc.hospital_id = fsi.hospital_id
+         AND fsc.sector_id = fsi.sector_id
+         AND fsc.active = 1
+        LEFT JOIN medical_specialties fms
+          ON fms.id = fsc.medical_specialty_id
+         AND fms.active = 1
+        JOIN hospitals fh
+          ON fh.id = fsi.hospital_id
+         AND fh.institution_id = fsi.institution_id
+        JOIN sectors fs
+          ON fs.id = fsi.sector_id
+         AND fs.institution_id = fsi.institution_id
+         AND fs.hospital_id = fsi.hospital_id
+        JOIN monthly_rosters fmr
+          ON fmr.institution_id = fsi.institution_id
+         AND fmr.hospital_id = fsi.hospital_id
+         AND fmr.year_month = DATE_FORMAT(DATE_SUB(fsi.start_at, INTERVAL 3 HOUR), '%Y-%m')
+         AND fmr.status = 'PUBLISHED'
+        JOIN shift_assignments_v2 fsa
+          ON fsa.id = sr.from_assignment_id
+         AND fsa.shift_instance_id = fsi.id
+         AND fsa.institution_id = fsi.institution_id
+         AND fsa.hospital_id = fsi.hospital_id
+         AND fsa.sector_id = fsi.sector_id
+         AND fsa.professional_id = sr.from_professional_id
+         AND fsa.is_active = 1
+         AND fsa.status = 'OCUPADO'
+        JOIN professionals fp
+          ON fp.id = sr.from_professional_id
+         AND fp.user_id = sr.from_user_id
+        JOIN users fu
+          ON fu.id = fp.user_id
+         AND fu.approval_status = 'APPROVED'
+         AND fu.deleted_at IS NULL
+        JOIN professional_institutions fpi
+          ON fpi.professional_id = fp.id
+         AND fpi.user_id = fp.user_id
+         AND fpi.institution_id = sr.institution_id
+         AND fpi.active = 1
+        JOIN professionals ap
+          ON ap.id = ${actor.professionalId}
+         AND ap.user_id = ${userId}
+        JOIN users au
+          ON au.id = ap.user_id
+         AND au.approval_status = 'APPROVED'
+         AND au.deleted_at IS NULL
+         AND au.session_version = ${ctx.user.sessionVersion}
+        JOIN professional_institutions api
+          ON api.professional_id = ap.id
+         AND api.user_id = au.id
+         AND api.institution_id = sr.institution_id
+         AND api.active = 1
+        LEFT JOIN shift_instances tsi
+          ON sr.type = 'SWAP'
+         AND tsi.id = sr.to_shift_instance_id
+         AND tsi.institution_id = sr.institution_id
+        LEFT JOIN hospitals th
+          ON th.id = tsi.hospital_id
+         AND th.institution_id = tsi.institution_id
+        LEFT JOIN sectors ts
+          ON ts.id = tsi.sector_id
+         AND ts.institution_id = tsi.institution_id
+         AND ts.hospital_id = tsi.hospital_id
+        LEFT JOIN shift_assignments_v2 tsa
+          ON sr.type = 'SWAP'
+         AND tsa.shift_instance_id = tsi.id
+         AND tsa.institution_id = tsi.institution_id
+         AND tsa.hospital_id = tsi.hospital_id
+         AND tsa.sector_id = tsi.sector_id
+         AND tsa.professional_id = ap.id
+         AND tsa.is_active = 1
+         AND tsa.status = 'OCUPADO'
+        WHERE sr.status = 'PENDING'
+          AND sr.institution_id = ${institutionId}
+          AND sr.from_user_id != ${userId}
+          ${
+            input.scheduleContextId !== undefined
+              ? sql`AND fsi.schedule_context_id = ${input.scheduleContextId}`
+              : sql``
+          }
+          AND (
+            (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
+            OR (sr.to_professional_id = ${actor.professionalId} AND sr.to_user_id = ${userId})
+            OR (
+              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
+              AND (
+                sr.to_professional_id != ${actor.professionalId}
+                OR sr.to_user_id != ${userId}
+              )
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_directed_scope
+                  WHERE actor_directed_scope.manager_professional_id = ap.id
+                    AND actor_directed_scope.institution_id = fsi.institution_id
+                    AND actor_directed_scope.hospital_id = fsi.hospital_id
+                    AND (actor_directed_scope.sector_id IS NULL OR actor_directed_scope.sector_id = fsi.sector_id)
+                    AND actor_directed_scope.active = 1
+                )
+              )
+            )
+          )
+          AND fsi.start_at > NOW()
+          AND (sr.expires_at IS NULL OR sr.expires_at > NOW())
+          AND NOT EXISTS (
+            SELECT 1
+            FROM shift_assignments_v2 source_duplicate
+            WHERE source_duplicate.shift_instance_id = fsi.id
+              AND source_duplicate.institution_id = fsi.institution_id
+              AND source_duplicate.hospital_id = fsi.hospital_id
+              AND source_duplicate.sector_id = fsi.sector_id
+              AND source_duplicate.professional_id = fp.id
+              AND source_duplicate.is_active = 1
+              AND source_duplicate.id != fsa.id
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM swap_request_dismissals actor_dismissal
+            WHERE actor_dismissal.swap_request_id = sr.id
+              AND actor_dismissal.institution_id = sr.institution_id
+              AND actor_dismissal.user_id = ${userId}
+          )
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM professional_access source_access
+              WHERE source_access.institution_id = fsi.institution_id
+                AND source_access.professional_id = fp.id
+                AND source_access.hospital_id = fsi.hospital_id
+                AND source_access.can_access = 1
+                AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
+            )
+            OR fpi.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope source_scope
+              WHERE source_scope.manager_professional_id = fp.id
+                AND source_scope.institution_id = fsi.institution_id
+                AND source_scope.hospital_id = fsi.hospital_id
+                AND (source_scope.sector_id IS NULL OR source_scope.sector_id = fsi.sector_id)
+                AND source_scope.active = 1
+            )
+          )
+          AND fsi.schedule_context_id IN (${sql.join(
+            visibleContextIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
+          AND (
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_mgr
+              WHERE actor_mgr.manager_professional_id = ap.id
+                AND actor_mgr.institution_id = fsi.institution_id
+                AND actor_mgr.hospital_id = fsi.hospital_id
+                AND (actor_mgr.sector_id IS NULL OR actor_mgr.sector_id = fsi.sector_id)
+                AND actor_mgr.active = 1
+            )
+            OR
+            (
+              (
+                fsc.admission_policy = 'ALL_CFM_SPECIALTIES'
+                AND ap.medical_specialty_id IS NOT NULL
+              )
+              OR
+              (
+                fsc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
+                AND ap.medical_specialty_id IS NOT NULL
+                AND ap.operational_profile_code IS NULL
+              )
+              OR
+              (
+                fsc.medical_specialty_id IS NOT NULL
+                AND fms.id IS NOT NULL
+                AND ap.medical_specialty_id = fsc.medical_specialty_id
+              )
+              OR
+              (
+                fsc.operational_profile_code IS NOT NULL
+                AND ap.operational_profile_code = fsc.operational_profile_code
+              )
+              OR
+              (
+                fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                AND EXISTS (
+                  SELECT 1
+                    FROM schedule_context_allowed_qualifications aq
+                   WHERE aq.schedule_context_id = fsc.id
+                     AND (
+                       (
+                         aq.medical_specialty_id IS NOT NULL
+                         AND ap.medical_specialty_id = aq.medical_specialty_id
+                       )
+                       OR
+                       (
+                         aq.operational_profile_code IS NOT NULL
+                         AND ap.operational_profile_code = aq.operational_profile_code
+                       )
+                     )
+                )
+              )
+            )
+          )
+          AND (
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_source_scope
+              WHERE actor_source_scope.manager_professional_id = ap.id
+                AND actor_source_scope.institution_id = fsi.institution_id
+                AND actor_source_scope.hospital_id = fsi.hospital_id
+                AND (actor_source_scope.sector_id IS NULL OR actor_source_scope.sector_id = fsi.sector_id)
+                AND actor_source_scope.active = 1
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM professional_access actor_source_access
+              WHERE actor_source_access.institution_id = fsi.institution_id
+                AND actor_source_access.professional_id = ap.id
+                AND actor_source_access.hospital_id = fsi.hospital_id
+                AND actor_source_access.can_access = 1
+                AND (actor_source_access.sector_id IS NULL OR actor_source_access.sector_id = fsi.sector_id)
+            )
+          )
+          AND (
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_specialty_scope
+              WHERE actor_specialty_scope.manager_professional_id = ap.id
+                AND actor_specialty_scope.institution_id = fsi.institution_id
+                AND actor_specialty_scope.hospital_id = fsi.hospital_id
+                AND (actor_specialty_scope.sector_id IS NULL OR actor_specialty_scope.sector_id = fsi.sector_id)
+                AND actor_specialty_scope.active = 1
+            )
+            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
+            OR NULLIF(TRIM(fp.specialty), '') IS NULL
+            OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(fp.specialty))
+          )
+          AND (
+            api.role_in_institution = 'GESTOR_PLUS'
+            OR EXISTS (
+              SELECT 1
+              FROM manager_scope actor_peer_specialty_scope
+              WHERE actor_peer_specialty_scope.manager_professional_id = ap.id
+                AND actor_peer_specialty_scope.institution_id = fsi.institution_id
+                AND actor_peer_specialty_scope.hospital_id = fsi.hospital_id
+                AND (actor_peer_specialty_scope.sector_id IS NULL OR actor_peer_specialty_scope.sector_id = fsi.sector_id)
+                AND actor_peer_specialty_scope.active = 1
+            )
+            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
+            OR NULLIF(TRIM(ap.specialty), '') IS NULL
+            OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(ap.specialty))
+          )
+          AND (
+            NOT EXISTS (
+              SELECT 1
+              FROM shift_assignments_v2 actor_conflict
+              JOIN shift_instances actor_conflict_shift
+                ON actor_conflict_shift.id = actor_conflict.shift_instance_id
+              WHERE actor_conflict.professional_id = ap.id
+                AND actor_conflict.is_active = 1
+                AND actor_conflict_shift.start_at < fsi.end_at
+                AND actor_conflict_shift.end_at > fsi.start_at
+                AND (sr.type != 'SWAP' OR actor_conflict.id != tsa.id)
+            )
+            OR (
+              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
+              AND (
+                sr.to_professional_id != ${actor.professionalId}
+                OR sr.to_user_id != ${userId}
+              )
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_conflict_bypass
+                  WHERE actor_conflict_bypass.manager_professional_id = ap.id
+                    AND actor_conflict_bypass.institution_id = fsi.institution_id
+                    AND actor_conflict_bypass.hospital_id = fsi.hospital_id
+                    AND (actor_conflict_bypass.sector_id IS NULL OR actor_conflict_bypass.sector_id = fsi.sector_id)
+                    AND actor_conflict_bypass.active = 1
+                )
+              )
+            )
+          )
+          AND (
+            (
+              sr.type IN ('TRANSFER', 'CESSAO')
+              AND sr.to_shift_instance_id IS NULL
+              AND sr.to_assignment_id IS NULL
+            )
+            OR
+            (
+              sr.type = 'SWAP'
+              AND sr.to_shift_instance_id IS NOT NULL
+              AND sr.to_shift_instance_id != sr.from_shift_instance_id
+              AND sr.to_assignment_id IS NULL
+              AND tsi.id IS NOT NULL
+              AND tsi.start_at > NOW()
+              AND th.id IS NOT NULL
+              AND ts.id IS NOT NULL
+              AND tsa.id IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM monthly_rosters target_roster
+                WHERE target_roster.institution_id = tsi.institution_id
+                  AND target_roster.hospital_id = tsi.hospital_id
+                  AND target_roster.year_month = DATE_FORMAT(DATE_SUB(tsi.start_at, INTERVAL 3 HOUR), '%Y-%m')
+                  AND target_roster.status = 'PUBLISHED'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM shift_assignments_v2 target_duplicate
+                WHERE target_duplicate.shift_instance_id = tsi.id
+                  AND target_duplicate.institution_id = tsi.institution_id
+                  AND target_duplicate.hospital_id = tsi.hospital_id
+                  AND target_duplicate.sector_id = tsi.sector_id
+                  AND target_duplicate.professional_id = ap.id
+                  AND target_duplicate.is_active = 1
+                  AND target_duplicate.id != tsa.id
+              )
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_target_scope
+                  WHERE actor_target_scope.manager_professional_id = ap.id
+                    AND actor_target_scope.institution_id = tsi.institution_id
+                    AND actor_target_scope.hospital_id = tsi.hospital_id
+                    AND (actor_target_scope.sector_id IS NULL OR actor_target_scope.sector_id = tsi.sector_id)
+                    AND actor_target_scope.active = 1
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM professional_access actor_target_access
+                  WHERE actor_target_access.institution_id = tsi.institution_id
+                    AND actor_target_access.professional_id = ap.id
+                    AND actor_target_access.hospital_id = tsi.hospital_id
+                    AND actor_target_access.can_access = 1
+                    AND (actor_target_access.sector_id IS NULL OR actor_target_access.sector_id = tsi.sector_id)
+                )
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM professional_access source_target_access
+                WHERE source_target_access.institution_id = tsi.institution_id
+                  AND source_target_access.professional_id = fp.id
+                  AND source_target_access.hospital_id = tsi.hospital_id
+                  AND source_target_access.can_access = 1
+                  AND (source_target_access.sector_id IS NULL OR source_target_access.sector_id = tsi.sector_id)
+              )
+              AND (
+                NULLIF(TRIM(tsi.specialty), '') IS NULL
+                OR NULLIF(TRIM(ap.specialty), '') IS NULL
+                OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(ap.specialty))
+              )
+              AND (
+                NULLIF(TRIM(tsi.specialty), '') IS NULL
+                OR NULLIF(TRIM(fp.specialty), '') IS NULL
+                OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(fp.specialty))
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM shift_assignments_v2 source_target_conflict
+                JOIN shift_instances source_target_conflict_shift
+                  ON source_target_conflict_shift.id = source_target_conflict.shift_instance_id
+                WHERE source_target_conflict.professional_id = fp.id
+                  AND source_target_conflict.is_active = 1
+                  AND source_target_conflict_shift.start_at < tsi.end_at
+                  AND source_target_conflict_shift.end_at > tsi.start_at
+                  AND source_target_conflict.id != fsa.id
+              )
+            )
+            OR
+            (
+              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
+              AND (
+                sr.to_professional_id != ${actor.professionalId}
+                OR sr.to_user_id != ${userId}
+              )
+              AND (
+                api.role_in_institution = 'GESTOR_PLUS'
+                OR EXISTS (
+                  SELECT 1
+                  FROM manager_scope actor_directed_type
+                  WHERE actor_directed_type.manager_professional_id = ap.id
+                    AND actor_directed_type.institution_id = fsi.institution_id
+                    AND actor_directed_type.hospital_id = fsi.hospital_id
+                    AND (actor_directed_type.sector_id IS NULL OR actor_directed_type.sector_id = fsi.sector_id)
+                    AND actor_directed_type.active = 1
+                )
+              )
+              AND (
+                (
+                  sr.type IN ('TRANSFER', 'CESSAO')
+                  AND sr.to_shift_instance_id IS NULL
+                  AND sr.to_assignment_id IS NULL
+                )
+                OR
+                (
+                  sr.type = 'SWAP'
+                  AND sr.to_shift_instance_id IS NOT NULL
+                  AND sr.to_shift_instance_id != sr.from_shift_instance_id
+                  AND tsi.id IS NOT NULL
+                  AND tsi.start_at > NOW()
+                  AND th.id IS NOT NULL
+                  AND ts.id IS NOT NULL
+                )
+              )
+            )
+          )
+          ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
+        ORDER BY fsi.start_at ASC, sr.id ASC
+      `);
+
+      return rowsFromExecute<AvailableSwapRow>(result).map((r) => ({
+        id: r.id,
+        type: r.type,
+        reason: r.reason,
+        expiresAt: r.expiresAt === null ? null : dateFromExecute(r.expiresAt),
+        createdAt: dateFromExecute(r.createdAt),
+        fromProfessional: {
+          name: r.fromProfessionalName,
+          role: r.fromProfessionalRole,
+        },
+        fromShift: {
+          id: r.fromShiftInstanceId,
+          scheduleContextId: r.fromScheduleContextId,
+          label: r.fromShiftLabel,
+          startAt: dateFromExecute(r.fromShiftStartAt),
+          endAt: dateFromExecute(r.fromShiftEndAt),
+          hospitalName: r.fromHospitalName,
+          sectorName: r.fromSectorName,
+        },
+        toShift: r.toShiftInstanceId
+          ? {
+              id: r.toShiftInstanceId,
+              label: r.toShiftLabel!,
+              startAt: dateFromExecute(r.toShiftStartAt!),
+              endAt: dateFromExecute(r.toShiftEndAt!),
+              hospitalName: r.toHospitalName!,
+              sectorName: r.toSectorName!,
+            }
+          : null,
+        toProfessionalId:
+          r.toProfessionalId == null ? null : Number(r.toProfessionalId),
+        toUserId: r.toUserId == null ? null : Number(r.toUserId),
+        canRespond: listedOfferCanRespond(
+          r.toProfessionalId,
+          r.toUserId,
+          actor.professionalId,
+          userId,
+        ),
+      }));
+}
+
+async function countActionableSwapOffers(ctx: TrpcContext): Promise<number> {
+  const rows = await queryListAvailableRows(ctx, {});
+  return rows.filter((row) => row.canRespond).length;
+}
+
 export const swapRouter = router({
   // ── offer ─────────────────────────────────────────────────────────────────
   // CESSAO and TRANSFER are functionally equivalent (one-way handoff
@@ -3169,548 +3758,13 @@ export const swapRouter = router({
 
   // ── listAvailable ─────────────────────────────────────────────────────────
   listAvailable: protectedProcedure
-    .input(
-      z.object({
-        type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
-        scheduleContextId: z.number().int().positive().optional(),
-      }),
-    )
-    .query(async ({ input, ctx }) => {
-      const db = await getDb();
-      if (!db)
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "DB unavailable",
-        });
+    .input(listAvailableInputSchema)
+    .query(async ({ input, ctx }) => queryListAvailableRows(ctx, input)),
 
-      const userId = ctx.user!.id;
-      const institutionId = ctx.institutionId;
-      const actor = await getTenantActorFromContext(ctx);
-      if (!actor.professionalId)
-        throw topologyDenied("Ator sem identidade profissional canônica");
-      await requireCurrentListAvailableActor(db, {
-        institutionId,
-        professionalId: actor.professionalId,
-        userId,
-        expectedSessionVersion: ctx.user.sessionVersion,
-      });
-      const assumableContextIds = await listAssumableScheduleContextIds(
-        institutionId,
-        actor.professionalId,
-        db,
-      );
-      const managedContextIds = isInstitutionManager(actor)
-        ? (await listAuthorizedScheduleContexts(actor, db))
-            .filter((context) => context.canManage)
-            .map((context) => context.id)
-        : [];
-      const visibleContextIds = [
-        ...new Set([...assumableContextIds, ...managedContextIds]),
-      ];
-      if (
-        input.scheduleContextId !== undefined &&
-        !visibleContextIds.includes(input.scheduleContextId)
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Escala fora do acesso ou qualificação do profissional.",
-        });
-      }
-      if (visibleContextIds.length === 0) return [];
-
-      const result = await db.execute(sql`
-        SELECT
-          sr.id,
-          sr.type,
-          sr.reason,
-          sr.expires_at       AS expiresAt,
-          sr.created_at       AS createdAt,
-          fp.name             AS fromProfessionalName,
-          fp.role             AS fromProfessionalRole,
-          fsi.id              AS fromShiftInstanceId,
-          fsi.schedule_context_id AS fromScheduleContextId,
-          fsi.label           AS fromShiftLabel,
-          fsi.start_at        AS fromShiftStartAt,
-          fsi.end_at          AS fromShiftEndAt,
-          fh.name             AS fromHospitalName,
-          fs.name             AS fromSectorName,
-          tsi.id              AS toShiftInstanceId,
-          tsi.label           AS toShiftLabel,
-          tsi.start_at        AS toShiftStartAt,
-          tsi.end_at          AS toShiftEndAt,
-          th.name             AS toHospitalName,
-          ts.name             AS toSectorName,
-          sr.to_professional_id AS toProfessionalId,
-          sr.to_user_id       AS toUserId
-        FROM swap_requests sr
-        JOIN institutions inst
-          ON inst.id = sr.institution_id
-         AND inst.is_active = 1
-        JOIN shift_instances fsi
-          ON fsi.id = sr.from_shift_instance_id
-         AND fsi.institution_id = sr.institution_id
-         AND fsi.hospital_id = sr.hospital_id
-         AND fsi.sector_id = sr.sector_id
-        JOIN schedule_contexts fsc
-          ON fsc.id = fsi.schedule_context_id
-         AND fsc.institution_id = fsi.institution_id
-         AND fsc.hospital_id = fsi.hospital_id
-         AND fsc.sector_id = fsi.sector_id
-         AND fsc.active = 1
-        LEFT JOIN medical_specialties fms
-          ON fms.id = fsc.medical_specialty_id
-         AND fms.active = 1
-        JOIN hospitals fh
-          ON fh.id = fsi.hospital_id
-         AND fh.institution_id = fsi.institution_id
-        JOIN sectors fs
-          ON fs.id = fsi.sector_id
-         AND fs.institution_id = fsi.institution_id
-         AND fs.hospital_id = fsi.hospital_id
-        JOIN monthly_rosters fmr
-          ON fmr.institution_id = fsi.institution_id
-         AND fmr.hospital_id = fsi.hospital_id
-         AND fmr.year_month = DATE_FORMAT(DATE_SUB(fsi.start_at, INTERVAL 3 HOUR), '%Y-%m')
-         AND fmr.status = 'PUBLISHED'
-        JOIN shift_assignments_v2 fsa
-          ON fsa.id = sr.from_assignment_id
-         AND fsa.shift_instance_id = fsi.id
-         AND fsa.institution_id = fsi.institution_id
-         AND fsa.hospital_id = fsi.hospital_id
-         AND fsa.sector_id = fsi.sector_id
-         AND fsa.professional_id = sr.from_professional_id
-         AND fsa.is_active = 1
-         AND fsa.status = 'OCUPADO'
-        JOIN professionals fp
-          ON fp.id = sr.from_professional_id
-         AND fp.user_id = sr.from_user_id
-        JOIN users fu
-          ON fu.id = fp.user_id
-         AND fu.approval_status = 'APPROVED'
-         AND fu.deleted_at IS NULL
-        JOIN professional_institutions fpi
-          ON fpi.professional_id = fp.id
-         AND fpi.user_id = fp.user_id
-         AND fpi.institution_id = sr.institution_id
-         AND fpi.active = 1
-        JOIN professionals ap
-          ON ap.id = ${actor.professionalId}
-         AND ap.user_id = ${userId}
-        JOIN users au
-          ON au.id = ap.user_id
-         AND au.approval_status = 'APPROVED'
-         AND au.deleted_at IS NULL
-         AND au.session_version = ${ctx.user.sessionVersion}
-        JOIN professional_institutions api
-          ON api.professional_id = ap.id
-         AND api.user_id = au.id
-         AND api.institution_id = sr.institution_id
-         AND api.active = 1
-        LEFT JOIN shift_instances tsi
-          ON sr.type = 'SWAP'
-         AND tsi.id = sr.to_shift_instance_id
-         AND tsi.institution_id = sr.institution_id
-        LEFT JOIN hospitals th
-          ON th.id = tsi.hospital_id
-         AND th.institution_id = tsi.institution_id
-        LEFT JOIN sectors ts
-          ON ts.id = tsi.sector_id
-         AND ts.institution_id = tsi.institution_id
-         AND ts.hospital_id = tsi.hospital_id
-        LEFT JOIN shift_assignments_v2 tsa
-          ON sr.type = 'SWAP'
-         AND tsa.shift_instance_id = tsi.id
-         AND tsa.institution_id = tsi.institution_id
-         AND tsa.hospital_id = tsi.hospital_id
-         AND tsa.sector_id = tsi.sector_id
-         AND tsa.professional_id = ap.id
-         AND tsa.is_active = 1
-         AND tsa.status = 'OCUPADO'
-        WHERE sr.status = 'PENDING'
-          AND sr.institution_id = ${institutionId}
-          AND sr.from_user_id != ${userId}
-          ${
-            input.scheduleContextId !== undefined
-              ? sql`AND fsi.schedule_context_id = ${input.scheduleContextId}`
-              : sql``
-          }
-          AND (
-            (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
-            OR (sr.to_professional_id = ${actor.professionalId} AND sr.to_user_id = ${userId})
-            OR (
-              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
-              AND (
-                sr.to_professional_id != ${actor.professionalId}
-                OR sr.to_user_id != ${userId}
-              )
-              AND (
-                api.role_in_institution = 'GESTOR_PLUS'
-                OR EXISTS (
-                  SELECT 1
-                  FROM manager_scope actor_directed_scope
-                  WHERE actor_directed_scope.manager_professional_id = ap.id
-                    AND actor_directed_scope.institution_id = fsi.institution_id
-                    AND actor_directed_scope.hospital_id = fsi.hospital_id
-                    AND (actor_directed_scope.sector_id IS NULL OR actor_directed_scope.sector_id = fsi.sector_id)
-                    AND actor_directed_scope.active = 1
-                )
-              )
-            )
-          )
-          AND fsi.start_at > NOW()
-          AND (sr.expires_at IS NULL OR sr.expires_at > NOW())
-          AND NOT EXISTS (
-            SELECT 1
-            FROM shift_assignments_v2 source_duplicate
-            WHERE source_duplicate.shift_instance_id = fsi.id
-              AND source_duplicate.institution_id = fsi.institution_id
-              AND source_duplicate.hospital_id = fsi.hospital_id
-              AND source_duplicate.sector_id = fsi.sector_id
-              AND source_duplicate.professional_id = fp.id
-              AND source_duplicate.is_active = 1
-              AND source_duplicate.id != fsa.id
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM swap_request_dismissals actor_dismissal
-            WHERE actor_dismissal.swap_request_id = sr.id
-              AND actor_dismissal.institution_id = sr.institution_id
-              AND actor_dismissal.user_id = ${userId}
-          )
-          AND (
-            EXISTS (
-              SELECT 1
-              FROM professional_access source_access
-              WHERE source_access.institution_id = fsi.institution_id
-                AND source_access.professional_id = fp.id
-                AND source_access.hospital_id = fsi.hospital_id
-                AND source_access.can_access = 1
-                AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
-            )
-            OR fpi.role_in_institution = 'GESTOR_PLUS'
-            OR EXISTS (
-              SELECT 1
-              FROM manager_scope source_scope
-              WHERE source_scope.manager_professional_id = fp.id
-                AND source_scope.institution_id = fsi.institution_id
-                AND source_scope.hospital_id = fsi.hospital_id
-                AND (source_scope.sector_id IS NULL OR source_scope.sector_id = fsi.sector_id)
-                AND source_scope.active = 1
-            )
-          )
-          AND fsi.schedule_context_id IN (${sql.join(
-            visibleContextIds.map((id) => sql`${id}`),
-            sql`, `,
-          )})
-          AND (
-            api.role_in_institution = 'GESTOR_PLUS'
-            OR EXISTS (
-              SELECT 1
-              FROM manager_scope actor_mgr
-              WHERE actor_mgr.manager_professional_id = ap.id
-                AND actor_mgr.institution_id = fsi.institution_id
-                AND actor_mgr.hospital_id = fsi.hospital_id
-                AND (actor_mgr.sector_id IS NULL OR actor_mgr.sector_id = fsi.sector_id)
-                AND actor_mgr.active = 1
-            )
-            OR
-            (
-              (
-                fsc.admission_policy = 'ALL_CFM_SPECIALTIES'
-                AND ap.medical_specialty_id IS NOT NULL
-              )
-              OR
-              (
-                fsc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
-                AND ap.medical_specialty_id IS NOT NULL
-                AND ap.operational_profile_code IS NULL
-              )
-              OR
-              (
-                fsc.medical_specialty_id IS NOT NULL
-                AND fms.id IS NOT NULL
-                AND ap.medical_specialty_id = fsc.medical_specialty_id
-              )
-              OR
-              (
-                fsc.operational_profile_code IS NOT NULL
-                AND ap.operational_profile_code = fsc.operational_profile_code
-              )
-              OR
-              (
-                fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-                AND EXISTS (
-                  SELECT 1
-                    FROM schedule_context_allowed_qualifications aq
-                   WHERE aq.schedule_context_id = fsc.id
-                     AND (
-                       (
-                         aq.medical_specialty_id IS NOT NULL
-                         AND ap.medical_specialty_id = aq.medical_specialty_id
-                       )
-                       OR
-                       (
-                         aq.operational_profile_code IS NOT NULL
-                         AND ap.operational_profile_code = aq.operational_profile_code
-                       )
-                     )
-                )
-              )
-            )
-          )
-          AND (
-            api.role_in_institution = 'GESTOR_PLUS'
-            OR EXISTS (
-              SELECT 1
-              FROM manager_scope actor_source_scope
-              WHERE actor_source_scope.manager_professional_id = ap.id
-                AND actor_source_scope.institution_id = fsi.institution_id
-                AND actor_source_scope.hospital_id = fsi.hospital_id
-                AND (actor_source_scope.sector_id IS NULL OR actor_source_scope.sector_id = fsi.sector_id)
-                AND actor_source_scope.active = 1
-            )
-            OR EXISTS (
-              SELECT 1
-              FROM professional_access actor_source_access
-              WHERE actor_source_access.institution_id = fsi.institution_id
-                AND actor_source_access.professional_id = ap.id
-                AND actor_source_access.hospital_id = fsi.hospital_id
-                AND actor_source_access.can_access = 1
-                AND (actor_source_access.sector_id IS NULL OR actor_source_access.sector_id = fsi.sector_id)
-            )
-          )
-          AND (
-            api.role_in_institution = 'GESTOR_PLUS'
-            OR EXISTS (
-              SELECT 1
-              FROM manager_scope actor_specialty_scope
-              WHERE actor_specialty_scope.manager_professional_id = ap.id
-                AND actor_specialty_scope.institution_id = fsi.institution_id
-                AND actor_specialty_scope.hospital_id = fsi.hospital_id
-                AND (actor_specialty_scope.sector_id IS NULL OR actor_specialty_scope.sector_id = fsi.sector_id)
-                AND actor_specialty_scope.active = 1
-            )
-            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
-            OR NULLIF(TRIM(fp.specialty), '') IS NULL
-            OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(fp.specialty))
-          )
-          AND (
-            api.role_in_institution = 'GESTOR_PLUS'
-            OR EXISTS (
-              SELECT 1
-              FROM manager_scope actor_peer_specialty_scope
-              WHERE actor_peer_specialty_scope.manager_professional_id = ap.id
-                AND actor_peer_specialty_scope.institution_id = fsi.institution_id
-                AND actor_peer_specialty_scope.hospital_id = fsi.hospital_id
-                AND (actor_peer_specialty_scope.sector_id IS NULL OR actor_peer_specialty_scope.sector_id = fsi.sector_id)
-                AND actor_peer_specialty_scope.active = 1
-            )
-            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
-            OR NULLIF(TRIM(ap.specialty), '') IS NULL
-            OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(ap.specialty))
-          )
-          AND (
-            NOT EXISTS (
-              SELECT 1
-              FROM shift_assignments_v2 actor_conflict
-              JOIN shift_instances actor_conflict_shift
-                ON actor_conflict_shift.id = actor_conflict.shift_instance_id
-              WHERE actor_conflict.professional_id = ap.id
-                AND actor_conflict.is_active = 1
-                AND actor_conflict_shift.start_at < fsi.end_at
-                AND actor_conflict_shift.end_at > fsi.start_at
-                AND (sr.type != 'SWAP' OR actor_conflict.id != tsa.id)
-            )
-            OR (
-              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
-              AND (
-                sr.to_professional_id != ${actor.professionalId}
-                OR sr.to_user_id != ${userId}
-              )
-              AND (
-                api.role_in_institution = 'GESTOR_PLUS'
-                OR EXISTS (
-                  SELECT 1
-                  FROM manager_scope actor_conflict_bypass
-                  WHERE actor_conflict_bypass.manager_professional_id = ap.id
-                    AND actor_conflict_bypass.institution_id = fsi.institution_id
-                    AND actor_conflict_bypass.hospital_id = fsi.hospital_id
-                    AND (actor_conflict_bypass.sector_id IS NULL OR actor_conflict_bypass.sector_id = fsi.sector_id)
-                    AND actor_conflict_bypass.active = 1
-                )
-              )
-            )
-          )
-          AND (
-            (
-              sr.type IN ('TRANSFER', 'CESSAO')
-              AND sr.to_shift_instance_id IS NULL
-              AND sr.to_assignment_id IS NULL
-            )
-            OR
-            (
-              sr.type = 'SWAP'
-              AND sr.to_shift_instance_id IS NOT NULL
-              AND sr.to_shift_instance_id != sr.from_shift_instance_id
-              AND sr.to_assignment_id IS NULL
-              AND tsi.id IS NOT NULL
-              AND tsi.start_at > NOW()
-              AND th.id IS NOT NULL
-              AND ts.id IS NOT NULL
-              AND tsa.id IS NOT NULL
-              AND EXISTS (
-                SELECT 1
-                FROM monthly_rosters target_roster
-                WHERE target_roster.institution_id = tsi.institution_id
-                  AND target_roster.hospital_id = tsi.hospital_id
-                  AND target_roster.year_month = DATE_FORMAT(DATE_SUB(tsi.start_at, INTERVAL 3 HOUR), '%Y-%m')
-                  AND target_roster.status = 'PUBLISHED'
-              )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM shift_assignments_v2 target_duplicate
-                WHERE target_duplicate.shift_instance_id = tsi.id
-                  AND target_duplicate.institution_id = tsi.institution_id
-                  AND target_duplicate.hospital_id = tsi.hospital_id
-                  AND target_duplicate.sector_id = tsi.sector_id
-                  AND target_duplicate.professional_id = ap.id
-                  AND target_duplicate.is_active = 1
-                  AND target_duplicate.id != tsa.id
-              )
-              AND (
-                api.role_in_institution = 'GESTOR_PLUS'
-                OR EXISTS (
-                  SELECT 1
-                  FROM manager_scope actor_target_scope
-                  WHERE actor_target_scope.manager_professional_id = ap.id
-                    AND actor_target_scope.institution_id = tsi.institution_id
-                    AND actor_target_scope.hospital_id = tsi.hospital_id
-                    AND (actor_target_scope.sector_id IS NULL OR actor_target_scope.sector_id = tsi.sector_id)
-                    AND actor_target_scope.active = 1
-                )
-                OR EXISTS (
-                  SELECT 1
-                  FROM professional_access actor_target_access
-                  WHERE actor_target_access.institution_id = tsi.institution_id
-                    AND actor_target_access.professional_id = ap.id
-                    AND actor_target_access.hospital_id = tsi.hospital_id
-                    AND actor_target_access.can_access = 1
-                    AND (actor_target_access.sector_id IS NULL OR actor_target_access.sector_id = tsi.sector_id)
-                )
-              )
-              AND EXISTS (
-                SELECT 1
-                FROM professional_access source_target_access
-                WHERE source_target_access.institution_id = tsi.institution_id
-                  AND source_target_access.professional_id = fp.id
-                  AND source_target_access.hospital_id = tsi.hospital_id
-                  AND source_target_access.can_access = 1
-                  AND (source_target_access.sector_id IS NULL OR source_target_access.sector_id = tsi.sector_id)
-              )
-              AND (
-                NULLIF(TRIM(tsi.specialty), '') IS NULL
-                OR NULLIF(TRIM(ap.specialty), '') IS NULL
-                OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(ap.specialty))
-              )
-              AND (
-                NULLIF(TRIM(tsi.specialty), '') IS NULL
-                OR NULLIF(TRIM(fp.specialty), '') IS NULL
-                OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(fp.specialty))
-              )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM shift_assignments_v2 source_target_conflict
-                JOIN shift_instances source_target_conflict_shift
-                  ON source_target_conflict_shift.id = source_target_conflict.shift_instance_id
-                WHERE source_target_conflict.professional_id = fp.id
-                  AND source_target_conflict.is_active = 1
-                  AND source_target_conflict_shift.start_at < tsi.end_at
-                  AND source_target_conflict_shift.end_at > tsi.start_at
-                  AND source_target_conflict.id != fsa.id
-              )
-            )
-            OR
-            (
-              (sr.to_professional_id IS NOT NULL OR sr.to_user_id IS NOT NULL)
-              AND (
-                sr.to_professional_id != ${actor.professionalId}
-                OR sr.to_user_id != ${userId}
-              )
-              AND (
-                api.role_in_institution = 'GESTOR_PLUS'
-                OR EXISTS (
-                  SELECT 1
-                  FROM manager_scope actor_directed_type
-                  WHERE actor_directed_type.manager_professional_id = ap.id
-                    AND actor_directed_type.institution_id = fsi.institution_id
-                    AND actor_directed_type.hospital_id = fsi.hospital_id
-                    AND (actor_directed_type.sector_id IS NULL OR actor_directed_type.sector_id = fsi.sector_id)
-                    AND actor_directed_type.active = 1
-                )
-              )
-              AND (
-                (
-                  sr.type IN ('TRANSFER', 'CESSAO')
-                  AND sr.to_shift_instance_id IS NULL
-                  AND sr.to_assignment_id IS NULL
-                )
-                OR
-                (
-                  sr.type = 'SWAP'
-                  AND sr.to_shift_instance_id IS NOT NULL
-                  AND sr.to_shift_instance_id != sr.from_shift_instance_id
-                  AND tsi.id IS NOT NULL
-                  AND tsi.start_at > NOW()
-                  AND th.id IS NOT NULL
-                  AND ts.id IS NOT NULL
-                )
-              )
-            )
-          )
-          ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
-        ORDER BY fsi.start_at ASC, sr.id ASC
-      `);
-
-      return rowsFromExecute<AvailableSwapRow>(result).map((r) => ({
-        id: r.id,
-        type: r.type,
-        reason: r.reason,
-        expiresAt: r.expiresAt === null ? null : dateFromExecute(r.expiresAt),
-        createdAt: dateFromExecute(r.createdAt),
-        fromProfessional: {
-          name: r.fromProfessionalName,
-          role: r.fromProfessionalRole,
-        },
-        fromShift: {
-          id: r.fromShiftInstanceId,
-          scheduleContextId: r.fromScheduleContextId,
-          label: r.fromShiftLabel,
-          startAt: dateFromExecute(r.fromShiftStartAt),
-          endAt: dateFromExecute(r.fromShiftEndAt),
-          hospitalName: r.fromHospitalName,
-          sectorName: r.fromSectorName,
-        },
-        toShift: r.toShiftInstanceId
-          ? {
-              id: r.toShiftInstanceId,
-              label: r.toShiftLabel!,
-              startAt: dateFromExecute(r.toShiftStartAt!),
-              endAt: dateFromExecute(r.toShiftEndAt!),
-              hospitalName: r.toHospitalName!,
-              sectorName: r.toSectorName!,
-            }
-          : null,
-        toProfessionalId:
-          r.toProfessionalId == null ? null : Number(r.toProfessionalId),
-        toUserId: r.toUserId == null ? null : Number(r.toUserId),
-        canRespond: listedOfferCanRespond(
-          r.toProfessionalId,
-          r.toUserId,
-          actor.professionalId,
-          userId,
-        ),
-      }));
-    }),
+  // ── countActionable ───────────────────────────────────────────────────────
+  // Contagem server-side de ofertas que exigem ação do usuário atual.
+  // Mesma regra de listAvailable + canRespond; não usa notifications.read.
+  countActionable: protectedProcedure.query(async ({ ctx }) => ({
+    swapOffers: await countActionableSwapOffers(ctx),
+  })),
 });

@@ -9,7 +9,11 @@ import Constants from "expo-constants";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { profileRoleBadgeLabel } from "@/lib/institution-roles";
-import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
+
+function navigationBadgeValue(count: number): string | number | undefined {
+  if (count <= 0) return undefined;
+  return count > 9 ? "9+" : count;
+}
 
 function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const { user } = useAuth();
@@ -69,6 +73,11 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
               : typeof options.title === "string"
                 ? options.title
                 : route.name;
+          const badge = options.tabBarBadge;
+          const badgeLabel =
+            badge !== undefined && badge !== null
+              ? `${label}, ${badge} pendência${Number(badge) === 1 ? "" : "s"}`
+              : label;
           const color = focused ? theme.colors.onDark.text : theme.colors.onDark.textInactive;
 
           const onPress = () => {
@@ -86,6 +95,8 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
             <Pressable
               key={route.key}
               onPress={onPress}
+              accessibilityRole="button"
+              accessibilityLabel={badgeLabel}
               style={(pressableState) => {
                 const hovered = (pressableState as { hovered?: boolean }).hovered === true;
                 const itemStyle: ViewStyle = {
@@ -124,7 +135,32 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
                 />
               ) : null}
               {options.tabBarIcon?.({ focused, color, size: 18 }) ?? null}
-              <Text style={{ color, fontSize: 14, fontWeight: focused ? "700" : "500" }}>{label}</Text>
+              <Text style={{ color, fontSize: 14, fontWeight: focused ? "700" : "500", flex: 1 }}>{label}</Text>
+              {badge !== undefined && badge !== null ? (
+                <View
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                  style={{
+                    minWidth: theme.space[4],
+                    height: theme.space[4],
+                    paddingHorizontal: theme.space[1],
+                    borderRadius: theme.radius.full,
+                    backgroundColor: theme.colors.danger,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Text
+                    style={{
+                      ...theme.text.caption,
+                      fontWeight: theme.weight.bold,
+                      color: theme.colors.onDark.text,
+                    }}
+                  >
+                    {String(badge)}
+                  </Text>
+                </View>
+              ) : null}
             </Pressable>
           );
         })}
@@ -205,13 +241,21 @@ export default function TabLayout() {
   // 2026-08-22.
   const showManagementTabs = isDesktopWeb;
   const showTrocasTab = !isDesktopWeb || !isManager;
-  // Badge da aba Trocas: ofertas que o usuário pode responder.
-  const { data: availableSwaps } = trpc.swaps.listAvailable.useQuery(
-    {},
-    { enabled: !!user?.id && showTrocasTab, staleTime: 60_000 },
-  );
-  const availableSwapsCount =
-    availableSwaps?.filter((row) => listedSwapIsActionable(row)).length ?? 0;
+  const { data: actionableSwapCount } = trpc.swaps.countActionable.useQuery(undefined, {
+    enabled: !!user?.id,
+    staleTime: 60_000,
+  });
+  const swapOffersPending = actionableSwapCount?.swapOffers ?? 0;
+  const swapBadge = navigationBadgeValue(swapOffersPending);
+  const trocasTabBadge = showTrocasTab ? swapBadge : undefined;
+  // Desktop gestor: Trocas oculta; aceitar/recusar fica em Solicitações
+  // (pending.tsx → AvailableSwapsList, fluxo peer A↔B — não approveByManager).
+  const pendingTabBadge =
+    showManagementTabs && canApproveAssignments && !showTrocasTab ? swapBadge : undefined;
+  const attentionBadgeStyle = {
+    backgroundColor: theme.colors.danger,
+    color: theme.colors.onDark.text,
+  } as const;
 
   return (
     <Tabs
@@ -264,8 +308,8 @@ export default function TabLayout() {
           title: "Trocas",
           href: showTrocasTab ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="swap" color={color} size={size} />,
-          tabBarBadge: availableSwapsCount > 0 ? availableSwapsCount : undefined,
-          tabBarBadgeStyle: { backgroundColor: theme.colors.primary, color: theme.colors.onDark.text },
+          tabBarBadge: trocasTabBadge,
+          tabBarBadgeStyle: attentionBadgeStyle,
         }}
       />
       <Tabs.Screen
@@ -301,6 +345,8 @@ export default function TabLayout() {
           title: "Solicitações",
           href: showManagementTabs && canApproveAssignments ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
+          tabBarBadge: pendingTabBadge,
+          tabBarBadgeStyle: attentionBadgeStyle,
         }}
       />
       <Tabs.Screen

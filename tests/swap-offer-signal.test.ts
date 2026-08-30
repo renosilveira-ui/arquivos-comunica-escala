@@ -320,7 +320,10 @@ describe("sinal de oferta de plantão", () => {
     expect(source).toContain("enqueueSwapOfferSignals");
     expect(source).toContain("enqueueSwapTakenSignals");
     expect(source).toContain("applySwapAssignmentTransfer");
-    const listAvailable = source.slice(source.indexOf("listAvailable:"));
+    const listAvailable = source.slice(
+      source.indexOf("async function queryListAvailableRows"),
+      source.indexOf("async function countActionableSwapOffers"),
+    );
     expect(listAvailable).toContain("manager_scope");
     expect(listAvailable).toContain("GESTOR_PLUS");
     expect(listAvailable).toContain(
@@ -730,6 +733,46 @@ describe("sinal de oferta de plantão", () => {
         fromAssignmentId: shift.assignmentId,
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("countActionable do gestor conta só peer acionável resolvível em Solicitações", async () => {
+    const openShift = await createOccupiedShift(offerer, 20, "Clínica Médica");
+    const openOffer = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: openShift.shiftId,
+      fromAssignmentId: openShift.assignmentId,
+    });
+
+    const directedShift = await createOccupiedShift(offerer, 21, "Clínica Médica");
+    await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: directedShift.shiftId,
+      fromAssignmentId: directedShift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+
+    await expect(callerFor(gestor).countActionable()).resolves.toEqual({
+      swapOffers: 1,
+    });
+    await expect(callerFor(peer).countActionable()).resolves.toEqual({
+      swapOffers: 2,
+    });
+
+    const gestorRows = await callerFor(gestor).listAvailable({});
+    const gestorOpen = gestorRows.find(
+      (item) => Number(item.id) === Number(openOffer.id),
+    );
+    expect(gestorOpen).toMatchObject({ canRespond: true });
+    expect(
+      gestorRows.filter((row) => row.canRespond).length,
+    ).toBe(1);
+
+    await expect(
+      callerFor(gestor).accept({ swapRequestId: Number(openOffer.id) }),
+    ).resolves.toEqual({ ok: true });
+    await expect(callerFor(gestor).countActionable()).resolves.toEqual({
+      swapOffers: 0,
+    });
   });
 
   it("filterReadableSwaps só omite FORBIDDEN/NOT_FOUND", () => {
