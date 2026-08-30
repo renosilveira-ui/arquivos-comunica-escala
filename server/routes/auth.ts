@@ -684,23 +684,29 @@ function hashResetToken(token: string): string {
 /**
  * Marca o token recém-emitido como usado quando o correio não entregou.
  * Guarda por hash + usedAt IS NULL: se o reset venceu a corrida, não reabre.
+ * Reusa o `db` do caller (não chama getDb de novo) e devolve se o UPDATE
+ * chegou a ser executado — o log não pode afirmar revogação sem isso.
  */
 async function revokeFreshPasswordResetToken(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
   userId: number,
   tokenHash: string,
-): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db
-    .update(passwordResets)
-    .set({ usedAt: new Date() })
-    .where(
-      and(
-        eq(passwordResets.userId, userId),
-        eq(passwordResets.tokenHash, tokenHash),
-        isNull(passwordResets.usedAt),
-      ),
-    );
+): Promise<boolean> {
+  try {
+    await db
+      .update(passwordResets)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(passwordResets.userId, userId),
+          eq(passwordResets.tokenHash, tokenHash),
+          isNull(passwordResets.usedAt),
+        ),
+      );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 type AuditMembershipSnapshot = {
@@ -962,10 +968,16 @@ authRouter.post(
           // a lançar, o token recém-gravado não pode ficar utilizável.
         }
         if (!delivered) {
-          console.error(
-            "[forgot-password] E-mail não entregue; token recém-emitido revogado",
+          const revoked = await revokeFreshPasswordResetToken(
+            db,
+            user.id,
+            tokenHash,
           );
-          await revokeFreshPasswordResetToken(user.id, tokenHash);
+          console.error(
+            revoked
+              ? "[forgot-password] E-mail não entregue; token recém-emitido revogado"
+              : "[forgot-password] E-mail não entregue; revogação do token recém-emitido não confirmada",
+          );
         }
       }
     } catch (error) {

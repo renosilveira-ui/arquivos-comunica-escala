@@ -490,6 +490,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
     const logged = errors.mock.calls.flat().join(" ");
     expect(logged).toContain("token recém-emitido revogado");
+    expect(logged).not.toContain("não confirmada");
     expect(logged).not.toContain(token);
     expect(logged).not.toContain("reset-password?token=");
     spy.mockRestore();
