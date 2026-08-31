@@ -478,8 +478,8 @@ export const confirmationRouter = router({
     }),
 
   /**
-   * Médico confirma presença no plantão.
-   * Dispara auto-SSO no Comunica+ (Fase 3).
+   * Médico confirma responsabilidade pelo intervalo do plantão.
+   * Enfileira duty-sync CONFIRM. Não dispara SSO nem sessão no Comunica+.
    */
   confirm: protectedProcedure
     .input(z.object({ confirmationToken: z.string().uuid() }))

@@ -420,6 +420,28 @@ describe("duty-sync V2 lifecycle", () => {
     });
   });
 
+  it("COMUNICA_PLUS_OUTBOUND_ENABLED=0 não impede enqueue nem HTTP do duty-sync", async () => {
+    vi.stubEnv("COMUNICA_PLUS_OUTBOUND_ENABLED", "0");
+    const { shiftId, assignmentId } = await occupiedShift(titularProId);
+    const conf = await pendingConfirmation(assignmentId, shiftId);
+    await confirmationRouter
+      .createCaller(doctorCtx(titularUserId))
+      .confirm({ confirmationToken: conf.confirmationToken });
+    const queued = await dutySyncRows(conf.id);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.status).toBe("PENDING");
+    expect(queued[0]?.body).toBe("CONFIRM");
+
+    await processPendingDutySyncs(new Date(), { concurrency: 1 });
+    const sent = await dutySyncRows(conf.id);
+    expect(sent[0]?.status).toBe("SENT");
+    expect(fetchMock).toHaveBeenCalled();
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.includes("/api/integrations/duty-roster"))).toBe(
+      true,
+    );
+  });
+
   it("desistência após CONFIRMED gera WITHDRAW e não reverte a alocação", async () => {
     const { shiftId, assignmentId } = await occupiedShift(titularProId);
     const conf = await pendingConfirmation(assignmentId, shiftId);
@@ -461,6 +483,30 @@ describe("duty-sync V2 lifecycle", () => {
       .from(shiftAssignmentsV2)
       .where(eq(shiftAssignmentsV2.id, assignmentId));
     expect(assignment.isActive).toBe(false);
+    const rows = await dutySyncRows(conf.id);
+    expect(rows.some((row) => row.body === "WITHDRAW")).toBe(true);
+  });
+
+  it("markVacant após CONFIRMED gera WITHDRAW e deixa o turno vago", async () => {
+    const { shiftId, assignmentId } = await occupiedShift(titularProId);
+    const conf = await pendingConfirmation(assignmentId, shiftId);
+    await confirmationRouter
+      .createCaller(doctorCtx(titularUserId))
+      .confirm({ confirmationToken: conf.confirmationToken });
+    await editorRouter.createCaller(managerCtx()).markVacant({
+      shiftInstanceId: shiftId,
+      reason: "Turno marcado vago após confirmação",
+    });
+    const [assignment] = await db
+      .select({ isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
+    expect(assignment.isActive).toBe(false);
+    const [shift] = await db
+      .select({ status: shiftInstances.status })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftId));
+    expect(shift.status).toBe("VAGO");
     const rows = await dutySyncRows(conf.id);
     expect(rows.some((row) => row.body === "WITHDRAW")).toBe(true);
   });
@@ -745,14 +791,15 @@ describe("duty-sync V2 lifecycle", () => {
       });
     });
     const rows = await dutySyncRows(conf.id);
-    expect(rows.some((row) => row.body === "WITHDRAW")).toBe(true);
-    expect(
-      rows.some(
-        (row) =>
-          row.body === "CONFIRM" &&
-          row.dedupKey?.includes(`interval:${nextStart.toISOString()}`),
-      ),
-    ).toBe(true);
+    const withdraw = rows.find((row) => row.body === "WITHDRAW");
+    const intervalConfirm = rows.find(
+      (row) =>
+        row.body === "CONFIRM" &&
+        row.dedupKey?.includes(`interval:${nextStart.toISOString()}`),
+    );
+    expect(withdraw).toBeDefined();
+    expect(intervalConfirm).toBeDefined();
+    expect(withdraw!.id).toBeLessThan(intervalConfirm!.id);
   });
 
   it("#310 outbox_processed não significa presença ativa", async () => {

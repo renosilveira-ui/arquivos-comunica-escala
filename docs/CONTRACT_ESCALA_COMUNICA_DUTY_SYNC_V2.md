@@ -51,8 +51,9 @@ O Escala+ declara que o profissional confirmou **responsabilidade** pelo interva
 Derivada **somente** no Comunica+:
 
 ```
-confirmedAt != null
-AND dutyStart <= now < dutyEnd
+confirmedAt IS NOT NULL
+AND dutyStartAt <= now
+AND dutyEndAt > now
 ```
 
 Se o médico confirma às 15:00 um plantão 19:00→07:00:
@@ -85,6 +86,8 @@ Contrato **separado**. Confirmação de plantão **não** dispara sessão intera
 
 O botão manual **“Abrir Comunica+”** permanece, se existir, como jornada explícita do usuário.
 
+O cron `processShiftStartPushes` **continua existindo**. Não é disparado por `confirm` nem por `acceptNomination`. Quando um plantão `CONFIRMED` / `REPLACEMENT_CONFIRMED` **começa** (janela `startAt ∈ [now − 5min, now]`), envia push `type=sso_ready` (“seu plantão começou”) para o profissional efetivo. O toque no dispositivo pede launch-code e abre o handoff — não cria sessão no servidor. Instituição sem `SSO_TARGET_URL` confiável suprime o push. Esta frente **não** remove esse mecanismo temporal.
+
 ---
 
 ## 3. Transporte
@@ -102,6 +105,22 @@ O botão manual **“Abrir Comunica+”** permanece, se existir, como jornada ex
 | Fail-closed | org não mapeada → `UNMAPPED_COMUNICA_ORGANIZATION`; subject ausente/inválido → `MISSING_CANONICAL_EXTERNAL_SUBJECT`; **não** chama a rede |
 
 Flag `COMUNICA_PLUS_OUTBOUND_ENABLED` governa o outbox de **avisos** (publicação, troca aprovada). **Não** liga nem desliga duty-sync. Permanece `0` nesta frente.
+
+Classificação (código executável Escala+): `OUTBOUND_FLAG_INDEPENDENT_OF_DUTY_SYNC`.
+
+Com `COMUNICA_PLUS_OUTBOUND_ENABLED=0` (ou unset): `CONFIRM` ainda é criado na outbox `PENDING`; o worker `processPendingDutySyncs` ainda processa; o HTTP `POST /api/integrations/duty-roster` **é executado** se o destino SSO for confiável. A flag de avisos **não** bloqueia o envio. O worker de avisos (`processPendingComunicaPlusOutbox` → `getConfig`) é o único que lança `COMUNICA_OUTBOUND_DISABLED`.
+
+Variáveis efetivamente usadas pelo Duty Sync (não pela flag de avisos):
+
+| Variável | Papel |
+|----------|--------|
+| `SSO_TARGET_URL` | Destino HTTP. Ausente/inválida → sem rede, intent `PENDING` retryável |
+| `SSO_ORG_MAP` | Mapeamento instituição → UUID Comunica+. Ausente/inválido → `UNMAPPED_COMUNICA_ORGANIZATION`, sem rede |
+| `SSO_PRIVATE_KEY_JWK` | Assinatura JWT. Falha → retryável, sem rede |
+| `SSO_ISSUER` / `SSO_AUDIENCE` | Claims JWT (`iss` / `aud`) |
+| e-mail canônico do usuário | Subject. Ausente/inválido → `MISSING_CANONICAL_EXTERNAL_SUBJECT`, sem rede |
+
+Não usadas pelo Duty Sync: `COMUNICA_PLUS_OUTBOUND_ENABLED`, `COMUNICA_PLUS_URL`, `COMUNICA_PLUS_SYSTEM_EMAIL`, `COMUNICA_PLUS_SYSTEM_PASSWORD`, `COMUNICA_PLUS_SYSTEM_PIN`.
 
 Hospital Alert permanece congelado (`EXPO_PUBLIC_HOSPITAL_ALERT_ENABLED` ≠ `true`).
 
@@ -144,7 +163,16 @@ Efeito:
 2. `WITHDRAW` Reno `[19:00, 07:00)` — Reno deixa de aparecer imediatamente.
 3. `CONFIRM` João `[19:00, 07:00)` — João aparece imediatamente porque `now` já está dentro do intervalo.
 
-Limitação conhecida (não bloqueia V2): o Comunica+ passa a registrar João como responsável pelo intervalo completo, inclusive 19:00–23:00, que é histórico. Presença **agora** fica correta. Recorte from-now exigiria decisão de produto (e possivelmente evolução da chave natural). **Não implementar recorte nesta frente.**
+Limitação conhecida — dívida V2.1, **não** bloqueia piloto: o Comunica+ persiste João com `dutyStartAt` = 19:00. Qualquer consulta histórica “quem cobria 19–23?” sobre essa linha veria João. **Consumidores atuais** (Comunica+ `4b604268c08439e8136e8e9257142ca1ea349ead`) filtram por `now`:
+
+| Superfície | Fonte | Instante |
+|------------|--------|----------|
+| Lista / chip de plantonistas (`dutyRoster.listOnDuty`) | `listOnDutyNow` → `listCovering` | `new Date()` (turno seguinte: `upcoming.start + 1s`) |
+| Push de demanda em serviço de plantão | `dispatchRequestCreatedPush` → `listOnDutyNow(..., now: new Date())` | agora |
+| Livro caixa Médico+ | `medico_plus_fiscal_entries` | **não** lê `duty_confirmations` |
+| Auditoria duty-sync | `SYSTEM_MUTATION` no POST | metadado do evento, não relatório de cobertura histórica |
+
+Classificação: `FULL_INTERVAL_SUBSTITUTION_SAFE_FOR_PILOT`. Recorte from-now exigiria decisão de produto (e possivelmente evolução da chave natural). **Não implementar recorte nesta frente.**
 
 ---
 
@@ -176,7 +204,7 @@ Semântica: desistência após ter confirmado. O médico permanece alocado até 
 | Turno marcado vago (`markVacant`) | sim | **sim**, todas as declarações do turno | não | **esta frente** |
 | Convite / `assignDirect` / alocação nova | não | **não** | não até haver confirmação | sim (não gera WITHDRAW) |
 | Oferta de troca ainda não efetivada | possível do titular atual | **não** (oferta ≠ roster) | não | sim |
-| Troca/cessão efetivada (`swap` `APPROVED`) | possível de quem saiu | **sim**, quem deixou o intervalo | **não** automático de quem entrou | **esta frente** (WITHDRAW de quem saiu) |
+| Troca/cessão efetivada (`swap` `APPROVED`) | possível de quem saiu | **sim**, quem deixou o intervalo | **não** automático de quem entrou | **esta frente** (WITHDRAW de quem saiu). Quem entrou fica `OCUPADO` no Escala+ e **não** aparece como plantonista confirmado no Comunica+ até confirmar explicitamente. Regra de produto vigente; esta frente não a altera. |
 | Edição temporal do turno (`startAt`/`endAt`) com declaração vigente | sim, chave Comunica+ = `dutyStart` antigo | **sim**, intervalo antigo | **sim**, intervalo novo (dedup distinta) | **esta frente** |
 | Mudança de profissional via unassign+assign | sim do antigo | coberto por unassign | só se o novo confirmar | unassign nesta frente |
 | Cancelamento dedicado de shift | não há entidade “cancel”; vago / unassign | coberto por `markVacant` / unassign | não | esta frente |
@@ -230,3 +258,29 @@ Copy canônica de sucesso:
 - Não acoplar confirmação a SSO Handoff.
 - Não alterar Comunica+ nesta frente.
 - Não recortar `dutyStart` para “agora” em substituição durante o plantão.
+- Não remover `processShiftStartPushes` (mecanismo temporal complementar, não é SSO da confirmação).
+
+---
+
+## 10. Proveniência das afirmações
+
+Cada afirmação normativa deste documento tem uma origem. Hipótese não entra como fato.
+
+| Afirmação | Origem |
+|-----------|--------|
+| `CONFIRM` / `WITHDRAW` são os únicos verbos; sem `START`/`END` | Escala+ (`DutySyncAction`) + Comunica+ (`duty-roster/route.ts`) |
+| Presença ativa = `confirmedAt IS NOT NULL AND dutyStartAt <= now AND dutyEndAt > now` | Comunica+ `listCovering` em `duty-roster.service.ts` |
+| Chave natural `(organizationId, userId, dutyStartAt)` | Comunica+ POST duty-roster |
+| `WITHDRAW` zera `confirmedAt` e preserva a linha | Comunica+ POST duty-roster |
+| `COMUNICA_PLUS_OUTBOUND_ENABLED` não governa duty-sync | Escala+ `duty-sync.ts` (flag ausente) vs `comunica-plus.ts` `getConfig` |
+| HTTP duty-sync usa `SSO_TARGET_URL` + JWT SSO | Escala+ `syncDutyToComunica` |
+| Confirmação / aceite de indicação não chamam auto-SSO | Escala+ `confirmation-router.ts` |
+| `processShiftStartPushes` existe e é temporal | Escala+ `shift-confirmation-dispatcher.ts` |
+| `CONFIRMED → DECLINED` sem estado novo | Escala+ `DUTY_CONFIRMATION_TRANSITIONS` |
+| Unique `assignment_id` impede recriar `PENDING` | Escala+ `duty_confirmations.uniqAssignment` |
+| Cron não produz `AUTO_CONFIRMED` | Escala+ transições vazias + `processRechecks` só alerta gestor |
+| Desistência não desfaz alocação | Escala+ `decline` + teste de lifecycle |
+| Gestor avisado na desistência via recheck (+30 min), não no mesmo request | Escala+ `recheckAt` + `OPEN_CONFIRMATION_STATUSES` inclui `DECLINED` |
+| Substituição full-interval no piloto não altera presença operacional *agora* | Comunica+ consumidores listados na §4.2 |
+| João fica gravado com `dutyStartAt` original após substituição durante o plantão | Decisão arquitetural + limitação conhecida (dívida V2.1) |
+| Troca `APPROVED` não auto-confirma quem entra | Decisão de produto vigente (não alterada nesta frente) |

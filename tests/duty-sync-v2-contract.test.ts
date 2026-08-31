@@ -11,6 +11,11 @@ const confirmDuty = readFileSync("app/confirm-duty.tsx", "utf8");
 const dutySync = readFileSync("server/sso/duty-sync.ts", "utf8");
 const dutySyncStatus = readFileSync("server/sso/duty-sync-status.ts", "utf8");
 const confirmationRouter = readFileSync("server/confirmation-router.ts", "utf8");
+const dispatcher = readFileSync(
+  "server/cron/shift-confirmation-dispatcher.ts",
+  "utf8",
+);
+const comunicaPlus = readFileSync("server/integrations/comunica-plus.ts", "utf8");
 const renderYaml = readFileSync("render.yaml", "utf8");
 const hospitalAlertConfig = readFileSync("lib/hospitalAlertConfig.ts", "utf8");
 const contractV2 = readFileSync(
@@ -64,7 +69,19 @@ describe("contrato duty-sync V2 (estrutural)", () => {
     expect(dutySync).not.toMatch(/action:\s*"END"/);
     expect(confirmationRouter).not.toContain("enqueueAutoSsoPush");
     expect(confirmationRouter).not.toContain("triggerAutoSso");
+    expect(confirmationRouter).not.toMatch(/Dispara auto-SSO/);
     expect(contractV2).toContain("Não existem verbos `START` ou `END`");
     expect(contractV2).toContain("CONFIRMED → DECLINED");
+  });
+
+  it("COMUNICA_PLUS_OUTBOUND_ENABLED governa avisos, não duty-sync", () => {
+    expect(dutySync).not.toContain("COMUNICA_PLUS_OUTBOUND_ENABLED");
+    expect(comunicaPlus).toContain(
+      'process.env.COMUNICA_PLUS_OUTBOUND_ENABLED !== "1"',
+    );
+    expect(dispatcher).toContain("processPendingDutySyncs");
+    expect(dispatcher).toContain("processPendingComunicaPlusOutbox");
+    expect(dispatcher).toContain("processShiftStartPushes");
+    expect(contractV2).toContain("OUTBOUND_FLAG_INDEPENDENT_OF_DUTY_SYNC");
   });
 });
