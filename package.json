@@ -31,6 +31,7 @@
     "provision:sao-carlos": "tsx scripts/provision-sao-carlos-contexts.ts",
     "provision:sala-recuperacao": "tsx scripts/provision-sala-recuperacao-schedule.ts",
     "provision:institution-scale": "tsx scripts/provision-institution-scale.ts",
+    "provision:unimed-hospitals": "tsx scripts/provision-unimed-hospitals.ts",
     "apply:migration": "tsx scripts/apply-manual-migration.ts",
     "android": "expo start --android",
     "ios": "expo start --ios",
