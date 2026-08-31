@@ -74,6 +74,7 @@ export default defineConfig({
       "tests/operational-events-schema.test.ts",
       "tests/operational-events-migration.test.ts",
       "tests/operational-events-foundation.test.ts",
+      "tests/operational-email-trust.test.ts",
     ],
   },
 });

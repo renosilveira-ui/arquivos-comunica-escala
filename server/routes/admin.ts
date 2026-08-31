@@ -59,6 +59,7 @@ import {
   replaceManagerScopesForProfessional,
   resolveManagerScopesForRole,
 } from "../manager-scope-write";
+import { invalidateOperationalEmailTrustAfterEmailChangeInTransaction } from "../operational-email-trust";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -1565,6 +1566,12 @@ adminRouter.put(
               let invalidatedPasswordResetCount = 0;
               let revokedPushTokenCount = 0;
               if (emailActuallyChanges) {
+                // O novo endereço permanece sem confiança até uma origem
+                // comprovada posterior. A revogação é atômica com a troca.
+                await invalidateOperationalEmailTrustAfterEmailChangeInTransaction(
+                  tx,
+                  { userId },
+                );
                 revokedPushTokenCount = await revokeUserPushRegistrations(
                   tx,
                   userId,

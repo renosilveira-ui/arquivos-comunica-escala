@@ -83,6 +83,11 @@ import {
   enqueueScheduleInviteAcceptedSignal,
   enqueueScheduleInviteDeclinedSignal,
 } from "../schedule-invite-response-signal";
+import {
+  invalidateOperationalEmailTrustAfterEmailChangeInTransaction,
+  markOperationalEmailTrustPendingForSelfSignupInTransaction,
+  trustOperationalEmailFromAdministrativeOriginInTransaction,
+} from "../operational-email-trust";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -1770,6 +1775,12 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
                 "A conta mudou durante a exclusão",
               );
             }
+            // A anonimização é também uma troca de e-mail: nenhuma confiança
+            // antiga ou token pendente pode sobreviver ao soft-delete.
+            await invalidateOperationalEmailTrustAfterEmailChangeInTransaction(
+              tx,
+              { userId: lockedUser.id, now },
+            );
             await tx
               .update(professionals)
               .set({ name: "Conta removida" })
@@ -2780,6 +2791,12 @@ authRouter.post(
           throw new Error("password-hash-not-persisted");
         }
 
+        // Cadastro por GESTOR_PLUS é uma origem administrativa comprovada.
+        // A prova é gravada junto com a conta, nunca por um envio posterior.
+        await trustOperationalEmailFromAdministrativeOriginInTransaction(tx, {
+          userId: newUserId,
+        });
+
         const [existingProfessional] = await tx
           .select({ id: professionals.id })
           .from(professionals)
@@ -3234,6 +3251,12 @@ authRouter.post(
         if (!hasUsablePasswordHash(persistedSecret?.passwordHash)) {
           throw new Error("password-hash-not-persisted");
         }
+
+        // Autocadastro não prova posse do endereço. A conta só poderá usar
+        // e-mail operacional depois da confirmação explícita futura.
+        await markOperationalEmailTrustPendingForSelfSignupInTransaction(tx, {
+          userId: newUserId,
+        });
 
         const [existingProfessional] = await tx
           .select({ id: professionals.id })

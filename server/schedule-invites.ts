@@ -30,6 +30,7 @@ import {
   selectActiveScheduleContexts,
   type ProfessionalQualification,
 } from "./schedule-contexts";
+import { trustOperationalEmailFromActivatedInviteInTransaction } from "./operational-email-trust";
 import { protectedProcedure, router } from "./_core/trpc";
 
 const NAMED_TTL_MS = 24 * 60 * 60 * 1000;
@@ -309,6 +310,14 @@ export async function redeemScheduleInviteInTransaction(
   if (updateAffectedRows(increment) !== 1) {
     throw new ScheduleInviteError(400, "Convite inválido ou expirado");
   }
+
+  // O convite só passa a ser uma origem comprovada depois do incremento CAS
+  // que representa o resgate canônico. Falhas posteriores fazem rollback de
+  // acesso, resgate e trust como uma única transação.
+  await trustOperationalEmailFromActivatedInviteInTransaction(tx, {
+    userId: input.userId,
+    now,
+  });
 
   await recordAudit(
     {
