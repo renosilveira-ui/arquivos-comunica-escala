@@ -64,6 +64,7 @@ export default defineConfig({
       "tests/mobile-session-resume.test.ts",
       "tests/web-verified-session.test.ts",
       "tests/institution-roles.test.ts",
+      "tests/duty-sync-v2-contract.test.ts",
     ],
   },
 });

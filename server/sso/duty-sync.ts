@@ -2,10 +2,11 @@
 // plantonista no Comunica+ (substitui a pergunta "você é o plantonista?"
 // para quem está na escala oficial).
 //
-// Quando o médico confirma presença (ou o substituto aceita), enviamos
-// CONFIRM para POST /api/integrations/duty-roster do
-// Comunica+ — que grava na mesma tabela da auto-declaração, com
-// source "ESCALA". Recusa → WITHDRAW.
+// CONFIRM declara responsabilidade pelo intervalo [dutyStart, dutyEnd).
+// Não significa plantão agora, login, sessão ou presença imediata.
+// Presença ativa é derivada no Comunica+ (confirmedAt + relógio).
+// WITHDRAW anula a declaração quando o Escala+ já não considera aquele
+// profissional responsável (recusa após confirmado, remoção, substituto).
 //
 // Auth: JWT RS256 assinado com a MESMA chave do SSO de handoff
 // (o Comunica+ valida pela JWKS que já consome), com scope "duty:sync"
@@ -70,17 +71,29 @@ const DUTY_CONFIRMATION_STATUSES: readonly ConfirmationStatus[] = [
 
 export type DutySyncAction = "CONFIRM" | "WITHDRAW";
 
+type ConfirmationStatus = typeof dutyConfirmations.$inferSelect.status;
+
 export type DutySyncProcessOptions = Readonly<{
   /** Limite menor usado por testes de ordenação; produção permanece em 4. */
   concurrency?: number;
 }>;
 
-const DUTY_SYNC_STATUS_POLICY: Record<
+export const DUTY_SYNC_STATUS_POLICY: Record<
   DutySyncAction,
   readonly ConfirmationStatus[]
 > = {
   CONFIRM: ["CONFIRMED", "REPLACEMENT_CONFIRMED"],
-  WITHDRAW: ["DECLINED", "NOMINATED", "REPLACEMENT_DECLINED", "REPLACEMENT_CONFIRMED"],
+  // WITHDRAW pode partir de CONFIRMED/AUTO_CONFIRMED (desistência ou
+  // remoção operacional) sem estado novo: o envelope congela o status
+  // canônico no momento da intenção.
+  WITHDRAW: [
+    "DECLINED",
+    "NOMINATED",
+    "REPLACEMENT_DECLINED",
+    "REPLACEMENT_CONFIRMED",
+    "CONFIRMED",
+    "AUTO_CONFIRMED",
+  ],
 };
 
 interface DutySyncResult {
@@ -91,7 +104,6 @@ interface DutySyncResult {
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type EnqueueDb = Pick<Db, "insert" | "select" | "update">;
-type ConfirmationStatus = typeof dutyConfirmations.$inferSelect.status;
 
 type DutySyncQueued = {
   dutySyncVersion: typeof DUTY_SYNC_VERSION;
@@ -506,8 +518,8 @@ export async function enqueueDutySync(
  * Sincroniza o estado de plantonista de uma duty_confirmation do Escala
  * com o roster do Comunica+.
  *
- * CONFIRM  → médico vira plantonista declarado no Comunica+.
- * WITHDRAW → declaração retirada (recusa / troca aceita por outro).
+ * CONFIRM  → declara o intervalo; presença ativa só no horário.
+ * WITHDRAW → declaração retirada (desistência, remoção, substituto).
  */
 export async function syncDutyToComunica(
   confirmationId: number,

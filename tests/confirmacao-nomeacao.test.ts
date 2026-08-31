@@ -225,6 +225,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       | "MISSING_CANONICAL_EXTERNAL_SUBJECT";
     organizationId?: string;
     externalSubject?: string;
+    processedCount?: number;
   }) {
     const [outbox] = await db
       .select({
@@ -262,7 +263,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     } else {
       expect(outbox.providerReceipt).not.toHaveProperty("externalSubject");
     }
-    await expect(processPendingDutySyncs()).resolves.toBe(0);
+    await expect(processPendingDutySyncs()).resolves.toBe(input.processedCount ?? 0);
   }
 
   async function expectAuditEvidence(
@@ -476,11 +477,18 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
     const r = await sub.acceptNomination({ confirmationToken: conf.confirmationToken });
     expect(r.status).toBe("REPLACEMENT_CONFIRMED");
-    expect(vi.mocked(enqueueAutoSsoPush)).toHaveBeenCalledWith(
-      conf.id,
-      expect.any(Date),
-      expect.anything(),
-    );
+    expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
+    expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(enqueueDutySync).mock.calls[0]?.[0]).toMatchObject({
+      confirmationId: conf.id,
+      action: "WITHDRAW",
+      targetUserId: titularUserId,
+    });
+    expect(vi.mocked(enqueueDutySync).mock.calls[1]?.[0]).toMatchObject({
+      confirmationId: conf.id,
+      action: "CONFIRM",
+      targetUserId: subUserId,
+    });
     expect(queuedPushMock).toHaveBeenCalledWith(
       expect.objectContaining({
         payload: expect.objectContaining({
@@ -625,6 +633,14 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         );
       expect(active).toEqual([{ professionalId: subProId }]);
       await expectAuditEvidence("TRANSFER_ACCEPTED", assignmentId);
+      await expectSuppressedDutySyncEvidence({
+        dedupKey: `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`,
+        confirmationId: conf.id,
+        targetUserId: titularUserId,
+        action: "WITHDRAW",
+        reason: "UNMAPPED_COMUNICA_ORGANIZATION",
+        externalSubject: `cn-titular-${stamp}@test.local`,
+      });
       await expectSuppressedDutySyncEvidence({
         dedupKey,
         confirmationId: conf.id,
@@ -785,6 +801,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         action: "CONFIRM",
         reason: "MISSING_CANONICAL_EXTERNAL_SUBJECT",
         organizationId,
+        processedCount: 1,
       });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
@@ -1055,7 +1072,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       );
     expect(activeReplacementAssignments).toHaveLength(1);
     expect(queuedPushMock).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(2);
   });
 
   it("aceites em meses distintos do mesmo hospital não fazem upgrade S→X na topologia", async () => {
@@ -1313,7 +1330,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(isAllowedDutyConfirmationTransition("PENDING", "CONFIRMED")).toBe(true);
     expect(isAllowedDutyConfirmationTransition("PENDING", "AUTO_CONFIRMED")).toBe(false);
     expect(isAllowedDutyConfirmationTransition("PENDING", "REPLACEMENT_CONFIRMED")).toBe(false);
-    expect(isAllowedDutyConfirmationTransition("CONFIRMED", "DECLINED")).toBe(false);
+    expect(isAllowedDutyConfirmationTransition("CONFIRMED", "DECLINED")).toBe(true);
 
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
@@ -1521,27 +1538,27 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       titular.confirm({ confirmationToken: conf.confirmationToken }),
       titular.decline({ confirmationToken: conf.confirmationToken, reason: "Indisponível" }),
     ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(results.some((result) => result.status === "fulfilled")).toBe(true);
 
     const [after] = await db
       .select({ status: dutyConfirmations.status })
       .from(dutyConfirmations)
       .where(eq(dutyConfirmations.id, conf.id));
+    expect(vi.mocked(triggerAutoSso)).not.toHaveBeenCalled();
+    expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
     if (after.status === "CONFIRMED") {
-      expect(vi.mocked(triggerAutoSso)).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(enqueueAutoSsoPush)).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledWith(
         expect.objectContaining({ confirmationId: conf.id, action: "CONFIRM" }),
         expect.any(Date),
         expect.anything(),
       );
+      expect(vi.mocked(enqueueDutySync)).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "WITHDRAW" }),
+        expect.any(Date),
+        expect.anything(),
+      );
     } else {
       expect(after.status).toBe("DECLINED");
-      expect(vi.mocked(triggerAutoSso)).not.toHaveBeenCalled();
-      expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
-      expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledWith(
         expect.objectContaining({ confirmationId: conf.id, action: "WITHDRAW" }),
         expect.any(Date),
@@ -1639,8 +1656,14 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(trackedPushMock).toHaveBeenCalledTimes(1);
     if (after.status === "REPLACEMENT_CONFIRMED") {
       expect(active).toEqual([{ professionalId: subProId }]);
-      expect(vi.mocked(triggerAutoSso)).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(enqueueAutoSsoPush)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(triggerAutoSso)).not.toHaveBeenCalled();
+      expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
+      expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledWith(
+        expect.objectContaining({ confirmationId: conf.id, action: "WITHDRAW" }),
+        expect.any(Date),
+        expect.anything(),
+      );
       expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledWith(
         expect.objectContaining({ confirmationId: conf.id, action: "CONFIRM" }),
         expect.any(Date),
@@ -2454,7 +2477,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       .where(eq(dutyConfirmations.id, conf.id));
     expect(confirmed.status).toBe("CONFIRMED");
     expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(enqueueAutoSsoPush)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
   });
 
   it("getPending dirigido usa exatamente o token do push e nunca substitui por outra pendência", async () => {

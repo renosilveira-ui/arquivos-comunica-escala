@@ -1274,7 +1274,7 @@ export const swapRequestDismissals = mysqlTable(
  *
  * Fluxo:
  *   CRON (11h/17h/22h) → Push "Confirma plantão?" → PENDING
- *     → SIM: CONFIRMED (auto-SSO no Comunica+)
+ *     → SIM: CONFIRMED (declara o intervalo no Comunica+ via duty-sync; sem SSO)
  *     → NÃO: DECLINED (abre tela indicar substituto)
  *     → sem resposta +30min: mantém estado e escala para decisão humana
  *

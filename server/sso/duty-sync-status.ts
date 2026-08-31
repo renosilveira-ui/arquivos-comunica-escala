@@ -5,7 +5,7 @@ import { DUTY_SYNC_VERSION } from "./duty-sync";
 
 export const DUTY_SYNC_NOTIFICATION_TITLE = "Duty roster sync";
 
-/** Escopo explícito: outbox local do Escala+; não implica efeito semântico no Comunica+. */
+/** Escopo explícito: outbox local do Escala+; SENT ≠ presença ativa no Comunica+. */
 export const DUTY_SYNC_LOCAL_STATUS_SCOPE = "escala_outbox" as const;
 
 export type DutySyncLocalDeliveryStatus =

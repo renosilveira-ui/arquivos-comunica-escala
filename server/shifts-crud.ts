@@ -27,6 +27,7 @@ import {
   scheduleContexts,
   users,
 } from "../drizzle/schema";
+import { enqueueDutySyncIntervalRewrite } from "./sso/duty-sync-lifecycle";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import {
@@ -2085,6 +2086,38 @@ export const shiftsRouter = router({
           .update(shiftInstances)
           .set(patch)
           .where(eq(shiftInstances.id, input.id));
+        const nextDutyType =
+          (patch.modality ?? locked.modality) === "SOBREAVISO"
+            ? "SOBREAVISO"
+            : "PLANTAO";
+        const previousDutyType =
+          locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
+        if (windowChanged || nextDutyType !== previousDutyType) {
+          await enqueueDutySyncIntervalRewrite(tx, {
+            institutionId: locked.institutionId,
+            shiftInstanceId: locked.id,
+            previousSnapshot: {
+              institutionId: locked.institutionId,
+              hospitalId: locked.hospitalId,
+              sectorId: locked.sectorId,
+              label: locked.label,
+              startAt: locked.startAt.toISOString(),
+              endAt: locked.endAt.toISOString(),
+            },
+            nextSnapshot: {
+              institutionId: locked.institutionId,
+              hospitalId: locked.hospitalId,
+              sectorId: locked.sectorId,
+              label: locked.label,
+              startAt: effectiveStartAt.toISOString(),
+              endAt: effectiveEndAt.toISOString(),
+            },
+            previousDutyType,
+            nextDutyType,
+            previousServiceName: locked.specialty,
+            nextServiceName: locked.specialty,
+          });
+        }
         await auditLog(
           {
             event: "SHIFT_UPDATED",
