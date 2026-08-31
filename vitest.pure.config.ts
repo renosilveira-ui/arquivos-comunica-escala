@@ -17,6 +17,13 @@ export default defineConfig({
     setupFiles: [],
     include: [
       "tests/medical-specialties-catalog.test.ts",
+      "tests/sector-service-specialties-schema.test.ts",
+      "tests/sector-service-specialties-migration.test.ts",
+      "tests/sector-service-specialties-eligibility.test.ts",
+      "tests/sector-service-specialties-service.test.ts",
+      "tests/sector-service-specialties-plan.test.ts",
+      "tests/sector-service-specialties-router.test.ts",
+      "tests/sector-service-specialties-ui.test.ts",
       "tests/schedule-contexts-schema.test.ts",
       "tests/schedule-contexts-migration.test.ts",
       "tests/schedule-context-policy.test.ts",

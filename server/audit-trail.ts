@@ -39,6 +39,7 @@ export interface AuditEntry {
     | "USER_CREATED"
     | "USER_UPDATED"
     | "USER_ROLE_CHANGED"
+    | "SECTOR_SERVICE_SPECIALTIES_UPDATED"
     | "SSO_JIT_LINK_CREATED"
     | "PUSH_DISPATCHED"
     | "CONFLICT_DETECTED"
@@ -50,7 +51,8 @@ export interface AuditEntry {
     | "TRANSFER_REQUEST"
     | "MONTHLY_ROSTER"
     | "USER"
-    | "PROFESSIONAL";
+    | "PROFESSIONAL"
+    | "SECTOR";
   entityId: number;
   description: string;
   metadata?: Record<string, unknown>;

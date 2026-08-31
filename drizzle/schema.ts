@@ -252,6 +252,59 @@ export const medicalSpecialties = mysqlTable(
 export type MedicalSpecialtyRow = typeof medicalSpecialties.$inferSelect;
 export type InsertMedicalSpecialty = typeof medicalSpecialties.$inferInsert;
 
+/**
+ * Especialidades assistenciais descritas por setor.
+ *
+ * Esta relação é deliberadamente distinta de `schedule_contexts` e da
+ * qualificação de `professionals`: ela descreve o serviço prestado pelo
+ * setor, mas não autoriza, impede ou seleciona profissionais para uma
+ * escala. A chave composta mantém a referência na topologia canônica.
+ */
+export const sectorServiceSpecialties = mysqlTable(
+  "sector_service_specialties",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    sectorId: int("sector_id")
+      .notNull()
+      .references(() => sectors.id),
+    medicalSpecialtyId: int("medical_specialty_id")
+      .notNull()
+      .references(() => medicalSpecialties.id),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqSectorServiceSpecialty: unique("uniq_sector_service_specialty").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.medicalSpecialtyId,
+    ),
+    idxSectorServiceSpecialtySpecialty: index(
+      "idx_sector_service_specialty_specialty",
+    ).on(table.medicalSpecialtyId, table.institutionId),
+    fkSectorServiceSpecialtyTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [
+        sectors.institutionId,
+        sectors.hospitalId,
+        sectors.id,
+      ],
+      name: "fk_sector_service_specialty_topology",
+    }),
+  }),
+);
+
+export type SectorServiceSpecialty =
+  typeof sectorServiceSpecialties.$inferSelect;
+export type InsertSectorServiceSpecialty =
+  typeof sectorServiceSpecialties.$inferInsert;
+
 /** Perfil assistencial que não representa título de especialista do CFM. */
 export const operationalProfileCodeEnum = mysqlEnum(
   "operational_profile_code",
@@ -1078,6 +1131,7 @@ export const auditTrail = mysqlTable(
       "USER_CREATED",
       "USER_UPDATED",
       "USER_ROLE_CHANGED",
+      "SECTOR_SERVICE_SPECIALTIES_UPDATED",
       "SSO_JIT_LINK_CREATED",
       "PUSH_DISPATCHED",
       // Conflict
@@ -1094,6 +1148,7 @@ export const auditTrail = mysqlTable(
       "MONTHLY_ROSTER",
       "USER",
       "PROFESSIONAL",
+      "SECTOR",
     ]).notNull(),
     entityId: int("entity_id").notNull(),
 
@@ -1491,6 +1546,7 @@ export const sectorsRelations = relations(sectors, ({ one, many }) => ({
   shiftInstances: many(shiftInstances),
   shiftAssignments: many(shiftAssignmentsV2),
   swapRequests: many(swapRequests),
+  serviceSpecialties: many(sectorServiceSpecialties),
 }));
 
 export const professionalsRelations = relations(
@@ -1514,6 +1570,25 @@ export const medicalSpecialtiesRelations = relations(
   ({ many }) => ({
     professionals: many(professionals),
     scheduleContexts: many(scheduleContexts),
+    serviceSectors: many(sectorServiceSpecialties),
+  }),
+);
+
+export const sectorServiceSpecialtiesRelations = relations(
+  sectorServiceSpecialties,
+  ({ one }) => ({
+    sector: one(sectors, {
+      fields: [
+        sectorServiceSpecialties.institutionId,
+        sectorServiceSpecialties.hospitalId,
+        sectorServiceSpecialties.sectorId,
+      ],
+      references: [sectors.institutionId, sectors.hospitalId, sectors.id],
+    }),
+    medicalSpecialty: one(medicalSpecialties, {
+      fields: [sectorServiceSpecialties.medicalSpecialtyId],
+      references: [medicalSpecialties.id],
+    }),
   }),
 );
 

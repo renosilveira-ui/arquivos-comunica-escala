@@ -28,6 +28,7 @@
     "seed:staging": "tsx scripts/seed-staging.ts",
     "import:professionals": "tsx scripts/bulk-import-professionals.ts",
     "check:schedule-readiness": "tsx scripts/check-schedule-context-readiness.ts",
+    "plan:sector-service-specialties": "tsx scripts/plan-sector-service-specialties.ts",
     "provision:sao-carlos": "tsx scripts/provision-sao-carlos-contexts.ts",
     "provision:sala-recuperacao": "tsx scripts/provision-sala-recuperacao-schedule.ts",
     "provision:institution-scale": "tsx scripts/provision-institution-scale.ts",

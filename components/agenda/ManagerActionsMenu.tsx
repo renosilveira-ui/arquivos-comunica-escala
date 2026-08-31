@@ -8,11 +8,12 @@
 // antes de confirmar; o resultado vira toast e a Agenda recarrega.
 
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { CalendarRange, CopyPlus, Lock, Send, Settings2, X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { MEDICAL_SPECIALTIES } from "@/lib/medical-specialties";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
 import { toLocalISODateString } from "@/lib/datetime-utils";
@@ -54,7 +55,7 @@ interface Props {
   variant?: "button" | "strip" | "empty-state";
 }
 
-type Step = "menu" | "replicate" | "busy";
+type Step = "menu" | "replicate" | "specialties" | "busy";
 
 const MONTHS_PT = [
   "janeiro", "fevereiro", "março", "abril", "maio", "junho",
@@ -103,6 +104,9 @@ export function ManagerActionsMenu({
   const [calendarRule, setCalendarRule] = useState<"FULL" | "REMOVE_WEEKENDS" | "REMOVE_NIGHTS" | "REMOVE_DAYS" | "CUSTOM">("FULL");
   const [selectedShiftIds, setSelectedShiftIds] = useState<number[]>([]);
   const [preview, setPreview] = useState<{ created: number; skipped?: number; outOfRange?: number; origin?: CalendarOpenOrigin; candidates?: { sourceShiftId: number; label: string; startAt: string }[] } | null>(null);
+  const [selectedServiceSpecialtyCodes, setSelectedServiceSpecialtyCodes] = useState<string[]>([]);
+  const [specialtySearch, setSpecialtySearch] = useState("");
+  const [serviceSpecialtiesInitializedFor, setServiceSpecialtiesInitializedFor] = useState<string | null>(null);
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
 
@@ -150,7 +154,37 @@ export function ManagerActionsMenu({
   const replicateMonthCalendar = trpc.shifts.replicateMonthCalendar.useMutation();
   const publish = trpc.shifts.publish.useMutation();
   const lock = trpc.shifts.lock.useMutation();
-  const busy = replicate.isPending || replicateMonthCalendar.isPending || publish.isPending || lock.isPending;
+  const sectorServiceSpecialties = trpc.scheduleContexts.getSectorServiceSpecialties.useQuery(
+    {
+      hospitalId: selectedScheduleContext?.hospitalId ?? 0,
+      sectorId: selectedScheduleContext?.sectorId ?? 0,
+    },
+    {
+      enabled: open && step === "specialties" && selectedScheduleContext !== null,
+      staleTime: 0,
+    },
+  );
+  const replaceSectorServiceSpecialties =
+    trpc.scheduleContexts.replaceSectorServiceSpecialties.useMutation();
+  const busy =
+    replicate.isPending ||
+    replicateMonthCalendar.isPending ||
+    publish.isPending ||
+    lock.isPending ||
+    replaceSectorServiceSpecialties.isPending;
+
+  const serviceSpecialtyScopeKey = selectedScheduleContext
+    ? `${selectedScheduleContext.hospitalId}:${selectedScheduleContext.sectorId}`
+    : null;
+  const filteredServiceSpecialties = useMemo(() => {
+    const query = specialtySearch.trim().toLocaleLowerCase("pt-BR");
+    if (!query) return MEDICAL_SPECIALTIES;
+    return MEDICAL_SPECIALTIES.filter((specialty) =>
+      `${specialty.name} ${specialty.code}`
+        .toLocaleLowerCase("pt-BR")
+        .includes(query),
+    );
+  }, [specialtySearch]);
 
   const resolvedHospitalId = selectedScheduleContext?.hospitalId ?? hospitalId;
   const replicateInput = useMemo(() => {
@@ -202,6 +236,26 @@ export function ManagerActionsMenu({
     }
   }, [calendarOrigin, calendarRule]);
 
+  useEffect(() => {
+    if (
+      step !== "specialties" ||
+      !serviceSpecialtyScopeKey ||
+      !sectorServiceSpecialties.data ||
+      serviceSpecialtiesInitializedFor === serviceSpecialtyScopeKey
+    ) {
+      return;
+    }
+    setSelectedServiceSpecialtyCodes(
+      sectorServiceSpecialties.data.specialties.map((specialty) => specialty.code),
+    );
+    setServiceSpecialtiesInitializedFor(serviceSpecialtyScopeKey);
+  }, [
+    sectorServiceSpecialties.data,
+    serviceSpecialtiesInitializedFor,
+    serviceSpecialtyScopeKey,
+    step,
+  ]);
+
   function close() {
     setOpen(false);
     setStep("menu");
@@ -209,6 +263,9 @@ export function ManagerActionsMenu({
     setIncludeAssignments(false);
     setCalendarRule("FULL");
     setSelectedShiftIds([]);
+    setSelectedServiceSpecialtyCodes([]);
+    setSpecialtySearch("");
+    setServiceSpecialtiesInitializedFor(null);
   }
 
   function openMenu() {
@@ -220,6 +277,55 @@ export function ManagerActionsMenu({
     openMenu();
     if (!replicateInput || !replicationSectorId) return;
     await startReplicate();
+  }
+
+  function openServiceSpecialties() {
+    if (!selectedScheduleContext) {
+      feedback.error("Selecione um setor na agenda para definir suas especialidades assistenciais.");
+      return;
+    }
+    setSpecialtySearch("");
+    setSelectedServiceSpecialtyCodes([]);
+    setServiceSpecialtiesInitializedFor(null);
+    setStep("specialties");
+  }
+
+  function toggleServiceSpecialty(code: string) {
+    setSelectedServiceSpecialtyCodes((codes) =>
+      codes.includes(code)
+        ? codes.filter((selectedCode) => selectedCode !== code)
+        : [...codes, code],
+    );
+  }
+
+  async function saveServiceSpecialties() {
+    if (!selectedScheduleContext) return;
+    setStep("busy");
+    try {
+      const result = await replaceSectorServiceSpecialties.mutateAsync({
+        hospitalId: selectedScheduleContext.hospitalId,
+        sectorId: selectedScheduleContext.sectorId,
+        medicalSpecialtyCodes: selectedServiceSpecialtyCodes,
+      });
+      await Promise.all([
+        utils.scheduleContexts.getSectorServiceSpecialties.invalidate({
+          hospitalId: selectedScheduleContext.hospitalId,
+          sectorId: selectedScheduleContext.sectorId,
+        }),
+        utils.scheduleContexts.listMine.invalidate(),
+        utils.scheduleContexts.listReadable.invalidate(),
+      ]);
+      onChanged?.();
+      feedback.success(
+        result.changed
+          ? "Especialidades assistenciais do setor atualizadas. Elas não alteram a elegibilidade de médicos."
+          : "Nenhuma alteração nas especialidades assistenciais do setor.",
+      );
+      setStep("menu");
+    } catch (error) {
+      feedback.error((error as Error).message);
+      setStep("specialties");
+    }
   }
 
   async function startReplicate() {
@@ -482,6 +588,108 @@ export function ManagerActionsMenu({
                 <ActivityIndicator size="large" color={theme.colors.primary} />
                 <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>Processando…</Text>
               </View>
+            ) : step === "specialties" ? (
+              <View style={{ gap: theme.space[4] }}>
+                <View style={{ gap: theme.space[1] }}>
+                  <Text style={{ ...theme.text.bodyLg, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
+                    Especialidades assistenciais
+                  </Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                    Descrevem o serviço deste setor. Não restringem convite, elegibilidade, alocação ou troca de médicos.
+                  </Text>
+                </View>
+
+                {sectorServiceSpecialties.isLoading ? (
+                  <View style={{ alignItems: "center", paddingVertical: theme.space[6], gap: theme.space[3] }}>
+                    <ActivityIndicator color={theme.colors.primary} />
+                    <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                      Carregando especialidades do setor…
+                    </Text>
+                  </View>
+                ) : sectorServiceSpecialties.isError ? (
+                  <View style={{ gap: theme.space[3] }}>
+                    <Text style={{ ...theme.text.body, color: theme.colors.danger }}>
+                      Não foi possível carregar as especialidades deste setor.
+                    </Text>
+                    <AppButton
+                      title="Tentar novamente"
+                      variant="secondary"
+                      onPress={() => {
+                        void sectorServiceSpecialties.refetch();
+                      }}
+                    />
+                  </View>
+                ) : (
+                  <>
+                    <TextInput
+                      value={specialtySearch}
+                      onChangeText={setSpecialtySearch}
+                      placeholder="Buscar especialidade"
+                      placeholderTextColor={theme.colors.textMuted}
+                      accessibilityLabel="Buscar especialidade assistencial"
+                      style={{
+                        minHeight: theme.space[11],
+                        borderWidth: 1,
+                        borderColor: theme.colors.border,
+                        borderRadius: theme.radius.md,
+                        paddingHorizontal: theme.space[3],
+                        color: theme.colors.textPrimary,
+                        backgroundColor: theme.colors.surface,
+                        ...theme.text.body,
+                      }}
+                    />
+                    <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
+                      {selectedServiceSpecialtyCodes.length} selecionada{selectedServiceSpecialtyCodes.length === 1 ? "" : "s"}
+                    </Text>
+                    <ScrollView style={{ maxHeight: theme.space[40] }} contentContainerStyle={{ gap: theme.space[1] }}>
+                      {filteredServiceSpecialties.map((specialty) => {
+                        const selected = selectedServiceSpecialtyCodes.includes(specialty.code);
+                        return (
+                          <Pressable
+                            key={specialty.code}
+                            onPress={() => toggleServiceSpecialty(specialty.code)}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: selected }}
+                            style={({ pressed }) => ({
+                              minHeight: theme.space[11],
+                              justifyContent: "center",
+                              paddingHorizontal: theme.space[3],
+                              borderRadius: theme.radius.md,
+                              borderWidth: 1,
+                              borderColor: selected ? theme.colors.primary : theme.colors.border,
+                              backgroundColor: selected
+                                ? theme.colors.primarySoft
+                                : pressed
+                                  ? theme.colors.surfaceAlt
+                                  : theme.colors.surface,
+                            })}
+                          >
+                            <Text style={{ ...theme.text.body, color: theme.colors.textPrimary }}>
+                              {selected ? "✓ " : ""}{specialty.name}
+                            </Text>
+                            <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary }}>
+                              {specialty.code}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </>
+                )}
+
+                <View style={{ flexDirection: "row", gap: theme.space[3] }}>
+                  <View style={{ flex: 1 }}>
+                    <AppButton title="Voltar" variant="secondary" onPress={() => setStep("menu")} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <AppButton
+                      title="Salvar"
+                      onPress={saveServiceSpecialties}
+                      disabled={sectorServiceSpecialties.isLoading || sectorServiceSpecialties.isError || busy}
+                    />
+                  </View>
+                </View>
+              </View>
             ) : step === "replicate" && preview ? (
               <View style={{ gap: theme.space[4] }}>
                 <Text style={{ ...theme.text.bodyLg, color: theme.colors.textPrimary }}>
@@ -621,6 +829,17 @@ export function ManagerActionsMenu({
                   }
                   onPress={startReplicate}
                   disabled={!canReplicate}
+                />
+                <MenuItem
+                  icon={<Settings2 size={20} color={selectedScheduleContext ? theme.colors.primary : theme.colors.textMuted} />}
+                  title="Especialidades do setor"
+                  subtitle={
+                    selectedScheduleContext
+                      ? "Metadado assistencial; não bloqueia médicos"
+                      : "Selecione um setor na agenda"
+                  }
+                  onPress={openServiceSpecialties}
+                  disabled={!selectedScheduleContext}
                 />
                 <MenuItem
                   icon={<Send size={20} color={rosterStatus === "DRAFT" ? theme.colors.primary : theme.colors.textMuted} />}
