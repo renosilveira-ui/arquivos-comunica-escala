@@ -248,6 +248,7 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     const routers = readFileSync("server/routers.ts", "utf8");
     const confirmation = readFileSync("server/confirmation-router.ts", "utf8");
     const swap = readFileSync("server/swap-router.ts", "utf8");
+    const swapDomain = readFileSync("server/swap-domain.ts", "utf8");
     const shifts = readFileSync("server/shifts-crud.ts", "utf8");
     const validations = readFileSync("server/shift-validations-v2.ts", "utf8");
 
@@ -382,9 +383,9 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
       ),
     ).toContain("insert(shiftAssignmentsV2)");
     const swapQualification = block(
-      swap,
-      "async function assertProfessionalQualifiedForShift",
-      "async function requireCanonicalAssignmentTuple",
+      swapDomain,
+      "export async function assertProfessionalQualifiedForShift",
+      "export async function requireCanonicalAssignmentTuple",
     );
     expect(swapQualification).toContain("shift.scheduleContextId === null");
     expect(swapQualification).toContain("assertSpecialtyCompatible");
@@ -393,16 +394,16 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     );
     expect(
       block(
-        swap,
-        "async function requireCanonicalAssignmentTuple",
-        "async function requireProfessionalCanReceiveShift",
+        swapDomain,
+        "export async function requireCanonicalAssignmentTuple",
+        "export async function requireProfessionalCanReceiveShift",
       ),
     ).toContain("assertProfessionalQualifiedForShift");
     expect(
       block(
-        swap,
-        "async function requireProfessionalCanReceiveShift",
-        "async function requireCanonicalShiftOccupant",
+        swapDomain,
+        "export async function requireProfessionalCanReceiveShift",
+        "export async function requireCanonicalShiftOccupant",
       ),
     ).toContain("assertProfessionalQualifiedForShift");
 

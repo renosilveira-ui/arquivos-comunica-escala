@@ -321,13 +321,16 @@ describe("sinal de oferta de plantão", () => {
   });
 
   it("liga a criação da oferta ao dispatcher de sinal", () => {
-    const source = readFileSync("server/swap-router.ts", "utf8");
-    expect(source).toContain("enqueueSwapOfferSignals");
-    expect(source).toContain("enqueueSwapTakenSignals");
-    expect(source).toContain("applySwapAssignmentTransfer");
-    const listAvailable = source.slice(
-      source.indexOf("async function queryListAvailableRows"),
-      source.indexOf("async function countActionableSwapOffers"),
+    const routerSource = readFileSync("server/swap-router.ts", "utf8");
+    const offerSource = readFileSync("server/swap-offer-create.ts", "utf8");
+    const offerDomain = readFileSync("server/swap-domain.ts", "utf8");
+    expect(routerSource).toContain("createSwapOffer");
+    expect(offerSource).toContain("enqueueSwapOfferSignals");
+    expect(routerSource).toContain("enqueueSwapTakenSignals");
+    expect(routerSource).toContain("applySwapAssignmentTransfer");
+    const listAvailable = routerSource.slice(
+      routerSource.indexOf("async function queryListAvailableRows"),
+      routerSource.indexOf("async function countActionableSwapOffers"),
     );
     expect(listAvailable).toContain("manager_scope");
     expect(listAvailable).toContain("GESTOR_PLUS");
@@ -337,9 +340,9 @@ describe("sinal de oferta de plantão", () => {
     expect(listAvailable).not.toContain(
       "AND fp.medical_specialty_id = aq.medical_specialty_id",
     );
-    const receive = source.slice(
-      source.indexOf("async function requireProfessionalCanReceiveShift"),
-      source.indexOf("async function requireCanonicalShiftOccupant"),
+    const receive = offerDomain.slice(
+      offerDomain.indexOf("export async function requireProfessionalCanReceiveShift"),
+      offerDomain.indexOf("export async function requireCanonicalShiftOccupant"),
     );
     expect(receive).toContain("findManagerScopeId");
     expect(receive).toContain("GESTOR_PLUS");
@@ -353,9 +356,9 @@ describe("sinal de oferta de plantão", () => {
     expect(listAvailable).toContain("canRespond");
     expect(listAvailable).toContain("swap_request_dismissals");
     expect(listAvailable).toContain("source_scope");
-    const sourceTuple = source.slice(
-      source.indexOf("async function requireCanonicalAssignmentTuple"),
-      source.indexOf("async function requireProfessionalCanReceiveShift"),
+    const sourceTuple = offerDomain.slice(
+      offerDomain.indexOf("export async function requireCanonicalAssignmentTuple"),
+      offerDomain.indexOf("export async function requireProfessionalCanReceiveShift"),
     );
     expect(sourceTuple).toContain("findManagerScopeId");
     expect(sourceTuple).toContain("GESTOR_PLUS");
