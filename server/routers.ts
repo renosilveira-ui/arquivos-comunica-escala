@@ -43,6 +43,7 @@ import {
   scheduleContextsRouter,
 } from "./schedule-contexts";
 import { scheduleInvitesRouter } from "./schedule-invites";
+import { profileRouter } from "./profile-router";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type AssignmentDecisionDb = Pick<Db, "select">;
@@ -1097,6 +1098,7 @@ export const appRouter = router({
   voice: voiceRouter,
   scheduleContexts: scheduleContextsRouter,
   scheduleInvites: scheduleInvitesRouter,
+  profile: profileRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -14,6 +14,7 @@ import {
   passwordResets,
   shiftAssignmentsV2,
   shiftInstances,
+  userContactChannels,
   type User,
 } from "../../drizzle/schema";
 import {
@@ -1778,6 +1779,10 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
               .update(professionalInstitutions)
               .set({ active: false })
               .where(eq(professionalInstitutions.userId, lockedUser.id));
+            await tx
+              .update(userContactChannels)
+              .set({ active: false, verifiedAt: null })
+              .where(eq(userContactChannels.userId, lockedUser.id));
             const revokedPushTokenCount = await revokeUserPushRegistrations(
               tx,
               lockedUser.id,

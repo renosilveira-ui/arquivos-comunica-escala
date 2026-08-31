@@ -110,6 +110,61 @@ export const passwordResets = mysqlTable(
 
 export type PasswordReset = typeof passwordResets.$inferSelect;
 
+/**
+ * Canais de contato do usuário (WhatsApp V1).
+ * Identidade canônica: user → channel → E.164 normalizado.
+ * verifiedAt só é preenchido server-side após Twilio Verify (futuro) —
+ * mutations de perfil NUNCA marcam verificado.
+ * Migração: drizzle/migrations/manual/2026-08-31-user-contact-channels.sql
+ */
+export const contactChannelEnum = mysqlEnum("channel", ["WHATSAPP"]);
+
+export const userContactChannels = mysqlTable(
+  "user_contact_channels",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    channel: contactChannelEnum.notNull(),
+    /** Valor de exibição / última entrada do usuário (não canônico). */
+    address: varchar("address", { length: 32 }).notNull(),
+    /** E.164 canônico (+5511…). Persistência sempre normalizada. */
+    normalizedAddress: varchar("normalized_address", { length: 20 }).notNull(),
+    verifiedAt: timestamp("verified_at"),
+    active: boolean("active").notNull().default(true),
+    /**
+     * Coluna gerada: espelha normalized_address só quando active=1.
+     * UNIQUE (channel, active_normalized_address) garante E.164 ativo
+     * único entre usuários; NULL em inativos permite reuso.
+     */
+    activeNormalizedAddress: varchar("active_normalized_address", {
+      length: 20,
+    }).generatedAlwaysAs(
+      (): ReturnType<typeof sql> =>
+        sql`IF(\`active\` = 1, \`normalized_address\`, NULL)`,
+      { mode: "stored" },
+    ),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    uniqUserContactChannel: unique("uniq_user_contact_channel").on(
+      table.userId,
+      table.channel,
+    ),
+    uniqContactChannelActiveAddress: unique(
+      "uniq_contact_channel_active_address",
+    ).on(table.channel, table.activeNormalizedAddress),
+    idxUserContactChannelsUser: index("idx_user_contact_channels_user").on(
+      table.userId,
+    ),
+  }),
+);
+
+export type UserContactChannel = typeof userContactChannels.$inferSelect;
+export type InsertUserContactChannel = typeof userContactChannels.$inferInsert;
+
 // ========================================
 // NOVO MODELO MULTI-INSTITUCIONAL
 // ========================================
