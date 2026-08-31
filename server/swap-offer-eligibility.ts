@@ -1,6 +1,11 @@
 import { sql, type SQLWrapper } from "drizzle-orm";
 import type { swapRequests } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
+import {
+  plantonistaAccessCoversShiftSql,
+  plantonistaQualificationMatchesSql,
+  plantonistaXorQualificationSql,
+} from "./plantonista-shift-eligibility";
 
 type SwapRow = typeof swapRequests.$inferSelect;
 
@@ -124,9 +129,7 @@ export async function eligibleRecipientUserIdsForSwapOffer(
       AND sr.institution_id = ${swap.institutionId}
       AND sr.status = 'PENDING'
       AND sr.from_user_id != au.id
-      AND (
-        (ap.medical_specialty_id IS NULL) != (ap.operational_profile_code IS NULL)
-      )
+      AND ${plantonistaXorQualificationSql("ap")}
       AND (
         (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
         OR (sr.to_professional_id = ap.id AND sr.to_user_id = au.id)
@@ -175,68 +178,8 @@ export async function eligibleRecipientUserIdsForSwapOffer(
             AND source_scope.active = 1
         )
       )
-      AND (
-        (
-          fsc.admission_policy = 'ALL_CFM_SPECIALTIES'
-          AND ap.medical_specialty_id IS NOT NULL
-        )
-        OR
-        (
-          fsc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
-          AND ap.medical_specialty_id IS NOT NULL
-          AND ap.operational_profile_code IS NULL
-        )
-        OR
-        (
-          fsc.medical_specialty_id IS NOT NULL
-          AND fms.id IS NOT NULL
-          AND ap.medical_specialty_id = fsc.medical_specialty_id
-        )
-        OR
-        (
-          fsc.operational_profile_code IS NOT NULL
-          AND ap.operational_profile_code = fsc.operational_profile_code
-        )
-        OR
-        (
-          fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-          AND EXISTS (
-            SELECT 1
-              FROM schedule_context_allowed_qualifications aq
-             WHERE aq.schedule_context_id = fsc.id
-               AND (
-                 (
-                   aq.medical_specialty_id IS NOT NULL
-                   AND ap.medical_specialty_id = aq.medical_specialty_id
-                 )
-                 OR
-                 (
-                   aq.operational_profile_code IS NOT NULL
-                   AND ap.operational_profile_code = aq.operational_profile_code
-                 )
-               )
-          )
-        )
-      )
-      AND EXISTS (
-        SELECT 1
-        FROM professional_access actor_source_access
-        WHERE actor_source_access.institution_id = fsi.institution_id
-          AND actor_source_access.professional_id = ap.id
-          AND actor_source_access.hospital_id = fsi.hospital_id
-          AND actor_source_access.can_access = 1
-          AND (
-            (
-              fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-              AND actor_source_access.sector_id = fsi.sector_id
-            )
-            OR
-            (
-              fsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
-              AND (actor_source_access.sector_id IS NULL OR actor_source_access.sector_id = fsi.sector_id)
-            )
-          )
-      )
+      AND ${plantonistaQualificationMatchesSql("ap", "fsc", "fms")}
+      AND ${plantonistaAccessCoversShiftSql("ap", "fsi", "fsc")}
       AND (
         fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
         OR NULLIF(TRIM(fsi.specialty), '') IS NULL

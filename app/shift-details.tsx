@@ -19,7 +19,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus, Trash2 } from "lucide-react-native";
+import { ChevronLeft, Clock, Calendar, Users, CheckCircle2, AlertCircle, Search, UserPlus, Trash2, Bell } from "lucide-react-native";
 import { isDemoMode, DEMO_SHIFTS } from "@/lib/demo-mode";
 import { formatDateBR } from "@/lib/datetime";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
@@ -30,6 +30,7 @@ import {
   allocationRepeatToast,
   type AllocationRepeatRule,
 } from "@/lib/allocation-repeat";
+import { vacancyBroadcastFeedbackMessage } from "@/lib/vacancy-broadcast";
 
 const ICON_BOX_SIZE = theme.space[10] + theme.space[2];
 const PRIMARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 2;
@@ -115,6 +116,19 @@ export default function ShiftDetailsScreen() {
     },
     onError: (error) => {
       feedback.error(error.message || "Não foi possível remover. Tente novamente.");
+    },
+  });
+  const notifyVacancy = trpc.shifts.notifyVacancy.useMutation({
+    onSuccess: (result) => {
+      const message = vacancyBroadcastFeedbackMessage(result.notifiedCount);
+      if (result.notifiedCount <= 0) {
+        feedback.info(message);
+        return;
+      }
+      feedback.success(message);
+    },
+    onError: (error) => {
+      feedback.error(error.message || "Não foi possível avisar a equipe.");
     },
   });
   const filteredAssignableProfessionals = useMemo(() => {
@@ -211,6 +225,11 @@ export default function ShiftDetailsScreen() {
       assignmentId: assignment.id,
       reason: "Remoção direta pela tela de detalhes",
     });
+  };
+
+  const handleNotifyVacancy = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    notifyVacancy.mutate({ shiftInstanceId: shiftId });
   };
 
   if (!user && !isDemo) {
@@ -454,6 +473,16 @@ export default function ShiftDetailsScreen() {
                     <Text style={styles.subtleText}>Selecione um profissional habilitado para este setor.</Text>
                   </View>
                 </View>
+
+                {shift.status === "VAGO" ? (
+                  <ActionButton
+                    label={notifyVacancy.isPending ? "Enviando aviso..." : "Avisar equipe"}
+                    onPress={handleNotifyVacancy}
+                    variant="secondary"
+                    icon={<Bell size={20} color={theme.colors.textPrimary} />}
+                    disabled={notifyVacancy.isPending}
+                  />
+                ) : null}
 
                 <View style={styles.searchBox}>
                   <Search size={18} color={theme.colors.textMuted} />

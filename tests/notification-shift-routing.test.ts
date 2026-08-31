@@ -149,6 +149,54 @@ describe("roteamento de push para o plantão exato", () => {
     ]);
   });
 
+  it("troca o tenant e abre Plantões em aberto no aviso de vaga", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 22, revision: 3 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "vacancy_available",
+          institutionId: 11,
+          shiftInstanceId: 404,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => {
+            calls.push("allowed");
+            return [11, 22];
+          },
+          setActiveInstitutionId: async (institutionId) => {
+            calls.push(`set:${institutionId}`);
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          navigateToVacancies: () => {
+            calls.push(`vacancies:tenant:${activeTenant.institutionId}`);
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual([
+      "allowed",
+      "set:11",
+      "invalidate",
+      "vacancies:tenant:11",
+    ]);
+  });
+
   it("abre Minhas ofertas quando o plantão foi assumido", async () => {
     const calls: string[] = [];
     let activeTenant = { institutionId: 22, revision: 1 };
