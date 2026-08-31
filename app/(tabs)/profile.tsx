@@ -47,6 +47,7 @@ import {
   LayoutDashboard,
   Link2,
   LogOut,
+  MessageCircle,
   ShieldCheck,
   Trash2,
   UserPlus,
@@ -107,6 +108,10 @@ export default function ProfileScreen() {
     isGlobalAdmin,
     roleInInstitution,
   });
+  const { data: whatsappContact } = trpc.profile.getWhatsAppContact.useQuery(
+    undefined,
+    { staleTime: 30_000 },
+  );
 
   const managementLinks = useMemo(
     () =>
@@ -602,6 +607,25 @@ export default function ProfileScreen() {
                 Icon={KeyRound}
                 onPress={go("/change-password")}
                 accessibilityLabel="Alterar minha senha"
+              />
+              <ListRow
+                title="WhatsApp"
+                subtitle={
+                  whatsappContact?.status === "verified"
+                    ? `Verificado · ${whatsappContact.maskedAddress}`
+                    : whatsappContact?.status === "unverified"
+                      ? `Não verificado · ${whatsappContact.maskedAddress}`
+                      : "Cadastrar número para troca/cessão"
+                }
+                Icon={MessageCircle}
+                value={
+                  whatsappContact?.status === "missing" || !whatsappContact
+                    ? "Cadastrar"
+                    : "Abrir"
+                }
+                valueTone="action"
+                onPress={go("/whatsapp-contact")}
+                accessibilityLabel="Gerenciar WhatsApp da conta"
               />
               <ListRow
                 title="Último erro registrado"
