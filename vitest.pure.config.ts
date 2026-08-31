@@ -69,6 +69,7 @@ export default defineConfig({
       "tests/swap-offer-actions.test.ts",
       "tests/swap-offer-badge-refresh.test.ts",
       "tests/swap-offer-outbox.test.ts",
+      "tests/swap-read-path-purity.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
     ],

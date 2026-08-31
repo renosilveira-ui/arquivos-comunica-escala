@@ -296,11 +296,12 @@ a operação violar alguma das regras hard, a cessão/troca é
 **rejeitada automaticamente** com mensagem explicativa para A e B.
 Gestor pode ser notificado mas não há aprovação manual.
 
-Candidatura antiga em ACCEPTED (fluxo de três passos) efetiva sozinha
-ao listar. Se a efetivação for recusada (expirou, conflito, mês não
-publicado, acesso revogado), a solicitação **é cancelada** com motivo
-em português — o dono (e quem assumiu) pode desfazer em Minhas
-ofertas. Não há botão de aprovar.
+Candidatura antiga em ACCEPTED (fluxo de três passos) continua visível, mas
+uma consulta nunca a efetiva, cancela, audita nem enfileira notificações. A
+reconciliação ocorre somente por uma mutation explícita (`swaps.reconcileAccepted`),
+novo aceite ou cancelamento. Se uma reconciliação autorizada for recusada por
+condição operacional (expirou, conflito ou mês não publicado), a solicitação
+**é cancelada** com motivo em português. Não há botão de aprovar.
 
 ---
 

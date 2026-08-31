@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   auditTrail,
   hospitals,
@@ -38,7 +38,7 @@ type Identity = {
   userId: number;
   professionalId: number;
   name: string;
-  role: "doctor" | "manager";
+  role: "doctor" | "manager" | "admin";
 };
 
 describe("take em um passo: quem assume leva o plantão", () => {
@@ -46,7 +46,9 @@ describe("take em um passo: quem assume leva o plantão", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let otherSectorId: number;
   let scheduleContextId: number;
+  let otherScheduleContextId: number;
   let anesthesiaId: number;
   let clinicaId: number;
   let offerer: Identity;
@@ -54,6 +56,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
   let peerTwo: Identity;
   let gestor: Identity;
   let plus: Identity;
+  let globalAdmin: Identity;
   const userIds: number[] = [];
   const professionalIds: number[] = [];
   const stamp = Date.now();
@@ -65,6 +68,31 @@ describe("take em um passo: quem assume leva o plantão", () => {
     return value;
   };
 
+  const nextMonthAt = (): Date => {
+    const now = new Date();
+    return new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 15, 12, 0, 0),
+    );
+  };
+
+  async function moveShiftIntoGestorMedicoWindow(shiftId: number): Promise<void> {
+    const startAt = nextMonthAt();
+    const endAt = new Date(startAt.getTime() + 6 * 60 * 60_000);
+    await db
+      .update(shiftInstances)
+      .set({ startAt, endAt })
+      .where(eq(shiftInstances.id, shiftId));
+    await db
+      .insert(monthlyRosters)
+      .values({
+        institutionId,
+        hospitalId,
+        yearMonth: yearMonthBrt(startAt),
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
+  }
+
   async function createIdentity(
     label: string,
     input: {
@@ -72,10 +100,13 @@ describe("take em um passo: quem assume leva o plantão", () => {
       medicalSpecialtyId: number | null;
       specialty: string | null;
       withAccess?: boolean;
+      globalRole?: "doctor" | "manager" | "admin";
     },
   ): Promise<Identity> {
     const name = `one-step-${stamp}-${label}`;
-    const role = input.roleInInstitution === "USER" ? "doctor" : "manager";
+    const role =
+      input.globalRole ??
+      (input.roleInInstitution === "USER" ? "doctor" : "manager");
     const [user] = await db
       .insert(users)
       .values({
@@ -203,6 +234,64 @@ describe("take em um passo: quem assume leva o plantão", () => {
     return { swapId: swap.id, shiftId: shift.shiftId };
   }
 
+  async function insertCrossSectorAccepted(
+    candidate: Identity,
+    dayOffset: number,
+  ): Promise<{ swapId: number; sourceShiftId: number; targetShiftId: number }> {
+    const source = await createOccupiedShift(offerer, dayOffset, "Clínica Médica");
+    const [targetShift] = await db
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId: otherSectorId,
+        scheduleContextId: otherScheduleContextId,
+        label: `one-step-${stamp}-cross-sector-${dayOffset}`,
+        specialty: "Anestesiologia",
+        startAt: at(dayOffset, 8),
+        endAt: at(dayOffset, 14),
+        status: "OCUPADO",
+      })
+      .$returningId();
+    const [targetAssignment] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        shiftInstanceId: targetShift.id,
+        institutionId,
+        hospitalId,
+        sectorId: otherSectorId,
+        professionalId: candidate.professionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: true,
+      })
+      .$returningId();
+    const [swap] = await db
+      .insert(swapRequests)
+      .values({
+        type: "SWAP",
+        status: "ACCEPTED",
+        fromProfessionalId: offerer.professionalId,
+        fromUserId: offerer.userId,
+        fromShiftInstanceId: source.shiftId,
+        fromAssignmentId: source.assignmentId,
+        toProfessionalId: candidate.professionalId,
+        toUserId: candidate.userId,
+        toShiftInstanceId: targetShift.id,
+        toAssignmentId: targetAssignment.id,
+        institutionId,
+        hospitalId,
+        sectorId,
+        expiresAt: at(dayOffset + 2, 8),
+      })
+      .$returningId();
+    return {
+      swapId: swap.id,
+      sourceShiftId: source.shiftId,
+      targetShiftId: targetShift.id,
+    };
+  }
+
   async function expectTransferred(
     swapId: number,
     shiftId: number,
@@ -274,6 +363,17 @@ describe("take em um passo: quem assume leva o plantão", () => {
       })
       .$returningId();
     sectorId = sector.id;
+    const [otherSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `UTI ${stamp}`,
+        category: "clinico",
+        color: "#654321",
+      })
+      .$returningId();
+    otherSectorId = otherSector.id;
     anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
     const [clinica] = await db
       .insert(medicalSpecialties)
@@ -291,6 +391,11 @@ describe("take em um passo: quem assume leva o plantão", () => {
       hospitalId,
       sectorId,
     });
+    otherScheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId: otherSectorId,
+    });
     await db
       .update(scheduleContexts)
       .set({
@@ -299,9 +404,19 @@ describe("take em um passo: quem assume leva o plantão", () => {
         operationalProfileCode: null,
       })
       .where(eq(scheduleContexts.id, scheduleContextId));
+    await db
+      .update(scheduleContexts)
+      .set({
+        admissionPolicy: "QUALIFICATION_ALLOWLIST",
+        medicalSpecialtyId: null,
+        operationalProfileCode: null,
+      })
+      .where(eq(scheduleContexts.id, otherScheduleContextId));
     await db.insert(scheduleContextAllowedQualifications).values([
       { scheduleContextId, medicalSpecialtyId: anesthesiaId },
       { scheduleContextId, medicalSpecialtyId: clinicaId },
+      { scheduleContextId: otherScheduleContextId, medicalSpecialtyId: anesthesiaId },
+      { scheduleContextId: otherScheduleContextId, medicalSpecialtyId: clinicaId },
     ]);
 
     offerer = await createIdentity("offerer", {
@@ -313,6 +428,13 @@ describe("take em um passo: quem assume leva o plantão", () => {
       roleInInstitution: "USER",
       medicalSpecialtyId: anesthesiaId,
       specialty: "Anestesiologia",
+    });
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: peer.professionalId,
+      hospitalId,
+      sectorId: otherSectorId,
+      canAccess: true,
     });
     peerTwo = await createIdentity("peer-two", {
       roleInInstitution: "USER",
@@ -337,6 +459,13 @@ describe("take em um passo: quem assume leva o plantão", () => {
       medicalSpecialtyId: null,
       specialty: null,
       withAccess: false,
+    });
+    globalAdmin = await createIdentity("global-admin", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: null,
+      specialty: null,
+      withAccess: false,
+      globalRole: "admin",
     });
   });
 
@@ -375,7 +504,12 @@ describe("take em um passo: quem assume leva o plantão", () => {
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
     await db
       .delete(scheduleContextAllowedQualifications)
-      .where(eq(scheduleContextAllowedQualifications.scheduleContextId, scheduleContextId));
+      .where(
+        inArray(scheduleContextAllowedQualifications.scheduleContextId, [
+          scheduleContextId,
+          otherScheduleContextId,
+        ]),
+      );
     await db.delete(managerScope).where(eq(managerScope.institutionId, institutionId));
     await db
       .delete(professionalAccess)
@@ -385,8 +519,10 @@ describe("take em um passo: quem assume leva o plantão", () => {
       .where(eq(professionalInstitutions.institutionId, institutionId));
     await db.delete(professionals).where(inArray(professionals.id, professionalIds));
     await db.delete(users).where(inArray(users.id, userIds));
-    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
-    await db.delete(sectors).where(eq(sectors.id, sectorId));
+    await db
+      .delete(scheduleContexts)
+      .where(inArray(scheduleContexts.id, [scheduleContextId, otherScheduleContextId]));
+    await db.delete(sectors).where(inArray(sectors.id, [sectorId, otherSectorId]));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     await db.delete(medicalSpecialties).where(eq(medicalSpecialties.id, clinicaId));
@@ -535,22 +671,319 @@ describe("take em um passo: quem assume leva o plantão", () => {
     expect(withdraws.some((row) => row.body === "CONFIRM")).toBe(false);
   });
 
-  it("ACCEPTED residual com GESTOR sem ACL completa ao dono listar Minhas ofertas", async () => {
+  it("listar ACCEPTED residual é leitura: não muda swap, alocações, auditoria ou outbox", async () => {
     const leftover = await insertLeftoverAccepted(gestor, 6);
+    const [swapBefore] = await db
+      .select({
+        status: swapRequests.status,
+        version: swapRequests.version,
+        reviewedByUserId: swapRequests.reviewedByUserId,
+        reviewedAt: swapRequests.reviewedAt,
+        reviewNote: swapRequests.reviewNote,
+      })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId));
+    const assignmentsBefore = await db
+      .select({
+        id: shiftAssignmentsV2.id,
+        professionalId: shiftAssignmentsV2.professionalId,
+        isActive: shiftAssignmentsV2.isActive,
+        status: shiftAssignmentsV2.status,
+      })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, leftover.shiftId));
+    const auditBefore = await db
+      .select({ id: auditTrail.id, action: auditTrail.action })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, leftover.swapId),
+        ),
+      );
+    const outboxBefore = await db
+      .select({
+        id: notifications.id,
+        userId: notifications.userId,
+        dedupKey: notifications.dedupKey,
+      })
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+
     const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
     const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
-    expect(row?.status).toBe("APPROVED");
-    expect(row?.awaitingMyApproval).toBe(false);
-    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+    expect(row).toMatchObject({
+      status: "ACCEPTED",
+      awaitingMyApproval: false,
+      canCancel: true,
+    });
+
+    const [swapAfter] = await db
+      .select({
+        status: swapRequests.status,
+        version: swapRequests.version,
+        reviewedByUserId: swapRequests.reviewedByUserId,
+        reviewedAt: swapRequests.reviewedAt,
+        reviewNote: swapRequests.reviewNote,
+      })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId));
+    const assignmentsAfter = await db
+      .select({
+        id: shiftAssignmentsV2.id,
+        professionalId: shiftAssignmentsV2.professionalId,
+        isActive: shiftAssignmentsV2.isActive,
+        status: shiftAssignmentsV2.status,
+      })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, leftover.shiftId));
+    const auditAfter = await db
+      .select({ id: auditTrail.id, action: auditTrail.action })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, leftover.swapId),
+        ),
+      );
+    const outboxAfter = await db
+      .select({
+        id: notifications.id,
+        userId: notifications.userId,
+        dedupKey: notifications.dedupKey,
+      })
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+
+    expect(swapAfter).toEqual(swapBefore);
+    expect(assignmentsAfter).toEqual(assignmentsBefore);
+    expect(auditAfter).toEqual(auditBefore);
+    expect(outboxAfter).toEqual(outboxBefore);
   });
 
-  it("ACCEPTED residual com GESTOR sem ACL completa ao candidato listar", async () => {
+  it("reconciliação explícita completa ACCEPTED residual para GESTOR com scope sem ACL", async () => {
     const leftover = await insertLeftoverAccepted(gestor, 7);
-    const receiverRows = await callerFor(gestor).list({ role: "RECEIVER" });
-    const row = receiverRows.find((item) => Number(item.id) === leftover.swapId);
-    expect(row?.status).toBe("APPROVED");
-    expect(row?.awaitingMyApproval).toBe(false);
+
+    await expect(
+      callerFor(gestor).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ outcome: "APPROVED" });
     await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+
+    const audits = await db
+      .select({
+        actorUserId: auditTrail.actorUserId,
+        actorRole: auditTrail.actorRole,
+      })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, leftover.swapId),
+          eq(auditTrail.action, "CESSAO_ACCEPTED"),
+        ),
+      );
+    expect(audits).toEqual([
+      expect.objectContaining({
+        actorUserId: gestor.userId,
+        actorRole: "GESTOR_MEDICO",
+      }),
+    ]);
+  });
+
+  it("GESTOR_MEDICO não participante reconcilia dentro da competência e audita o papel canônico", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 18);
+    await moveShiftIntoGestorMedicoWindow(leftover.shiftId);
+
+    await expect(
+      callerFor(gestor).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ outcome: "APPROVED" });
+    await expectTransferred(leftover.swapId, leftover.shiftId, peer);
+
+    const [audit] = await db
+      .select({
+        actorUserId: auditTrail.actorUserId,
+        actorRole: auditTrail.actorRole,
+      })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, leftover.swapId),
+          eq(auditTrail.action, "CESSAO_ACCEPTED"),
+        ),
+      );
+    expect(audit).toMatchObject({
+      actorUserId: gestor.userId,
+      actorRole: "GESTOR_MEDICO",
+    });
+  });
+
+  it("GESTOR_MEDICO não participante fora da competência não altera swap, auditoria ou outbox", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 19);
+
+    await expect(
+      callerFor(gestor).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const [swap] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId));
+    expect(swap?.status).toBe("ACCEPTED");
+    await expectStillOwnedByOfferer(leftover.shiftId);
+    const [audits, outbox] = await Promise.all([
+      db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(
+          and(
+            eq(auditTrail.institutionId, institutionId),
+            eq(auditTrail.entityId, leftover.swapId),
+          ),
+        ),
+      db
+        .select({ id: notifications.id })
+        .from(notifications)
+        .where(eq(notifications.institutionId, institutionId)),
+    ]);
+    expect(audits).toHaveLength(0);
+    expect(outbox).toHaveLength(0);
+  });
+
+  it("GESTOR_PLUS não participante reconcilia residual fora da janela do gestor médico", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 20);
+
+    await expect(
+      callerFor(plus).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ outcome: "APPROVED" });
+    await expectTransferred(leftover.swapId, leftover.shiftId, peer);
+  });
+
+  it("admin global com vínculo USER registra a autoridade efetiva na auditoria", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 21);
+
+    await expect(
+      callerFor(globalAdmin).reconcileAccepted({
+        swapRequestId: leftover.swapId,
+      }),
+    ).resolves.toEqual({ outcome: "APPROVED" });
+
+    const [audit] = await db
+      .select({
+        actorUserId: auditTrail.actorUserId,
+        actorRole: auditTrail.actorRole,
+      })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, leftover.swapId),
+          eq(auditTrail.action, "CESSAO_ACCEPTED"),
+        ),
+      );
+    expect(audit).toMatchObject({
+      actorUserId: globalAdmin.userId,
+      actorRole: "GESTOR_PLUS",
+    });
+  });
+
+  it("GESTOR_MEDICO sem scope na contrapartida cross-setor não reconcilia", async () => {
+    const leftover = await insertCrossSectorAccepted(peer, 22);
+    await moveShiftIntoGestorMedicoWindow(leftover.sourceShiftId);
+    await moveShiftIntoGestorMedicoWindow(leftover.targetShiftId);
+
+    await expect(
+      callerFor(gestor).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const [swap] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId));
+    expect(swap?.status).toBe("ACCEPTED");
+    await expectStillOwnedByOfferer(leftover.sourceShiftId);
+    const targetAssignments = await db
+      .select({
+        professionalId: shiftAssignmentsV2.professionalId,
+        isActive: shiftAssignmentsV2.isActive,
+      })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, leftover.targetShiftId));
+    expect(
+      targetAssignments.some(
+        (assignment) =>
+          assignment.professionalId === peer.professionalId && assignment.isActive,
+      ),
+    ).toBe(true);
+    const [audits, outbox] = await Promise.all([
+      db
+        .select({ id: auditTrail.id })
+        .from(auditTrail)
+        .where(
+          and(
+            eq(auditTrail.institutionId, institutionId),
+            eq(auditTrail.entityId, leftover.swapId),
+          ),
+        ),
+      db
+        .select({ id: notifications.id })
+        .from(notifications)
+        .where(eq(notifications.institutionId, institutionId)),
+    ]);
+    expect(audits).toHaveLength(0);
+    expect(outbox).toHaveLength(0);
+  });
+
+  it("reconciliação rejeita terceiro elegível que não participa nem gere o setor", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 16);
+
+    await expect(
+      callerFor(peerTwo).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const [swap] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId));
+    expect(swap?.status).toBe("ACCEPTED");
+    await expectStillOwnedByOfferer(leftover.shiftId);
+    const audits = await db
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, leftover.swapId),
+        ),
+      );
+    expect(audits).toHaveLength(0);
+  });
+
+  it("reconciliações concorrentes convergem para uma única transferência auditada", async () => {
+    const leftover = await insertLeftoverAccepted(gestor, 17);
+
+    await expect(
+      Promise.all([
+        callerFor(offerer).reconcileAccepted({ swapRequestId: leftover.swapId }),
+        callerFor(gestor).reconcileAccepted({ swapRequestId: leftover.swapId }),
+      ]),
+    ).resolves.toEqual([
+      { outcome: "APPROVED" },
+      { outcome: "APPROVED" },
+    ]);
+    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+
+    const audits = await db
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.entityId, leftover.swapId),
+          eq(auditTrail.action, "CESSAO_ACCEPTED"),
+        ),
+      );
+    expect(audits).toHaveLength(1);
   });
 
   it("accept de novo em ACCEPTED residual com GESTOR sem ACL completa sem 500", async () => {
@@ -579,7 +1012,9 @@ describe("take em um passo: quem assume leva o plantão", () => {
 
   it("list de já APPROVED é no-op e accept devolve CONFLICT em português", async () => {
     const leftover = await insertLeftoverAccepted(gestor, 9);
-    await callerFor(offerer).list({ role: "OFFERER" });
+    await callerFor(offerer).reconcileAccepted({
+      swapRequestId: leftover.swapId,
+    });
     await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
 
     const again = await callerFor(offerer).list({ role: "OFFERER" });
@@ -596,7 +1031,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
     await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
   });
 
-  it("ACCEPTED residual expirada cancela ao listar e o plantão fica com o dono", async () => {
+  it("reconciliação explícita de ACCEPTED residual expirada cancela e preserva o dono", async () => {
     const leftover = await insertLeftoverAccepted(gestor, 10);
     await db
       .update(swapRequests)
@@ -605,10 +1040,14 @@ describe("take em um passo: quem assume leva o plantão", () => {
 
     const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
     const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
-    expect(row?.status).toBe("CANCELLED");
+    expect(row?.status).toBe("ACCEPTED");
     expect(row?.awaitingMyApproval).toBe(false);
-    expect(row?.canCancel).toBe(false);
-    expect(row?.reviewNote).toMatch(/expirou/);
+    expect(row?.canCancel).toBe(true);
+    expect(row?.reviewNote).toBeNull();
+
+    await expect(
+      callerFor(offerer).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ outcome: "CANCELLED" });
 
     const [swap] = await db
       .select({ status: swapRequests.status, reviewNote: swapRequests.reviewNote })
@@ -622,7 +1061,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
     await expectStillOwnedByOfferer(leftover.shiftId);
   });
 
-  it("ACCEPTED residual com mês não publicado cancela ao listar", async () => {
+  it("reconciliação explícita cancela ACCEPTED residual com mês não publicado", async () => {
     const leftover = await insertLeftoverAccepted(peer, 11);
     const [shift] = await db
       .select({ startAt: shiftInstances.startAt })
@@ -636,21 +1075,39 @@ describe("take em um passo: quem assume leva o plantão", () => {
 
     const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
     const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
-    expect(row?.status).toBe("CANCELLED");
-    expect(row?.canCancel).toBe(false);
-    expect(row?.reviewNote).toMatch(/escala do mês|publicad|trancad|acesso/);
+    expect(row).toMatchObject({ status: "ACCEPTED", canCancel: true });
+    await expect(
+      callerFor(offerer).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ outcome: "CANCELLED" });
+    const [swap] = await db
+      .select({ status: swapRequests.status, reviewNote: swapRequests.reviewNote })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId));
+    expect(swap).toMatchObject({
+      status: "CANCELLED",
+      reviewNote: expect.stringMatching(/escala do mês|publicad|trancad|acesso/),
+    });
     await expectStillOwnedByOfferer(leftover.shiftId);
   });
 
-  it("ACCEPTED residual com conflito de horário cancela ao listar", async () => {
+  it("reconciliação explícita cancela ACCEPTED residual com conflito de horário", async () => {
     const leftover = await insertLeftoverAccepted(peer, 12);
     await createOccupiedShift(peer, 12, "Anestesiologia");
 
     const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
     const row = ownerRows.find((item) => Number(item.id) === leftover.swapId);
-    expect(row?.status).toBe("CANCELLED");
-    expect(row?.canCancel).toBe(false);
-    expect(row?.reviewNote).toMatch(/conflito de horário/);
+    expect(row).toMatchObject({ status: "ACCEPTED", canCancel: true });
+    await expect(
+      callerFor(offerer).reconcileAccepted({ swapRequestId: leftover.swapId }),
+    ).resolves.toEqual({ outcome: "CANCELLED" });
+    const [swap] = await db
+      .select({ status: swapRequests.status, reviewNote: swapRequests.reviewNote })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId));
+    expect(swap).toMatchObject({
+      status: "CANCELLED",
+      reviewNote: expect.stringMatching(/conflito de horário/),
+    });
     await expectStillOwnedByOfferer(leftover.shiftId);
   });
 

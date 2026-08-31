@@ -16,7 +16,7 @@ import { swapRouter } from "../server/swap-router";
  * `swaps.list` ganhou:
  *   - filtro `role`: OFFERER / RECEIVER / ANY (default ANY, comportamento legado)
  *   - flag `awaitingMyApproval`: sempre false (sem Aprovar candidatura).
- *     ACCEPTED residual que não completa é cancelado ao listar.
+ *     ACCEPTED residual é apenas lido; a reconciliação é mutation explícita.
  *
  * Isso destrava a tela "Minhas ofertas" do USER (consome
  * approveByOwner) sem fazer o client filtrar/comparar IDs.
@@ -220,21 +220,22 @@ describe("swaps.list — role filter + awaitingMyApproval", () => {
     expect(ids).not.toContain(pendingFromBId);
   });
 
-  it("awaitingMyApproval nunca pede aprovação e residual sem heal não fica preso", async () => {
+  it("awaitingMyApproval nunca pede aprovação e consulta preserva ACCEPTED residual", async () => {
     const callerA = callerAs(userAId);
     const rowsA = await callerA.list({ role: "OFFERER" });
     const acceptedA = rowsA.find((r) => r.id === acceptedFromAId);
     const pendingA = rowsA.find((r) => r.id === pendingFromAId);
     expect(acceptedA?.awaitingMyApproval).toBe(false);
     expect(pendingA?.awaitingMyApproval).toBe(false);
-    expect(acceptedA?.status).toBe("CANCELLED");
-    expect(acceptedA?.canCancel).toBe(false);
+    expect(acceptedA?.status).toBe("ACCEPTED");
+    expect(acceptedA?.canCancel).toBe(true);
     expect(pendingA?.canCancel).toBe(true);
 
     const callerB = callerAs(userBId);
     const rowsB = await callerB.list({ role: "RECEIVER" });
     const acceptedB = rowsB.find((r) => r.id === acceptedFromAId);
     expect(acceptedB?.awaitingMyApproval).toBe(false);
-    expect(acceptedB?.status).toBe("CANCELLED");
+    expect(acceptedB?.status).toBe("ACCEPTED");
+    expect(acceptedB?.canCancel).toBe(true);
   });
 });

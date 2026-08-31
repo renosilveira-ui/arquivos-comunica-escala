@@ -14,6 +14,7 @@ import { enqueueComunicaSwapApproved } from "./integrations/comunica-plus";
 import { enqueueDutySyncWithdrawsForRemovedProfessionals } from "./sso/duty-sync-lifecycle";
 import {
   assertManagerScopeAccess,
+  assertManagerScopeAccessForUpdate,
   getTenantActorFromContext,
   type TenantActor,
 } from "./_core/policy";
@@ -900,16 +901,7 @@ async function applySwapAssignmentTransfer(
   return approvedVersion;
 }
 
-function leftoverHealReviewer(
-  topology: SwapTransferTopology,
-): SwapTransferReviewer {
-  return {
-    professional: topology.recipient,
-    auditRole: topology.recipient.roleInInstitution,
-  };
-}
-
-function isExpectedLeftoverHealDenial(error: unknown): boolean {
+function isExpectedAcceptedResidualReconciliationError(error: unknown): boolean {
   return (
     error instanceof TRPCError &&
     (error.code === "CONFLICT" ||
@@ -917,6 +909,142 @@ function isExpectedLeftoverHealDenial(error: unknown): boolean {
       error.code === "FORBIDDEN" ||
       error.code === "NOT_FOUND")
   );
+}
+
+/**
+ * Revalida, já sob lock, quem está autorizando a reconciliação de uma
+ * candidatura ACCEPTED legada. Ser participante é suficiente; para gestor,
+ * exige papel e manager_scope ainda ativos no setor canônico do swap.
+ */
+async function requireAcceptedResidualReconcilerForUpdate(
+  tx: any,
+  actor: TenantActor,
+  swap: SwapRow,
+  expectedSessionVersion: number,
+  managerScopeTargets: readonly ReconcileManagerScopeTarget[] | undefined,
+): Promise<SwapTransferReviewer> {
+  if (!actor.professionalId) {
+    throw topologyDenied("Ator sem identidade profissional canônica");
+  }
+  const professional = await requireCanonicalProfessional(tx, {
+    institutionId: swap.institutionId,
+    professionalId: actor.professionalId,
+    userId: actor.userId,
+    lockForUpdate: true,
+    expectedSessionVersion,
+  });
+  const isParticipant =
+    (swap.fromUserId === actor.userId &&
+      swap.fromProfessionalId === professional.professionalId) ||
+    (swap.toUserId === actor.userId &&
+      swap.toProfessionalId === professional.professionalId);
+  if (!isParticipant) {
+    if (!isInstitutionManager(actor)) {
+      throw topologyDenied(
+        "Solicitação não pertence ao profissional autenticado",
+      );
+    }
+    if (!managerScopeTargets || managerScopeTargets.length === 0) {
+      throw topologyDenied(
+        "Não foi possível validar a jurisdição da reconciliação gerencial",
+      );
+    }
+    let managerRole: "GESTOR_MEDICO" | "GESTOR_PLUS" | undefined;
+    for (const target of managerScopeTargets) {
+      const currentManagerRole = await assertManagerScopeAccessForUpdate(
+        tx,
+        actor,
+        expectedSessionVersion,
+        target.hospitalId,
+        target.sectorId,
+        target.dates,
+      );
+      managerRole ??= currentManagerRole;
+    }
+    return {
+      professional,
+      auditRole: managerRole!,
+    };
+  }
+  return {
+    professional,
+    auditRole: professional.roleInInstitution,
+  };
+}
+
+type ReconcileManagerScopeTarget = {
+  hospitalId: number;
+  sectorId: number;
+  dates: Date[];
+};
+
+function acceptedResidualManagerScopeTargets(
+  shifts: readonly {
+    hospitalId: number;
+    sectorId: number;
+    startAt: Date;
+  }[],
+): ReconcileManagerScopeTarget[] {
+  const targets = new Map<string, ReconcileManagerScopeTarget>();
+  for (const shift of shifts) {
+    const key = `${shift.hospitalId}:${shift.sectorId}`;
+    const target = targets.get(key) ?? {
+      hospitalId: shift.hospitalId,
+      sectorId: shift.sectorId,
+      dates: [],
+    };
+    target.dates.push(shift.startAt);
+    targets.set(key, target);
+  }
+  return [...targets.values()]
+    .map((target) => ({
+      ...target,
+      dates: [...target.dates].sort((left, right) => left.getTime() - right.getTime()),
+    }))
+    .sort(
+      (left, right) =>
+        left.hospitalId - right.hospitalId || left.sectorId - right.sectorId,
+    );
+}
+
+function acceptedResidualManagerScopeTargetsFromTopology(
+  topology: SwapTransferTopology,
+): ReconcileManagerScopeTarget[] {
+  const shifts = [topology.source.shift];
+  if (topology.toTuple) shifts.push(topology.toTuple.shift);
+  return acceptedResidualManagerScopeTargets(shifts);
+}
+
+async function acceptedResidualManagerScopeTargetsForUpdate(
+  tx: any,
+  swap: SwapRow,
+): Promise<ReconcileManagerScopeTarget[]> {
+  // A reconciliação de cancelamento não altera alocações, mas ainda precisa
+  // observar a mesma ordem determinística de turnos da efetivação antes de
+  // ler os alvos de jurisdição.
+  await lockSwapShiftsForUpdate(tx, swap.institutionId, [
+    swap.fromShiftInstanceId,
+    swap.toShiftInstanceId,
+  ]);
+  const source = await requireCanonicalShift(tx, {
+    institutionId: swap.institutionId,
+    hospitalId: swap.hospitalId,
+    sectorId: swap.sectorId,
+    shiftInstanceId: swap.fromShiftInstanceId,
+    lockForUpdate: true,
+  });
+  const shifts = [source];
+  if (swap.toShiftInstanceId) {
+    const counterpart = await requireCanonicalShift(tx, {
+      institutionId: swap.institutionId,
+      shiftInstanceId: swap.toShiftInstanceId,
+      lockForUpdate: true,
+    });
+    shifts.push(counterpart);
+  } else if (!isOneWay(swap.type)) {
+    throw topologyDenied("Troca sem turno de contrapartida");
+  }
+  return acceptedResidualManagerScopeTargets(shifts);
 }
 
 function isLeftoverAlreadyResolvedConflict(error: unknown): boolean {
@@ -957,15 +1085,15 @@ function leftoverUnwindReason(error: unknown): string {
  * Efetua um swap/cessão/transfer residual em ACCEPTED.
  * O fluxo canônico novo completa no `accept` (PENDING → APPROVED).
  * Este caminho existe só para candidaturas antigas que ficaram
- * aguardando o dono: listagem e novo aceite completam sozinhos
- * (mesma escrita endurecida do TAKE). `approveByOwner` legado
- * ainda pode chamar com `requireOwner`.
+ * aguardando o dono. A reconciliação é uma mutation explícita ou um
+ * novo aceite, nunca um efeito colateral de consulta. `approveByOwner`
+ * legado ainda pode chamar com `requireOwner`.
  */
 async function effectuateApprovedSwap(
   db: any,
   swap: SwapRow,
   actor: TenantActor,
-  expectedSessionVersion: number | undefined,
+  expectedSessionVersion: number,
   note: string | undefined,
   description: string,
   options: {
@@ -1060,23 +1188,26 @@ async function effectuateApprovedSwap(
       topology.toTuple?.shift ?? null,
       "Topologia do plantão mudou durante a efetivação",
     );
-    const reviewer = options.requireOwner
-      ? await requireCurrentSwapOwner(
+    // Mantém a ordem corporativa de locks: mês → plantão/alocação →
+    // identidade/escopo. A revalidação ainda acontece na mesma transação,
+    // imediatamente antes de qualquer escrita de alocação ou auditoria.
+    const residualReviewer = options.requireOwner
+      ? null
+      : await requireAcceptedResidualReconcilerForUpdate(
           tx,
           actor,
           currentSwap,
           expectedSessionVersion,
-        )
-      : leftoverHealReviewer(topology);
-    if (!options.requireOwner && actor.professionalId) {
-      await requireCanonicalProfessional(tx, {
-        institutionId: currentSwap.institutionId,
-        professionalId: actor.professionalId,
-        userId: actor.userId,
-        lockForUpdate: true,
+          acceptedResidualManagerScopeTargetsFromTopology(topology),
+        );
+    const reviewer =
+      residualReviewer ??
+      (await requireCurrentSwapOwner(
+        tx,
+        actor,
+        currentSwap,
         expectedSessionVersion,
-      });
-    }
+      ));
     await assertAssignmentWritesAllowedForUpdate(
       tx,
       assignmentWriteCandidatesForSwap(
@@ -1105,15 +1236,14 @@ async function effectuateApprovedSwap(
 }
 
 /**
- * Completa ACCEPTED residual com a mesma escrita do TAKE.
- * Quem pode ver a solicitação (dono, candidato ou gestor da escala)
- * dispara a efetivação; o dono não precisa aprovar.
+ * Completa ACCEPTED residual com a mesma escrita do TAKE. É chamada apenas
+ * por mutations que já declararam a reconciliação como efeito de escrita.
  */
-async function healLeftoverAcceptedSwap(
+async function completeAcceptedResidualSwap(
   db: any,
   swap: SwapRow,
   actor: TenantActor,
-  expectedSessionVersion: number | undefined,
+  expectedSessionVersion: number,
 ): Promise<void> {
   if (swap.status === "APPROVED") {
     throw new TRPCError({
@@ -1134,7 +1264,7 @@ async function healLeftoverAcceptedSwap(
     actor,
     expectedSessionVersion,
     undefined,
-    `${acceptAudit.label} residual efetivada automaticamente`,
+    `${acceptAudit.label} residual efetivada por reconciliação explícita`,
     { approvalPath: "TAKE", requireOwner: false },
   );
 }
@@ -1144,10 +1274,11 @@ async function healLeftoverAcceptedSwap(
  * Guarda `WHERE status = ACCEPTED` + tenant + `affectedRows`.
  * Se outra ação já concluiu ou cancelou, devolve o status atual.
  */
-async function unwindLeftoverAcceptedSwap(
+async function cancelAcceptedResidualSwap(
   db: any,
   swap: SwapRow,
   actor: TenantActor,
+  expectedSessionVersion: number,
   reviewNote: string,
 ): Promise<"APPROVED" | "CANCELLED" | SwapRow["status"]> {
   return db.transaction(async (tx: any) => {
@@ -1158,15 +1289,22 @@ async function unwindLeftoverAcceptedSwap(
     );
     if (current.status === "APPROVED") return "APPROVED";
     if (current.status !== "ACCEPTED") return current.status;
-    if (!actor.professionalId) {
-      throw topologyDenied("Ator sem identidade profissional canônica");
-    }
-    const reviewer = await requireCanonicalProfessional(tx, {
-      institutionId: current.institutionId,
-      professionalId: actor.professionalId,
-      userId: actor.userId,
-      lockForUpdate: true,
-    });
+    const actorIsCurrentParticipant =
+      (current.fromUserId === actor.userId &&
+        current.fromProfessionalId === actor.professionalId) ||
+      (current.toUserId === actor.userId &&
+        current.toProfessionalId === actor.professionalId);
+    const managerScopeTargets =
+      isInstitutionManager(actor) && !actorIsCurrentParticipant
+        ? await acceptedResidualManagerScopeTargetsForUpdate(tx, current)
+        : undefined;
+    const reviewer = await requireAcceptedResidualReconcilerForUpdate(
+      tx,
+      actor,
+      current,
+      expectedSessionVersion,
+      managerScopeTargets,
+    );
     await transitionSwapStatusForUpdate(tx, current, ["ACCEPTED"], {
       status: "CANCELLED",
       reviewedByUserId: actor.userId,
@@ -1180,8 +1318,8 @@ async function unwindLeftoverAcceptedSwap(
         entityType: cancelAudit.entityType,
         entityId: current.id,
         actorUserId: actor.userId,
-        actorRole: reviewer.roleInInstitution,
-        actorName: reviewer.name,
+        actorRole: reviewer.auditRole,
+        actorName: reviewer.professional.name,
         description: reviewNote,
         fromProfessionalId: current.fromProfessionalId,
         fromUserId: current.fromUserId,
@@ -1199,10 +1337,11 @@ async function unwindLeftoverAcceptedSwap(
   }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 }
 
-async function applyLeftoverHealDenial(
+async function reconcileAcceptedResidualFailure(
   db: any,
   swap: SwapRow,
   actor: TenantActor,
+  expectedSessionVersion: number,
   error: unknown,
 ): Promise<"APPROVED" | "CANCELLED" | null> {
   if (isLeftoverAlreadyResolvedConflict(error)) {
@@ -1223,44 +1362,49 @@ async function applyLeftoverHealDenial(
     if (current?.status === "APPROVED") return "APPROVED";
     if (current?.status === "CANCELLED") return "CANCELLED";
   }
-  const outcome = await unwindLeftoverAcceptedSwap(
+  const outcome = await cancelAcceptedResidualSwap(
     db,
     swap,
     actor,
+    expectedSessionVersion,
     leftoverUnwindReason(error),
   );
   if (outcome === "APPROVED" || outcome === "CANCELLED") return outcome;
   return null;
 }
 
-async function healReadableAcceptedLeftovers(
+async function reconcileAcceptedResidualSwap(
   db: any,
   actor: TenantActor,
-  swaps: SwapRow[],
-  expectedSessionVersion: number | undefined,
-): Promise<{ healedIds: Set<number>; cancelledById: Map<number, string> }> {
-  const healedIds = new Set<number>();
-  const cancelledById = new Map<number, string>();
-  for (const swap of swaps) {
-    if (swap.status !== "ACCEPTED") continue;
-    try {
-      await healLeftoverAcceptedSwap(
-        db,
-        swap,
-        actor,
-        expectedSessionVersion,
-      );
-      healedIds.add(swap.id);
-    } catch (error) {
-      if (!isExpectedLeftoverHealDenial(error)) throw error;
-      const outcome = await applyLeftoverHealDenial(db, swap, actor, error);
-      if (outcome === "APPROVED") healedIds.add(swap.id);
-      if (outcome === "CANCELLED") {
-        cancelledById.set(swap.id, leftoverUnwindReason(error));
-      }
-    }
+  swap: SwapRow,
+  expectedSessionVersion: number,
+): Promise<"APPROVED" | "CANCELLED"> {
+  if (swap.status !== "ACCEPTED") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Esta solicitação já foi efetivada ou cancelada.",
+    });
   }
-  return { healedIds, cancelledById };
+  try {
+    await completeAcceptedResidualSwap(
+      db,
+      swap,
+      actor,
+      expectedSessionVersion,
+    );
+    return "APPROVED";
+  } catch (error) {
+    if (!isExpectedAcceptedResidualReconciliationError(error)) throw error;
+    const outcome = await reconcileAcceptedResidualFailure(
+      db,
+      swap,
+      actor,
+      expectedSessionVersion,
+      error,
+    );
+    if (outcome === "APPROVED" || outcome === "CANCELLED") return outcome;
+    throw error;
+  }
 }
 
 // ─── router ─────────────────────────────────────────────────────────────────
@@ -1985,7 +2129,7 @@ export const swapRouter = router({
       if (swap.status === "ACCEPTED") {
         await assertActorCanReadSwap(actor, swap);
         try {
-          await healLeftoverAcceptedSwap(
+          await completeAcceptedResidualSwap(
             db,
             swap,
             actor,
@@ -1993,8 +2137,14 @@ export const swapRouter = router({
           );
           return { ok: true };
         } catch (error) {
-          if (!isExpectedLeftoverHealDenial(error)) throw error;
-          const outcome = await applyLeftoverHealDenial(db, swap, actor, error);
+          if (!isExpectedAcceptedResidualReconciliationError(error)) throw error;
+          const outcome = await reconcileAcceptedResidualFailure(
+            db,
+            swap,
+            actor,
+            expectedSessionVersion,
+            error,
+          );
           if (outcome === "APPROVED") {
             throw new TRPCError({
               code: "CONFLICT",
@@ -2131,6 +2281,55 @@ export const swapRouter = router({
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       return { ok: true };
+    }),
+
+  // ── reconcileAccepted ────────────────────────────────────────────────────
+  // Recupera uma candidatura ACCEPTED criada pelo fluxo legado. A ação é
+  // deliberadamente uma mutation: consultar trocas nunca pode efetivar,
+  // cancelar, auditar ou enfileirar sinais por efeito colateral.
+  reconcileAccepted: protectedProcedure
+    .input(z.object({ swapRequestId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const db = await getDb();
+      if (!db) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
+      }
+
+      const expectedSessionVersion = ctx.user!.sessionVersion;
+      const institutionId = ctx.institutionId;
+      const actor = await getTenantActorFromContext(ctx);
+      if (!actor.professionalId) {
+        throw topologyDenied("Ator sem identidade profissional canônica");
+      }
+
+      const [swap] = await db
+        .select()
+        .from(swapRequests)
+        .where(
+          and(
+            eq(swapRequests.id, input.swapRequestId),
+            eq(swapRequests.institutionId, institutionId),
+          ),
+        )
+        .limit(1);
+      if (!swap) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Solicitação não encontrada",
+        });
+      }
+
+      await assertActorCanReadSwap(actor, swap);
+      const outcome = await reconcileAcceptedResidualSwap(
+        db,
+        actor,
+        swap,
+        expectedSessionVersion,
+      );
+      return { outcome };
     }),
 
   // ── reject (by peer) ─────────────────────────────────────────────────────
@@ -2432,8 +2631,8 @@ export const swapRouter = router({
   //   "OFFERER"  — apenas as solicitações onde sou o ofertante (A).
   //   "RECEIVER" — onde sou o aceitante (B).
   //   "ANY"      — comportamento legado: qualquer envolvimento (default).
-  // Residual ACCEPTED: lista tenta o heal; se a efetivação for recusada
-  // (expirou, conflito, mês não publicado, acesso), cancela com motivo.
+  // Consulta é estritamente leitura: residual ACCEPTED permanece visível até
+  // uma mutation explícita de reconciliação, aceite ou cancelamento.
   // awaitingMyApproval não volta — não há Aprovar candidatura.
   list: protectedProcedure
     .input(
@@ -2454,7 +2653,6 @@ export const swapRouter = router({
         });
 
       const userId = ctx.user!.id;
-      const expectedSessionVersion = ctx.user!.sessionVersion;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
       if (!actor.professionalId)
@@ -2542,23 +2740,11 @@ export const swapRouter = router({
         : [];
       const readableSwaps = await filterReadableSwaps(db, actor, candidateSwaps);
       const readableIds = new Set(readableSwaps.map((swap) => swap.id));
-      const { healedIds, cancelledById } = await healReadableAcceptedLeftovers(
-        db,
-        actor,
-        readableSwaps,
-        expectedSessionVersion,
-      );
 
       return data
         .filter((r: any) => readableIds.has(Number(r.id)))
         .map((r: any) => {
-          const id = Number(r.id);
-          const cancelledNote = cancelledById.get(id);
-          const status = healedIds.has(id)
-            ? "APPROVED"
-            : cancelledNote
-              ? "CANCELLED"
-              : r.status;
+          const status = r.status;
           const canCancel =
             (status === "PENDING" && r.fromUserId === userId) ||
             (status === "ACCEPTED" &&
@@ -2568,7 +2754,7 @@ export const swapRouter = router({
           type: r.type,
           status,
           reason: r.reason,
-          reviewNote: cancelledNote ?? r.reviewNote,
+          reviewNote: r.reviewNote,
           expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
           createdAt: new Date(r.createdAt),
           reviewedAt: r.reviewedAt ? new Date(r.reviewedAt) : null,
@@ -2603,8 +2789,8 @@ export const swapRouter = router({
               }
             : null,
           reviewerName: r.reviewerName ?? null,
-          // Sem botão de aprovação. Residual que não completa é
-          // cancelado; se ainda estiver ACCEPTED, dono/candidato desfaz.
+          // Sem botão de aprovação. Quem participa pode cancelar o residual
+          // ou pedir reconciliação por uma mutation explícita.
           awaitingMyApproval: false,
           canCancel,
           };
