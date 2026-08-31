@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 type PlatformName = "web" | "ios";
 type WebGateState = "CLEAR" | "ADMISSION" | "REVOKE_REQUIRED";
 type BatchLinkOptions = {
+  maxItems?: number;
   headers: () => Promise<Record<string, string>>;
   fetch: (url: string, options?: RequestInit) => Promise<Response>;
 };
@@ -176,6 +177,18 @@ describe("gate de sessão web nos headers tRPC", () => {
     expect(harness.getWebSessionGateState).not.toHaveBeenCalled();
     expect(harness.getActiveInstitutionId).toHaveBeenCalledTimes(1);
     expect(harness.getSessionToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("limita cada lote tRPC a cinco operações", async () => {
+    const harness = await loadHeaderBuilder({
+      platform: "ios",
+      institutionId: 202,
+      token: "token-nativo",
+    });
+
+    harness.createTRPCClient();
+
+    expect(harness.getBatchLinkOptions()?.maxItems).toBe(5);
   });
 
   it("revalida o ticket após a leitura assíncrona do tenant", async () => {
