@@ -76,6 +76,10 @@ export default defineConfig({
       "tests/whatsapp-contact-source.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
+      "tests/readiness-fence-schema.test.ts",
+      "tests/readiness-fence-migration.test.ts",
+      "tests/readiness-fence.test.ts",
+      "tests/apply-readiness-fence-migration.test.ts",
     ],
   },
 });

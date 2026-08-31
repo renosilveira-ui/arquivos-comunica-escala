@@ -11,6 +11,8 @@ import {
   json,
   unique,
   index,
+  bigint,
+  tinyint,
   decimal,
   foreignKey,
   customType,
@@ -184,6 +186,50 @@ export const institutions = mysqlTable("institutions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 });
+
+/**
+ * Fence transacional por tenant para o diagnóstico de prontidão.
+ *
+ * A linha não é um cache do relatório nem uma decisão de publicação. Ela só
+ * contém uma revisão monotônica. Os triggers da migration correspondente a
+ * incrementam quando uma fonte do diagnóstico muda; o fluxo que for publicar
+ * poderá travá-la e verificar que a revisão observada ainda é a mesma antes
+ * do commit.
+ */
+export const institutionReadinessFences = mysqlTable(
+  "institution_readiness_fences",
+  {
+    institutionId: int("institution_id")
+      .primaryKey()
+      .references(() => institutions.id, { onDelete: "cascade" }),
+    revision: bigint("revision", { mode: "bigint", unsigned: true })
+      .notNull()
+      .default(0n),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+);
+
+export type InstitutionReadinessFence =
+  typeof institutionReadinessFences.$inferSelect;
+
+/**
+ * Marcador global escrito somente após a instalação integral da cobertura de
+ * triggers da fence. O runtime falha fechado se ele estiver ausente ou não
+ * corresponder ao contrato versionado esperado.
+ */
+export const institutionReadinessFenceInstallations = mysqlTable(
+  "institution_readiness_fence_installations",
+  {
+    id: tinyint("id", { unsigned: true }).primaryKey(),
+    coverageVersion: varchar("coverage_version", { length: 64 }).notNull(),
+    coverageHash: varchar("coverage_hash", { length: 64 }).notNull(),
+    installedAt: timestamp("installed_at").notNull().defaultNow(),
+  },
+);
+
+export type InstitutionReadinessFenceInstallation =
+  typeof institutionReadinessFenceInstallations.$inferSelect;
 
 /**
  * Hospitais (pertence a uma instituição)
@@ -1490,6 +1536,7 @@ export const dutyConfirmationsRelations = relations(
 
 export const institutionsRelations = relations(institutions, ({ many }) => ({
   hospitals: many(hospitals),
+  readinessFences: many(institutionReadinessFences),
   sectors: many(sectors),
   professionalInstitutions: many(professionalInstitutions),
   professionalAccesses: many(professionalAccess),
@@ -1509,6 +1556,16 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   swapRequestDismissals: many(swapRequestDismissals),
   dutyConfirmations: many(dutyConfirmations),
 }));
+
+export const institutionReadinessFencesRelations = relations(
+  institutionReadinessFences,
+  ({ one }) => ({
+    institution: one(institutions, {
+      fields: [institutionReadinessFences.institutionId],
+      references: [institutions.id],
+    }),
+  }),
+);
 
 export const usersRelations = relations(users, ({ many }) => ({
   professionals: many(professionals),
