@@ -21,6 +21,11 @@ type PendingCommandBase = DutyConfirmationCasIdentity & {
   respondedAt: Date;
 };
 
+type DeclineCommandBase = DutyConfirmationCasIdentity & {
+  expectedStatus: "PENDING" | "CONFIRMED";
+  respondedAt: Date;
+};
+
 type NominatedCommandBase = DutyConfirmationCasIdentity & {
   expectedStatus: "NOMINATED";
   expectedReplacementProfessionalId: number;
@@ -31,7 +36,7 @@ export type DutyConfirmationTransitionCommand =
   | (PendingCommandBase & {
       kind: "CONFIRM";
     })
-  | (PendingCommandBase & {
+  | (DeclineCommandBase & {
       kind: "DECLINE";
       declineReason: string | null;
       recheckAt: Date;
@@ -55,7 +60,8 @@ export type DutyConfirmationTransitionCommand =
 
 export const DUTY_CONFIRMATION_TRANSITIONS = {
   PENDING: ["CONFIRMED", "DECLINED"],
-  CONFIRMED: [],
+  // Desistência após confirmar: reutiliza DECLINED. Sem estado novo.
+  CONFIRMED: ["DECLINED"],
   DECLINED: ["NOMINATED"],
   NOMINATED: ["REPLACEMENT_CONFIRMED", "REPLACEMENT_DECLINED"],
   REPLACEMENT_CONFIRMED: [],

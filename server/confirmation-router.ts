@@ -15,13 +15,18 @@ import {
 import { assertSpecialtyCompatible } from "./specialty";
 import { rowsFromExecute } from "./_core/db-results";
 import { recordAudit } from "./audit-trail";
-import { enqueueAutoSsoPush, triggerAutoSso } from "./sso/auto-sso";
 import {
   canonicalizeDutySyncExternalSubject,
   DUTY_SYNC_MISSING_EXTERNAL_SUBJECT_REASON,
   enqueueDutySync,
   type DutySyncExternalSubjectBinding,
 } from "./sso/duty-sync";
+import {
+  DUTY_SYNC_WITHDRAW_EXPECTED_STATUSES,
+  dutySyncConfirmDedupKey,
+  dutySyncReplacementConfirmDedupKey,
+  dutySyncWithdrawDedupKey,
+} from "./sso/duty-sync-lifecycle";
 import { getDutySyncLocalStatusForConfirmation } from "./sso/duty-sync-status";
 import {
   dutyShiftSnapshot,
@@ -551,18 +556,16 @@ export const confirmationRouter = router({
                 ? "SOBREAVISO"
                 : "PLANTAO",
             serviceName: current.shift.specialty,
-            dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:confirmed:${current.original.userId}`,
+            dedupKey: dutySyncConfirmDedupKey(
+              current.confirmation.id,
+              current.original.userId,
+            ),
           },
           new Date(),
           tx,
         );
-        await enqueueAutoSsoPush(current.confirmation.id, new Date(), tx);
       });
 
-      // Auto-SSO → Comunica+ (fire-and-forget)
-      triggerAutoSso(conf.id).catch(() =>
-        console.error(`[Confirmation] AUTO_SSO_FAILED confirmation=${conf.id}`),
-      );
       const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
         confirmationId: conf.id,
         institutionId: ctx.institutionId,
@@ -608,7 +611,7 @@ export const confirmationRouter = router({
 
       await db.transaction(async (tx) => {
         const current = await requireValidDutyConfirmation(tx, conf.id, {
-          allowedStatuses: ["PENDING"],
+          allowedStatuses: ["PENDING", "CONFIRMED"],
           expectedActor: {
             kind: "ORIGINAL",
             userId: ctx.user.id,
@@ -617,10 +620,20 @@ export const confirmationRouter = router({
           expectedInstitutionId: ctx.institutionId,
           lockForUpdate: true,
         });
+        if (
+          current.confirmation.status !== "PENDING" &&
+          current.confirmation.status !== "CONFIRMED"
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Esta confirmação foi alterada por outra ação. Atualize a tela e tente novamente.",
+          });
+        }
         await transitionDutyConfirmation(tx, {
           kind: "DECLINE",
           ...dutyConfirmationCasIdentity(current.confirmation),
-          expectedStatus: "PENDING",
+          expectedStatus: current.confirmation.status,
           respondedAt: new Date(),
           declineReason: input.reason ?? null,
           recheckAt: newRecheckAt,
@@ -653,18 +666,16 @@ export const confirmationRouter = router({
             shiftSnapshot: dutyShiftSnapshot(current.shift),
             action: "WITHDRAW",
             confirmationStatus: "DECLINED",
-            expectedStatuses: [
-              "DECLINED",
-              "NOMINATED",
-              "REPLACEMENT_DECLINED",
-              "REPLACEMENT_CONFIRMED",
-            ],
+            expectedStatuses: [...DUTY_SYNC_WITHDRAW_EXPECTED_STATUSES],
             dutyType:
               current.shift.modality === "SOBREAVISO"
                 ? "SOBREAVISO"
                 : "PLANTAO",
             serviceName: current.shift.specialty,
-            dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:withdraw:${current.original.userId}`,
+            dedupKey: dutySyncWithdrawDedupKey(
+              current.confirmation.id,
+              current.original.userId,
+            ),
           },
           new Date(),
           tx,
@@ -1086,6 +1097,34 @@ export const confirmationRouter = router({
           },
           { db: tx, strict: true },
         );
+        const titularSubjectBinding = await resolveApprovedExternalSubject(
+          tx,
+          current.original.userId,
+        );
+        await enqueueDutySync(
+          {
+            confirmationId: current.confirmation.id,
+            institutionId: current.shift.institutionId,
+            shiftInstanceId: current.shift.id,
+            targetUserId: current.original.userId,
+            ...titularSubjectBinding,
+            shiftSnapshot: dutyShiftSnapshot(current.shift),
+            action: "WITHDRAW",
+            confirmationStatus: "REPLACEMENT_CONFIRMED",
+            expectedStatuses: [...DUTY_SYNC_WITHDRAW_EXPECTED_STATUSES],
+            dutyType:
+              current.shift.modality === "SOBREAVISO"
+                ? "SOBREAVISO"
+                : "PLANTAO",
+            serviceName: current.shift.specialty,
+            dedupKey: dutySyncWithdrawDedupKey(
+              current.confirmation.id,
+              current.original.userId,
+            ),
+          },
+          new Date(),
+          tx,
+        );
         const externalSubjectBinding = await resolveApprovedExternalSubject(
           tx,
           replacementPro.userId,
@@ -1106,21 +1145,17 @@ export const confirmationRouter = router({
                 ? "SOBREAVISO"
                 : "PLANTAO",
             serviceName: current.shift.specialty,
-            dedupKey: `duty-confirmation:${current.confirmation.id}:duty-sync:replacement-confirmed:${replacementPro.userId}`,
+            dedupKey: dutySyncReplacementConfirmDedupKey(
+              current.confirmation.id,
+              replacementPro.userId,
+            ),
           },
           new Date(),
           tx,
         );
-        await enqueueAutoSsoPush(current.confirmation.id, new Date(), tx);
         return intent;
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
-      // Auto-SSO for replacement → Comunica+ (fire-and-forget)
-      triggerAutoSso(conf.id).catch(() =>
-        console.error(
-          `[Confirmation] REPLACEMENT_AUTO_SSO_FAILED confirmation=${conf.id}`,
-        ),
-      );
       await sendTrackedPushNotification(pushIntent).catch(() =>
         console.error(
           `[Confirmation] ACCEPTANCE_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`,

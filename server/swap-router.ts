@@ -24,6 +24,7 @@ import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import { recomputeShiftStatus } from "./shift-status";
 import { enqueueComunicaSwapApproved } from "./integrations/comunica-plus";
+import { enqueueDutySyncWithdrawsForRemovedProfessionals } from "./sso/duty-sync-lifecycle";
 import {
   assertManagerScopeAccess,
   getTenantActorFromContext,
@@ -1593,6 +1594,11 @@ async function writeTransferredAssignments(
       isActive: true,
       createdBy: actor.userId,
     });
+    await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+      institutionId: topology.source.shift.institutionId,
+      shiftInstanceId: topology.source.shift.id,
+      professionalIds: [topology.source.professional.professionalId],
+    });
     return;
   }
   if (!topology.toTuple)
@@ -1620,6 +1626,16 @@ async function writeTransferredAssignments(
     status: "OCUPADO",
     isActive: true,
     createdBy: actor.userId,
+  });
+  await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+    institutionId: topology.source.shift.institutionId,
+    shiftInstanceId: topology.source.shift.id,
+    professionalIds: [topology.source.professional.professionalId],
+  });
+  await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+    institutionId: topology.toTuple.shift.institutionId,
+    shiftInstanceId: topology.toTuple.shift.id,
+    professionalIds: [topology.recipient.professionalId],
   });
 }
 

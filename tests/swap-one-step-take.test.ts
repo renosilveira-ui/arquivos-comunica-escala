@@ -19,6 +19,7 @@ import {
   swapRequests,
   swapRequestDismissals,
   users,
+  dutyConfirmations,
 } from "../drizzle/schema";
 import {
   ensureTestAnesthesiaSpecialty,
@@ -346,6 +347,9 @@ describe("take em um passo: quem assume leva o plantão", () => {
       .where(eq(swapRequestDismissals.institutionId, institutionId));
     await db.delete(swapRequests).where(eq(swapRequests.institutionId, institutionId));
     await db
+      .delete(dutyConfirmations)
+      .where(eq(dutyConfirmations.institutionId, institutionId));
+    await db
       .delete(shiftAssignmentsV2)
       .where(eq(shiftAssignmentsV2.institutionId, institutionId));
     await db.delete(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
@@ -357,6 +361,9 @@ describe("take em um passo: quem assume leva o plantão", () => {
     if (!db) return;
     await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
     await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+    await db
+      .delete(dutyConfirmations)
+      .where(eq(dutyConfirmations.institutionId, institutionId));
     await db
       .delete(swapRequestDismissals)
       .where(eq(swapRequestDismissals.institutionId, institutionId));
@@ -482,6 +489,50 @@ describe("take em um passo: quem assume leva o plantão", () => {
         }),
       ]),
     );
+  });
+
+  it("troca efetivada emite WITHDRAW do titular confirmado e não declara o assumidor", async () => {
+    const shift = await createOccupiedShift(offerer, 12, "Clínica Médica");
+    await db.insert(dutyConfirmations).values({
+      institutionId,
+      shiftInstanceId: shift.shiftId,
+      assignmentId: shift.assignmentId,
+      professionalId: offerer.professionalId,
+      userId: offerer.userId,
+      status: "CONFIRMED",
+      notifiedAt: new Date(),
+      respondedAt: new Date(),
+      confirmationToken: crypto.randomUUID(),
+    });
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    const afterOffer = await db
+      .select({ title: notifications.title, body: notifications.body })
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    expect(afterOffer.some((row) => row.title === "Duty roster sync")).toBe(false);
+
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+    const dutySync = await db
+      .select({
+        userId: notifications.userId,
+        title: notifications.title,
+        body: notifications.body,
+      })
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+    const withdraws = dutySync.filter((row) => row.title === "Duty roster sync");
+    expect(withdraws).toEqual([
+      expect.objectContaining({
+        userId: offerer.userId,
+        title: "Duty roster sync",
+        body: "WITHDRAW",
+      }),
+    ]);
+    expect(withdraws.some((row) => row.body === "CONFIRM")).toBe(false);
   });
 
   it("ACCEPTED residual com GESTOR sem ACL completa ao dono listar Minhas ofertas", async () => {

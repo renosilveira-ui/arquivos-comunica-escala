@@ -13,6 +13,12 @@ import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { formatHospitalTime } from "@/lib/hospital-time";
+import {
+  DUTY_ASSUMED_SUCCESS_COPY,
+  DUTY_CONFIRM_PROMPT_COPY,
+  DUTY_CONFIRMED_SUCCESS_COPY,
+  DUTY_NOMINATION_PROMPT_COPY,
+} from "@/lib/duty-sync-copy";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -43,7 +49,7 @@ export default function ConfirmDutyScreen() {
 
   const acceptNominationMutation = trpc.confirmations.acceptNomination.useMutation({
     onSuccess: () => {
-      feedback.success("Plantão assumido. Seu login no Comunica+ será automático.");
+      feedback.success(DUTY_ASSUMED_SUCCESS_COPY);
       router.replace("/(tabs)/agenda" as any);
     },
     onError: (err) => feedback.error(err.message),
@@ -63,7 +69,7 @@ export default function ConfirmDutyScreen() {
           ? " A sincronização com o Comunica+ será reprocessada."
           : "";
       feedback.success(
-        `Plantão confirmado. Seu login no Comunica+ será automático.${syncHint}`,
+        `${DUTY_CONFIRMED_SUCCESS_COPY}${syncHint}`,
       );
       router.replace("/(tabs)/agenda" as any);
     },
@@ -193,7 +199,7 @@ export default function ConfirmDutyScreen() {
             </View>
           </TintedGlassCard>
           <Text style={{ fontSize: 16, color: theme.colors.textSecondary, textAlign: "center", lineHeight: 22 }}>
-            Ao aceitar, o plantão passa para você e o login no Comunica+ será feito automaticamente.
+            {DUTY_NOMINATION_PROMPT_COPY}
           </Text>
           <View style={{ gap: 12 }}>
             <PrimaryButton
@@ -287,7 +293,7 @@ export default function ConfirmDutyScreen() {
         </TintedGlassCard>
 
         <Text style={{ fontSize: 16, color: theme.colors.textSecondary, textAlign: "center", lineHeight: 22 }}>
-          Você confirma sua presença neste plantão? Ao confirmar, o login no Comunica+ será feito automaticamente.
+          {DUTY_CONFIRM_PROMPT_COPY}
         </Text>
 
         <View style={{ gap: 12 }}>
