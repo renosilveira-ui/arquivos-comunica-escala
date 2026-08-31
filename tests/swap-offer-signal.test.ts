@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   auditTrail,
   hospitals,
@@ -29,6 +29,7 @@ import { TRPCError } from "@trpc/server";
 import { getDb } from "../server/db";
 import { isExpectedSwapVisibilityDenial, swapRouter } from "../server/swap-router";
 import { yearMonthBrt } from "../server/local-time";
+import { SWAP_OFFER_PUSH_TITLE } from "../lib/swap-offer-badge-refresh";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type Identity = {
@@ -342,6 +343,8 @@ describe("sinal de oferta de plantão", () => {
     const signal = readFileSync("server/swap-offer-signal.ts", "utf8");
     expect(signal).toContain("SIGNAL_TRACKING_FAILED");
     expect(signal).toContain("throw error");
+    expect(signal).toContain("eligibleRecipientUserIdsForSwapOffer");
+    expect(signal).not.toContain("listScaleManagerUserIds");
     expect(listAvailable).toContain("actor_directed_scope");
     expect(listAvailable).toContain("canRespond");
     expect(listAvailable).toContain("swap_request_dismissals");
@@ -533,7 +536,20 @@ describe("sinal de oferta de plantão", () => {
     });
   });
 
-  it("grava sinal para o destinatário direcionado e para o gestor da escala", async () => {
+  async function listOfferSignals() {
+    return db
+      .select({
+        userId: notifications.userId,
+        title: notifications.title,
+        body: notifications.body,
+        dedupKey: notifications.dedupKey,
+        shiftInstanceId: notifications.shiftInstanceId,
+      })
+      .from(notifications)
+      .where(eq(notifications.institutionId, institutionId));
+  }
+
+  it("oferta direcionada notifica só o alvo elegível, não gestores", async () => {
     const shift = await createOccupiedShift(offerer, 3, "Clínica Médica");
     const created = await callerFor(offerer).offer({
       type: "CESSAO",
@@ -542,31 +558,18 @@ describe("sinal de oferta de plantão", () => {
       toProfessionalId: peer.professionalId,
     });
 
-    const rows = await db
-      .select({
-        userId: notifications.userId,
-        title: notifications.title,
-        dedupKey: notifications.dedupKey,
-      })
-      .from(notifications)
-      .where(eq(notifications.institutionId, institutionId));
-
-    const userIdsSignaled = rows.map((row) => row.userId).sort((a, b) => a - b);
-    expect(userIdsSignaled).toEqual(
-      [peer.userId, gestor.userId, plus.userId].sort((a, b) => a - b),
-    );
-    expect(rows.every((row) => row.title === "Oferta de plantão")).toBe(true);
-    expect(rows.map((row) => row.dedupKey)).toEqual(
-      expect.arrayContaining([
-        `swap-offer:${created.id}:${peer.userId}`,
-        `swap-offer:${created.id}:${gestor.userId}`,
-        `swap-offer:${created.id}:${plus.userId}`,
-      ]),
-    );
+    const rows = await listOfferSignals();
+    expect(rows.map((row) => row.userId)).toEqual([peer.userId]);
+    expect(rows[0]?.title).toBe(SWAP_OFFER_PUSH_TITLE);
+    expect(rows[0]?.body).not.toContain(offerer.name);
+    expect(rows[0]?.dedupKey).toBe(`swap-offer:${created.id}:${peer.userId}`);
+    expect(rows[0]?.shiftInstanceId).toBe(shift.shiftId);
+    expect(rows.some((row) => row.userId === gestor.userId)).toBe(false);
+    expect(rows.some((row) => row.userId === plus.userId)).toBe(false);
     expect(rows.some((row) => row.userId === offerer.userId)).toBe(false);
   });
 
-  it("grava sinal para o gestor quando a oferta é aberta", async () => {
+  it("oferta aberta notifica médicos elegíveis e não o gestor só pelo papel", async () => {
     const shift = await createOccupiedShift(offerer, 4, "Clínica Médica");
     const created = await callerFor(offerer).offer({
       type: "CESSAO",
@@ -574,18 +577,20 @@ describe("sinal de oferta de plantão", () => {
       fromAssignmentId: shift.assignmentId,
     });
 
-    const rows = await db
-      .select()
-      .from(notifications)
-      .where(
-        and(
-          eq(notifications.institutionId, institutionId),
-          eq(notifications.userId, gestor.userId),
-        ),
-      );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.dedupKey).toBe(`swap-offer:${created.id}:${gestor.userId}`);
-    expect(rows[0]?.shiftInstanceId).toBe(shift.shiftId);
+    const rows = await listOfferSignals();
+    expect(rows.map((row) => row.userId)).toEqual([peer.userId]);
+    expect(rows[0]?.title).toBe(SWAP_OFFER_PUSH_TITLE);
+    expect(rows[0]?.dedupKey).toBe(`swap-offer:${created.id}:${peer.userId}`);
+    expect(
+      rows.filter((row) => row.userId === gestor.userId || row.userId === plus.userId),
+    ).toHaveLength(0);
+    expect(rows.some((row) => row.userId === offerer.userId)).toBe(false);
+    await expect(callerFor(peer).countActionable()).resolves.toEqual({
+      swapOffers: 1,
+    });
+    await expect(callerFor(gestor).countActionable()).resolves.toEqual({
+      swapOffers: 1,
+    });
   });
 
   it("oferta direcionada aparece na lista de quem recebeu o sinal", async () => {
@@ -597,13 +602,8 @@ describe("sinal de oferta de plantão", () => {
       toProfessionalId: peer.professionalId,
     });
 
-    const signaled = await db
-      .select({ userId: notifications.userId })
-      .from(notifications)
-      .where(eq(notifications.institutionId, institutionId));
-    expect(signaled.map((row) => row.userId).sort((a, b) => a - b)).toEqual(
-      [peer.userId, gestor.userId, plus.userId].sort((a, b) => a - b),
-    );
+    const signaled = await listOfferSignals();
+    expect(signaled.map((row) => row.userId)).toEqual([peer.userId]);
 
     const peerRow = (await callerFor(peer).listAvailable({})).find(
       (item) => Number(item.id) === Number(created.id),
@@ -803,5 +803,208 @@ describe("sinal de oferta de plantão", () => {
       ),
     ).toBe(false);
     expect(isExpectedSwapVisibilityDenial(new Error("boom"))).toBe(false);
+  });
+
+  it("plantonista inelegível e de outro setor não recebem sinal", async () => {
+    const ineligible = await createIdentity("no-access", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: clinicaId,
+      specialty: "Clínica Médica",
+      withAccess: false,
+    });
+    const [otherSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Outro setor ${stamp}`,
+        category: "cirurgico",
+        color: "#654321",
+      })
+      .$returningId();
+    const otherSectorPeer = await createIdentity("other-sector", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "Anestesiologia",
+      withAccess: false,
+    });
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: otherSectorPeer.professionalId,
+      hospitalId,
+      sectorId: otherSector.id,
+      canAccess: true,
+    });
+    try {
+      const shift = await createOccupiedShift(offerer, 30, "Clínica Médica");
+      await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+      });
+      const signaled = (await listOfferSignals()).map((row) => row.userId);
+      expect(signaled).toEqual([peer.userId]);
+      expect(signaled).not.toContain(ineligible.userId);
+      expect(signaled).not.toContain(otherSectorPeer.userId);
+    } finally {
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.sectorId, otherSector.id));
+      await db.delete(sectors).where(eq(sectors.id, otherSector.id));
+    }
+  });
+
+  it("outro tenant nunca recebe o sinal", async () => {
+    const [otherInstitution] = await db
+      .insert(institutions)
+      .values({
+        name: `Offer Signal Other ${stamp}`,
+        cnpj: String(stamp + 1).slice(-14).padStart(14, "7"),
+        legalName: `Offer Signal Other ${stamp}`,
+        tradeName: `OX${stamp}`.slice(0, 20),
+        isActive: true,
+      })
+      .$returningId();
+    const [otherHospital] = await db
+      .insert(hospitals)
+      .values({ institutionId: otherInstitution.id, name: `Other H ${stamp}` })
+      .$returningId();
+    const [otherSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId: otherInstitution.id,
+        hospitalId: otherHospital.id,
+        name: `Other S ${stamp}`,
+        category: "cirurgico",
+        color: "#000000",
+      })
+      .$returningId();
+    const name = `offer-signal-${stamp}-foreign`;
+    const [foreignUser] = await db
+      .insert(users)
+      .values({
+        name,
+        email: `${name}@example.test`,
+        passwordHash: "not-used",
+        role: "doctor",
+        approvalStatus: "APPROVED",
+        sessionVersion: 1,
+      })
+      .$returningId();
+    userIds.push(foreignUser.id);
+    const [foreignProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: foreignUser.id,
+        name,
+        role: "Médico",
+        specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaId,
+        userRole: "USER",
+      })
+      .$returningId();
+    professionalIds.push(foreignProfessional.id);
+    await db.insert(professionalInstitutions).values({
+      professionalId: foreignProfessional.id,
+      userId: foreignUser.id,
+      institutionId: otherInstitution.id,
+      roleInInstitution: "USER",
+      active: true,
+    });
+    await db.insert(professionalAccess).values({
+      institutionId: otherInstitution.id,
+      professionalId: foreignProfessional.id,
+      hospitalId: otherHospital.id,
+      sectorId: otherSector.id,
+      canAccess: true,
+    });
+    try {
+      const shift = await createOccupiedShift(offerer, 31, "Clínica Médica");
+      await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+      });
+      const local = await listOfferSignals();
+      expect(local.map((row) => row.userId)).toEqual([peer.userId]);
+      expect(local.some((row) => row.userId === foreignUser.id)).toBe(false);
+      const foreign = await db
+        .select({ userId: notifications.userId })
+        .from(notifications)
+        .where(eq(notifications.institutionId, otherInstitution.id));
+      expect(foreign).toHaveLength(0);
+    } finally {
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.institutionId, otherInstitution.id));
+      await db
+        .delete(professionalInstitutions)
+        .where(eq(professionalInstitutions.institutionId, otherInstitution.id));
+      await db.delete(sectors).where(eq(sectors.id, otherSector.id));
+      await db.delete(hospitals).where(eq(hospitals.id, otherHospital.id));
+      await db.delete(institutions).where(eq(institutions.id, otherInstitution.id));
+    }
+  });
+
+  it("gestor que também é médico elegível recebe o sinal como plantonista", async () => {
+    const gestorPeer = await createIdentity("gestor-peer", {
+      roleInInstitution: "GESTOR_MEDICO",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "Anestesiologia",
+    });
+    await db.insert(managerScope).values({
+      institutionId,
+      managerProfessionalId: gestorPeer.professionalId,
+      hospitalId,
+      sectorId,
+      active: true,
+    });
+    const shift = await createOccupiedShift(offerer, 32, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    const signaled = (await listOfferSignals()).map((row) => row.userId).sort((a, b) => a - b);
+    expect(signaled).toEqual([peer.userId, gestorPeer.userId].sort((a, b) => a - b));
+    expect(signaled).not.toContain(gestor.userId);
+    expect(signaled).not.toContain(plus.userId);
+    expect(
+      (await listOfferSignals()).map((row) => row.dedupKey),
+    ).toEqual(
+      expect.arrayContaining([
+        `swap-offer:${created.id}:${peer.userId}`,
+        `swap-offer:${created.id}:${gestorPeer.userId}`,
+      ]),
+    );
+  });
+
+  it("aceitar oferta reduz countActionable do colega e oferta expirada não conta", async () => {
+    const openShift = await createOccupiedShift(offerer, 33, "Clínica Médica");
+    const openOffer = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: openShift.shiftId,
+      fromAssignmentId: openShift.assignmentId,
+    });
+    const expiredShift = await createOccupiedShift(offerer, 34, "Clínica Médica");
+    const expiredOffer = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: expiredShift.shiftId,
+      fromAssignmentId: expiredShift.assignmentId,
+    });
+    await db
+      .update(swapRequests)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(swapRequests.id, Number(expiredOffer.id)));
+
+    await expect(callerFor(peer).countActionable()).resolves.toEqual({
+      swapOffers: 1,
+    });
+    await expect(
+      callerFor(peer).accept({ swapRequestId: Number(openOffer.id) }),
+    ).resolves.toEqual({ ok: true });
+    await expect(callerFor(peer).countActionable()).resolves.toEqual({
+      swapOffers: 0,
+    });
   });
 });

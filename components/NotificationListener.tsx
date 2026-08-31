@@ -15,6 +15,7 @@ import {
   useTenantState,
   type ActiveTenantSnapshot,
 } from "@/lib/tenant-state";
+import { shouldInvalidateSwapQueriesOnNotification } from "@/lib/swap-offer-badge-refresh";
 
 type NotificationData = Readonly<Record<string, unknown>>;
 
@@ -591,6 +592,18 @@ export function NotificationListener() {
         },
       );
     };
+    const receivedSubscription = Notifications.addNotificationReceivedListener(
+      (notification) => {
+        if (!scopeActive || !isSessionAuthorizationCurrent()) return;
+        const type = notification.request.content.data?.type;
+        if (!shouldInvalidateSwapQueriesOnNotification(type)) return;
+        void Promise.all([
+          utils.swaps.countActionable.invalidate(),
+          utils.swaps.listAvailable.invalidate(),
+          utils.swaps.list.invalidate(),
+        ]);
+      },
+    );
     responseConsumerRef.current = consumeResponse;
     try {
       const lastResponse = Notifications.getLastNotificationResponse();
@@ -601,6 +614,7 @@ export function NotificationListener() {
 
     return () => {
       scopeActive = false;
+      receivedSubscription.remove();
       if (responseConsumerRef.current === consumeResponse) {
         responseConsumerRef.current = () => undefined;
       }
