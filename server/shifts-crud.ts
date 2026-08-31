@@ -27,10 +27,12 @@ import {
   scheduleContexts,
   users,
 } from "../drizzle/schema";
+import { enqueueDutySyncIntervalRewrite } from "./sso/duty-sync-lifecycle";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import {
   assertMonthEditableForUpdate,
+  assertMonthNotLockedForUpdate,
   assertMonthsEditableForUpdate,
   lockMonthsForUpdate,
   lockMonth,
@@ -67,6 +69,11 @@ import {
   ensureDefaultShiftTemplates,
   planMissingDefaultShiftTemplates,
 } from "./sector-scale";
+import { deriveShiftStatus } from "./shift-status";
+import {
+  enqueueVacancyAvailableSignals,
+  recentVacancyBroadcastExists,
+} from "./vacancy-broadcast-signal";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -1826,6 +1833,225 @@ export const shiftsRouter = router({
       return { ...instance, template: template ?? null, assignments };
     }),
 
+  /**
+   * Aviso deliberado do gestor: push aos plantonistas elegíveis deste
+   * plantão vago. Não dispara em markVacant / unassignDirect.
+   * Input só o shiftInstanceId — tenant, hospital, setor e destinatários
+   * saem do plantão + actor.
+   */
+  notifyVacancy: protectedProcedure
+    .input(z.object({ shiftInstanceId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const userId = ctx.user?.id;
+      if (!userId) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Autenticação necessária",
+        });
+      }
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      const managerId = actor.professionalId;
+      if (!managerId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Profissional não encontrado",
+        });
+      }
+
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      const [shift] = await db
+        .select({
+          id: shiftInstances.id,
+          institutionId: shiftInstances.institutionId,
+          hospitalId: shiftInstances.hospitalId,
+          sectorId: shiftInstances.sectorId,
+          scheduleContextId: shiftInstances.scheduleContextId,
+          label: shiftInstances.label,
+          startAt: shiftInstances.startAt,
+          endAt: shiftInstances.endAt,
+          status: shiftInstances.status,
+        })
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, input.shiftInstanceId),
+            eq(shiftInstances.institutionId, ctx.institutionId),
+          ),
+        )
+        .limit(1);
+      if (!shift) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Turno não encontrado",
+        });
+      }
+
+      await assertInstitutionHierarchy(
+        {
+          institutionId: shift.institutionId,
+          hospitalId: shift.hospitalId,
+          sectorId: shift.sectorId,
+        },
+        { db },
+      );
+      await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
+      assertCanEditScheduleDate(actor, shift.startAt);
+
+      if (shift.status !== "VAGO") {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Este plantão não está mais vago.",
+        });
+      }
+      if (shift.startAt.getTime() <= Date.now()) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Este plantão já começou.",
+        });
+      }
+
+      return db.transaction(async (tx) => {
+        await assertMonthNotLockedForUpdate(
+          tx,
+          shift.institutionId,
+          shift.hospitalId,
+          shift.startAt,
+        );
+        const [locked] = await tx
+          .select({
+            id: shiftInstances.id,
+            institutionId: shiftInstances.institutionId,
+            hospitalId: shiftInstances.hospitalId,
+            sectorId: shiftInstances.sectorId,
+            scheduleContextId: shiftInstances.scheduleContextId,
+            label: shiftInstances.label,
+            startAt: shiftInstances.startAt,
+            endAt: shiftInstances.endAt,
+            status: shiftInstances.status,
+          })
+          .from(shiftInstances)
+          .where(
+            and(
+              eq(shiftInstances.id, input.shiftInstanceId),
+              eq(shiftInstances.institutionId, ctx.institutionId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!locked) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "O turno não está mais disponível.",
+          });
+        }
+        await assertActiveScheduleContextTopology({
+          institutionId: locked.institutionId,
+          hospitalId: locked.hospitalId,
+          sectorId: locked.sectorId,
+          scheduleContextId: locked.scheduleContextId,
+          db: tx,
+        });
+        const actorRole = await assertManagerScopeAccessForUpdate(
+          tx,
+          actor,
+          ctx.user.sessionVersion,
+          locked.hospitalId,
+          locked.sectorId,
+          [locked.startAt],
+        );
+        if (locked.status !== "VAGO") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Este plantão não está mais vago.",
+          });
+        }
+        const activeAssignments = await tx
+          .select({ status: shiftAssignmentsV2.status })
+          .from(shiftAssignmentsV2)
+          .where(
+            and(
+              eq(shiftAssignmentsV2.shiftInstanceId, locked.id),
+              eq(shiftAssignmentsV2.institutionId, locked.institutionId),
+              eq(shiftAssignmentsV2.hospitalId, locked.hospitalId),
+              eq(shiftAssignmentsV2.sectorId, locked.sectorId),
+              eq(shiftAssignmentsV2.isActive, true),
+            ),
+          );
+        if (
+          activeAssignments.length > 0 ||
+          deriveShiftStatus(activeAssignments.map((row) => row.status)) !==
+            "VAGO"
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Este plantão não está mais vago.",
+          });
+        }
+
+        const now = new Date();
+        if (
+          await recentVacancyBroadcastExists(
+            tx,
+            { id: locked.id, institutionId: locked.institutionId },
+            now,
+          )
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
+          });
+        }
+
+        const notifiedCount = await enqueueVacancyAvailableSignals({
+          db: tx,
+          shift: {
+            id: locked.id,
+            institutionId: locked.institutionId,
+            hospitalId: locked.hospitalId,
+            sectorId: locked.sectorId,
+            startAt: locked.startAt,
+            endAt: locked.endAt,
+            label: locked.label,
+          },
+          now,
+        });
+
+        await auditLog(
+          {
+            event: "VACANCY_BROADCAST",
+            shiftInstanceId: locked.id,
+            institutionId: locked.institutionId,
+            professionalId: managerId,
+            metadata: { notifiedCount, actorUserId: userId },
+          },
+          { db: tx },
+        );
+        await recordAudit(
+          {
+            actorUserId: userId,
+            actorRole,
+            actorName: ctx.user.name ?? undefined,
+            action: "PUSH_DISPATCHED",
+            entityType: "SHIFT_INSTANCE",
+            entityId: locked.id,
+            description: "Aviso de plantão vago enviado aos médicos elegíveis",
+            institutionId: locked.institutionId,
+            shiftInstanceId: locked.id,
+            hospitalId: locked.hospitalId,
+            sectorId: locked.sectorId,
+            metadata: { notifiedCount },
+          },
+          { db: tx, strict: true },
+        );
+
+        return { notifiedCount };
+      }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
+    }),
+
   // ------------------------------------------------------------------
   // shifts.update — admin/manager only
   // Updates status and/or timestamps; records audit entry.
@@ -2085,6 +2311,38 @@ export const shiftsRouter = router({
           .update(shiftInstances)
           .set(patch)
           .where(eq(shiftInstances.id, input.id));
+        const nextDutyType =
+          (patch.modality ?? locked.modality) === "SOBREAVISO"
+            ? "SOBREAVISO"
+            : "PLANTAO";
+        const previousDutyType =
+          locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
+        if (windowChanged || nextDutyType !== previousDutyType) {
+          await enqueueDutySyncIntervalRewrite(tx, {
+            institutionId: locked.institutionId,
+            shiftInstanceId: locked.id,
+            previousSnapshot: {
+              institutionId: locked.institutionId,
+              hospitalId: locked.hospitalId,
+              sectorId: locked.sectorId,
+              label: locked.label,
+              startAt: locked.startAt.toISOString(),
+              endAt: locked.endAt.toISOString(),
+            },
+            nextSnapshot: {
+              institutionId: locked.institutionId,
+              hospitalId: locked.hospitalId,
+              sectorId: locked.sectorId,
+              label: locked.label,
+              startAt: effectiveStartAt.toISOString(),
+              endAt: effectiveEndAt.toISOString(),
+            },
+            previousDutyType,
+            nextDutyType,
+            previousServiceName: locked.specialty,
+            nextServiceName: locked.specialty,
+          });
+        }
         await auditLog(
           {
             event: "SHIFT_UPDATED",

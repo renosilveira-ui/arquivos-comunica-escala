@@ -15,6 +15,8 @@ import {
   useTenantState,
   type ActiveTenantSnapshot,
 } from "@/lib/tenant-state";
+import { shouldInvalidateSwapQueriesOnNotification } from "@/lib/swap-offer-badge-refresh";
+import { shouldInvalidateVacancyQueriesOnNotification } from "@/lib/vacancy-broadcast";
 
 type NotificationData = Readonly<Record<string, unknown>>;
 
@@ -72,6 +74,7 @@ export type NotificationRoutingDependencies = Readonly<{
   navigateToConfirmation: (confirmationToken: string) => void;
   navigateToAgenda: () => void;
   navigateToTrocas?: () => void;
+  navigateToVacancies?: () => void;
   navigateToMyOffers?: () => void;
   navigateToScheduleInvites?: () => void;
   navigateToShiftDetails?: (shiftInstanceId: number) => void;
@@ -327,6 +330,25 @@ export async function routeNotificationData(
       return true;
     }
 
+    case "vacancy_available": {
+      const alignedSnapshot = await alignNotificationTenant(
+        data,
+        dependencies,
+        isCurrent,
+      );
+      if (
+        !alignedSnapshot ||
+        !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)
+      ) {
+        return false;
+      }
+      if (dependencies.navigateToVacancies) {
+        dependencies.navigateToVacancies();
+        return true;
+      }
+      return false;
+    }
+
     case "swap_taken": {
       const alignedSnapshot = await alignNotificationTenant(
         data,
@@ -500,6 +522,7 @@ export function NotificationListener() {
       },
       navigateToAgenda: () => router.push("/(tabs)/agenda" as any),
       navigateToTrocas: () => router.push("/(tabs)/trocas" as any),
+      navigateToVacancies: () => router.push("/(tabs)/vacancies" as any),
       navigateToMyOffers: () => router.push("/my-offers" as any),
       navigateToScheduleInvites: () => router.push("/schedule-invites" as any),
       navigateToShiftDetails: (shiftInstanceId) =>
@@ -591,6 +614,22 @@ export function NotificationListener() {
         },
       );
     };
+    const receivedSubscription = Notifications.addNotificationReceivedListener(
+      (notification) => {
+        if (!scopeActive || !isSessionAuthorizationCurrent()) return;
+        const type = notification.request.content.data?.type;
+        if (shouldInvalidateSwapQueriesOnNotification(type)) {
+          void Promise.all([
+            utils.swaps.countActionable.invalidate(),
+            utils.swaps.listAvailable.invalidate(),
+            utils.swaps.list.invalidate(),
+          ]);
+          return;
+        }
+        if (!shouldInvalidateVacancyQueriesOnNotification(type)) return;
+        void utils.shiftInstances.listVacancies.invalidate();
+      },
+    );
     responseConsumerRef.current = consumeResponse;
     try {
       const lastResponse = Notifications.getLastNotificationResponse();
@@ -601,6 +640,7 @@ export function NotificationListener() {
 
     return () => {
       scopeActive = false;
+      receivedSubscription.remove();
       if (responseConsumerRef.current === consumeResponse) {
         responseConsumerRef.current = () => undefined;
       }

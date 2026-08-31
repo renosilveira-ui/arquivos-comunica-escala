@@ -34,6 +34,7 @@ import {
   enqueueShiftAssignedPush,
   enqueueShiftUnassignedPush,
 } from "./assignment-push-signal";
+import { enqueueDutySyncWithdrawsForRemovedProfessionals } from "./sso/duty-sync-lifecycle";
 
 type EditorDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
 
@@ -728,6 +729,10 @@ export const editorRouter = router({
           },
           { db: tx, strict: true },
         );
+        await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+          institutionId: lockedShift.institutionId,
+          shiftInstanceId,
+        });
       });
 
       return { ok: true };
@@ -899,6 +904,11 @@ export const editorRouter = router({
           assignmentId,
           professionalId: removedProfessionalId,
           shift: removedShift,
+        });
+        await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+          institutionId: lockedAssignment.institutionId,
+          shiftInstanceId: lockedAssignment.id,
+          professionalIds: [removedProfessionalId],
         });
       });
 

@@ -1,5 +1,5 @@
 import { shiftAuditLog, shiftInstances } from "../drizzle/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "./db";
 
 type AuditLogDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "insert" | "select">;
@@ -24,6 +24,7 @@ export type AuditEvent =
   | "ASSIGNMENT_APPROVED"
   | "ASSIGNMENT_REJECTED"
   | "VACANCY_REQUESTED" // Quando USER assume vaga (cria PENDENTE)
+  | "VACANCY_BROADCAST" // Gestor avisou plantonistas de plantão vago
   | "RETROACTIVE_EDIT";
 
 export interface AuditLogParams {

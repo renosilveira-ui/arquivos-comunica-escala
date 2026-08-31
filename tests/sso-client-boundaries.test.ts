@@ -248,6 +248,9 @@ async function renderRealNotificationListener(options: {
   );
   let responseListener:
     ((response: ReturnType<typeof notificationResponse>) => void) | undefined;
+  let receivedListener:
+    | ((notification: { request: { content: { data: Record<string, unknown> } } }) => void)
+    | undefined;
   let user = options.user === undefined ? { id: 7 } : options.user;
   let sessionVerified = options.sessionVerified ?? true;
   let sessionAuthorizationCurrent =
@@ -298,6 +301,12 @@ async function renderRealNotificationListener(options: {
         return { remove: removeSubscription };
       },
     ),
+    addNotificationReceivedListener: vi.fn(
+      (listener: typeof receivedListener) => {
+        receivedListener = listener;
+        return { remove: vi.fn() };
+      },
+    ),
     getLastNotificationResponse,
     clearLastNotificationResponse,
   }));
@@ -324,9 +333,23 @@ async function renderRealNotificationListener(options: {
     getActiveTenantSnapshot: () => activeTenant,
     useTenantState: () => ({ setActiveInstitutionId }),
   }));
+  const invalidateCountActionable = vi.fn(async () => undefined);
+  const invalidateListAvailable = vi.fn(async () => undefined);
+  const invalidateSwapList = vi.fn(async () => undefined);
+  const invalidateListVacancies = vi.fn(async () => undefined);
   vi.doMock("@/lib/trpc", () => ({
     trpc: {
-      useUtils: () => ({ invalidate: invalidateQueries }),
+      useUtils: () => ({
+        invalidate: invalidateQueries,
+        swaps: {
+          countActionable: { invalidate: invalidateCountActionable },
+          listAvailable: { invalidate: invalidateListAvailable },
+          list: { invalidate: invalidateSwapList },
+        },
+        shiftInstances: {
+          listVacancies: { invalidate: invalidateListVacancies },
+        },
+      }),
       professionals: {
         listMyInstitutions: { useQuery: () => ({ refetch }) },
       },
@@ -353,6 +376,10 @@ async function renderRealNotificationListener(options: {
     removeSubscription,
     refetch,
     invalidateQueries,
+    invalidateCountActionable,
+    invalidateListAvailable,
+    invalidateSwapList,
+    invalidateListVacancies,
     setActiveInstitutionId,
     openComunicaFromNotification,
     notificationWebHandoff,
@@ -362,6 +389,10 @@ async function renderRealNotificationListener(options: {
     clearLastNotificationResponse,
     emit: (response: ReturnType<typeof notificationResponse>) =>
       responseListener?.(response),
+    emitReceived: (data: Record<string, unknown>) =>
+      receivedListener?.({
+        request: { content: { data } },
+      }),
     setUser: (next: { id: number } | null) => {
       user = next;
     },
@@ -626,6 +657,7 @@ vi.mock("@/lib/_core/api", () => ({
 vi.mock("expo-notifications", () => ({
   DEFAULT_ACTION_IDENTIFIER: "expo.modules.notifications.actions.DEFAULT",
   addNotificationResponseReceivedListener: vi.fn(() => ({ remove: vi.fn() })),
+  addNotificationReceivedListener: vi.fn(() => ({ remove: vi.fn() })),
   getLastNotificationResponse: vi.fn(() => null),
   clearLastNotificationResponse: vi.fn(),
 }));
@@ -1923,6 +1955,7 @@ describe("SSO client tenant boundaries", () => {
           return { remove: removeSubscription };
         },
       ),
+      addNotificationReceivedListener: vi.fn(() => ({ remove: vi.fn() })),
       getLastNotificationResponse: vi.fn(() => null),
       clearLastNotificationResponse: vi.fn(),
     }));
@@ -1948,7 +1981,17 @@ describe("SSO client tenant boundaries", () => {
     }));
     vi.doMock("@/lib/trpc", () => ({
       trpc: {
-        useUtils: () => ({ invalidate: invalidateQueries }),
+        useUtils: () => ({
+          invalidate: invalidateQueries,
+          swaps: {
+            countActionable: { invalidate: vi.fn(async () => undefined) },
+            listAvailable: { invalidate: vi.fn(async () => undefined) },
+            list: { invalidate: vi.fn(async () => undefined) },
+          },
+          shiftInstances: {
+            listVacancies: { invalidate: vi.fn(async () => undefined) },
+          },
+        }),
         professionals: {
           listMyInstitutions: {
             useQuery: () => ({
@@ -2023,6 +2066,46 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.invalidateQueries).not.toHaveBeenCalled();
     expect(harness.routerPush).not.toHaveBeenCalled();
     expect(harness.clearLastNotificationResponse).not.toHaveBeenCalled();
+    (cleanup as () => void)();
+  });
+
+  it("push swap_offer recebido invalida countActionable e listAvailable sem navegar", async () => {
+    const harness = await renderRealNotificationListener({
+      user: { id: 7 },
+      sessionVerified: true,
+      sessionAuthorizationCurrent: true,
+      activeTenant: { institutionId: 22, revision: 1 },
+    });
+
+    expect(harness.render()).not.toBeNull();
+    const cleanup = harness.runLatestEffect();
+    harness.emitReceived({
+      type: "swap_offer",
+      institutionId: 22,
+      swapRequestId: 91,
+    });
+    await Promise.resolve();
+
+    expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListAvailable).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateSwapList).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateQueries).not.toHaveBeenCalled();
+    expect(harness.routerPush).not.toHaveBeenCalled();
+    expect(harness.setActiveInstitutionId).not.toHaveBeenCalled();
+
+    harness.emitReceived({
+      type: "vacancy_available",
+      institutionId: 22,
+      shiftInstanceId: 44,
+    });
+    await Promise.resolve();
+    expect(harness.invalidateListVacancies).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
+    expect(harness.routerPush).not.toHaveBeenCalled();
+
+    harness.emitReceived({ type: "duty_confirmation", institutionId: 22 });
+    await Promise.resolve();
+    expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
     (cleanup as () => void)();
   });
 

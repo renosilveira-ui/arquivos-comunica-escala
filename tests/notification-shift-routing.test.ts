@@ -5,6 +5,7 @@ vi.mock("expo-router", () => ({ useRouter: vi.fn() }));
 vi.mock("expo-notifications", () => ({
   DEFAULT_ACTION_IDENTIFIER: "default",
   addNotificationResponseReceivedListener: vi.fn(),
+  addNotificationReceivedListener: vi.fn(() => ({ remove: vi.fn() })),
 }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: vi.fn() }));
 vi.mock("@/hooks/use-notifications", () => ({ useNotifications: vi.fn() }));
@@ -146,6 +147,128 @@ describe("roteamento de push para o plantão exato", () => {
       "invalidate",
       "trocas:tenant:11",
     ]);
+  });
+
+  it("troca o tenant e abre Plantões em aberto no aviso de vaga", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 22, revision: 3 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "vacancy_available",
+          institutionId: 11,
+          shiftInstanceId: 404,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => {
+            calls.push("allowed");
+            return [11, 22];
+          },
+          setActiveInstitutionId: async (institutionId) => {
+            calls.push(`set:${institutionId}`);
+            activeTenant = {
+              institutionId,
+              revision: activeTenant.revision + 1,
+            };
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          navigateToVacancies: () => {
+            calls.push(`vacancies:tenant:${activeTenant.institutionId}`);
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual([
+      "allowed",
+      "set:11",
+      "invalidate",
+      "vacancies:tenant:11",
+    ]);
+  });
+
+  it("aviso de vaga não cai na Agenda se a rota de vagas estiver ausente", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 11, revision: 1 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "vacancy_available",
+          institutionId: 11,
+          shiftInstanceId: 404,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: async () => {
+            calls.push("set");
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(false);
+
+    expect(calls).toEqual(["invalidate"]);
+    expect(calls).not.toContain("agenda");
+  });
+
+  it("aviso de vaga de instituição sem membership não troca tenant nem navega", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 22, revision: 3 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "vacancy_available",
+          institutionId: 11,
+          shiftInstanceId: 404,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => {
+            calls.push("allowed");
+            return [22];
+          },
+          setActiveInstitutionId: async (institutionId) => {
+            calls.push(`set:${institutionId}`);
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: () => {
+            calls.push("agenda");
+          },
+          navigateToVacancies: () => {
+            calls.push("vacancies");
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(false);
+
+    expect(calls).toEqual(["allowed"]);
+    expect(activeTenant).toEqual({ institutionId: 22, revision: 3 });
   });
 
   it("abre Minhas ofertas quando o plantão foi assumido", async () => {

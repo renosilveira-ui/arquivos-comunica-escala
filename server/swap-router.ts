@@ -24,6 +24,7 @@ import { assertSpecialtyCompatible } from "./specialty";
 import { recordAudit } from "./audit-trail";
 import { recomputeShiftStatus } from "./shift-status";
 import { enqueueComunicaSwapApproved } from "./integrations/comunica-plus";
+import { enqueueDutySyncWithdrawsForRemovedProfessionals } from "./sso/duty-sync-lifecycle";
 import {
   assertManagerScopeAccess,
   getTenantActorFromContext,
@@ -37,6 +38,7 @@ import {
 } from "./shift-validations-v2";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import { dateFromExecute, rowsFromExecute } from "./_core/db-results";
+import { listedOfferCanRespond } from "../lib/swap-offer-actions";
 import { yearMonthBrt } from "./local-time";
 import {
   assertActiveScheduleContextTopology,
@@ -97,20 +99,6 @@ type AvailableSwapRow = {
   toProfessionalId: number | string | null;
   toUserId: number | string | null;
 };
-
-function listedOfferCanRespond(
-  toProfessionalId: number | string | null | undefined,
-  toUserId: number | string | null | undefined,
-  actorProfessionalId: number | null,
-  actorUserId: number,
-): boolean {
-  if (actorProfessionalId == null) return false;
-  if (toProfessionalId == null && toUserId == null) return true;
-  return (
-    Number(toProfessionalId) === actorProfessionalId &&
-    Number(toUserId) === actorUserId
-  );
-}
 
 function isOpenSwapOffer(swap: Pick<SwapRow, "toProfessionalId" | "toUserId">): boolean {
   return swap.toProfessionalId === null && swap.toUserId === null;
@@ -1593,6 +1581,11 @@ async function writeTransferredAssignments(
       isActive: true,
       createdBy: actor.userId,
     });
+    await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+      institutionId: topology.source.shift.institutionId,
+      shiftInstanceId: topology.source.shift.id,
+      professionalIds: [topology.source.professional.professionalId],
+    });
     return;
   }
   if (!topology.toTuple)
@@ -1620,6 +1613,16 @@ async function writeTransferredAssignments(
     status: "OCUPADO",
     isActive: true,
     createdBy: actor.userId,
+  });
+  await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+    institutionId: topology.source.shift.institutionId,
+    shiftInstanceId: topology.source.shift.id,
+    professionalIds: [topology.source.professional.professionalId],
+  });
+  await enqueueDutySyncWithdrawsForRemovedProfessionals(tx, {
+    institutionId: topology.toTuple.shift.institutionId,
+    shiftInstanceId: topology.toTuple.shift.id,
+    professionalIds: [topology.recipient.professionalId],
   });
 }
 
@@ -3005,8 +3008,8 @@ export const swapRouter = router({
         await enqueueSwapOfferSignals({
           db: tx,
           swap: created,
-          offererName: locked.source.professional.name,
           shiftLabel: locked.source.shift.label,
+          startAt: locked.source.shift.startAt,
         });
         return created;
       });
