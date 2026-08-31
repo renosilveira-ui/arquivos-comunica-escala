@@ -692,6 +692,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         verifiedSessionSnapshotRef.current.userId === sessionUserRef.current.id;
       const requestSequence = ++latestAuthRefetchSequence;
       let durableSession = expectedUserId !== undefined;
+      // Sequence só agrupa refetch concorrente. O TenantAuthorizationBoundary
+      // não pode tratar esse bump como identidade nova: senão o resume com
+      // `/me` 200 desmonta o Stack e o médico volta para Agenda/Hoje.
       if (!preservedVerifiedSession) {
         // CHECKING é uma barreira de transporte, não apenas visual. O `/me`
         // abaixo usa o escape restrito ao binding físico; tRPC/API normais
