@@ -655,6 +655,9 @@ export const scheduleInvites = mysqlTable(
     uniqScheduleInviteCodeHash: unique("uniq_schedule_invite_code_hash").on(
       table.codeHash,
     ),
+    uniqScheduleInviteIdInstitution: unique(
+      "uniq_schedule_invites_id_institution",
+    ).on(table.id, table.institutionId),
     idxScheduleInviteInstitution: index("idx_schedule_invite_institution").on(
       table.institutionId,
       table.hospitalId,
@@ -749,6 +752,12 @@ export const shiftInstances = mysqlTable(
     idxShiftInstanceInstitutionId: index(
       "idx_shift_instances_institution_id",
     ).on(table.institutionId, table.id),
+    uniqShiftInstanceTopologyId: unique("uniq_shift_instances_topology_id").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.id,
+    ),
     idxShiftInstanceScheduleContext: index(
       "idx_shift_instances_schedule_context",
     ).on(table.institutionId, table.scheduleContextId),
@@ -809,6 +818,9 @@ export const shiftAssignmentsV2 = mysqlTable(
     idxShiftAssignmentInstitutionId: index(
       "idx_shift_assignments_institution_id",
     ).on(table.institutionId, table.id),
+    uniqShiftAssignmentTopologyId: unique(
+      "uniq_shift_assignments_topology_id",
+    ).on(table.institutionId, table.hospitalId, table.sectorId, table.id),
   }),
 );
 
@@ -953,6 +965,512 @@ export const notifications = mysqlTable(
       table.status,
       table.createdAt,
     ),
+  }),
+);
+
+/**
+ * Evento operacional canônico. Esta tabela é deliberadamente separada de
+ * `notifications`: o fato de negócio, seus destinatários e cada tentativa de
+ * entrega possuem ciclos de vida diferentes.
+ *
+ * Nenhum emissor existente usa esta tabela ainda. A fundação preserva a
+ * topologia institucional completa para que uma futura integração não possa
+ * reconstruí-la a partir de nomes livres ou do tenant selecionado no cliente.
+ */
+export const operationalEvents = mysqlTable(
+  "operational_events",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    idempotencyKeyHash: binaryVarchar("idempotency_key_hash", {
+      length: 64,
+    }).notNull(),
+    eventHash: varchar("event_hash", { length: 64 }).notNull(),
+    eventType: varchar("event_type", { length: 80 }).notNull(),
+    deliveryPolicy: mysqlEnum("delivery_policy", [
+      "NOTIFY",
+      "BROADCAST",
+      "SILENT_AUDITED",
+    ]).notNull(),
+    recipientResolution: mysqlEnum("recipient_resolution", [
+      "RESOLVED",
+      "NO_ELIGIBLE_RECIPIENTS",
+      "NO_RESPONSIBLE_MANAGERS",
+      "NO_DELIVERABLE_RECIPIENTS",
+      "NOT_APPLICABLE",
+    ]).notNull(),
+    aggregateType: varchar("aggregate_type", { length: 80 }).notNull(),
+    aggregateId: int("aggregate_id").notNull(),
+    aggregateVersion: int("aggregate_version").notNull(),
+    transitionFrom: varchar("transition_from", { length: 80 }),
+    transitionTo: varchar("transition_to", { length: 80 }),
+    actorKind: mysqlEnum("actor_kind", ["USER", "SYSTEM"]).notNull(),
+    actorUserId: int("actor_user_id").references(() => users.id),
+    actorProfessionalId: int("actor_professional_id").references(
+      () => professionals.id,
+    ),
+    actorRole: varchar("actor_role", { length: 32 }).notNull(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id").references(() => hospitals.id),
+    // Eventos de publicação/replicação podem abranger vários setores do
+    // hospital. Nesses casos, `scopeKind=HOSPITAL` preserva a autoridade sem
+    // inventar um setor. Recursos de escala só são admitidos no escopo SETOR.
+    scopeKind: mysqlEnum("scope_kind", [
+      "INSTITUTION",
+      "HOSPITAL",
+      "SECTOR",
+    ]).notNull(),
+    sectorId: int("sector_id").references(() => sectors.id),
+    scheduleContextId: int("schedule_context_id").references(
+      () => scheduleContexts.id,
+    ),
+    shiftInstanceId: int("shift_instance_id").references(
+      () => shiftInstances.id,
+    ),
+    assignmentId: int("assignment_id").references(() => shiftAssignmentsV2.id),
+    occurredAt: datetime("occurred_at").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxOperationalEventContext: index("idx_operational_events_context").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.occurredAt,
+    ),
+    idxOperationalEventAggregate: index("idx_operational_events_aggregate").on(
+      table.aggregateType,
+      table.aggregateId,
+      table.aggregateVersion,
+    ),
+    uniqOperationalEventIdempotency: unique(
+      "uniq_operational_event_idempotency",
+    ).on(table.institutionId, table.idempotencyKeyHash),
+    uniqOperationalEventIdInstitution: unique(
+      "uniq_operational_events_id_institution",
+    ).on(table.id, table.institutionId),
+    idxOperationalEventShift: index("idx_operational_events_shift").on(
+      table.shiftInstanceId,
+    ),
+    fkOperationalEventHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_operational_events_hospital_topology",
+    }),
+    // Um evento USER só pode existir na instituição do vínculo canônico da
+    // conta. A FK simples para users continua útil para integridade geral,
+    // mas não prova isolamento entre tenants.
+    fkOperationalEventActorUserInstitution: foreignKey({
+      columns: [table.actorUserId, table.institutionId],
+      foreignColumns: [
+        professionalInstitutions.userId,
+        professionalInstitutions.institutionId,
+      ],
+      name: "fk_operational_events_actor_user_institution",
+    }),
+    fkOperationalEventSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_operational_events_sector_topology",
+    }),
+    fkOperationalEventScheduleContextTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.scheduleContextId,
+      ],
+      foreignColumns: [
+        scheduleContexts.institutionId,
+        scheduleContexts.hospitalId,
+        scheduleContexts.sectorId,
+        scheduleContexts.id,
+      ],
+      name: "fk_operational_events_schedule_context_topology",
+    }),
+    fkOperationalEventShiftTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.shiftInstanceId,
+      ],
+      foreignColumns: [
+        shiftInstances.institutionId,
+        shiftInstances.hospitalId,
+        shiftInstances.sectorId,
+        shiftInstances.id,
+      ],
+      name: "fk_operational_events_shift_topology",
+    }),
+    fkOperationalEventAssignmentTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.assignmentId,
+      ],
+      foreignColumns: [
+        shiftAssignmentsV2.institutionId,
+        shiftAssignmentsV2.hospitalId,
+        shiftAssignmentsV2.sectorId,
+        shiftAssignmentsV2.id,
+      ],
+      name: "fk_operational_events_assignment_topology",
+    }),
+    chkOperationalEventScope: check(
+      "chk_operational_event_scope",
+      sql`(
+        (
+          ${table.scopeKind} = 'INSTITUTION'
+          AND ${table.hospitalId} IS NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'HOSPITAL'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'SECTOR'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NOT NULL
+        )
+      )`,
+    ),
+    chkOperationalEventActor: check(
+      "chk_operational_event_actor",
+      sql`(
+        (
+          ${table.actorKind} = 'USER'
+          AND ${table.actorUserId} IS NOT NULL
+        )
+        OR
+        (
+          ${table.actorKind} = 'SYSTEM'
+          AND ${table.actorUserId} IS NULL
+          AND ${table.actorProfessionalId} IS NULL
+        )
+      )`,
+    ),
+  }),
+);
+
+/**
+ * Contextos adicionais do mesmo evento, para fatos que abrangem mais de um
+ * setor/hospital dentro da instituição, como troca entre dois plantões. Cada
+ * linha preserva IDs e FKs compostas próprios; rótulos livres não participam
+ * de autoridade.
+ */
+export const operationalEventRelatedContexts = mysqlTable(
+  "operational_event_related_contexts",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    operationalEventId: int("operational_event_id").notNull(),
+    relationKind: mysqlEnum("relation_kind", [
+      "COUNTERPART",
+      "AFFECTED_SCOPE",
+    ]).notNull(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id").references(() => hospitals.id),
+    scopeKind: mysqlEnum("scope_kind", [
+      "INSTITUTION",
+      "HOSPITAL",
+      "SECTOR",
+    ]).notNull(),
+    sectorId: int("sector_id").references(() => sectors.id),
+    scheduleContextId: int("schedule_context_id").references(
+      () => scheduleContexts.id,
+    ),
+    shiftInstanceId: int("shift_instance_id").references(
+      () => shiftInstances.id,
+    ),
+    assignmentId: int("assignment_id").references(() => shiftAssignmentsV2.id),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxOperationalEventRelatedContext: index(
+      "idx_operational_event_related_context",
+    ).on(table.operationalEventId, table.relationKind, table.id),
+    fkOperationalEventRelatedContextEventInstitution: foreignKey({
+      columns: [table.operationalEventId, table.institutionId],
+      foreignColumns: [operationalEvents.id, operationalEvents.institutionId],
+      name: "fk_operational_event_related_context_event_institution",
+    }),
+    fkOperationalEventRelatedContextHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_operational_event_related_context_hospital_topology",
+    }),
+    fkOperationalEventRelatedContextSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_operational_event_related_context_sector_topology",
+    }),
+    fkOperationalEventRelatedContextScheduleContextTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.scheduleContextId,
+      ],
+      foreignColumns: [
+        scheduleContexts.institutionId,
+        scheduleContexts.hospitalId,
+        scheduleContexts.sectorId,
+        scheduleContexts.id,
+      ],
+      name: "fk_operational_event_related_context_schedule_context_topology",
+    }),
+    fkOperationalEventRelatedContextShiftTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.shiftInstanceId,
+      ],
+      foreignColumns: [
+        shiftInstances.institutionId,
+        shiftInstances.hospitalId,
+        shiftInstances.sectorId,
+        shiftInstances.id,
+      ],
+      name: "fk_operational_event_related_context_shift_topology",
+    }),
+    fkOperationalEventRelatedContextAssignmentTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.assignmentId,
+      ],
+      foreignColumns: [
+        shiftAssignmentsV2.institutionId,
+        shiftAssignmentsV2.hospitalId,
+        shiftAssignmentsV2.sectorId,
+        shiftAssignmentsV2.id,
+      ],
+      name: "fk_operational_event_related_context_assignment_topology",
+    }),
+    chkOperationalEventRelatedContextScope: check(
+      "chk_operational_event_related_context_scope",
+      sql`(
+        (
+          ${table.scopeKind} = 'INSTITUTION'
+          AND ${table.hospitalId} IS NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'HOSPITAL'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'SECTOR'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NOT NULL
+        )
+      )`,
+    ),
+  }),
+);
+
+/**
+ * Destinatário calculado no servidor para um evento operacional. O alvo é
+ * sempre uma conta ou um convite nominal já persistidos; nunca um endereço
+ * recebido do cliente.
+ */
+export const operationalEventRecipients = mysqlTable(
+  "operational_event_recipients",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    operationalEventId: int("operational_event_id")
+      .notNull()
+      .references(() => operationalEvents.id, { onDelete: "cascade" }),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    recipientKind: mysqlEnum("recipient_kind", [
+      "USER",
+      "SCHEDULE_INVITE",
+    ]).notNull(),
+    userId: int("user_id").references(() => users.id),
+    scheduleInviteId: int("schedule_invite_id").references(
+      () => scheduleInvites.id,
+    ),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqOperationalEventRecipientUser: unique(
+      "uniq_operational_event_recipient_user",
+    ).on(table.operationalEventId, table.userId),
+    uniqOperationalEventRecipientInvite: unique(
+      "uniq_operational_event_recipient_invite",
+    ).on(table.operationalEventId, table.scheduleInviteId),
+    idxOperationalEventRecipientTarget: index(
+      "idx_operational_event_recipient_target",
+    ).on(table.recipientKind, table.userId, table.scheduleInviteId),
+    fkOperationalEventRecipientEventInstitution: foreignKey({
+      columns: [table.operationalEventId, table.institutionId],
+      foreignColumns: [operationalEvents.id, operationalEvents.institutionId],
+      name: "fk_operational_event_recipient_event_institution",
+    }),
+    // Um destinatário USER precisa ter vínculo com a mesma instituição do
+    // evento, inclusive se algum writer futuro contornar o helper de serviço.
+    fkOperationalEventRecipientUserInstitution: foreignKey({
+      columns: [table.userId, table.institutionId],
+      foreignColumns: [
+        professionalInstitutions.userId,
+        professionalInstitutions.institutionId,
+      ],
+      name: "fk_operational_event_recipient_user_institution",
+    }),
+    fkOperationalEventRecipientScheduleInviteInstitution: foreignKey({
+      columns: [table.scheduleInviteId, table.institutionId],
+      foreignColumns: [scheduleInvites.id, scheduleInvites.institutionId],
+      name: "fk_operational_event_recipient_schedule_invite_institution",
+    }),
+    chkOperationalEventRecipientTarget: check(
+      "chk_operational_event_recipient_target",
+      sql`(
+        (${table.recipientKind} = 'USER' AND ${table.userId} IS NOT NULL AND ${table.scheduleInviteId} IS NULL)
+        OR
+        (${table.recipientKind} = 'SCHEDULE_INVITE' AND ${table.userId} IS NULL AND ${table.scheduleInviteId} IS NOT NULL)
+      )`,
+    ),
+  }),
+);
+
+/**
+ * Cada canal possui estado e deduplicação próprios. PROVIDER_ACCEPTED não é
+ * entrega final: só DELIVERED representa confirmação final do adaptador.
+ */
+export const notificationDeliveries = mysqlTable(
+  "notification_deliveries",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    operationalEventRecipientId: int("operational_event_recipient_id")
+      .notNull()
+      .references(() => operationalEventRecipients.id, {
+        onDelete: "cascade",
+      }),
+    channel: mysqlEnum("channel", ["PUSH", "EMAIL"]).notNull(),
+    status: mysqlEnum("status", [
+      "QUEUED",
+      "PROCESSING",
+      "PROVIDER_ACCEPTED",
+      "DELIVERED",
+      "FAILED",
+      "DEAD",
+      "SKIPPED",
+    ])
+      .notNull()
+      .default("QUEUED"),
+    dedupKey: binaryVarchar("dedup_key", { length: 64 })
+      .notNull()
+      .unique("uniq_notification_delivery_dedup"),
+    attemptCount: int("attempt_count").notNull().default(0),
+    availableAt: datetime("available_at").notNull(),
+    leaseUntil: datetime("lease_until"),
+    providerAcceptedAt: datetime("provider_accepted_at"),
+    deliveredAt: datetime("delivered_at"),
+    providerReference: varchar("provider_reference", { length: 255 }),
+    lastErrorCode: varchar("last_error_code", { length: 80 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqNotificationDeliveryChannel: unique(
+      "uniq_notification_delivery_channel",
+    ).on(table.operationalEventRecipientId, table.channel),
+    idxNotificationDeliveryReady: index("idx_notification_deliveries_ready").on(
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    idxNotificationDeliveryRecipient: index(
+      "idx_notification_deliveries_recipient",
+    ).on(table.operationalEventRecipientId, table.id),
+  }),
+);
+
+/**
+ * Confiança de e-mail operacional. O hash é do e-mail normalizado atual; se
+ * a conta trocar de e-mail, o vínculo deixa de coincidir e deve ser revogado
+ * pelo writer da conta antes de qualquer envio futuro.
+ */
+export const userOperationalEmailTrust = mysqlTable(
+  "user_operational_email_trust",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" })
+      .unique("uniq_operational_email_trust_user"),
+    emailHash: varchar("email_hash", { length: 64 }).notNull(),
+    state: mysqlEnum("state", ["PENDING", "TRUSTED", "REVOKED"])
+      .notNull()
+      .default("PENDING"),
+    source: mysqlEnum("source", [
+      "ADMIN_CREATED",
+      "INVITE_ACTIVATED",
+      "USER_CONFIRMED",
+      "LEGACY",
+    ]).notNull(),
+    trustedAt: datetime("trusted_at"),
+    invalidatedAt: datetime("invalidated_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    idxOperationalEmailTrustHash: index("idx_operational_email_trust_hash").on(
+      table.emailHash,
+    ),
+  }),
+);
+
+/**
+ * Preparação para confirmação de e-mail. Apenas o hash do token é gravado;
+ * o uso é único e a emissão/consumo serão conectados em frente própria.
+ */
+export const operationalEmailVerificationTokens = mysqlTable(
+  "operational_email_verification_tokens",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    emailHash: varchar("email_hash", { length: 64 }).notNull(),
+    tokenHash: varchar("token_hash", { length: 64 })
+      .notNull()
+      .unique("uniq_operational_email_verification_token"),
+    expiresAt: datetime("expires_at").notNull(),
+    usedAt: datetime("used_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxOperationalEmailVerificationUser: index(
+      "idx_operational_email_verification_user",
+    ).on(table.userId, table.expiresAt),
   }),
 );
 
@@ -1446,6 +1964,10 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   shiftAuditLogs: many(shiftAuditLog),
   pushTokens: many(pushTokens),
   notifications: many(notifications),
+  scheduleInvites: many(scheduleInvites),
+  operationalEvents: many(operationalEvents),
+  operationalEventRelatedContexts: many(operationalEventRelatedContexts),
+  operationalEventRecipients: many(operationalEventRecipients),
   ssoUsedTokens: many(ssoUsedTokens),
   shiftReminders: many(shiftReminders),
   monthlyRosters: many(monthlyRosters),
@@ -1455,12 +1977,25 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   dutyConfirmations: many(dutyConfirmations),
 }));
 
-export const usersRelations = relations(users, ({ many }) => ({
+export const usersRelations = relations(users, ({ many, one }) => ({
   professionals: many(professionals),
   professionalInstitutions: many(professionalInstitutions),
   pushTokens: many(pushTokens),
   notifications: many(notifications),
   shiftReminders: many(shiftReminders),
+  createdScheduleInvites: many(scheduleInvites, {
+    relationName: "schedule_invite_created_by",
+  }),
+  invitedScheduleInvites: many(scheduleInvites, {
+    relationName: "schedule_invite_invited_user",
+  }),
+  declinedScheduleInvites: many(scheduleInvites, {
+    relationName: "schedule_invite_declined_by",
+  }),
+  operationalEventsAsActor: many(operationalEvents),
+  operationalEventRecipients: many(operationalEventRecipients),
+  operationalEmailTrust: one(userOperationalEmailTrust),
+  operationalEmailVerificationTokens: many(operationalEmailVerificationTokens),
 }));
 
 export const hospitalsRelations = relations(hospitals, ({ one, many }) => ({
@@ -1473,6 +2008,9 @@ export const hospitalsRelations = relations(hospitals, ({ one, many }) => ({
   scheduleContexts: many(scheduleContexts),
   shiftInstances: many(shiftInstances),
   shiftAssignments: many(shiftAssignmentsV2),
+  scheduleInvites: many(scheduleInvites),
+  operationalEvents: many(operationalEvents),
+  operationalEventRelatedContexts: many(operationalEventRelatedContexts),
   monthlyRosters: many(monthlyRosters),
   swapRequests: many(swapRequests),
 }));
@@ -1490,6 +2028,9 @@ export const sectorsRelations = relations(sectors, ({ one, many }) => ({
   scheduleContexts: many(scheduleContexts),
   shiftInstances: many(shiftInstances),
   shiftAssignments: many(shiftAssignmentsV2),
+  scheduleInvites: many(scheduleInvites),
+  operationalEvents: many(operationalEvents),
+  operationalEventRelatedContexts: many(operationalEventRelatedContexts),
   swapRequests: many(swapRequests),
 }));
 
@@ -1506,6 +2047,7 @@ export const professionalsRelations = relations(
     }),
     institutionLinks: many(professionalInstitutions),
     accesses: many(professionalAccess),
+    operationalEventsAsActor: many(operationalEvents),
   }),
 );
 
@@ -1571,6 +2113,8 @@ export const scheduleContextsRelations = relations(
     }),
     allowedQualifications: many(scheduleContextAllowedQualifications),
     shiftInstances: many(shiftInstances),
+    operationalEvents: many(operationalEvents),
+    operationalEventRelatedContexts: many(operationalEventRelatedContexts),
   }),
 );
 
@@ -1584,6 +2128,167 @@ export const scheduleContextAllowedQualificationsRelations = relations(
     medicalSpecialty: one(medicalSpecialties, {
       fields: [scheduleContextAllowedQualifications.medicalSpecialtyId],
       references: [medicalSpecialties.id],
+    }),
+  }),
+);
+
+export const scheduleInvitesRelations = relations(
+  scheduleInvites,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [scheduleInvites.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [scheduleInvites.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [scheduleInvites.sectorId],
+      references: [sectors.id],
+    }),
+    createdByUser: one(users, {
+      fields: [scheduleInvites.createdByUserId],
+      references: [users.id],
+      relationName: "schedule_invite_created_by",
+    }),
+    invitedUser: one(users, {
+      fields: [scheduleInvites.invitedUserId],
+      references: [users.id],
+      relationName: "schedule_invite_invited_user",
+    }),
+    declinedByUser: one(users, {
+      fields: [scheduleInvites.declinedByUserId],
+      references: [users.id],
+      relationName: "schedule_invite_declined_by",
+    }),
+    operationalEventRecipients: many(operationalEventRecipients),
+  }),
+);
+
+export const operationalEventsRelations = relations(
+  operationalEvents,
+  ({ one, many }) => ({
+    actorUser: one(users, {
+      fields: [operationalEvents.actorUserId],
+      references: [users.id],
+    }),
+    actorProfessional: one(professionals, {
+      fields: [operationalEvents.actorProfessionalId],
+      references: [professionals.id],
+    }),
+    institution: one(institutions, {
+      fields: [operationalEvents.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [operationalEvents.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [operationalEvents.sectorId],
+      references: [sectors.id],
+    }),
+    scheduleContext: one(scheduleContexts, {
+      fields: [operationalEvents.scheduleContextId],
+      references: [scheduleContexts.id],
+    }),
+    shiftInstance: one(shiftInstances, {
+      fields: [operationalEvents.shiftInstanceId],
+      references: [shiftInstances.id],
+    }),
+    assignment: one(shiftAssignmentsV2, {
+      fields: [operationalEvents.assignmentId],
+      references: [shiftAssignmentsV2.id],
+    }),
+    recipients: many(operationalEventRecipients),
+    relatedContexts: many(operationalEventRelatedContexts),
+  }),
+);
+
+export const operationalEventRelatedContextsRelations = relations(
+  operationalEventRelatedContexts,
+  ({ one }) => ({
+    operationalEvent: one(operationalEvents, {
+      fields: [operationalEventRelatedContexts.operationalEventId],
+      references: [operationalEvents.id],
+    }),
+    institution: one(institutions, {
+      fields: [operationalEventRelatedContexts.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [operationalEventRelatedContexts.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [operationalEventRelatedContexts.sectorId],
+      references: [sectors.id],
+    }),
+    scheduleContext: one(scheduleContexts, {
+      fields: [operationalEventRelatedContexts.scheduleContextId],
+      references: [scheduleContexts.id],
+    }),
+    shiftInstance: one(shiftInstances, {
+      fields: [operationalEventRelatedContexts.shiftInstanceId],
+      references: [shiftInstances.id],
+    }),
+    assignment: one(shiftAssignmentsV2, {
+      fields: [operationalEventRelatedContexts.assignmentId],
+      references: [shiftAssignmentsV2.id],
+    }),
+  }),
+);
+
+export const operationalEventRecipientsRelations = relations(
+  operationalEventRecipients,
+  ({ one, many }) => ({
+    operationalEvent: one(operationalEvents, {
+      fields: [operationalEventRecipients.operationalEventId],
+      references: [operationalEvents.id],
+    }),
+    institution: one(institutions, {
+      fields: [operationalEventRecipients.institutionId],
+      references: [institutions.id],
+    }),
+    user: one(users, {
+      fields: [operationalEventRecipients.userId],
+      references: [users.id],
+    }),
+    scheduleInvite: one(scheduleInvites, {
+      fields: [operationalEventRecipients.scheduleInviteId],
+      references: [scheduleInvites.id],
+    }),
+    deliveries: many(notificationDeliveries),
+  }),
+);
+
+export const notificationDeliveriesRelations = relations(
+  notificationDeliveries,
+  ({ one }) => ({
+    operationalEventRecipient: one(operationalEventRecipients, {
+      fields: [notificationDeliveries.operationalEventRecipientId],
+      references: [operationalEventRecipients.id],
+    }),
+  }),
+);
+
+export const userOperationalEmailTrustRelations = relations(
+  userOperationalEmailTrust,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [userOperationalEmailTrust.userId],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const operationalEmailVerificationTokensRelations = relations(
+  operationalEmailVerificationTokens,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [operationalEmailVerificationTokens.userId],
+      references: [users.id],
     }),
   }),
 );
@@ -1609,6 +2314,8 @@ export const shiftInstancesRelations = relations(
     }),
     assignments: many(shiftAssignmentsV2),
     reminders: many(shiftReminders),
+    operationalEvents: many(operationalEvents),
+    operationalEventRelatedContexts: many(operationalEventRelatedContexts),
   }),
 );
 
@@ -1636,7 +2343,7 @@ export const shiftRemindersRelations = relations(shiftReminders, ({ one }) => ({
 
 export const shiftAssignmentsRelations = relations(
   shiftAssignmentsV2,
-  ({ one }) => ({
+  ({ one, many }) => ({
     institution: one(institutions, {
       fields: [shiftAssignmentsV2.institutionId],
       references: [institutions.id],
@@ -1657,6 +2364,8 @@ export const shiftAssignmentsRelations = relations(
       fields: [shiftAssignmentsV2.professionalId],
       references: [professionals.id],
     }),
+    operationalEvents: many(operationalEvents),
+    operationalEventRelatedContexts: many(operationalEventRelatedContexts),
   }),
 );
 
@@ -1671,29 +2380,32 @@ export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
   }),
 }));
 
-export const swapRequestsRelations = relations(swapRequests, ({ one, many }) => ({
-  institution: one(institutions, {
-    fields: [swapRequests.institutionId],
-    references: [institutions.id],
+export const swapRequestsRelations = relations(
+  swapRequests,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [swapRequests.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [swapRequests.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [swapRequests.sectorId],
+      references: [sectors.id],
+    }),
+    fromProfessional: one(professionals, {
+      fields: [swapRequests.fromProfessionalId],
+      references: [professionals.id],
+    }),
+    toProfessional: one(professionals, {
+      fields: [swapRequests.toProfessionalId],
+      references: [professionals.id],
+    }),
+    dismissals: many(swapRequestDismissals),
   }),
-  hospital: one(hospitals, {
-    fields: [swapRequests.hospitalId],
-    references: [hospitals.id],
-  }),
-  sector: one(sectors, {
-    fields: [swapRequests.sectorId],
-    references: [sectors.id],
-  }),
-  fromProfessional: one(professionals, {
-    fields: [swapRequests.fromProfessionalId],
-    references: [professionals.id],
-  }),
-  toProfessional: one(professionals, {
-    fields: [swapRequests.toProfessionalId],
-    references: [professionals.id],
-  }),
-  dismissals: many(swapRequestDismissals),
-}));
+);
 
 export const swapRequestDismissalsRelations = relations(
   swapRequestDismissals,

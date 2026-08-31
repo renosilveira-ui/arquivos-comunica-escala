@@ -71,6 +71,9 @@ export default defineConfig({
       "tests/swap-offer-outbox.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
+      "tests/operational-events-schema.test.ts",
+      "tests/operational-events-migration.test.ts",
+      "tests/operational-events-foundation.test.ts",
     ],
   },
 });
