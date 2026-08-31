@@ -84,17 +84,17 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
     ]);
 
   const acceptSwap = trpc.swaps.accept.useMutation({
-    onSuccess: () => {
-      void invalidateAcceptedSwapQueries();
+    onSuccess: async () => {
       feedback.success("Plantão assumido. A escala já foi atualizada.");
+      await invalidateAcceptedSwapQueries();
     },
     onError: (error) => feedback.error(error.message || "Não foi possível aceitar a oferta."),
     onSettled: () => setActing(null),
   });
   const rejectSwap = trpc.swaps.reject.useMutation({
-    onSuccess: () => {
-      void invalidateSwapQueries();
+    onSuccess: async () => {
       feedback.success("Oferta recusada.");
+      await invalidateSwapQueries();
     },
     onError: (error) => feedback.error(error.message || "Não foi possível recusar a oferta."),
     onSettled: () => setActing(null),

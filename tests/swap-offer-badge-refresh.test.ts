@@ -178,7 +178,11 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(list).toContain("utils.shifts.get.invalidate()");
     expect(list).toContain("utils.confirmations.getPending.invalidate()");
     expect(acceptBlock).toContain("invalidateAcceptedSwapQueries");
+    expect(acceptBlock).toContain("onSuccess: async");
+    expect(acceptBlock).toContain("await invalidateAcceptedSwapQueries()");
     expect(rejectBlock).toContain("invalidateSwapQueries");
+    expect(rejectBlock).toContain("onSuccess: async");
+    expect(rejectBlock).toContain("await invalidateSwapQueries()");
     expect(rejectBlock).not.toContain("invalidateAcceptedSwapQueries");
   });
 });
