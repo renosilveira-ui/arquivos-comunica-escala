@@ -3399,30 +3399,12 @@ authRouter.post(
     }
 
     try {
-      const joined = await db.transaction(async (tx) => {
-        const [professional] = await tx
-          .select({
-            id: professionals.id,
-            medicalSpecialtyId: professionals.medicalSpecialtyId,
-            operationalProfileCode: professionals.operationalProfileCode,
-          })
-          .from(professionals)
-          .where(eq(professionals.userId, authUser.id))
-          .limit(1)
-          .for("update");
-        if (!professional) {
-          throw new ScheduleInviteError(409, "Profissional não encontrado");
-        }
-        return redeemScheduleInviteInTransaction(tx, {
+      const joined = await db.transaction((tx) =>
+        redeemScheduleInviteInTransaction(tx, {
           code: parsedInvite,
           userId: authUser.id,
-          professionalId: professional.id,
-          qualification: {
-            medicalSpecialtyId: professional.medicalSpecialtyId,
-            operationalProfileCode: professional.operationalProfileCode,
-          },
-        });
-      });
+        }),
+      );
       await enqueueScheduleInviteAcceptedSignal({
         db,
         scheduleInviteId: joined.scheduleInviteId,

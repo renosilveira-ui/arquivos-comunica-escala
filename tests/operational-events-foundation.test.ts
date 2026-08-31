@@ -902,6 +902,7 @@ describe("foundation de eventos operacionais", () => {
     expect(
       isTrustedOperationalEmail({
         state: "TRUSTED",
+        source: "ADMIN_CREATED",
         trustedEmailHash: trustedHash,
         currentEmail: " Medico@example.test ",
       }),
@@ -909,8 +910,25 @@ describe("foundation de eventos operacionais", () => {
     expect(
       isTrustedOperationalEmail({
         state: "TRUSTED",
+        source: "ADMIN_CREATED",
         trustedEmailHash: trustedHash,
         currentEmail: "outro@example.test",
+      }),
+    ).toBe(false);
+    expect(
+      isTrustedOperationalEmail({
+        state: "TRUSTED",
+        source: "LEGACY",
+        trustedEmailHash: trustedHash,
+        currentEmail: "medico@example.test",
+      }),
+    ).toBe(false);
+    expect(
+      isTrustedOperationalEmail({
+        state: "TRUSTED",
+        source: "ADMIN_CREATED",
+        trustedEmailHash: trustedHash,
+        currentEmail: "   ",
       }),
     ).toBe(false);
   });

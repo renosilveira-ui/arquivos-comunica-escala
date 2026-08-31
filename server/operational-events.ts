@@ -1636,13 +1636,24 @@ export function hashOperationalEmailAddress(email: string): string {
 
 export function isTrustedOperationalEmail(input: {
   state: OperationalEmailTrustState;
+  source: OperationalEmailTrustSource;
   trustedEmailHash: string;
   currentEmail: string | null | undefined;
 }): boolean {
-  if (input.state !== "TRUSTED" || !input.currentEmail) return false;
-  return (
-    hashOperationalEmailAddress(input.currentEmail) === input.trustedEmailHash
-  );
+  if (
+    input.state !== "TRUSTED" ||
+    !input.currentEmail ||
+    (input.source !== "ADMIN_CREATED" &&
+      input.source !== "INVITE_ACTIVATED" &&
+      input.source !== "USER_CONFIRMED")
+  ) {
+    return false;
+  }
+  try {
+    return hashOperationalEmailAddress(input.currentEmail) === input.trustedEmailHash;
+  } catch {
+    return false;
+  }
 }
 
 export function isTerminalOperationalDeliveryStatus(

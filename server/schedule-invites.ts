@@ -30,6 +30,7 @@ import {
   selectActiveScheduleContexts,
   type ProfessionalQualification,
 } from "./schedule-contexts";
+import { hashOperationalEmailAddress } from "./operational-events";
 import { trustOperationalEmailFromActivatedInviteInTransaction } from "./operational-email-trust";
 import { protectedProcedure, router } from "./_core/trpc";
 
@@ -69,6 +70,22 @@ function updateAffectedRows(result: unknown): number {
     );
   }
   return 0;
+}
+
+/**
+ * O e-mail do convite é só uma evidência de ativação se ainda puder ser
+ * normalizado. Dados legados vazios ou inválidos mantêm o resgate funcional,
+ * mas não autorizam promover a confiança de e-mail operacional.
+ */
+function invitedEmailHashForOperationalTrust(
+  invitedEmail: string | null,
+): string | null {
+  if (typeof invitedEmail !== "string") return null;
+  try {
+    return hashOperationalEmailAddress(invitedEmail);
+  } catch {
+    return null;
+  }
 }
 
 export async function peekScheduleInviteInstitution(
@@ -112,6 +129,71 @@ export function parseInviteCode(raw: unknown): string {
   return normalized;
 }
 
+type LockedScheduleInviteRedeemer = {
+  professionalId: number;
+  qualification: ProfessionalQualification;
+};
+
+type RedeemScheduleInviteInput = {
+  code: string;
+  userId: number;
+  now?: Date;
+};
+
+type RedeemedScheduleInvite = {
+  institutionId: number;
+  hospitalId: number;
+  sectorId: number;
+  hospitalName: string;
+  sectorName: string;
+  scheduleInviteId: number;
+  createdByUserId: number;
+  invitedUserId: number;
+};
+
+/**
+ * Contrato de concorrência do resgate: a identidade sempre é bloqueada na
+ * ordem users -> professionals antes de o fluxo tocar convite ou PI. A
+ * variante que recebe a identidade já bloqueada permanece privada para que
+ * um caller futuro não possa pular essa pré-condição.
+ */
+async function lockScheduleInviteRedeemer(
+  tx: InviteDb,
+  userId: number,
+): Promise<LockedScheduleInviteRedeemer> {
+  const [lockedUser] = await tx
+    .select({ id: users.id, deletedAt: users.deletedAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1)
+    .for("update");
+  if (!lockedUser || lockedUser.deletedAt) {
+    throw new ScheduleInviteError(409, "Conta não encontrada");
+  }
+
+  const [professional] = await tx
+    .select({
+      id: professionals.id,
+      medicalSpecialtyId: professionals.medicalSpecialtyId,
+      operationalProfileCode: professionals.operationalProfileCode,
+    })
+    .from(professionals)
+    .where(eq(professionals.userId, userId))
+    .limit(1)
+    .for("update");
+  if (!professional) {
+    throw new ScheduleInviteError(409, "Profissional não encontrado");
+  }
+
+  return {
+    professionalId: professional.id,
+    qualification: {
+      medicalSpecialtyId: professional.medicalSpecialtyId,
+      operationalProfileCode: professional.operationalProfileCode,
+    },
+  };
+}
+
 async function assertCanManageSector(
   actor: TenantActor,
   hospitalId: number,
@@ -134,23 +216,19 @@ async function assertCanManageSector(
 
 export async function redeemScheduleInviteInTransaction(
   tx: InviteDb,
-  input: {
-    code: string;
-    userId: number;
-    professionalId: number;
-    qualification: ProfessionalQualification;
-    now?: Date;
-  },
-): Promise<{
-  institutionId: number;
-  hospitalId: number;
-  sectorId: number;
-  hospitalName: string;
-  sectorName: string;
-  scheduleInviteId: number;
-  createdByUserId: number;
-  invitedUserId: number;
-}> {
+  input: RedeemScheduleInviteInput,
+): Promise<RedeemedScheduleInvite> {
+  const redeemer = await lockScheduleInviteRedeemer(tx, input.userId);
+  return redeemScheduleInviteWithLockedIdentityInTransaction(tx, {
+    ...input,
+    ...redeemer,
+  });
+}
+
+async function redeemScheduleInviteWithLockedIdentityInTransaction(
+  tx: InviteDb,
+  input: RedeemScheduleInviteInput & LockedScheduleInviteRedeemer,
+): Promise<RedeemedScheduleInvite> {
   const now = input.now ?? new Date();
   const codeHash = hashScheduleInviteCode(input.code);
   const [invite] = await tx
@@ -311,11 +389,13 @@ export async function redeemScheduleInviteInTransaction(
     throw new ScheduleInviteError(400, "Convite inválido ou expirado");
   }
 
-  // O convite só passa a ser uma origem comprovada depois do incremento CAS
-  // que representa o resgate canônico. Falhas posteriores fazem rollback de
-  // acesso, resgate e trust como uma única transação.
+  // O convite só pode promover confiança depois do CAS de resgate e se o
+  // endereço original ainda coincidir com a conta bloqueada nesta transação.
+  // Divergência de e-mail não desfaz o resgate, mas permanece fail-closed no
+  // canal de e-mail (PUSH não depende desta decisão).
   await trustOperationalEmailFromActivatedInviteInTransaction(tx, {
     userId: input.userId,
+    expectedEmailHash: invitedEmailHashForOperationalTrust(invite.invitedEmail),
     now,
   });
 

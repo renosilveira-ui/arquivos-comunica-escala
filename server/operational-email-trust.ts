@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import {
+  institutions,
   operationalEmailVerificationTokens,
   professionalInstitutions,
+  professionals,
   users,
   userOperationalEmailTrust,
 } from "../drizzle/schema";
@@ -40,6 +42,7 @@ export type OperationalEmailTrustTx = Pick<
 type OperationalEmailUser = {
   id: number;
   email: string | null;
+  approvalStatus: "PENDING" | "APPROVED";
   deletedAt: Date | null;
 };
 
@@ -62,12 +65,51 @@ type StoredOperationalEmailVerificationToken = {
   usedAt: Date | null;
 };
 
+type OperationalInstitutionAuthorization =
+  | { kind: "AUTHORIZED"; user: OperationalEmailUser }
+  | {
+      kind: "INELIGIBLE";
+      reason:
+        | "NO_ACTIVE_INSTITUTION_MEMBERSHIP"
+        | "INSTITUTION_INACTIVE"
+        | "INSTITUTIONAL_IDENTITY_MISMATCH"
+        | "USER_NOT_APPROVED"
+        | "USER_UNAVAILABLE";
+    };
+
+type OperationalEmailInstitution = {
+  id: number;
+  isActive: boolean;
+};
+
+type OperationalEmailProfessional = {
+  id: number;
+  userId: number;
+};
+
+type OperationalEmailInstitutionMembership = {
+  id: number;
+  professionalId: number;
+  userId: number;
+  active: boolean;
+};
+
 /**
  * Porta de persistência intencionalmente pequena. Ela permite testar os
  * invariantes de concorrência e de origem sem precisar de um banco real, mas
  * a implementação de produção abaixo sempre emite SELECT ... FOR UPDATE.
  */
 export type OperationalEmailTrustStore = {
+  lockInstitution(
+    institutionId: number,
+  ): Promise<OperationalEmailInstitution | null>;
+  lockProfessionalsByUser(
+    userId: number,
+  ): Promise<readonly OperationalEmailProfessional[]>;
+  lockInstitutionMembership(input: {
+    userId: number;
+    institutionId: number;
+  }): Promise<OperationalEmailInstitutionMembership | null>;
   lockUser(userId: number): Promise<OperationalEmailUser | null>;
   lockTrust(userId: number): Promise<StoredOperationalEmailTrust | null>;
   saveTrust(input: {
@@ -93,10 +135,6 @@ export type OperationalEmailTrustStore = {
   markTokenUsedIfUsable(input: {
     tokenId: number;
     now: Date;
-  }): Promise<boolean>;
-  lockActiveInstitutionMembership(input: {
-    userId: number;
-    institutionId: number;
   }): Promise<boolean>;
 };
 
@@ -148,12 +186,17 @@ export type OperationalEmailEligibility =
       kind: "INELIGIBLE";
       reason:
         | "NO_ACTIVE_INSTITUTION_MEMBERSHIP"
+        | "INSTITUTION_INACTIVE"
+        | "INSTITUTIONAL_IDENTITY_MISMATCH"
         | "USER_UNAVAILABLE"
+        | "USER_NOT_APPROVED"
         | "USER_EMAIL_UNAVAILABLE"
         | "NO_TRUST_RECORD"
         | "EMAIL_CHANGED"
         | "TRUST_PENDING"
-        | "TRUST_REVOKED";
+        | "TRUST_REVOKED"
+        | "TRUST_SOURCE_UNVERIFIED"
+        | "TRUST_UNKNOWN_STATE";
     };
 
 export type OperationalDeliveryChannelResolution = {
@@ -205,7 +248,25 @@ function hasCurrentTrustedEmail(
   trust: StoredOperationalEmailTrust | null,
   emailHash: string,
 ): boolean {
-  return trust?.state === "TRUSTED" && trust.emailHash === emailHash;
+  return (
+    trust?.state === "TRUSTED" &&
+    trust.emailHash === emailHash &&
+    isDeliverableOperationalEmailTrustSource(trust.source)
+  );
+}
+
+function isDeliverableOperationalEmailTrustSource(
+  source: unknown,
+): source is Exclude<OperationalEmailTrustSource, "LEGACY"> {
+  return (
+    source === "ADMIN_CREATED" ||
+    source === "INVITE_ACTIVATED" ||
+    source === "USER_CONFIRMED"
+  );
+}
+
+function isOperationalEmailHash(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 function hashOperationalEmailVerificationToken(rawToken: string): string {
@@ -237,11 +298,47 @@ function createOperationalEmailTrustStore(
   tx: OperationalEmailTrustTx,
 ): OperationalEmailTrustStore {
   return {
+    async lockInstitution(institutionId) {
+      const [institution] = await tx
+        .select({ id: institutions.id, isActive: institutions.isActive })
+        .from(institutions)
+        .where(eq(institutions.id, institutionId))
+        .limit(1)
+        .for("update");
+      return institution ?? null;
+    },
+    async lockProfessionalsByUser(userId) {
+      return tx
+        .select({ id: professionals.id, userId: professionals.userId })
+        .from(professionals)
+        .where(eq(professionals.userId, userId))
+        .for("update");
+    },
+    async lockInstitutionMembership({ userId, institutionId }) {
+      const [membership] = await tx
+        .select({
+          id: professionalInstitutions.id,
+          professionalId: professionalInstitutions.professionalId,
+          userId: professionalInstitutions.userId,
+          active: professionalInstitutions.active,
+        })
+        .from(professionalInstitutions)
+        .where(
+          and(
+            eq(professionalInstitutions.userId, userId),
+            eq(professionalInstitutions.institutionId, institutionId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      return membership ?? null;
+    },
     async lockUser(userId) {
       const [user] = await tx
         .select({
           id: users.id,
           email: users.email,
+          approvalStatus: users.approvalStatus,
           deletedAt: users.deletedAt,
         })
         .from(users)
@@ -341,21 +438,6 @@ function createOperationalEmailTrustStore(
         );
       return affectedRows(result) === 1;
     },
-    async lockActiveInstitutionMembership({ userId, institutionId }) {
-      const [membership] = await tx
-        .select({ id: professionalInstitutions.id })
-        .from(professionalInstitutions)
-        .where(
-          and(
-            eq(professionalInstitutions.userId, userId),
-            eq(professionalInstitutions.institutionId, institutionId),
-            eq(professionalInstitutions.active, true),
-          ),
-        )
-        .limit(1)
-        .for("update");
-      return Boolean(membership);
-    },
   };
 }
 
@@ -371,6 +453,67 @@ function affectedRows(result: unknown): number {
   return 0;
 }
 
+function normalizeOperationalEmailHashOrNull(email: unknown): string | null {
+  if (typeof email !== "string") return null;
+  try {
+    return hashOperationalEmailAddress(email);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ordem canônica de identidade compartilhada com Admin: usuário ->
+ * profissional -> vínculo institucional -> instituição -> trust. Cada linha
+ * é relida bloqueada antes de liberar o canal para não aceitar identidade
+ * parcialmente alterada ou criar ciclo com mutações administrativas.
+ */
+async function lockCanonicalInstitutionAuthorization(
+  store: OperationalEmailTrustStore,
+  input: { userId: number; institutionId: number },
+): Promise<OperationalInstitutionAuthorization> {
+  const user = await store.lockUser(input.userId);
+  if (!user || user.deletedAt) {
+    return { kind: "INELIGIBLE", reason: "USER_UNAVAILABLE" };
+  }
+  if (user.approvalStatus !== "APPROVED") {
+    return { kind: "INELIGIBLE", reason: "USER_NOT_APPROVED" };
+  }
+
+  const professionals = await store.lockProfessionalsByUser(input.userId);
+  const membership = await store.lockInstitutionMembership(input);
+  if (!membership || !membership.active) {
+    return {
+      kind: "INELIGIBLE",
+      reason: "NO_ACTIVE_INSTITUTION_MEMBERSHIP",
+    };
+  }
+  const professional = professionals.find(
+    (candidate) => candidate.id === membership.professionalId,
+  );
+  if (
+    membership.userId !== input.userId ||
+    !professional ||
+    professional.userId !== membership.userId
+  ) {
+    return {
+      kind: "INELIGIBLE",
+      reason: "INSTITUTIONAL_IDENTITY_MISMATCH",
+    };
+  }
+  if (user.id !== membership.userId) {
+    return {
+      kind: "INELIGIBLE",
+      reason: "INSTITUTIONAL_IDENTITY_MISMATCH",
+    };
+  }
+  const institution = await store.lockInstitution(input.institutionId);
+  if (!institution || !institution.isActive) {
+    return { kind: "INELIGIBLE", reason: "INSTITUTION_INACTIVE" };
+  }
+  return { kind: "AUTHORIZED", user };
+}
+
 async function lockCurrentUserEmail(
   store: OperationalEmailTrustStore,
   userId: number,
@@ -383,13 +526,14 @@ async function lockCurrentUserEmail(
       "Conta indisponível para e-mail operacional",
     );
   }
-  if (!user.email) {
+  const emailHash = normalizeOperationalEmailHashOrNull(user.email);
+  if (!emailHash) {
     throw new OperationalEmailTrustError(
       "USER_EMAIL_UNAVAILABLE",
       "Conta sem e-mail operacional utilizável",
     );
   }
-  return { user, emailHash: hashOperationalEmailAddress(user.email) };
+  return { user, emailHash };
 }
 
 async function writeTrustForOrigin(
@@ -499,25 +643,62 @@ export async function trustOperationalEmailFromAdministrativeOriginInTransaction
   });
 }
 
-/** A ativação canônica de convite atesta o endereço da conta convidada. */
+export type OperationalEmailInviteActivationResult =
+  | {
+      kind: "PROMOTED";
+      trust: OperationalEmailTrustWriteResult;
+    }
+  | {
+      kind: "NOT_PROMOTED";
+      reason: "INVITED_EMAIL_MISSING_OR_MISMATCH" | "USER_UNAVAILABLE";
+    };
+
+/**
+ * A ativação canônica do convite só é prova do endereço se o hash de e-mail
+ * gravado no convite ainda corresponde ao e-mail atual, bloqueado, da conta.
+ * Um convite antigo continua podendo conceder acesso à escala, mas jamais
+ * converte divergência de endereço em confiança de e-mail operacional.
+ */
 export async function trustOperationalEmailFromActivatedInvite(
   store: OperationalEmailTrustStore,
-  input: { userId: number; now?: Date },
-): Promise<OperationalEmailTrustWriteResult> {
-  return recordOperationalEmailTrustForOrigin(store, {
-    ...input,
-    source: "INVITE_ACTIVATED",
+  input: { userId: number; expectedEmailHash: string | null; now?: Date },
+): Promise<OperationalEmailInviteActivationResult> {
+  const now = input.now ?? new Date();
+  const reconciled = await reconcileCurrentEmailTrust(store, {
+    userId: input.userId,
+    now,
   });
+  if (!reconciled.user || reconciled.user.deletedAt) {
+    return { kind: "NOT_PROMOTED", reason: "USER_UNAVAILABLE" };
+  }
+  if (
+    !reconciled.emailHash ||
+    !isOperationalEmailHash(input.expectedEmailHash) ||
+    reconciled.emailHash !== input.expectedEmailHash
+  ) {
+    return {
+      kind: "NOT_PROMOTED",
+      reason: "INVITED_EMAIL_MISSING_OR_MISMATCH",
+    };
+  }
+  return {
+    kind: "PROMOTED",
+    trust: await recordOperationalEmailTrustForOrigin(store, {
+      userId: input.userId,
+      source: "INVITE_ACTIVATED",
+      now,
+    }),
+  };
 }
 
 export async function trustOperationalEmailFromActivatedInviteInTransaction(
   tx: OperationalEmailTrustTx,
-  input: { userId: number; now?: Date },
-): Promise<OperationalEmailTrustWriteResult> {
-  return recordOperationalEmailTrustForOriginInTransaction(tx, {
-    ...input,
-    source: "INVITE_ACTIVATED",
-  });
+  input: { userId: number; expectedEmailHash: string | null; now?: Date },
+): Promise<OperationalEmailInviteActivationResult> {
+  return trustOperationalEmailFromActivatedInvite(
+    createOperationalEmailTrustStore(tx),
+    input,
+  );
 }
 
 /** Autocadastro e conta legada ficam pendentes até uma prova posterior. */
@@ -592,7 +773,7 @@ export async function invalidateOperationalEmailTrustAfterEmailChangeInTransacti
  */
 async function reconcileCurrentEmailTrust(
   store: OperationalEmailTrustStore,
-  input: { userId: number; now: Date },
+  input: { userId: number; now: Date; lockedUser?: OperationalEmailUser | null },
 ): Promise<{
   user: OperationalEmailUser | null;
   emailHash: string | null;
@@ -600,8 +781,12 @@ async function reconcileCurrentEmailTrust(
   changed: boolean;
 }> {
   assertPositiveId(input.userId, "userId");
-  const user = await store.lockUser(input.userId);
-  if (!user || user.deletedAt || !user.email) {
+  const user = input.lockedUser ?? (await store.lockUser(input.userId));
+  const emailHash =
+    user && !user.deletedAt
+      ? normalizeOperationalEmailHashOrNull(user.email)
+      : null;
+  if (!user || user.deletedAt || !emailHash) {
     const trust = await store.lockTrust(input.userId);
     if (trust && trust.state !== "REVOKED") {
       await store.saveTrust({
@@ -619,7 +804,6 @@ async function reconcileCurrentEmailTrust(
     return { user, emailHash: null, trust, changed: false };
   }
 
-  const emailHash = hashOperationalEmailAddress(user.email);
   const trust = await store.lockTrust(input.userId);
   if (trust && trust.emailHash !== emailHash && trust.state !== "REVOKED") {
     await store.saveTrust({
@@ -749,7 +933,8 @@ export async function consumeOperationalEmailVerificationToken(
   if (!user || user.deletedAt || !user.email) {
     return { kind: "INVALID_OR_EXPIRED" };
   }
-  const currentEmailHash = hashOperationalEmailAddress(user.email);
+  const currentEmailHash = normalizeOperationalEmailHashOrNull(user.email);
+  if (!currentEmailHash) return { kind: "INVALID_OR_EXPIRED" };
   const token = await store.lockTokenByHash(tokenHash);
   if (!token || token.userId !== user.id) {
     return { kind: "INVALID_OR_EXPIRED" };
@@ -829,19 +1014,19 @@ export async function assessOperationalEmailEligibility(
   assertPositiveId(input.userId, "userId");
   assertPositiveId(input.institutionId, "institutionId");
   const now = input.now ?? new Date();
-  const hasMembership = await store.lockActiveInstitutionMembership({
+  // A autorização institucional usa a ordem documentada pelo helper antes da
+  // confiança de e-mail, evitando ciclo de locks com o resgate de convite.
+  const authorization = await lockCanonicalInstitutionAuthorization(store, {
     userId: input.userId,
     institutionId: input.institutionId,
   });
-  if (!hasMembership) {
-    return {
-      kind: "INELIGIBLE",
-      reason: "NO_ACTIVE_INSTITUTION_MEMBERSHIP",
-    };
+  if (authorization.kind === "INELIGIBLE") {
+    return authorization;
   }
   const reconciled = await reconcileCurrentEmailTrust(store, {
     userId: input.userId,
     now,
+    lockedUser: authorization.user,
   });
   if (!reconciled.user || reconciled.user.deletedAt) {
     return { kind: "INELIGIBLE", reason: "USER_UNAVAILABLE" };
@@ -860,6 +1045,12 @@ export async function assessOperationalEmailEligibility(
   }
   if (reconciled.trust.state === "REVOKED") {
     return { kind: "INELIGIBLE", reason: "TRUST_REVOKED" };
+  }
+  if (reconciled.trust.state !== "TRUSTED") {
+    return { kind: "INELIGIBLE", reason: "TRUST_UNKNOWN_STATE" };
+  }
+  if (!isDeliverableOperationalEmailTrustSource(reconciled.trust.source)) {
+    return { kind: "INELIGIBLE", reason: "TRUST_SOURCE_UNVERIFIED" };
   }
   return {
     kind: "ELIGIBLE",
