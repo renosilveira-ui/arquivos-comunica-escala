@@ -12,3 +12,22 @@ export function listedSwapIsActionable(row: {
   if (row.canRespond === false) return false;
   return row.toProfessionalId == null && row.toUserId == null;
 }
+
+/**
+ * Semântica de `canRespond` em listAvailable: oferta aberta responde quem
+ * a lista mostrou; direcionada só o destinatário nominal.
+ * O SQL de visibilidade (plantonista vs gestor) já filtrou a linha.
+ */
+export function listedOfferCanRespond(
+  toProfessionalId: number | string | null | undefined,
+  toUserId: number | string | null | undefined,
+  actorProfessionalId: number | null,
+  actorUserId: number,
+): boolean {
+  if (actorProfessionalId == null) return false;
+  if (toProfessionalId == null && toUserId == null) return true;
+  return (
+    Number(toProfessionalId) === actorProfessionalId &&
+    Number(toUserId) === actorUserId
+  );
+}

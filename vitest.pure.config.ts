@@ -66,6 +66,9 @@ export default defineConfig({
       "tests/web-verified-session.test.ts",
       "tests/institution-roles.test.ts",
       "tests/duty-sync-v2-contract.test.ts",
+      "tests/swap-offer-actions.test.ts",
+      "tests/swap-offer-badge-refresh.test.ts",
+      "tests/swap-offer-outbox.test.ts",
     ],
   },
 });

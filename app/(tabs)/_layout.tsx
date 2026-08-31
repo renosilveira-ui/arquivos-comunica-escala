@@ -4,11 +4,13 @@ import { TabIcon } from "@/components/ui/TabIcon";
 import { MobileTabBar } from "@/components/ui/MobileTabBar";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
-import { Platform, Pressable, Text, View, useWindowDimensions, type ViewStyle } from "react-native";
+import { useEffect, useRef } from "react";
+import { AppState, Platform, Pressable, Text, View, useWindowDimensions, type ViewStyle } from "react-native";
 import Constants from "expo-constants";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { profileRoleBadgeLabel } from "@/lib/institution-roles";
+import { shouldRefetchSwapOfferBadgeOnAppStateChange } from "@/lib/swap-offer-badge-refresh";
 
 function navigationBadgeValue(count: number): string | number | undefined {
   if (count <= 0) return undefined;
@@ -231,6 +233,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
 export default function TabLayout() {
   const { can, isManager, canApproveAssignments } = usePermissions();
   const { user } = useAuth();
+  const utils = trpc.useUtils();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
   // Barra inferior (celular) = experiência do plantonista, para todo
@@ -243,7 +246,7 @@ export default function TabLayout() {
   const showTrocasTab = !isDesktopWeb || !isManager;
   const { data: actionableSwapCount } = trpc.swaps.countActionable.useQuery(undefined, {
     enabled: !!user?.id,
-    staleTime: 60_000,
+    staleTime: 15_000,
   });
   const swapOffersPending = actionableSwapCount?.swapOffers ?? 0;
   const swapBadge = navigationBadgeValue(swapOffersPending);
@@ -256,6 +259,30 @@ export default function TabLayout() {
     backgroundColor: theme.colors.danger,
     color: theme.colors.onDark.text,
   } as const;
+  const previousAppStateRef = useRef(AppState.currentState);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    previousAppStateRef.current = AppState.currentState;
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      const previousState = previousAppStateRef.current;
+      previousAppStateRef.current = nextState;
+      if (
+        !shouldRefetchSwapOfferBadgeOnAppStateChange({
+          platform: Platform.OS,
+          previousState,
+          nextState,
+        })
+      ) {
+        return;
+      }
+      void Promise.all([
+        utils.swaps.countActionable.invalidate(),
+        utils.swaps.listAvailable.invalidate(),
+      ]);
+    });
+    return () => subscription.remove();
+  }, [utils]);
 
   return (
     <Tabs

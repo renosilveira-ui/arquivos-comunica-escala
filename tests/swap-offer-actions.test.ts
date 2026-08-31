@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { listedSwapIsActionable } from "../lib/swap-offer-actions";
+import { listedSwapIsActionable, listedOfferCanRespond } from "../lib/swap-offer-actions";
 
 describe("listedSwapIsActionable", () => {
   it("servidor novo manda boolean explícito", () => {
     expect(listedSwapIsActionable({ canRespond: true })).toBe(true);
     expect(listedSwapIsActionable({ canRespond: false })).toBe(false);
+  });
+
+  it("listedOfferCanRespond: aberta para quem a lista mostrou; direcionada só ao alvo", () => {
+    expect(listedOfferCanRespond(null, null, 2, 22)).toBe(true);
+    expect(listedOfferCanRespond(2, 22, 2, 22)).toBe(true);
+    expect(listedOfferCanRespond(2, 22, 3, 33)).toBe(false);
+    expect(listedOfferCanRespond(null, null, null, 22)).toBe(false);
   });
 
   it("cliente velho sem canRespond: direcionada a outro fica só leitura", () => {

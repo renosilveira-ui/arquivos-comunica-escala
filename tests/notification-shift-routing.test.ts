@@ -5,6 +5,7 @@ vi.mock("expo-router", () => ({ useRouter: vi.fn() }));
 vi.mock("expo-notifications", () => ({
   DEFAULT_ACTION_IDENTIFIER: "default",
   addNotificationResponseReceivedListener: vi.fn(),
+  addNotificationReceivedListener: vi.fn(() => ({ remove: vi.fn() })),
 }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: vi.fn() }));
 vi.mock("@/hooks/use-notifications", () => ({ useNotifications: vi.fn() }));

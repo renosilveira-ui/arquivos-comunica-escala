@@ -1,148 +1,107 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, type SQLWrapper } from "drizzle-orm";
+import { sectors, shiftInstances, type swapRequests } from "../drizzle/schema";
 import {
-  managerScope,
-  professionalInstitutions,
-  professionals,
-  users,
-  type swapRequests,
-} from "../drizzle/schema";
+  SWAP_OFFER_DEEP_LINK,
+  SWAP_OFFER_PUSH_TITLE,
+} from "../lib/swap-offer-badge-refresh";
+import {
+  formatHospitalDate,
+  formatHospitalTime,
+} from "../lib/hospital-time";
 import { enqueueTrackedPushNotification } from "./push-delivery";
+import { eligibleRecipientUserIdsForSwapOffer } from "./swap-offer-eligibility";
 
 type SwapRow = typeof swapRequests.$inferSelect;
-type SignalDb = NonNullable<Parameters<typeof enqueueTrackedPushNotification>[2]>;
+type EnqueueDb = NonNullable<Parameters<typeof enqueueTrackedPushNotification>[2]>;
+type SignalDb = EnqueueDb & {
+  execute: (query: string | SQLWrapper) => Promise<unknown>;
+};
 
 export type SwapOfferSignalInput = {
   db: SignalDb;
   swap: SwapRow;
-  offererName: string;
   shiftLabel: string;
+  sectorName?: string | null;
+  startAt?: Date | string;
 };
 
-function offerCopy(type: SwapRow["type"], offererName: string, shiftLabel: string) {
-  if (type === "SWAP") {
-    return {
-      title: "Proposta de troca",
-      body: `${offererName} propôs uma troca no plantão ${shiftLabel}.`,
-    };
+export function swapOfferPushCopy(input: {
+  sectorName?: string | null;
+  shiftLabel: string;
+  startAt?: Date | string | null;
+}): { title: string; body: string } {
+  const parts: string[] = [];
+  const sector = input.sectorName?.trim();
+  if (sector) parts.push(sector);
+  const label = input.shiftLabel.trim();
+  if (label) parts.push(label);
+  if (input.startAt) {
+    parts.push(
+      `${formatHospitalDate(input.startAt)} ${formatHospitalTime(input.startAt)}`,
+    );
   }
   return {
-    title: "Oferta de plantão",
-    body: `${offererName} ofereceu o plantão ${shiftLabel}.`,
+    title: SWAP_OFFER_PUSH_TITLE,
+    body: parts.join(" · "),
   };
 }
 
-async function listScaleManagerUserIds(
-  db: any,
-  input: {
-    institutionId: number;
-    hospitalId: number;
-    sectorId: number;
-  },
-): Promise<number[]> {
-  const scopedManagers = await db
-    .select({ userId: professionals.userId })
-    .from(managerScope)
+async function resolveOfferCopyContext(
+  db: SignalDb,
+  input: SwapOfferSignalInput,
+): Promise<{ sectorName: string; shiftLabel: string; startAt: Date | null }> {
+  const shiftLabel = input.shiftLabel.trim();
+  let sectorName = input.sectorName?.trim() ?? "";
+  let startAt = input.startAt ? new Date(input.startAt) : null;
+  if (sectorName && startAt && !Number.isNaN(startAt.getTime())) {
+    return { sectorName, shiftLabel, startAt };
+  }
+  const [place] = await db
+    .select({
+      sectorName: sectors.name,
+      startAt: shiftInstances.startAt,
+      shiftLabel: shiftInstances.label,
+    })
+    .from(shiftInstances)
     .innerJoin(
-      professionals,
-      eq(professionals.id, managerScope.managerProfessionalId),
-    )
-    .innerJoin(
-      professionalInstitutions,
+      sectors,
       and(
-        eq(professionalInstitutions.professionalId, professionals.id),
-        eq(professionalInstitutions.userId, professionals.userId),
-        eq(professionalInstitutions.institutionId, input.institutionId),
-        eq(professionalInstitutions.roleInInstitution, "GESTOR_MEDICO"),
-        eq(professionalInstitutions.active, true),
-      ),
-    )
-    .innerJoin(
-      users,
-      and(
-        eq(users.id, professionals.userId),
-        eq(users.approvalStatus, "APPROVED"),
-        isNull(users.deletedAt),
+        eq(sectors.id, shiftInstances.sectorId),
+        eq(sectors.institutionId, shiftInstances.institutionId),
+        eq(sectors.hospitalId, shiftInstances.hospitalId),
       ),
     )
     .where(
       and(
-        eq(managerScope.institutionId, input.institutionId),
-        eq(managerScope.hospitalId, input.hospitalId),
-        or(isNull(managerScope.sectorId), eq(managerScope.sectorId, input.sectorId)),
-        eq(managerScope.active, true),
-      ),
-    );
-
-  const gestoresPlus = await db
-    .select({ userId: professionals.userId })
-    .from(professionalInstitutions)
-    .innerJoin(
-      professionals,
-      and(
-        eq(professionals.id, professionalInstitutions.professionalId),
-        eq(professionals.userId, professionalInstitutions.userId),
+        eq(shiftInstances.id, input.swap.fromShiftInstanceId),
+        eq(shiftInstances.institutionId, input.swap.institutionId),
       ),
     )
-    .innerJoin(
-      users,
-      and(
-        eq(users.id, professionals.userId),
-        eq(users.approvalStatus, "APPROVED"),
-        isNull(users.deletedAt),
-      ),
-    )
-    .where(
-      and(
-        eq(professionalInstitutions.institutionId, input.institutionId),
-        eq(professionalInstitutions.roleInInstitution, "GESTOR_PLUS"),
-        eq(professionalInstitutions.active, true),
-      ),
-    );
-
-  return [
-    ...scopedManagers.map((row: { userId: number }) => row.userId),
-    ...gestoresPlus.map((row: { userId: number }) => row.userId),
-  ];
-}
-
-export async function listSwapOfferSignalRecipientUserIds(
-  db: any,
-  input: {
-    institutionId: number;
-    hospitalId: number;
-    sectorId: number;
-    fromUserId: number;
-    toUserId: number | null;
-  },
-): Promise<number[]> {
-  const recipients = new Set<number>();
-  if (input.toUserId !== null && input.toUserId !== input.fromUserId) {
-    recipients.add(input.toUserId);
+    .limit(1);
+  if (!sectorName) sectorName = place?.sectorName?.trim() ?? "";
+  if (!startAt || Number.isNaN(startAt.getTime())) {
+    startAt = place?.startAt ?? null;
   }
-  for (const userId of await listScaleManagerUserIds(db, input)) {
-    if (userId !== input.fromUserId) recipients.add(userId);
-  }
-  return [...recipients];
+  return {
+    sectorName,
+    shiftLabel: shiftLabel || place?.shiftLabel?.trim() || "",
+    startAt,
+  };
 }
 
 /**
- * Persiste o sinal da oferta (push + inbox) para o destinatário
- * direcionado e para os gestores da escala. Sem isso a oferta existe
- * no banco e some da UI: ninguém é avisado.
+ * Persiste o sinal da oferta (push + inbox) para médicos plantonistas
+ * elegíveis a responder. Gestores não entram só pelo papel; o ofertante
+ * nunca entra; outro tenant nunca entra.
  */
 export async function enqueueSwapOfferSignals(
   input: SwapOfferSignalInput,
 ): Promise<number> {
   const { db, swap } = input;
   if (swap.sectorId === null) return 0;
-  const userIds = await listSwapOfferSignalRecipientUserIds(db, {
-    institutionId: swap.institutionId,
-    hospitalId: swap.hospitalId,
-    sectorId: swap.sectorId,
-    fromUserId: swap.fromUserId,
-    toUserId: swap.toUserId,
-  });
-  const copy = offerCopy(swap.type, input.offererName, input.shiftLabel);
+  const userIds = await eligibleRecipientUserIdsForSwapOffer(db, swap);
+  const copyContext = await resolveOfferCopyContext(db, input);
+  const copy = swapOfferPushCopy(copyContext);
   let persisted = 0;
   for (const userId of userIds) {
     try {
@@ -152,7 +111,7 @@ export async function enqueueSwapOfferSignals(
           userId,
           shiftInstanceId: swap.fromShiftInstanceId,
           dedupKey: `swap-offer:${swap.id}:${userId}`,
-          deepLink: "/(tabs)/trocas",
+          deepLink: SWAP_OFFER_DEEP_LINK,
           payload: {
             ...copy,
             data: {
@@ -200,7 +159,7 @@ function takenCopy(type: SwapRow["type"], takerName: string, shiftLabel: string)
  * Mesma transação do aceite — falha de persistência aborta o take.
  */
 export async function enqueueSwapTakenSignals(input: {
-  db: SignalDb;
+  db: EnqueueDb;
   swap: SwapRow;
   takerName: string;
   shiftLabel: string;
