@@ -3212,6 +3212,14 @@ export const shiftsRouter = router({
         institutionId: z.number().int(),
         hospitalId: z.number().int(),
         yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+        readinessAcknowledgement: z
+          .object({
+            snapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+            issueCodes: z
+              .array(z.string().regex(/^[A-Z0-9_]{3,96}$/))
+              .max(100),
+          })
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -3223,9 +3231,7 @@ export const shiftsRouter = router({
           message: "institutionId inválido para tenant ativo",
         });
       }
-      await assertManagerScopeAccess(actor, input.hospitalId, undefined, {
-        mode: "any-hospital",
-      });
+      await assertManagerScopeAccess(actor, input.hospitalId);
       await publishMonth(
         input.institutionId,
         input.hospitalId,
@@ -3233,6 +3239,7 @@ export const shiftsRouter = router({
         actor,
         ctx.user.sessionVersion,
         ctx.user.name ?? undefined,
+        input.readinessAcknowledgement,
       );
 
       return { ok: true };
@@ -3337,9 +3344,7 @@ export const shiftsRouter = router({
           message: "institutionId inválido para tenant ativo",
         });
       }
-      await assertManagerScopeAccess(actor, input.hospitalId, undefined, {
-        mode: "any-hospital",
-      });
+      await assertManagerScopeAccess(actor, input.hospitalId);
       await lockMonth(
         input.institutionId,
         input.hospitalId,

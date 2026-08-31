@@ -10,6 +10,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  rosterReadinessAcknowledgements,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -22,6 +23,20 @@ import {
   assertManagerScopeAccessForUpdate,
   type TenantActor,
 } from "./_core/policy";
+import {
+  assertReadinessAcknowledgement,
+  getCorporateReadinessReport,
+  type CorporateReadinessAcknowledgement,
+  type CorporateReadinessReportV1,
+} from "./corporate-readiness";
+import {
+  READINESS_FENCE_COVERAGE_HASH,
+  READINESS_FENCE_COVERAGE_VERSION,
+} from "./readiness-fence-contract";
+import {
+  assertInstitutionReadinessFenceUnchanged,
+  materializeAndLockInstitutionReadinessFence,
+} from "./readiness-fence";
 
 type MonthLockDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
@@ -63,6 +78,95 @@ type LockedMonthRow = MonthLockTarget & {
   status: "DRAFT" | "PUBLISHED" | "LOCKED";
 };
 
+/**
+ * Converte a falha interna de ciência em contrato tRPC estável. O cliente
+ * recebe somente a decisão operacional; IDs, topologia e detalhes do relatório
+ * continuam acessíveis exclusivamente pelo endpoint de prontidão autorizado.
+ */
+function requirePublishReadinessAcknowledgement(
+  report: CorporateReadinessReportV1,
+  acknowledgement: CorporateReadinessAcknowledgement | undefined,
+): void {
+  try {
+    assertReadinessAcknowledgement(report, acknowledgement);
+  } catch (error) {
+    const marker = error instanceof Error ? error.message : "";
+    if (marker === "READINESS_SECURITY_BLOCKER") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "A publicação foi bloqueada por uma inconsistência de segurança na escala. Corrija a topologia antes de publicar.",
+      });
+    }
+    if (marker === "READINESS_ACKNOWLEDGEMENT_REQUIRED") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Há alertas operacionais. Revise a prontidão e confirme ciência antes de publicar.",
+      });
+    }
+    if (
+      marker === "READINESS_SNAPSHOT_STALE" ||
+      marker === "READINESS_ISSUES_MISMATCH"
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "A configuração da escala mudou. Revise a prontidão e confirme ciência novamente.",
+      });
+    }
+    throw error;
+  }
+}
+
+/**
+ * A fence é uma prova de consistência, não um alerta configurável. Sem a
+ * instalação completa ou diante de uma alteração concorrente, não há base
+ * segura para publicar a escala.
+ */
+async function requirePublishReadinessFence<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const marker = error instanceof Error ? error.message : "";
+    if (marker.startsWith("READINESS_FENCE_")) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Não foi possível comprovar a consistência atual da escala. Revise a prontidão e tente publicar novamente.",
+      });
+    }
+    throw error;
+  }
+}
+
+function compareCanonicalStrings(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function operationalWarningSnapshot(report: CorporateReadinessReportV1): {
+  code: string;
+  sectorId: number | null;
+}[] {
+  return [
+    ...report.hospitalIssues,
+    ...report.sectors.flatMap((sector) => sector.issues),
+  ]
+    .filter((issue) => issue.severity === "OPERATIONAL_WARNING")
+    .map((issue) => ({
+      code: issue.code,
+      sectorId: issue.scope.sectorId ?? null,
+    }))
+    .sort(
+      (left, right) =>
+        (left.sectorId ?? 0) - (right.sectorId ?? 0) ||
+        compareCanonicalStrings(left.code, right.code),
+    );
+}
+
 function dateInsideYearMonth(yearMonth: string): Date {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(yearMonth)) {
     throw new TRPCError({
@@ -84,18 +188,21 @@ function dateInsideYearMonth(yearMonth: string): Date {
 }
 
 function orderedMonthTargets(targets: readonly MonthLockTarget[]) {
-  return [...new Map(
-    targets.map((target) => {
-      const yearMonth = yearMonthBrt(target.date);
-      return [
-        `${target.institutionId}:${target.hospitalId}:${yearMonth}`,
-        { ...target, yearMonth },
-      ] as const;
-    }),
-  ).values()].sort((left, right) =>
-    left.institutionId - right.institutionId ||
-    left.hospitalId - right.hospitalId ||
-    left.yearMonth.localeCompare(right.yearMonth),
+  return [
+    ...new Map(
+      targets.map((target) => {
+        const yearMonth = yearMonthBrt(target.date);
+        return [
+          `${target.institutionId}:${target.hospitalId}:${yearMonth}`,
+          { ...target, yearMonth },
+        ] as const;
+      }),
+    ).values(),
+  ].sort(
+    (left, right) =>
+      left.institutionId - right.institutionId ||
+      left.hospitalId - right.hospitalId ||
+      compareCanonicalStrings(left.yearMonth, right.yearMonth),
   );
 }
 
@@ -215,7 +322,9 @@ export async function assertMonthNotLockedForUpdate(
   hospitalId: number,
   date: Date,
 ): Promise<void> {
-  await assertMonthsNotLockedForUpdate(tx, [{ institutionId, hospitalId, date }]);
+  await assertMonthsNotLockedForUpdate(tx, [
+    { institutionId, hospitalId, date },
+  ]);
 }
 
 /**
@@ -295,14 +404,22 @@ export async function assertMonthsEditableForUpdate(
     .where(eq(users.id, ctx.user.id))
     .limit(1);
   if (!account) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Usuário não encontrado" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Usuário não encontrado",
+    });
   }
 
-  const memberships = new Map<number, {
-    professionalId: number;
-    roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
-  }>();
-  for (const institutionId of new Set(rosters.map((roster) => roster.institutionId))) {
+  const memberships = new Map<
+    number,
+    {
+      professionalId: number;
+      roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
+    }
+  >();
+  for (const institutionId of new Set(
+    rosters.map((roster) => roster.institutionId),
+  )) {
     const [membership] = await tx
       .select({
         professionalId: professionalInstitutions.professionalId,
@@ -327,7 +444,8 @@ export async function assertMonthsEditableForUpdate(
     if (!membership) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "Vínculo profissional ativo não encontrado para esta instituição",
+        message:
+          "Vínculo profissional ativo não encontrado para esta instituição",
       });
     }
     memberships.set(institutionId, membership);
@@ -348,9 +466,8 @@ export async function assertMonthsEditableForUpdate(
       ));
     if (emptyPublished) continue;
     const membership = memberships.get(roster.institutionId)!;
-    const role = account.role === "admin"
-      ? "GESTOR_PLUS"
-      : membership.roleInInstitution;
+    const role =
+      account.role === "admin" ? "GESTOR_PLUS" : membership.roleInInstitution;
     if (role !== "GESTOR_PLUS") {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -476,7 +593,10 @@ async function getRosterPublicationRecipients(
         eq(shiftAssignmentsV2.isActive, true),
       ),
     )
-    .innerJoin(professionals, eq(professionals.id, shiftAssignmentsV2.professionalId))
+    .innerJoin(
+      professionals,
+      eq(professionals.id, shiftAssignmentsV2.professionalId),
+    )
     .innerJoin(
       professionalAccess,
       and(
@@ -495,7 +615,10 @@ async function getRosterPublicationRecipients(
       and(
         eq(professionalInstitutions.professionalId, professionals.id),
         eq(professionalInstitutions.userId, professionals.userId),
-        eq(professionalInstitutions.institutionId, shiftInstances.institutionId),
+        eq(
+          professionalInstitutions.institutionId,
+          shiftInstances.institutionId,
+        ),
         eq(professionalInstitutions.active, true),
       ),
     )
@@ -519,7 +642,6 @@ async function getRosterPublicationRecipients(
   return [...new Map(rows.map((row) => [row.userId, row] as const)).values()];
 }
 
-
 /**
  * Publica um mês DRAFT → PUBLISHED.
  * Preenche published_at, published_by_user_id e incrementa version.
@@ -531,6 +653,7 @@ export async function publishMonth(
   actor: TenantActor,
   expectedActorSessionVersion: number,
   actorName?: string,
+  readinessAcknowledgement?: CorporateReadinessAcknowledgement,
 ): Promise<void> {
   const monthDate = dateInsideYearMonth(yearMonth);
   const db = await getDb();
@@ -544,10 +667,31 @@ export async function publishMonth(
   await assertInstitutionHierarchy({ institutionId, hospitalId }, { db });
 
   await db.transaction(async (tx) => {
+    // Publicar é uma mutação hospitalar: um escopo setorial não pode
+    // materializar sequer o roster DRAFT antes de a autorização ser provada.
+    const currentRole = await assertManagerScopeAccessForUpdate(
+      tx,
+      actor,
+      expectedActorSessionVersion,
+      hospitalId,
+      undefined,
+      [monthDate],
+    );
+    // A autorização acima já reteve o vínculo/scope do ator. Primeiro
+    // materializamos o registro mensal; esse INSERT faz parte da própria
+    // preparação da publicação e é uma fonte observada pela fence. Só então
+    // retemos a fence para que o nosso INSERT não seja confundido com uma
+    // alteração concorrente entre o diagnóstico e a decisão final.
     await tx
       .insert(monthlyRosters)
       .values({ institutionId, hospitalId, yearMonth, status: "DRAFT" })
       .onDuplicateKeyUpdate({ set: { id: sql`${monthlyRosters.id}` } });
+    // Daqui em diante, toda fonte que compõe a prontidão fica serializada até
+    // a transição DRAFT → PUBLISHED. Uma mudança de terceiros bloqueia na
+    // mesma linha da instituição e não pode tornar a ciência obsoleta.
+    const readinessFence = await requirePublishReadinessFence(() =>
+      materializeAndLockInstitutionReadinessFence(tx, institutionId),
+    );
     const [existing] = await tx
       .select({
         id: monthlyRosters.id,
@@ -572,14 +716,47 @@ export async function publishMonth(
           : `A escala de ${yearMonth} já foi publicada.`,
       );
     }
-    const currentRole = await assertManagerScopeAccessForUpdate(
-      tx,
-      actor,
-      expectedActorSessionVersion,
+    // A leitura e a ciência ocorrem dentro da mesma transação que muda o
+    // roster. O snapshot informado pelo cliente nunca é suficiente por si:
+    // ele é sempre confrontado com a prontidão recalculada no commit.
+    const readiness = await getCorporateReadinessReport(tx, {
+      institutionId,
       hospitalId,
-      undefined,
-      [monthDate],
-      { mode: "any-hospital" },
+      yearMonth,
+    });
+    requirePublishReadinessAcknowledgement(readiness, readinessAcknowledgement);
+    const readinessWarnings = operationalWarningSnapshot(readiness);
+    // O recibo nasce somente aqui, a partir do relatório local recém-calculado
+    // e já validado. Não há fábrica pública que aceite hash fornecido por caller.
+    const readinessFenceReceipt = {
+      revision: readinessFence.revision,
+      coverageVersion: READINESS_FENCE_COVERAGE_VERSION,
+      coverageHash: READINESS_FENCE_COVERAGE_HASH,
+    } as const;
+
+    if (readiness.acknowledgement.required) {
+      await tx.insert(rosterReadinessAcknowledgements).values({
+        institutionId,
+        hospitalId,
+        monthlyRosterId: existing.id,
+        yearMonth,
+        actorUserId: actor.userId,
+        reportVersion: readiness.version,
+        snapshotHash: readiness.snapshotHash,
+        readinessFenceRevision: readinessFenceReceipt.revision,
+        readinessFenceCoverageVersion:
+          readinessFenceReceipt.coverageVersion,
+        readinessFenceCoverageHash: readinessFenceReceipt.coverageHash,
+        issueCodes: readiness.acknowledgement.operationalWarningCodes,
+        issueSnapshot: readinessWarnings,
+      });
+    }
+
+    // Deve permanecer imediatamente antes da mudança DRAFT → PUBLISHED. A
+    // inserção da ciência não é uma fonte do relatório; qualquer alteração de
+    // configuração concorrente tenta a mesma fence e torna esta prova inválida.
+    await requirePublishReadinessFence(() =>
+      assertInstitutionReadinessFenceUnchanged(tx, readinessFence),
     );
 
     const [result] = await tx
@@ -598,7 +775,9 @@ export async function publishMonth(
         ),
       );
     if (!result.affectedRows) {
-      throw new Error(`A escala de ${yearMonth} acabou de ser publicada por outra pessoa.`);
+      throw new Error(
+        `A escala de ${yearMonth} acabou de ser publicada por outra pessoa.`,
+      );
     }
     await recordAudit(
       {
@@ -611,7 +790,23 @@ export async function publishMonth(
         description: `Escala publicada (${yearMonth})`,
         institutionId,
         hospitalId,
-        metadata: { yearMonth, previousStatus: existing.status },
+        metadata: {
+          yearMonth,
+          previousStatus: existing.status,
+          readiness: {
+            reportVersion: readiness.version,
+            snapshotHash: readiness.snapshotHash,
+            acknowledgementRequired: readiness.acknowledgement.required,
+            operationalWarningCodes:
+              readiness.acknowledgement.operationalWarningCodes,
+            operationalWarnings: readinessWarnings,
+            fence: {
+              revision: readinessFenceReceipt.revision.toString(),
+              coverageVersion: readinessFenceReceipt.coverageVersion,
+              coverageHash: readinessFenceReceipt.coverageHash,
+            },
+          },
+        },
       },
       { db: tx, strict: true },
     );
@@ -640,8 +835,9 @@ export async function publishMonth(
 /**
  * Tranca um mês PUBLISHED → LOCKED.
  * Preenche locked_at, locked_by_user_id e incrementa version.
- * Jurisdição: a mesma de publicar (`any-hospital`) — hospital-wide
- * ou qualquer setor daquele hospital. Janela do GESTOR_MEDICO inalterada.
+ * Jurisdição: a mesma de publicar — escopo hospitalar explícito ou
+ * Gestor+. Um escopo setorial não pode trancar a escala de todo o hospital.
+ * A janela temporal do GESTOR_MEDICO permanece inalterada.
  */
 export async function lockMonth(
   institutionId: number,
@@ -663,8 +859,22 @@ export async function lockMonth(
   await assertInstitutionHierarchy({ institutionId, hospitalId }, { db });
 
   await db.transaction(async (tx) => {
+    // Trancar o mês também é hospitalar. Fazemos a revalidação antes de ler
+    // ou alterar o roster para que uma tentativa setorial não produza efeito.
+    const currentRole = await assertManagerScopeAccessForUpdate(
+      tx,
+      actor,
+      expectedActorSessionVersion,
+      hospitalId,
+      undefined,
+      [monthDate],
+    );
     const [existing] = await tx
-      .select({ id: monthlyRosters.id, status: monthlyRosters.status, version: monthlyRosters.version })
+      .select({
+        id: monthlyRosters.id,
+        status: monthlyRosters.status,
+        version: monthlyRosters.version,
+      })
       .from(monthlyRosters)
       .where(
         and(
@@ -678,15 +888,6 @@ export async function lockMonth(
     if (!existing || existing.status !== "PUBLISHED") {
       throw new Error("Mês não encontrado ou não está PUBLISHED");
     }
-    const currentRole = await assertManagerScopeAccessForUpdate(
-      tx,
-      actor,
-      expectedActorSessionVersion,
-      hospitalId,
-      undefined,
-      [monthDate],
-      { mode: "any-hospital" },
-    );
     const [result] = await tx
       .update(monthlyRosters)
       .set({

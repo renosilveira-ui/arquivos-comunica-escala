@@ -615,13 +615,14 @@ describe("system review — correções de raiz", () => {
     });
   });
 
-  it("7: gestor de setor consulta hasMonthShifts do hospital que opera", async () => {
+  it("7: gestor de setor consulta hasMonthShifts apenas do próprio setor", async () => {
     const probe = await callerApp(
       medicoAUserId,
       "manager",
       institutionA,
     ).filters.hasMonthShifts({
       hospitalId: hospitalA,
+      sectorId: sectorA,
       yearMonth: nextYm,
     });
     expect(probe.hasShifts).toBe(true);
@@ -629,6 +630,15 @@ describe("system review — correções de raiz", () => {
     await expect(
       callerApp(medicoAUserId, "manager", institutionA).filters.hasMonthShifts({
         hospitalId: hospitalA2,
+        sectorId: sectorA2,
+        yearMonth: nextYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    await expect(
+      callerApp(medicoAUserId, "manager", institutionA).filters.hasMonthShifts({
+        hospitalId: hospitalA,
         yearMonth: nextYm,
       }),
     ).rejects.toMatchObject({
@@ -636,28 +646,45 @@ describe("system review — correções de raiz", () => {
     });
   });
 
-  it("8: gestor de setor tranca o mês do próprio hospital e não o de outro", async () => {
-    const published = await callerShifts(
-      medicoAUserId,
-      "manager",
-      institutionA,
-    ).publish({
-      institutionId: institutionA,
-      hospitalId: hospitalA,
-      yearMonth: currentYm,
+  it("8: gestor setorial não publica nem tranca o roster hospitalar", async () => {
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).publish({
+        institutionId: institutionA,
+        hospitalId: hospitalA,
+        yearMonth: currentYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição hospitalar/),
     });
-    expect(published).toEqual({ ok: true });
+    const afterRejectedPublish = await db
+      .select({ id: monthlyRosters.id })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionA),
+          eq(monthlyRosters.hospitalId, hospitalA),
+          eq(monthlyRosters.yearMonth, currentYm),
+        ),
+      );
+    expect(afterRejectedPublish).toHaveLength(0);
 
-    const locked = await callerShifts(
-      medicoAUserId,
-      "manager",
-      institutionA,
-    ).lock({
+    await db.insert(monthlyRosters).values({
       institutionId: institutionA,
       hospitalId: hospitalA,
       yearMonth: currentYm,
+      status: "PUBLISHED",
     });
-    expect(locked).toEqual({ ok: true });
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).lock({
+        institutionId: institutionA,
+        hospitalId: hospitalA,
+        yearMonth: currentYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição hospitalar/),
+    });
     const [roster] = await db
       .select({ status: monthlyRosters.status })
       .from(monthlyRosters)
@@ -668,7 +695,7 @@ describe("system review — correções de raiz", () => {
           eq(monthlyRosters.yearMonth, currentYm),
         ),
       );
-    expect(roster?.status).toBe("LOCKED");
+    expect(roster?.status).toBe("PUBLISHED");
 
     await expect(
       callerShifts(medicoAUserId, "manager", institutionA).lock({

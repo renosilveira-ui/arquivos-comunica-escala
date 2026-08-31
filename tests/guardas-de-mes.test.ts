@@ -31,6 +31,7 @@ import { calendarRouter } from "../server/calendar";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
 import { dayKeyBrt, yearMonthBrt } from "../server/local-time";
+import { lockMonth, publishMonth } from "../server/month-guards";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
 import {
@@ -344,6 +345,33 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     await expectStaleMutationNoWrite(plusUserId, "publishMonth", () =>
       asPlus().publish({ institutionId, hospitalId, yearMonth: currentYm }),
     );
+  });
+
+  it("gestor setorial não publica ou tranca o roster hospitalar e não deixa efeitos", async () => {
+    const managerActor = await resolveTenantActor(
+      medicoUserId,
+      institutionId,
+      false,
+    );
+    const beforePublish = await mutationSnapshot();
+
+    await expect(
+      asMedico().publish({ institutionId, hospitalId, yearMonth: currentYm }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      publishMonth(institutionId, hospitalId, currentYm, managerActor, 1),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await mutationSnapshot()).toEqual(beforePublish);
+
+    await setRoster(currentYm, "PUBLISHED");
+    const beforeLock = await mutationSnapshot();
+    await expect(
+      asMedico().lock({ institutionId, hospitalId, yearMonth: currentYm }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      lockMonth(institutionId, hospitalId, currentYm, managerActor, 1),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await mutationSnapshot()).toEqual(beforeLock);
   });
 
   it("assumeVacancy vincula expectedSessionVersion ao expectedUserId sem escrever", async () => {

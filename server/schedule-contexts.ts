@@ -27,6 +27,12 @@ import {
 import { protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { ensureDefaultSectorScale, listManageableTopology } from "./sector-scale";
+import {
+  getCorporateReadinessReport,
+  projectCorporateReadinessReport,
+  visibleSectorIdsForActor,
+  type CorporateReadinessReportV1,
+} from "./corporate-readiness";
 import { z } from "zod";
 
 export type AllowedScheduleContextQualification = {
@@ -1390,6 +1396,144 @@ export async function resolveScheduleContextForShiftCreation(input: {
 }
 
 export const scheduleContextsRouter = router({
+  /**
+   * Diagnóstico corporativo somente leitura. A instituição vem sempre do
+   * tenant autenticado; o cliente nunca escolhe tenant. Gestor médico recebe
+   * somente seu recorte setorial; totais, alertas e ciência hospitalares são
+   * redigidos. Publicação é uma operação hospitalar e tem autorização própria.
+   */
+  getCorporateReadiness: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int().positive().optional(),
+        sectorId: z.number().int().positive().optional(),
+        yearMonth: z
+          .string()
+          .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      if (input.sectorId !== undefined && input.hospitalId === undefined) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "sectorId exige hospitalId.",
+        });
+      }
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      let hospitalRows: { id: number }[];
+      if (input.hospitalId !== undefined) {
+        hospitalRows = [{ id: input.hospitalId }];
+      } else if (actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS") {
+        hospitalRows = await db
+          .select({ id: hospitals.id })
+          .from(hospitals)
+          .where(eq(hospitals.institutionId, ctx.institutionId));
+      } else {
+        if (!actor.professionalId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Gestor sem vínculo profissional ativo neste tenant.",
+          });
+        }
+        const scopeRows = await db
+          .select({ hospitalId: managerScope.hospitalId })
+          .from(managerScope)
+          .where(
+            and(
+              eq(managerScope.institutionId, ctx.institutionId),
+              eq(managerScope.managerProfessionalId, actor.professionalId),
+              eq(managerScope.active, true),
+            ),
+          );
+        const manageableHospitalIds = [
+          ...new Set(scopeRows.map((scope) => scope.hospitalId)),
+        ];
+        hospitalRows =
+          manageableHospitalIds.length === 0
+            ? []
+            : await db
+                .select({ id: hospitals.id })
+                .from(hospitals)
+                .where(
+                  and(
+                    eq(hospitals.institutionId, ctx.institutionId),
+                    inArray(hospitals.id, manageableHospitalIds),
+                  ),
+                );
+      }
+
+      const visibilityScopes =
+        actor.isGlobalAdmin || actor.roleInInstitution === "GESTOR_PLUS"
+          ? []
+          : actor.professionalId === null
+            ? []
+            : await db
+                .select({
+                  hospitalId: managerScope.hospitalId,
+                  sectorId: managerScope.sectorId,
+                })
+                .from(managerScope)
+                .where(
+                  and(
+                    eq(managerScope.institutionId, ctx.institutionId),
+                    eq(managerScope.managerProfessionalId, actor.professionalId),
+                    eq(managerScope.active, true),
+                  ),
+                );
+
+      const reports: CorporateReadinessReportV1[] = [];
+      for (const hospital of hospitalRows.sort(
+        (left, right) => left.id - right.id,
+      )) {
+        const reportSectorId =
+          input.hospitalId === hospital.id ? input.sectorId : undefined;
+        // Mesmo hospitais descobertos por manager_scope passam pela mesma
+        // revalidação de hierarquia/RBAC do endpoint explícito. Uma linha
+        // antiga contaminada jamais vira cobertura para gerar o relatório.
+        await assertManagerScopeAccess(
+          actor,
+          hospital.id,
+          reportSectorId,
+          reportSectorId === undefined ? { mode: "any-hospital" } : undefined,
+        );
+        const report = await getCorporateReadinessReport(db, {
+          institutionId: ctx.institutionId,
+          hospitalId: hospital.id,
+          ...(reportSectorId !== undefined
+            ? { sectorId: reportSectorId }
+            : {}),
+          yearMonth: input.yearMonth,
+        });
+        const canRevealHospitalReadiness =
+          actor.isGlobalAdmin ||
+          actor.roleInInstitution === "GESTOR_PLUS" ||
+          visibilityScopes.some(
+            (scope) =>
+              scope.hospitalId === hospital.id && scope.sectorId === null,
+          );
+        reports.push(
+          projectCorporateReadinessReport(report, {
+            revealAll: canRevealHospitalReadiness,
+            visibleSectorIds: visibleSectorIdsForActor(
+              report,
+              actor,
+              visibilityScopes,
+            ),
+          }),
+        );
+      }
+      return {
+        version: "v1" as const,
+        institutionId: ctx.institutionId,
+        yearMonth: input.yearMonth,
+        reports,
+      };
+    }),
+
   listMine: protectedProcedure.query(async ({ ctx }) => {
     const actor = await getTenantActorFromContext(ctx);
     return listAuthorizedScheduleContexts(actor);

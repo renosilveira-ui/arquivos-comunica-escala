@@ -130,7 +130,11 @@ export default function EditShiftScreen() {
     { enabled: canLoadEditShift(permissionState, !!shiftId) },
   );
   const { data: monthRoster, hasShifts: monthHasShifts } =
-    usePublishedMonthRoster(shiftData?.hospitalId, startDate || undefined);
+    usePublishedMonthRoster(
+      shiftData?.hospitalId,
+      startDate || undefined,
+      shiftData?.sectorId,
+    );
   const utils = trpc.useUtils();
 
   // Mutation para atualizar escala
