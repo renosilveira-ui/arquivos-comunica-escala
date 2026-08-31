@@ -135,13 +135,17 @@ describe("sinal de oferta de plantão", () => {
     owner: Identity,
     dayOffset: number,
     specialty: string,
+    place?: { hospitalId: number; sectorId: number; scheduleContextId: number },
   ): Promise<{ shiftId: number; assignmentId: number }> {
     const startAt = at(dayOffset, 8);
+    const hid = place?.hospitalId ?? hospitalId;
+    const sid = place?.sectorId ?? sectorId;
+    const cid = place?.scheduleContextId ?? scheduleContextId;
     await db
       .insert(monthlyRosters)
       .values({
         institutionId,
-        hospitalId,
+        hospitalId: hid,
         yearMonth: yearMonthBrt(startAt),
         status: "PUBLISHED",
       })
@@ -150,9 +154,9 @@ describe("sinal de oferta de plantão", () => {
       .insert(shiftInstances)
       .values({
         institutionId,
-        hospitalId,
-        sectorId,
-        scheduleContextId,
+        hospitalId: hid,
+        sectorId: sid,
+        scheduleContextId: cid,
         label: `offer-signal-${stamp}-shift-${dayOffset}`,
         specialty,
         startAt,
@@ -165,8 +169,8 @@ describe("sinal de oferta de plantão", () => {
       .values({
         shiftInstanceId: shift.id,
         institutionId,
-        hospitalId,
-        sectorId,
+        hospitalId: hid,
+        sectorId: sid,
         professionalId: owner.professionalId,
         assignmentType: "ON_DUTY",
         status: "OCUPADO",
@@ -1006,5 +1010,164 @@ describe("sinal de oferta de plantão", () => {
     await expect(callerFor(peer).countActionable()).resolves.toEqual({
       swapOffers: 0,
     });
+  });
+
+  it("oferta direcionada a gestor inelegível não gera sinal (fail-closed)", async () => {
+    const shift = await createOccupiedShift(offerer, 35, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: gestor.professionalId,
+    });
+    expect(Number(created.id)).toBeGreaterThan(0);
+    const rows = await listOfferSignals();
+    expect(rows).toHaveLength(0);
+    const gestorRow = (await callerFor(gestor).listAvailable({})).find(
+      (item) => Number(item.id) === Number(created.id),
+    );
+    expect(gestorRow).toMatchObject({ canRespond: true });
+  });
+
+  it("quem recebe o sinal vê a oferta com canRespond; gestor puro vê mas não recebe", async () => {
+    const shift = await createOccupiedShift(offerer, 36, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    const signaled = new Set((await listOfferSignals()).map((row) => row.userId));
+    const peerRow = (await callerFor(peer).listAvailable({})).find(
+      (item) => Number(item.id) === Number(created.id),
+    );
+    expect(peerRow).toMatchObject({ canRespond: true });
+    expect(signaled.has(peer.userId)).toBe(true);
+    const gestorRow = (await callerFor(gestor).listAvailable({})).find(
+      (item) => Number(item.id) === Number(created.id),
+    );
+    expect(gestorRow).toMatchObject({ canRespond: true });
+    expect(signaled.has(gestor.userId)).toBe(false);
+    expect(signaled.has(plus.userId)).toBe(false);
+    expect(signaled.has(offerer.userId)).toBe(false);
+  });
+
+  it("acesso hospital-wide cobre legado ALL_CFM e não cobre allowlist; outro hospital não recebe", async () => {
+    const [legacySector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Legado ${stamp}`,
+        category: "servico",
+        color: "#abcdef",
+      })
+      .$returningId();
+    const legacyContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId: legacySector.id,
+    });
+    const [otherHospital] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `Other Hospital ${stamp}` })
+      .$returningId();
+    const [otherHospitalSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId: otherHospital.id,
+        name: `OH S ${stamp}`,
+        category: "cirurgico",
+        color: "#111111",
+      })
+      .$returningId();
+    const widePeer = await createIdentity("wide-peer", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "Anestesiologia",
+      withAccess: false,
+    });
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: widePeer.professionalId,
+      hospitalId,
+      sectorId: null,
+      canAccess: true,
+    });
+    const otherHospitalPeer = await createIdentity("other-hospital", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "Anestesiologia",
+      withAccess: false,
+    });
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: otherHospitalPeer.professionalId,
+      hospitalId: otherHospital.id,
+      sectorId: otherHospitalSector.id,
+      canAccess: true,
+    });
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: offerer.professionalId,
+      hospitalId,
+      sectorId: legacySector.id,
+      canAccess: true,
+    });
+    try {
+      const allowlistShift = await createOccupiedShift(offerer, 37, "Clínica Médica");
+      await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: allowlistShift.shiftId,
+        fromAssignmentId: allowlistShift.assignmentId,
+      });
+      const allowlistSignaled = (await listOfferSignals()).map((row) => row.userId);
+      expect(allowlistSignaled).toContain(peer.userId);
+      expect(allowlistSignaled).not.toContain(widePeer.userId);
+      expect(allowlistSignaled).not.toContain(otherHospitalPeer.userId);
+
+      await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+      const legacyShift = await createOccupiedShift(offerer, 38, "", {
+        hospitalId,
+        sectorId: legacySector.id,
+        scheduleContextId: legacyContextId,
+      });
+      await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: legacyShift.shiftId,
+        fromAssignmentId: legacyShift.assignmentId,
+      });
+      const legacySignaled = (await listOfferSignals()).map((row) => row.userId);
+      expect(legacySignaled).toContain(widePeer.userId);
+      expect(legacySignaled).not.toContain(peer.userId);
+      expect(legacySignaled).not.toContain(otherHospitalPeer.userId);
+    } finally {
+      await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+      await db
+        .delete(swapRequests)
+        .where(eq(swapRequests.institutionId, institutionId));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.sectorId, legacySector.id));
+      await db
+        .delete(shiftInstances)
+        .where(eq(shiftInstances.sectorId, legacySector.id));
+      await db
+        .delete(monthlyRosters)
+        .where(eq(monthlyRosters.hospitalId, otherHospital.id));
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.sectorId, legacySector.id));
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.hospitalId, otherHospital.id));
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.professionalId, widePeer.professionalId));
+      await db.delete(scheduleContexts).where(eq(scheduleContexts.id, legacyContextId));
+      await db.delete(sectors).where(eq(sectors.id, legacySector.id));
+      await db.delete(sectors).where(eq(sectors.id, otherHospitalSector.id));
+      await db.delete(hospitals).where(eq(hospitals.id, otherHospital.id));
+    }
   });
 });

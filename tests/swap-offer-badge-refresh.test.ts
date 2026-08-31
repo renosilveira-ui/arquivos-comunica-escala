@@ -68,8 +68,9 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(sql).not.toContain("actor_mgr");
     expect(sql).not.toContain("actor_source_scope");
     expect(sql).not.toContain("actor_directed_scope");
-    expect(listSlice).toContain("GESTOR_PLUS");
-    expect(listSlice).toContain("manager_scope");
+    expect(sql).toContain(
+      "(ap.medical_specialty_id IS NULL) != (ap.operational_profile_code IS NULL)",
+    );
     expect(listSlice).toContain("GESTOR_PLUS");
     expect(listSlice).toContain("manager_scope");
   });
@@ -106,12 +107,34 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     const root = readFileSync("app/_layout.tsx", "utf8");
     expect(tabs).toContain("trpc.swaps.countActionable.useQuery");
     expect(tabs).toContain("staleTime: 15_000");
+    expect(tabs).not.toContain("refetchInterval");
     expect(tabs).toContain("shouldRefetchSwapOfferBadgeOnAppStateChange");
     expect(tabs).toContain("utils.swaps.countActionable.invalidate()");
     expect(tabs).toContain("utils.swaps.listAvailable.invalidate()");
     expect(tabs).not.toContain("notifications.read");
     expect(tabs).toContain('if (Platform.OS === "web") return');
     expect(root).toContain("refetchOnWindowFocus: false");
+  });
+
+  it("resume do badge não reativa handshake nem clear da #322", () => {
+    const tabs = readFileSync("app/(tabs)/_layout.tsx", "utf8");
+    const root = readFileSync("app/_layout.tsx", "utf8");
+    const helper = readFileSync("lib/swap-offer-badge-refresh.ts", "utf8");
+    const tabsEffect = tabs.slice(
+      tabs.indexOf("previousAppStateRef"),
+      tabs.indexOf("return (") > tabs.indexOf("previousAppStateRef")
+        ? tabs.indexOf("return (", tabs.indexOf("previousAppStateRef"))
+        : tabs.length,
+    );
+    expect(tabsEffect).toContain("utils.swaps.countActionable.invalidate()");
+    expect(tabsEffect).toContain("utils.swaps.listAvailable.invalidate()");
+    expect(tabsEffect).not.toContain("queryClient.clear");
+    expect(tabsEffect).not.toContain("keep_verified_tree");
+    expect(tabsEffect).not.toContain("runTenantAuthorizationAttempt");
+    expect(tabsEffect).not.toContain("shouldSoftRevalidateNativeSessionOnForeground");
+    expect(helper).not.toContain("queryClient.clear");
+    expect(root).toContain('treeIntent === "keep_verified_tree"');
+    expect(root).toContain("shouldSoftRevalidateNativeSessionOnForeground(Platform.OS)");
   });
 
   it("aceitar/ofertar no cliente já invalida o badge", () => {

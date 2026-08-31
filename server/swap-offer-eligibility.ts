@@ -18,8 +18,10 @@ type EligibilityDb = {
  * entra aqui como médico.
  *
  * Os predicados de qualificação, acesso setorial, conflito e SWAP
- * espelham o ramo plantonista de queryListAvailableRows. Não reintroduzir
- * atalho gerencial no destinatário (aliases api/ap).
+ * espelham o ramo plantonista de queryListAvailableRows. XOR de
+ * especialidade/perfil replica qualificationMatches (listAssumable),
+ * para ninguém receber push sem aparecer com canRespond em Trocas.
+ * Não reintroduzir atalho gerencial no destinatário (aliases api/ap).
  */
 export async function eligibleRecipientUserIdsForSwapOffer(
   db: EligibilityDb,
@@ -122,6 +124,9 @@ export async function eligibleRecipientUserIdsForSwapOffer(
       AND sr.institution_id = ${swap.institutionId}
       AND sr.status = 'PENDING'
       AND sr.from_user_id != au.id
+      AND (
+        (ap.medical_specialty_id IS NULL) != (ap.operational_profile_code IS NULL)
+      )
       AND (
         (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
         OR (sr.to_professional_id = ap.id AND sr.to_user_id = au.id)
