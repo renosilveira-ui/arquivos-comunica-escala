@@ -109,6 +109,9 @@ describe("badge acionável — estado confiável", () => {
     expect(tabs).not.toContain("actionableSwapCount?.swapOffers ?? 0");
     expect(profile).not.toContain("pendingAssignments?.length ?? 0");
     expect(tabs).toContain("tabBarAccessibilityLabel");
+    expect(tabs).toContain("const badgeBackground");
+    expect(tabs).toContain("backgroundColor: badgeBackground");
+    expect(tabs).toContain("color: badgeTextColor");
     expect(mobileTabBar).toContain("options.tabBarAccessibilityLabel");
   });
 });

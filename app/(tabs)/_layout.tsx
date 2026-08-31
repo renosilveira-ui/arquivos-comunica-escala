@@ -78,6 +78,19 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
                 ? options.title
                 : route.name;
           const badge = options.tabBarBadge;
+          const badgeStyle = options.tabBarBadgeStyle;
+          const badgeBackground =
+            badgeStyle &&
+            typeof badgeStyle === "object" &&
+            "backgroundColor" in badgeStyle
+              ? String(badgeStyle.backgroundColor)
+              : theme.colors.danger;
+          const badgeTextColor =
+            badgeStyle &&
+            typeof badgeStyle === "object" &&
+            "color" in badgeStyle
+              ? String(badgeStyle.color)
+              : theme.colors.onDark.text;
           const badgeLabel =
             typeof options.tabBarAccessibilityLabel === "string"
               ? options.tabBarAccessibilityLabel
@@ -151,7 +164,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
                     height: theme.space[4],
                     paddingHorizontal: theme.space[1],
                     borderRadius: theme.radius.full,
-                    backgroundColor: theme.colors.danger,
+                    backgroundColor: badgeBackground,
                     alignItems: "center",
                     justifyContent: "center",
                   }}
@@ -160,7 +173,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
                     style={{
                       ...theme.text.caption,
                       fontWeight: theme.weight.bold,
-                      color: theme.colors.onDark.text,
+                      color: badgeTextColor,
                     }}
                   >
                     {String(badge)}
