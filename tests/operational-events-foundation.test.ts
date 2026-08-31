@@ -2,10 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   createOperationalEventInTransaction,
+  getOperationalEventEmissionMode,
   hashOperationalEmailAddress,
   isOperationalDeliveryRetryExhausted,
   isTerminalOperationalDeliveryStatus,
   OPERATIONAL_DELIVERY_MAX_ATTEMPTS,
+  OPERATIONAL_EVENT_EMISSION_POLICIES,
   isTrustedOperationalEmail,
   operationalDeliveryDedupKey,
   operationalDeliveryRetryDelayMs,
@@ -15,6 +17,7 @@ import {
   type CreateOperationalEventInput,
 } from "../server/operational-events";
 import {
+  canClaimOperationalDeliveryForEmissionMode,
   isOperationalDeliveryWorkerEnabled,
   runOperationalDeliveryWorker,
 } from "../server/operational-delivery-worker";
@@ -29,6 +32,7 @@ import {
   shiftAssignmentsV2,
   shiftInstances,
   swapRequests,
+  users,
 } from "../drizzle/schema";
 
 function hospitalEvent(): CreateOperationalEventInput {
@@ -55,6 +59,7 @@ type FoundationTransaction = Parameters<
 function inMemoryOperationalEventTransaction(options?: {
   membershipChecks?: boolean[];
   membershipRoles?: ("USER" | "GESTOR_MEDICO" | "GESTOR_PLUS")[];
+  globalAdmin?: boolean;
   inviteBelongsToInstitution?: boolean;
   resourceChecks?: boolean[];
   aggregateChecks?: boolean[];
@@ -182,6 +187,11 @@ function inMemoryOperationalEventTransaction(options?: {
                           ],
                     );
                   }
+                  if (table === users) {
+                    return lockableRows(
+                      options?.globalAdmin ? [{ id: 7 }] : [],
+                    );
+                  }
                   if (table === scheduleInvites) {
                     return lockableRows(
                       options?.inviteBelongsToInstitution === false
@@ -278,6 +288,42 @@ describe("foundation de eventos operacionais", () => {
     first.recipients = [...second.recipients].reverse();
 
     expect(operationalEventHash(first)).toBe(operationalEventHash(second));
+  });
+
+  it("fixa ROSTER_PUBLISHED em sombra no catálogo do servidor e no fato", async () => {
+    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe("SHADOW");
+    expect(Object.isFrozen(OPERATIONAL_EVENT_EMISSION_POLICIES)).toBe(true);
+
+    const memory = inMemoryOperationalEventTransaction();
+    await expect(
+      createOperationalEventInTransaction(memory.tx, hospitalEvent()),
+    ).resolves.toMatchObject({ eventId: 1, created: true });
+    expect(memory.getPersistedEvent()).toMatchObject({
+      eventType: "ROSTER_PUBLISHED",
+      emissionMode: "SHADOW",
+    });
+  });
+
+  it("não aceita ativação escolhida pelo caller", () => {
+    const clientSelectedActive = {
+      ...hospitalEvent(),
+      emissionMode: "ACTIVE",
+    } as unknown as CreateOperationalEventInput;
+
+    expect(() => operationalEventHash(clientSelectedActive)).toThrow(
+      "Modo de emissão é definido exclusivamente pelo servidor",
+    );
+  });
+
+  it("inclui a versão e o modo na projeção de deduplicação", () => {
+    const currentVersion = hospitalEvent();
+    const nextVersion = {
+      ...hospitalEvent(),
+      aggregate: { ...hospitalEvent().aggregate, version: 4 },
+    };
+    expect(operationalEventHash(currentVersion)).not.toBe(
+      operationalEventHash(nextVersion),
+    );
   });
 
   it("aceita publicação hospitalar sem setor e rejeita recursos setoriais nesse escopo", () => {
@@ -659,6 +705,13 @@ describe("foundation de eventos operacionais", () => {
     await expect(
       createOperationalEventInTransaction(staleRoster.tx, hospitalEvent()),
     ).rejects.toBeInstanceOf(OperationalEventValidationError);
+    // Se a mutação externa fizer rollback ou não alcançar PUBLISHED, a
+    // validação ocorre antes de inserir fato, recipients ou deliveries.
+    expect(staleRoster.counters).toEqual({
+      relatedContexts: 0,
+      recipients: 0,
+      deliveries: 0,
+    });
 
     const lockedRoster = inMemoryOperationalEventTransaction({
       rosterRow: { version: 3, status: "LOCKED" },
@@ -791,6 +844,7 @@ describe("foundation de eventos operacionais", () => {
     });
     expect(memory.getPersistedEvent()).toMatchObject({
       eventType: "ROSTER_PUBLISHED",
+      emissionMode: "SHADOW",
       deliveryPolicy: "NOTIFY",
       aggregateId: 50,
       aggregateVersion: 3,
@@ -873,6 +927,19 @@ describe("foundation de eventos operacionais", () => {
     });
   });
 
+  it("reconhece o Gestor+ global revalidado sem relaxar outros papéis", async () => {
+    const globalAdmin = inMemoryOperationalEventTransaction({
+      membershipRoles: ["USER"],
+      globalAdmin: true,
+    });
+    const input = hospitalEvent();
+    input.actor = { kind: "USER", userId: 7, role: "GESTOR_PLUS" };
+
+    await expect(
+      createOperationalEventInTransaction(globalAdmin.tx, input),
+    ).resolves.toMatchObject({ eventId: 1, created: true });
+  });
+
   it("reconhece retry de evento silencioso sem usar recipients como sinal", async () => {
     const memory = inMemoryOperationalEventTransaction({
       rosterRow: { version: 3, status: "LOCKED" },
@@ -939,6 +1006,7 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 1,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
         recipient,
         channel: "PUSH",
       }),
@@ -946,6 +1014,7 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 1,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
         recipient,
         channel: "EMAIL",
       }),
@@ -954,6 +1023,7 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 1,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
         recipient,
         channel: "PUSH",
       }),
@@ -961,6 +1031,24 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 2,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
+        recipient,
+        channel: "PUSH",
+      }),
+    );
+    expect(
+      operationalDeliveryDedupKey({
+        institutionId: 1,
+        eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
+        recipient,
+        channel: "PUSH",
+      }),
+    ).not.toBe(
+      operationalDeliveryDedupKey({
+        institutionId: 1,
+        eventIdempotencyKey: "event:1",
+        emissionMode: "ACTIVE",
         recipient,
         channel: "PUSH",
       }),
@@ -993,6 +1081,8 @@ describe("foundation de eventos operacionais", () => {
       claimed: 0,
       delivered: 0,
     });
+    expect(canClaimOperationalDeliveryForEmissionMode("SHADOW")).toBe(false);
+    expect(canClaimOperationalDeliveryForEmissionMode("ACTIVE")).toBe(true);
   });
 
   it("não carrega adaptador, banco ou logger de entrega nesta frente", () => {

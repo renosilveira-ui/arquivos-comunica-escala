@@ -1,3 +1,5 @@
+import type { OperationalEventEmissionMode } from "./operational-events";
+
 /**
  * Worker propositalmente inerte da fundação de eventos operacionais.
  *
@@ -25,6 +27,18 @@ export function isOperationalDeliveryWorkerEnabled(
   environment: Record<string, string | undefined> = process.env,
 ): boolean {
   return environment[OPERATIONAL_DELIVERY_WORKER_ENABLED_FLAG] === "true";
+}
+
+/**
+ * Um registro em sombra jamais pode ser reivindicado por um worker, mesmo se
+ * uma frente posterior habilitar transporte. O modo é lido do fato imutável,
+ * não de configuração do cliente ou do worker. Esta versão ainda não faz
+ * claim algum; o predicado deixa a barreira explícita e testável antes disso.
+ */
+export function canClaimOperationalDeliveryForEmissionMode(
+  emissionMode: OperationalEventEmissionMode,
+): boolean {
+  return emissionMode === "ACTIVE";
 }
 
 /**

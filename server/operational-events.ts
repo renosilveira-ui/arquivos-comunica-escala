@@ -12,6 +12,7 @@ import {
   shiftInstances,
   scheduleInvites,
   swapRequests,
+  users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 
@@ -47,6 +48,48 @@ export const OPERATIONAL_EVENT_TYPES = [
 ] as const;
 
 export type OperationalEventType = (typeof OPERATIONAL_EVENT_TYPES)[number];
+
+/**
+ * O modo de emissão é parte imutável do fato operacional. Nesta fase todos
+ * os emissores permanecem em sombra: a alteração para ACTIVE exige mudar o
+ * catálogo do servidor em uma frente revisada; ela nunca vem de payload,
+ * endpoint ou variável de ambiente.
+ */
+export const OPERATIONAL_EVENT_EMISSION_MODES = ["SHADOW", "ACTIVE"] as const;
+export type OperationalEventEmissionMode =
+  (typeof OPERATIONAL_EVENT_EMISSION_MODES)[number];
+
+export const OPERATIONAL_EVENT_EMISSION_POLICIES = Object.freeze({
+  ASSIGNMENT_CREATED: "SHADOW",
+  ASSIGNMENT_REMOVED: "SHADOW",
+  VACANCY_REQUESTED: "SHADOW",
+  ASSIGNMENT_APPROVED: "SHADOW",
+  ASSIGNMENT_REJECTED: "SHADOW",
+  SHIFT_UPDATED: "SHADOW",
+  VACANCY_BROADCAST: "SHADOW",
+  SCHEDULE_INVITE_CREATED: "SHADOW",
+  SCHEDULE_INVITE_ACCEPTED: "SHADOW",
+  SCHEDULE_INVITE_DECLINED: "SHADOW",
+  SCHEDULE_INVITE_REVOKED: "SHADOW",
+  SCHEDULE_INVITE_EXPIRED: "SHADOW",
+  SWAP_OFFERED: "SHADOW",
+  SWAP_ACCEPTED: "SHADOW",
+  SWAP_REJECTED: "SHADOW",
+  SWAP_CANCELLED: "SHADOW",
+  SWAP_OFFER_DISMISSED: "SHADOW",
+  SWAP_EXPIRED: "SHADOW",
+  ROSTER_PUBLISHED: "SHADOW",
+  ROSTER_LOCKED: "SHADOW",
+  SCHEDULE_REPLICATED: "SHADOW",
+  ACCESS_UPDATED: "SHADOW",
+  SCHEDULE_CONTEXT_CREATED: "SHADOW",
+} satisfies Record<OperationalEventType, OperationalEventEmissionMode>);
+
+export function getOperationalEventEmissionMode(
+  eventType: OperationalEventType,
+): OperationalEventEmissionMode {
+  return OPERATIONAL_EVENT_EMISSION_POLICIES[eventType];
+}
 
 export const OPERATIONAL_AGGREGATE_TYPES = [
   "SHIFT_ASSIGNMENT",
@@ -437,6 +480,12 @@ export type OperationalEventRecipient =
 export type CreateOperationalEventInput = {
   idempotencyKey: string;
   eventType: OperationalEventType;
+  /**
+   * Deliberadamente impossível de fornecer: o modo é derivado do catálogo
+   * fechado do servidor. A presença do campo em payload não tipado falha
+   * fechada em validateCreateInput.
+   */
+  emissionMode?: never;
   deliveryPolicy: OperationalDeliveryPolicy;
   aggregate: {
     type: OperationalAggregateType;
@@ -853,6 +902,7 @@ function resolveRecipientResolution(
 type CanonicalOperationalEventInput = {
   idempotencyKey: string;
   eventType: OperationalEventType;
+  emissionMode: OperationalEventEmissionMode;
   deliveryPolicy: OperationalDeliveryPolicy;
   aggregate: Readonly<{
     type: OperationalAggregateType;
@@ -957,11 +1007,33 @@ async function assertActorInInstitution(
       "Ator USER sem vínculo institucional ativo",
     );
   }
-  if (membership.roleInInstitution !== actor.role) {
-    throw new OperationalEventValidationError(
-      "Papel do ator diverge do vínculo institucional canônico",
-    );
+  if (membership.roleInInstitution === actor.role) return;
+
+  // A política de publicação já reconhece administrador global como
+  // GESTOR_PLUS, mesmo quando o vínculo institucional histórico é USER. O
+  // ledger precisa espelhar essa autorização canônica em vez de tornar a
+  // publicação um rollback inesperado. A exceção é estreita e revalida a
+  // conta bloqueada; nenhuma outra divergência de papel é admitida.
+  if (actor.role === "GESTOR_PLUS") {
+    const [globalAdmin] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        and(
+          eq(users.id, actor.userId),
+          eq(users.role, "admin"),
+          eq(users.approvalStatus, "APPROVED"),
+          isNull(users.deletedAt),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (globalAdmin) return;
   }
+
+  throw new OperationalEventValidationError(
+    "Papel do ator diverge do vínculo institucional canônico",
+  );
 }
 
 /**
@@ -1232,6 +1304,11 @@ function validateCreateInput(
   if (!isOperationalEventType(input.eventType)) {
     throw new OperationalEventValidationError("eventType inválido");
   }
+  if ("emissionMode" in (input as object)) {
+    throw new OperationalEventValidationError(
+      "Modo de emissão é definido exclusivamente pelo servidor",
+    );
+  }
   if (!isDeliveryPolicy(input.deliveryPolicy)) {
     throw new OperationalEventValidationError("deliveryPolicy inválida");
   }
@@ -1382,6 +1459,7 @@ function validateCreateInput(
   return Object.freeze({
     idempotencyKey: input.idempotencyKey,
     eventType: input.eventType,
+    emissionMode: getOperationalEventEmissionMode(input.eventType),
     deliveryPolicy: input.deliveryPolicy,
     aggregate: Object.freeze({
       type: input.aggregate.type,
@@ -1412,6 +1490,7 @@ function identityProjection(
 ): Record<string, unknown> {
   return {
     eventType: input.eventType,
+    emissionMode: input.emissionMode,
     deliveryPolicy: input.deliveryPolicy,
     aggregate: {
       type: input.aggregate.type,
@@ -1456,6 +1535,7 @@ export function operationalEventHash(
 export function operationalDeliveryDedupKey(input: {
   institutionId: number;
   eventIdempotencyKey: string;
+  emissionMode: OperationalEventEmissionMode;
   recipient: OperationalEventRecipient;
   channel: OperationalDeliveryChannel;
 }): string {
@@ -1463,6 +1543,7 @@ export function operationalDeliveryDedupKey(input: {
     canonicalJson({
       institutionId: input.institutionId,
       eventIdempotencyKey: input.eventIdempotencyKey,
+      emissionMode: input.emissionMode,
       recipient: targetKey(input.recipient),
       channel: input.channel,
     }),
@@ -1509,6 +1590,7 @@ export async function createOperationalEventInTransaction(
       idempotencyKeyHash,
       eventHash,
       eventType: eventInput.eventType,
+      emissionMode: eventInput.emissionMode,
       deliveryPolicy: eventInput.deliveryPolicy,
       recipientResolution: eventInput.recipientResolution,
       aggregateType: eventInput.aggregate.type,
@@ -1611,6 +1693,7 @@ export async function createOperationalEventInTransaction(
         dedupKey: operationalDeliveryDedupKey({
           institutionId: eventInput.context.institutionId,
           eventIdempotencyKey: eventInput.idempotencyKey,
+          emissionMode: eventInput.emissionMode,
           recipient,
           channel,
         }),
