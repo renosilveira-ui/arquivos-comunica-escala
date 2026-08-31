@@ -249,7 +249,9 @@ async function renderRealNotificationListener(options: {
   let responseListener:
     ((response: ReturnType<typeof notificationResponse>) => void) | undefined;
   let receivedListener:
-    | ((notification: { request: { content: { data: Record<string, unknown> } } }) => void)
+    | ((notification: {
+        request: { content: { data: Record<string, unknown> } };
+      }) => void)
     | undefined;
   let user = options.user === undefined ? { id: 7 } : options.user;
   let sessionVerified = options.sessionVerified ?? true;
@@ -337,6 +339,15 @@ async function renderRealNotificationListener(options: {
   const invalidateListAvailable = vi.fn(async () => undefined);
   const invalidateSwapList = vi.fn(async () => undefined);
   const invalidateListVacancies = vi.fn(async () => undefined);
+  const invalidateListByPeriod = vi.fn(async () => undefined);
+  const invalidateListAgenda = vi.fn(async () => undefined);
+  const invalidateGetNextShift = vi.fn(async () => undefined);
+  const invalidateShiftGet = vi.fn(async () => undefined);
+  const invalidatePendingConfirmation = vi.fn(async () => undefined);
+  const invalidateListPending = vi.fn(async () => undefined);
+  const invalidateListActiveInvites = vi.fn(async () => undefined);
+  const invalidateListInviteCandidates = vi.fn(async () => undefined);
+  const invalidateSummaryCounts = vi.fn(async () => undefined);
   vi.doMock("@/lib/trpc", () => ({
     trpc: {
       useUtils: () => ({
@@ -348,6 +359,25 @@ async function renderRealNotificationListener(options: {
         },
         shiftInstances: {
           listVacancies: { invalidate: invalidateListVacancies },
+        },
+        shifts: {
+          listAgenda: { invalidate: invalidateListAgenda },
+          getNextShift: { invalidate: invalidateGetNextShift },
+          listByPeriod: { invalidate: invalidateListByPeriod },
+          get: { invalidate: invalidateShiftGet },
+        },
+        confirmations: {
+          getPending: { invalidate: invalidatePendingConfirmation },
+        },
+        shiftAssignments: {
+          listPending: { invalidate: invalidateListPending },
+        },
+        scheduleInvites: {
+          listActive: { invalidate: invalidateListActiveInvites },
+          listCandidates: { invalidate: invalidateListInviteCandidates },
+        },
+        filters: {
+          summaryCounts: { invalidate: invalidateSummaryCounts },
         },
       }),
       professionals: {
@@ -380,6 +410,15 @@ async function renderRealNotificationListener(options: {
     invalidateListAvailable,
     invalidateSwapList,
     invalidateListVacancies,
+    invalidateListByPeriod,
+    invalidateListAgenda,
+    invalidateGetNextShift,
+    invalidateShiftGet,
+    invalidatePendingConfirmation,
+    invalidateListPending,
+    invalidateListActiveInvites,
+    invalidateListInviteCandidates,
+    invalidateSummaryCounts,
     setActiveInstitutionId,
     openComunicaFromNotification,
     notificationWebHandoff,
@@ -2106,6 +2145,65 @@ describe("SSO client tenant boundaries", () => {
     harness.emitReceived({ type: "duty_confirmation", institutionId: 22 });
     await Promise.resolve();
     expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListByPeriod).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListAgenda).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateGetNextShift).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateShiftGet).toHaveBeenCalledTimes(1);
+    expect(harness.invalidatePendingConfirmation).toHaveBeenCalledTimes(1);
+    (cleanup as () => void)();
+  });
+
+  it("push operacional recebido reconcilia apenas os caches mapeados", async () => {
+    const harness = await renderRealNotificationListener({
+      user: { id: 7 },
+      sessionVerified: true,
+      sessionAuthorizationCurrent: true,
+      activeTenant: { institutionId: 22, revision: 1 },
+    });
+
+    harness.render();
+    const cleanup = harness.runLatestEffect();
+
+    harness.emitReceived({
+      type: "shift_unassigned",
+      institutionId: 22,
+      shiftInstanceId: 44,
+    });
+    await Promise.resolve();
+    expect(harness.invalidateListByPeriod).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListVacancies).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListPending).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateSummaryCounts).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListActiveInvites).not.toHaveBeenCalled();
+    expect(harness.invalidateQueries).not.toHaveBeenCalled();
+
+    harness.emitReceived({ type: "invite_accepted", institutionId: 22 });
+    await Promise.resolve();
+    expect(harness.invalidateListActiveInvites).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListInviteCandidates).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListByPeriod).toHaveBeenCalledTimes(1);
+    expect(harness.routerPush).not.toHaveBeenCalled();
+    expect(harness.setActiveInstitutionId).not.toHaveBeenCalled();
+
+    harness.emitReceived({ type: "future_event", institutionId: 22 });
+    await Promise.resolve();
+    expect(harness.invalidateQueries).not.toHaveBeenCalled();
+    expect(harness.invalidateListByPeriod).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListActiveInvites).toHaveBeenCalledTimes(1);
+
+    harness.emitReceived({
+      type: "shift_unassigned",
+      institutionId: 11,
+      shiftInstanceId: 45,
+    });
+    harness.emitReceived({ type: "shift_unassigned", shiftInstanceId: 46 });
+    await Promise.resolve();
+    expect(harness.invalidateListByPeriod).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListVacancies).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateListPending).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateSummaryCounts).toHaveBeenCalledTimes(1);
+
     (cleanup as () => void)();
   });
 

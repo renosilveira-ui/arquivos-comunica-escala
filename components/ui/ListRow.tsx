@@ -26,7 +26,7 @@ export interface ListRowProps {
   /**
    * Cor do `value`. "muted" (padrão) para informação; "action" (primary) quando
    * o valor É a ação ("Alterar"); "count" desenha pílula âmbar preenchida —
-   * fila que exige ação (só renderizar quando > 0: um "0" é ruído).
+   * fila que exige ação (renderizar quando > 0; "!" indica contagem indisponível).
    */
   valueTone?: "muted" | "action" | "count";
   /** Switch à direita. Quando definido, a linha não mostra chevron. */

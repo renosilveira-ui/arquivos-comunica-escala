@@ -11,11 +11,13 @@ import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { profileRoleBadgeLabel } from "@/lib/institution-roles";
 import { shouldRefetchSwapOfferBadgeOnAppStateChange } from "@/lib/swap-offer-badge-refresh";
-
-function navigationBadgeValue(count: number): string | number | undefined {
-  if (count <= 0) return undefined;
-  return count > 9 ? "9+" : count;
-}
+import {
+  actionableBadgeAccessibilityLabel,
+  actionableBadgeUsesWarningTone,
+  actionableBadgeValue,
+  combineActionableBadgeStates,
+  deriveActionableBadgeState,
+} from "@/lib/actionable-badge";
 
 function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const { user } = useAuth();
@@ -77,9 +79,11 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
                 : route.name;
           const badge = options.tabBarBadge;
           const badgeLabel =
-            badge !== undefined && badge !== null
-              ? `${label}, ${badge} pendência${Number(badge) === 1 ? "" : "s"}`
-              : label;
+            typeof options.tabBarAccessibilityLabel === "string"
+              ? options.tabBarAccessibilityLabel
+              : badge !== undefined && badge !== null
+                ? `${label}, ${badge} pendência${Number(badge) === 1 ? "" : "s"}`
+                : label;
           const color = focused ? theme.colors.onDark.text : theme.colors.onDark.textInactive;
 
           const onPress = () => {
@@ -232,7 +236,7 @@ function WebSidebarTabBar({ state, descriptors, navigation }: BottomTabBarProps)
 
 export default function TabLayout() {
   const { can, isManager, canApproveAssignments } = usePermissions();
-  const { user } = useAuth();
+  const { user, isSessionAuthorizationCurrent } = useAuth();
   const utils = trpc.useUtils();
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === "web" && width >= 1024;
@@ -244,19 +248,56 @@ export default function TabLayout() {
   // 2026-08-22.
   const showManagementTabs = isDesktopWeb;
   const showTrocasTab = !isDesktopWeb || !isManager;
-  const { data: actionableSwapCount } = trpc.swaps.countActionable.useQuery(undefined, {
+  const showDesktopRequestsTab =
+    showManagementTabs && canApproveAssignments && !showTrocasTab;
+  const {
+    data: actionableSwapCount,
+    isError: actionableSwapCountHasError,
+  } = trpc.swaps.countActionable.useQuery(undefined, {
     enabled: !!user?.id,
     staleTime: 15_000,
   });
-  const swapOffersPending = actionableSwapCount?.swapOffers ?? 0;
-  const swapBadge = navigationBadgeValue(swapOffersPending);
+  const swapBadgeState = deriveActionableBadgeState({
+    count: actionableSwapCount?.swapOffers,
+    hasError: actionableSwapCountHasError,
+  });
+  const swapBadge = actionableBadgeValue(swapBadgeState);
   const trocasTabBadge = showTrocasTab ? swapBadge : undefined;
+  const {
+    data: pendingAssignments,
+    isError: pendingAssignmentsHasError,
+  } = trpc.shiftAssignments.listPending.useQuery(
+    {},
+    {
+      enabled: !!user?.id && showDesktopRequestsTab,
+      staleTime: 60_000,
+    },
+  );
+  const assignmentBadgeState = deriveActionableBadgeState({
+    count: pendingAssignments?.length,
+    hasError: pendingAssignmentsHasError,
+  });
+  const requestsBadgeState = combineActionableBadgeStates([
+    swapBadgeState,
+    assignmentBadgeState,
+  ]);
   // Desktop gestor: Trocas oculta; aceitar/recusar fica em Solicitações
   // (pending.tsx → AvailableSwapsList, fluxo peer A↔B — não approveByManager).
-  const pendingTabBadge =
-    showManagementTabs && canApproveAssignments && !showTrocasTab ? swapBadge : undefined;
-  const attentionBadgeStyle = {
-    backgroundColor: theme.colors.danger,
+  // O total soma as duas filas disjuntas da tela: trocas acionáveis e
+  // alocações aguardando decisão gerencial.
+  const pendingTabBadge = showDesktopRequestsTab
+    ? actionableBadgeValue(requestsBadgeState)
+    : undefined;
+  const swapBadgeStyle = {
+    backgroundColor: actionableBadgeUsesWarningTone(swapBadgeState)
+      ? theme.palette.warning[700]
+      : theme.colors.danger,
+    color: theme.colors.onDark.text,
+  } as const;
+  const requestsBadgeStyle = {
+    backgroundColor: actionableBadgeUsesWarningTone(requestsBadgeState)
+      ? theme.palette.warning[700]
+      : theme.colors.danger,
     color: theme.colors.onDark.text,
   } as const;
   const previousAppStateRef = useRef(AppState.currentState);
@@ -276,13 +317,27 @@ export default function TabLayout() {
       ) {
         return;
       }
+      // Entre BEGIN de logout/rotação e o rerender, `user` ainda pode estar
+      // capturado. A proof corrente impede refetch operacional sob sessão stale.
+      if (!user?.id || !isSessionAuthorizationCurrent()) return;
       void Promise.all([
         utils.swaps.countActionable.invalidate(),
         utils.swaps.listAvailable.invalidate(),
+        utils.swaps.list.invalidate(),
+        utils.shiftInstances.listVacancies.invalidate(),
+        utils.shiftAssignments.listPending.invalidate(),
+        utils.shifts.listAgenda.invalidate(),
+        utils.shifts.getNextShift.invalidate(),
+        utils.shifts.listByPeriod.invalidate(),
+        utils.shifts.get.invalidate(),
+        utils.confirmations.getPending.invalidate(),
+        utils.scheduleInvites.listActive.invalidate(),
+        utils.scheduleInvites.listCandidates.invalidate(),
+        utils.filters.summaryCounts.invalidate(),
       ]);
     });
     return () => subscription.remove();
-  }, [utils]);
+  }, [isSessionAuthorizationCurrent, user?.id, utils]);
 
   return (
     <Tabs
@@ -336,7 +391,11 @@ export default function TabLayout() {
           href: showTrocasTab ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="swap" color={color} size={size} />,
           tabBarBadge: trocasTabBadge,
-          tabBarBadgeStyle: attentionBadgeStyle,
+          tabBarBadgeStyle: swapBadgeStyle,
+          tabBarAccessibilityLabel: actionableBadgeAccessibilityLabel(
+            "Trocas",
+            swapBadgeState,
+          ),
         }}
       />
       <Tabs.Screen
@@ -373,7 +432,11 @@ export default function TabLayout() {
           href: showManagementTabs && canApproveAssignments ? undefined : null,
           tabBarIcon: ({ color, size }) => <TabIcon name="pending" color={color} size={size} />,
           tabBarBadge: pendingTabBadge,
-          tabBarBadgeStyle: attentionBadgeStyle,
+          tabBarBadgeStyle: requestsBadgeStyle,
+          tabBarAccessibilityLabel: actionableBadgeAccessibilityLabel(
+            "Solicitações",
+            requestsBadgeState,
+          ),
         }}
       />
       <Tabs.Screen

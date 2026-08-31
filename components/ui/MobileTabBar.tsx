@@ -56,17 +56,23 @@ export function MobileTabBar({
           const badge = options.tabBarBadge;
           const badgeStyle = options.tabBarBadgeStyle;
           const badgeBackground =
-            badgeStyle && typeof badgeStyle === "object" && "backgroundColor" in badgeStyle
+            badgeStyle &&
+            typeof badgeStyle === "object" &&
+            "backgroundColor" in badgeStyle
               ? String(badgeStyle.backgroundColor)
               : theme.colors.danger;
           const badgeTextColor =
-            badgeStyle && typeof badgeStyle === "object" && "color" in badgeStyle
+            badgeStyle &&
+            typeof badgeStyle === "object" &&
+            "color" in badgeStyle
               ? String(badgeStyle.color)
               : theme.colors.onDark.text;
           const accessibilityLabel =
-            badge !== undefined && badge !== null
-              ? `${label}, ${badge} pendência${Number(badge) === 1 ? "" : "s"}`
-              : label;
+            typeof options.tabBarAccessibilityLabel === "string"
+              ? options.tabBarAccessibilityLabel
+              : badge !== undefined && badge !== null
+                ? `${label}, ${badge} pendência${Number(badge) === 1 ? "" : "s"}`
+                : label;
 
           return (
             <Pressable
