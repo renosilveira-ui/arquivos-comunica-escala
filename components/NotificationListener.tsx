@@ -344,10 +344,9 @@ export async function routeNotificationData(
       }
       if (dependencies.navigateToVacancies) {
         dependencies.navigateToVacancies();
-      } else {
-        dependencies.navigateToAgenda();
+        return true;
       }
-      return true;
+      return false;
     }
 
     case "swap_taken": {

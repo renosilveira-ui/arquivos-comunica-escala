@@ -26,11 +26,13 @@ import {
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
+import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
 import { yearMonthBrt } from "../server/local-time";
 import {
   VACANCY_AVAILABLE_DEEP_LINK,
   VACANCY_AVAILABLE_PUSH_TITLE,
+  VACANCY_BROADCAST_COOLDOWN_MS,
   vacancyBroadcastDedupPrefix,
 } from "../lib/vacancy-broadcast";
 
@@ -132,6 +134,20 @@ describe("aviso deliberado de plantão vago", () => {
       },
       institutionId: inst,
       allowedInstitutionIds: [inst],
+    } as never);
+  }
+
+  function vacanciesCaller(identity: Identity) {
+    return appRouter.createCaller({
+      user: {
+        id: identity.userId,
+        role: identity.role,
+        name: identity.name,
+        email: `${identity.name}@example.test`,
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
     } as never);
   }
 
@@ -359,6 +375,19 @@ describe("aviso deliberado de plantão vago", () => {
     expect(rows[0]?.title).toBe(VACANCY_AVAILABLE_PUSH_TITLE);
     expect(rows[0]?.deepLink).toBe(VACANCY_AVAILABLE_DEEP_LINK);
     expect(rows[0]?.body).toContain("SR ·");
+    expect(rows[0]?.body).toMatch(/SR · \d{2}\/\d{2} · /);
+    expect(rows[0]?.body).not.toMatch(/saiu|motivo|telefone|\+55/i);
+    expect(rows[0]?.title).not.toMatch(manager.name);
+    const visible = await vacanciesCaller(doctor).shiftInstances.listVacancies(
+      {},
+    );
+    expect(visible.map((row) => Number(row.shiftInstanceId))).toContain(shiftId);
+    const hidden = await vacanciesCaller(ineligible).shiftInstances.listVacancies(
+      {},
+    );
+    expect(hidden.map((row) => Number(row.shiftInstanceId))).not.toContain(
+      shiftId,
+    );
   });
 
   it("GESTOR_PLUS autorizado envia", async () => {
@@ -478,6 +507,104 @@ describe("aviso deliberado de plantão vago", () => {
       message:
         "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
     });
+  });
+
+  it("virada de bucket em 2s continua em cooldown (elapsed, não época)", async () => {
+    const shiftId = await createVacantShift(16);
+    await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId });
+    await db
+      .update(notifications)
+      .set({ createdAt: new Date(Date.now() - 2_000) })
+      .where(
+        like(
+          notifications.dedupKey,
+          `${vacancyBroadcastDedupPrefix(shiftId)}%`,
+        ),
+      );
+    await expect(
+      callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }),
+    ).rejects.toMatchObject({
+      message:
+        "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
+    });
+    expect(await listBroadcasts(shiftId)).toHaveLength(2);
+  });
+
+  it("libera novo aviso só depois de 15 min elapsed no mesmo plantão", async () => {
+    const shiftId = await createVacantShift(17);
+    await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId });
+    await db
+      .update(notifications)
+      .set({
+        createdAt: new Date(Date.now() - VACANCY_BROADCAST_COOLDOWN_MS - 1_000),
+      })
+      .where(
+        like(
+          notifications.dedupKey,
+          `${vacancyBroadcastDedupPrefix(shiftId)}%`,
+        ),
+      );
+    const result = await callerFor(manager).notifyVacancy({
+      shiftInstanceId: shiftId,
+    });
+    expect(result.notifiedCount).toBe(2);
+    expect(await listBroadcasts(shiftId)).toHaveLength(4);
+  });
+
+  it("double tap concorrente gera um broadcast e um cooldown", async () => {
+    const shiftId = await createVacantShift(18);
+    const outcomes = await Promise.allSettled([
+      callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }),
+      callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }),
+    ]);
+    const fulfilled = outcomes.filter(
+      (outcome): outcome is PromiseFulfilledResult<{ notifiedCount: number }> =>
+        outcome.status === "fulfilled",
+    );
+    const rejected = outcomes.filter(
+      (outcome): outcome is PromiseRejectedResult =>
+        outcome.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(fulfilled[0]?.value.notifiedCount).toBe(2);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({
+      message:
+        "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
+    });
+    expect(await listBroadcasts(shiftId)).toHaveLength(2);
+  });
+
+  it("cooldown é por plantão, não por gestor", async () => {
+    const shiftId = await createVacantShift(19);
+    await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId });
+    await expect(
+      callerFor(plus).notifyVacancy({ shiftInstanceId: shiftId }),
+    ).rejects.toMatchObject({
+      message:
+        "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
+    });
+    expect(await listBroadcasts(shiftId)).toHaveLength(2);
+  });
+
+  it("status VAGO envenenado com assignment ativa não dispara aviso", async () => {
+    const shiftId = await createVacantShift(20);
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: shiftId,
+      institutionId,
+      hospitalId,
+      sectorId,
+      professionalId: doctor.professionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+    });
+    await expect(
+      callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }),
+    ).rejects.toMatchObject({
+      message: "Este plantão não está mais vago.",
+    });
+    expect(await listBroadcasts(shiftId)).toEqual([]);
   });
 
   it("outro tenant nunca recebe", async () => {

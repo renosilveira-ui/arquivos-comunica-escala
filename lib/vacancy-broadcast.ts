@@ -10,8 +10,19 @@ export const VACANCY_AVAILABLE_DEEP_LINK = "/(tabs)/vacancies";
 /** 15 min: cobre double-tap sem impedir um segundo aviso se a vaga continuar aberta. */
 export const VACANCY_BROADCAST_COOLDOWN_MS = 15 * 60 * 1000;
 
-export function vacancyBroadcastCooldownBucket(now: Date): number {
-  return Math.floor(now.getTime() / VACANCY_BROADCAST_COOLDOWN_MS);
+/**
+ * Cooldown temporal real: elapsed desde o último broadcast deste plantão.
+ * Não usa bucket de relógio — a virada de época (12:14:59 → 12:15:01)
+ * continuaria bloqueada.
+ */
+export function vacancyBroadcastStillCoolingDown(
+  lastBroadcastAt: Date | null | undefined,
+  now: Date,
+): boolean {
+  if (!lastBroadcastAt) return false;
+  const lastMs = lastBroadcastAt.getTime();
+  if (!Number.isFinite(lastMs)) return false;
+  return now.getTime() - lastMs < VACANCY_BROADCAST_COOLDOWN_MS;
 }
 
 export function vacancyBroadcastDedupKey(input: {
@@ -19,7 +30,9 @@ export function vacancyBroadcastDedupKey(input: {
   userId: number;
   now: Date;
 }): string {
-  return `vacancy-notify:${input.shiftInstanceId}:${input.userId}:${vacancyBroadcastCooldownBucket(input.now)}`;
+  // Wave id = instante desta mutation (capturado uma vez na TX).
+  // Unicidade do outbox, não janela de cooldown — o gate é createdAt.
+  return `vacancy-notify:${input.shiftInstanceId}:${input.userId}:${input.now.getTime()}`;
 }
 
 export function vacancyBroadcastDedupPrefix(shiftInstanceId: number): string {

@@ -1,4 +1,4 @@
-import { and, eq, gt, like, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, like, type SQLWrapper } from "drizzle-orm";
 import { notifications, sectors } from "../drizzle/schema";
 import {
   formatHospitalDate,
@@ -8,9 +8,9 @@ import {
   VACANCY_AVAILABLE_DEEP_LINK,
   VACANCY_AVAILABLE_PUSH_TITLE,
   VACANCY_AVAILABLE_PUSH_TYPE,
-  VACANCY_BROADCAST_COOLDOWN_MS,
   vacancyBroadcastDedupKey,
   vacancyBroadcastDedupPrefix,
+  vacancyBroadcastStillCoolingDown,
 } from "../lib/vacancy-broadcast";
 import { enqueueTrackedPushNotification } from "./push-delivery";
 import {
@@ -76,21 +76,18 @@ export async function recentVacancyBroadcastExists(
   now: Date,
 ): Promise<boolean> {
   const [row] = await db
-    .select({ id: notifications.id })
+    .select({ createdAt: notifications.createdAt })
     .from(notifications)
     .where(
       and(
         eq(notifications.institutionId, shift.institutionId),
         eq(notifications.shiftInstanceId, shift.id),
         like(notifications.dedupKey, `${vacancyBroadcastDedupPrefix(shift.id)}%`),
-        gt(
-          notifications.createdAt,
-          new Date(now.getTime() - VACANCY_BROADCAST_COOLDOWN_MS),
-        ),
       ),
     )
+    .orderBy(desc(notifications.createdAt))
     .limit(1);
-  return Boolean(row);
+  return vacancyBroadcastStillCoolingDown(row?.createdAt, now);
 }
 
 /**

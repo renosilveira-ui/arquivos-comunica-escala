@@ -69,6 +69,7 @@ import {
   ensureDefaultShiftTemplates,
   planMissingDefaultShiftTemplates,
 } from "./sector-scale";
+import { deriveShiftStatus } from "./shift-status";
 import {
   enqueueVacancyAvailableSignals,
   recentVacancyBroadcastExists,
@@ -1962,6 +1963,28 @@ export const shiftsRouter = router({
           [locked.startAt],
         );
         if (locked.status !== "VAGO") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Este plantão não está mais vago.",
+          });
+        }
+        const activeAssignments = await tx
+          .select({ status: shiftAssignmentsV2.status })
+          .from(shiftAssignmentsV2)
+          .where(
+            and(
+              eq(shiftAssignmentsV2.shiftInstanceId, locked.id),
+              eq(shiftAssignmentsV2.institutionId, locked.institutionId),
+              eq(shiftAssignmentsV2.hospitalId, locked.hospitalId),
+              eq(shiftAssignmentsV2.sectorId, locked.sectorId),
+              eq(shiftAssignmentsV2.isActive, true),
+            ),
+          );
+        if (
+          activeAssignments.length > 0 ||
+          deriveShiftStatus(activeAssignments.map((row) => row.status)) !==
+            "VAGO"
+        ) {
           throw new TRPCError({
             code: "CONFLICT",
             message: "Este plantão não está mais vago.",

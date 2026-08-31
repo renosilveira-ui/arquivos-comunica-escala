@@ -5,7 +5,9 @@ import {
   VACANCY_AVAILABLE_PUSH_TITLE,
   VACANCY_BROADCAST_COOLDOWN_MS,
   shouldInvalidateVacancyQueriesOnNotification,
+  vacancyBroadcastDedupKey,
   vacancyBroadcastFeedbackMessage,
+  vacancyBroadcastStillCoolingDown,
 } from "../lib/vacancy-broadcast";
 
 describe("aviso de plantão vago — contratos de fonte", () => {
@@ -32,8 +34,40 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(vacancyBroadcastFeedbackMessage(12)).not.toMatch(/entreg/i);
   });
 
-  it("cooldown de 15 min sem migration", () => {
+  it("cooldown de 15 min é elapsed real, não bucket de relógio", () => {
     expect(VACANCY_BROADCAST_COOLDOWN_MS).toBe(15 * 60 * 1000);
+    const last = new Date("2026-08-31T15:14:59.000Z");
+    const twoSecondsLater = new Date("2026-08-31T15:15:01.000Z");
+    expect(vacancyBroadcastStillCoolingDown(last, twoSecondsLater)).toBe(true);
+    expect(
+      vacancyBroadcastStillCoolingDown(
+        last,
+        new Date(last.getTime() + VACANCY_BROADCAST_COOLDOWN_MS - 1),
+      ),
+    ).toBe(true);
+    expect(
+      vacancyBroadcastStillCoolingDown(
+        last,
+        new Date(last.getTime() + VACANCY_BROADCAST_COOLDOWN_MS),
+      ),
+    ).toBe(false);
+    expect(vacancyBroadcastStillCoolingDown(null, twoSecondsLater)).toBe(false);
+
+    const firstKey = vacancyBroadcastDedupKey({
+      shiftInstanceId: 44,
+      userId: 22,
+      now: last,
+    });
+    const secondKey = vacancyBroadcastDedupKey({
+      shiftInstanceId: 44,
+      userId: 22,
+      now: twoSecondsLater,
+    });
+    expect(firstKey).toBe(`vacancy-notify:44:22:${last.getTime()}`);
+    expect(secondKey).not.toBe(firstKey);
+    const source = readFileSync("lib/vacancy-broadcast.ts", "utf8");
+    expect(source).not.toContain("vacancyBroadcastCooldownBucket");
+    expect(source).toContain("vacancyBroadcastStillCoolingDown");
   });
 
   it("copy, deep link e título canônicos", () => {
@@ -57,8 +91,14 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(notify).toContain("assertManagerScopeAccess");
     expect(notify).toContain("assertManagerScopeAccessForUpdate");
     expect(notify).toContain('locked.status !== "VAGO"');
+    expect(notify).toContain("deriveShiftStatus");
+    expect(notify).toContain("shiftAssignmentsV2.isActive");
     expect(notify).toContain("enqueueVacancyAvailableSignals");
     expect(notify).toContain("recentVacancyBroadcastExists");
+    const signal = readFileSync("server/vacancy-broadcast-signal.ts", "utf8");
+    expect(signal).toContain("vacancyBroadcastStillCoolingDown");
+    expect(signal).toContain("orderBy(desc(notifications.createdAt))");
+    expect(signal).not.toContain("vacancyBroadcastCooldownBucket");
   });
 
   it("markVacant e unassignDirect não disparam aviso de equipe", () => {
@@ -99,6 +139,13 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(listener).toContain('router.push("/(tabs)/vacancies"');
     expect(listener).toContain("shouldInvalidateVacancyQueriesOnNotification");
     expect(listener).toContain("utils.shiftInstances.listVacancies.invalidate()");
+    const vacancyCase = listener.slice(
+      listener.indexOf('case "vacancy_available"'),
+      listener.indexOf('case "swap_taken"'),
+    );
+    expect(vacancyCase).toContain("alignNotificationTenant");
+    expect(vacancyCase).not.toContain("navigateToAgenda");
+    expect(vacancyCase).toContain("return false");
     const received = listener.slice(
       listener.indexOf("addNotificationReceivedListener"),
     );
@@ -109,5 +156,13 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(received.slice(0, vacancyInvalidate)).not.toContain(
       "navigateToVacancies",
     );
+  });
+
+  it("rota canônica de Assumir plantão existe no mobile", () => {
+    const vacancies = readFileSync("app/(tabs)/vacancies.tsx", "utf8");
+    const tabs = readFileSync("app/(tabs)/_layout.tsx", "utf8");
+    expect(vacancies).toContain('title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}');
+    expect(tabs).toContain('name="vacancies"');
+    expect(tabs).toContain('href: can("view:vacancies") ? undefined : null');
   });
 });
