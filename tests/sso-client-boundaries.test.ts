@@ -336,6 +336,7 @@ async function renderRealNotificationListener(options: {
   const invalidateCountActionable = vi.fn(async () => undefined);
   const invalidateListAvailable = vi.fn(async () => undefined);
   const invalidateSwapList = vi.fn(async () => undefined);
+  const invalidateListVacancies = vi.fn(async () => undefined);
   vi.doMock("@/lib/trpc", () => ({
     trpc: {
       useUtils: () => ({
@@ -344,6 +345,9 @@ async function renderRealNotificationListener(options: {
           countActionable: { invalidate: invalidateCountActionable },
           listAvailable: { invalidate: invalidateListAvailable },
           list: { invalidate: invalidateSwapList },
+        },
+        shiftInstances: {
+          listVacancies: { invalidate: invalidateListVacancies },
         },
       }),
       professionals: {
@@ -375,6 +379,7 @@ async function renderRealNotificationListener(options: {
     invalidateCountActionable,
     invalidateListAvailable,
     invalidateSwapList,
+    invalidateListVacancies,
     setActiveInstitutionId,
     openComunicaFromNotification,
     notificationWebHandoff,
@@ -1983,6 +1988,9 @@ describe("SSO client tenant boundaries", () => {
             listAvailable: { invalidate: vi.fn(async () => undefined) },
             list: { invalidate: vi.fn(async () => undefined) },
           },
+          shiftInstances: {
+            listVacancies: { invalidate: vi.fn(async () => undefined) },
+          },
         }),
         professionals: {
           listMyInstitutions: {
@@ -2084,6 +2092,16 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.invalidateQueries).not.toHaveBeenCalled();
     expect(harness.routerPush).not.toHaveBeenCalled();
     expect(harness.setActiveInstitutionId).not.toHaveBeenCalled();
+
+    harness.emitReceived({
+      type: "vacancy_available",
+      institutionId: 22,
+      shiftInstanceId: 44,
+    });
+    await Promise.resolve();
+    expect(harness.invalidateListVacancies).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
+    expect(harness.routerPush).not.toHaveBeenCalled();
 
     harness.emitReceived({ type: "duty_confirmation", institutionId: 22 });
     await Promise.resolve();

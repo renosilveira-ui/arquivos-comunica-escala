@@ -52,6 +52,10 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
 
   it("elegibilidade de push reusa o ramo plantonista e não o atalho gerencial", () => {
     const eligibility = readFileSync("server/swap-offer-eligibility.ts", "utf8");
+    const plantonista = readFileSync(
+      "server/plantonista-shift-eligibility.ts",
+      "utf8",
+    );
     const sql = eligibility.slice(eligibility.indexOf("SELECT DISTINCT au.id"));
     const listAvailable = readFileSync("server/swap-router.ts", "utf8");
     const listSlice = listAvailable.slice(
@@ -59,18 +63,23 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
       listAvailable.indexOf("async function countActionableSwapOffers"),
     );
     expect(eligibility).toContain("export async function eligibleRecipientUserIdsForSwapOffer");
-    expect(sql).toContain("ap.medical_specialty_id = aq.medical_specialty_id");
-    expect(listSlice).toContain("ap.medical_specialty_id = aq.medical_specialty_id");
-    expect(sql).toContain("actor_source_access.sector_id = fsi.sector_id");
-    expect(listSlice).toContain("actor_source_access.sector_id = fsi.sector_id");
+    expect(eligibility).toContain("plantonistaXorQualificationSql");
+    expect(eligibility).toContain("plantonistaQualificationMatchesSql");
+    expect(eligibility).toContain("plantonistaAccessCoversShiftSql");
+    expect(plantonista).toContain(
+      '${col(ap, "medical_specialty_id")} = aq.medical_specialty_id',
+    );
+    expect(plantonista).toContain("actor_source_access.sector_id = ${col(si, \"sector_id\")}");
     expect(sql).toContain("sr.to_professional_id = ap.id AND sr.to_user_id = au.id");
     expect(sql).not.toContain("api.role_in_institution = 'GESTOR_PLUS'");
     expect(sql).not.toContain("actor_mgr");
     expect(sql).not.toContain("actor_source_scope");
     expect(sql).not.toContain("actor_directed_scope");
-    expect(sql).toContain(
-      "(ap.medical_specialty_id IS NULL) != (ap.operational_profile_code IS NULL)",
+    expect(plantonista).toContain(
+      "(${col(ap, \"medical_specialty_id\")} IS NULL) != (${col(ap, \"operational_profile_code\")} IS NULL)",
     );
+    expect(listSlice).toContain("ap.medical_specialty_id = aq.medical_specialty_id");
+    expect(listSlice).toContain("actor_source_access.sector_id = fsi.sector_id");
     expect(listSlice).toContain("GESTOR_PLUS");
     expect(listSlice).toContain("manager_scope");
   });
