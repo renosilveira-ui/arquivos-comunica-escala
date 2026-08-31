@@ -16,6 +16,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { enqueueComunicaRosterPublished } from "./integrations/comunica-plus";
+import { createOperationalEventInTransaction } from "./operational-events";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import { rowsFromExecute } from "./_core/db-results";
 import {
@@ -622,6 +623,42 @@ export async function publishMonth(
       hospitalId,
       yearMonth,
     );
+    await createOperationalEventInTransaction(tx, {
+      // A chave só usa identificadores canônicos e a revisão resultante do
+      // CAS. Um retry preserva o mesmo fato; uma publicação futura recebe
+      // versão nova e não pode sobrescrever o histórico anterior.
+      idempotencyKey: `roster-published:${institutionId}:${hospitalId}:${existing.id}:v${publishedVersion}`,
+      eventType: "ROSTER_PUBLISHED",
+      deliveryPolicy: "NOTIFY",
+      aggregate: {
+        type: "MONTHLY_ROSTER",
+        id: existing.id,
+        version: publishedVersion,
+      },
+      transition: { from: "DRAFT", to: "PUBLISHED" },
+      context: {
+        institutionId,
+        hospitalId,
+        scopeKind: "HOSPITAL",
+      },
+      actor: {
+        kind: "USER",
+        userId: actor.userId,
+        professionalId: actor.professionalId,
+        role: currentRole,
+      },
+      // O ledger recebe somente IDs de usuários que a consulta canônica já
+      // limitou à instituição, hospital, setor e alocação ocupada. E-mail
+      // nunca entra no evento; confiança de canal será revalidada pelo
+      // worker quando essa frente for ativada.
+      recipients: recipients.map((recipient) => ({
+        kind: "USER" as const,
+        userId: recipient.userId,
+        channels: ["PUSH", "EMAIL"] as const,
+      })),
+      recipientResolution:
+        recipients.length > 0 ? "RESOLVED" : "NO_DELIVERABLE_RECIPIENTS",
+    });
     for (const recipient of recipients) {
       await enqueueComunicaRosterPublished({
         rosterId: existing.id,

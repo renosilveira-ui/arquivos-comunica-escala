@@ -27,6 +27,11 @@ import {
 
 describe("schema da foundation de eventos operacionais", () => {
   it("preserva escopos institucional, hospitalar e setorial sem inferir topologia", () => {
+    expect(operationalEvents.emissionMode.notNull).toBe(true);
+    expect(operationalEvents.emissionMode.enumValues).toEqual([
+      "SHADOW",
+      "ACTIVE",
+    ]);
     expect(operationalEvents.institutionId.notNull).toBe(true);
     expect(operationalEvents.hospitalId.notNull).toBe(false);
     expect(operationalEvents.scopeKind.notNull).toBe(true);
