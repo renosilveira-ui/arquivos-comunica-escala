@@ -63,7 +63,9 @@ import {
 } from "@/lib/query-persist";
 import {
   canStartTenantAuthorizationHandshake,
+  resolveTenantAuthorizationTreeIntent,
   runTenantAuthorizationAttempt,
+  tenantAuthorizationTreeShouldClearQueryCache,
   tenantAuthorityMatchesMembership,
   TenantAuthorizationCoordinator,
   type AuthorizedInstitution,
@@ -367,6 +369,27 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     user,
     sessionValidation,
   });
+  const verifiedTreeSubjectKeyRef = useRef<string | null>(null);
+  const liveSessionRef = useRef({
+    userId: user?.id ?? null,
+    sessionValidation,
+  });
+  liveSessionRef.current = {
+    userId: user?.id ?? null,
+    sessionValidation,
+  };
+  const treeIntent = resolveTenantAuthorizationTreeIntent({
+    verifiedSubjectKey: verifiedTreeSubjectKeyRef.current,
+    currentSubjectKey: subjectKey,
+    userId: user?.id ?? null,
+    sessionStatus: sessionValidation.status,
+    sessionUserId:
+      sessionValidation.status === "VERIFIED" ? sessionValidation.userId : null,
+    sessionProofCurrent: currentSessionProof !== null,
+    requiresHandshake,
+    isHydrating,
+    activityReady: activity.visible && activity.online,
+  });
 
   const getCurrentSubject = useCallback((): TenantAuthorizationSubject => ({
     userId: currentSubjectRef.current.userId,
@@ -388,6 +411,7 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
 
     if (transition.action === "CLOSE") {
       // O evento de lifecycle fecha a autoridade antes do próximo paint.
+      verifiedTreeSubjectKeyRef.current = null;
       coordinatorRef.current.invalidate();
       fenceQueryCachePersistence();
       queryClient.clear();
@@ -447,23 +471,28 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
 
   useEffect(() => {
     const coordinator = coordinatorRef.current;
-    if (
-      !requiresHandshake ||
-      !currentSessionProof ||
-      isHydrating ||
-      !activity.visible ||
-      !activity.online
-    ) {
+    // Sequence de `/me` e o objeto do receipt não entram nas deps: revalidação
+    // soft da mesma identidade não pode invalidar o ticket nem desmontar o Stack.
+    if (treeIntent === "keep_verified_tree") {
+      return;
+    }
+
+    if (treeIntent === "clear_unauthenticated") {
+      verifiedTreeSubjectKeyRef.current = null;
       coordinator.invalidate();
       fenceQueryCachePersistence();
-      if (!user) {
-        queryClient.clear();
-      }
+      queryClient.clear();
+      setGateState({ status: "CHECKING", subjectKey });
+      return;
+    }
+
+    if (treeIntent === "boot_hold" || treeIntent === "unavailable") {
+      verifiedTreeSubjectKeyRef.current = null;
+      coordinator.invalidate();
+      fenceQueryCachePersistence();
       setGateState((current) => {
         const nextStatus =
-          user && sessionValidation.status === "UNAVAILABLE"
-            ? "UNAVAILABLE"
-            : "CHECKING";
+          treeIntent === "unavailable" ? "UNAVAILABLE" : "CHECKING";
         return current.subjectKey === subjectKey && current.status === nextStatus
           ? current
           : { status: nextStatus, subjectKey };
@@ -471,10 +500,13 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
       return;
     }
 
+    verifiedTreeSubjectKeyRef.current = null;
     const ticket = coordinator.begin(getCurrentSubject());
     let cancelled = false;
     fenceQueryCachePersistence();
-    queryClient.clear();
+    if (tenantAuthorizationTreeShouldClearQueryCache(treeIntent)) {
+      queryClient.clear();
+    }
     setGateState({ status: "CHECKING", subjectKey });
 
     void (async () => {
@@ -526,10 +558,25 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
           utils.professionals.getManagerScope.setData(undefined, managerScope);
         }
 
-        const isCurrent = () => (
-          currentSessionProof.isCurrent() &&
-          coordinator.isCurrent(ticket, getCurrentSubject())
-        );
+        const isCurrent = () => {
+          const live = liveSessionRef.current;
+          // Identidade efetiva, não sequence de `/me`. Sequence stale no
+          // resume deixava attestation.isCurrent() falso e o AuthGuard
+          // desmontava o Stack mesmo com a sessão válida.
+          if (live.userId !== ticket.subject.userId) return false;
+          if (live.sessionValidation.status === "VERIFIED") {
+            if (live.sessionValidation.userId !== ticket.subject.userId) {
+              return false;
+            }
+          } else if (
+            live.sessionValidation.status !== "CHECKING" &&
+            live.sessionValidation.status !== "UNAVAILABLE"
+          ) {
+            return false;
+          }
+          return coordinator.isCurrent(ticket, getCurrentSubject());
+        };
+        verifiedTreeSubjectKeyRef.current = subjectKeyOf(ticket.subject);
         setGateState({
           status: "VERIFIED",
           subjectKey,
@@ -538,33 +585,28 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
       } catch (error) {
         if (cancelled || !coordinator.isCurrent(ticket, getCurrentSubject())) return;
         if (isUnauthorizedError(error)) emitSessionUnauthorized();
+        verifiedTreeSubjectKeyRef.current = null;
         setGateState({ status: "UNAVAILABLE", subjectKey });
       }
     })();
 
     return () => {
       cancelled = true;
-      if (coordinator.isCurrent(ticket, getCurrentSubject())) {
+      const liveSubject = getCurrentSubject();
+      const liveSubjectKey = subjectKeyOf(liveSubject);
+      // Resume da mesma identidade: o effect seguinte é keep_verified_tree.
+      // Invalidar o ticket aqui desmontava o Stack via attestation.isCurrent().
+      if (verifiedTreeSubjectKeyRef.current === liveSubjectKey) return;
+      if (coordinator.isCurrent(ticket, liveSubject)) {
         coordinator.invalidate();
       }
     };
   }, [
     clearInstitutionSelection,
-    activity.online,
-    activity.revision,
-    activity.visible,
-    currentSubject.userId,
-    currentSubject.tenant.institutionId,
-    currentSubject.tenant.revision,
+    treeIntent,
     getCurrentSubject,
-    isHydrating,
     queryClient,
-    requiresHandshake,
-    currentSessionProof,
-    sessionValidation.status,
-    sessionValidation.sequence,
     subjectKey,
-    user,
     utils,
   ]);
 
@@ -601,6 +643,17 @@ function TenantAuthorizationBoundary({ children }: { children: React.ReactNode }
     sessionValidation.status,
     sessionValidation.sequence,
   ]);
+
+  if (treeIntent === "keep_verified_tree" && gateState.status === "VERIFIED") {
+    return (
+      <TenantAuthorizationContext.Provider value={gateState.attestation}>
+        {activeInstitutionId !== null ? (
+          <QueryCachePersistence attestation={gateState.attestation} />
+        ) : null}
+        {children}
+      </TenantAuthorizationContext.Provider>
+    );
+  }
 
   if (user && !currentSessionProof) {
     if (

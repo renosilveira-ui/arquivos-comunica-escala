@@ -39,6 +39,10 @@ type SessionIdentityValidation =
 /**
  * Só uma identidade canônica da epoch atual pode iniciar o handshake tenant.
  * Usuário ainda em memória nunca substitui o receipt fresco de /me/login.
+ *
+ * `isCurrent()` / `sessionValidation.sequence` servem para coalescer
+ * refetch e impedir handshake com receipt stale. Não são identidade
+ * efetiva: um `/me` 200 da mesma conta não pode desmontar o navigator.
  */
 export function canStartTenantAuthorizationHandshake(params: {
   user: TenantAuthorizationIdentity | null;
@@ -84,6 +88,84 @@ function sameSubject(
     left.tenant.institutionId === right.tenant.institutionId &&
     left.tenant.revision === right.tenant.revision
   );
+}
+
+/**
+ * O que o root navigation tree deve fazer quando auth/tenant mudam.
+ *
+ * Invariante: revalidação soft de uma sessão já verificada NÃO transiciona
+ * a árvore para boot/CHECKING se a identidade efetiva (user + institution +
+ * revisão de tenant) não mudou. Sequence de `/me`, foco e erro transitório
+ * não são identidade nova.
+ *
+ * - `boot_hold`: cold start / espera de prova — BootScreen ok; children
+ *   ainda não montaram.
+ * - `keep_verified_tree`: resume `/me` 200, `/me` transitório, sequence
+ *   bump — navigator permanece; cache permanece.
+ * - `destructive_handshake`: first boot com prova, login, user id novo,
+ *   institution/tenant novo — CHECKING + clear + remount.
+ * - `clear_unauthenticated`: logout / 401 real — zera cache e área protegida.
+ * - `unavailable`: cold start sem prova e servidor indisponível.
+ */
+export type TenantAuthorizationTreeIntent =
+  | "boot_hold"
+  | "keep_verified_tree"
+  | "destructive_handshake"
+  | "clear_unauthenticated"
+  | "unavailable";
+
+export type TenantAuthorizationTreeInput = Readonly<{
+  verifiedSubjectKey: string | null;
+  currentSubjectKey: string;
+  userId: number | null;
+  sessionStatus: "CHECKING" | "UNAVAILABLE" | "VERIFIED";
+  sessionUserId: number | null;
+  sessionProofCurrent: boolean;
+  requiresHandshake: boolean;
+  isHydrating: boolean;
+  activityReady: boolean;
+}>;
+
+export function resolveTenantAuthorizationTreeIntent(
+  input: TenantAuthorizationTreeInput,
+): TenantAuthorizationTreeIntent {
+  if (input.userId === null) {
+    return "clear_unauthenticated";
+  }
+
+  const sameVerifiedIdentity =
+    input.verifiedSubjectKey !== null &&
+    input.verifiedSubjectKey === input.currentSubjectKey;
+
+  if (sameVerifiedIdentity) {
+    return "keep_verified_tree";
+  }
+
+  if (!input.activityReady || input.isHydrating) {
+    return "boot_hold";
+  }
+
+  if (input.requiresHandshake && input.sessionProofCurrent) {
+    return "destructive_handshake";
+  }
+
+  if (input.sessionStatus === "UNAVAILABLE") {
+    return "unavailable";
+  }
+
+  return "boot_hold";
+}
+
+export function tenantAuthorizationTreeShouldClearQueryCache(
+  intent: TenantAuthorizationTreeIntent,
+): boolean {
+  return intent === "destructive_handshake" || intent === "clear_unauthenticated";
+}
+
+export function tenantAuthorizationTreeShouldShowBootScreen(
+  intent: TenantAuthorizationTreeIntent,
+): boolean {
+  return intent === "boot_hold" || intent === "destructive_handshake";
 }
 
 /**

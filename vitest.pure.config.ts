@@ -62,6 +62,7 @@ export default defineConfig({
       "tests/web-session-visibility.test.ts",
       "tests/web-session-lifecycle.test.ts",
       "tests/mobile-session-resume.test.ts",
+      "tests/mobile-resume-navigation.test.ts",
       "tests/web-verified-session.test.ts",
       "tests/institution-roles.test.ts",
       "tests/duty-sync-v2-contract.test.ts",

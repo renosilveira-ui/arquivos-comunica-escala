@@ -93,4 +93,14 @@ describe("sessão mobile no ciclo background → foreground", () => {
       ).action,
     ).toBe("CLOSE");
   });
+
+  it("401 legítimo no /me ainda revoga — o resume não enfraquece o fail-closed", () => {
+    const auth = readFileSync("hooks/use-auth.ts", "utf8");
+    const block = auth.slice(
+      auth.indexOf("} else if (result.sessionInvalid) {"),
+      auth.indexOf("me() falhou por rede/servidor"),
+    );
+    expect(block).toContain("revokeMismatchedTransport");
+    expect(block).toContain("result.sessionInvalid");
+  });
 });
