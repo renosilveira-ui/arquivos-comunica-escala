@@ -502,7 +502,7 @@ type OwnedColumnRequirement = Readonly<{
 const DEFAULT_NONE = (value: string | null) => value === null;
 const DEFAULT_ZERO = (value: string | null) => value === "0";
 const DEFAULT_CURRENT_TIMESTAMP = (value: string | null) =>
-  value !== null && /^current_timestamp(?:\(\))?$/i.test(value);
+  value !== null && /^(?:current_timestamp|now)(?:\(\))?$/i.test(value);
 
 const OWNED_COLUMNS: Record<OwnedTableName, readonly OwnedColumnRequirement[]> =
   {

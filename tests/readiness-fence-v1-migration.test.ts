@@ -294,6 +294,28 @@ describe("migration da readiness fence V1", () => {
     ).toBe("PREPARED");
   });
 
+  it("aceita as formas equivalentes now() geradas pelo Drizzle para timestamps", () => {
+    const schemaPushCatalog = completeCatalog([]);
+    const drizzleSchemaPushCatalog: ReadinessFenceV1Catalog = {
+      ...schemaPushCatalog,
+      columns: schemaPushCatalog.columns.map((column) =>
+        ["created_at", "updated_at", "installed_at"].includes(
+          column.columnName,
+        )
+          ? { ...column, columnDefault: "now()" }
+          : column,
+      ),
+    };
+
+    expect(
+      classifyReadinessFenceV1Installation(
+        drizzleSchemaPushCatalog,
+        parsed.triggers,
+        [],
+      ),
+    ).toBe("PREPARED");
+  });
+
   it("falha fechada para fonte ausente ou instalação parcial", () => {
     const noSource = sourceCatalog();
     noSource.tables = noSource.tables.filter(
