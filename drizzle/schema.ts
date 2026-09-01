@@ -775,6 +775,11 @@ export const scheduleInvites = mysqlTable(
     uniqScheduleInviteCodeHash: unique("uniq_schedule_invite_code_hash").on(
       table.codeHash,
     ),
+    // Dá suporte à FK composta do destinatário de evento sem depender de
+    // uma alteração manual posterior em bancos criados a partir do schema.
+    uniqScheduleInvitesIdInstitution: unique(
+      "uniq_schedule_invites_id_institution",
+    ).on(table.id, table.institutionId),
     idxScheduleInviteInstitution: index("idx_schedule_invite_institution").on(
       table.institutionId,
       table.hospitalId,
@@ -869,6 +874,14 @@ export const shiftInstances = mysqlTable(
     idxShiftInstanceInstitutionId: index(
       "idx_shift_instances_institution_id",
     ).on(table.institutionId, table.id),
+    // Chave-pai física da FK composta de eventos operacionais. Mantém o
+    // vínculo de um turno com a topologia em instalações novas do schema.
+    uniqShiftInstancesTopologyId: unique("uniq_shift_instances_topology_id").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.id,
+    ),
     idxShiftInstanceScheduleContext: index(
       "idx_shift_instances_schedule_context",
     ).on(table.institutionId, table.scheduleContextId),
@@ -929,6 +942,11 @@ export const shiftAssignmentsV2 = mysqlTable(
     idxShiftAssignmentInstitutionId: index(
       "idx_shift_assignments_institution_id",
     ).on(table.institutionId, table.id),
+    // Chave-pai física da FK composta de eventos operacionais. A migration
+    // manual conserva o mesmo nome para instalações legadas.
+    uniqShiftAssignmentsTopologyId: unique(
+      "uniq_shift_assignments_topology_id",
+    ).on(table.institutionId, table.hospitalId, table.sectorId, table.id),
   }),
 );
 
@@ -1085,6 +1103,14 @@ export const notifications = mysqlTable(
  * colunas — para que o nome físico seja estável e <= 64 caracteres no MySQL.
  * As FKs compostas mantêm a hierarquia instituição → hospital → setor no
  * banco, mesmo se um writer futuro ignorar a validação de aplicação.
+ *
+ * Esta fundação não autoriza ativação de writers, workers nem entregas. Antes
+ * de qualquer ativação, uma frente própria precisa provar e impor duas
+ * coerências que a topologia comum não expressa sozinha: (1) o profissional
+ * atribuído ao ator pertence ao mesmo usuário e à mesma instituição; e (2)
+ * quando contexto, turno e alocação coexistem, a alocação pertence ao turno e
+ * o turno pertence ao contexto informado. Sem essa prova, o armazenamento
+ * permanece somente como fundação não ativa.
  */
 export const operationalEvents = mysqlTable(
   "operational_events",

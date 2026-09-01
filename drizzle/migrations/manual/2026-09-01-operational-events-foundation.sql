@@ -5,6 +5,15 @@
 -- Endereço de e-mail não é armazenado em recipients/deliveries: o alvo é uma
 -- conta ou convite nominal já persistidos. Qualquer resolução futura deverá
 -- revalidar identidade, escopo e confiança antes de entregar algo.
+--
+-- Esta fundação não autoriza writer, worker ou entrega. Uma ativação futura
+-- só pode acontecer depois de provar e impor no caminho de escrita que:
+--   1. actor_user_id e actor_professional_id representam o mesmo vínculo
+--      institucional; e
+--   2. quando contexto, turno e alocação coexistem, a alocação pertence ao
+--      turno e o turno pertence ao contexto informado.
+-- As FKs abaixo preservam a topologia comum, mas não substituem essas duas
+-- verificações semânticas de ativação.
 
 -- Uma tabela de fundação já existente só é aceitável se corresponder
 -- integralmente ao contrato desta migração. CREATE TABLE IF NOT EXISTS, sem
@@ -19,6 +28,9 @@
 -- confirma o contrato das seis tabelas.
 -- O limite de GROUP_CONCAT é elevado somente para o fingerprint e restaurado
 -- depois da validação posterior, evitando truncar contratos extensos.
+-- Drizzle materializa defaultNow() como NOW(), enquanto a DDL manual usa
+-- CURRENT_TIMESTAMP; ambos descrevem o mesmo default de timestamp e o
+-- fingerprint normaliza somente essa grafia de catálogo.
 SET @operational_events_contract_previous_group_concat_max_len := @@SESSION.group_concat_max_len;
 SET SESSION group_concat_max_len = 65535;
 
@@ -65,7 +77,10 @@ SET @operational_events_contract_preflight_mismatches := (
                 columns.COLUMN_NAME,
                 LOWER(columns.COLUMN_TYPE),
                 columns.IS_NULLABLE,
-                COALESCE(UPPER(columns.COLUMN_DEFAULT), '<NULL>'),
+                CASE
+                  WHEN UPPER(COALESCE(columns.COLUMN_DEFAULT, '')) IN ('NOW()', 'CURRENT_TIMESTAMP()') THEN 'CURRENT_TIMESTAMP'
+                  ELSE COALESCE(UPPER(columns.COLUMN_DEFAULT), '<NULL>')
+                END,
                 LOWER(COALESCE(columns.EXTRA, '')),
                 CASE
                   WHEN columns.CHARACTER_SET_NAME IS NULL THEN '<NULL>'
@@ -609,7 +624,10 @@ SET @operational_events_contract_postflight_mismatches := (
                 columns.COLUMN_NAME,
                 LOWER(columns.COLUMN_TYPE),
                 columns.IS_NULLABLE,
-                COALESCE(UPPER(columns.COLUMN_DEFAULT), '<NULL>'),
+                CASE
+                  WHEN UPPER(COALESCE(columns.COLUMN_DEFAULT, '')) IN ('NOW()', 'CURRENT_TIMESTAMP()') THEN 'CURRENT_TIMESTAMP'
+                  ELSE COALESCE(UPPER(columns.COLUMN_DEFAULT), '<NULL>')
+                END,
                 LOWER(COALESCE(columns.EXTRA, '')),
                 CASE
                   WHEN columns.CHARACTER_SET_NAME IS NULL THEN '<NULL>'

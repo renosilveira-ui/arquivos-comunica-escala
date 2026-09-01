@@ -7,6 +7,9 @@ import {
   operationalEventRecipients,
   operationalEventRelatedContexts,
   operationalEvents,
+  scheduleInvites,
+  shiftAssignmentsV2,
+  shiftInstances,
   userOperationalEmailTrust,
 } from "../drizzle/schema";
 
@@ -277,6 +280,24 @@ const expectedFoundationContractHashes = [
   "60e2426c4e90c52a7a4cc169e7519040dfed86365fc53a31537b4ee14c97f10c",
 ];
 
+const parentUniqueKeyContracts = [
+  {
+    table: shiftInstances,
+    name: "uniq_shift_instances_topology_id",
+    columns: ["institution_id", "hospital_id", "sector_id", "id"],
+  },
+  {
+    table: shiftAssignmentsV2,
+    name: "uniq_shift_assignments_topology_id",
+    columns: ["institution_id", "hospital_id", "sector_id", "id"],
+  },
+  {
+    table: scheduleInvites,
+    name: "uniq_schedule_invites_id_institution",
+    columns: ["id", "institution_id"],
+  },
+];
+
 function expectForeignKeys(
   table: Parameters<typeof getTableConfig>[0],
   expected: ForeignKeyContract[],
@@ -335,6 +356,23 @@ describe("foundation de eventos operacionais", () => {
 
     expect(foundationSource).not.toContain(".references(");
     expect(foundationSource.match(/foreignKey\(/g) ?? []).toHaveLength(36);
+  });
+
+  it("declara no schema as três chaves-pai compostas usadas pela migration", () => {
+    for (const expected of parentUniqueKeyContracts) {
+      const actual = new Map(
+        getTableConfig(expected.table).uniqueConstraints.map((constraint) => [
+          constraint.getName(),
+          constraint,
+        ]),
+      );
+      const constraint = actual.get(expected.name);
+      expect(constraint, expected.name).toBeDefined();
+      expect(constraint!.columns.map(({ name }) => name)).toEqual(
+        expected.columns,
+      );
+      expect(migration).toContain(expected.name);
+    }
   });
 
   it("mantém topo institucional e destinatários canônicos sem endereço em claro", () => {
@@ -434,6 +472,9 @@ describe("foundation de eventos operacionais", () => {
     expect(migration).toContain("INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS");
     expect(migration).toContain("key_columns.REFERENCED_TABLE_SCHEMA");
     expect(migration).toContain("<CURRENT_SCHEMA>");
+    expect(migration).toContain(
+      "IN ('NOW()', 'CURRENT_TIMESTAMP()') THEN 'CURRENT_TIMESTAMP'",
+    );
     expect(migration).toContain("INFORMATION_SCHEMA.CHECK_CONSTRAINTS");
     expect(migration).toContain("actual_contract.table_name IS NULL");
     expect(
@@ -442,6 +483,22 @@ describe("foundation de eventos operacionais", () => {
     for (const hash of expectedFoundationContractHashes) {
       expect(migration).toContain(hash);
     }
+  });
+
+  it("mantém explícitas as pré-condições antes de ativar qualquer writer", () => {
+    expect(schemaSource).toContain(
+      "Esta fundação não autoriza ativação de writers, workers nem entregas",
+    );
+    expect(schemaSource).toContain(
+      "atribuído ao ator pertence ao mesmo usuário e à mesma instituição",
+    );
+    expect(schemaSource).toContain(
+      "quando contexto, turno e alocação coexistem",
+    );
+    expect(schemaSource).toContain("o turno pertence ao contexto informado");
+    expect(migration).toContain(
+      "Esta fundação não autoriza writer, worker ou entrega",
+    );
   });
 
   it("executa a prova MySQL descartável no serviço local da CI", () => {
