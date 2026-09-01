@@ -2,12 +2,13 @@
 //
 // Sem dependência nova: quando RESEND_API_KEY existe, usa a API HTTP da
 // Resend via fetch (remetente MAIL_FROM). Sem a chave (dev/staging), o
-// conteúdo é logado no console e delivered=false — callers fail-closed
-// (convite, forgot-password). O log local não prova entrega.
+// mailer registra somente um evento de observabilidade redigido e retorna
+// delivered=false — callers fail-closed (convite, forgot-password). O log
+// local não prova entrega nem contém dados da mensagem.
 //
 // `mailer.sendMail` é chamado via o objeto (e não como função solta) de
 // propósito: permite `vi.spyOn(mailer, "sendMail")` nos testes para
-// capturar o link sem bater na rede.
+// observar o contrato de entrega sem bater na rede.
 
 export interface MailMessage {
   to: string;
@@ -26,6 +27,20 @@ const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Escala+ <no-reply@escalas.app>";
 /** Teto da chamada HTTP à Resend. Sem retry nesta frente. */
 export const MAIL_HTTP_TIMEOUT_MS = 15_000;
+
+const NO_PROVIDER_OBSERVABILITY = {
+  eventType: "TRANSACTIONAL_EMAIL_NOT_SENT",
+  channel: "EMAIL",
+  providerConfigured: false,
+  delivered: false,
+} as const;
+
+function logMailNotSentWithoutProvider(): void {
+  // Não inclua destinatário, assunto, corpo, HTML, links, tokens ou senhas.
+  // O objeto é intencionalmente constante para que o fallback nunca faça um
+  // dado da mensagem atravessar a fronteira de observabilidade.
+  console.log(`[mailer] ${JSON.stringify(NO_PROVIDER_OBSERVABILITY)}`);
+}
 
 function isTimeoutOrAbort(err: unknown): boolean {
   return err instanceof Error &&
@@ -72,14 +87,9 @@ export const mailer = {
       const from = (process.env.MAIL_FROM ?? "").trim() || DEFAULT_FROM;
       return sendViaResend(apiKey, from, msg);
     }
-    // Sem provedor configurado: log no console (dev/staging sem chave).
-    // Conteúdo vindo do usuário (e-mail, assunto, corpo) vai serializado
-    // em JSON: quebras de linha viram "\n" escapado, então ninguém forja
-    // linhas de log (CodeQL js/log-injection) e o link continua legível.
-    console.log(
-      "[mailer] (sem RESEND_API_KEY — e-mail NÃO enviado) " +
-        JSON.stringify({ to: msg.to, subject: msg.subject, text: msg.text }, null, 2),
-    );
+    // Sem provedor configurado: preserva o fallback fail-closed, mas nunca
+    // torna conteúdo transacional sensível disponível em logs locais.
+    logMailNotSentWithoutProvider();
     return { delivered: false, transport: "console" };
   },
 };
