@@ -20,15 +20,10 @@ import {
 } from "../lib/schedule-invite-code";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
-import {
-  getTenantActorFromContext,
-  type TenantActor,
-} from "./_core/policy";
+import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
 import {
   listAuthorizedScheduleContexts,
-  qualificationMatches,
   selectActiveScheduleContexts,
-  type ProfessionalQualification,
 } from "./schedule-contexts";
 import { protectedProcedure, router } from "./_core/trpc";
 
@@ -137,7 +132,6 @@ export async function redeemScheduleInviteInTransaction(
     code: string;
     userId: number;
     professionalId: number;
-    qualification: ProfessionalQualification;
     now?: Date;
   },
 ): Promise<{
@@ -212,13 +206,12 @@ export async function redeemScheduleInviteInTransaction(
     { hospitalId: invite.hospitalId, sectorId: invite.sectorId },
     true,
   );
-  const compatible = contexts.filter((context) =>
-    qualificationMatches(input.qualification, context),
-  );
-  if (compatible.length === 0) {
+  if (contexts.length !== 1) {
     throw new ScheduleInviteError(
       409,
-      "Sua especialidade não é aceita nesta escala",
+      contexts.length === 0
+        ? "A escala deste convite não está mais ativa"
+        : "O setor deste convite possui mais de uma escala ativa; regularize a topologia.",
     );
   }
 
@@ -579,14 +572,21 @@ export const scheduleInvitesRouter = router({
       await assertCanManageSector(actor, input.hospitalId, input.sectorId);
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-      const contexts = await selectActiveScheduleContexts(db, actor.institutionId, {
-        hospitalId: input.hospitalId,
-        sectorId: input.sectorId,
-      });
-      if (contexts.length === 0) {
+      const contexts = await selectActiveScheduleContexts(
+        db,
+        actor.institutionId,
+        {
+          hospitalId: input.hospitalId,
+          sectorId: input.sectorId,
+        },
+      );
+      if (contexts.length !== 1) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Esta escala ainda não está aberta",
+          message:
+            contexts.length === 0
+              ? "Esta escala ainda não está aberta"
+              : "Este setor possui mais de uma escala ativa; regularize a topologia.",
         });
       }
 
@@ -594,8 +594,6 @@ export const scheduleInvitesRouter = router({
         userId: users.id,
         name: users.name,
         email: users.email,
-        medicalSpecialtyId: professionals.medicalSpecialtyId,
-        operationalProfileCode: professionals.operationalProfileCode,
         specialtyLabel: professionals.specialty,
       };
 
@@ -614,7 +612,9 @@ export const scheduleInvitesRouter = router({
             eq(professionalInstitutions.active, true),
           ),
         )
-        .where(and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)));
+        .where(
+          and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)),
+        );
 
       const waitingRoom = await db
         .select(candidateColumns)
@@ -645,6 +645,42 @@ export const scheduleInvitesRouter = router({
 
       const candidates = [...byId.values()];
       if (candidates.length === 0) return [];
+
+      // Um vínculo institucional sem ACL é uma conta ainda sem lotação e pode
+      // ser convidada. Já quem possui ACL operacional apenas em outro hospital
+      // da mesma instituição não pertence implicitamente a este plantel.
+      // A exceção é o profissional com lotação nos dois hospitais: ele pode
+      // ser convidado para um setor ainda não liberado no hospital solicitado.
+      const hospitalAccess = await db
+        .select({
+          professionalUserId: professionals.userId,
+          hospitalId: professionalAccess.hospitalId,
+        })
+        .from(professionalAccess)
+        .innerJoin(
+          professionals,
+          eq(professionals.id, professionalAccess.professionalId),
+        )
+        .where(
+          and(
+            eq(professionalAccess.institutionId, actor.institutionId),
+            eq(professionalAccess.canAccess, true),
+            inArray(
+              professionals.userId,
+              candidates.map((row) => row.userId),
+            ),
+          ),
+        );
+      const linkedToRequestedHospital = new Set(
+        hospitalAccess
+          .filter((row) => row.hospitalId === input.hospitalId)
+          .map((row) => row.professionalUserId),
+      );
+      const linkedOnlyElsewhere = new Set(
+        hospitalAccess
+          .filter((row) => row.hospitalId !== input.hospitalId)
+          .map((row) => row.professionalUserId),
+      );
 
       const access = await db
         .select({
@@ -709,6 +745,12 @@ export const scheduleInvitesRouter = router({
       return candidates
         .filter((row) => {
           if (alreadyInScale.has(row.userId)) return false;
+          if (
+            linkedOnlyElsewhere.has(row.userId) &&
+            !linkedToRequestedHospital.has(row.userId)
+          ) {
+            return false;
+          }
           if (lockedToOtherHouse.has(row.userId)) return false;
           if (
             nameNeedle &&
@@ -719,15 +761,7 @@ export const scheduleInvitesRouter = router({
           if (emailNeedle && (row.email ?? "").toLowerCase() !== emailNeedle) {
             return false;
           }
-          return contexts.some((context) =>
-            qualificationMatches(
-              {
-                medicalSpecialtyId: row.medicalSpecialtyId,
-                operationalProfileCode: row.operationalProfileCode,
-              },
-              context,
-            ),
-          );
+          return true;
         })
         .sort((left, right) =>
           (left.name ?? "").localeCompare(right.name ?? "", "pt-BR"),
@@ -754,16 +788,24 @@ export const scheduleInvitesRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
-      const contexts = await selectActiveScheduleContexts(db, actor.institutionId, {
-        hospitalId: input.hospitalId,
-        sectorId: input.sectorId,
-      });
-      if (contexts.length === 0) {
+      const contexts = await selectActiveScheduleContexts(
+        db,
+        actor.institutionId,
+        {
+          hospitalId: input.hospitalId,
+          sectorId: input.sectorId,
+        },
+      );
+      if (contexts.length !== 1) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Esta escala ainda não está aberta",
+          message:
+            contexts.length === 0
+              ? "Esta escala ainda não está aberta"
+              : "Este setor possui mais de uma escala ativa; regularize a topologia.",
         });
       }
+      const context = contexts[0]!;
 
       const uniqueUserIds = [...new Set(input.userIds)];
       const sent: { userId: number; name: string | null }[] = [];
@@ -777,8 +819,6 @@ export const scheduleInvitesRouter = router({
             email: users.email,
             deletedAt: users.deletedAt,
             approvalStatus: users.approvalStatus,
-            medicalSpecialtyId: professionals.medicalSpecialtyId,
-            operationalProfileCode: professionals.operationalProfileCode,
           })
           .from(users)
           .innerJoin(professionals, eq(professionals.userId, users.id))
@@ -793,23 +833,6 @@ export const scheduleInvitesRouter = router({
           failed.push({ userId, error: "Médico não encontrado" });
           continue;
         }
-        const compatible = contexts.some((context) =>
-          qualificationMatches(
-            {
-              medicalSpecialtyId: invitee.medicalSpecialtyId,
-              operationalProfileCode: invitee.operationalProfileCode,
-            },
-            context,
-          ),
-        );
-        if (!compatible) {
-          failed.push({
-            userId,
-            error: "A especialidade não é aceita nesta escala",
-          });
-          continue;
-        }
-
         const houses = await db
           .select({
             institutionId: professionalInstitutions.institutionId,
@@ -834,17 +857,20 @@ export const scheduleInvitesRouter = router({
         const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
         const formatted = formatScheduleInviteCode(normalized);
 
-        const [inserted] = await db.insert(scheduleInvites).values({
-          institutionId: actor.institutionId,
-          hospitalId: input.hospitalId,
-          sectorId: input.sectorId,
-          codeHash,
-          createdByUserId: actor.userId,
-          invitedUserId: invitee.userId,
-          invitedEmail: invitee.email,
-          maxRedemptions: NAMED_MAX_REDEMPTIONS,
-          expiresAt,
-        }).$returningId();
+        const [inserted] = await db
+          .insert(scheduleInvites)
+          .values({
+            institutionId: actor.institutionId,
+            hospitalId: input.hospitalId,
+            sectorId: input.sectorId,
+            codeHash,
+            createdByUserId: actor.userId,
+            invitedUserId: invitee.userId,
+            invitedEmail: invitee.email,
+            maxRedemptions: NAMED_MAX_REDEMPTIONS,
+            expiresAt,
+          })
+          .$returningId();
 
         await db
           .update(scheduleInvites)
@@ -864,8 +890,8 @@ export const scheduleInvitesRouter = router({
 
         const mail = buildScheduleInviteMail({
           to: invitee.email,
-          hospitalName: contexts[0].hospitalName,
-          sectorName: contexts[0].sectorName,
+          hospitalName: context.hospitalName,
+          sectorName: context.sectorName,
           code: formatted,
           expiresAt,
         });
@@ -905,7 +931,7 @@ export const scheduleInvitesRouter = router({
             entityId: invitee.userId,
             actorUserId: actor.userId,
             actorRole: actor.roleInInstitution,
-            description: `Convite nominal enviado para a escala ${contexts[0].hospitalName} / ${contexts[0].sectorName}`,
+            description: `Convite nominal enviado para a escala ${context.hospitalName} / ${context.sectorName}`,
             metadata: {
               scheduleInviteId: inserted.id,
               invitedUserId: invitee.userId,
@@ -933,8 +959,8 @@ export const scheduleInvitesRouter = router({
       return {
         sent,
         failed,
-        hospitalName: contexts[0].hospitalName,
-        sectorName: contexts[0].sectorName,
+        hospitalName: context.hospitalName,
+        sectorName: context.sectorName,
       };
     }),
 

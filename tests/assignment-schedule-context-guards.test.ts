@@ -1,15 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
+  managerScope,
   professionalAccess,
+  professionalInstitutions,
   professionals,
   scheduleContexts,
 } from "../drizzle/schema";
-import {
-  assertProfessionalEligibleForScheduleContext,
-  qualificationMatches,
-} from "../server/schedule-contexts";
-import { specialtiesConflict } from "../server/specialty";
+import { assertProfessionalEligibleForScheduleContext } from "../server/schedule-contexts";
 
 type RowsQueue = Map<unknown, unknown[][]>;
 
@@ -53,37 +51,33 @@ function fakeSelectDb(rowsByTable: RowsQueue) {
   };
 }
 
-function twoContextsSameSectorDb() {
+function activeRecoveryContext(id = 202) {
+  return {
+    id,
+    institutionId: 1,
+    hospitalId: 10,
+    hospitalName: "Hospital São Carlos",
+    sectorId: 20,
+    sectorName: "Sala de Recuperação",
+    medicalSpecialtyId: null,
+    medicalSpecialtyCode: null,
+    medicalSpecialtyName: null,
+    operationalProfileCode: null,
+    admissionPolicy: "QUALIFICATION_ALLOWLIST",
+    active: true,
+  };
+}
+
+function exactSectorAccessDb() {
   return fakeSelectDb(
     new Map([
-      // 1) lock do contexto B; 2) catálogo do contexto B (especialidade
-      // diferente do profissional — alocação ignora essa diferença).
       [
         scheduleContexts,
-        [
-          [{ id: 202 }],
-          [
-            {
-              id: 202,
-              institutionId: 1,
-              hospitalId: 10,
-              hospitalName: "Hospital São Carlos",
-              sectorId: 20,
-              sectorName: "Sala de Recuperação",
-              medicalSpecialtyId: 200,
-              medicalSpecialtyCode: "CLINICA_MEDICA",
-              medicalSpecialtyName: "Qualificação exibida",
-              operationalProfileCode: null,
-              admissionPolicy: "PINNED_QUALIFICATION",
-              active: true,
-            },
-          ],
-        ],
+        [[activeRecoveryContext()], [activeRecoveryContext()]],
       ],
-      [
-        professionals,
-        [[{ userId: 9, medicalSpecialtyId: 100, operationalProfileCode: null }]],
-      ],
+      [professionals, [[{ userId: 9 }]]],
+      [professionalInstitutions, [[{ roleInInstitution: "USER" }]]],
+      [managerScope, [[]]],
       [
         professionalAccess,
         [
@@ -96,6 +90,20 @@ function twoContextsSameSectorDb() {
               canAccess: true,
             },
           ],
+        ],
+      ],
+    ]),
+  );
+}
+
+function ambiguousSectorContextDb() {
+  return fakeSelectDb(
+    new Map([
+      [
+        scheduleContexts,
+        [
+          [activeRecoveryContext()],
+          [activeRecoveryContext(), activeRecoveryContext(203)],
         ],
       ],
     ]),
@@ -123,8 +131,8 @@ function expectGuardBeforeWrite(
 }
 
 describe("elegibilidade canônica em toda escrita de alocação", () => {
-  it("aceita contexto B com acesso setorial mesmo com especialidade diferente", async () => {
-    const db = twoContextsSameSectorDb();
+  it("aceita membro ativo com acesso exato ao setor mesmo sem allowlist clínica", async () => {
+    const db = exactSectorAccessDb();
     let writes = 0;
 
     await assertProfessionalEligibleForScheduleContext({
@@ -144,27 +152,11 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
       new Map([
         [
           scheduleContexts,
-          [
-            [{ id: 202 }],
-            [
-              {
-                id: 202,
-                institutionId: 1,
-                hospitalId: 10,
-                hospitalName: "Hospital São Carlos",
-                sectorId: 20,
-                sectorName: "Sala de Recuperação",
-                medicalSpecialtyId: null,
-                medicalSpecialtyCode: null,
-                medicalSpecialtyName: null,
-                operationalProfileCode: null,
-                admissionPolicy: "QUALIFICATION_ALLOWLIST",
-                active: true,
-              },
-            ],
-          ],
+          [[activeRecoveryContext()], [activeRecoveryContext()]],
         ],
         [professionals, [[{ userId: 9 }]]],
+        [professionalInstitutions, [[{ roleInInstitution: "USER" }]]],
+        [managerScope, [[]]],
       ]),
     );
 
@@ -179,68 +171,16 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("aliases textuais conflitantes não anulam a qualificação estruturada", () => {
-    expect(specialtiesConflict("Clínica Geral", "Médico generalista")).toBe(
-      true,
-    );
-    expect(
-      qualificationMatches(
-        {
-          medicalSpecialtyId: null,
-          operationalProfileCode: "MEDICO_GENERALISTA",
-        },
-        {
-          medicalSpecialtyId: null,
-          operationalProfileCode: "MEDICO_GENERALISTA",
-        },
-      ),
-    ).toBe(true);
-
-    expect(specialtiesConflict("Ortopedia", "Ortopedia e Traumatologia")).toBe(
-      true,
-    );
-    expect(
-      qualificationMatches(
-        { medicalSpecialtyId: 42, operationalProfileCode: null },
-        { medicalSpecialtyId: 42, operationalProfileCode: null },
-      ),
-    ).toBe(true);
-  });
-
-  it("QUALIFICATION_ALLOWLIST aceita qualquer qualificação da lista fechada", () => {
-    const context = {
-      medicalSpecialtyId: null,
-      operationalProfileCode: null,
-      admissionPolicy: "QUALIFICATION_ALLOWLIST" as const,
-      allowedQualifications: [
-        { medicalSpecialtyId: 10, operationalProfileCode: null },
-        {
-          medicalSpecialtyId: null,
-          operationalProfileCode: "RESIDENTE_ANESTESIOLOGIA" as const,
-        },
-      ],
-    };
-    expect(
-      qualificationMatches(
-        { medicalSpecialtyId: 10, operationalProfileCode: null },
-        context,
-      ),
-    ).toBe(true);
-    expect(
-      qualificationMatches(
-        {
-          medicalSpecialtyId: null,
-          operationalProfileCode: "RESIDENTE_ANESTESIOLOGIA",
-        },
-        context,
-      ),
-    ).toBe(true);
-    expect(
-      qualificationMatches(
-        { medicalSpecialtyId: 99, operationalProfileCode: null },
-        context,
-      ),
-    ).toBe(false);
+  it("recusa setor com mais de um contexto ativo antes de avaliar o profissional", async () => {
+    await expect(
+      assertProfessionalEligibleForScheduleContext({
+        institutionId: 1,
+        professionalId: 55,
+        scheduleContextId: 202,
+        db: ambiguousSectorContextDb() as any,
+        lockForShare: true,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("é mutation-sensitive: assignDirect/assume/swap/nomination não voltam ao texto", () => {
@@ -267,7 +207,10 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
       "await assertProfessionalEligibleForScheduleContext",
       "let activeSchedule",
     );
-    expect(legacyBranch).toContain("assertSpecialtyCompatible");
+    expect(legacyBranch).toContain(
+      "Plantão sem escala operacional classificada",
+    );
+    expect(legacyBranch).not.toContain("assertSpecialtyCompatible");
     expect(structuredBranch).toContain(
       "assertProfessionalEligibleForScheduleContext",
     );
@@ -388,7 +331,7 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
       "export async function requireCanonicalAssignmentTuple",
     );
     expect(swapQualification).toContain("shift.scheduleContextId === null");
-    expect(swapQualification).toContain("assertSpecialtyCompatible");
+    expect(swapQualification).not.toContain("assertSpecialtyCompatible");
     expect(swapQualification).toContain(
       "assertProfessionalEligibleForScheduleContext",
     );

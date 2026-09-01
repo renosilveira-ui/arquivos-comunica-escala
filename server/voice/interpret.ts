@@ -23,7 +23,6 @@ import {
   shiftAssignmentsV2,
   shiftInstances,
 } from "../../drizzle/schema";
-import { specialtiesConflict } from "../specialty";
 
 // ── Parsing ────────────────────────────────────────────────────────────
 
@@ -48,37 +47,114 @@ export interface ParseFailure {
 }
 
 const MONTHS: Record<string, number> = {
-  janeiro: 1, fevereiro: 2, marco: 3, abril: 4, maio: 5, junho: 6,
-  julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12,
+  janeiro: 1,
+  fevereiro: 2,
+  marco: 3,
+  abril: 4,
+  maio: 5,
+  junho: 6,
+  julho: 7,
+  agosto: 8,
+  setembro: 9,
+  outubro: 10,
+  novembro: 11,
+  dezembro: 12,
 };
 
 const WEEKDAYS: Record<string, number> = {
-  domingo: 0, segunda: 1, terca: 2, quarta: 3, quinta: 4, sexta: 5, sabado: 6,
+  domingo: 0,
+  segunda: 1,
+  terca: 2,
+  quarta: 3,
+  quinta: 4,
+  sexta: 5,
+  sabado: 6,
 };
 
-const WEEKDAY_LABEL = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+const WEEKDAY_LABEL = [
+  "domingo",
+  "segunda",
+  "terça",
+  "quarta",
+  "quinta",
+  "sexta",
+  "sábado",
+];
 
 // Números por extenso que o reconhecimento de fala costuma devolver.
 const UNITS: Record<string, number> = {
-  um: 1, uma: 1, primeiro: 1, dois: 2, tres: 3, quatro: 4, cinco: 5, seis: 6,
-  sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12, treze: 13,
-  catorze: 14, quatorze: 14, quinze: 15, dezesseis: 16, dezessete: 17,
-  dezoito: 18, dezenove: 19, vinte: 20, trinta: 30,
+  um: 1,
+  uma: 1,
+  primeiro: 1,
+  dois: 2,
+  tres: 3,
+  quatro: 4,
+  cinco: 5,
+  seis: 6,
+  sete: 7,
+  oito: 8,
+  nove: 9,
+  dez: 10,
+  onze: 11,
+  doze: 12,
+  treze: 13,
+  catorze: 14,
+  quatorze: 14,
+  quinze: 15,
+  dezesseis: 16,
+  dezessete: 17,
+  dezoito: 18,
+  dezenove: 19,
+  vinte: 20,
+  trinta: 30,
 };
 
 const DAY_WORD =
   "(?:\\d{1,2}|(?:vinte|trinta)(?: e (?:um|dois|tres|quatro|cinco|seis|sete|oito|nove))?|um|uma|primeiro|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|catorze|quatorze|quinze|dezesseis|dezessete|dezoito|dezenove)";
-const MONTH_WORD = "(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)";
+const MONTH_WORD =
+  "(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)";
 
 export const DATE_HINT = 'Diga o dia: "hoje", "amanhã", "sexta" ou "dia 2".';
 
 // Palavras que encerram o nome do colega ("com o João dia 2" → "joao").
 const NAME_STOP_WORDS = [
-  "dia", "no", "na", "do", "da", "de", "o", "a", "os", "as", "e",
-  "plantao", "turno", "manha", "tarde", "noite", "madrugada", "cedo",
-  "hoje", "amanha", "ontem", "depois",
-  "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
-  "proxima", "proximo", "que", "vem", "meu", "minha", "por", "favor",
+  "dia",
+  "no",
+  "na",
+  "do",
+  "da",
+  "de",
+  "o",
+  "a",
+  "os",
+  "as",
+  "e",
+  "plantao",
+  "turno",
+  "manha",
+  "tarde",
+  "noite",
+  "madrugada",
+  "cedo",
+  "hoje",
+  "amanha",
+  "ontem",
+  "depois",
+  "segunda",
+  "terca",
+  "quarta",
+  "quinta",
+  "sexta",
+  "sabado",
+  "domingo",
+  "proxima",
+  "proximo",
+  "que",
+  "vem",
+  "meu",
+  "minha",
+  "por",
+  "favor",
 ];
 
 export function normalize(text: string): string {
@@ -103,27 +179,39 @@ function parseDayNumber(token: string): number | null {
 }
 
 function parseDate(text: string): VoiceDate | ParseFailure | null {
-  if (/\bdepois de amanha\b/.test(text)) return { kind: "offset", days: 2, said: "depois de amanhã" };
-  if (/\bamanha\b/.test(text)) return { kind: "offset", days: 1, said: "amanhã" };
+  if (/\bdepois de amanha\b/.test(text))
+    return { kind: "offset", days: 2, said: "depois de amanhã" };
+  if (/\bamanha\b/.test(text))
+    return { kind: "offset", days: 1, said: "amanhã" };
   if (/\bhoje\b/.test(text)) return { kind: "offset", days: 0, said: "hoje" };
-  if (/\bontem\b/.test(text)) return { kind: "offset", days: -1, said: "ontem" };
-  if (/\bproximo plantao\b/.test(text)) return { kind: "next-shift", said: "seu próximo plantão" };
+  if (/\bontem\b/.test(text))
+    return { kind: "offset", days: -1, said: "ontem" };
+  if (/\bproximo plantao\b/.test(text))
+    return { kind: "next-shift", said: "seu próximo plantão" };
 
   // "dia 2", "dia 2 de setembro", "dia vinte e um"
-  const byDia = text.match(new RegExp(`\\bdia (${DAY_WORD})\\b(?: de (${MONTH_WORD}))?`));
+  const byDia = text.match(
+    new RegExp(`\\bdia (${DAY_WORD})\\b(?: de (${MONTH_WORD}))?`),
+  );
   // "2 de setembro"
-  const byMonth = byDia ? null : text.match(new RegExp(`\\b(${DAY_WORD}) de (${MONTH_WORD})\\b`));
+  const byMonth = byDia
+    ? null
+    : text.match(new RegExp(`\\b(${DAY_WORD}) de (${MONTH_WORD})\\b`));
   // "02/09"
-  const bySlash = byDia || byMonth ? null : text.match(/\b(\d{1,2})\/(\d{1,2})\b/);
+  const bySlash =
+    byDia || byMonth ? null : text.match(/\b(\d{1,2})\/(\d{1,2})\b/);
   const abs = byDia ?? byMonth ?? bySlash;
   if (abs) {
     const day = parseDayNumber(abs[1]);
     if (!day || day < 1 || day > 31) {
-      return { kind: "FALHA", reason: `Dia inválido: "${abs[1]}". ${DATE_HINT}` };
+      return {
+        kind: "FALHA",
+        reason: `Dia inválido: "${abs[1]}". ${DATE_HINT}`,
+      };
     }
     let month: number | null = null;
     if (abs[2]) {
-      month = /^\d+$/.test(abs[2]) ? Number(abs[2]) : MONTHS[abs[2]] ?? null;
+      month = /^\d+$/.test(abs[2]) ? Number(abs[2]) : (MONTHS[abs[2]] ?? null);
       if (!month || month < 1 || month > 12) {
         return { kind: "FALHA", reason: `Não reconheci o mês "${abs[2]}".` };
       }
@@ -152,7 +240,10 @@ function parsePeriod(text: string): VoicePeriod | null {
   // cedo", "bem cedo", "de manhã cedo"); no começo da frase ou antes de
   // "o/meu/a/minha plantão" é o verbo ceder ("cedo meu plantão de hoje à
   // noite" → turno da NOITE, não da manhã).
-  const cedoComoTurno = /\b(hoje|amanha|ontem|bem|de|mais|segunda|terca|quarta|quinta|sexta|sabado|domingo)\s+cedo\b/.test(text);
+  const cedoComoTurno =
+    /\b(hoje|amanha|ontem|bem|de|mais|segunda|terca|quarta|quinta|sexta|sabado|domingo)\s+cedo\b/.test(
+      text,
+    );
   if (/\bmanha\b|\bcedinho\b/.test(text) || cedoComoTurno) return "manha";
   if (/\btarde\b/.test(text)) return "tarde";
   if (/\bnoite\b|\bmadrugada\b/.test(text)) return "noite";
@@ -162,7 +253,11 @@ function parsePeriod(text: string): VoicePeriod | null {
 export function parseVoiceCommand(raw: string): ParsedCommand | ParseFailure {
   const text = normalize(raw);
 
-  if (!/\b(troc\w*|passar|passo|passa|ceder|cedo|cede|repassar|repasso|transferir|transfiro|dar|dou|oferecer|ofereco|oferece)\b/.test(text)) {
+  if (
+    !/\b(troc\w*|passar|passo|passa|ceder|cedo|cede|repassar|repasso|transferir|transfiro|dar|dou|oferecer|ofereco|oferece)\b/.test(
+      text,
+    )
+  ) {
     return {
       kind: "FALHA",
       reason:
@@ -173,7 +268,10 @@ export function parseVoiceCommand(raw: string): ParsedCommand | ParseFailure {
   const date = parseDate(text);
   if (date && "kind" in date && date.kind === "FALHA") return date;
   if (!date) {
-    return { kind: "FALHA", reason: `Não identifiquei o dia do plantão. ${DATE_HINT}` };
+    return {
+      kind: "FALHA",
+      reason: `Não identifiquei o dia do plantão. ${DATE_HINT}`,
+    };
   }
 
   const period = parsePeriod(text);
@@ -184,11 +282,17 @@ export function parseVoiceCommand(raw: string): ParsedCommand | ParseFailure {
   const noTitles = text.replace(/\b(?:dr|dra|doutor|doutora)\.?\s+/g, "");
   const stop = NAME_STOP_WORDS.join("|");
   const targetMatch = noTitles.match(
-    new RegExp(`\\b(?:com|para|pro|pra|entre eu e)\\s+(?:o |a )?((?:(?!\\b(?:${stop})\\b)[a-z]+\\s*){1,4})`),
+    new RegExp(
+      `\\b(?:com|para|pro|pra|entre eu e)\\s+(?:o |a )?((?:(?!\\b(?:${stop})\\b)[a-z]+\\s*){1,4})`,
+    ),
   );
   const targetName = targetMatch?.[1]?.trim() ?? "";
   if (!targetName) {
-    return { kind: "FALHA", reason: 'Não identifiquei com quem é a troca. Diga, por exemplo, "com o João".' };
+    return {
+      kind: "FALHA",
+      reason:
+        'Não identifiquei com quem é a troca. Diga, por exemplo, "com o João".',
+    };
   }
 
   return { kind: "TROCA", targetName, date, period };
@@ -204,10 +308,18 @@ function periodOfStart(startAt: Date): VoicePeriod {
   if (hourBrt >= 12 && hourBrt < 18) return "tarde";
   return "noite";
 }
-const PERIOD_LABEL: Record<VoicePeriod, string> = { manha: "Manhã", tarde: "Tarde", noite: "Noite" };
+const PERIOD_LABEL: Record<VoicePeriod, string> = {
+  manha: "Manhã",
+  tarde: "Tarde",
+  noite: "Noite",
+};
 const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
 
-interface LocalDate { y: number; m: number; d: number }
+interface LocalDate {
+  y: number;
+  m: number;
+  d: number;
+}
 
 function todayBrt(now: Date): LocalDate {
   const b = new Date(now.getTime() - BRT_OFFSET_MS);
@@ -234,7 +346,8 @@ function localDateOf(instant: Date): LocalDate {
 export function resolveVoiceDate(
   date: VoiceDate,
   now = new Date(),
-): { ok: true; target: LocalDate; said: string } | { ok: false; error: string } {
+):
+  { ok: true; target: LocalDate; said: string } | { ok: false; error: string } {
   const today = todayBrt(now);
   let target: LocalDate;
   switch (date.kind) {
@@ -252,13 +365,22 @@ export function resolveVoiceDate(
       let m = date.month ?? today.m;
       if (date.month === null && date.day < today.d) {
         m += 1;
-        if (m > 12) { m = 1; y += 1; }
-      } else if (date.month !== null && (m < today.m || (m === today.m && date.day < today.d))) {
+        if (m > 12) {
+          m = 1;
+          y += 1;
+        }
+      } else if (
+        date.month !== null &&
+        (m < today.m || (m === today.m && date.day < today.d))
+      ) {
         y += 1; // mês já passou este ano → próximo ano
       }
       const probe = new Date(Date.UTC(y, m - 1, date.day));
       if (probe.getUTCMonth() + 1 !== m) {
-        return { ok: false, error: `O dia ${date.day} não existe em ${fmtDate({ y, m, d: 1 }).slice(3)}/${y}.` };
+        return {
+          ok: false,
+          error: `O dia ${date.day} não existe em ${fmtDate({ y, m, d: 1 }).slice(3)}/${y}.`,
+        };
       }
       target = { y, m, d: date.day };
       break;
@@ -267,7 +389,10 @@ export function resolveVoiceDate(
       return { ok: false, error: "next-shift não usa data" };
   }
   if (compareDates(target, today) < 0) {
-    return { ok: false, error: "Esse plantão já passou — só dá para trocar plantões futuros." };
+    return {
+      ok: false,
+      error: "Esse plantão já passou — só dá para trocar plantões futuros.",
+    };
   }
   return { ok: true, target, said: date.said };
 }
@@ -340,12 +465,18 @@ export async function resolveSwapCommand(
     const upcoming = await db
       .select(myShiftFields)
       .from(shiftAssignmentsV2)
-      .innerJoin(shiftInstances, eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id))
+      .innerJoin(
+        shiftInstances,
+        eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id),
+      )
       .where(and(mine, gte(shiftInstances.startAt, now)))
       .orderBy(shiftInstances.startAt)
       .limit(1);
     if (upcoming.length === 0) {
-      return { ok: false, error: "Você não tem nenhum plantão futuro nesta instituição." };
+      return {
+        ok: false,
+        error: "Você não tem nenhum plantão futuro nesta instituição.",
+      };
     }
     shift = upcoming[0];
     whenSaid = "seu próximo plantão";
@@ -356,18 +487,35 @@ export async function resolveSwapCommand(
 
     // Janela do dia em UTC (dia BRT começa 03:00Z e vai até 03:00Z do
     // dia seguinte; a Noite 22Z ainda pertence ao dia).
-    const dayStartUtc = new Date(Date.UTC(target.y, target.m - 1, target.d, 3, 0, 0));
-    const dayEndUtc = new Date(Date.UTC(target.y, target.m - 1, target.d + 1, 3, 0, 0));
+    const dayStartUtc = new Date(
+      Date.UTC(target.y, target.m - 1, target.d, 3, 0, 0),
+    );
+    const dayEndUtc = new Date(
+      Date.UTC(target.y, target.m - 1, target.d + 1, 3, 0, 0),
+    );
 
     let myShifts = await db
       .select(myShiftFields)
       .from(shiftAssignmentsV2)
-      .innerJoin(shiftInstances, eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id))
-      .where(and(mine, gte(shiftInstances.startAt, dayStartUtc), lt(shiftInstances.startAt, dayEndUtc)));
+      .innerJoin(
+        shiftInstances,
+        eq(shiftAssignmentsV2.shiftInstanceId, shiftInstances.id),
+      )
+      .where(
+        and(
+          mine,
+          gte(shiftInstances.startAt, dayStartUtc),
+          lt(shiftInstances.startAt, dayEndUtc),
+        ),
+      );
 
     whenSaid =
       parsed.date.kind === "offset"
-        ? parsed.date.days === 0 ? "hoje" : parsed.date.days === 1 ? "amanhã" : `em ${fmtDate(target)}`
+        ? parsed.date.days === 0
+          ? "hoje"
+          : parsed.date.days === 1
+            ? "amanhã"
+            : `em ${fmtDate(target)}`
         : `na ${WEEKDAY_LABEL[weekdayOf(target)]}, ${fmtDate(target)}`;
 
     if (myShifts.length === 0) {
@@ -376,15 +524,22 @@ export async function resolveSwapCommand(
 
     // Só plantões que ainda não começaram podem ser trocados: "hoje" às
     // 15h não pode resolver para a Manhã que já passou.
-    const future = myShifts.filter((s) => new Date(s.startAt).getTime() > now.getTime());
+    const future = myShifts.filter(
+      (s) => new Date(s.startAt).getTime() > now.getTime(),
+    );
     if (future.length === 0) {
-      return { ok: false, error: `Seu plantão ${whenSaid} já começou — só é possível trocar plantões futuros.` };
+      return {
+        ok: false,
+        error: `Seu plantão ${whenSaid} já começou — só é possível trocar plantões futuros.`,
+      };
     }
     myShifts = future;
 
     if (parsed.period) {
       // Pelo horário de início (faixas), não por hora exata 07/13/19.
-      const match = myShifts.find((s) => periodOfStart(new Date(s.startAt)) === parsed.period);
+      const match = myShifts.find(
+        (s) => periodOfStart(new Date(s.startAt)) === parsed.period,
+      );
       if (!match) {
         const available = myShifts.map((s) => s.label).join(", ");
         return {
@@ -403,8 +558,9 @@ export async function resolveSwapCommand(
     }
   }
 
-  // Colega: vínculo ativo na instituição, nome compatível, serviço
-  // compatível com o plantão, e que não seja o próprio usuário.
+  // Colega: vínculo ativo na instituição, nome compatível e que não seja o
+  // próprio usuário. A elegibilidade operacional é revalidada pelo domínio
+  // de troca com contexto, topologia e ACL setorial.
   const colleagues = await db
     .select({
       id: professionals.id,
@@ -425,13 +581,13 @@ export async function resolveSwapCommand(
   // Desambiguação explícita: o usuário tocou num candidato.
   if (ctx.targetProfessionalId) {
     const chosen = colleagues.find(
-      (c) =>
-        c.id === ctx.targetProfessionalId &&
-        c.userId !== ctx.userId &&
-        !specialtiesConflict(shift.specialty, c.specialty),
+      (c) => c.id === ctx.targetProfessionalId && c.userId !== ctx.userId,
     );
     if (!chosen) {
-      return { ok: false, error: "Profissional escolhido não está disponível para este plantão." };
+      return {
+        ok: false,
+        error: "Profissional escolhido não está disponível para este plantão.",
+      };
     }
     return buildResolved(shift, chosen);
   }
@@ -439,12 +595,13 @@ export async function resolveSwapCommand(
   const queryTokens = normalize(parsed.targetName).split(" ").filter(Boolean);
   const matches = colleagues
     .filter((c) => c.userId !== ctx.userId)
-    .filter((c) => !specialtiesConflict(shift.specialty, c.specialty))
     .filter((c) => {
       const nameTokens = normalize(c.name).split(" ");
       // Todos os tokens ditos devem aparecer no nome (prefixo conta:
       // "germana" acha "Germana Medeiros Mendes"; "joao" acha "João").
-      return queryTokens.every((qt) => nameTokens.some((nt) => nt === qt || nt.startsWith(qt)));
+      return queryTokens.every((qt) =>
+        nameTokens.some((nt) => nt === qt || nt.startsWith(qt)),
+      );
     });
 
   if (matches.length === 0) {
@@ -456,20 +613,27 @@ export async function resolveSwapCommand(
   // Preferência por nome EXATO: "Bruno" é ambíguo entre "Bruno" e
   // "Bruno Silva", mas quem diz o nome completo igual ao cadastro
   // resolve sem pergunta.
-  const exact = matches.filter((c) => normalize(c.name) === normalize(parsed.targetName));
+  const exact = matches.filter(
+    (c) => normalize(c.name) === normalize(parsed.targetName),
+  );
   const finalMatches = exact.length === 1 ? exact : matches;
   if (finalMatches.length > 1) {
     return {
       ok: false,
       error: `Encontrei ${finalMatches.length} profissionais com esse nome — qual deles?`,
-      candidates: finalMatches.slice(0, 5).map((m) => ({ id: m.id, name: m.name })),
+      candidates: finalMatches
+        .slice(0, 5)
+        .map((m) => ({ id: m.id, name: m.name })),
     };
   }
 
   return buildResolved(shift, finalMatches[0]);
 }
 
-function buildResolved(shift: MyShift, target: { id: number; name: string }): ResolvedSwapIntent {
+function buildResolved(
+  shift: MyShift,
+  target: { id: number; name: string },
+): ResolvedSwapIntent {
   const start = new Date(shift.startAt);
   const end = new Date(shift.endAt);
   const brt = (d: Date) => {

@@ -388,7 +388,6 @@ const shiftAssignmentsRouter = router({
             scheduleContextId: lockedShift.scheduleContextId,
             startAt: lockedShift.startAt,
             endAt: lockedShift.endAt,
-            requiredSpecialty: lockedShift.specialty,
           },
         ]);
         await assertShiftAssignmentCapacityForUpdate(tx, {
@@ -754,7 +753,6 @@ const shiftInstancesRouter = router({
               scheduleContextId: lockedAssignment.scheduleContextId,
               startAt: lockedAssignment.startAt,
               endAt: lockedAssignment.endAt,
-              requiredSpecialty: lockedAssignment.specialty,
               excludeAssignmentIds: [lockedAssignment.assignmentId],
             },
           ],

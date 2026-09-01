@@ -15,6 +15,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftAuditLog,
@@ -27,12 +28,14 @@ import { dayKeyBrt } from "../server/local-time";
 import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
+import { openTestScale } from "./helpers/open-test-scale";
 
 describe("status do turno derivado das alocações", () => {
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
   let poisonedSectorId: number;
   let managerUserId: number;
   let managerProfessionalId: number;
@@ -105,6 +108,11 @@ describe("status do turno derivado das alocações", () => {
       .values({ institutionId, hospitalId, name: `Status Setor ${stamp}`, category: "cirurgico", color: "#2563EB" })
       .$returningId();
     sectorId = sec.id;
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
     const [poisonedSector] = await db
       .insert(sectors)
       .values({
@@ -167,7 +175,7 @@ describe("status do turno derivado das alocações", () => {
     const endAt = new Date(`${todayKey}T13:00:00-03:00`);
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, label: `Status Shift ${stamp}`, startAt, endAt, status: "VAGO" })
+      .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: `Status Shift ${stamp}`, startAt, endAt, status: "VAGO" })
       .$returningId();
     shiftInstanceId = s.id;
   });
@@ -192,6 +200,7 @@ describe("status do turno derivado das alocações", () => {
     await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.professionalId, pros));
     await db.delete(professionals).where(inArray(professionals.id, pros));
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
+    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(inArray(sectors.id, [sectorId, poisonedSectorId]));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));

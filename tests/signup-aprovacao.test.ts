@@ -528,7 +528,7 @@ describe("auto-cadastro público e aprovação", () => {
     expect(professional.medicalSpecialtyId).toBeTypeOf("number");
   });
 
-  it("cadastro direto separa dois generalistas por setor e rejeita ambiguidade/incompatibilidade sem escrever", async () => {
+  it("cadastro direto exige escolha inequívoca de escala e permite ACL setorial independente do metadado clínico", async () => {
     const email = `signup-generalist-${STAMP}@test.local`;
     const generalistSignup = await request(app).post("/api/auth/signup").send({
       name: "Signup Generalista",
@@ -644,7 +644,7 @@ describe("auto-cadastro público e aprovação", () => {
         .where(eq(professionalAccess.professionalId, trrProfessional.id)),
     ).toEqual([{ hospitalId: hospitalB, sectorId: emergencySectorId }]);
 
-    const invalidEdit = await request(app)
+    const explicitMetadataIndependentEdit = await request(app)
       .put(`/api/admin/users/${trr.body.user.id}`)
       .set("Cookie", adminCookie)
       .set("x-tenant-id", String(institutionId))
@@ -653,29 +653,45 @@ describe("auto-cadastro público e aprovação", () => {
         medicalSpecialtyCode: null,
         scheduleContextIds: [anesthesiaContextId],
       });
-    expect(invalidEdit.status).toBe(409);
+    expect(explicitMetadataIndependentEdit.status).toBe(200);
     expect(
       await db
         .select({ sectorId: professionalAccess.sectorId })
         .from(professionalAccess)
         .where(eq(professionalAccess.professionalId, trrProfessional.id)),
-    ).toEqual([{ sectorId: emergencySectorId }]);
+    ).toEqual([{ sectorId: recoverySectorId }]);
 
     const ambiguous = await create("ambiguous");
     expect(ambiguous.status).toBe(409);
     expect(ambiguous.body.error).toMatch(/mais de uma escala/i);
-    const incompatible = await create("mismatch", [anesthesiaContextId]);
-    expect(incompatible.status).toBe(409);
-    expect(incompatible.body.error).toMatch(/incompatível/i);
+    const metadataIndependent = await create("mismatch", [anesthesiaContextId]);
+    expect(metadataIndependent.status).toBe(201);
     const crossTenant = await create("cross-tenant", [otherTenantContextId]);
     expect(crossTenant.status).toBe(409);
+    const [metadataIndependentProfessional] = await db
+      .select({ id: professionals.id })
+      .from(professionals)
+      .where(eq(professionals.userId, metadataIndependent.body.user.id));
+    expect(
+      await db
+        .select({
+          hospitalId: professionalAccess.hospitalId,
+          sectorId: professionalAccess.sectorId,
+        })
+        .from(professionalAccess)
+        .where(
+          eq(
+            professionalAccess.professionalId,
+            metadataIndependentProfessional.id,
+          ),
+        ),
+    ).toEqual([{ hospitalId: hospitalA, sectorId: recoverySectorId }]);
     const forbiddenWrites = await db
       .select({ id: users.id })
       .from(users)
       .where(
         inArray(users.email, [
           `signup-direct-ambiguous-${STAMP}@test.local`,
-          `signup-direct-mismatch-${STAMP}@test.local`,
           `signup-direct-cross-tenant-${STAMP}@test.local`,
         ]),
       );
@@ -719,7 +735,8 @@ describe("auto-cadastro público e aprovação", () => {
     const ok = await request(app)
       .post(`/api/admin/pending-signups/${u.id}/approve`)
       .set("Cookie", adminCookie)
-      .set("x-tenant-id", String(institutionId));
+      .set("x-tenant-id", String(institutionId))
+      .send({ scheduleContextIds: [anesthesiaContextId] });
     expect(ok.status).toBe(200);
     const [approvalAudit] = await db
       .select({
@@ -898,15 +915,15 @@ describe("auto-cadastro público e aprovação", () => {
       .send({ inviteCode: "ABCD-2345" });
     expect(forbidden.status).toBe(403);
 
-    const wrongSpecialty = await request(app).post("/api/auth/signup").send({
+    const metadataIndependent = await request(app).post("/api/auth/signup").send({
       name: "Invite Wrong",
       email: `signup-invite-wrong-${STAMP}@test.local`,
       password: PASSWORD,
       operationalProfileCode: "MEDICO_GENERALISTA",
       medicalSpecialtyCode: null,
     });
-    expect(wrongSpecialty.status).toBe(201);
-    const [wrongUser] = await db
+    expect(metadataIndependent.status).toBe(201);
+    const [metadataIndependentUser] = await db
       .select()
       .from(users)
       .where(eq(users.email, `signup-invite-wrong-${STAMP}@test.local`));
@@ -916,7 +933,7 @@ describe("auto-cadastro público e aprovação", () => {
       sectorId: recoverySectorId,
       codeHash: hashScheduleInviteCode("WRONG234"),
       createdByUserId: adminId,
-      invitedUserId: wrongUser.id,
+      invitedUserId: metadataIndependentUser.id,
       invitedEmail: `signup-invite-wrong-${STAMP}@test.local`,
       maxRedemptions: 1,
       expiresAt: new Date(Date.now() + 86_400_000),
@@ -925,12 +942,22 @@ describe("auto-cadastro público e aprovação", () => {
       `signup-invite-wrong-${STAMP}@test.local`,
       PASSWORD,
     );
-    const wrong = await request(app)
+    const metadataIndependentRedemption = await request(app)
       .post("/api/auth/redeem-invite")
       .set("Cookie", cookieOf(wrongSession))
       .send({ inviteCode: "WRO-NG234" });
-    expect(wrong.status).toBe(409);
-    expect(wrong.body.error).toMatch(/especialidade/i);
+    expect(metadataIndependentRedemption.status).toBe(200);
+    const [metadataIndependentMembership] = await db
+      .select({
+        institutionId: professionalInstitutions.institutionId,
+        active: professionalInstitutions.active,
+      })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, metadataIndependentUser.id));
+    expect(metadataIndependentMembership).toEqual({
+      institutionId,
+      active: true,
+    });
 
     const session = await login(email, PASSWORD);
     expect(session.status).toBe(200);

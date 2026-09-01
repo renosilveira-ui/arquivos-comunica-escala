@@ -24,7 +24,9 @@ function allowlistContext(
     medicalSpecialtyName: null,
     operationalProfileCode: null,
     admissionPolicy: "QUALIFICATION_ALLOWLIST",
-    allowedQualifications: [{ medicalSpecialtyId: 10, operationalProfileCode: null }],
+    // Caso de regressão de Sala de Recuperação: ausência de metadado clínico
+    // não altera a ACL exata do setor.
+    allowedQualifications: [],
     active: true,
     ...overrides,
   };
@@ -52,7 +54,7 @@ const professionalId = 55;
 describe("accessCoversScheduleContext — regra canônica allowlist", () => {
   const salaRecuperacao = allowlistContext(101);
 
-  it("allowlist + sector exato → permitido", () => {
+  it("allowlist clínica vazia + setor exato → permitido", () => {
     expect(
       accessCoversScheduleContext(
         {
@@ -164,15 +166,10 @@ describe("accessCoversScheduleContext — regra canônica allowlist", () => {
 
   it("projectEffectiveScheduleContextIds nega allowlist com acesso hospital-wide", () => {
     const contexts = [allowlistContext(101), allowlistContext(102, { id: 11 })];
-    const qualification = {
-      medicalSpecialtyId: 10,
-      operationalProfileCode: null as const,
-    };
     expect(
       projectEffectiveScheduleContextIds({
         institutionId: 1,
         professionalId,
-        qualification,
         contexts,
         accesses: [
           {
@@ -189,7 +186,6 @@ describe("accessCoversScheduleContext — regra canônica allowlist", () => {
       projectEffectiveScheduleContextIds({
         institutionId: 1,
         professionalId,
-        qualification,
         contexts,
         accesses: [
           {
@@ -235,16 +231,27 @@ describe("leitores SQL alinhados com accessCoversScheduleContext", () => {
 
   it("swap-router aplica a mesma fronteira em professional_access", () => {
     const source = readFileSync("server/swap-router.ts", "utf8");
-    expect(source).toContain("fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
-    expect(source).toContain("tsc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
+    expect(source).toContain(
+      "fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'",
+    );
+    expect(source).toContain(
+      "tsc.admission_policy = 'QUALIFICATION_ALLOWLIST'",
+    );
     expect(source).toContain("source_access.sector_id = fsi.sector_id");
     expect(source).toContain("actor_target_access.sector_id = tsi.sector_id");
   });
 
   it("assignDirect e listAssignable concordam no bloqueio hospital-wide", () => {
     const editor = readFileSync("tests/editor-assign-direct.test.ts", "utf8");
-    const assignable = readFileSync("tests/assignable-professionals.test.ts", "utf8");
-    expect(editor).toContain("bloqueia bypass de alocação direta com acesso só hospitalar");
-    expect(assignable).toContain("expect(ids).not.toContain(hospitalWideProfessionalId)");
+    const assignable = readFileSync(
+      "tests/assignable-professionals.test.ts",
+      "utf8",
+    );
+    expect(editor).toContain(
+      "bloqueia bypass de alocação direta com acesso só hospitalar",
+    );
+    expect(assignable).toContain(
+      "expect(ids).not.toContain(hospitalWideProfessionalId)",
+    );
   });
 });

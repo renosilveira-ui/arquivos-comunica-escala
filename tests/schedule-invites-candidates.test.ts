@@ -21,13 +21,15 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
   let institutionId: number;
   let otherInstitutionId: number;
   let hospitalId: number;
+  let otherHospitalId: number;
   let sectorId: number;
   let managerUserId: number;
   let waitingUserId: number;
   let houseUserId: number;
   let alreadyInScaleUserId: number;
   let otherHouseUserId: number;
-  let wrongSpecialtyUserId: number;
+  let otherHospitalUserId: number;
+  let differentSpecialtyUserId: number;
 
   async function createDoctor(input: {
     stamp: number;
@@ -119,6 +121,11 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       .values({ institutionId, name: `Invite Cand Hospital ${stamp}` })
       .$returningId();
     hospitalId = hospital.id;
+    const [otherHospital] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `Invite Cand Hospital B ${stamp}` })
+      .$returningId();
+    otherHospitalId = otherHospital.id;
 
     const [sector] = await db
       .insert(sectors)
@@ -241,17 +248,33 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     });
     otherHouseUserId = otherHouse.userId;
 
-    const wrong = await createDoctor({
+    const otherHospitalDoctor = await createDoctor({
+      stamp,
+      label: "other-hospital",
+      name: "Carla Hospital B",
+      specialtyId: anesthesiaId,
+      specialtyLabel: "Anestesiologia",
+      institutionId,
+    });
+    otherHospitalUserId = otherHospitalDoctor.userId;
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: otherHospitalDoctor.professionalId,
+      hospitalId: otherHospitalId,
+      canAccess: true,
+    });
+
+    const differentSpecialty = await createDoctor({
       stamp,
       label: "wrong",
       name: "Diego Clínica Médica",
       specialtyId: clinica.id,
       specialtyLabel: "Clínica médica",
     });
-    wrongSpecialtyUserId = wrong.userId;
+    differentSpecialtyUserId = differentSpecialty.userId;
   });
 
-  it("mostra a sala de espera e a casa sem exigir e-mail; fecha o plantel de outro hospital", async () => {
+  it("mostra a sala de espera e a casa sem exigir e-mail; isola outro hospital sem usar especialidade como ACL", async () => {
     const rows = await caller().scheduleInvites.listCandidates({
       hospitalId,
       sectorId,
@@ -262,7 +285,8 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     expect(ids).toContain(houseUserId);
     expect(ids).not.toContain(alreadyInScaleUserId);
     expect(ids).not.toContain(otherHouseUserId);
-    expect(ids).not.toContain(wrongSpecialtyUserId);
+    expect(ids).not.toContain(otherHospitalUserId);
+    expect(ids).toContain(differentSpecialtyUserId);
     expect(rows.find((row) => row.userId === waitingUserId)?.name).toBe(
       "José da Silva Awaiting",
     );

@@ -370,15 +370,19 @@ describe("aviso deliberado de plantão vago", () => {
   it("gestor autorizado envia e médicos elegíveis recebem", async () => {
     const shiftId = await createVacantShift(1);
     const result = await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId });
-    expect(result.notifiedCount).toBe(2);
+    expect(result.notifiedCount).toBe(3);
     const rows = await listBroadcasts(shiftId);
     const userIdsSignaled = rows.map((row) => row.userId);
     expect(userIdsSignaled).toEqual(
-      expect.arrayContaining([doctor.userId, doctorGestor.userId]),
+      expect.arrayContaining([
+        doctor.userId,
+        doctorGestor.userId,
+        ineligible.userId,
+      ]),
     );
     expect(userIdsSignaled).not.toContain(manager.userId);
     expect(userIdsSignaled).not.toContain(plus.userId);
-    expect(userIdsSignaled).not.toContain(ineligible.userId);
+    expect(userIdsSignaled).toContain(ineligible.userId);
     expect(rows[0]?.title).toBe(VACANCY_AVAILABLE_PUSH_TITLE);
     expect(rows[0]?.deepLink).toBe(VACANCY_AVAILABLE_DEEP_LINK);
     expect(rows[0]?.body).toContain("SR ·");
@@ -389,10 +393,16 @@ describe("aviso deliberado de plantão vago", () => {
       {},
     );
     expect(visible.map((row) => Number(row.shiftInstanceId))).toContain(shiftId);
-    const hidden = await vacanciesCaller(ineligible).shiftInstances.listVacancies(
+    const visibleWithDifferentClinicalMetadata = await vacanciesCaller(
+      ineligible,
+    ).shiftInstances.listVacancies(
       {},
     );
-    expect(hidden.map((row) => Number(row.shiftInstanceId))).not.toContain(
+    expect(
+      visibleWithDifferentClinicalMetadata.map((row) =>
+        Number(row.shiftInstanceId),
+      ),
+    ).toContain(
       shiftId,
     );
   });
@@ -400,7 +410,7 @@ describe("aviso deliberado de plantão vago", () => {
   it("GESTOR_PLUS autorizado envia", async () => {
     const shiftId = await createVacantShift(2);
     const result = await callerFor(plus).notifyVacancy({ shiftInstanceId: shiftId });
-    expect(result.notifiedCount).toBe(2);
+    expect(result.notifiedCount).toBe(3);
   });
 
   it("médico comum não envia", async () => {
@@ -444,7 +454,7 @@ describe("aviso deliberado de plantão vago", () => {
       .set({ status: "VAGO" })
       .where(eq(shiftInstances.id, shiftId));
     const result = await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId });
-    expect(result.notifiedCount).toBe(2);
+    expect(result.notifiedCount).toBe(3);
   });
 
   it("concorrência vaga→ocupada falha fechado", async () => {
@@ -534,7 +544,7 @@ describe("aviso deliberado de plantão vago", () => {
       message:
         "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
     });
-    expect(await listBroadcasts(shiftId)).toHaveLength(2);
+    expect(await listBroadcasts(shiftId)).toHaveLength(3);
   });
 
   it("libera novo aviso só depois de 15 min elapsed no mesmo plantão", async () => {
@@ -554,8 +564,8 @@ describe("aviso deliberado de plantão vago", () => {
     const result = await callerFor(manager).notifyVacancy({
       shiftInstanceId: shiftId,
     });
-    expect(result.notifiedCount).toBe(2);
-    expect(await listBroadcasts(shiftId)).toHaveLength(4);
+    expect(result.notifiedCount).toBe(3);
+    expect(await listBroadcasts(shiftId)).toHaveLength(6);
   });
 
   it("double tap concorrente gera um broadcast e um cooldown", async () => {
@@ -573,13 +583,13 @@ describe("aviso deliberado de plantão vago", () => {
         outcome.status === "rejected",
     );
     expect(fulfilled).toHaveLength(1);
-    expect(fulfilled[0]?.value.notifiedCount).toBe(2);
+    expect(fulfilled[0]?.value.notifiedCount).toBe(3);
     expect(rejected).toHaveLength(1);
     expect(rejected[0]?.reason).toMatchObject({
       message:
         "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
     });
-    expect(await listBroadcasts(shiftId)).toHaveLength(2);
+    expect(await listBroadcasts(shiftId)).toHaveLength(3);
   });
 
   it("cooldown é por plantão, não por gestor", async () => {
@@ -591,7 +601,7 @@ describe("aviso deliberado de plantão vago", () => {
       message:
         "Este aviso já foi enviado há pouco. Aguarde 15 minutos para enviar de novo.",
     });
-    expect(await listBroadcasts(shiftId)).toHaveLength(2);
+    expect(await listBroadcasts(shiftId)).toHaveLength(3);
   });
 
   it("status VAGO envenenado com assignment ativa não dispara aviso", async () => {

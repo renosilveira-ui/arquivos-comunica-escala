@@ -50,6 +50,7 @@ import {
   resolveScheduleContextAclSelection,
   scheduleContextsToSpecificAccessTargets,
   ScheduleContextAclError,
+  shouldRewriteScheduleContextAccess,
 } from "../schedule-contexts";
 import { parseManagerScopes } from "../../lib/manager-scope-admin";
 import {
@@ -1209,10 +1210,6 @@ adminRouter.get(
             scheduleContextIds: projectEffectiveScheduleContextIds({
               institutionId,
               professionalId: row.professionalId,
-              qualification: {
-                medicalSpecialtyId: row.medicalSpecialtyId,
-                operationalProfileCode: row.operationalProfileCode,
-              },
               contexts: activeContexts,
               accesses: accessRows,
             }),
@@ -1370,7 +1367,8 @@ adminRouter.put(
       requestedManagerScopes = parseManagerScopes(managerScopes);
     } catch (error) {
       res.status(400).json({
-        error: error instanceof Error ? error.message : "managerScopes inválido",
+        error:
+          error instanceof Error ? error.message : "managerScopes inválido",
       });
       return;
     }
@@ -1513,17 +1511,14 @@ adminRouter.put(
               }
 
               const shouldRewriteScheduleAccess =
-                target.globalRole === "doctor" &&
-                (requestedScheduleContextIds !== undefined ||
-                  qualificationUpdateRequested);
+                shouldRewriteScheduleContextAccess({
+                  isDoctor: target.globalRole === "doctor",
+                  requestedScheduleContextIds,
+                });
               const selectedScheduleContexts = shouldRewriteScheduleAccess
                 ? await resolveScheduleContextAclSelection({
                     db: tx,
                     institutionId,
-                    qualification: {
-                      medicalSpecialtyId: effectiveMedicalSpecialtyId,
-                      operationalProfileCode: effectiveOperationalProfileCode,
-                    },
                     requestedScheduleContextIds,
                   })
                 : [];
@@ -2433,10 +2428,6 @@ adminRouter.post(
           await resolveScheduleContextAclSelection({
             db: tx,
             institutionId,
-            qualification: {
-              medicalSpecialtyId: effectiveMedicalSpecialtyId,
-              operationalProfileCode: effectiveOperationalProfileCode,
-            },
             requestedScheduleContextIds,
           });
 

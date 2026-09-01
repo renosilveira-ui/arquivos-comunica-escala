@@ -17,7 +17,6 @@ import {
   institutions,
   monthlyRosters,
 } from "../drizzle/schema";
-import { assertSpecialtyCompatible } from "./specialty";
 import {
   assertMonthsNotLockedForUpdate,
   type MonthLockTarget,
@@ -448,8 +447,7 @@ export async function assertProfessionalQualifiedForShift(
   lockForShare: boolean,
 ): Promise<void> {
   if (shift.scheduleContextId === null) {
-    assertSpecialtyCompatible(shift.specialty, professional.specialty);
-    return;
+    throw topologyDenied("Plantão sem escala operacional classificada");
   }
   await assertProfessionalEligibleForScheduleContext({
     institutionId: shift.institutionId,
@@ -495,7 +493,8 @@ export async function requireCanonicalAssignmentTuple(
     lockForUpdate: input.lockForUpdate,
   };
   const accessId = await findProfessionalAccessId(db, accessInput);
-  const canManageAsGestorPlus = professional.roleInInstitution === "GESTOR_PLUS";
+  const canManageAsGestorPlus =
+    professional.roleInInstitution === "GESTOR_PLUS";
   const scopeId = canManageAsGestorPlus
     ? null
     : await findManagerScopeId(db, accessInput);
@@ -506,16 +505,17 @@ export async function requireCanonicalAssignmentTuple(
         : "Profissional sem acesso ativo ao hospital/setor do plantão",
     );
   }
+  if (shift.scheduleContextId === null) {
+    throw topologyDenied("Plantão sem escala operacional classificada");
+  }
   if (scopeId !== null || canManageAsGestorPlus) {
-    if (shift.scheduleContextId !== null) {
-      await assertActiveScheduleContextTopology({
-        institutionId: shift.institutionId,
-        hospitalId: shift.hospitalId,
-        sectorId: shift.sectorId,
-        scheduleContextId: shift.scheduleContextId,
-        db,
-      });
-    }
+    await assertActiveScheduleContextTopology({
+      institutionId: shift.institutionId,
+      hospitalId: shift.hospitalId,
+      sectorId: shift.sectorId,
+      scheduleContextId: shift.scheduleContextId,
+      db,
+    });
   } else {
     await assertProfessionalQualifiedForShift(
       db,
@@ -641,7 +641,8 @@ export async function requireProfessionalCanReceiveShift(
     lockForUpdate: input.lockForUpdate,
   };
   const accessId = await findProfessionalAccessId(db, accessInput);
-  const canManageAsGestorPlus = professional.roleInInstitution === "GESTOR_PLUS";
+  const canManageAsGestorPlus =
+    professional.roleInInstitution === "GESTOR_PLUS";
   const scopeId = canManageAsGestorPlus
     ? null
     : await findManagerScopeId(db, accessInput);
@@ -652,19 +653,20 @@ export async function requireProfessionalCanReceiveShift(
         : "Profissional sem acesso ativo ao hospital/setor do plantão",
     );
   }
+  if (input.shift.scheduleContextId === null) {
+    throw topologyDenied("Plantão sem escala operacional classificada");
+  }
   // listAvailable já mostra a oferta a GESTOR_PLUS e a GESTOR_MEDICO com
   // manager_scope, sem professional_access. Aceitar/recusar usa a mesma
   // regra; especialidade não filtra gestão.
   if (scopeId !== null || canManageAsGestorPlus) {
-    if (input.shift.scheduleContextId !== null) {
-      await assertActiveScheduleContextTopology({
-        institutionId: input.shift.institutionId,
-        hospitalId: input.shift.hospitalId,
-        sectorId: input.shift.sectorId,
-        scheduleContextId: input.shift.scheduleContextId,
-        db,
-      });
-    }
+    await assertActiveScheduleContextTopology({
+      institutionId: input.shift.institutionId,
+      hospitalId: input.shift.hospitalId,
+      sectorId: input.shift.sectorId,
+      scheduleContextId: input.shift.scheduleContextId,
+      db,
+    });
     return professional;
   }
   await assertProfessionalQualifiedForShift(

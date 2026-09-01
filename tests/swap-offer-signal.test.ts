@@ -334,11 +334,9 @@ describe("sinal de oferta de plantão", () => {
     );
     expect(listAvailable).toContain("manager_scope");
     expect(listAvailable).toContain("GESTOR_PLUS");
-    expect(listAvailable).toContain(
-      "ap.medical_specialty_id = aq.medical_specialty_id",
-    );
+    expect(listAvailable).toContain("plantonistaAccessCoversShiftSql");
     expect(listAvailable).not.toContain(
-      "AND fp.medical_specialty_id = aq.medical_specialty_id",
+      "medical_specialty_id = aq.medical_specialty_id",
     );
     const receive = offerDomain.slice(
       offerDomain.indexOf("export async function requireProfessionalCanReceiveShift"),
@@ -1170,6 +1168,100 @@ describe("sinal de oferta de plantão", () => {
       await db.delete(scheduleContexts).where(eq(scheduleContexts.id, legacyContextId));
       await db.delete(sectors).where(eq(sectors.id, legacySector.id));
       await db.delete(sectors).where(eq(sectors.id, otherHospitalSector.id));
+      await db.delete(hospitals).where(eq(hospitals.id, otherHospital.id));
+    }
+  });
+
+  it("ACL do hospital A não expõe, conta ou permite aceitar oferta do hospital B", async () => {
+    const [otherHospital] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `Isolation Hospital B ${stamp}` })
+      .$returningId();
+    const [otherSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId: otherHospital.id,
+        name: `Isolation Setor B ${stamp}`,
+        category: "cirurgico",
+        color: "#0F766E",
+      })
+      .$returningId();
+    const otherScheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId: otherHospital.id,
+      sectorId: otherSector.id,
+    });
+    const ownerAtHospitalB = await createIdentity("hospital-b-owner", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: clinicaId,
+      specialty: "Clínica Médica",
+      withAccess: false,
+    });
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: ownerAtHospitalB.professionalId,
+      hospitalId: otherHospital.id,
+      sectorId: otherSector.id,
+      canAccess: true,
+    });
+
+    let shiftId: number | undefined;
+    let offerId: number | undefined;
+    try {
+      const shift = await createOccupiedShift(
+        ownerAtHospitalB,
+        39,
+        "Clínica Médica",
+        {
+          hospitalId: otherHospital.id,
+          sectorId: otherSector.id,
+          scheduleContextId: otherScheduleContextId,
+        },
+      );
+      shiftId = shift.shiftId;
+      const offer = await callerFor(ownerAtHospitalB).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+      });
+      offerId = Number(offer.id);
+
+      const listAtHospitalA = await callerFor(peer).listAvailable({});
+      expect(listAtHospitalA.map((row) => Number(row.id))).not.toContain(offerId);
+      await expect(callerFor(peer).countActionable()).resolves.toEqual({
+        swapOffers: 0,
+      });
+      await expect(
+        callerFor(peer).accept({ swapRequestId: offerId }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    } finally {
+      if (shiftId) {
+        await db.delete(notifications).where(eq(notifications.shiftInstanceId, shiftId));
+        await db.delete(auditTrail).where(eq(auditTrail.shiftInstanceId, shiftId));
+      }
+      if (offerId) {
+        await db
+          .delete(swapRequestDismissals)
+          .where(eq(swapRequestDismissals.swapRequestId, offerId));
+        await db.delete(swapRequests).where(eq(swapRequests.id, offerId));
+      }
+      if (shiftId) {
+        await db
+          .delete(shiftAssignmentsV2)
+          .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftId));
+        await db.delete(shiftInstances).where(eq(shiftInstances.id, shiftId));
+      }
+      await db
+        .delete(monthlyRosters)
+        .where(eq(monthlyRosters.hospitalId, otherHospital.id));
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.professionalId, ownerAtHospitalB.professionalId));
+      await db
+        .delete(scheduleContexts)
+        .where(eq(scheduleContexts.id, otherScheduleContextId));
+      await db.delete(sectors).where(eq(sectors.id, otherSector.id));
       await db.delete(hospitals).where(eq(hospitals.id, otherHospital.id));
     }
   });

@@ -12,6 +12,7 @@ import {
   professionalInstitutions,
   professionals,
   pushTokens,
+  scheduleContextAllowedQualifications,
   scheduleContexts,
   sectorServiceSpecialties,
   sectors,
@@ -33,7 +34,15 @@ function source(overrides: Partial<Source> = {}): Source {
     },
     rosterStatus: "DRAFT",
     sectors: [{ id: 100, name: "Sala de Recuperação" }],
-    scheduleContexts: [{ id: 1000, sectorId: 100, active: true }],
+    scheduleContexts: [
+      {
+        id: 1000,
+        sectorId: 100,
+        admissionPolicy: "QUALIFICATION_ALLOWLIST",
+        qualificationAllowlistMetadataEntryCount: 1,
+        active: true,
+      },
+    ],
     activeTemplates: [{ id: 2000, sectorId: 100 }],
     shifts: [
       {
@@ -126,7 +135,10 @@ function fakeReadDb(rowsByTable: Map<unknown, unknown[] | Error>) {
 }
 
 function databaseRows(
-  options: { serviceSpecialties?: unknown[] | Error } = {},
+  options: {
+    serviceSpecialties?: unknown[] | Error;
+    qualificationAllowlistMetadata?: unknown[];
+  } = {},
 ) {
   const serviceSpecialties = options.serviceSpecialties ?? [
     {
@@ -140,6 +152,8 @@ function databaseRows(
       active: true,
     },
   ];
+  const qualificationAllowlistMetadata =
+    options.qualificationAllowlistMetadata ?? [{ scheduleContextId: 1000 }];
   return new Map<unknown, unknown[] | Error>([
     [sectors, [{ id: 100, name: "Sala de Recuperação" }]],
     [
@@ -150,6 +164,7 @@ function databaseRows(
           institutionId: 1,
           hospitalId: 10,
           sectorId: 100,
+          admissionPolicy: "QUALIFICATION_ALLOWLIST",
           active: true,
         },
       ],
@@ -242,6 +257,7 @@ function databaseRows(
       ],
     ],
     [pushTokens, [{ userId: 111 }]],
+    [scheduleContextAllowedQualifications, qualificationAllowlistMetadata],
     [sectorServiceSpecialties, serviceSpecialties],
   ]);
 }
@@ -292,7 +308,7 @@ describe("corporate readiness V1", () => {
     expect(withOneSpecialty.integrations.emailTrust).toBe("NOT_ACTIVATED");
   });
 
-  it("classifica configuração incompleta como aviso ou informação, nunca como bloqueio", () => {
+  it("mantém configuração incompleta como aviso, mas bloqueia contexto estruturalmente ausente", () => {
     const report = buildCorporateReadinessReport(
       source({
         scheduleContexts: [],
@@ -320,7 +336,7 @@ describe("corporate readiness V1", () => {
       "2026-09-01T12:00:00.000Z",
     );
 
-    expect(report.summary.SECURITY_BLOCKER).toBe(0);
+    expect(report.summary.SECURITY_BLOCKER).toBe(1);
     expect(issueCodes(report)).toEqual(
       expect.arrayContaining([
         "MISSING_ACTIVE_SCHEDULE_CONTEXT",
@@ -383,10 +399,107 @@ describe("corporate readiness V1", () => {
       source({ activeTemplates: [{ id: 2001, sectorId: 100 }] }),
       "2026-09-01T12:00:00.000Z",
     );
+    const changedAllowlistMetadata = buildCorporateReadinessReport(
+      source({
+        scheduleContexts: [
+          {
+            id: 1000,
+            sectorId: 100,
+            admissionPolicy: "QUALIFICATION_ALLOWLIST",
+            qualificationAllowlistMetadataEntryCount: 2,
+            active: true,
+          },
+        ],
+      }),
+      "2026-09-01T12:00:00.000Z",
+    );
 
     expect(renamed.snapshotHash).toBe(original.snapshotHash);
     expect(changedConfiguration.snapshotHash).not.toBe(original.snapshotHash);
+    expect(changedAllowlistMetadata.snapshotHash).not.toBe(
+      original.snapshotHash,
+    );
     expect(renamed.sectors[0]?.sectorName).toBe("RPA");
+  });
+
+  it("torna allowlist clínica vazia visível sem transformá-la em bloqueio de acesso", () => {
+    const report = buildCorporateReadinessReport(
+      source({
+        scheduleContexts: [
+          {
+            id: 1000,
+            sectorId: 100,
+            admissionPolicy: "QUALIFICATION_ALLOWLIST",
+            qualificationAllowlistMetadataEntryCount: 0,
+            active: true,
+          },
+        ],
+      }),
+      "2026-09-01T12:00:00.000Z",
+    );
+
+    expect(report.summary.SECURITY_BLOCKER).toBe(0);
+    expect(issueCodes(report)).toEqual(
+      expect.arrayContaining([
+        "EMPTY_QUALIFICATION_ALLOWLIST_METADATA",
+        "SHIFTS_ON_EMPTY_QUALIFICATION_ALLOWLIST_METADATA",
+      ]),
+    );
+    expect(report.sectors[0]?.metrics).toMatchObject({
+      qualificationAllowlistMetadataEntryCount: 0,
+      shiftsWithEmptyQualificationAllowlistMetadataCount: 1,
+      activeProfessionalCoverageCount: 2,
+    });
+  });
+
+  it("bloqueia topologia ambígua mesmo que os contextos tenham metadados completos", () => {
+    const report = buildCorporateReadinessReport(
+      source({
+        scheduleContexts: [
+          {
+            id: 1000,
+            sectorId: 100,
+            admissionPolicy: "QUALIFICATION_ALLOWLIST",
+            qualificationAllowlistMetadataEntryCount: 1,
+            active: true,
+          },
+          {
+            id: 1001,
+            sectorId: 100,
+            admissionPolicy: "QUALIFICATION_ALLOWLIST",
+            qualificationAllowlistMetadataEntryCount: 1,
+            active: true,
+          },
+        ],
+      }),
+      "2026-09-01T12:00:00.000Z",
+    );
+
+    expect(issueCodes(report)).toEqual(
+      expect.arrayContaining([
+        "MULTIPLE_ACTIVE_SCHEDULE_CONTEXTS",
+        "SHIFT_CONTEXT_TOPOLOGY_AMBIGUOUS",
+      ]),
+    );
+    expect(report.summary.SECURITY_BLOCKER).toBe(2);
+  });
+
+  it("não conta acesso hospitalar amplo para contexto que exige acesso setorial", () => {
+    const report = buildCorporateReadinessReport(
+      source({
+        memberships: [
+          { professionalId: 11, userId: 111, roleInInstitution: "USER" },
+        ],
+        activeProfessionalAccesses: [
+          { id: 4000, professionalId: 11, sectorId: null },
+        ],
+        activeManagerScopes: [],
+      }),
+      "2026-09-01T12:00:00.000Z",
+    );
+
+    expect(report.sectors[0]?.metrics.activeProfessionalCoverageCount).toBe(0);
+    expect(issueCodes(report)).toContain("NO_ACTIVE_PROFESSIONAL_COVERAGE");
   });
 
   it("reflete a tolerância real dos três horários atuais de confirmação", () => {
@@ -417,7 +530,7 @@ describe("corporate readiness V1", () => {
     ).toBe(true);
   });
 
-  it("carrega a fonte real sem consultar especialidade profissional ou e-mail", async () => {
+  it("carrega metadado da allowlist sem consultar especialidade profissional ou e-mail", async () => {
     const db = fakeReadDb(databaseRows());
 
     const report = await getCorporateReadinessReport(db as any, {
@@ -431,10 +544,33 @@ describe("corporate readiness V1", () => {
       activeProfessionalCoverageCount: 2,
       allocatedProfessionalCount: 1,
       allocatedProfessionalsWithPushTokenCount: 1,
+      qualificationAllowlistMetadataEntryCount: 1,
+      shiftsWithEmptyQualificationAllowlistMetadataCount: 0,
       serviceSpecialtyCount: 1,
     });
     expect(report.summary.SECURITY_BLOCKER).toBe(0);
     expect(db.select).toHaveBeenCalled();
+  });
+
+  it("reporta a allowlist clínica vazia encontrada no banco sem usar essa ausência como ACL", async () => {
+    const report = await getCorporateReadinessReport(
+      fakeReadDb(databaseRows({ qualificationAllowlistMetadata: [] })) as any,
+      {
+        institutionId: 1,
+        hospitalId: 10,
+        sectorId: 100,
+        yearMonth: "2026-09",
+      },
+    );
+
+    expect(report.summary.SECURITY_BLOCKER).toBe(0);
+    expect(issueCodes(report)).toContain(
+      "EMPTY_QUALIFICATION_ALLOWLIST_METADATA",
+    );
+    expect(report.sectors[0]?.metrics).toMatchObject({
+      qualificationAllowlistMetadataEntryCount: 0,
+      shiftsWithEmptyQualificationAllowlistMetadataCount: 1,
+    });
   });
 
   it("trata a migration descritiva ainda ausente como informação, sem derrubar a escala", async () => {

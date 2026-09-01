@@ -76,7 +76,7 @@ describe("scheduleContexts.listMine no appRouter", () => {
     });
   });
 
-  it("integra tenant, qualificação exata e professional_access em uma lista 0/1/N", async () => {
+  it("integra tenant e professional_access sem filtrar por especialidade clínica", async () => {
     mocks.getDb.mockResolvedValue(
       fakeSelectDb(
         new Map([
@@ -173,14 +173,17 @@ describe("scheduleContexts.listMine no appRouter", () => {
 
     const result = await caller.scheduleContexts.listMine();
 
-    expect(result.map((row) => row.id)).toEqual([1, 2]);
+    expect(result.map((row) => row.id)).toEqual([1, 2, 3]);
     expect(result.map((row) => row.sectorName)).toEqual([
       "Emergência",
       "Sala de Recuperação",
+      "UTI",
     ]);
-    expect(
-      result.every((row) => row.qualificationCode === "CLINICA_MEDICA"),
-    ).toBe(true);
+    expect(result.map((row) => row.qualificationCode)).toEqual([
+      "CLINICA_MEDICA",
+      "CLINICA_MEDICA",
+      "MEDICINA_INTENSIVA",
+    ]);
   });
 
   it("listReadable inclui escalas do tenant que o USER não pratica", async () => {

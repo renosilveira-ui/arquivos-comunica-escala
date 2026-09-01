@@ -12,7 +12,7 @@ describe("contexto imutável na edição de turno", () => {
     expect(editScreen).toContain("shiftData?.sectorName");
     expect(editScreen).toContain("shiftData?.specialty");
     expect(editScreen).toMatch(
-      /Para mudar hospital, setor ou qualificação,[\s\S]*crie o turno na escala[\s\S]*correta\./,
+      /Para mudar hospital ou setor,[\s\S]*crie o turno na escala[\s\S]*referência clínica é informativa e não altera o acesso\./,
     );
   });
 

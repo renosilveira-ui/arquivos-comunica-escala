@@ -1529,7 +1529,7 @@ function DesktopGroupBlock({
 }) {
   return (
     <View>
-      {/* Hospital, setor e qualificação identificam uma escala distinta. */}
+      {/* Hospital e setor identificam uma escala distinta; o rótulo clínico é informativo. */}
       <View
         style={{
           backgroundColor: theme.colors.primarySoft,

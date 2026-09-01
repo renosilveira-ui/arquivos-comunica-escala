@@ -1,44 +1,27 @@
 import { useMemo, useState } from "react";
 import { FlatList, Modal, Text, TouchableOpacity, View } from "react-native";
 import { Check, ChevronDown, X } from "lucide-react-native";
-import type { ProfessionalQualificationSelection } from "./ProfessionalQualificationPicker";
 import { theme } from "@/lib/theme";
-import {
-  scheduleContextMatchesQualification,
-  type ScheduleContextAccessOption,
-} from "./ScheduleContextAccessPicker.logic";
+import type { ScheduleContextAccessOption } from "./ScheduleContextAccessPicker.logic";
 
-export {
-  compatibleScheduleContextIds,
-  scheduleContextMatchesQualification,
-  type ScheduleContextAccessOption,
-} from "./ScheduleContextAccessPicker.logic";
+export { type ScheduleContextAccessOption } from "./ScheduleContextAccessPicker.logic";
 
 export function ScheduleContextAccessPicker({
   contexts,
-  qualification,
   selectedIds,
   onChange,
   required = false,
   tone = "light",
 }: {
   contexts: ScheduleContextAccessOption[];
-  qualification: ProfessionalQualificationSelection | null;
   selectedIds: number[];
   onChange: (ids: number[]) => void;
   required?: boolean;
   tone?: "light" | "dark";
 }) {
   const [visible, setVisible] = useState(false);
-  const options = useMemo(
-    () =>
-      contexts.filter((context) =>
-        scheduleContextMatchesQualification(context, qualification),
-      ),
-    [contexts, qualification],
-  );
+  const options = useMemo(() => contexts, [contexts]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const disabled = !qualification;
   const fieldBackground =
     tone === "dark" ? theme.palette.neutral[900] : theme.colors.surface;
   const fieldText =
@@ -74,7 +57,6 @@ export function ScheduleContextAccessPicker({
       <TouchableOpacity
         accessibilityRole="button"
         accessibilityLabel={`Escalas e setores: ${selectedIds.length} selecionados`}
-        disabled={disabled}
         onPress={() => setVisible(true)}
         style={{
           minHeight: 50,
@@ -85,7 +67,6 @@ export function ScheduleContextAccessPicker({
           borderColor:
             selectedIds.length > 0 ? theme.colors.primary : fieldBorder,
           backgroundColor: fieldBackground,
-          opacity: disabled ? 0.6 : 1,
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
@@ -98,13 +79,11 @@ export function ScheduleContextAccessPicker({
             color: selectedIds.length ? fieldText : theme.colors.textMuted,
           }}
         >
-          {!qualification
-            ? "Selecione primeiro a qualificação"
-            : selectedIds.length > 0
-              ? `${selectedIds.length} escala(s) selecionada(s)`
-              : options.length > 0
-                ? "Selecionar escalas"
-                : "Nenhuma escala compatível configurada"}
+          {selectedIds.length > 0
+            ? `${selectedIds.length} escala(s) selecionada(s)`
+            : options.length > 0
+              ? "Selecionar escalas"
+              : "Nenhuma escala ativa configurada"}
         </Text>
         <ChevronDown size={18} color={theme.colors.textMuted} />
       </TouchableOpacity>
@@ -159,8 +138,8 @@ export function ScheduleContextAccessPicker({
                     marginTop: 4,
                   }}
                 >
-                  Cada item é uma escala distinta por hospital, setor e
-                  qualificação.
+                  Cada item é uma escala distinta por hospital e setor. A
+                  referência clínica é apenas informativa.
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setVisible(false)} hitSlop={12}>
@@ -183,7 +162,7 @@ export function ScheduleContextAccessPicker({
                     paddingVertical: 18,
                   }}
                 >
-                  Nenhuma escala ativa é compatível com essa qualificação.
+                  Nenhuma escala ativa está configurada.
                 </Text>
               }
               renderItem={({ item }) => {

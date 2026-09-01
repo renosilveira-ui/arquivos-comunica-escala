@@ -1,11 +1,7 @@
 import { sql, type SQLWrapper } from "drizzle-orm";
 import type { swapRequests } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
-import {
-  plantonistaAccessCoversShiftSql,
-  plantonistaQualificationMatchesSql,
-  plantonistaXorQualificationSql,
-} from "./plantonista-shift-eligibility";
+import { plantonistaAccessCoversShiftSql } from "./plantonista-shift-eligibility";
 
 type SwapRow = typeof swapRequests.$inferSelect;
 
@@ -19,13 +15,12 @@ type EligibilityDb = {
  *
  * Gestores continuam vendo e podendo aceitar na lista (SQL de
  * queryListAvailableRows). Push não os inclui só pelo papel gerencial.
- * GESTOR_MEDICO que também passa na qualificação + professional_access
+ * GESTOR_MEDICO que também passa pelo professional_access
  * entra aqui como médico.
  *
- * Os predicados de qualificação, acesso setorial, conflito e SWAP
- * espelham o ramo plantonista de queryListAvailableRows. XOR de
- * especialidade/perfil replica qualificationMatches (listAssumable),
- * para ninguém receber push sem aparecer com canRespond em Trocas.
+ * Os predicados de acesso setorial, conflito e SWAP espelham o ramo
+ * plantonista de queryListAvailableRows, para ninguém receber push sem
+ * aparecer com canRespond em Trocas.
  * Não reintroduzir atalho gerencial no destinatário (aliases api/ap).
  */
 export async function eligibleRecipientUserIdsForSwapOffer(
@@ -52,9 +47,6 @@ export async function eligibleRecipientUserIdsForSwapOffer(
      AND fsc.hospital_id = fsi.hospital_id
      AND fsc.sector_id = fsi.sector_id
      AND fsc.active = 1
-    LEFT JOIN medical_specialties fms
-      ON fms.id = fsc.medical_specialty_id
-     AND fms.active = 1
     JOIN hospitals fh
       ON fh.id = fsi.hospital_id
      AND fh.institution_id = fsi.institution_id
@@ -129,7 +121,6 @@ export async function eligibleRecipientUserIdsForSwapOffer(
       AND sr.institution_id = ${swap.institutionId}
       AND sr.status = 'PENDING'
       AND sr.from_user_id != au.id
-      AND ${plantonistaXorQualificationSql("ap")}
       AND (
         (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
         OR (sr.to_professional_id = ap.id AND sr.to_user_id = au.id)
@@ -178,20 +169,7 @@ export async function eligibleRecipientUserIdsForSwapOffer(
             AND source_scope.active = 1
         )
       )
-      AND ${plantonistaQualificationMatchesSql("ap", "fsc", "fms")}
       AND ${plantonistaAccessCoversShiftSql("ap", "fsi", "fsc")}
-      AND (
-        fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-        OR NULLIF(TRIM(fsi.specialty), '') IS NULL
-        OR NULLIF(TRIM(fp.specialty), '') IS NULL
-        OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(fp.specialty))
-      )
-      AND (
-        fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-        OR NULLIF(TRIM(fsi.specialty), '') IS NULL
-        OR NULLIF(TRIM(ap.specialty), '') IS NULL
-        OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(ap.specialty))
-      )
       AND NOT EXISTS (
         SELECT 1
         FROM shift_assignments_v2 actor_conflict
@@ -276,16 +254,6 @@ export async function eligibleRecipientUserIdsForSwapOffer(
                   AND (source_target_access.sector_id IS NULL OR source_target_access.sector_id = tsi.sector_id)
                 )
               )
-          )
-          AND (
-            NULLIF(TRIM(tsi.specialty), '') IS NULL
-            OR NULLIF(TRIM(ap.specialty), '') IS NULL
-            OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(ap.specialty))
-          )
-          AND (
-            NULLIF(TRIM(tsi.specialty), '') IS NULL
-            OR NULLIF(TRIM(fp.specialty), '') IS NULL
-            OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(fp.specialty))
           )
           AND NOT EXISTS (
             SELECT 1

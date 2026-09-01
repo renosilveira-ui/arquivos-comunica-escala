@@ -24,6 +24,7 @@ import {
   professionalInstitutions,
   professionals,
   pushTokens,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -45,6 +46,7 @@ import {
 } from "../server/confirmation-state";
 import { enqueueAutoSsoPush, triggerAutoSso } from "../server/sso/auto-sso";
 import { enqueueDutySync, processPendingDutySyncs } from "../server/sso/duty-sync";
+import { openTestScale } from "./helpers/open-test-scale";
 
 const dutySyncMockState = vi.hoisted(() => ({ useReal: false }));
 const orgMappingState = vi.hoisted(() => ({ organizationId: null as string | null }));
@@ -103,6 +105,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
   let titularUserId: number;
   let titularProId: number;
   let subUserId: number;
@@ -144,7 +147,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   async function shiftWithTitular(type: "ON_DUTY" | "ON_CALL" = "ON_DUTY") {
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, label: `CN ${stamp}`, startAt: start, endAt: end, status: "OCUPADO" })
+      .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: `CN ${stamp}`, startAt: start, endAt: end, status: "OCUPADO" })
       .$returningId();
     const [a] = await db
       .insert(shiftAssignmentsV2)
@@ -398,6 +401,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     hospitalId = h.id;
     const [sec] = await db.insert(sectors).values({ institutionId, hospitalId, name: `CN Setor ${stamp}`, category: "cirurgico", color: "#2563EB" }).$returningId();
     sectorId = sec.id;
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
     const t = await person("titular");
     titularUserId = t.userId;
     titularProId = t.proId;
@@ -461,6 +469,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await db.delete(professionalAccess).where(inArray(professionalAccess.professionalId, proIds));
     await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.professionalId, proIds));
     await db.delete(professionals).where(inArray(professionals.id, proIds));
+    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
@@ -985,6 +994,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `CN overlap ${stamp}`,
         startAt: new Date(start.getTime() + 60 * 60_000),
         endAt: new Date(end.getTime() + 60 * 60_000),
@@ -1082,6 +1092,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `CN cross-month ${startAt.toISOString()} ${stamp}`,
         startAt,
         endAt,
@@ -1136,6 +1147,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `CN RC overlap ${startAt.toISOString()} ${stamp}`,
         startAt,
         endAt,
@@ -2133,6 +2145,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `CN gate ${stamp}`,
         startAt: start,
         endAt: end,
