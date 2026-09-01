@@ -306,6 +306,7 @@ export default function CreateShiftScreen() {
       // Agendar lembrete 30 min antes em dispositivos nativos.
       if (
         Platform.OS !== "web" &&
+        user &&
         selectedScheduleContext &&
         selectedDate &&
         selectedTemplate
@@ -316,9 +317,8 @@ export default function CreateShiftScreen() {
 
         try {
           await scheduleShiftReminder(
-            selectedScheduleContext.sectorName,
+            user.id,
             startDateTime,
-            `${selectedTemplate.name} (${formatShiftTemplateTimeRange(selectedTemplate)})`,
           );
         } catch (error) {
           console.warn("Não foi possível agendar lembrete local:", error);

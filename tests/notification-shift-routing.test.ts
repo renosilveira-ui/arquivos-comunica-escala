@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("react-native", () => ({ Platform: { OS: "ios" } }));
 vi.mock("expo-router", () => ({ useRouter: vi.fn() }));
 vi.mock("expo-notifications", () => ({
+  setNotificationHandler: vi.fn(),
   DEFAULT_ACTION_IDENTIFIER: "default",
   addNotificationResponseReceivedListener: vi.fn(),
   addNotificationReceivedListener: vi.fn(() => ({ remove: vi.fn() })),

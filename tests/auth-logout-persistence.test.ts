@@ -982,7 +982,12 @@ describe("persistência local do logout web", () => {
     expect(operation).not.toHaveBeenCalled();
     expect(harness.clearPushRegistrationState).not.toHaveBeenCalled();
     expect(harness.beginWebSessionAdmission).not.toHaveBeenCalled();
-    expect(harness.sequence).not.toContain("close-push");
+    // BEGIN fecha também a superfície visual/local antes de o preflight
+    // assíncrono decidir que a operação não pode prosseguir.
+    expect(harness.sequence.slice(0, 2)).toEqual([
+      "close-push",
+      "fence-query",
+    ]);
     expect(harness.meDetailedApi).toHaveBeenCalledTimes(1);
     expect(harness.setUser).toHaveBeenCalledWith(currentUser);
   });
@@ -2032,6 +2037,8 @@ describe("persistência local do logout web", () => {
     );
     expect(harness.sequence).toEqual([
       "close-push",
+      "fence-query",
+      "close-push",
       "suspend-query",
       "wait-push",
       "clear-push-fingerprint",
@@ -2097,6 +2104,8 @@ describe("persistência local do logout web", () => {
     expect(harness.setPushRegistrationRevision).toHaveBeenCalledTimes(1);
     expect(harness.sequence).toEqual([
       "close-push",
+      "fence-query",
+      "close-push",
       "wait-push",
       "clear-push-fingerprint",
       "http-change-password",
@@ -2140,6 +2149,8 @@ describe("persistência local do logout web", () => {
     expect(harness.setPushRegistrationRevision).not.toHaveBeenCalled();
     expect(harness.sequence).toEqual([
       "close-push",
+      "fence-query",
+      "close-push",
       "wait-push",
       "clear-push-fingerprint",
       "http-me",
@@ -2169,6 +2180,8 @@ describe("persistência local do logout web", () => {
     expect(harness.openPushRegistrationAdmission).not.toHaveBeenCalled();
     expect(harness.setPushRegistrationRevision).not.toHaveBeenCalled();
     expect(harness.sequence).toEqual([
+      "close-push",
+      "fence-query",
       "close-push",
       "wait-push",
       "clear-push-fingerprint",
@@ -2214,6 +2227,8 @@ describe("persistência local do logout web", () => {
     expect(harness.openPushRegistrationAdmission).not.toHaveBeenCalled();
     expect(harness.setPushRegistrationRevision).not.toHaveBeenCalled();
     expect(harness.sequence).toEqual([
+      "close-push",
+      "fence-query",
       "close-push",
       "wait-push",
       "clear-push-fingerprint",
@@ -2408,6 +2423,8 @@ describe("persistência local do logout web", () => {
     expect(harness.setUser).toHaveBeenCalledWith(null);
     expect(harness.openPushRegistrationAdmission).not.toHaveBeenCalled();
     expect(harness.sequence).toEqual([
+      "close-push",
+      "fence-query",
       "close-push",
       "fence-query",
       "set-user:null",
@@ -3587,6 +3604,7 @@ describe("persistência local do logout web", () => {
     }));
     vi.doMock("expo-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
     vi.doMock("expo-notifications", () => ({
+      setNotificationHandler: vi.fn(),
       addNotificationResponseReceivedListener: vi.fn(),
       getLastNotificationResponse: vi.fn(() => null),
       clearLastNotificationResponse: vi.fn(),

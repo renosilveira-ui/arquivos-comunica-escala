@@ -9,6 +9,12 @@ import { useRouter } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { useAuth } from "@/hooks/use-auth";
 import { useNotifications } from "@/hooks/use-notifications";
+import "@/lib/notification-foreground-handler";
+import {
+  parseNotificationRecipientUserId,
+  publishVerifiedNotificationForegroundSubject,
+  releaseVerifiedNotificationForegroundSubject,
+} from "@/lib/notification-foreground-subject";
 import { trpc } from "@/lib/trpc";
 import {
   getActiveTenantSnapshot,
@@ -125,6 +131,15 @@ export function parseNotificationShiftInstanceId(
         ? Number(value)
         : Number.NaN;
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isNotificationForAuthorizedUser(
+  data: NotificationData | null | undefined,
+  authorizedUserId: number,
+): boolean {
+  return (
+    parseNotificationRecipientUserId(data?.recipientUserId) === authorizedUserId
+  );
 }
 
 async function alignNotificationTenant(
@@ -501,11 +516,20 @@ export function NotificationListener() {
 
   useEffect(() => {
     const routingScope = routingCoordinatorRef.current!.beginScope();
-    if (authorizedUserId === null) {
+    // `authorizedUserId` vem do render; a proof é viva e pode ter sido
+    // invalidada por BEGIN antes de este efeito passivo executar. Sem as duas
+    // condições, um efeito atrasado de A poderia republicar o sujeito após o
+    // clear síncrono da transição.
+    if (authorizedUserId === null || !isSessionAuthorizationCurrent()) {
       responseConsumerRef.current = () => undefined;
       return () => routingScope.invalidate();
     }
 
+    // isAuthenticated só é true com a prova VERIFIED da sessão corrente.
+    // Publicar este lease é o único caminho que libera apresentação visual em
+    // foreground; todo payload sem recipient compatível fica silencioso.
+    const foregroundSubject =
+      publishVerifiedNotificationForegroundSubject(authorizedUserId);
     let scopeActive = true;
     const pendingResponseKeys = new Set<string>();
     const routingDependencies: NotificationRoutingDependencies = {
@@ -589,6 +613,15 @@ export function NotificationListener() {
         clearLastResponseIfMatching(key);
         return;
       }
+      const data = response.notification.request.content.data;
+      if (!isNotificationForAuthorizedUser(data, authorizedUserId)) {
+        // Payloads antigos não têm binding de conta e um tap da conta A pode
+        // sobreviver no dispositivo até B entrar. Consome sem enfileirar: não
+        // há troca de tenant, invalidação, consulta nem navegação sob B.
+        markTerminalNotificationResponse(key);
+        clearLastResponseIfMatching(key);
+        return;
+      }
       if (!claimNotificationResponse(key)) {
         clearLastResponseIfMatching(key);
         return;
@@ -600,7 +633,6 @@ export function NotificationListener() {
       // apenas o claim em memória; uma nova tentativa exige novo evento LIVE.
       clearLastResponseIfMatching(key);
       pendingResponseKeys.add(key);
-      const data = response.notification.request.content.data;
       void routingScope.enqueue(data, routingDependencies).then(
         (success) => {
           // Cleanup pode ter liberado a chave para uma nova sessão. Uma
@@ -620,6 +652,7 @@ export function NotificationListener() {
       (notification) => {
         if (!scopeActive || !isSessionAuthorizationCurrent()) return;
         const data = notification.request.content.data;
+        if (!isNotificationForAuthorizedUser(data, authorizedUserId)) return;
         const notificationInstitutionId = parseNotificationInstitutionId(
           data?.institutionId,
         );
@@ -674,6 +707,9 @@ export function NotificationListener() {
     }
 
     return () => {
+      // O cleanup A não pode apagar B: release compara a identidade do lease,
+      // não somente o userId, antes de limpar o estado process-wide.
+      releaseVerifiedNotificationForegroundSubject(foregroundSubject);
       scopeActive = false;
       receivedSubscription.remove();
       if (responseConsumerRef.current === consumeResponse) {

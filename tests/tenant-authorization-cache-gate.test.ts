@@ -312,6 +312,7 @@ describe("gate fresco de autorização antes do cache tenant-bound", () => {
     vi.resetModules();
     vi.doMock("expo-router", () => ({ useRouter: vi.fn() }));
     vi.doMock("expo-notifications", () => ({
+      setNotificationHandler: vi.fn(),
       addNotificationResponseReceivedListener: vi.fn(),
     }));
     vi.doMock("@/hooks/use-auth", () => ({ useAuth: vi.fn() }));

@@ -115,8 +115,29 @@ type TokenMutationDb = Pick<Db, "delete"> | Pick<TokenTransaction, "delete">;
 export type PushSubmissionGuard = (tx: TokenTransaction) => Promise<void>;
 type JsonRecord = Record<string, unknown>;
 
+/**
+ * O token Expo pertence a uma conta, não ao payload que um chamador montou.
+ * Mantém esse vínculo explícito no envelope enviado ao dispositivo e nunca
+ * aceita um recipientUserId fornecido pelo produtor da notificação.
+ */
+export function withAuthoritativePushRecipient(
+  data: JsonRecord | undefined,
+  recipientUserId: number,
+): JsonRecord {
+  if (!Number.isSafeInteger(recipientUserId) || recipientUserId <= 0) {
+    throw new Error("Destinatário de push inválido");
+  }
+  return {
+    ...(data ?? {}),
+    recipientUserId,
+  };
+}
+
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
+const EXPO_NEUTRAL_NOTIFICATION_TITLE = "Escala+";
+const EXPO_NEUTRAL_NOTIFICATION_BODY =
+  "Há uma atualização disponível. Abra o aplicativo para consultar.";
 const EXPO_RECEIPT_BATCH_SIZE = 1_000;
 const EXPO_HTTP_TIMEOUT_MS = 15_000;
 // Um owner do outbox precisa conservar o claim durante todo fetch Expo.
@@ -287,9 +308,19 @@ async function submitExpoPushTicket(
       },
       body: JSON.stringify({
         to: tokenData.token,
-        title: payload.title,
-        body: payload.body,
-        data: payload.data ?? {},
+        // Em background/killed, o sistema operacional pode apresentar esta
+        // mensagem antes de o JS conhecer o usuário atual. A visualização
+        // remota é propositalmente neutra; o app só obtém detalhes depois da
+        // autenticação e da cerca recipientUserId no listener.
+        title: EXPO_NEUTRAL_NOTIFICATION_TITLE,
+        body: EXPO_NEUTRAL_NOTIFICATION_BODY,
+        // O owner foi revalidado sob mutex imediatamente antes do fetch. O
+        // campo do produtor é deliberadamente sobrescrito para impedir que um
+        // payload stale ou forjado seja aceito pelo listener da outra conta.
+        data: withAuthoritativePushRecipient(
+          payload.data,
+          tokenData.expectedUserId,
+        ),
         sound: "default",
         priority: "high",
         // Precisa coincidir com o plugin expo-notifications e o canal runtime

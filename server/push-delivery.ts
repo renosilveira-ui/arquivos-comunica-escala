@@ -5,6 +5,7 @@ import {
   getExpoPushReceipts,
   PUSH_SUBMISSION_LEASE_HORIZON_MS,
   sendPushNotification,
+  withAuthoritativePushRecipient,
   type ExpoReceiptTarget,
   type PushNotificationPayload,
   type PushSendResult,
@@ -452,9 +453,22 @@ async function loadNotification(db: Pick<Db, "select">, id: number): Promise<Not
   return row ?? null;
 }
 
-function assertSameTrackedIntent(row: NotificationRow, input: TrackedPushInput): void {
+function hasOwnRecipientUserId(payloadData: PayloadData): boolean {
+  return Object.prototype.hasOwnProperty.call(payloadData, "recipientUserId");
+}
+
+function assertSameTrackedIntent(
+  row: NotificationRow,
+  input: TrackedPushInput,
+  allowRecipientOverride: boolean,
+): void {
   const storedState = asRecord(row.providerReceipt);
-  const storedPayload = storedState?.payloadData ?? {};
+  const storedPayload = asRecord(storedState?.payloadData);
+  const suppliedPayload = input.payload.data ?? {};
+  const authoritativePayload = withAuthoritativePushRecipient(
+    suppliedPayload,
+    input.userId,
+  );
   const sameIdentity =
     row.institutionId === input.institutionId &&
     row.userId === input.userId &&
@@ -462,9 +476,28 @@ function assertSameTrackedIntent(row: NotificationRow, input: TrackedPushInput):
     row.title === input.payload.title &&
     (row.body ?? "") === input.payload.body &&
     (row.deepLink ?? null) === (input.deepLink ?? null) &&
-    canonicalJson(storedPayload) === canonicalJson(input.payload.data ?? {}) &&
     canonicalJson(storedState?.authority ?? null) === canonicalJson(input.authority ?? null);
-  if (!sameIdentity) {
+  const storedMatchesCanonical =
+    storedPayload !== null &&
+    canonicalJson(storedPayload) === canonicalJson(authoritativePayload);
+  // A única compatibilidade retroativa aceita uma row sem o campo e uma nova
+  // intenção também sem ele. A submissão ao Expo a sela sob mutex/ownership;
+  // qualquer payload que já declare um destinatário diferente continua sendo
+  // uma colisão de dedupKey, não uma oportunidade de sobrescrita.
+  const storedMatchesExactLegacy =
+    storedPayload !== null &&
+    !hasOwnRecipientUserId(storedPayload) &&
+    !hasOwnRecipientUserId(suppliedPayload) &&
+    canonicalJson(storedPayload) === canonicalJson(suppliedPayload);
+  const suppliedRecipientIsCompatible =
+    allowRecipientOverride ||
+    !hasOwnRecipientUserId(suppliedPayload) ||
+    suppliedPayload.recipientUserId === input.userId;
+  if (
+    !sameIdentity ||
+    !suppliedRecipientIsCompatible ||
+    (!storedMatchesCanonical && !storedMatchesExactLegacy)
+  ) {
     throw new Error(
       `Colisão de dedupKey em notificação rastreada: ${input.dedupKey}`,
     );
@@ -1068,14 +1101,18 @@ async function persistTrackedPushIntent(
   input: TrackedPushInput,
   now: Date,
 ): Promise<number> {
-  if (isDutyConfirmationPayload(input.payload.data ?? {}) && !input.authority) {
+  const payloadData = withAuthoritativePushRecipient(
+    input.payload.data,
+    input.userId,
+  );
+  if (isDutyConfirmationPayload(payloadData) && !input.authority) {
     throw new Error("Push de confirmacao rastreado exige autoridade canonica");
   }
   if (input.authority) {
-    const payloadInstitutionId = input.payload.data?.institutionId;
+    const payloadInstitutionId = payloadData.institutionId;
     if (
       input.userId !== input.authority.expectedUserId ||
-      !authorityMatchesPurpose(input.authority, input.payload.data ?? {}, true) ||
+      !authorityMatchesPurpose(input.authority, payloadData, true) ||
       payloadInstitutionId !== input.institutionId ||
       payloadInstitutionId !== input.authority.shiftSnapshot.institutionId
     ) {
@@ -1090,13 +1127,14 @@ async function persistTrackedPushIntent(
   const initial: QueuedState = {
     trackingVersion: TRACKING_VERSION,
     revision: 1,
-    payloadData: input.payload.data ?? {},
+    payloadData,
     attemptCount: 0,
     ...(input.authority ? { authority: input.authority } : {}),
     phase: "QUEUED",
     availableAt: now.toISOString(),
   };
   let notificationId: number;
+  let insertedNew = false;
   try {
     const [inserted] = await db
       .insert(notifications)
@@ -1114,6 +1152,7 @@ async function persistTrackedPushIntent(
       })
       .$returningId();
     notificationId = inserted.id;
+    insertedNew = true;
   } catch (error) {
     if (!isDuplicateEntry(error)) throw error;
     const [existing] = await db
@@ -1127,7 +1166,7 @@ async function persistTrackedPushIntent(
 
   const row = await loadNotification(db, notificationId);
   if (!row) throw new Error(`Notificação rastreada ${notificationId} não encontrada`);
-  assertSameTrackedIntent(row, input);
+  assertSameTrackedIntent(row, input, insertedNew);
   if (
     row.status === "FAILED" &&
     input.authority?.purpose === "MANAGER_ESCALATION"
