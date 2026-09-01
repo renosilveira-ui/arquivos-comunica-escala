@@ -29,6 +29,7 @@ export default defineConfig({
       "tests/shift-template-options.test.ts",
       "tests/assignment-schedule-context-guards.test.ts",
       "tests/schedule-context-readiness.test.ts",
+      "tests/corporate-structural-normalizer.test.ts",
       "tests/admin-schedule-context-selection.test.ts",
       "tests/schedule-context-readers-source.test.ts",
       "tests/notification-shift-routing.test.ts",
