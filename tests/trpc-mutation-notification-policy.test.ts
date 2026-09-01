@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  EXPRESS_MUTATION_NOTIFICATION_POLICIES,
+  EXPRESS_MUTATION_NOTIFICATION_TARGETS,
   MUTATION_NOTIFICATION_POLICIES,
   SSO_ONE_TIME_LAUNCH_GET_CONSUMPTION_EXCEPTION,
-  TRPC_MUTATION_NOTIFICATION_POLICIES,
+  TRPC_MUTATION_NOTIFICATION_TARGETS,
 } from "../server/mutation-notification-policy";
 import {
   discoverExpressMutationEndpoints,
@@ -100,13 +100,13 @@ describe("contrato corporativo — políticas de notificação das mutations tRP
     expect(discovered.declarations.map((entry) => entry.path).sort()).toEqual(
       expectedMutationPaths,
     );
-    expect(Object.keys(TRPC_MUTATION_NOTIFICATION_POLICIES).sort()).toEqual(
+    expect(Object.keys(TRPC_MUTATION_NOTIFICATION_TARGETS).sort()).toEqual(
       expectedMutationPaths,
     );
     expect(
       verifyTrpcMutationPolicyInventory(
         serverSources,
-        TRPC_MUTATION_NOTIFICATION_POLICIES,
+        TRPC_MUTATION_NOTIFICATION_TARGETS,
         MUTATION_NOTIFICATION_POLICIES,
       ),
     ).toEqual([]);
@@ -118,13 +118,13 @@ describe("contrato corporativo — políticas de notificação das mutations tRP
     expect(
       discovered.declarations.map((entry) => entry.endpoint).sort(),
     ).toEqual(expectedExpressMutationEndpoints);
-    expect(Object.keys(EXPRESS_MUTATION_NOTIFICATION_POLICIES).sort()).toEqual(
+    expect(Object.keys(EXPRESS_MUTATION_NOTIFICATION_TARGETS).sort()).toEqual(
       expectedExpressMutationEndpoints,
     );
     expect(
       verifyExpressMutationPolicyInventory(
         serverSources,
-        EXPRESS_MUTATION_NOTIFICATION_POLICIES,
+        EXPRESS_MUTATION_NOTIFICATION_TARGETS,
         MUTATION_NOTIFICATION_POLICIES,
       ),
     ).toEqual([]);
@@ -152,7 +152,7 @@ describe("contrato corporativo — políticas de notificação das mutations tRP
     ]);
   });
 
-  it("falha para política inválida e para entrada de inventário sem mutation", () => {
+  it("falha para target inválido e para entrada de inventário sem mutation", () => {
     const sources = sourceFixture(`
       const fixtureRouter = router({
         write: protectedProcedure.mutation(async () => ({ ok: true })),
@@ -163,15 +163,25 @@ describe("contrato corporativo — políticas de notificação das mutations tRP
     const violations = verifyTrpcMutationPolicyInventory(
       sources,
       {
-        "fixture.obsolete": "SILENT_AUDITED",
-        "fixture.write": "UNCLASSIFIED",
+        "fixture.obsolete": {
+          targets: [
+            {
+              policy: "SILENT_AUDITED",
+              when: "quando o fixture não existe",
+              audience: [],
+            },
+          ],
+        },
+        "fixture.write": {
+          targets: [{ policy: "UNCLASSIFIED", when: "sempre", audience: [] }],
+        },
       },
       MUTATION_NOTIFICATION_POLICIES,
     );
 
     expect(violations).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "INVALID_POLICY" }),
+        expect.objectContaining({ code: "INVALID_POLICY_TARGET" }),
         expect.objectContaining({ code: "UNUSED_POLICY" }),
       ]),
     );
@@ -199,7 +209,7 @@ describe("contrato corporativo — políticas de notificação das mutations tRP
     ]);
   });
 
-  it("falha para política REST inválida ou obsoleta", () => {
+  it("falha para target REST inválido ou obsoleto", () => {
     const sources = sourceFixture(`
       const fixtureRouter = Router();
       fixtureRouter.put("/write", () => undefined);
@@ -210,18 +220,262 @@ describe("contrato corporativo — políticas de notificação das mutations tRP
     const violations = verifyExpressMutationPolicyInventory(
       sources,
       {
-        "PUT /api/fixture/obsolete": "SILENT_AUDITED",
-        "PUT /api/fixture/write": "UNCLASSIFIED",
+        "PUT /api/fixture/obsolete": {
+          targets: [
+            {
+              policy: "SILENT_AUDITED",
+              when: "quando o fixture não existe",
+              audience: [],
+            },
+          ],
+        },
+        "PUT /api/fixture/write": {
+          targets: [{ policy: "UNCLASSIFIED", when: "sempre", audience: [] }],
+        },
       },
       MUTATION_NOTIFICATION_POLICIES,
     );
 
     expect(violations).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "INVALID_POLICY" }),
+        expect.objectContaining({ code: "INVALID_POLICY_TARGET" }),
         expect.objectContaining({ code: "UNUSED_EXPRESS_POLICY" }),
       ]),
     );
+  });
+
+  it("rejeita target sem condição ou audiência compatível com a política", () => {
+    const sources = sourceFixture(`
+      const fixtureRouter = router({
+        write: protectedProcedure.mutation(async () => ({ ok: true })),
+      });
+      export const appRouter = router({ fixture: fixtureRouter });
+    `);
+
+    const violations = verifyTrpcMutationPolicyInventory(
+      sources,
+      {
+        "fixture.write": {
+          targets: [
+            {
+              policy: "NOTIFY",
+              when: "",
+              audience: [],
+            },
+            {
+              policy: "SILENT_AUDITED",
+              when: "quando não há destinatário",
+              audience: ["SHOULD_NOT_EXIST"],
+            },
+          ],
+        },
+      },
+      MUTATION_NOTIFICATION_POLICIES,
+    );
+
+    expect(violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "INVALID_TARGET_CONDITION" }),
+        expect.objectContaining({ code: "INVALID_TARGET_AUDIENCE" }),
+      ]),
+    );
+  });
+
+  it("preserva os ramos corporativos de impacto pessoal", () => {
+    expect(TRPC_MUTATION_NOTIFICATION_TARGETS["editor.markVacant"]).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando remove uma ou mais alocações ativas ao marcar o plantão como vago",
+          audience: ["AFFECTED_ASSIGNED_PROFESSIONALS"],
+        },
+        {
+          policy: "SILENT_AUDITED",
+          when: "quando marca como vago um plantão sem alocação ativa removida",
+          audience: [],
+        },
+      ],
+    });
+    expect(
+      TRPC_MUTATION_NOTIFICATION_TARGETS["shiftAssignments.assumeVacancy"],
+    ).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando um profissional solicita uma vaga e a alocação pendente é criada",
+          audience: ["RESPONSIBLE_MANAGERS"],
+        },
+      ],
+    });
+    expect(
+      TRPC_MUTATION_NOTIFICATION_TARGETS["shiftInstances.approveAssignment"],
+    ).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando a solicitação de vaga é aprovada",
+          audience: ["REQUESTING_PROFESSIONAL"],
+        },
+      ],
+    });
+    expect(
+      TRPC_MUTATION_NOTIFICATION_TARGETS["shiftInstances.rejectAssignment"],
+    ).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando a solicitação de vaga é rejeitada",
+          audience: ["REQUESTING_PROFESSIONAL"],
+        },
+      ],
+    });
+    expect(TRPC_MUTATION_NOTIFICATION_TARGETS["shifts.update"]).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando horário, modalidade ou local de um plantão com alocação ativa é alterado",
+          audience: ["AFFECTED_ASSIGNED_PROFESSIONALS"],
+        },
+        {
+          policy: "SILENT_AUDITED",
+          when: "quando não há alocação ativa afetada por horário, modalidade ou local",
+          audience: [],
+        },
+      ],
+    });
+    expect(TRPC_MUTATION_NOTIFICATION_TARGETS["shifts.publish"]).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando a publicação inclui uma ou mais alocações ativas; consolidar uma mensagem por profissional e ação",
+          audience: ["ASSIGNED_PROFESSIONALS"],
+        },
+        {
+          policy: "SILENT_AUDITED",
+          when: "quando a publicação contém apenas calendário sem alocações ativas",
+          audience: [],
+        },
+      ],
+    });
+    expect(TRPC_MUTATION_NOTIFICATION_TARGETS["shifts.replicateRange"]).toEqual(
+      {
+        targets: [
+          {
+            policy: "NOTIFY",
+            when: "quando includeAssignments é verdadeiro e ao menos uma alocação é copiada; consolidar uma mensagem por profissional e ação",
+            audience: ["ASSIGNED_PROFESSIONALS"],
+          },
+          {
+            policy: "SILENT_AUDITED",
+            when: "quando é dry-run, não copia alocações ou replica somente calendário",
+            audience: [],
+          },
+        ],
+      },
+    );
+    expect(TRPC_MUTATION_NOTIFICATION_TARGETS["swaps.offer"]).toEqual({
+      targets: [
+        {
+          policy: "BROADCAST",
+          when: "quando a oferta é aberta e não informa toProfessionalId",
+          audience: ["ELIGIBLE_PROFESSIONALS"],
+        },
+        {
+          policy: "NOTIFY",
+          when: "quando a oferta é direcionada e informa toProfessionalId",
+          audience: ["DIRECTED_SWAP_RECIPIENT"],
+        },
+      ],
+    });
+    expect(TRPC_MUTATION_NOTIFICATION_TARGETS["swaps.reject"]).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando a contraparte rejeita uma oferta direcionada",
+          audience: ["SWAP_COUNTERPART"],
+        },
+        {
+          policy: "SILENT_AUDITED",
+          when: "quando um profissional apenas dispensa para si uma oferta aberta que continua disponível",
+          audience: [],
+        },
+      ],
+    });
+    expect(TRPC_MUTATION_NOTIFICATION_TARGETS["swaps.cancel"]).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando o cancelamento atinge uma contraparte direcionada ou já aceita",
+          audience: ["SWAP_COUNTERPART"],
+        },
+        {
+          policy: "SILENT_AUDITED",
+          when: "quando uma oferta aberta sem contraparte é cancelada",
+          audience: [],
+        },
+      ],
+    });
+  });
+
+  it("preserva os ramos de convite, criação e alteração de acesso", () => {
+    expect(
+      EXPRESS_MUTATION_NOTIFICATION_TARGETS[
+        "POST /api/admin/pending-signups/:id/approve"
+      ],
+    ).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando a aprovação ativa a conta e o vínculo institucional pendentes",
+          audience: ["PENDING_SIGNUP_USER"],
+        },
+      ],
+    });
+    expect(
+      EXPRESS_MUTATION_NOTIFICATION_TARGETS[
+        "POST /api/admin/pending-signups/:id/reject"
+      ],
+    ).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando a recusa remove o cadastro pendente; capturar o destinatário antes da remoção",
+          audience: ["PENDING_SIGNUP_USER"],
+        },
+      ],
+    });
+    expect(
+      EXPRESS_MUTATION_NOTIFICATION_TARGETS["POST /api/auth/register"],
+    ).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando cria credenciais ou ativa vínculo e acesso institucional para a conta alvo",
+          audience: ["TARGET_ACCOUNT_USER"],
+        },
+        {
+          policy: "SILENT_AUDITED",
+          when: "quando a tentativa não cria nem reativa acesso institucional",
+          audience: [],
+        },
+      ],
+    });
+    expect(
+      EXPRESS_MUTATION_NOTIFICATION_TARGETS["PUT /api/admin/users/:id"],
+    ).toEqual({
+      targets: [
+        {
+          policy: "NOTIFY",
+          when: "quando muda roleInInstitution, managerScopes, schedule contexts, professional_access ou outra concessão ou revogação de acesso institucional",
+          audience: ["TARGET_ACCOUNT_USER"],
+        },
+        {
+          policy: "SILENT_AUDITED",
+          when: "quando altera somente dados sem impacto no papel ou escopo institucional",
+          audience: [],
+        },
+      ],
+    });
   });
 
   it("rejeita aliases e acessos computados que esconderiam uma mutation da AST", () => {

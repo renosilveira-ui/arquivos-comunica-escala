@@ -25,7 +25,10 @@ export type ContractViolation = {
     | "COMPUTED_MUTATION_MEMBER"
     | "ESCAPED_EXPRESS_METHOD"
     | "ESCAPED_MUTATION_MEMBER"
-    | "INVALID_POLICY"
+    | "INVALID_POLICY_TARGET"
+    | "INVALID_TARGET_AUDIENCE"
+    | "INVALID_TARGET_CONDITION"
+    | "INVALID_TARGET_CONTRACT"
     | "MISSING_EXPRESS_POLICY"
     | "MISSING_POLICY"
     | "UNMOUNTED_EXPRESS_ROUTER"
@@ -38,6 +41,84 @@ export type ContractViolation = {
     | "UNUSED_POLICY";
   message: string;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateNotificationTargetPolicy(
+  policyPath: string,
+  value: unknown,
+  allowedPolicies: readonly string[],
+  violations: ContractViolation[],
+): void {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.targets) ||
+    value.targets.length === 0
+  ) {
+    violations.push({
+      code: "INVALID_TARGET_CONTRACT",
+      message: `${policyPath} precisa declarar ao menos um target de notificação.`,
+    });
+    return;
+  }
+
+  for (const target of value.targets) {
+    if (!isRecord(target)) {
+      violations.push({
+        code: "INVALID_TARGET_CONTRACT",
+        message: `${policyPath} possui target de notificação inválido.`,
+      });
+      continue;
+    }
+
+    const policy = target.policy;
+    if (typeof policy !== "string" || !allowedPolicies.includes(policy)) {
+      violations.push({
+        code: "INVALID_POLICY_TARGET",
+        message: `${policyPath} usa uma política de notificação inválida.`,
+      });
+    }
+
+    const when = target.when;
+    if (typeof when !== "string" || when.trim().length === 0) {
+      violations.push({
+        code: "INVALID_TARGET_CONDITION",
+        message: `${policyPath} precisa declarar quando o target se aplica.`,
+      });
+    }
+
+    const audience = target.audience;
+    const hasAudience =
+      Array.isArray(audience) &&
+      audience.every(
+        (recipient) =>
+          typeof recipient === "string" && recipient.trim().length > 0,
+      ) &&
+      new Set(audience).size === audience.length;
+    if (!hasAudience) {
+      violations.push({
+        code: "INVALID_TARGET_AUDIENCE",
+        message: `${policyPath} possui audiência de notificação inválida.`,
+      });
+      continue;
+    }
+
+    if (policy === "SILENT_AUDITED" && audience.length !== 0) {
+      violations.push({
+        code: "INVALID_TARGET_AUDIENCE",
+        message: `${policyPath} silencioso não pode ter audiência.`,
+      });
+    }
+    if (policy !== "SILENT_AUDITED" && audience.length === 0) {
+      violations.push({
+        code: "INVALID_TARGET_AUDIENCE",
+        message: `${policyPath} notificável precisa ter audiência.`,
+      });
+    }
+  }
+}
 
 type SourceWithAst = SourceInput & { ast: ts.SourceFile };
 
@@ -237,7 +318,7 @@ export function discoverTrpcMutations(inputs: readonly SourceInput[]): {
 
 export function verifyTrpcMutationPolicyInventory(
   inputs: readonly SourceInput[],
-  inventory: Readonly<Record<string, string>>,
+  inventory: Readonly<Record<string, unknown>>,
   allowedPolicies: readonly string[],
 ): ContractViolation[] {
   const { declarations, violations } = discoverTrpcMutations(inputs);
@@ -261,12 +342,12 @@ export function verifyTrpcMutationPolicyInventory(
   }
 
   for (const policyPath of Object.keys(inventory)) {
-    if (!allowedPolicies.includes(inventory[policyPath])) {
-      violations.push({
-        code: "INVALID_POLICY",
-        message: `${policyPath} usa uma política de notificação inválida.`,
-      });
-    }
+    validateNotificationTargetPolicy(
+      policyPath,
+      inventory[policyPath],
+      allowedPolicies,
+      violations,
+    );
     if (!seen.has(policyPath)) {
       violations.push({
         code: "UNUSED_POLICY",
@@ -855,7 +936,7 @@ export function discoverExpressMutationEndpoints(
 
 export function verifyExpressMutationPolicyInventory(
   inputs: readonly SourceInput[],
-  inventory: Readonly<Record<string, string>>,
+  inventory: Readonly<Record<string, unknown>>,
   allowedPolicies: readonly string[],
 ): ContractViolation[] {
   const { declarations, violations } = discoverExpressMutationEndpoints(inputs);
@@ -879,12 +960,12 @@ export function verifyExpressMutationPolicyInventory(
   }
 
   for (const endpoint of Object.keys(inventory)) {
-    if (!allowedPolicies.includes(inventory[endpoint])) {
-      violations.push({
-        code: "INVALID_POLICY",
-        message: `${endpoint} usa uma política de notificação inválida.`,
-      });
-    }
+    validateNotificationTargetPolicy(
+      endpoint,
+      inventory[endpoint],
+      allowedPolicies,
+      violations,
+    );
     if (!seen.has(endpoint)) {
       violations.push({
         code: "UNUSED_EXPRESS_POLICY",

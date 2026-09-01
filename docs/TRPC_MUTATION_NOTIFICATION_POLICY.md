@@ -1,79 +1,70 @@
-# Política de notificação das mutações de API
+# Contrato-alvo de notificação das mutações
 
-Toda procedure tRPC construída com `.mutation()` e montada no `appRouter`, e
-toda rota Express externa `POST`, `PUT`, `PATCH` ou `DELETE`, deve ter uma
-entrada explícita em `server/mutation-notification-policy.ts`.
+O arquivo `server/mutation-notification-policy.ts` inventaria cada mutation tRPC montada no `appRouter` e cada endpoint Express externo mutável.
 
-Esta é uma classificação declarativa: não acrescenta provider, evento,
-entrega, migration ou escrita de auditoria. Ela descreve o comportamento que a
-mutation já possui.
+Este é um contrato **alvo**, não uma prova de entrega atual: esta PR não cria evento, outbox, provider, envio de push/e-mail, migration ou auditoria nova. O motor operacional futuro deverá consumir estas regras sem enviar em paralelo ao caminho antigo.
 
-| Política         | Significado                                                                                                  |
-| ---------------- | ------------------------------------------------------------------------------------------------------------ |
-| `NOTIFY`         | Já envia ou enfileira aviso dirigido a destinatário(s) identificados.                                        |
-| `BROADCAST`      | Já seleciona uma audiência elegível e a avisa.                                                               |
-| `SILENT_AUDITED` | Não inicia aviso ao usuário; preserva a trilha operacional existente, sem criar nova auditoria nesta camada. |
+## Forma do contrato
 
-## Inventário tRPC atual
+Cada mutation ou endpoint possui um ou mais ramos `targets`:
 
-| Política         | Mutations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `NOTIFY`         | `confirmations.acceptNomination`, `confirmations.declineNomination`, `confirmations.nominateReplacement`, `editor.assignDirect`, `editor.unassignDirect`, `scheduleInvites.create`, `swaps.accept`, `swaps.approveByOwner`, `swaps.offer`                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `BROADCAST`      | `shifts.notifyVacancy`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `SILENT_AUDITED` | `confirmations.confirm`, `confirmations.decline`, `confirmations.registerPushToken`, `confirmations.unregisterPushToken`, `editor.markVacant`, `hospitals.create`, `profile.deactivateWhatsAppContact`, `profile.setWhatsAppContact`, `scheduleContexts.ensureDefaultSectorScale`, `scheduleInvites.revoke`, `shiftAssignments.assumeVacancy`, `shiftInstances.approveAssignment`, `shiftInstances.rejectAssignment`, `shifts.create`, `shifts.lock`, `shifts.openMonthShifts`, `shifts.publish`, `shifts.replicateMonthCalendar`, `shifts.replicateRange`, `shifts.replicateWeek`, `shifts.update`, `swaps.approve`, `swaps.cancel`, `swaps.reject`, `swaps.rejectByManager`, `voice.interpret` |
+```ts
+{
+  targets: [
+    { policy: "NOTIFY", when: "condição verificável", audience: ["AFFECTED_ASSIGNED_PROFESSIONALS"] },
+    { policy: "SILENT_AUDITED", when: "ramo sem impacto pessoal", audience: [] },
+  ],
+}
+```
 
-## Inventário Express externo
+| Política         | Significado-alvo                                                               |
+| ---------------- | ------------------------------------------------------------------------------ |
+| `NOTIFY`         | Criar aviso dirigido após o commit para a audiência calculada pelo servidor.   |
+| `BROADCAST`      | Criar aviso coletivo para a audiência elegível calculada pelo servidor.        |
+| `SILENT_AUDITED` | Não comunicar usuário; preservar ou criar somente a trilha auditável adequada. |
 
-`EXPRESS_MUTATION_NOTIFICATION_POLICIES` usa a chave `METHOD path`, depois de
-resolver os mounts `app.use()`. Há 24 endpoints externos atuais.
+Quando ativados, `NOTIFY` e `BROADCAST` deverão usar push e e-mail independentemente, respeitando confiança de e-mail, autorização vigente e retentativas. Esta PR ainda não implementa esses mecanismos.
 
-| Política         | Endpoints                                                                                                                                                                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `NOTIFY`         | `POST /api/auth/forgot-password`, `POST /api/auth/redeem-invite`, `POST /api/auth/decline-invite`, `POST /api/admin/users/:id/reset-password`                                                                                                                |
-| `BROADCAST`      | Nenhum endpoint Express atual.                                                                                                                                                                                                                               |
-| `SILENT_AUDITED` | `DELETE /api/admin/users/:id`, `DELETE /api/auth/me`, `PUT /api/admin/users/:id`; os POSTs de sessão/cadastro em `/api/auth`; os três proxies em `/api/integrations/hospital-alert`; e `POST generate` / `POST launch-code` sob `/.well-known` e `/api/sso`. |
+As audiências são identificadores semânticos, nunca nomes de pessoas, hospitais ou setores. A resolução futura deve usar IDs de instituição, hospital, setor, contexto de escala, plantão e alocação.
 
-O mesmo `ssoRouter` é montado em `/.well-known` e `/api/sso`; cada caminho é
-uma superfície externa distinta, portanto ambos entram no inventário sem serem
-considerados duplicata.
+## Ramos operacionais fixados
+
+| Fluxo                                                               | Ramo-alvo                                                                                                                   |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `editor.markVacant`                                                 | `NOTIFY` aos profissionais removidos se houver alocação ativa; caso contrário `SILENT_AUDITED`.                             |
+| `shiftAssignments.assumeVacancy`                                    | `NOTIFY` aos gestores responsáveis quando cria pedido pendente.                                                             |
+| `shiftInstances.approveAssignment` e `rejectAssignment`             | `NOTIFY` ao profissional solicitante.                                                                                       |
+| `shifts.update`                                                     | `NOTIFY` aos alocados somente quando horário, modalidade ou local muda com alocação ativa; os demais ramos são silenciosos. |
+| `shifts.publish`                                                    | `NOTIFY` consolidado por profissional quando há alocações; calendário vazio é silencioso.                                   |
+| `shifts.replicateRange`                                             | `NOTIFY` consolidado somente com `includeAssignments=true` e cópia efetiva; dry-run e calendário puro são silenciosos.      |
+| `shifts.replicateMonthCalendar`, `replicateWeek`, `openMonthShifts` | `SILENT_AUDITED`, pois não criam alocações.                                                                                 |
+| `shifts.notifyVacancy`                                              | `BROADCAST` aos profissionais elegíveis.                                                                                    |
+| `swaps.offer`                                                       | Oferta aberta faz `BROADCAST`; oferta com `toProfessionalId` faz `NOTIFY` dirigido.                                         |
+| `swaps.reject` e `swaps.cancel`                                     | Avisam contraparte somente quando ela existe; dispensa/cancelamento de oferta aberta sem contraparte é silencioso.          |
+| `scheduleInvites.create` e `revoke`                                 | Convite nominal criado ou revogado ativo avisa o usuário convidado.                                                         |
+
+## Criação, convite e acesso
+
+| Endpoint                                                       | Ramo-alvo                                                                                                                                                           |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/admin/pending-signups/:id/approve`                  | `NOTIFY` ao usuário pendente quando ativa conta e vínculo.                                                                                                          |
+| `POST /api/admin/pending-signups/:id/reject`                   | `NOTIFY` ao usuário pendente; o destinatário precisa ser capturado antes da remoção.                                                                                |
+| `POST /api/auth/register`                                      | `NOTIFY` somente se cria credenciais ou ativa vínculo/acesso; caso contrário silêncio auditável.                                                                    |
+| `PUT /api/admin/users/:id`                                     | `NOTIFY` se muda `roleInInstitution`, `managerScopes`, contextos de escala, `professional_access` ou outra concessão/revogação; atualização cadastral é silenciosa. |
+| `POST /api/auth/redeem-invite` e `decline-invite`              | `NOTIFY` ao emissor ou gestor do convite.                                                                                                                           |
+| `POST /api/admin/users/:id/reset-password` e `forgot-password` | `NOTIFY` à conta-alvo.                                                                                                                                              |
+| `DELETE /api/admin/users/:id`                                  | `SILENT_AUDITED` enquanto retorna `501` e não remove acesso.                                                                                                        |
+
+Autocadastro público permanece silencioso enquanto não concede acesso institucional. Se passar a conceder, deverá receber ramo explícito e teste antes da integração.
 
 ## Porta de CI
 
-`tests/trpc-mutation-notification-policy.test.ts` usa a AST do TypeScript,
-não regex. Para tRPC, ela descobre as chamadas `.mutation()` em todos os
-arquivos `server/**/*.ts`, vincula cada uma ao router montado no `appRouter` e
-compara o resultado com o inventário tipado. Para Express, ela descobre
-`Router()` e apps Express, resolve `app.use()` estático e compara cada rota
-externa mutável com o inventário. O teste falha para:
+`tests/trpc-mutation-notification-policy.test.ts` inspeciona AST do TypeScript, não regex. A suíte descobre mutations tRPC e rotas Express montadas e falha para entradas ausentes ou obsoletas, políticas inválidas, targets sem `when`, audiência inválida, caminhos ocultos por alias/acesso computado e duplicidades.
 
-- mutation sem política;
-- rota Express externa sem política;
-- política inválida ou obsoleta;
-- duas mutations com o mesmo caminho; ou
-- duas rotas Express com o mesmo método e caminho externo; ou
-- router com mutation que não esteja montado no `appRouter`; ou
-- `Router()` mutável que não esteja montado em um app Express; ou
-- caminho/mount dinâmico, alias ou acesso computado que esconda um método
-  Express mutável da inspeção; ou
-- alias, desestruturação ou acesso computado a `.mutation` que esconderia a
-  procedure da inspeção AST.
+Os testes também fixam os ramos corporativos acima, para que uma alteração futura não silencie remoções, aprovações, publicações com alocação, trocas dirigidas ou alterações de acesso sem revisão deliberada.
 
-Queries continuam fora desse contrato e não são reclassificadas nem recebem
-efeito colateral.
+`vitest.pure.config.ts` executa essa porta sem setup de MySQL. Queries ficam fora do contrato.
 
-O teste também entra em `vitest.pure.config.ts`, que executa sem setup de
-MySQL; assim a porta estrutural continua executável antes de qualquer banco ou
-migration.
+## Exceção SSO
 
-Exclusões verificadas pela fonte atual: `privacyRouter` só registra GET;
-`registerOAuthRoutes` é um placeholder sem rota HTTP; o `app` direto só
-registra GET de health/catch-all; e `/api/trpc` é `createExpressMiddleware`,
-coberto separadamente pelo inventário tRPC.
-
-## Exceção SSO estrita
-
-`GET /.well-known/launch` e `GET /api/sso/launch` consomem um código SSO de uso
-único porque o browser externo conclui o handoff por navegação. A exceção
-nomeada é `SSO_ONE_TIME_LAUNCH_GET_CONSUMPTION_EXCEPTION`; ela não é query nem
-mutation tRPC. O mesmo teste confirma os dois mounts, uma única rota `/launch`
-e a chamada a `redeemLaunchCode`.
+`GET /.well-known/launch` e `GET /api/sso/launch` consomem código de uso único por navegação do browser. A exceção é `SSO_ONE_TIME_LAUNCH_GET_CONSUMPTION_EXCEPTION`; ela não é query nem mutation tRPC.
