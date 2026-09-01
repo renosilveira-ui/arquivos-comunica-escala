@@ -1,5 +1,5 @@
 /**
- * Contrato declarativo de comportamento de notificação para mutations tRPC.
+ * Contrato declarativo de comportamento de notificação para mutações de API.
  *
  * Esta camada não emite eventos, não chama providers e não escreve no banco.
  * Ela só torna a intenção revisável e permite que o teste AST impeça novas
@@ -64,14 +64,53 @@ export const TRPC_MUTATION_NOTIFICATION_POLICIES = {
 export type TrpcMutationPath = keyof typeof TRPC_MUTATION_NOTIFICATION_POLICIES;
 
 /**
- * Exceção estrita fora do tRPC: o navegador externo precisa seguir um GET para
- * consumir o código SSO de uso único. Não é query e não entra no inventário de
- * mutations tRPC; `tests/trpc-mutation-notification-policy.test.ts` confirma
- * a rota e o consumo efetivo do código.
+ * Inventário canônico de endpoints Express externos que usam POST, PUT, PATCH
+ * ou DELETE. As chaves incluem método e caminho já resolvido após app.use().
+ *
+ * NOTIFY somente marca fluxos que já entregam ou enfileiram aviso dirigido.
+ * Os demais endpoints preservam seu comportamento atual sem habilitar novos
+ * eventos, providers, entregas ou escrita de auditoria.
+ */
+export const EXPRESS_MUTATION_NOTIFICATION_POLICIES = {
+  "DELETE /api/admin/users/:id": "SILENT_AUDITED",
+  "DELETE /api/auth/me": "SILENT_AUDITED",
+  "POST /.well-known/generate": "SILENT_AUDITED",
+  "POST /.well-known/launch-code": "SILENT_AUDITED",
+  "POST /api/admin/pending-signups/:id/approve": "SILENT_AUDITED",
+  "POST /api/admin/pending-signups/:id/reject": "SILENT_AUDITED",
+  "POST /api/admin/users/:id/reset-password": "NOTIFY",
+  "POST /api/auth/change-password": "SILENT_AUDITED",
+  "POST /api/auth/decline-invite": "NOTIFY",
+  "POST /api/auth/forgot-password": "NOTIFY",
+  "POST /api/auth/login": "SILENT_AUDITED",
+  "POST /api/auth/logout": "SILENT_AUDITED",
+  "POST /api/auth/redeem-invite": "NOTIFY",
+  "POST /api/auth/register": "SILENT_AUDITED",
+  "POST /api/auth/reset-password": "SILENT_AUDITED",
+  "POST /api/auth/signup": "SILENT_AUDITED",
+  "POST /api/auth/sso-exchange": "SILENT_AUDITED",
+  "POST /api/auth/ssoExchange": "SILENT_AUDITED",
+  "POST /api/integrations/hospital-alert/shifts/end": "SILENT_AUDITED",
+  "POST /api/integrations/hospital-alert/shifts/start": "SILENT_AUDITED",
+  "POST /api/integrations/hospital-alert/sync-user": "SILENT_AUDITED",
+  "POST /api/sso/generate": "SILENT_AUDITED",
+  "POST /api/sso/launch-code": "SILENT_AUDITED",
+  "PUT /api/admin/users/:id": "SILENT_AUDITED",
+} as const satisfies Readonly<Record<string, MutationNotificationPolicy>>;
+
+export type ExpressMutationEndpoint =
+  keyof typeof EXPRESS_MUTATION_NOTIFICATION_POLICIES;
+
+/**
+ * Exceção estrita para GET com escrita: o navegador externo precisa seguir a
+ * navegação para consumir o código SSO de uso único. ssoRouter é montado em
+ * ambos os prefixes abaixo; não é query e não entra no inventário POST/PUT/
+ * PATCH/DELETE. O teste confirma a rota, ambos os caminhos externos e o
+ * consumo efetivo do código.
  */
 export const SSO_ONE_TIME_LAUNCH_GET_CONSUMPTION_EXCEPTION = {
   id: "SSO_ONE_TIME_LAUNCH_GET_CONSUMPTION",
-  route: "GET /api/sso/launch",
+  routes: ["GET /.well-known/launch", "GET /api/sso/launch"],
   reason:
-    "O código de lançamento SSO é consumido uma única vez no navegador externo.",
+    "O código de lançamento SSO é consumido uma única vez no navegador externo em cada prefixo montado do mesmo handler.",
 } as const;
