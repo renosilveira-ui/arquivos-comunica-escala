@@ -324,6 +324,8 @@ export const professionalInstitutions = mysqlTable(
     roleInInstitution: roleInInstitutionEnum.notNull().default("USER"),
     isPrimary: boolean("is_primary").notNull().default(false),
     active: boolean("active").notNull().default(true),
+    /** Revisão monotônica do estado efetivo de acesso institucional. */
+    operationalRevision: int("operational_revision").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
@@ -985,6 +987,8 @@ export const operationalEvents = mysqlTable(
       length: 64,
     }).notNull(),
     eventHash: varchar("event_hash", { length: 64 }).notNull(),
+    /** Compromisso hashado do estado ID-only para ACCESS_UPDATED. */
+    accessStateHash: binaryVarchar("access_state_hash", { length: 64 }),
     eventType: varchar("event_type", { length: 80 }).notNull(),
     // O modo é gravado com o fato para que um retry não possa promover um
     // registro histórico de sombra a entrega ativa.
