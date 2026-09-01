@@ -775,6 +775,11 @@ export const scheduleInvites = mysqlTable(
     uniqScheduleInviteCodeHash: unique("uniq_schedule_invite_code_hash").on(
       table.codeHash,
     ),
+    // Dá suporte à FK composta do destinatário de evento sem depender de
+    // uma alteração manual posterior em bancos criados a partir do schema.
+    uniqScheduleInvitesIdInstitution: unique(
+      "uniq_schedule_invites_id_institution",
+    ).on(table.id, table.institutionId),
     idxScheduleInviteInstitution: index("idx_schedule_invite_institution").on(
       table.institutionId,
       table.hospitalId,
@@ -869,6 +874,14 @@ export const shiftInstances = mysqlTable(
     idxShiftInstanceInstitutionId: index(
       "idx_shift_instances_institution_id",
     ).on(table.institutionId, table.id),
+    // Chave-pai física da FK composta de eventos operacionais. Mantém o
+    // vínculo de um turno com a topologia em instalações novas do schema.
+    uniqShiftInstancesTopologyId: unique("uniq_shift_instances_topology_id").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.id,
+    ),
     idxShiftInstanceScheduleContext: index(
       "idx_shift_instances_schedule_context",
     ).on(table.institutionId, table.scheduleContextId),
@@ -929,6 +942,11 @@ export const shiftAssignmentsV2 = mysqlTable(
     idxShiftAssignmentInstitutionId: index(
       "idx_shift_assignments_institution_id",
     ).on(table.institutionId, table.id),
+    // Chave-pai física da FK composta de eventos operacionais. A migration
+    // manual conserva o mesmo nome para instalações legadas.
+    uniqShiftAssignmentsTopologyId: unique(
+      "uniq_shift_assignments_topology_id",
+    ).on(table.institutionId, table.hospitalId, table.sectorId, table.id),
   }),
 );
 
@@ -1073,6 +1091,575 @@ export const notifications = mysqlTable(
       table.status,
       table.createdAt,
     ),
+  }),
+);
+
+/**
+ * Fundação persistente de eventos operacionais. Nenhum emissor, worker ou
+ * entrega usa estas tabelas nesta frente: elas registram apenas a topologia
+ * canônica que uma integração futura deverá respeitar.
+ *
+ * As 21 FKs simples são declaradas explicitamente — sem `.references()` nas
+ * colunas — para que o nome físico seja estável e <= 64 caracteres no MySQL.
+ * As FKs compostas mantêm a hierarquia instituição → hospital → setor no
+ * banco, mesmo se um writer futuro ignorar a validação de aplicação.
+ *
+ * Esta fundação não autoriza ativação de writers, workers nem entregas. Antes
+ * de qualquer ativação, uma frente própria precisa provar e impor duas
+ * coerências que a topologia comum não expressa sozinha: (1) o profissional
+ * atribuído ao ator pertence ao mesmo usuário e à mesma instituição; e (2)
+ * quando contexto, turno e alocação coexistem, a alocação pertence ao turno e
+ * o turno pertence ao contexto informado. Sem essa prova, o armazenamento
+ * permanece somente como fundação não ativa.
+ */
+export const operationalEvents = mysqlTable(
+  "operational_events",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    idempotencyKeyHash: binaryVarchar("idempotency_key_hash", {
+      length: 64,
+    }).notNull(),
+    eventHash: varchar("event_hash", { length: 64 }).notNull(),
+    eventType: varchar("event_type", { length: 80 }).notNull(),
+    deliveryPolicy: mysqlEnum("delivery_policy", [
+      "NOTIFY",
+      "BROADCAST",
+      "SILENT_AUDITED",
+    ]).notNull(),
+    recipientResolution: mysqlEnum("recipient_resolution", [
+      "RESOLVED",
+      "NO_ELIGIBLE_RECIPIENTS",
+      "NO_RESPONSIBLE_MANAGERS",
+      "NO_DELIVERABLE_RECIPIENTS",
+      "NOT_APPLICABLE",
+    ]).notNull(),
+    aggregateType: varchar("aggregate_type", { length: 80 }).notNull(),
+    aggregateId: int("aggregate_id").notNull(),
+    aggregateVersion: int("aggregate_version").notNull(),
+    transitionFrom: varchar("transition_from", { length: 80 }),
+    transitionTo: varchar("transition_to", { length: 80 }),
+    actorKind: mysqlEnum("actor_kind", ["USER", "SYSTEM"]).notNull(),
+    actorUserId: int("actor_user_id"),
+    actorProfessionalId: int("actor_professional_id"),
+    actorRole: varchar("actor_role", { length: 32 }).notNull(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id"),
+    scopeKind: mysqlEnum("scope_kind", [
+      "INSTITUTION",
+      "HOSPITAL",
+      "SECTOR",
+    ]).notNull(),
+    sectorId: int("sector_id"),
+    scheduleContextId: int("schedule_context_id"),
+    shiftInstanceId: int("shift_instance_id"),
+    assignmentId: int("assignment_id"),
+    occurredAt: datetime("occurred_at").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxOperationalEventContext: index("idx_operational_events_context").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.occurredAt,
+    ),
+    idxOperationalEventAggregate: index("idx_operational_events_aggregate").on(
+      table.aggregateType,
+      table.aggregateId,
+      table.aggregateVersion,
+    ),
+    uniqOperationalEventIdempotency: unique(
+      "uniq_operational_event_idempotency",
+    ).on(table.institutionId, table.idempotencyKeyHash),
+    uniqOperationalEventIdInstitution: unique(
+      "uniq_operational_events_id_institution",
+    ).on(table.id, table.institutionId),
+    idxOperationalEventShift: index("idx_operational_events_shift").on(
+      table.shiftInstanceId,
+    ),
+    fkOperationalEventActorUser: foreignKey({
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+      name: "fk_operational_events_actor_user",
+    }),
+    fkOperationalEventActorUserInstitution: foreignKey({
+      columns: [table.actorUserId, table.institutionId],
+      foreignColumns: [
+        professionalInstitutions.userId,
+        professionalInstitutions.institutionId,
+      ],
+      name: "fk_operational_events_actor_user_institution",
+    }),
+    fkOperationalEventActorProfessional: foreignKey({
+      columns: [table.actorProfessionalId],
+      foreignColumns: [professionals.id],
+      name: "fk_operational_events_actor_professional",
+    }),
+    fkOperationalEventInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_operational_events_institution",
+    }),
+    fkOperationalEventHospital: foreignKey({
+      columns: [table.hospitalId],
+      foreignColumns: [hospitals.id],
+      name: "fk_operational_events_hospital",
+    }),
+    fkOperationalEventSector: foreignKey({
+      columns: [table.sectorId],
+      foreignColumns: [sectors.id],
+      name: "fk_operational_events_sector",
+    }),
+    fkOperationalEventScheduleContext: foreignKey({
+      columns: [table.scheduleContextId],
+      foreignColumns: [scheduleContexts.id],
+      name: "fk_operational_events_schedule_context",
+    }),
+    fkOperationalEventShift: foreignKey({
+      columns: [table.shiftInstanceId],
+      foreignColumns: [shiftInstances.id],
+      name: "fk_operational_events_shift",
+    }),
+    fkOperationalEventAssignment: foreignKey({
+      columns: [table.assignmentId],
+      foreignColumns: [shiftAssignmentsV2.id],
+      name: "fk_operational_events_assignment",
+    }),
+    fkOperationalEventHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_operational_events_hospital_topology",
+    }),
+    fkOperationalEventSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_operational_events_sector_topology",
+    }),
+    fkOperationalEventScheduleContextTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.scheduleContextId,
+      ],
+      foreignColumns: [
+        scheduleContexts.institutionId,
+        scheduleContexts.hospitalId,
+        scheduleContexts.sectorId,
+        scheduleContexts.id,
+      ],
+      name: "fk_operational_events_schedule_context_topology",
+    }),
+    fkOperationalEventShiftTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.shiftInstanceId,
+      ],
+      foreignColumns: [
+        shiftInstances.institutionId,
+        shiftInstances.hospitalId,
+        shiftInstances.sectorId,
+        shiftInstances.id,
+      ],
+      name: "fk_operational_events_shift_topology",
+    }),
+    fkOperationalEventAssignmentTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.assignmentId,
+      ],
+      foreignColumns: [
+        shiftAssignmentsV2.institutionId,
+        shiftAssignmentsV2.hospitalId,
+        shiftAssignmentsV2.sectorId,
+        shiftAssignmentsV2.id,
+      ],
+      name: "fk_operational_events_assignment_topology",
+    }),
+    chkOperationalEventScope: check(
+      "chk_operational_event_scope",
+      sql`(
+        (
+          ${table.scopeKind} = 'INSTITUTION'
+          AND ${table.hospitalId} IS NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'HOSPITAL'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'SECTOR'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NOT NULL
+        )
+      )`,
+    ),
+    chkOperationalEventActor: check(
+      "chk_operational_event_actor",
+      sql`(
+        (
+          ${table.actorKind} = 'USER'
+          AND ${table.actorUserId} IS NOT NULL
+        )
+        OR
+        (
+          ${table.actorKind} = 'SYSTEM'
+          AND ${table.actorUserId} IS NULL
+          AND ${table.actorProfessionalId} IS NULL
+        )
+      )`,
+    ),
+  }),
+);
+
+export const operationalEventRelatedContexts = mysqlTable(
+  "operational_event_related_contexts",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    operationalEventId: int("operational_event_id").notNull(),
+    relationKind: mysqlEnum("relation_kind", [
+      "COUNTERPART",
+      "AFFECTED_SCOPE",
+    ]).notNull(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id"),
+    scopeKind: mysqlEnum("scope_kind", [
+      "INSTITUTION",
+      "HOSPITAL",
+      "SECTOR",
+    ]).notNull(),
+    sectorId: int("sector_id"),
+    scheduleContextId: int("schedule_context_id"),
+    shiftInstanceId: int("shift_instance_id"),
+    assignmentId: int("assignment_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxOperationalEventRelatedContext: index(
+      "idx_operational_event_related_context",
+    ).on(table.operationalEventId, table.relationKind, table.id),
+    fkOperationalEventRelatedContextEventInstitution: foreignKey({
+      columns: [table.operationalEventId, table.institutionId],
+      foreignColumns: [operationalEvents.id, operationalEvents.institutionId],
+      name: "fk_operational_event_related_context_event_institution",
+    }).onDelete("cascade"),
+    fkOperationalEventRelatedContextInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_operational_event_related_context_institution",
+    }),
+    fkOperationalEventRelatedContextHospital: foreignKey({
+      columns: [table.hospitalId],
+      foreignColumns: [hospitals.id],
+      name: "fk_operational_event_related_context_hospital",
+    }),
+    fkOperationalEventRelatedContextSector: foreignKey({
+      columns: [table.sectorId],
+      foreignColumns: [sectors.id],
+      name: "fk_operational_event_related_context_sector",
+    }),
+    fkOperationalEventRelatedContextScheduleContext: foreignKey({
+      columns: [table.scheduleContextId],
+      foreignColumns: [scheduleContexts.id],
+      name: "fk_operational_event_related_context_schedule_context",
+    }),
+    fkOperationalEventRelatedContextShift: foreignKey({
+      columns: [table.shiftInstanceId],
+      foreignColumns: [shiftInstances.id],
+      name: "fk_operational_event_related_context_shift",
+    }),
+    fkOperationalEventRelatedContextAssignment: foreignKey({
+      columns: [table.assignmentId],
+      foreignColumns: [shiftAssignmentsV2.id],
+      name: "fk_operational_event_related_context_assignment",
+    }),
+    fkOperationalEventRelatedContextHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_operational_event_related_context_hospital_topology",
+    }),
+    fkOperationalEventRelatedContextSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_operational_event_related_context_sector_topology",
+    }),
+    fkOperationalEventRelatedContextScheduleContextTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.scheduleContextId,
+      ],
+      foreignColumns: [
+        scheduleContexts.institutionId,
+        scheduleContexts.hospitalId,
+        scheduleContexts.sectorId,
+        scheduleContexts.id,
+      ],
+      name: "fk_operational_event_related_context_schedule_context_topology",
+    }),
+    fkOperationalEventRelatedContextShiftTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.shiftInstanceId,
+      ],
+      foreignColumns: [
+        shiftInstances.institutionId,
+        shiftInstances.hospitalId,
+        shiftInstances.sectorId,
+        shiftInstances.id,
+      ],
+      name: "fk_operational_event_related_context_shift_topology",
+    }),
+    fkOperationalEventRelatedContextAssignmentTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.assignmentId,
+      ],
+      foreignColumns: [
+        shiftAssignmentsV2.institutionId,
+        shiftAssignmentsV2.hospitalId,
+        shiftAssignmentsV2.sectorId,
+        shiftAssignmentsV2.id,
+      ],
+      name: "fk_operational_event_related_context_assignment_topology",
+    }),
+    chkOperationalEventRelatedContextScope: check(
+      "chk_operational_event_related_context_scope",
+      sql`(
+        (
+          ${table.scopeKind} = 'INSTITUTION'
+          AND ${table.hospitalId} IS NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'HOSPITAL'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NULL
+          AND ${table.scheduleContextId} IS NULL
+          AND ${table.shiftInstanceId} IS NULL
+          AND ${table.assignmentId} IS NULL
+        )
+        OR
+        (
+          ${table.scopeKind} = 'SECTOR'
+          AND ${table.hospitalId} IS NOT NULL
+          AND ${table.sectorId} IS NOT NULL
+        )
+      )`,
+    ),
+  }),
+);
+
+export const operationalEventRecipients = mysqlTable(
+  "operational_event_recipients",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    operationalEventId: int("operational_event_id").notNull(),
+    institutionId: int("institution_id").notNull(),
+    recipientKind: mysqlEnum("recipient_kind", [
+      "USER",
+      "SCHEDULE_INVITE",
+    ]).notNull(),
+    userId: int("user_id"),
+    scheduleInviteId: int("schedule_invite_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqOperationalEventRecipientUser: unique(
+      "uniq_operational_event_recipient_user",
+    ).on(table.operationalEventId, table.userId),
+    uniqOperationalEventRecipientInvite: unique(
+      "uniq_operational_event_recipient_invite",
+    ).on(table.operationalEventId, table.scheduleInviteId),
+    idxOperationalEventRecipientTarget: index(
+      "idx_operational_event_recipient_target",
+    ).on(table.recipientKind, table.userId, table.scheduleInviteId),
+    fkOperationalEventRecipientsEvent: foreignKey({
+      columns: [table.operationalEventId],
+      foreignColumns: [operationalEvents.id],
+      name: "fk_operational_event_recipients_event",
+    }).onDelete("cascade"),
+    fkOperationalEventRecipientEventInstitution: foreignKey({
+      columns: [table.operationalEventId, table.institutionId],
+      foreignColumns: [operationalEvents.id, operationalEvents.institutionId],
+      name: "fk_operational_event_recipient_event_institution",
+    }).onDelete("cascade"),
+    fkOperationalEventRecipientInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_operational_event_recipient_institution",
+    }),
+    fkOperationalEventRecipientsUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_operational_event_recipients_user",
+    }),
+    fkOperationalEventRecipientUserInstitution: foreignKey({
+      columns: [table.userId, table.institutionId],
+      foreignColumns: [
+        professionalInstitutions.userId,
+        professionalInstitutions.institutionId,
+      ],
+      name: "fk_operational_event_recipient_user_institution",
+    }),
+    fkOperationalEventRecipientsScheduleInvite: foreignKey({
+      columns: [table.scheduleInviteId],
+      foreignColumns: [scheduleInvites.id],
+      name: "fk_operational_event_recipients_schedule_invite",
+    }),
+    fkOperationalEventRecipientScheduleInviteInstitution: foreignKey({
+      columns: [table.scheduleInviteId, table.institutionId],
+      foreignColumns: [scheduleInvites.id, scheduleInvites.institutionId],
+      name: "fk_operational_event_recipient_schedule_invite_institution",
+    }),
+    chkOperationalEventRecipientTarget: check(
+      "chk_operational_event_recipient_target",
+      sql`(
+        (${table.recipientKind} = 'USER' AND ${table.userId} IS NOT NULL AND ${table.scheduleInviteId} IS NULL)
+        OR
+        (${table.recipientKind} = 'SCHEDULE_INVITE' AND ${table.userId} IS NULL AND ${table.scheduleInviteId} IS NOT NULL)
+      )`,
+    ),
+  }),
+);
+
+export const notificationDeliveries = mysqlTable(
+  "notification_deliveries",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    operationalEventRecipientId: int(
+      "operational_event_recipient_id",
+    ).notNull(),
+    channel: mysqlEnum("channel", ["PUSH", "EMAIL"]).notNull(),
+    status: mysqlEnum("status", [
+      "QUEUED",
+      "PROCESSING",
+      "PROVIDER_ACCEPTED",
+      "DELIVERED",
+      "FAILED",
+      "DEAD",
+      "SKIPPED",
+    ])
+      .notNull()
+      .default("QUEUED"),
+    dedupKey: binaryVarchar("dedup_key", { length: 64 })
+      .notNull()
+      .unique("uniq_notification_delivery_dedup"),
+    attemptCount: int("attempt_count").notNull().default(0),
+    availableAt: datetime("available_at").notNull(),
+    leaseUntil: datetime("lease_until"),
+    providerAcceptedAt: datetime("provider_accepted_at"),
+    deliveredAt: datetime("delivered_at"),
+    providerReference: varchar("provider_reference", { length: 255 }),
+    lastErrorCode: varchar("last_error_code", { length: 80 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqNotificationDeliveryChannel: unique(
+      "uniq_notification_delivery_channel",
+    ).on(table.operationalEventRecipientId, table.channel),
+    idxNotificationDeliveryReady: index("idx_notification_deliveries_ready").on(
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    idxNotificationDeliveryRecipient: index(
+      "idx_notification_deliveries_recipient",
+    ).on(table.operationalEventRecipientId, table.id),
+    fkNotificationDeliveriesRecipient: foreignKey({
+      columns: [table.operationalEventRecipientId],
+      foreignColumns: [operationalEventRecipients.id],
+      name: "fk_notification_deliveries_recipient",
+    }).onDelete("cascade"),
+  }),
+);
+
+/**
+ * Preparação isolada para confiança de e-mail. Nenhum fluxo atual consulta
+ * ou escreve essas tabelas; valores sensíveis permanecem somente em hash.
+ */
+export const userOperationalEmailTrust = mysqlTable(
+  "user_operational_email_trust",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    emailHash: varchar("email_hash", { length: 64 }).notNull(),
+    state: mysqlEnum("state", ["PENDING", "TRUSTED", "REVOKED"])
+      .notNull()
+      .default("PENDING"),
+    source: mysqlEnum("source", [
+      "ADMIN_CREATED",
+      "INVITE_ACTIVATED",
+      "USER_CONFIRMED",
+      "LEGACY",
+    ]).notNull(),
+    trustedAt: datetime("trusted_at"),
+    invalidatedAt: datetime("invalidated_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqOperationalEmailTrustUser: unique(
+      "uniq_operational_email_trust_user",
+    ).on(table.userId),
+    idxOperationalEmailTrustHash: index("idx_operational_email_trust_hash").on(
+      table.emailHash,
+    ),
+    fkOperationalEmailTrustUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_operational_email_trust_user",
+    }).onDelete("cascade"),
+  }),
+);
+
+export const operationalEmailVerificationTokens = mysqlTable(
+  "operational_email_verification_tokens",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    emailHash: varchar("email_hash", { length: 64 }).notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: datetime("expires_at").notNull(),
+    usedAt: datetime("used_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqOperationalEmailVerificationToken: unique(
+      "uniq_operational_email_verification_token",
+    ).on(table.tokenHash),
+    idxOperationalEmailVerificationUser: index(
+      "idx_operational_email_verification_user",
+    ).on(table.userId, table.expiresAt),
+    fkOperationalEmailVerificationUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_operational_email_verification_user",
+    }).onDelete("cascade"),
   }),
 );
 
