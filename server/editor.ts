@@ -34,6 +34,11 @@ import {
   enqueueShiftAssignedPush,
   enqueueShiftUnassignedPush,
 } from "./assignment-push-signal";
+import {
+  captureCanonicalAssignmentShadowRecipient,
+  isAssignmentStatusEligibleForShadow,
+  recordAssignmentShadowEventInTransaction,
+} from "./assignment-operational-events";
 import { enqueueDutySyncWithdrawsForRemovedProfessionals } from "./sso/duty-sync-lifecycle";
 
 type EditorDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
@@ -56,6 +61,7 @@ type AssignmentTarget = ShiftTarget & {
   professionalId: number;
   assignmentStatus: string;
   isActive: boolean;
+  operationalRevision: number;
 };
 
 async function getShiftTarget(
@@ -155,6 +161,7 @@ async function getAssignmentTarget(
         professionalId: shiftAssignmentsV2.professionalId,
         assignmentStatus: shiftAssignmentsV2.status,
         isActive: shiftAssignmentsV2.isActive,
+        operationalRevision: shiftAssignmentsV2.operationalRevision,
         shiftInstanceId: shiftAssignmentsV2.shiftInstanceId,
         institutionId: shiftAssignmentsV2.institutionId,
         hospitalId: shiftAssignmentsV2.hospitalId,
@@ -191,6 +198,7 @@ async function getAssignmentTarget(
       professionalId: assignment.professionalId,
       assignmentStatus: assignment.assignmentStatus,
       isActive: assignment.isActive,
+      operationalRevision: assignment.operationalRevision,
       ...shift,
     };
   }
@@ -201,6 +209,7 @@ async function getAssignmentTarget(
       professionalId: shiftAssignmentsV2.professionalId,
       assignmentStatus: shiftAssignmentsV2.status,
       isActive: shiftAssignmentsV2.isActive,
+      operationalRevision: shiftAssignmentsV2.operationalRevision,
       id: shiftInstances.id,
       institutionId: shiftInstances.institutionId,
       hospitalId: shiftInstances.hospitalId,
@@ -301,10 +310,30 @@ async function insertDirectAssignment(
     assignmentType: input.assignmentType,
     status: "OCUPADO",
     isActive: true,
+    operationalRevision: 1,
     createdBy: input.userId,
   });
   await recomputeShiftStatus(tx, input.shift.id);
   const createdAssignmentId = Number(inserted.insertId);
+  const capturedRecipient = await captureCanonicalAssignmentShadowRecipient(
+    tx,
+    {
+      institutionId: input.shift.institutionId,
+      hospitalId: input.shift.hospitalId,
+      sectorId: input.shift.sectorId,
+      scheduleContextId: input.shift.scheduleContextId,
+      shiftInstanceId: input.shift.id,
+      assignmentId: createdAssignmentId,
+    },
+  );
+  await recordAssignmentShadowEventInTransaction(tx, {
+    operation: "DIRECT_ASSIGNMENT",
+    capturedRecipient,
+    actor: {
+      userId: input.userId,
+      professionalId: input.managerId,
+    },
+  });
   const reason =
     input.reason ||
     (input.isRepeat
@@ -377,7 +406,8 @@ function assertSameAssignmentTarget(
     authorized.assignmentId !== locked.assignmentId ||
     authorized.professionalId !== locked.professionalId ||
     authorized.assignmentStatus !== locked.assignmentStatus ||
-    authorized.isActive !== locked.isActive
+    authorized.isActive !== locked.isActive ||
+    authorized.operationalRevision !== locked.operationalRevision
   ) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -564,6 +594,9 @@ export const editorRouter = router({
   /**
    * markVacant
    * Marca turno como VAGO (remove assignments ativos se houver)
+   *
+   * Fora do escopo do ledger SHADOW de assignment: pode desativar múltiplas
+   * alocações e não oferece um único destinatário canônico para este fato.
    */
   markVacant: protectedProcedure
     .input(
@@ -829,10 +862,36 @@ export const editorRouter = router({
           startAt: lockedAssignment.startAt,
           endAt: lockedAssignment.endAt,
         };
+        // Somente uma retirada de titular OCUPADO possui contrato de fato
+        // canônico. PENDENTE e estados legados continuam removíveis, mas não
+        // podem produzir um evento que diga, incorretamente, que um plantão
+        // confirmado foi retirado.
+        const emitsAssignmentShadow = isAssignmentStatusEligibleForShadow(
+          lockedAssignment.assignmentStatus,
+        );
+        // O snapshot do destinatário é bloqueado antes de a alocação OCUPADO
+        // ser desativada. A emissão posterior relê a mesma identidade e a
+        // revisão já incrementada, no mesmo commit.
+        const capturedRecipient =
+          emitsAssignmentShadow
+            ? await captureCanonicalAssignmentShadowRecipient(tx, {
+                institutionId: lockedAssignment.institutionId,
+                hospitalId: lockedAssignment.hospitalId,
+                sectorId: lockedAssignment.sectorId,
+                scheduleContextId: lockedAssignment.scheduleContextId,
+                shiftInstanceId: lockedAssignment.id,
+                assignmentId,
+              })
+            : null;
 
         const [deactivated] = await tx
           .update(shiftAssignmentsV2)
-          .set({ isActive: false })
+          .set({
+            isActive: false,
+            operationalRevision: emitsAssignmentShadow
+              ? lockedAssignment.operationalRevision + 1
+              : lockedAssignment.operationalRevision,
+          })
           .where(
             and(
               eq(shiftAssignmentsV2.id, assignmentId),
@@ -849,6 +908,10 @@ export const editorRouter = router({
               ),
               eq(shiftAssignmentsV2.status, lockedAssignment.assignmentStatus),
               eq(shiftAssignmentsV2.isActive, true),
+              eq(
+                shiftAssignmentsV2.operationalRevision,
+                lockedAssignment.operationalRevision,
+              ),
             ),
           );
         if (deactivated.affectedRows !== 1) {
@@ -864,6 +927,17 @@ export const editorRouter = router({
         // voltava para "Plantões em aberto" com candidato na fila
         // (auditoria 22/08, achado M4).
         await recomputeShiftStatus(tx, lockedAssignment.id);
+
+        if (capturedRecipient) {
+          await recordAssignmentShadowEventInTransaction(tx, {
+            operation: "DIRECT_REMOVAL",
+            capturedRecipient,
+            actor: {
+              userId,
+              professionalId: managerId,
+            },
+          });
+        }
 
         // 8. Auditorias da remoção no mesmo commit da alteração operacional.
         await auditLog(
