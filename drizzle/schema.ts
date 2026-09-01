@@ -1419,6 +1419,39 @@ export const notificationDeliveries = mysqlTable(
 );
 
 /**
+ * Trilha de auditoria de requeues manuais. Ela não contém destinatário, conteúdo,
+ * token ou dado clínico e é gravada na mesma transação que devolve uma
+ * delivery DEAD à fila.
+ */
+export const operationalDeliveryRequeueAudits = mysqlTable(
+  "operational_delivery_requeue_audits",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    notificationDeliveryId: int("notification_delivery_id").notNull(),
+    operationalEventId: int("operational_event_id").notNull(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    actorUserId: int("actor_user_id").notNull(),
+    actorRole: mysqlEnum("actor_role", [
+      "GESTOR_MEDICO",
+      "GESTOR_PLUS",
+      "GLOBAL_ADMIN",
+    ]).notNull(),
+    previousAttemptCount: int("previous_attempt_count").notNull(),
+    createdAt: datetime("created_at").notNull(),
+  },
+  (table) => ({
+    idxOperationalDeliveryRequeueAuditDelivery: index(
+      "idx_operational_delivery_requeue_audit_delivery",
+    ).on(table.notificationDeliveryId, table.id),
+    idxOperationalDeliveryRequeueAuditInstitution: index(
+      "idx_operational_delivery_requeue_audit_institution",
+    ).on(table.institutionId, table.id),
+  }),
+);
+
+/**
  * Confiança de e-mail operacional. O hash é do e-mail normalizado atual; se
  * a conta trocar de e-mail, o vínculo deixa de coincidir e deve ser revogado
  * pelo writer da conta antes de qualquer envio futuro.
