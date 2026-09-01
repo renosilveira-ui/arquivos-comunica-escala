@@ -62,23 +62,33 @@ describe("wiring dos fatos SHADOW de assignment", () => {
     expect(directAssignment).toContain('operation: "DIRECT_ASSIGNMENT"');
   });
 
-  it("captura o destinatário antes da retirada e incrementa a revisão sob CAS", () => {
+  it("só emite retirada SHADOW para OCUPADO e preserva a remoção dos demais estados", () => {
     const unassign = section(editor, "unassignDirect: protectedProcedure");
+    const eligibility = unassign.indexOf(
+      "isAssignmentStatusEligibleForShadow",
+    );
     const capture = unassign.indexOf(
       "captureCanonicalAssignmentShadowRecipient",
     );
     const deactivation = unassign.indexOf(".update(shiftAssignmentsV2)");
     const record = unassign.indexOf("recordAssignmentShadowEventInTransaction");
 
-    expect(capture).toBeGreaterThanOrEqual(0);
+    expect(eligibility).toBeGreaterThanOrEqual(0);
+    expect(capture).toBeGreaterThan(eligibility);
     expect(deactivation).toBeGreaterThan(capture);
-    expect(unassign).toContain(
-      "operationalRevision: lockedAssignment.operationalRevision + 1",
+    expect(unassign).toMatch(
+      /const capturedRecipient\s*=\s*emitsAssignmentShadow\s*\?\s*await captureCanonicalAssignmentShadowRecipient[\s\S]*:\s*null;/,
+    );
+    expect(unassign).toMatch(
+      /operationalRevision:\s*emitsAssignmentShadow\s*\?\s*lockedAssignment\.operationalRevision \+ 1\s*:\s*lockedAssignment\.operationalRevision/,
     );
     expect(unassign).toContain(
       "shiftAssignmentsV2.operationalRevision,\n                lockedAssignment.operationalRevision",
     );
     expect(record).toBeGreaterThan(deactivation);
+    expect(unassign).toMatch(
+      /if \(capturedRecipient\) \{\s*await recordAssignmentShadowEventInTransaction/,
+    );
     expect(unassign).toContain('operation: "DIRECT_REMOVAL"');
   });
 

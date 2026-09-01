@@ -21,6 +21,7 @@ import {
   shiftInstances,
   users,
   notifications,
+  operationalEvents,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { dayKeyBrt } from "../server/local-time";
@@ -326,6 +327,54 @@ describe("status do turno derivado das alocações", () => {
     expect(result.ok).toBe(true);
     expect(await shiftStatus()).toBe("PENDENTE");
     expect((await activeAssignments()).map((a) => a.professionalId)).toEqual([y]);
+  });
+
+  it("PENDENTE é removida sem fato SHADOW de titular ocupado", async () => {
+    const [x] = doctorProfessionalIds;
+    const pending = await insertAssignment(x, "PENDENTE");
+    await db
+      .update(shiftInstances)
+      .set({ status: "PENDENTE" })
+      .where(eq(shiftInstances.id, shiftInstanceId));
+
+    await expect(
+      editor().unassignDirect({
+        assignmentId: pending,
+        reason: "Cancelar solicitação pendente",
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const [assignment] = await db
+      .select({
+        status: shiftAssignmentsV2.status,
+        isActive: shiftAssignmentsV2.isActive,
+        operationalRevision: shiftAssignmentsV2.operationalRevision,
+      })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, pending));
+    expect(assignment).toEqual({
+      status: "PENDENTE",
+      isActive: false,
+      operationalRevision: 0,
+    });
+    expect(await shiftStatus()).toBe("VAGO");
+
+    const facts = await db
+      .select({ id: operationalEvents.id })
+      .from(operationalEvents)
+      .where(eq(operationalEvents.assignmentId, pending));
+    expect(facts).toHaveLength(0);
+
+    const audits = await db
+      .select({ action: auditTrail.action })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.entityId, pending),
+          eq(auditTrail.action, "ASSIGNMENT_REMOVED"),
+        ),
+      );
+    expect(audits).toHaveLength(1);
   });
 
   it("M4: remoção direta faz rollback quando outra alocação ativa contamina a tupla", async () => {

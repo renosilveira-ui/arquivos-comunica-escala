@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASSIGNMENT_SHADOW_OPERATIONS,
   assignmentShadowIdempotencyKey,
+  isAssignmentStatusEligibleForShadow,
   recordAssignmentShadowEventInTransaction,
   type CapturedAssignmentShadowRecipient,
 } from "../server/assignment-operational-events";
@@ -83,6 +84,15 @@ function assignmentCaptureRow(
 }
 
 describe("idempotência dos fatos SHADOW de assignment", () => {
+  it("limita fatos de assignment ao estado OCUPADO", () => {
+    expect(isAssignmentStatusEligibleForShadow("OCUPADO")).toBe(true);
+    expect(isAssignmentStatusEligibleForShadow("PENDENTE")).toBe(false);
+    expect(isAssignmentStatusEligibleForShadow("REJEITADO")).toBe(false);
+    expect(isAssignmentStatusEligibleForShadow("LEGACY_NON_OCCUPIED")).toBe(
+      false,
+    );
+  });
+
   it("usa revisão, operação, alocação e ação na chave determinística", () => {
     const key = assignmentShadowIdempotencyKey({
       operation: "DIRECT_REMOVAL",

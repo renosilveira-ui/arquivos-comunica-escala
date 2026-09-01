@@ -36,6 +36,7 @@ import {
 } from "./assignment-push-signal";
 import {
   captureCanonicalAssignmentShadowRecipient,
+  isAssignmentStatusEligibleForShadow,
   recordAssignmentShadowEventInTransaction,
 } from "./assignment-operational-events";
 import { enqueueDutySyncWithdrawsForRemovedProfessionals } from "./sso/duty-sync-lifecycle";
@@ -861,24 +862,35 @@ export const editorRouter = router({
           startAt: lockedAssignment.startAt,
           endAt: lockedAssignment.endAt,
         };
-        // O snapshot do destinatário é bloqueado antes de a alocação ser
-        // desativada. A emissão posterior relê a mesma identidade e a revisão
-        // já incrementada, no mesmo commit.
+        // Somente uma retirada de titular OCUPADO possui contrato de fato
+        // canônico. PENDENTE e estados legados continuam removíveis, mas não
+        // podem produzir um evento que diga, incorretamente, que um plantão
+        // confirmado foi retirado.
+        const emitsAssignmentShadow = isAssignmentStatusEligibleForShadow(
+          lockedAssignment.assignmentStatus,
+        );
+        // O snapshot do destinatário é bloqueado antes de a alocação OCUPADO
+        // ser desativada. A emissão posterior relê a mesma identidade e a
+        // revisão já incrementada, no mesmo commit.
         const capturedRecipient =
-          await captureCanonicalAssignmentShadowRecipient(tx, {
-            institutionId: lockedAssignment.institutionId,
-            hospitalId: lockedAssignment.hospitalId,
-            sectorId: lockedAssignment.sectorId,
-            scheduleContextId: lockedAssignment.scheduleContextId,
-            shiftInstanceId: lockedAssignment.id,
-            assignmentId,
-          });
+          emitsAssignmentShadow
+            ? await captureCanonicalAssignmentShadowRecipient(tx, {
+                institutionId: lockedAssignment.institutionId,
+                hospitalId: lockedAssignment.hospitalId,
+                sectorId: lockedAssignment.sectorId,
+                scheduleContextId: lockedAssignment.scheduleContextId,
+                shiftInstanceId: lockedAssignment.id,
+                assignmentId,
+              })
+            : null;
 
         const [deactivated] = await tx
           .update(shiftAssignmentsV2)
           .set({
             isActive: false,
-            operationalRevision: lockedAssignment.operationalRevision + 1,
+            operationalRevision: emitsAssignmentShadow
+              ? lockedAssignment.operationalRevision + 1
+              : lockedAssignment.operationalRevision,
           })
           .where(
             and(
@@ -916,14 +928,16 @@ export const editorRouter = router({
         // (auditoria 22/08, achado M4).
         await recomputeShiftStatus(tx, lockedAssignment.id);
 
-        await recordAssignmentShadowEventInTransaction(tx, {
-          operation: "DIRECT_REMOVAL",
-          capturedRecipient,
-          actor: {
-            userId,
-            professionalId: managerId,
-          },
-        });
+        if (capturedRecipient) {
+          await recordAssignmentShadowEventInTransaction(tx, {
+            operation: "DIRECT_REMOVAL",
+            capturedRecipient,
+            actor: {
+              userId,
+              professionalId: managerId,
+            },
+          });
+        }
 
         // 8. Auditorias da remoção no mesmo commit da alteração operacional.
         await auditLog(

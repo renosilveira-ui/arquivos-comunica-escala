@@ -31,6 +31,16 @@ export type AssignmentShadowOperation =
 
 type AssignmentShadowAction = "ASSIGN" | "REMOVE";
 
+/**
+ * O contrato fechado dos fatos de assignment representa somente a transição
+ * operacional de um titular OCUPADO. Linhas PENDENTE ou estados legados
+ * continuam removíveis pelos fluxos existentes, porém não podem ser
+ * reinterpretadas como uma retirada de plantão confirmado.
+ */
+export function isAssignmentStatusEligibleForShadow(status: string): boolean {
+  return status === "OCUPADO";
+}
+
 type AssignmentShadowOperationContract = {
   eventType: OperationalEventType;
   action: AssignmentShadowAction;
@@ -316,9 +326,11 @@ export async function recordAssignmentShadowEventInTransaction(
       ? input.capturedRecipient.operationalRevision + 1
       : input.capturedRecipient.operationalRevision;
   if (
-    input.capturedRecipient.assignmentStatus !== "OCUPADO" ||
+    !isAssignmentStatusEligibleForShadow(
+      input.capturedRecipient.assignmentStatus,
+    ) ||
     !input.capturedRecipient.isActive ||
-    current.assignmentStatus !== "OCUPADO" ||
+    !isAssignmentStatusEligibleForShadow(current.assignmentStatus) ||
     current.isActive !== contract.expectedIsActive ||
     current.operationalRevision !== expectedCurrentRevision
   ) {

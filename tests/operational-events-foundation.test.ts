@@ -395,22 +395,95 @@ describe("foundation de eventos operacionais", () => {
       OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_CREATED.aggregateRevision,
     ).toBeUndefined();
 
-    const memory = inMemoryOperationalEventTransaction();
-    await expect(
-      createOperationalEventInTransaction(memory.tx, assignmentShadowEvent()),
-    ).resolves.toMatchObject({ eventId: 1, created: true });
-    expect(memory.getPersistedEvent()).toMatchObject({
-      eventType: "ASSIGNMENT_DIRECT_ASSIGNED",
-      emissionMode: "SHADOW",
-      aggregateType: "SHIFT_ASSIGNMENT",
-      aggregateId: 16,
-      aggregateVersion: 1,
-      assignmentId: 16,
-    });
-    expect(memory.counters).toEqual({
-      relatedContexts: 0,
-      recipients: 1,
-      deliveries: 2,
+    const scenarios = [
+      {
+        eventType: "ASSIGNMENT_DIRECT_ASSIGNED",
+        operation: "DIRECT_ASSIGNMENT",
+        transition: { from: "NONE", to: "ASSIGNED" },
+        operationalRevision: 1,
+        isActive: true,
+      },
+      {
+        eventType: "ASSIGNMENT_DIRECT_REMOVED",
+        operation: "DIRECT_REMOVAL",
+        transition: { from: "ASSIGNED", to: "REMOVED" },
+        operationalRevision: 2,
+        isActive: false,
+      },
+      {
+        eventType: "ASSIGNMENT_SUBSTITUTION_ASSIGNED",
+        operation: "SUBSTITUTION_ASSIGNMENT",
+        transition: { from: "NONE", to: "ASSIGNED" },
+        operationalRevision: 1,
+        isActive: true,
+      },
+      {
+        eventType: "ASSIGNMENT_SUBSTITUTION_REMOVED",
+        operation: "SUBSTITUTION_REMOVAL",
+        transition: { from: "ASSIGNED", to: "REMOVED" },
+        operationalRevision: 2,
+        isActive: false,
+      },
+    ] as const;
+    const deliveryCounts = new Map<string, number>();
+
+    for (const scenario of scenarios) {
+      const event = assignmentShadowEvent();
+      event.eventType = scenario.eventType;
+      event.idempotencyKey = [
+        "assignment-shadow",
+        `revision:${scenario.operationalRevision}`,
+        `operation:${scenario.operation}`,
+        "assignment:16",
+      ].join(":");
+      event.aggregate = {
+        ...event.aggregate,
+        version: scenario.operationalRevision,
+      };
+      event.transition = { ...scenario.transition };
+      const canonicalAssignmentRow = {
+        id: 16,
+        assignmentId: 16,
+        institutionId: 1,
+        hospitalId: 10,
+        sectorId: 4,
+        scheduleContextId: 8,
+        shiftInstanceId: 12,
+        professionalId: 200,
+        userId: 20,
+        operationalRevision: scenario.operationalRevision,
+        status: "OCUPADO",
+        isActive: scenario.isActive,
+      };
+      const memory = inMemoryOperationalEventTransaction({
+        // A fundação relê a alocação uma vez para a topologia e outra para o
+        // agregado; as duas leituras precisam observar o mesmo estado.
+        assignmentRows: [canonicalAssignmentRow, canonicalAssignmentRow],
+      });
+      await expect(
+        createOperationalEventInTransaction(memory.tx, event),
+      ).resolves.toMatchObject({ eventId: 1, created: true });
+      expect(memory.getPersistedEvent()).toMatchObject({
+        eventType: scenario.eventType,
+        emissionMode: "SHADOW",
+        aggregateType: "SHIFT_ASSIGNMENT",
+        aggregateId: 16,
+        aggregateVersion: scenario.operationalRevision,
+        assignmentId: 16,
+      });
+      expect(memory.counters).toEqual({
+        relatedContexts: 0,
+        recipients: 1,
+        deliveries: 0,
+      });
+      deliveryCounts.set(scenario.eventType, memory.counters.deliveries);
+    }
+
+    expect(Object.fromEntries(deliveryCounts)).toEqual({
+      ASSIGNMENT_DIRECT_ASSIGNED: 0,
+      ASSIGNMENT_DIRECT_REMOVED: 0,
+      ASSIGNMENT_SUBSTITUTION_ASSIGNED: 0,
+      ASSIGNMENT_SUBSTITUTION_REMOVED: 0,
     });
 
     const genericAssignment = assignmentShadowEvent();
