@@ -49,6 +49,15 @@ describe("migration de especialidades assistenciais por setor", () => {
     expect(migration).toContain("''SECTOR''");
     expect(migration).toContain("LEFT(@action_column_type");
     expect(migration).toContain("LEFT(@entity_column_type");
+    expect(migration).toContain("@audit_action_contract_matches");
+    expect(migration).toContain("@audit_entity_contract_matches");
+    expect(migration).toContain(
+      "sector_service_specialties_audit_action_contract_mismatch",
+    );
+    expect(migration).toContain(
+      "sector_service_specialties_audit_entity_contract_mismatch",
+    );
+    expect(migration).toContain("LOWER(COLUMN_TYPE) LIKE 'enum(%'");
     expect(migration).not.toContain("MODIFY COLUMN action ENUM(");
     expect(migration).not.toContain("MODIFY COLUMN entity_type ENUM(");
   });

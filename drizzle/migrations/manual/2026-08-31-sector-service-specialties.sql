@@ -161,7 +161,27 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 -- A alteração de metadado é auditada como alteração de setor. O enum é
--- expandido de forma aditiva e preserva todos os valores históricos.
+-- expandido de forma aditiva e preserva todos os valores históricos. Uma
+-- coluna ausente, anulável ou que não seja enum não é reinterpretada: a
+-- migration falha antes do ALTER, sem adaptar um contrato de auditoria que
+-- não reconhece.
+SET @audit_action_contract_matches := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'audit_trail'
+    AND COLUMN_NAME = 'action'
+    AND LOWER(COLUMN_TYPE) LIKE 'enum(%'
+    AND IS_NULLABLE = 'NO'
+);
+SET @audit_action_precondition := IF(
+  @audit_action_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM sector_service_specialties_audit_action_contract_mismatch WHERE 1 = 0'
+);
+PREPARE audit_action_precondition_stmt FROM @audit_action_precondition;
+EXECUTE audit_action_precondition_stmt;
+DEALLOCATE PREPARE audit_action_precondition_stmt;
+
 SET @action_column_type := (
   SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE()
@@ -170,8 +190,7 @@ SET @action_column_type := (
   LIMIT 1
 );
 SET @ddl := IF(
-  @action_column_type IS NOT NULL
-  AND @action_column_type NOT LIKE '%SECTOR_SERVICE_SPECIALTIES_UPDATED%',
+  LOCATE('''SECTOR_SERVICE_SPECIALTIES_UPDATED''', @action_column_type) = 0,
   CONCAT(
     'ALTER TABLE audit_trail MODIFY COLUMN action ',
     LEFT(@action_column_type, CHAR_LENGTH(@action_column_type) - 1),
@@ -183,6 +202,23 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
+SET @audit_entity_contract_matches := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'audit_trail'
+    AND COLUMN_NAME = 'entity_type'
+    AND LOWER(COLUMN_TYPE) LIKE 'enum(%'
+    AND IS_NULLABLE = 'NO'
+);
+SET @audit_entity_precondition := IF(
+  @audit_entity_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM sector_service_specialties_audit_entity_contract_mismatch WHERE 1 = 0'
+);
+PREPARE audit_entity_precondition_stmt FROM @audit_entity_precondition;
+EXECUTE audit_entity_precondition_stmt;
+DEALLOCATE PREPARE audit_entity_precondition_stmt;
+
 SET @entity_column_type := (
   SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE()
@@ -191,8 +227,7 @@ SET @entity_column_type := (
   LIMIT 1
 );
 SET @ddl := IF(
-  @entity_column_type IS NOT NULL
-  AND @entity_column_type NOT LIKE '%SECTOR%',
+  LOCATE('''SECTOR''', @entity_column_type) = 0,
   CONCAT(
     'ALTER TABLE audit_trail MODIFY COLUMN entity_type ',
     LEFT(@entity_column_type, CHAR_LENGTH(@entity_column_type) - 1),
