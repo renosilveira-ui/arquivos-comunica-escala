@@ -42,6 +42,10 @@ jobs:
       # prefixo allowlisted no MySQL de serviço da própria CI. Nunca usa a
       # DATABASE_URL da aplicação nem um host externo.
       SECTOR_SERVICE_SPECIALTIES_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      # A proof da readiness fence usa somente o servidor MySQL local da CI e
+      # cria um schema efêmero com prefixo exclusivo; ela não lê DATABASE_URL.
+      READINESS_FENCE_V1_PROOF_ALLOW_DESTRUCTIVE: "1"
+      READINESS_FENCE_V1_PROOF_SERVER_URL: mysql://root:root@127.0.0.1:3306/
       NODE_ENV: test
 
     steps:
@@ -88,6 +92,9 @@ jobs:
 
       - name: Validate sector specialties manual migration
         run: pnpm test:sector-service-specialties-migration
+
+      - name: Prove readiness fence V1 manual migration
+        run: pnpm exec tsx scripts/prove-readiness-fence-v1-migration.ts
 
       - name: Lint
         run: pnpm lint
