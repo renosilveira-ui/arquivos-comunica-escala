@@ -646,6 +646,9 @@ describe("take em um passo: quem assume leva o plantão", () => {
         cancellationOnly: true,
         awaitingMyApproval: false,
         canCancel: true,
+        reason: null,
+        reviewNote: null,
+        createdAt: null,
         fromProfessional: null,
         toProfessional: null,
         fromShift: null,
@@ -660,6 +663,8 @@ describe("take em um passo: quem assume leva o plantão", () => {
         cancellationOnly: true,
         awaitingMyApproval: false,
         canCancel: true,
+        reason: null,
+        reviewNote: null,
         fromShift: null,
       });
       await expect(
@@ -667,6 +672,10 @@ describe("take em um passo: quem assume leva o plantão", () => {
       ).resolves.toMatchObject({
         status: "ACCEPTED",
         cancellationOnly: true,
+        reason: null,
+        reviewNote: null,
+        createdAt: null,
+        version: null,
         fromProfessional: null,
         toProfessional: null,
         fromShift: null,

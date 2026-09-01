@@ -459,7 +459,8 @@ function isRecordedSwapParticipant(
  * ou a uma alocação que deixou de ser válida. O participante registrado ainda
  * precisa enxergar uma representação mínima para cancelá-la; o gestor que
  * não participa continua submetido à topologia atual. A representação mínima
- * nunca usa os joins de turno/profissional potencialmente corrompidos.
+ * nunca usa os joins de turno/profissional potencialmente corrompidos nem
+ * devolve conteúdo livre ou datas históricas.
  */
 type SwapReadView = "FULL" | "STALE_ACCEPTED_PARTICIPANT";
 
@@ -506,11 +507,11 @@ function staleAcceptedResidualListItem(swap: SwapRow) {
     id: swap.id,
     type: swap.type,
     status: swap.status,
-    reason: swap.reason,
-    reviewNote: swap.reviewNote,
-    expiresAt: swap.expiresAt,
-    createdAt: swap.createdAt,
-    reviewedAt: swap.reviewedAt,
+    reason: null,
+    reviewNote: null,
+    expiresAt: null,
+    createdAt: null,
+    reviewedAt: null,
     fromProfessional: null,
     toProfessional: null,
     fromShift: null,
@@ -527,13 +528,13 @@ function staleAcceptedResidualDetails(swap: SwapRow) {
     id: swap.id,
     type: swap.type,
     status: swap.status,
-    reason: swap.reason,
-    reviewNote: swap.reviewNote,
-    expiresAt: swap.expiresAt,
-    createdAt: swap.createdAt,
-    updatedAt: swap.updatedAt,
-    reviewedAt: swap.reviewedAt,
-    version: swap.version,
+    reason: null,
+    reviewNote: null,
+    expiresAt: null,
+    createdAt: null,
+    updatedAt: null,
+    reviewedAt: null,
+    version: null,
     fromProfessional: null,
     toProfessional: null,
     fromShift: null,
