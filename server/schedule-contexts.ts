@@ -21,12 +21,24 @@ import type { ScheduleContextAdmissionPolicy } from "../lib/sao-carlos-schedule-
 import {
   assertCanManageInstitutionSchedule,
   assertManagerScopeAccess,
+  assertManagerScopeAccessForUpdate,
   getTenantActorFromContext,
   type TenantActor,
 } from "./_core/policy";
 import { protectedProcedure, router } from "./_core/trpc";
+import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
 import { ensureDefaultSectorScale, listManageableTopology } from "./sector-scale";
+import {
+  isSectorServiceSpecialtiesTableMissing,
+  loadSectorServiceSpecialtiesByTopology,
+  readSectorServiceSpecialties,
+  replaceSectorServiceSpecialties,
+  sectorServiceSpecialtiesMigrationPendingError,
+  sectorServiceSpecialtyTopologyKey,
+  type SectorServiceSpecialtiesAvailability,
+  type SectorServiceSpecialtyDescriptor,
+} from "./sector-service-specialties";
 import { z } from "zod";
 
 export type AllowedScheduleContextQualification = {
@@ -73,6 +85,16 @@ export type ActiveScheduleContext = ScheduleContextQualification & {
   medicalSpecialtyName: string | null;
   admissionPolicy: ScheduleContextAdmissionPolicy;
   active: boolean;
+  /**
+   * Metadado assistencial do setor. Nunca é consultado por
+   * qualificationMatches, ACL ou escrita de alocação.
+   */
+  serviceSpecialties?: readonly SectorServiceSpecialtyDescriptor[];
+  /**
+   * A relation é ativada por migration manual. A pendência só afeta sua
+   * apresentação administrativa; não altera a escala nem suas permissões.
+   */
+  serviceSpecialtiesAvailability?: SectorServiceSpecialtiesAvailability;
 };
 
 export type AuthorizedScheduleContext = ActiveScheduleContext & {
@@ -519,6 +541,50 @@ async function enrichActiveScheduleContexts(
   }));
 }
 
+/**
+ * Projeção exclusiva de leitura para interfaces administrativas. Ela fica
+ * fora de selectActiveScheduleContexts para que metadados assistenciais nunca
+ * se tornem dependência de elegibilidade, ACL ou escrita de plantão.
+ */
+export async function attachSectorServiceSpecialtiesToContexts<
+  T extends ActiveScheduleContext,
+>(
+  db: ContextDb,
+  contexts: readonly T[],
+): Promise<T[]> {
+  let serviceSpecialtiesByTopology: Map<
+    string,
+    SectorServiceSpecialtyDescriptor[]
+  >;
+  try {
+    serviceSpecialtiesByTopology = await loadSectorServiceSpecialtiesByTopology(
+      db,
+      contexts.map((context) => ({
+        institutionId: context.institutionId,
+        hospitalId: context.hospitalId,
+        sectorId: context.sectorId,
+      })),
+    );
+  } catch (error) {
+    if (isSectorServiceSpecialtiesTableMissing(error)) {
+      return contexts.map((context) => ({
+        ...context,
+        serviceSpecialties: [],
+        serviceSpecialtiesAvailability: "MIGRATION_PENDING" as const,
+      }));
+    }
+    throw error;
+  }
+  return contexts.map((context) => ({
+    ...context,
+    serviceSpecialties:
+      serviceSpecialtiesByTopology.get(
+        sectorServiceSpecialtyTopologyKey(context),
+      ) ?? [],
+    serviceSpecialtiesAvailability: "AVAILABLE" as const,
+  }));
+}
+
 export type ContextDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
   "select"
@@ -937,7 +1003,10 @@ export async function listAdministrativeScheduleContexts(
 ): Promise<AdministrativeScheduleContext[]> {
   const database = db ?? (await getDb());
   if (!database) throw new Error("Database not available");
-  const contexts = await selectActiveScheduleContexts(database, institutionId);
+  const contexts = await attachSectorServiceSpecialtiesToContexts(
+    database,
+    await selectActiveScheduleContexts(database, institutionId),
+  );
   return contexts.map((context) => describeScheduleContext(context, true));
 }
 
@@ -1392,13 +1461,23 @@ export async function resolveScheduleContextForShiftCreation(input: {
 export const scheduleContextsRouter = router({
   listMine: protectedProcedure.query(async ({ ctx }) => {
     const actor = await getTenantActorFromContext(ctx);
-    return listAuthorizedScheduleContexts(actor);
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    return attachSectorServiceSpecialtiesToContexts(
+      db,
+      await listAuthorizedScheduleContexts(actor, db),
+    );
   }),
 
   /** Escalas ativas do tenant para o panorama Geral — só leitura. */
   listReadable: protectedProcedure.query(async ({ ctx }) => {
     const actor = await getTenantActorFromContext(ctx);
-    return listReadableScheduleContexts(actor);
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    return attachSectorServiceSpecialtiesToContexts(
+      db,
+      await listReadableScheduleContexts(actor, db),
+    );
   }),
 
   /**
@@ -1466,5 +1545,101 @@ export const scheduleContextsRouter = router({
         createdTemplates: result.createdTemplates,
         context: opened ? describeScheduleContext(opened, true) : null,
       };
+    }),
+
+  /** Metadados clínicos do setor, sem efeito sobre admissão ou alocação. */
+  getSectorServiceSpecialties: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int().positive(),
+        sectorId: z.number().int().positive(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const result = await readSectorServiceSpecialties(db, {
+        institutionId: actor.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+      });
+      return {
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+        ...result,
+      };
+    }),
+
+  /**
+   * Atualiza apenas o rótulo assistencial do setor. A autorização é refeita
+   * sob lock na mesma transação que grava a relação N:N.
+   */
+  replaceSectorServiceSpecialties: protectedProcedure
+    .input(
+      z.object({
+        hospitalId: z.number().int().positive(),
+        sectorId: z.number().int().positive(),
+        medicalSpecialtyCodes: z
+          .array(z.string().trim().min(1).max(64))
+          .max(55),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      try {
+        return await db.transaction(async (tx) => {
+          const actorRole = await assertManagerScopeAccessForUpdate(
+            tx,
+            actor,
+            ctx.user!.sessionVersion,
+            input.hospitalId,
+            input.sectorId,
+          );
+          const result = await replaceSectorServiceSpecialties(tx, {
+            institutionId: actor.institutionId,
+            hospitalId: input.hospitalId,
+            sectorId: input.sectorId,
+            medicalSpecialtyCodes: input.medicalSpecialtyCodes,
+          });
+          if (result.changed) {
+            await recordAudit(
+              {
+                institutionId: actor.institutionId,
+                actorUserId: actor.userId,
+                actorRole,
+                actorName: ctx.user!.name ?? undefined,
+                action: "SECTOR_SERVICE_SPECIALTIES_UPDATED",
+                entityType: "SECTOR",
+                entityId: input.sectorId,
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+                description: "Especialidades assistenciais do setor atualizadas",
+                metadata: {
+                  addedCodes: result.addedCodes,
+                  removedCodes: result.removedCodes,
+                },
+              },
+              { db: tx, strict: true },
+            );
+          }
+          return {
+            hospitalId: input.hospitalId,
+            sectorId: input.sectorId,
+            ...result,
+          };
+        });
+      } catch (error) {
+        if (isSectorServiceSpecialtiesTableMissing(error)) {
+          throw sectorServiceSpecialtiesMigrationPendingError();
+        }
+        throw error;
+      }
     }),
 });

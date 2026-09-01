@@ -33,6 +33,7 @@ export default defineConfig({
       "**/hooks/**",
       "**/lib/**",
       "**/.expo/**",
+      "tests/sector-service-specialties-migration-mysql.test.ts",
     ],
   },
   define: {

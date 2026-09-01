@@ -8,11 +8,12 @@
 // calendário, abriam espaço para turnos duplicados).
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   hospitals,
   institutions,
   managerScope,
+  monthlyRosters,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -28,7 +29,7 @@ import {
 } from "./helpers/open-test-scale";
 import { calendarRouter } from "../server/calendar";
 import { getDb } from "../server/db";
-import { addDaysToKey, addMonthsYearMonth, dayKeyBrt, dayWindowBrt, mondayOfKey, monthWindowBrt, weekdayOfKey, yearMonthBrt } from "../server/local-time";
+import { addDaysToKey, addMonthsYearMonth, dayKeyBrt, dayWindowBrt, mondayOfKey, monthWindowBrt, weekdayOfKey, yearMonthBrt, yearMonthFromDayKey } from "../server/local-time";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
 
@@ -40,6 +41,15 @@ describe("local-time: helpers puros", () => {
     expect(yearMonthBrt(d)).toBe("2026-09");
     // virada de mês: 2026-08-31 23:30 -03:00 = 2026-09-01T02:30Z
     expect(yearMonthBrt(new Date("2026-09-01T02:30:00.000Z"))).toBe("2026-08");
+  });
+  it("mês de chave date-only não é reinterpretado como instante UTC", () => {
+    const firstDayOfMonth = "2026-09-01";
+    // O parser nativo trata a chave como 00:00Z; no hospital, ainda é agosto.
+    expect(yearMonthBrt(new Date(firstDayOfMonth))).toBe("2026-08");
+    // A chave civil precisa continuar em setembro, independentemente do fuso
+    // do processo (UTC) ou do relógio hospitalar (-03:00).
+    expect(yearMonthFromDayKey(firstDayOfMonth)).toBe("2026-09");
+    expect(yearMonthFromDayKey("2027-01-01")).toBe("2027-01");
   });
   it("janelas de dia e mês com fim exclusivo", () => {
     const day = dayWindowBrt("2026-09-10");
@@ -164,6 +174,33 @@ describe("consultas por dia usam o dia do hospital", () => {
     expect(day.shifts.map((s) => s.shiftInstanceId)).toEqual([lateShiftId]);
     const all = await db.select({ id: shiftInstances.id }).from(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
     expect(all).toHaveLength(1);
+  });
+
+  it("calendar.getDay preserva PUBLISHED no primeiro dia do mês date-only", async () => {
+    const date = "2026-09-01";
+    const yearMonth = yearMonthFromDayKey(date);
+    await db.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth,
+      status: "PUBLISHED",
+    });
+    try {
+      const cal = calendarRouter.createCaller(ctx(doctorUserId, "doctor"));
+      await expect(
+        cal.getDay({ institutionId, hospitalId, sectorId, date }),
+      ).resolves.toMatchObject({ monthStatus: "PUBLISHED" });
+    } finally {
+      await db
+        .delete(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+            eq(monthlyRosters.yearMonth, yearMonth),
+          ),
+        );
+    }
   });
 
   it("listAgenda coloca o plantão no dia D, com a semana iniciando na segunda", async () => {

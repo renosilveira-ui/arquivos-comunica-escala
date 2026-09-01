@@ -38,6 +38,10 @@ jobs:
 
     env:
       DATABASE_URL: mysql://root:root@127.0.0.1:3306/escalas_test
+      # A prova da migration manual cria e remove um schema efêmero com
+      # prefixo allowlisted no MySQL de serviço da própria CI. Nunca usa a
+      # DATABASE_URL da aplicação nem um host externo.
+      SECTOR_SERVICE_SPECIALTIES_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       NODE_ENV: test
 
     steps:
@@ -81,6 +85,9 @@ jobs:
         # commit. For CI we sync the schema directly from drizzle/schema.ts
         # via `drizzle-kit push --force` (non-interactive, idempotent).
         run: pnpm exec drizzle-kit push --force
+
+      - name: Validate sector specialties manual migration
+        run: pnpm test:sector-service-specialties-migration
 
       - name: Lint
         run: pnpm lint
