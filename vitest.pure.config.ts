@@ -87,6 +87,7 @@ export default defineConfig({
       "tests/whatsapp-contact-source.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
+      "tests/trpc-mutation-notification-policy.test.ts",
       "tests/decode-uri-component-security.test.ts",
       "tests/dependency-audit-policy.test.ts",
       "tests/dependency-security-overrides.test.ts",
