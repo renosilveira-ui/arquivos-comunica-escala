@@ -6,6 +6,195 @@
 -- conta ou convite nominal já persistidos. Qualquer resolução futura deverá
 -- revalidar identidade, escopo e confiança antes de entregar algo.
 
+-- Uma tabela de fundação já existente só é aceitável se corresponder
+-- integralmente ao contrato desta migração. CREATE TABLE IF NOT EXISTS, sem
+-- esta guarda, aceitaria silenciosamente uma tabela parcial e deixaria a
+-- fundação com FKs, índices ou checks ausentes.
+--
+-- O fingerprint inclui engine, colunas ordenadas, índices, FKs (inclusive
+-- schema e ações de update/delete) e checks. Valores herdados do schema
+-- corrente (collation padrão e referências internas) são normalizados para
+-- que a mesma migration seja válida em bancos MySQL distintos.
+-- A guarda prévia acontece antes de qualquer ALTER em tabelas-pai; a posterior
+-- confirma o contrato das seis tabelas.
+-- O limite de GROUP_CONCAT é elevado somente para o fingerprint e restaurado
+-- depois da validação posterior, evitando truncar contratos extensos.
+SET @operational_events_contract_previous_group_concat_max_len := @@SESSION.group_concat_max_len;
+SET SESSION group_concat_max_len = 65535;
+
+-- Não usar IF NOT EXISTS aqui: uma tabela temporária inesperada na conexão
+-- também precisa falhar, e nunca substituir o contrato esperado.
+CREATE TEMPORARY TABLE _operational_events_contract_expected (
+  table_name VARCHAR(64) NOT NULL,
+  contract_hash CHAR(64) NOT NULL,
+  PRIMARY KEY (table_name)
+) ENGINE=MEMORY;
+
+INSERT INTO _operational_events_contract_expected (table_name, contract_hash) VALUES
+  ('notification_deliveries', '5b6a9aa1e1c0b9f6c7c802e1426dc5a127a89a6a51a32a08df274a45bc831696'),
+  ('operational_email_verification_tokens', '2c4e53e3bde09ac0988783e3ededd7d0df8c09afcace4b9b10f5975f0c81a3d0'),
+  ('operational_event_recipients', 'e31345f78c453327f914db495583ddfd3ec1854ff8fca2980748a13f61a00a28'),
+  ('operational_event_related_contexts', 'c60097a40c96471bbb11b7b1fb00b0fddf3d22a94040801f1615037ab3d5a7ff'),
+  ('operational_events', '4e555009bf9ff1d7c7ecdd31ca515da0786201e34d8c685ff2a34c9647104568'),
+  ('user_operational_email_trust', '60e2426c4e90c52a7a4cc169e7519040dfed86365fc53a31537b4ee14c97f10c');
+
+SET @operational_events_contract_preflight_mismatches := (
+  SELECT COUNT(*)
+  FROM _operational_events_contract_expected AS expected_contract
+  INNER JOIN (
+    SELECT
+      tables.TABLE_NAME AS table_name,
+      SHA2(
+        CONCAT_WS(
+          '|',
+          tables.TABLE_TYPE,
+          COALESCE(tables.ENGINE, ''),
+          CASE
+            WHEN tables.TABLE_COLLATION = (
+              SELECT schema_defaults.DEFAULT_COLLATION_NAME
+              FROM INFORMATION_SCHEMA.SCHEMATA AS schema_defaults
+              WHERE schema_defaults.SCHEMA_NAME = tables.TABLE_SCHEMA
+            ) THEN '<DATABASE_DEFAULT>'
+            ELSE COALESCE(tables.TABLE_COLLATION, '<NULL>')
+          END,
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                columns.ORDINAL_POSITION,
+                columns.COLUMN_NAME,
+                LOWER(columns.COLUMN_TYPE),
+                columns.IS_NULLABLE,
+                COALESCE(UPPER(columns.COLUMN_DEFAULT), '<NULL>'),
+                LOWER(COALESCE(columns.EXTRA, '')),
+                CASE
+                  WHEN columns.CHARACTER_SET_NAME IS NULL THEN '<NULL>'
+                  WHEN columns.COLLATION_NAME = tables.TABLE_COLLATION THEN '<TABLE_DEFAULT>'
+                  ELSE CONCAT(
+                    columns.CHARACTER_SET_NAME,
+                    '/',
+                    columns.COLLATION_NAME
+                  )
+                END,
+                COALESCE(columns.GENERATION_EXPRESSION, '')
+              )
+              ORDER BY columns.ORDINAL_POSITION
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.COLUMNS AS columns
+            WHERE columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
+              AND columns.TABLE_NAME = tables.TABLE_NAME
+          ), ''),
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                indexes.INDEX_NAME,
+                indexes.NON_UNIQUE,
+                indexes.SEQ_IN_INDEX,
+                indexes.COLUMN_NAME,
+                COALESCE(indexes.COLLATION, '<NULL>'),
+                COALESCE(indexes.SUB_PART, '<NULL>'),
+                indexes.INDEX_TYPE,
+                COALESCE(indexes.IS_VISIBLE, '<NULL>')
+              )
+              ORDER BY indexes.INDEX_NAME, indexes.SEQ_IN_INDEX
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.STATISTICS AS indexes
+            WHERE indexes.TABLE_SCHEMA = tables.TABLE_SCHEMA
+              AND indexes.TABLE_NAME = tables.TABLE_NAME
+          ), ''),
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                key_columns.CONSTRAINT_NAME,
+                key_columns.ORDINAL_POSITION,
+                key_columns.COLUMN_NAME,
+                CASE
+                  WHEN key_columns.REFERENCED_TABLE_SCHEMA = tables.TABLE_SCHEMA
+                    THEN '<CURRENT_SCHEMA>'
+                  ELSE key_columns.REFERENCED_TABLE_SCHEMA
+                END,
+                key_columns.REFERENCED_TABLE_NAME,
+                key_columns.REFERENCED_COLUMN_NAME,
+                referential_constraints.MATCH_OPTION,
+                referential_constraints.UPDATE_RULE,
+                referential_constraints.DELETE_RULE
+              )
+              ORDER BY key_columns.CONSTRAINT_NAME, key_columns.ORDINAL_POSITION
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS key_columns
+            INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS referential_constraints
+              ON referential_constraints.CONSTRAINT_SCHEMA = key_columns.CONSTRAINT_SCHEMA
+              AND referential_constraints.TABLE_NAME = key_columns.TABLE_NAME
+              AND referential_constraints.CONSTRAINT_NAME = key_columns.CONSTRAINT_NAME
+            WHERE key_columns.CONSTRAINT_SCHEMA = tables.TABLE_SCHEMA
+              AND key_columns.TABLE_NAME = tables.TABLE_NAME
+              AND key_columns.REFERENCED_TABLE_NAME IS NOT NULL
+          ), ''),
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                table_constraints.CONSTRAINT_NAME,
+                REPLACE(
+                  REPLACE(
+                    REPLACE(
+                      REPLACE(
+                        REPLACE(UPPER(check_constraints.CHECK_CLAUSE), CHAR(96), ''),
+                        '_UTF8MB4',
+                        ''
+                      ),
+                      ' ',
+                      ''
+                    ),
+                    CHAR(10),
+                    ''
+                  ),
+                  CHAR(13),
+                  ''
+                )
+              )
+              ORDER BY table_constraints.CONSTRAINT_NAME
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS table_constraints
+            INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS check_constraints
+              ON check_constraints.CONSTRAINT_SCHEMA = table_constraints.CONSTRAINT_SCHEMA
+              AND check_constraints.CONSTRAINT_NAME = table_constraints.CONSTRAINT_NAME
+            WHERE table_constraints.CONSTRAINT_SCHEMA = tables.TABLE_SCHEMA
+              AND table_constraints.TABLE_NAME = tables.TABLE_NAME
+              AND table_constraints.CONSTRAINT_TYPE = 'CHECK'
+          ), '')
+        ),
+        256
+      ) AS contract_hash
+    FROM INFORMATION_SCHEMA.TABLES AS tables
+    WHERE tables.TABLE_SCHEMA = DATABASE()
+      AND tables.TABLE_NAME IN (
+        'operational_events',
+        'operational_event_related_contexts',
+        'operational_event_recipients',
+        'notification_deliveries',
+        'user_operational_email_trust',
+        'operational_email_verification_tokens'
+      )
+  ) AS actual_contract
+    ON actual_contract.table_name = expected_contract.table_name
+  WHERE actual_contract.contract_hash <> expected_contract.contract_hash
+);
+SET @operational_events_contract_guard_sql := IF(
+  @operational_events_contract_preflight_mismatches = 0,
+  'SELECT 1',
+  'SELECT 1 FROM __operational_events_contract_preflight_rejected__'
+);
+PREPARE operational_events_contract_preflight_stmt FROM @operational_events_contract_guard_sql;
+EXECUTE operational_events_contract_preflight_stmt;
+DEALLOCATE PREPARE operational_events_contract_preflight_stmt;
+
 -- As FKs compostas exigem chaves-pai com a topologia completa. `id` já é PK;
 -- estas chaves apenas tornam a combinação explicitamente referenciável e
 -- bloqueiam cruzamento entre tenants/setores no banco.
@@ -392,3 +581,170 @@ CREATE TABLE IF NOT EXISTS operational_email_verification_tokens (
   CONSTRAINT fk_operational_email_verification_user
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+SET @operational_events_contract_postflight_mismatches := (
+  SELECT COUNT(*)
+  FROM _operational_events_contract_expected AS expected_contract
+  LEFT JOIN (
+    SELECT
+      tables.TABLE_NAME AS table_name,
+      SHA2(
+        CONCAT_WS(
+          '|',
+          tables.TABLE_TYPE,
+          COALESCE(tables.ENGINE, ''),
+          CASE
+            WHEN tables.TABLE_COLLATION = (
+              SELECT schema_defaults.DEFAULT_COLLATION_NAME
+              FROM INFORMATION_SCHEMA.SCHEMATA AS schema_defaults
+              WHERE schema_defaults.SCHEMA_NAME = tables.TABLE_SCHEMA
+            ) THEN '<DATABASE_DEFAULT>'
+            ELSE COALESCE(tables.TABLE_COLLATION, '<NULL>')
+          END,
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                columns.ORDINAL_POSITION,
+                columns.COLUMN_NAME,
+                LOWER(columns.COLUMN_TYPE),
+                columns.IS_NULLABLE,
+                COALESCE(UPPER(columns.COLUMN_DEFAULT), '<NULL>'),
+                LOWER(COALESCE(columns.EXTRA, '')),
+                CASE
+                  WHEN columns.CHARACTER_SET_NAME IS NULL THEN '<NULL>'
+                  WHEN columns.COLLATION_NAME = tables.TABLE_COLLATION THEN '<TABLE_DEFAULT>'
+                  ELSE CONCAT(
+                    columns.CHARACTER_SET_NAME,
+                    '/',
+                    columns.COLLATION_NAME
+                  )
+                END,
+                COALESCE(columns.GENERATION_EXPRESSION, '')
+              )
+              ORDER BY columns.ORDINAL_POSITION
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.COLUMNS AS columns
+            WHERE columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
+              AND columns.TABLE_NAME = tables.TABLE_NAME
+          ), ''),
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                indexes.INDEX_NAME,
+                indexes.NON_UNIQUE,
+                indexes.SEQ_IN_INDEX,
+                indexes.COLUMN_NAME,
+                COALESCE(indexes.COLLATION, '<NULL>'),
+                COALESCE(indexes.SUB_PART, '<NULL>'),
+                indexes.INDEX_TYPE,
+                COALESCE(indexes.IS_VISIBLE, '<NULL>')
+              )
+              ORDER BY indexes.INDEX_NAME, indexes.SEQ_IN_INDEX
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.STATISTICS AS indexes
+            WHERE indexes.TABLE_SCHEMA = tables.TABLE_SCHEMA
+              AND indexes.TABLE_NAME = tables.TABLE_NAME
+          ), ''),
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                key_columns.CONSTRAINT_NAME,
+                key_columns.ORDINAL_POSITION,
+                key_columns.COLUMN_NAME,
+                CASE
+                  WHEN key_columns.REFERENCED_TABLE_SCHEMA = tables.TABLE_SCHEMA
+                    THEN '<CURRENT_SCHEMA>'
+                  ELSE key_columns.REFERENCED_TABLE_SCHEMA
+                END,
+                key_columns.REFERENCED_TABLE_NAME,
+                key_columns.REFERENCED_COLUMN_NAME,
+                referential_constraints.MATCH_OPTION,
+                referential_constraints.UPDATE_RULE,
+                referential_constraints.DELETE_RULE
+              )
+              ORDER BY key_columns.CONSTRAINT_NAME, key_columns.ORDINAL_POSITION
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS key_columns
+            INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS referential_constraints
+              ON referential_constraints.CONSTRAINT_SCHEMA = key_columns.CONSTRAINT_SCHEMA
+              AND referential_constraints.TABLE_NAME = key_columns.TABLE_NAME
+              AND referential_constraints.CONSTRAINT_NAME = key_columns.CONSTRAINT_NAME
+            WHERE key_columns.CONSTRAINT_SCHEMA = tables.TABLE_SCHEMA
+              AND key_columns.TABLE_NAME = tables.TABLE_NAME
+              AND key_columns.REFERENCED_TABLE_NAME IS NOT NULL
+          ), ''),
+          COALESCE((
+            SELECT GROUP_CONCAT(
+              CONCAT_WS(
+                ':',
+                table_constraints.CONSTRAINT_NAME,
+                REPLACE(
+                  REPLACE(
+                    REPLACE(
+                      REPLACE(
+                        REPLACE(UPPER(check_constraints.CHECK_CLAUSE), CHAR(96), ''),
+                        '_UTF8MB4',
+                        ''
+                      ),
+                      ' ',
+                      ''
+                    ),
+                    CHAR(10),
+                    ''
+                  ),
+                  CHAR(13),
+                  ''
+                )
+              )
+              ORDER BY table_constraints.CONSTRAINT_NAME
+              SEPARATOR '|'
+            )
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS table_constraints
+            INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS check_constraints
+              ON check_constraints.CONSTRAINT_SCHEMA = table_constraints.CONSTRAINT_SCHEMA
+              AND check_constraints.CONSTRAINT_NAME = table_constraints.CONSTRAINT_NAME
+            WHERE table_constraints.CONSTRAINT_SCHEMA = tables.TABLE_SCHEMA
+              AND table_constraints.TABLE_NAME = tables.TABLE_NAME
+              AND table_constraints.CONSTRAINT_TYPE = 'CHECK'
+          ), '')
+        ),
+        256
+      ) AS contract_hash
+    FROM INFORMATION_SCHEMA.TABLES AS tables
+    WHERE tables.TABLE_SCHEMA = DATABASE()
+      AND tables.TABLE_NAME IN (
+        'operational_events',
+        'operational_event_related_contexts',
+        'operational_event_recipients',
+        'notification_deliveries',
+        'user_operational_email_trust',
+        'operational_email_verification_tokens'
+      )
+  ) AS actual_contract
+    ON actual_contract.table_name = expected_contract.table_name
+  WHERE actual_contract.table_name IS NULL
+    OR actual_contract.contract_hash <> expected_contract.contract_hash
+);
+SET @operational_events_contract_guard_sql := IF(
+  @operational_events_contract_postflight_mismatches = 0,
+  'SELECT 1',
+  'SELECT 1 FROM __operational_events_contract_postflight_rejected__'
+);
+PREPARE operational_events_contract_postflight_stmt FROM @operational_events_contract_guard_sql;
+EXECUTE operational_events_contract_postflight_stmt;
+DEALLOCATE PREPARE operational_events_contract_postflight_stmt;
+
+SET @operational_events_contract_restore_session_sql := CONCAT(
+  'SET SESSION group_concat_max_len = ',
+  @operational_events_contract_previous_group_concat_max_len
+);
+PREPARE operational_events_contract_restore_session_stmt
+  FROM @operational_events_contract_restore_session_sql;
+EXECUTE operational_events_contract_restore_session_stmt;
+DEALLOCATE PREPARE operational_events_contract_restore_session_stmt;

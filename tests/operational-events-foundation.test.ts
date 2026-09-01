@@ -263,6 +263,15 @@ const allForeignKeys = [
   ...emailVerificationForeignKeys,
 ];
 
+const expectedFoundationContractHashes = [
+  "5b6a9aa1e1c0b9f6c7c802e1426dc5a127a89a6a51a32a08df274a45bc831696",
+  "2c4e53e3bde09ac0988783e3ededd7d0df8c09afcace4b9b10f5975f0c81a3d0",
+  "e31345f78c453327f914db495583ddfd3ec1854ff8fca2980748a13f61a00a28",
+  "c60097a40c96471bbb11b7b1fb00b0fddf3d22a94040801f1615037ab3d5a7ff",
+  "4e555009bf9ff1d7c7ecdd31ca515da0786201e34d8c685ff2a34c9647104568",
+  "60e2426c4e90c52a7a4cc169e7519040dfed86365fc53a31537b4ee14c97f10c",
+];
+
 function expectForeignKeys(
   table: Parameters<typeof getTableConfig>[0],
   expected: ForeignKeyContract[],
@@ -382,6 +391,45 @@ describe("foundation de eventos operacionais", () => {
       expect(constraint!.includes("ON DELETE CASCADE")).toBe(
         onDelete === "cascade",
       );
+    }
+  });
+
+  it("falha fechada para uma fundação pré-existente incompatível, antes e depois do DDL", () => {
+    expect(migration).toContain(
+      "CREATE TEMPORARY TABLE _operational_events_contract_expected",
+    );
+    expect(migration).toContain(
+      "PREPARE operational_events_contract_preflight_stmt",
+    );
+    expect(migration).toContain(
+      "PREPARE operational_events_contract_postflight_stmt",
+    );
+    expect(migration).toContain(
+      "PREPARE operational_events_contract_restore_session_stmt",
+    );
+    expect(migration).toContain(
+      "__operational_events_contract_preflight_rejected__",
+    );
+    expect(migration).toContain(
+      "__operational_events_contract_postflight_rejected__",
+    );
+    expect(migration).toContain("tables.ENGINE");
+    expect(migration).toContain("tables.TABLE_COLLATION");
+    expect(migration).toContain("INFORMATION_SCHEMA.SCHEMATA");
+    expect(migration).toContain("<DATABASE_DEFAULT>");
+    expect(migration).toContain("INFORMATION_SCHEMA.COLUMNS");
+    expect(migration).toContain("INFORMATION_SCHEMA.STATISTICS");
+    expect(migration).toContain("indexes.INDEX_TYPE");
+    expect(migration).toContain("INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS");
+    expect(migration).toContain("key_columns.REFERENCED_TABLE_SCHEMA");
+    expect(migration).toContain("<CURRENT_SCHEMA>");
+    expect(migration).toContain("INFORMATION_SCHEMA.CHECK_CONSTRAINTS");
+    expect(migration).toContain("actual_contract.table_name IS NULL");
+    expect(
+      migration.indexOf("PREPARE operational_events_contract_preflight_stmt"),
+    ).toBeLessThan(migration.indexOf("ALTER TABLE hospitals"));
+    for (const hash of expectedFoundationContractHashes) {
+      expect(migration).toContain(hash);
     }
   });
 });
