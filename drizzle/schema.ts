@@ -15,6 +15,8 @@ import {
   foreignKey,
   customType,
   check,
+  tinyint,
+  bigint,
 } from "drizzle-orm/mysql-core";
 import { relations, sql } from "drizzle-orm";
 
@@ -184,6 +186,51 @@ export const institutions = mysqlTable("institutions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 });
+
+/**
+ * Revisão monotônica por instituição para um futuro diagnóstico corporativo.
+ *
+ * Esta tabela não guarda uma decisão de prontidão e não é consultada pelos
+ * fluxos atuais de publicação. A migration manual V1 instala os observadores
+ * que avançam a revisão; um uso futuro deve validar o recibo de instalação
+ * antes de confiar nela.
+ */
+export const institutionReadinessFences = mysqlTable(
+  "institution_readiness_fences",
+  {
+    institutionId: int("institution_id")
+      .primaryKey()
+      .references(() => institutions.id, { onDelete: "cascade" }),
+    // SQL literal, em vez de 0n, evita serialização BigInt pelo drizzle-kit.
+    revision: bigint("revision", { mode: "bigint", unsigned: true })
+      .notNull()
+      .default(sql`0`),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+);
+
+export type InstitutionReadinessFence =
+  typeof institutionReadinessFences.$inferSelect;
+
+/**
+ * Recibo singleton da instalação integral da fence V1.
+ *
+ * A ausência, multiplicidade ou divergência deste recibo deve permanecer uma
+ * falha fechada em qualquer consumidor futuro.
+ */
+export const institutionReadinessFenceInstallations = mysqlTable(
+  "institution_readiness_fence_installations",
+  {
+    id: tinyint("id", { unsigned: true }).primaryKey(),
+    coverageVersion: varchar("coverage_version", { length: 64 }).notNull(),
+    coverageHash: varchar("coverage_hash", { length: 64 }).notNull(),
+    installedAt: timestamp("installed_at").notNull().defaultNow(),
+  },
+);
+
+export type InstitutionReadinessFenceInstallation =
+  typeof institutionReadinessFenceInstallations.$inferSelect;
 
 /**
  * Hospitais (pertence a uma instituição)
