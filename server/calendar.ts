@@ -1,9 +1,13 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { dayKeyBrt, dayWindowBrt, monthWindowBrt } from "./local-time";
+import {
+  dayKeyBrt,
+  dayWindowBrt,
+  monthWindowBrt,
+  yearMonthFromDayKey,
+} from "./local-time";
 import { dateFromExecute, rowsFromExecute } from "./_core/db-results";
-import { yearMonthFromDate } from "../lib/date-utils";
 import { sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
@@ -253,8 +257,9 @@ export const calendarRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
-      // 1. Extrair yearMonth da data
-      const yearMonth = yearMonthFromDate(new Date(date));
+      // 1. A entrada é uma chave civil YYYY-MM-DD; não a reinterprete como
+      // instante UTC, pois o primeiro dia do mês cairia no mês anterior em BRT.
+      const yearMonth = yearMonthFromDayKey(date);
 
       // 2. Verificar RBAC
       const { context, monthStatus } = await resolveCalendarAccess(
