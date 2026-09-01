@@ -80,6 +80,10 @@ export default defineConfig({
       "tests/whatsapp-contact-source.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
+      "tests/decode-uri-component-security.test.ts",
+      "tests/dependency-audit-policy.test.ts",
+      "tests/dependency-security-overrides.test.ts",
+      "tests/image-size-dos-regression.test.ts",
     ],
   },
 });
