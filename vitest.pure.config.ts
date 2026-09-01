@@ -75,6 +75,9 @@ export default defineConfig({
       "tests/operational-events-migration.test.ts",
       "tests/operational-events-emission-mode-migration.test.ts",
       "tests/operational-events-foundation.test.ts",
+      "tests/schedule-replication-batches-migration.test.ts",
+      "tests/schedule-replication-events.test.ts",
+      "tests/schedule-replication-shadow-source.test.ts",
     ],
   },
 });

@@ -8,6 +8,9 @@ import {
   monthlyRosters,
   professionalInstitutions,
   scheduleContexts,
+  scheduleReplicationBatches,
+  scheduleReplicationBatchScopes,
+  sectors,
   shiftAssignmentsV2,
   shiftInstances,
   scheduleInvites,
@@ -96,6 +99,7 @@ export const OPERATIONAL_AGGREGATE_TYPES = [
   "SWAP_REQUEST",
   "SCHEDULE_INVITE",
   "MONTHLY_ROSTER",
+  "SCHEDULE_REPLICATION_BATCH",
   "PROFESSIONAL_INSTITUTION_ACCESS",
   "SCHEDULE_CONTEXT",
 ] as const;
@@ -103,10 +107,9 @@ export type OperationalAggregateType =
   (typeof OPERATIONAL_AGGREGATE_TYPES)[number];
 
 /**
- * Apenas MONTHLY_ROSTER e SWAP_REQUEST já possuem revisão monotônica gravada
- * no modelo atual. Para os demais agregados, emitir evento seria registrar
- * uma versão inventada; a fundação falha fechada até a frente própria adicionar
- * revisão/CAS à entidade e aos seus writers.
+ * Apenas agregados com revisão monotônica gravada podem emitir fatos. Para os
+ * demais, emitir evento seria registrar uma versão inventada; a fundação falha
+ * fechada até a frente própria adicionar revisão/CAS à entidade e aos writers.
  */
 export const OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES = {
   SHIFT_ASSIGNMENT: "UNAVAILABLE",
@@ -115,6 +118,7 @@ export const OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES = {
   SWAP_REQUEST: "ROW_VERSION",
   SCHEDULE_INVITE: "UNAVAILABLE",
   MONTHLY_ROSTER: "ROW_VERSION",
+  SCHEDULE_REPLICATION_BATCH: "ROW_VERSION",
   PROFESSIONAL_INSTITUTION_ACCESS: "UNAVAILABLE",
   SCHEDULE_CONTEXT: "UNAVAILABLE",
 } as const satisfies Record<
@@ -139,6 +143,7 @@ export const OPERATIONAL_TRANSITION_STATES = [
   "CANCELLED",
   "REVOKED",
   "EXPIRED",
+  "COMPLETED",
   "PUBLISHED",
   "LOCKED",
 ] as const;
@@ -314,7 +319,7 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
     scopeKinds: ["HOSPITAL"],
   },
   SCHEDULE_REPLICATED: {
-    aggregateType: "MONTHLY_ROSTER",
+    aggregateType: "SCHEDULE_REPLICATION_BATCH",
     deliveryPolicies: ["NOTIFY", "SILENT_AUDITED"],
     scopeKinds: ["HOSPITAL"],
   },
@@ -376,7 +381,11 @@ export const OPERATIONAL_EVENT_TRANSITION_CONTRACTS: Record<
     to: "LOCKED",
     aggregateStatus: "LOCKED",
   },
-  SCHEDULE_REPLICATED: null,
+  SCHEDULE_REPLICATED: {
+    from: "NONE",
+    to: "COMPLETED",
+    aggregateStatus: "COMPLETED",
+  },
   ACCESS_UPDATED: null,
   SCHEDULE_CONTEXT_CREATED: null,
 };
@@ -1249,6 +1258,139 @@ async function resolveCanonicalAggregateContexts(
           },
         },
       ];
+    }
+    case "SCHEDULE_REPLICATION_BATCH": {
+      const [batch] = await tx
+        .select({
+          id: scheduleReplicationBatches.id,
+          version: scheduleReplicationBatches.version,
+          status: scheduleReplicationBatches.status,
+        })
+        .from(scheduleReplicationBatches)
+        .where(
+          and(
+            eq(scheduleReplicationBatches.id, aggregate.id),
+            eq(scheduleReplicationBatches.institutionId, context.institutionId),
+            eq(scheduleReplicationBatches.hospitalId, context.hospitalId!),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (
+        !batch ||
+        batch.version !== aggregate.version ||
+        batch.status !== transitionContract.aggregateStatus
+      ) {
+        throw new OperationalEventValidationError(
+          "Lote de replicação não pertence ao contexto ou versão canônica do evento",
+        );
+      }
+
+      const scopes = await tx
+        .select({
+          monthlyRosterId: scheduleReplicationBatchScopes.monthlyRosterId,
+          sectorId: scheduleReplicationBatchScopes.sectorId,
+          scheduleContextId: scheduleReplicationBatchScopes.scheduleContextId,
+        })
+        .from(scheduleReplicationBatchScopes)
+        .where(
+          and(
+            eq(
+              scheduleReplicationBatchScopes.scheduleReplicationBatchId,
+              batch.id,
+            ),
+            eq(
+              scheduleReplicationBatchScopes.institutionId,
+              context.institutionId,
+            ),
+            eq(scheduleReplicationBatchScopes.hospitalId, context.hospitalId!),
+          ),
+        )
+        .for("update");
+      if (scopes.length === 0) {
+        throw new OperationalEventValidationError(
+          "Lote de replicação sem escopo canônico persistido",
+        );
+      }
+
+      const relatedByScope = new Map<string, OperationalEventRelatedContext>();
+      for (const scope of [...scopes].sort(
+        (left, right) =>
+          left.monthlyRosterId - right.monthlyRosterId ||
+          left.sectorId - right.sectorId ||
+          (left.scheduleContextId ?? -1) - (right.scheduleContextId ?? -1),
+      )) {
+        const [roster] = await tx
+          .select({ id: monthlyRosters.id })
+          .from(monthlyRosters)
+          .where(
+            and(
+              eq(monthlyRosters.id, scope.monthlyRosterId),
+              eq(monthlyRosters.institutionId, context.institutionId),
+              eq(monthlyRosters.hospitalId, context.hospitalId!),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!roster) {
+          throw new OperationalEventValidationError(
+            "Competência do lote de replicação não pertence à topologia canônica",
+          );
+        }
+        const [sector] = await tx
+          .select({ id: sectors.id })
+          .from(sectors)
+          .where(
+            and(
+              eq(sectors.id, scope.sectorId),
+              eq(sectors.institutionId, context.institutionId),
+              eq(sectors.hospitalId, context.hospitalId!),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!sector) {
+          throw new OperationalEventValidationError(
+            "Setor do lote de replicação não pertence à topologia canônica",
+          );
+        }
+        if (scope.scheduleContextId !== null) {
+          const [scheduleContext] = await tx
+            .select({
+              id: scheduleContexts.id,
+              active: scheduleContexts.active,
+            })
+            .from(scheduleContexts)
+            .where(
+              and(
+                eq(scheduleContexts.id, scope.scheduleContextId),
+                eq(scheduleContexts.institutionId, context.institutionId),
+                eq(scheduleContexts.hospitalId, context.hospitalId!),
+                eq(scheduleContexts.sectorId, scope.sectorId),
+                eq(scheduleContexts.active, true),
+              ),
+            )
+            .limit(1)
+            .for("update");
+          if (!scheduleContext) {
+            throw new OperationalEventValidationError(
+              "Contexto do lote de replicação não está ativo na topologia canônica",
+            );
+          }
+        }
+        const scopeKey = `${scope.sectorId}:${scope.scheduleContextId ?? "NONE"}`;
+        relatedByScope.set(scopeKey, {
+          relationKind: "AFFECTED_SCOPE",
+          context: {
+            institutionId: context.institutionId,
+            hospitalId: context.hospitalId,
+            scopeKind: "SECTOR",
+            sectorId: scope.sectorId,
+            scheduleContextId: scope.scheduleContextId,
+          },
+        });
+      }
+      return [...relatedByScope.values()];
     }
     case "MONTHLY_ROSTER": {
       const [roster] = await tx
