@@ -296,11 +296,12 @@ a operação violar alguma das regras hard, a cessão/troca é
 **rejeitada automaticamente** com mensagem explicativa para A e B.
 Gestor pode ser notificado mas não há aprovação manual.
 
-Candidatura antiga em ACCEPTED (fluxo de três passos) efetiva sozinha
-ao listar. Se a efetivação for recusada (expirou, conflito, mês não
-publicado, acesso revogado), a solicitação **é cancelada** com motivo
-em português — o dono (e quem assumiu) pode desfazer em Minhas
-ofertas. Não há botão de aprovar.
+Candidatura antiga em ACCEPTED (fluxo de três passos) permanece registrada
+até o ofertante concluí-la explicitamente em Minhas ofertas ou até uma das
+partes cancelá-la. Consultar a candidatura nunca efetiva, cancela ou altera
+a escala. Se a conclusão for recusada (por expiração, conflito, mês não
+publicado ou acesso revogado), o estado continua intacto para uma decisão
+explícita posterior.
 
 ---
 
