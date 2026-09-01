@@ -126,11 +126,22 @@ type ReadinessScheduleContext = Readonly<{
   active: boolean;
 }>;
 
+/**
+ * Metadado de admissão clínica para invalidar uma ciência de prontidão.
+ * Não participa de elegibilidade, convite, alocação ou autorização.
+ */
+type ReadinessAllowedQualification = Readonly<{
+  scheduleContextId: number;
+  medicalSpecialtyId: number | null;
+  operationalProfileCode: string | null;
+}>;
+
 type ReadinessSource = Readonly<{
   scope: CorporateReadinessScope;
   rosterStatus: "DRAFT" | "PUBLISHED" | "LOCKED";
   sectors: readonly { id: number; name: string }[];
   scheduleContexts: readonly ReadinessScheduleContext[];
+  qualificationAllowlistMetadata: readonly ReadinessAllowedQualification[];
   activeTemplates: readonly { id: number; sectorId: number | null }[];
   shifts: readonly {
     id: number;
@@ -254,6 +265,21 @@ function buildSnapshotFingerprint(source: ReadinessSource) {
         active: context.active,
       }))
       .sort((left, right) => left.id - right.id),
+    qualificationAllowlistMetadata: source.qualificationAllowlistMetadata
+      .map((qualification) => ({
+        scheduleContextId: qualification.scheduleContextId,
+        medicalSpecialtyId: qualification.medicalSpecialtyId,
+        operationalProfileCode: qualification.operationalProfileCode,
+      }))
+      .sort(
+        (left, right) =>
+          left.scheduleContextId - right.scheduleContextId ||
+          (left.medicalSpecialtyId ?? 0) - (right.medicalSpecialtyId ?? 0) ||
+          compareCanonicalStrings(
+            left.operationalProfileCode ?? "",
+            right.operationalProfileCode ?? "",
+          ),
+      ),
     activeTemplates: source.activeTemplates
       .map((template) => ({ id: template.id, sectorId: template.sectorId }))
       .sort((left, right) => left.id - right.id),
@@ -1084,6 +1110,10 @@ async function loadCorporateReadinessSource(
           .select({
             scheduleContextId:
               scheduleContextAllowedQualifications.scheduleContextId,
+            medicalSpecialtyId:
+              scheduleContextAllowedQualifications.medicalSpecialtyId,
+            operationalProfileCode:
+              scheduleContextAllowedQualifications.operationalProfileCode,
           })
           .from(scheduleContextAllowedQualifications)
           .where(
@@ -1180,6 +1210,13 @@ async function loadCorporateReadinessSource(
         qualificationAllowlistMetadataEntryCountByContext.get(context.id) ?? 0,
       active: context.active,
     })),
+    qualificationAllowlistMetadata: allowlistMetadataRows.map(
+      (qualification) => ({
+        scheduleContextId: qualification.scheduleContextId,
+        medicalSpecialtyId: qualification.medicalSpecialtyId,
+        operationalProfileCode: qualification.operationalProfileCode,
+      }),
+    ),
     activeTemplates: validTemplates.map((template) => ({
       id: template.id,
       sectorId: template.sectorId,

@@ -43,6 +43,13 @@ function source(overrides: Partial<Source> = {}): Source {
         active: true,
       },
     ],
+    qualificationAllowlistMetadata: [
+      {
+        scheduleContextId: 1000,
+        medicalSpecialtyId: 7,
+        operationalProfileCode: null,
+      },
+    ],
     activeTemplates: [{ id: 2000, sectorId: 100 }],
     shifts: [
       {
@@ -153,7 +160,13 @@ function databaseRows(
     },
   ];
   const qualificationAllowlistMetadata =
-    options.qualificationAllowlistMetadata ?? [{ scheduleContextId: 1000 }];
+    options.qualificationAllowlistMetadata ?? [
+      {
+        scheduleContextId: 1000,
+        medicalSpecialtyId: 7,
+        operationalProfileCode: null,
+      },
+    ];
   return new Map<unknown, unknown[] | Error>([
     [sectors, [{ id: 100, name: "Sala de Recuperação" }]],
     [
@@ -413,10 +426,25 @@ describe("corporate readiness V1", () => {
       }),
       "2026-09-01T12:00:00.000Z",
     );
+    const changedAllowlistEntryWithSameCount = buildCorporateReadinessReport(
+      source({
+        qualificationAllowlistMetadata: [
+          {
+            scheduleContextId: 1000,
+            medicalSpecialtyId: 99,
+            operationalProfileCode: null,
+          },
+        ],
+      }),
+      "2026-09-01T12:00:00.000Z",
+    );
 
     expect(renamed.snapshotHash).toBe(original.snapshotHash);
     expect(changedConfiguration.snapshotHash).not.toBe(original.snapshotHash);
     expect(changedAllowlistMetadata.snapshotHash).not.toBe(
+      original.snapshotHash,
+    );
+    expect(changedAllowlistEntryWithSameCount.snapshotHash).not.toBe(
       original.snapshotHash,
     );
     expect(renamed.sectors[0]?.sectorName).toBe("RPA");
