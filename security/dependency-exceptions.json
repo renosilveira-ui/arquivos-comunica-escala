@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "minimumBlockedSeverity": "moderate",
+  "lastReviewed": "2026-09-01",
+  "exceptions": [
+    {
+      "ghsaId": "GHSA-5p2g-fcmc-qvqq",
+      "packageName": "image-size",
+      "version": "1.2.1",
+      "severity": "high",
+      "patchedDependency": "image-size@1.2.1",
+      "patchFile": "patches/image-size@1.2.1.patch",
+      "patchSha256": "026dd3814dafa90165077a2da89509cc5dfb6ecb8f7e35a2c5402ba6317b0748",
+      "testFile": "tests/image-size-dos-regression.test.ts",
+      "testSha256": "d3d24bfd3b1b0f373ce476f9a8f011112f4280699d45625a5bcbace2290b154f",
+      "reviewBy": "2026-12-01",
+      "upstreamReference": "https://github.com/image-size/image-size/commit/bdbe560bfd98af6feab93b46aed67f2f0a77e4d5",
+      "upstreamStatus": "unreleased-upstream-commit-no-patched-release",
+      "removalCondition": "Remove the exception and local patch after Metro adopts a fixed image-size release and the malformed JXL/HEIF regression suite passes unchanged."
+    },
+    {
+      "ghsaId": "GHSA-w3rx-r6r6-pgpr",
+      "packageName": "image-size",
+      "version": "1.2.1",
+      "severity": "high",
+      "patchedDependency": "image-size@1.2.1",
+      "patchFile": "patches/image-size@1.2.1.patch",
+      "patchSha256": "026dd3814dafa90165077a2da89509cc5dfb6ecb8f7e35a2c5402ba6317b0748",
+      "testFile": "tests/image-size-dos-regression.test.ts",
+      "testSha256": "d3d24bfd3b1b0f373ce476f9a8f011112f4280699d45625a5bcbace2290b154f",
+      "reviewBy": "2026-12-01",
+      "upstreamReference": "https://github.com/advisories/GHSA-w3rx-r6r6-pgpr",
+      "upstreamStatus": "no-published-fix",
+      "removalCondition": "Remove the exception and local patch after Metro adopts a fixed image-size release and the malformed ICNS regression suite passes unchanged."
+    },
+    {
+      "ghsaId": "GHSA-vcc3-ghjq-m6fr",
+      "packageName": "decode-uri-component",
+      "version": "0.2.2",
+      "severity": "moderate",
+      "patchedDependency": "decode-uri-component@0.2.2",
+      "patchFile": "patches/decode-uri-component@0.2.2.patch",
+      "patchSha256": "188282f8c1c3c0bc2bb073078bfa18dc4d84b4a99a844bcba13694e9b8e2166b",
+      "testFile": "tests/decode-uri-component-security.test.ts",
+      "testSha256": "a738a9d31fb89885d5070f477f37c9b8ea16588863bd1be862ccc221f070f697",
+      "reviewBy": "2026-12-01",
+      "upstreamReference": "https://github.com/SamVerschueren/decode-uri-component/commit/fa479dafeede7bedf04e5c89aa78f2a78c664005",
+      "upstreamStatus": "published-fix-backported-for-commonjs-compatibility",
+      "removalCondition": "Remove the exception and CommonJS backport after Expo and React Navigation accept a non-vulnerable dependency chain without changing URL compatibility."
+    }
+  ]
+}

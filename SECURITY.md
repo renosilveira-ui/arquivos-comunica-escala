@@ -48,16 +48,20 @@ effort**:
 ## Escopo
 
 ### Em escopo
+
 - Código deste repositório (`renosilveira-ui/arquivos-comunica-escala`).
 - Configurações do GitHub Actions / CI definidas em `.github/`.
 - Integração documentada com Comunica+ (`server/integrations/comunica-plus.ts`).
 
 ### Fora de escopo
+
 - Vulnerabilidades exclusivamente do **Comunica+** — reportar diretamente
   no repositório <https://github.com/renosilveira-ui/Comunicamais>.
-- Vulnerabilidades em dependências de terceiros — Dependabot já cobre.
-  Reportar à upstream e, se houver impacto neste projeto, abrir advisory
-  privado aqui.
+- Vulnerabilidades exclusivamente na implementação upstream de dependências
+  de terceiros devem ser reportadas ao mantenedor upstream. Se houver impacto
+  neste projeto, abrir também um advisory privado aqui. O tratamento local,
+  controles compensatórios e exceções temporárias são governados pelo
+  [registro de risco de dependências](docs/security/dependency-risk-register.md).
 - Configurações específicas de hospital cliente (deployment, secrets,
   rede). Reportar diretamente ao operador do hospital.
 - Engenharia social, phishing, denial-of-service contra a infraestrutura
@@ -87,6 +91,9 @@ Se você opera uma instância deste sistema, leia também:
   #27 implementa: fail-fast em secrets fracos, helmet, rate limit, CORS
   hardening, payload limit, health check DB-aware, graceful shutdown,
   structured logger, cookie tightening.
+- O
+  [registro de risco de dependências](docs/security/dependency-risk-register.md)
+  documenta patches locais, prazos de revisão e critérios de remoção.
 
 ## Histórico
 
