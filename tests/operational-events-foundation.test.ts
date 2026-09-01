@@ -270,9 +270,7 @@ function inMemoryOperationalEventTransaction(options?: {
 
 describe("foundation de eventos operacionais", () => {
   it("fixa o modo SHADOW no catálogo e no fato persistido", async () => {
-    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe(
-      "SHADOW",
-    );
+    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe("SHADOW");
 
     const memory = inMemoryOperationalEventTransaction();
     await expect(
@@ -1044,12 +1042,14 @@ describe("foundation de eventos operacionais", () => {
     });
   });
 
-  it("não carrega adaptador, banco ou logger de entrega nesta frente", () => {
+  it("mantém adapter persistente sem transporte real ou conexão automática", () => {
     const source = readFileSync(
       new URL("../server/operational-delivery-worker.ts", import.meta.url),
       "utf8",
     );
 
+    expect(source).toContain("class DrizzleOperationalDeliveryStore");
+    expect(source).toContain('eq(operationalEvents.emissionMode, "ACTIVE")');
     expect(source).not.toMatch(
       /from\s+["'].*(push-delivery|mailer|resend)["']/i,
     );
