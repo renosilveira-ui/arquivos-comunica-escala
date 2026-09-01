@@ -1066,7 +1066,7 @@ export function readReadinessFenceV1DedicatedCliOptions(
   return Object.freeze({ explicitApproval: true, databaseUrl });
 }
 
-function safeReadinessFenceV1CliErrorCode(error: unknown): string {
+export function safeReadinessFenceV1CliErrorCode(error: unknown): string {
   if (
     error instanceof Error &&
     /^READINESS_FENCE_V1_[A-Z0-9_]+$/.test(error.message)

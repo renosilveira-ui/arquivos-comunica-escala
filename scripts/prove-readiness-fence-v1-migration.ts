@@ -386,6 +386,16 @@ export async function runReadinessFenceV1MigrationProof(
   }
 }
 
+export function safeReadinessFenceV1ProofErrorCode(error: unknown): string {
+  if (
+    error instanceof Error &&
+    /^READINESS_FENCE_V1_PROOF_[A-Z0-9_]+$/.test(error.message)
+  ) {
+    return error.message;
+  }
+  return "READINESS_FENCE_V1_PROOF_FAILED";
+}
+
 if (
   process.argv[1] &&
   fileURLToPath(import.meta.url) ===
@@ -400,7 +410,7 @@ if (
     .catch((error) => {
       console.error(
         "Falha na prova local da readiness fence V1:",
-        error instanceof Error ? error.message : "erro desconhecido",
+        safeReadinessFenceV1ProofErrorCode(error),
       );
       process.exitCode = 1;
     });

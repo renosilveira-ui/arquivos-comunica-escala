@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   READINESS_FENCE_V1_PROOF_DATABASE_PREFIX,
   isReadinessFenceV1ProofDatabaseName,
+  safeReadinessFenceV1ProofErrorCode,
   validateReadinessFenceV1ProofEnvironment,
 } from "../scripts/prove-readiness-fence-v1-migration";
 
@@ -75,5 +76,18 @@ describe("prova MySQL isolada da readiness fence V1", () => {
         "escalas_test",
       ),
     ).toThrow("READINESS_FENCE_V1_PROOF_RANDOM_ID_INVALID");
+  });
+
+  it("não devolve URL, usuário ou credencial de uma falha de prova", () => {
+    expect(
+      safeReadinessFenceV1ProofErrorCode(
+        new Error("connect mysql://installer:secret@db.example.test/escala"),
+      ),
+    ).toBe("READINESS_FENCE_V1_PROOF_FAILED");
+    expect(
+      safeReadinessFenceV1ProofErrorCode(
+        new Error("READINESS_FENCE_V1_PROOF_RANDOM_ID_INVALID"),
+      ),
+    ).toBe("READINESS_FENCE_V1_PROOF_RANDOM_ID_INVALID");
   });
 });

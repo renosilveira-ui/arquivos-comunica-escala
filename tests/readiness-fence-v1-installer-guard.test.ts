@@ -3,6 +3,7 @@ import {
   applyReadinessFenceV1Migration,
   buildReadinessFenceV1ConnectionOptions,
   readReadinessFenceV1DedicatedCliOptions,
+  safeReadinessFenceV1CliErrorCode,
 } from "../scripts/apply-readiness-fence-v1-migration";
 import { assertGenericManualMigrationAllowed } from "../scripts/apply-manual-migration";
 
@@ -107,5 +108,18 @@ describe("proteções do instalador dedicado da readiness fence V1", () => {
         databaseUrl: "mysql://installer:secret@db.example.test:3306/escala",
       } as never),
     ).rejects.toThrow("READINESS_FENCE_V1_EXPLICIT_APPROVAL_REQUIRED");
+  });
+
+  it("não registra URL ou credencial quando o instalador falha", () => {
+    expect(
+      safeReadinessFenceV1CliErrorCode(
+        new Error("connect mysql://installer:secret@db.example.test/escala"),
+      ),
+    ).toBe("READINESS_FENCE_V1_INSTALLATION_FAILED");
+    expect(
+      safeReadinessFenceV1CliErrorCode(
+        new Error("READINESS_FENCE_V1_DATABASE_TLS_REQUIRED"),
+      ),
+    ).toBe("READINESS_FENCE_V1_DATABASE_TLS_REQUIRED");
   });
 });
