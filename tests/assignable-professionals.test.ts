@@ -313,11 +313,6 @@ describe("professionals.listAssignableForShift", () => {
       await redeemScheduleInviteInTransaction(tx, {
         code: normalizeScheduleInviteCode(inviteCode),
         userId: invitee.userId,
-        professionalId: inviteeProfessionalId,
-        qualification: {
-          medicalSpecialtyId: anesthesiaId,
-          operationalProfileCode: null,
-        },
       });
     });
 

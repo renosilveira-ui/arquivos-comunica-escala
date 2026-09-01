@@ -79,6 +79,11 @@ export default defineConfig({
       "tests/whatsapp-contact-source.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
+      "tests/operational-events-schema.test.ts",
+      "tests/operational-events-migration.test.ts",
+      "tests/operational-events-emission-mode-migration.test.ts",
+      "tests/operational-events-foundation.test.ts",
+      "tests/operational-email-trust.test.ts",
     ],
   },
 });
