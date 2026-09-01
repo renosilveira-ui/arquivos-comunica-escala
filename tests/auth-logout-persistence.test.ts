@@ -138,6 +138,7 @@ type AuthHarnessOptions = {
     networkOrServerError: boolean;
   }>;
   persistUser?: (user: { id: number }) => Promise<void>;
+  persistReversibleDeleteCleanup?: () => Promise<void>;
   admittedSessionUserId?: number | null;
   admittedSessionToken?: string | null;
   platform?: "web" | "ios";
@@ -254,6 +255,10 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
   const setLastPushToken = vi.fn((token: string | null) => {
     sequence.push(`set-last-push:${token ?? "null"}`);
   });
+  const setBadgeCountAsync = vi.fn(async () => true);
+  const dismissAllNotificationsAsync = vi.fn(async () => undefined);
+  const cancelAllScheduledNotificationsAsync = vi.fn(async () => undefined);
+  const clearLastNotificationResponse = vi.fn();
   let stagedExpectedUserId: number | null = null;
   let stagedSessionTokenValue: string | null = null;
   let admittedSessionUserId: number | null =
@@ -325,6 +330,18 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
     sequence.push("clear-user-info");
   });
   const getPersistedUserId = vi.fn(async () => persistedUserId);
+  const getNativeSessionGateState = vi.fn(async () => {
+    const quarantineActive =
+      locallyQuarantinedToken !== null ||
+      (await options.nativeSessionQuarantine?.isActive()) === true;
+    if (quarantineActive) return { state: "REVOKE_REQUIRED" } as const;
+    return admittedSessionUserId === null
+      ? ({ state: "CLEAR" } as const)
+      : ({
+          state: "ADMITTED",
+          expectedUserId: admittedSessionUserId,
+        } as const);
+  });
   const closeSessionTokenTransportAdmission = vi.fn(() => {
     if (options.trackWebLock) sequence.push("close-transport");
   });
@@ -695,6 +712,21 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
         sequence.push(
           `mark-revoked-cleanup:${reversibleNativeDeletion.expectedUserId}`,
         );
+        try {
+          await options.persistReversibleDeleteCleanup?.();
+        } catch (cause) {
+          throw Object.assign(
+            new Error(
+              "O servidor confirmou a exclusão da conta, mas o estado local não foi persistido",
+            ),
+            {
+              name: "ConfirmedNativeAccountDeletionLocalCleanupError",
+              code: "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+              result,
+              cause,
+            },
+          );
+        }
         reversibleNativeDeletion = null;
       }
       return result;
@@ -808,6 +840,7 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
         : admittedSessionUserId,
     ),
     getPersistedUserId,
+    getNativeSessionGateState,
     getWebSessionGateState,
     isWebSessionQuarantined,
     isSessionTokenQuarantined: vi.fn(
@@ -817,6 +850,16 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
         false,
     ),
     isSessionTransportUserCurrent: vi.fn(() => true),
+    isConfirmedSessionRevocationLocalCleanupError: (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code ===
+        "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+    isConfirmedNativeAccountDeletionLocalCleanupError: (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code ===
+        "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED",
     deleteAccountWithReversibleSessionCleanup,
     revokeWebSessionQuarantine,
     revokePreparedSessionToken,
@@ -848,6 +891,12 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
   vi.doMock("@/lib/session-events", () => ({
     onSessionUnauthorized: vi.fn(),
   }));
+  vi.doMock("expo-notifications", () => ({
+    setBadgeCountAsync,
+    dismissAllNotificationsAsync,
+    cancelAllScheduledNotificationsAsync,
+    clearLastNotificationResponse,
+  }));
 
   const [{ AuthProvider }, { isSessionTerminationNotDurableError }] =
     await Promise.all([
@@ -873,6 +922,10 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
     prepareSessionBindingMutation,
     logoutApi,
     setLastPushToken,
+    setBadgeCountAsync,
+    dismissAllNotificationsAsync,
+    cancelAllScheduledNotificationsAsync,
+    clearLastNotificationResponse,
     removeSessionToken,
     setSessionToken,
     setUserInfo,
@@ -1168,6 +1221,56 @@ describe("persistência local do logout web", () => {
     expect(deleteIndex).toBeGreaterThanOrEqual(0);
     expect(markIndex).toBeGreaterThan(deleteIndex);
     expect(removeIndex).toBeGreaterThan(markIndex);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("DELETE 2xx com persistência local falha encerra A e reporta higiene parcial", async () => {
+    const persistenceError = new Error("SecureStore indisponível após o DELETE");
+    const harness = await renderAuthHarness({
+      platform: "ios",
+      logoutRequest: async () => undefined,
+      deleteRequest: async () => ({ ok: true, status: 200 }),
+      persistReversibleDeleteCleanup: async () => {
+        throw persistenceError;
+      },
+    });
+
+    const error = await harness.auth
+      .deleteAccount("senha-atual")
+      .catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      name: "AccountDeletionLocalCleanupError",
+      reason: {
+        code: "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+        result: { ok: true, status: 200 },
+        cause: persistenceError,
+      },
+    });
+    expect(harness.deleteAccountWithReversibleSessionCleanup).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
+    expect(harness.clearUserInfo).toHaveBeenCalledTimes(1);
+    expect(harness.clearPersistedQueryCache).toHaveBeenCalledTimes(1);
+    expect(harness.queryClient.clear).toHaveBeenCalledTimes(1);
+    expect(harness.clearActiveInstitutionId).toHaveBeenCalledTimes(1);
+    expect(harness.setUser).toHaveBeenCalledWith(null);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+    expect(harness.logoutApi).not.toHaveBeenCalled();
+    expect(harness.revokeSessionTokenApi).not.toHaveBeenCalled();
+    expect(harness.meDetailedApi).not.toHaveBeenCalled();
+    expect(harness.resumeQueryCachePersistence).not.toHaveBeenCalled();
   });
 
   it("revisão cross-tab stale cancela rotação antes de marker, push e HTTP", async () => {

@@ -27,7 +27,10 @@ import {
   suspendQueryCachePersistence,
 } from "@/lib/query-persist";
 import {
+  AccountDeletionLocalCleanupError,
+  createAccountScopedNotificationCleanupSteps,
   runSessionCleanup,
+  SessionTerminationLocalCleanupError,
   SessionTerminationNotDurableError,
 } from "@/lib/session-cleanup";
 import {
@@ -120,16 +123,64 @@ function unprovenSessionValidation(
 
 type RefetchOutcome = "VERIFIED" | "INVALID" | "UNAVAILABLE" | "STALE";
 
-type SessionRevocationResult = Readonly<{
-  confirmed: boolean;
-  pushStateCleared: boolean;
-  requiresCanonicalReadmission?: true;
-  error?: unknown;
-}>;
+type SessionRevocationResult =
+  | Readonly<{
+      confirmed: false;
+      pushStateCleared: boolean;
+      error: unknown;
+    }>
+  | Readonly<{
+      confirmed: true;
+      pushStateCleared: boolean;
+      requiresCanonicalReadmission?: true;
+      localCleanupError?: unknown;
+    }>;
 
 type SessionRevocationFlight = Readonly<{
   promise: Promise<SessionRevocationResult>;
 }>;
+
+function aggregateLocalCleanupErrors(
+  ...errors: (unknown | undefined)[]
+): unknown | undefined {
+  const sources = errors.filter((error) => error !== undefined);
+  if (sources.length === 0) return undefined;
+  // Um único erro mantém seu contrato original — inclusive um AggregateError
+  // emitido por runSessionCleanup com nomes/causas das etapas. Só achatamos
+  // quando precisamos combinar duas fontes independentes de falha.
+  if (sources.length === 1) return sources[0];
+  const present = sources.flatMap((error) =>
+    error === undefined
+      ? []
+      : error instanceof AggregateError
+        ? error.errors
+        : [error],
+  );
+  return new AggregateError(
+    present,
+    "A revogação foi confirmada, mas a limpeza local ficou incompleta",
+  );
+}
+
+function isRemoteConfirmedLocalCleanupError(error: unknown): boolean {
+  let coreClassifier:
+    | typeof Auth.isConfirmedSessionRevocationLocalCleanupError
+    | undefined;
+  try {
+    // Alguns consumidores usam namespace proxies/partial mocks. A ausência do
+    // export opcional nunca pode transformar uma falha pré-ACK em exceção nova.
+    coreClassifier = Auth.isConfirmedSessionRevocationLocalCleanupError;
+  } catch {
+    coreClassifier = undefined;
+  }
+  return (
+    (typeof coreClassifier === "function" && coreClassifier(error)) ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code ===
+        "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED")
+  );
+}
 
 type SessionMutationCompletion<T> = Readonly<{
   value: T;
@@ -339,6 +390,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       pushStateAlreadyCleared = false,
       advanceEpoch = true,
       preserveQuarantinedToken = false,
+      clearNotificationArtifacts = false,
     ): Promise<boolean> => {
       const cleanupEpoch = advanceEpoch
         ? expectedEpoch
@@ -382,6 +434,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   run: onlyWhileCurrent(clearPushRegistrationState),
                 },
               ]),
+          ...(clearNotificationArtifacts
+            ? createAccountScopedNotificationCleanupSteps(Platform.OS).map(
+                (step) => ({
+                  ...step,
+                  run: onlyWhileCurrent(step.run),
+                }),
+              )
+            : []),
           {
             name: "usuário persistido",
             run: onlyWhileCurrent(Auth.clearUserInfo),
@@ -466,13 +526,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           if (!preparedRevocation) {
             await authApi.revokeSessionToken(token);
-            throw new Error(
-              "Logout remoto confirmou o token, mas o binding físico local não foi preparado",
-            );
+            return {
+              confirmed: true,
+              pushStateCleared,
+              localCleanupError: new AggregateError(
+                [preparationError],
+                "Logout remoto confirmado sem binding físico local preparado",
+              ),
+            };
           }
           await Auth.revokePreparedSessionToken(preparedRevocation);
           return { confirmed: true, pushStateCleared };
         } catch (error) {
+          if (isRemoteConfirmedLocalCleanupError(error)) {
+            return {
+              confirmed: true,
+              pushStateCleared,
+              localCleanupError: error,
+            };
+          }
           return {
             confirmed: false,
             pushStateCleared,
@@ -599,20 +671,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       expectedUserId?: number,
       expectedWebSessionInstance?: string,
     ): Promise<{ ok: false; error: string }> => {
-      const revocation = remoteRevocationAlreadyConfirmed
-        ? { confirmed: true, pushStateCleared: pushStateAlreadyCleared }
-        : Platform.OS === "web"
-          ? await revokeQuarantinedWebSession(
-              loginEpoch,
-              expectedUserId,
-              expectedWebSessionInstance,
-            )
-          : await revokeQuarantinedNativeSession(
-              loginEpoch,
-              explicitNativeToken,
-              pushStateAlreadyCleared,
-              expectedUserId,
-            );
+      const revocation: SessionRevocationResult =
+        remoteRevocationAlreadyConfirmed
+          ? { confirmed: true, pushStateCleared: pushStateAlreadyCleared }
+          : Platform.OS === "web"
+            ? await revokeQuarantinedWebSession(
+                loginEpoch,
+                expectedUserId,
+                expectedWebSessionInstance,
+              )
+            : await revokeQuarantinedNativeSession(
+                loginEpoch,
+                explicitNativeToken,
+                pushStateAlreadyCleared,
+                expectedUserId,
+              );
 
       if (!appSessionEpoch.isCurrent(loginEpoch)) {
         return {
@@ -645,6 +718,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           revocation.pushStateCleared,
           false,
           preserveQuarantinedToken,
+          Platform.OS !== "web" && revocation.confirmed,
         );
       } catch (cleanupError) {
         cleanupFailed = true;
@@ -653,7 +727,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           cleanupError,
         );
       }
-      if (revocation.requiresCanonicalReadmission) {
+      if (revocation.confirmed && revocation.requiresCanonicalReadmission) {
         sessionMutationState.reconciliationRequired = true;
       }
 
@@ -779,6 +853,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             requestEpoch,
             revocation.pushStateCleared,
             advanceEpoch,
+            false,
+            Platform.OS !== "web",
           );
           if (advanceEpoch) completionEpoch = appSessionEpoch.capture();
           await ending;
@@ -811,7 +887,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // endSession avança síncrono antes do primeiro await.
             completionEpoch = appSessionEpoch.capture();
             await ending;
-            if (revocation.requiresCanonicalReadmission) {
+            if (
+              revocation.confirmed &&
+              revocation.requiresCanonicalReadmission
+            ) {
               sessionMutationState.reconciliationRequired = true;
             }
           } catch (error) {
@@ -829,7 +908,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return revocation.confirmed ? "INVALID" : "UNAVAILABLE";
         }
 
-        if (Platform.OS !== "web" && (await Auth.isSessionTokenQuarantined())) {
+        const nativeGate =
+          Platform.OS === "web"
+            ? null
+            : await Auth.getNativeSessionGateState();
+        if (nativeGate !== null && !isLatestRequest()) return "STALE";
+        if (nativeGate?.state === "REVOKED_CLEANUP_REQUIRED") {
+          try {
+            const ending = endSession(
+              requestEpoch,
+              false,
+              true,
+              false,
+              true,
+            );
+            completionEpoch = appSessionEpoch.capture();
+            await ending;
+          } catch (error) {
+            console.error(
+              "[Auth] Revogação nativa já confirmada; limpeza local incompleta",
+              error,
+            );
+          }
+          return "INVALID";
+        }
+
+        if (
+          nativeGate !== null &&
+          nativeGate.state !== "CLEAR" &&
+          nativeGate.state !== "ADMITTED"
+        ) {
           if (!isLatestRequest()) return "STALE";
           const revocation = await revokeQuarantinedNativeSession(requestEpoch);
           if (!revocation.confirmed) {
@@ -852,6 +960,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const ending = endSession(
               requestEpoch,
               revocation.pushStateCleared,
+              true,
+              false,
+              Platform.OS !== "web",
             );
             completionEpoch = appSessionEpoch.capture();
             await ending;
@@ -1002,6 +1113,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const ending = endSession(
               requestEpoch,
               revocation.pushStateCleared,
+              true,
+              false,
+              Platform.OS !== "web",
             );
             completionEpoch = appSessionEpoch.capture();
             await ending;
@@ -1496,9 +1610,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           } else {
             let hasPreviousSession = false;
             try {
-              hasPreviousSession =
-                (await Auth.isSessionTokenQuarantined()) ||
-                (await Auth.getAdmittedSessionUserId()) !== null;
+              const nativeGate = await Auth.getNativeSessionGateState();
+              if (nativeGate.state === "REVOKED_CLEANUP_REQUIRED") {
+                previousRevocation = {
+                  confirmed: true,
+                  pushStateCleared: false,
+                };
+              } else {
+                hasPreviousSession =
+                  nativeGate.state !== "CLEAR" ||
+                  (await Auth.getAdmittedSessionUserId()) !== null;
+              }
             } catch (error) {
               previousRevocation = {
                 confirmed: false,
@@ -1544,6 +1666,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 lease.epoch,
                 previousRevocation.pushStateCleared,
                 false,
+                false,
+                Platform.OS !== "web",
               );
               if (previousRevocation.requiresCanonicalReadmission) {
                 sessionMutationState.reconciliationRequired = true;
@@ -2189,13 +2313,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           suspendQueryCachePersistence();
           if (!lease.isCurrent()) return { value: undefined };
           if (explicitRevocation.confirmed) {
-            await endSession(
-              lease.epoch,
-              explicitRevocation.pushStateCleared,
-              false,
-            );
+            let localCleanupError = explicitRevocation.localCleanupError;
+            try {
+              await endSession(
+                lease.epoch,
+                explicitRevocation.pushStateCleared,
+                false,
+                false,
+                true,
+              );
+            } catch (error) {
+              localCleanupError = aggregateLocalCleanupErrors(
+                localCleanupError,
+                error,
+              );
+            }
             if (explicitRevocation.requiresCanonicalReadmission) {
               sessionMutationState.reconciliationRequired = true;
+            }
+            if (localCleanupError !== undefined) {
+              const reportedError = localCleanupError;
+              return {
+                value: undefined,
+                afterSettled: async () => {
+                  throw new SessionTerminationLocalCleanupError(reportedError);
+                },
+              };
             }
             return { value: undefined };
           }
@@ -2317,9 +2460,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           };
         }
         if (!lease.isCurrent()) return { value: undefined };
-        await endSession(lease.epoch, true, false);
+        let localCleanupError: unknown;
+        try {
+          await endSession(lease.epoch, true, false, false, true);
+        } catch (error) {
+          localCleanupError = error;
+        }
         if (requiresCanonicalReadmission) {
           sessionMutationState.reconciliationRequired = true;
+        }
+        if (localCleanupError !== undefined) {
+          const reportedError = localCleanupError;
+          return {
+            value: undefined,
+            afterSettled: async () => {
+              throw new SessionTerminationLocalCleanupError(reportedError);
+            },
+          };
         }
         return { value: undefined };
       },
@@ -2556,6 +2713,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
 
           let result: Awaited<ReturnType<typeof authApi.deleteAccount>>;
+          let confirmedDeletionLocalCleanupError: unknown;
           try {
             if (Platform.OS === "web") {
               result = capabilityReceipt
@@ -2584,14 +2742,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               );
             }
           } catch (error) {
-            result = {
-              ok: false,
-              status: 0,
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Não foi possível confirmar a exclusão da conta.",
-            };
+            if (
+              Platform.OS !== "web" &&
+              Auth.isConfirmedNativeAccountDeletionLocalCleanupError(error)
+            ) {
+              result = error.result;
+              confirmedDeletionLocalCleanupError = error;
+            } else {
+              result = {
+                ok: false,
+                status: 0,
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Não foi possível confirmar a exclusão da conta.",
+              };
+            }
           }
 
           let requiresCanonicalReadmission = false;
@@ -2632,7 +2798,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
 
           if (result.ok) {
-            await endSession(lease.epoch, true, false);
+            let localCleanupError = confirmedDeletionLocalCleanupError;
+            try {
+              await endSession(lease.epoch, true, false, false, true);
+            } catch (error) {
+              localCleanupError = aggregateLocalCleanupErrors(
+                localCleanupError,
+                error,
+              );
+            }
+            if (localCleanupError !== undefined) {
+              const reportedError = localCleanupError;
+              return {
+                value: result,
+                afterSettled: async () => {
+                  throw new AccountDeletionLocalCleanupError(reportedError);
+                },
+              };
+            }
             return { value: result };
           }
 

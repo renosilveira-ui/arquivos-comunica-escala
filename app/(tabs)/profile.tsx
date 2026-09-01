@@ -67,13 +67,13 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { AppButton } from "@/components/ui/AppButton";
 import { getLastCrash } from "@/components/AppErrorBoundary";
 import { useAuth } from "@/hooks/use-auth";
+import { useLogoutAction } from "@/hooks/use-logout-action";
 import { usePermissions } from "@/hooks/use-permissions";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { useTenantState } from "@/lib/tenant-state";
-import { confirmAction } from "@/lib/ui/confirm";
+import { isAccountDeletionLocalCleanupError } from "@/lib/session-cleanup";
 import { uiAlert, uiConfirmDestructive } from "@/lib/ui/alert";
-import { isSessionTerminationNotDurableError } from "@/lib/session-cleanup";
 import {
   canManageScheduleInvites,
   profileRoleBadgeLabel,
@@ -96,7 +96,12 @@ const MONTH_LABELS = [
 ];
 
 export default function ProfileScreen() {
-  const { user, logout, deleteAccount } = useAuth();
+  const { user, deleteAccount } = useAuth();
+  const { isLoggingOut, requestLogout } = useLogoutAction({
+    scope: "Profile",
+    confirmMessage:
+      "Sair da conta?\n\nVocê precisará fazer login novamente para acessar o app.",
+  });
   const router = useRouter();
   const { clearInstitutionSelection } = useTenantState();
   const utils = trpc.useUtils();
@@ -273,30 +278,6 @@ export default function ProfileScreen() {
     router.push(href as any);
   };
 
-  const handleLogout = async () => {
-    const confirmed = await confirmAction(
-      "Sair da conta?\n\nVocê precisará fazer login novamente para acessar o app.",
-    );
-    if (!confirmed) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    try {
-      await logout();
-    } catch (err) {
-      console.warn("[Profile] logout failed", err);
-      if (isSessionTerminationNotDurableError(err)) {
-        uiAlert(
-          "Não foi possível sair com segurança",
-          "A sessão continua aberta neste aparelho. Tente novamente; se o erro persistir, feche o app e procure o suporte.",
-        );
-      } else {
-        uiAlert(
-          "Sessão encerrada com limpeza incompleta",
-          "Você saiu da conta, mas parte dos dados locais não pôde ser removida. Feche o app antes de entregá-lo a outra pessoa.",
-        );
-      }
-    }
-  };
-
   const handleSwitchInstitution = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await clearInstitutionSelection();
@@ -357,6 +338,15 @@ export default function ProfileScreen() {
       uiAlert("Conta excluída", "Sua conta foi removida. Sentiremos sua falta.");
     } catch (err) {
       console.warn("[Profile] deleteAccount failed", err);
+      if (isAccountDeletionLocalCleanupError(err)) {
+        setDeleteModalVisible(false);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        uiAlert(
+          "Conta excluída",
+          "Sua conta foi removida, mas a limpeza deste aparelho ficou incompleta. Feche e reabra o app antes de entrar com outra conta.",
+        );
+        return;
+      }
       setDeleteError("Falha de conexão. Tente novamente.");
     } finally {
       setDeleting(false);
@@ -680,12 +670,20 @@ export default function ProfileScreen() {
             <SectionHeader title="Conta" eyebrow="Zona de risco" />
             <Surface padded={false} style={{ borderColor: theme.palette.danger[100] }}>
               <ListRow
-                title="Sair da conta"
+                title={isLoggingOut ? "Saindo…" : "Sair da conta"}
                 Icon={LogOut}
                 tone="danger"
                 divided={false}
-                onPress={handleLogout}
+                onPress={isLoggingOut ? undefined : requestLogout}
                 accessibilityLabel="Sair da conta"
+                trailing={
+                  isLoggingOut ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={theme.palette.danger[600]}
+                    />
+                  ) : undefined
+                }
               />
               <ListRow
                 title="Excluir minha conta"

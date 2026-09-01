@@ -313,6 +313,73 @@ export function isSessionTokenCommitAmbiguousError(
   );
 }
 
+export class ConfirmedSessionRevocationLocalCleanupError extends Error {
+  readonly code = "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED" as const;
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    const detail = cause instanceof Error ? `: ${cause.message}` : "";
+    super(
+      `O servidor confirmou a revogação, mas o estado local não foi persistido${detail}`,
+    );
+    this.name = "ConfirmedSessionRevocationLocalCleanupError";
+    this.cause = cause;
+  }
+}
+
+export function isConfirmedSessionRevocationLocalCleanupError(
+  error: unknown,
+): error is ConfirmedSessionRevocationLocalCleanupError {
+  return (
+    error instanceof ConfirmedSessionRevocationLocalCleanupError ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code ===
+        "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED")
+  );
+}
+
+export class ConfirmedNativeAccountDeletionLocalCleanupError extends Error {
+  readonly code = "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED" as const;
+  readonly result: NativeAccountDeletionResult;
+  readonly cause: unknown;
+
+  constructor(result: NativeAccountDeletionResult, cause: unknown) {
+    const detail = cause instanceof Error ? `: ${cause.message}` : "";
+    super(
+      `O servidor confirmou a exclusão da conta, mas o estado local não foi persistido${detail}`,
+    );
+    this.name = "ConfirmedNativeAccountDeletionLocalCleanupError";
+    this.result = result;
+    this.cause = cause;
+  }
+}
+
+export function isConfirmedNativeAccountDeletionLocalCleanupError(
+  error: unknown,
+): error is ConfirmedNativeAccountDeletionLocalCleanupError {
+  const result =
+    typeof error === "object" && error !== null
+      ? (error as { result?: unknown }).result
+      : undefined;
+  const confirmedResult =
+    typeof result === "object" &&
+    result !== null &&
+    (result as { ok?: unknown }).ok === true &&
+    typeof (result as { status?: unknown }).status === "number" &&
+    Number.isInteger((result as { status: number }).status) &&
+    (result as { status: number }).status >= 200 &&
+    (result as { status: number }).status < 300;
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error instanceof ConfirmedNativeAccountDeletionLocalCleanupError ||
+      (error as { code?: unknown }).code ===
+        "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED") &&
+    confirmedResult
+  );
+}
+
 const SHA256_ROUND_CONSTANTS = [
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
   0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -2755,10 +2822,9 @@ export async function isSessionTokenQuarantined(): Promise<boolean> {
     ) {
       throw new Error("Admission REVOKED_CLEANUP_REQUIRED corrompida");
     }
-    // Falha local é propagada, não projetada como `true`: `true` faria o hook
-    // repetir logout remoto. O retry seguinte reexecuta somente este cleanup.
-    await removeSessionToken();
-    return false;
+    // A leitura é deliberadamente não destrutiva. O caller precisa distinguir
+    // esta prova de ACK remoto de REVOKE_REQUIRED antes de iniciar qualquer POST.
+    return true;
   }
   const gate = nativeSessionGateStateFromSnapshot(snapshot);
   return (
@@ -2803,7 +2869,7 @@ function nativeSessionGateStateFromSnapshot(
 
 export async function getNativeSessionGateState(): Promise<NativeSessionGateState> {
   if (Platform.OS === "web") return { state: "CLEAR" };
-  let snapshot = await readNativeSessionSnapshot();
+  const snapshot = await readNativeSessionSnapshot();
   if (
     isRevokedCleanupAdmissionNamespace(snapshot.admission) ||
     isRevokedCleanupClearTail(snapshot)
@@ -2814,12 +2880,9 @@ export async function getNativeSessionGateState(): Promise<NativeSessionGateStat
     ) {
       return { state: "BLOCKED" };
     }
-    try {
-      await removeSessionToken();
-    } catch {
-      return { state: "REVOKED_CLEANUP_REQUIRED" };
-    }
-    snapshot = await readNativeSessionSnapshot();
+    // Preserva a proveniência do ACK para o coordenador encerrar UI/cache e
+    // notificações antes de consumir a fase com removeSessionToken().
+    return { state: "REVOKED_CLEANUP_REQUIRED" };
   }
   return nativeSessionGateStateFromSnapshot(snapshot);
 }
@@ -3502,14 +3565,20 @@ export async function revokePreparedSessionToken(
     // Rejeita clone/fase/nonce/SHA divergentes antes de emitir qualquer byte.
     bindingForPreparedRevocation(snapshot, prepared, "ALREADY_INVALID", null);
     const proof = await requestPreparedSessionTokenRevocation(prepared.token);
-    snapshot = await readNativeSessionSnapshot();
-    const binding = bindingForPreparedRevocation(
-      snapshot,
-      prepared,
-      proof.status,
-      proof.revocationUserId ?? null,
-    );
-    await persistRevokedCleanupWithReadback(binding, prepared.token);
+    try {
+      snapshot = await readNativeSessionSnapshot();
+      const binding = bindingForPreparedRevocation(
+        snapshot,
+        prepared,
+        proof.status,
+        proof.revocationUserId ?? null,
+      );
+      await persistRevokedCleanupWithReadback(binding, prepared.token);
+    } catch (error) {
+      // A partir daqui o 2xx tipado já foi validado. Preserva essa fronteira
+      // para que o caller encerre a UI e trate somente a higiene local restante.
+      throw new ConfirmedSessionRevocationLocalCleanupError(error);
+    }
   });
   sessionTokenMutationTail = mutation.catch(() => undefined);
   try {
@@ -3604,7 +3673,13 @@ export async function deleteAccountWithReversibleSessionCleanup(
     credential,
   );
   if (!result.ok) return result;
-  await persistReversibleDeleteCleanup(ticket);
+  try {
+    await persistReversibleDeleteCleanup(ticket);
+  } catch (error) {
+    // O DELETE 2xx já é irreversível. Preserva resultado e causa em um tipo que
+    // impede o caller de convertê-lo em falha pré-dispatch/status 0.
+    throw new ConfirmedNativeAccountDeletionLocalCleanupError(result, error);
+  }
   return result;
 }
 
