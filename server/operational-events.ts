@@ -48,6 +48,47 @@ export const OPERATIONAL_EVENT_TYPES = [
 
 export type OperationalEventType = (typeof OPERATIONAL_EVENT_TYPES)[number];
 
+/**
+ * O modo é imutável e vem exclusivamente do catálogo fechado do servidor.
+ * Nesta etapa, todos os fatos permanecem em SHADOW; uma promoção a ACTIVE
+ * exige frente própria, nunca payload, endpoint ou variável de ambiente.
+ */
+export const OPERATIONAL_EVENT_EMISSION_MODES = ["SHADOW", "ACTIVE"] as const;
+export type OperationalEventEmissionMode =
+  (typeof OPERATIONAL_EVENT_EMISSION_MODES)[number];
+
+export const OPERATIONAL_EVENT_EMISSION_POLICIES = Object.freeze({
+  ASSIGNMENT_CREATED: "SHADOW",
+  ASSIGNMENT_REMOVED: "SHADOW",
+  VACANCY_REQUESTED: "SHADOW",
+  ASSIGNMENT_APPROVED: "SHADOW",
+  ASSIGNMENT_REJECTED: "SHADOW",
+  SHIFT_UPDATED: "SHADOW",
+  VACANCY_BROADCAST: "SHADOW",
+  SCHEDULE_INVITE_CREATED: "SHADOW",
+  SCHEDULE_INVITE_ACCEPTED: "SHADOW",
+  SCHEDULE_INVITE_DECLINED: "SHADOW",
+  SCHEDULE_INVITE_REVOKED: "SHADOW",
+  SCHEDULE_INVITE_EXPIRED: "SHADOW",
+  SWAP_OFFERED: "SHADOW",
+  SWAP_ACCEPTED: "SHADOW",
+  SWAP_REJECTED: "SHADOW",
+  SWAP_CANCELLED: "SHADOW",
+  SWAP_OFFER_DISMISSED: "SHADOW",
+  SWAP_EXPIRED: "SHADOW",
+  ROSTER_PUBLISHED: "SHADOW",
+  ROSTER_LOCKED: "SHADOW",
+  SCHEDULE_REPLICATED: "SHADOW",
+  ACCESS_UPDATED: "SHADOW",
+  SCHEDULE_CONTEXT_CREATED: "SHADOW",
+} satisfies Record<OperationalEventType, OperationalEventEmissionMode>);
+
+export function getOperationalEventEmissionMode(
+  eventType: OperationalEventType,
+): OperationalEventEmissionMode {
+  return OPERATIONAL_EVENT_EMISSION_POLICIES[eventType];
+}
+
 export const OPERATIONAL_AGGREGATE_TYPES = [
   "SHIFT_ASSIGNMENT",
   "SHIFT_INSTANCE",
@@ -361,6 +402,26 @@ export const OPERATIONAL_DELIVERY_CHANNELS = ["PUSH", "EMAIL"] as const;
 export type OperationalDeliveryChannel =
   (typeof OPERATIONAL_DELIVERY_CHANNELS)[number];
 
+const NO_OPERATIONAL_DELIVERY_CHANNELS: readonly OperationalDeliveryChannel[] =
+  Object.freeze([]);
+
+/**
+ * A fila só nasce para fatos promovidos explicitamente pelo catálogo fechado.
+ * SHADOW preserva o fato e seus destinatários para auditoria, sem criar uma
+ * entrega latente que poderia ser promovida por um worker futuro.
+ *
+ * O teste literal de ACTIVE também falha fechado para valores inválidos que
+ * eventualmente atravessem uma fronteira JavaScript sem a tipagem TypeScript.
+ */
+export function operationalDeliveryChannelsForEmission(
+  emissionMode: OperationalEventEmissionMode,
+  channels: readonly OperationalDeliveryChannel[],
+): readonly OperationalDeliveryChannel[] {
+  return emissionMode === "ACTIVE"
+    ? channels
+    : NO_OPERATIONAL_DELIVERY_CHANNELS;
+}
+
 export const OPERATIONAL_DELIVERY_STATUSES = [
   "QUEUED",
   "PROCESSING",
@@ -437,6 +498,8 @@ export type OperationalEventRecipient =
 export type CreateOperationalEventInput = {
   idempotencyKey: string;
   eventType: OperationalEventType;
+  /** O caller não pode definir o modo de emissão do fato. */
+  emissionMode?: never;
   deliveryPolicy: OperationalDeliveryPolicy;
   aggregate: {
     type: OperationalAggregateType;
@@ -853,6 +916,7 @@ function resolveRecipientResolution(
 type CanonicalOperationalEventInput = {
   idempotencyKey: string;
   eventType: OperationalEventType;
+  emissionMode: OperationalEventEmissionMode;
   deliveryPolicy: OperationalDeliveryPolicy;
   aggregate: Readonly<{
     type: OperationalAggregateType;
@@ -1232,6 +1296,11 @@ function validateCreateInput(
   if (!isOperationalEventType(input.eventType)) {
     throw new OperationalEventValidationError("eventType inválido");
   }
+  if ("emissionMode" in (input as object)) {
+    throw new OperationalEventValidationError(
+      "Modo de emissão é definido exclusivamente pelo servidor",
+    );
+  }
   if (!isDeliveryPolicy(input.deliveryPolicy)) {
     throw new OperationalEventValidationError("deliveryPolicy inválida");
   }
@@ -1382,6 +1451,7 @@ function validateCreateInput(
   return Object.freeze({
     idempotencyKey: input.idempotencyKey,
     eventType: input.eventType,
+    emissionMode: getOperationalEventEmissionMode(input.eventType),
     deliveryPolicy: input.deliveryPolicy,
     aggregate: Object.freeze({
       type: input.aggregate.type,
@@ -1470,11 +1540,12 @@ export function operationalDeliveryDedupKey(input: {
 }
 
 /**
- * Insere o fato, seus destinatários e a fila multicanal no mesmo commit da
- * mutação de negócio que o chamar. A função relê e bloqueia a topologia, o
- * agregado e os vínculos envolvidos antes de persistir o ledger; ela recusa
- * contexto incompleto em vez de tentar derivar autoridade de texto ou de
- * estado do cliente.
+ * Insere o fato e seus destinatários no mesmo commit da mutação de negócio que
+ * o chamar. A fila multicanal só é persistida para um fato ACTIVE; SHADOW
+ * registra a auditoria sem criar entregas latentes. A função relê e bloqueia a
+ * topologia, o agregado e os vínculos envolvidos antes de persistir o ledger;
+ * ela recusa contexto incompleto em vez de tentar derivar autoridade de texto
+ * ou de estado do cliente.
  */
 export async function createOperationalEventInTransaction(
   tx: OperationalEventTx,
@@ -1509,6 +1580,7 @@ export async function createOperationalEventInTransaction(
       idempotencyKeyHash,
       eventHash,
       eventType: eventInput.eventType,
+      emissionMode: eventInput.emissionMode,
       deliveryPolicy: eventInput.deliveryPolicy,
       recipientResolution: eventInput.recipientResolution,
       aggregateType: eventInput.aggregate.type,
@@ -1603,7 +1675,10 @@ export async function createOperationalEventInTransaction(
     if (!recipientRow?.id) {
       throw new Error("Destinatário operacional não foi persistido");
     }
-    for (const channel of recipient.channels) {
+    for (const channel of operationalDeliveryChannelsForEmission(
+      eventInput.emissionMode,
+      recipient.channels,
+    )) {
       await tx.insert(notificationDeliveries).values({
         operationalEventRecipientId: recipientRow.id,
         channel,
