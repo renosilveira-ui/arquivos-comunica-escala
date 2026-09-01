@@ -11,6 +11,7 @@ export { requiresPublishedMonthReason, validatePublishedMonthReason };
 export function usePublishedMonthRoster(
   hospitalId: number | undefined,
   dateKey: string | undefined,
+  sectorId?: number,
 ) {
   const yearMonth = dateKey?.slice(0, 7);
   const enabled = !!hospitalId && !!yearMonth && /^\d{4}-\d{2}$/.test(yearMonth);
@@ -24,6 +25,7 @@ export function usePublishedMonthRoster(
   const monthShifts = trpc.filters.hasMonthShifts.useQuery(
     {
       hospitalId: hospitalId ?? 0,
+      ...(sectorId === undefined ? {} : { sectorId }),
       yearMonth: yearMonth ?? "0000-00",
     },
     {

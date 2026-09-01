@@ -481,15 +481,20 @@ export const filtersRouter = router({
     .input(
       z.object({
         hospitalId: z.number().int().positive(),
+        sectorId: z.number().int().positive().optional(),
         yearMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
       }),
     )
     .query(async ({ ctx, input }) => {
       const actor = await getTenantActorFromContext(ctx);
       assertCanManageInstitutionSchedule(actor);
-      await assertManagerScopeAccess(actor, input.hospitalId, undefined, {
-        mode: "any-hospital",
-      });
+      // Um escopo setorial só pode consultar o próprio setor. O agregado do
+      // hospital requer escopo hospitalar explícito (ou Gestor+).
+      await assertManagerScopeAccess(
+        actor,
+        input.hospitalId,
+        input.sectorId,
+      );
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const window = monthWindowBrt(input.yearMonth);
@@ -500,6 +505,9 @@ export const filtersRouter = router({
           and(
             eq(shiftInstances.institutionId, ctx.institutionId),
             eq(shiftInstances.hospitalId, input.hospitalId),
+            ...(input.sectorId === undefined
+              ? []
+              : [eq(shiftInstances.sectorId, input.sectorId)]),
             gte(shiftInstances.startAt, window.start),
             lt(shiftInstances.startAt, window.end),
           ),

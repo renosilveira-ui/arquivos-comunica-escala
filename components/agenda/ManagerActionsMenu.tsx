@@ -85,6 +85,24 @@ const ROSTER_LABEL: Record<string, string> = {
   LOCKED: "Bloqueada",
 };
 
+const READINESS_WARNING_LABEL: Record<string, string> = {
+  NO_SECTORS_CONFIGURED: "hospital sem setores configurados",
+  STALE_PROFESSIONAL_ACCESS: "há acessos profissionais sem vínculo ativo",
+  STALE_MANAGER_SCOPE: "há escopos de gestão desatualizados",
+  MISSING_ACTIVE_SCHEDULE_CONTEXT: "há setor sem contexto de escala ativo",
+  MISSING_ACTIVE_SHIFT_TEMPLATE: "há setor sem modelo de turno ativo",
+  NO_ACTIVE_MANAGER_COVERAGE: "há setor sem gestor ativo",
+  VACANT_SHIFT_REQUIRES_ALLOCATION: "há plantões vagos que exigem alocação",
+  PENDING_ALLOCATION_REQUIRES_REVIEW:
+    "há alocações pendentes que exigem revisão",
+  CONFIRMATION_WINDOW_UNSUPPORTED:
+    "há turnos fora dos horários atuais de confirmação",
+};
+
+function readinessWarningLabel(code: string): string {
+  return READINESS_WARNING_LABEL[code] ?? "há uma pendência operacional";
+}
+
 export function ManagerActionsMenu({
   institutionId,
   period,
@@ -305,15 +323,60 @@ export function ManagerActionsMenu({
 
   async function doPublish() {
     if (!resolvedHospitalId || !institutionId) return;
-    const ok = await feedback.confirmDestructive(
-      "Publicar escala",
-      `Publicar a escala de ${monthLabel(monthKey)}? Os profissionais alocados passam a ver a escala como oficial e o Comunica+ é avisado.`,
-      "Publicar",
-    );
-    if (!ok) return;
-    setStep("busy");
     try {
-      await publish.mutateAsync({ institutionId, hospitalId: resolvedHospitalId, yearMonth: monthKey });
+      const readinessResult = await utils.client.scheduleContexts.getCorporateReadiness.query({
+        hospitalId: resolvedHospitalId,
+        yearMonth: monthKey,
+      });
+      const readiness = readinessResult.reports.find(
+        (report) => report.scope.hospitalId === resolvedHospitalId,
+      );
+      if (!readiness) {
+        feedback.error("Não foi possível verificar a prontidão da escala antes da publicação.");
+        return;
+      }
+      if (readiness.visibility.detailsRedacted) {
+        feedback.error(
+          "A publicação do mês exige escopo de gestão hospitalar ou Gestor+.",
+        );
+        return;
+      }
+      if (readiness.summary.SECURITY_BLOCKER > 0) {
+        feedback.error(
+          "A publicação está bloqueada por uma inconsistência de segurança. Corrija a topologia da escala antes de publicar.",
+        );
+        return;
+      }
+
+      const warningCodes = readiness.acknowledgement.operationalWarningCodes;
+      const warningCount = readiness.summary.OPERATIONAL_WARNING;
+      const warningSummary = warningCodes
+        .slice(0, 4)
+        .map((code) => `• ${readinessWarningLabel(code)}`)
+        .join("\n");
+      const ok = await feedback.confirmDestructive(
+        warningCodes.length > 0 ? "Publicar com alertas operacionais" : "Publicar escala",
+        warningCodes.length > 0
+          ? `Foram identificados ${warningCount} alerta(s) operacional(is):\n${warningSummary}${warningCodes.length > 4 ? "\n• outras pendências operacionais" : ""}\n\nA publicação seguirá, e sua ciência será registrada na auditoria.`
+          : `Publicar a escala de ${monthLabel(monthKey)}? Os profissionais alocados passam a ver a escala como oficial e o Comunica+ é avisado.`,
+        warningCodes.length > 0 ? "Confirmar e publicar" : "Publicar",
+      );
+      if (!ok) return;
+
+      setStep("busy");
+      await publish.mutateAsync({
+        institutionId,
+        hospitalId: resolvedHospitalId,
+        yearMonth: monthKey,
+        ...(warningCodes.length > 0
+          ? {
+              readinessAcknowledgement: {
+                snapshotHash: readiness.snapshotHash,
+                issueCodes: warningCodes,
+              },
+            }
+          : {}),
+      });
       await utils.shifts.rosterStatus.invalidate();
       feedback.success(`Escala de ${monthLabel(monthKey)} publicada.`);
       close();

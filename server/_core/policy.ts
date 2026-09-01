@@ -230,8 +230,9 @@ export function assertCanEditScheduleDate(actor: TenantActor, date: Date, now = 
 
 /**
  * `exact`: hospital inteiro (sector null) ou o setor informado.
- * `any-hospital`: qualquer jurisdição naquele hospital — publicar e
- * trancar o mês do hospital é a mesma cadeia operacional de abrir o setor.
+ * `any-hospital`: qualquer jurisdição naquele hospital, exclusivamente para
+ * consultas agregadas cujo resultado seja projetado/redigido por setor. Uma
+ * mutação hospitalar (publicar ou trancar o mês) exige `exact` sem setor.
  */
 export type ManagerScopeMode = "exact" | "any-hospital";
 

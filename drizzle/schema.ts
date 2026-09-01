@@ -11,6 +11,8 @@ import {
   json,
   unique,
   index,
+  bigint,
+  tinyint,
   decimal,
   foreignKey,
   customType,
@@ -184,6 +186,50 @@ export const institutions = mysqlTable("institutions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 });
+
+/**
+ * Fence transacional por tenant para o diagnóstico de prontidão.
+ *
+ * A linha não é um cache do relatório nem uma decisão de publicação. Ela só
+ * contém uma revisão monotônica. Os triggers da migration correspondente a
+ * incrementam quando uma fonte do diagnóstico muda; o fluxo que for publicar
+ * poderá travá-la e verificar que a revisão observada ainda é a mesma antes
+ * do commit.
+ */
+export const institutionReadinessFences = mysqlTable(
+  "institution_readiness_fences",
+  {
+    institutionId: int("institution_id")
+      .primaryKey()
+      .references(() => institutions.id, { onDelete: "cascade" }),
+    revision: bigint("revision", { mode: "bigint", unsigned: true })
+      .notNull()
+      .default(0n),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+);
+
+export type InstitutionReadinessFence =
+  typeof institutionReadinessFences.$inferSelect;
+
+/**
+ * Marcador global escrito somente após a instalação integral da cobertura de
+ * triggers da fence. O runtime falha fechado se ele estiver ausente ou não
+ * corresponder ao contrato versionado esperado.
+ */
+export const institutionReadinessFenceInstallations = mysqlTable(
+  "institution_readiness_fence_installations",
+  {
+    id: tinyint("id", { unsigned: true }).primaryKey(),
+    coverageVersion: varchar("coverage_version", { length: 64 }).notNull(),
+    coverageHash: varchar("coverage_hash", { length: 64 }).notNull(),
+    installedAt: timestamp("installed_at").notNull().defaultNow(),
+  },
+);
+
+export type InstitutionReadinessFenceInstallation =
+  typeof institutionReadinessFenceInstallations.$inferSelect;
 
 /**
  * Hospitais (pertence a uma instituição)
@@ -1070,6 +1116,9 @@ export const monthlyRosters = mysqlTable(
       table.hospitalId,
       table.yearMonth,
     ),
+    uniqMonthlyRosterTopologyId: unique(
+      "uniq_monthly_rosters_topology_id",
+    ).on(table.institutionId, table.hospitalId, table.yearMonth, table.id),
     fkInstitution: index("idx_monthly_rosters_institution").on(
       table.institutionId,
     ),
@@ -1077,6 +1126,88 @@ export const monthlyRosters = mysqlTable(
       "idx_monthly_rosters_institution_id",
     ).on(table.institutionId, table.id),
     fkHospital: index("idx_monthly_rosters_hospital").on(table.hospitalId),
+  }),
+);
+
+/**
+ * Ciência explícita de alertas de prontidão na publicação da escala.
+ *
+ * A confirmação não concede autorização nem libera bloqueios de segurança:
+ * ela apenas registra que o gestor publicou um mês DRAFT apesar dos avisos
+ * operacionais presentes no snapshot canônico daquele instante.
+ */
+export const rosterReadinessAcknowledgements = mysqlTable(
+  "roster_readiness_acknowledgements",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id")
+      .notNull()
+      .references(() => institutions.id),
+    hospitalId: int("hospital_id")
+      .notNull()
+      .references(() => hospitals.id),
+    monthlyRosterId: int("monthly_roster_id")
+      .notNull()
+      .references(() => monthlyRosters.id),
+    yearMonth: varchar("year_month", { length: 7 }).notNull(),
+    actorUserId: int("actor_user_id")
+      .notNull()
+      .references(() => users.id),
+    reportVersion: varchar("report_version", { length: 16 })
+      .notNull()
+      .default("v1"),
+    snapshotHash: varchar("snapshot_hash", { length: 64 }).notNull(),
+    /** Revisão da fence que permaneceu retida durante o diagnóstico e publish. */
+    readinessFenceRevision: bigint("readiness_fence_revision", {
+      mode: "bigint",
+      unsigned: true,
+    }).notNull(),
+    readinessFenceCoverageVersion: varchar(
+      "readiness_fence_coverage_version",
+      { length: 64 },
+    ).notNull(),
+    readinessFenceCoverageHash: varchar("readiness_fence_coverage_hash", {
+      length: 64,
+    }).notNull(),
+    issueCodes: json("issue_codes").notNull(),
+    issueSnapshot: json("issue_snapshot").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqRosterReadinessAcknowledgement: unique(
+      "uniq_roster_readiness_acknowledgement",
+    ).on(table.monthlyRosterId, table.actorUserId, table.snapshotHash),
+    idxRosterReadinessAcknowledgementScope: index(
+      "idx_roster_readiness_ack_scope",
+    ).on(table.institutionId, table.hospitalId, table.yearMonth, table.id),
+    fkRosterReadinessAcknowledgementHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_roster_readiness_ack_hospital_topology",
+    }),
+    fkRosterReadinessAcknowledgementRosterTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.yearMonth,
+        table.monthlyRosterId,
+      ],
+      foreignColumns: [
+        monthlyRosters.institutionId,
+        monthlyRosters.hospitalId,
+        monthlyRosters.yearMonth,
+        monthlyRosters.id,
+      ],
+      name: "fk_roster_readiness_ack_roster_topology",
+    }),
+    fkRosterReadinessAcknowledgementActorInstitution: foreignKey({
+      columns: [table.actorUserId, table.institutionId],
+      foreignColumns: [
+        professionalInstitutions.userId,
+        professionalInstitutions.institutionId,
+      ],
+      name: "fk_roster_readiness_ack_actor_institution",
+    }),
   }),
 );
 
@@ -1490,6 +1621,7 @@ export const dutyConfirmationsRelations = relations(
 
 export const institutionsRelations = relations(institutions, ({ many }) => ({
   hospitals: many(hospitals),
+  readinessFences: many(institutionReadinessFences),
   sectors: many(sectors),
   professionalInstitutions: many(professionalInstitutions),
   professionalAccesses: many(professionalAccess),
@@ -1504,11 +1636,22 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   ssoUsedTokens: many(ssoUsedTokens),
   shiftReminders: many(shiftReminders),
   monthlyRosters: many(monthlyRosters),
+  rosterReadinessAcknowledgements: many(rosterReadinessAcknowledgements),
   auditTrails: many(auditTrail),
   swapRequests: many(swapRequests),
   swapRequestDismissals: many(swapRequestDismissals),
   dutyConfirmations: many(dutyConfirmations),
 }));
+
+export const institutionReadinessFencesRelations = relations(
+  institutionReadinessFences,
+  ({ one }) => ({
+    institution: one(institutions, {
+      fields: [institutionReadinessFences.institutionId],
+      references: [institutions.id],
+    }),
+  }),
+);
 
 export const usersRelations = relations(users, ({ many }) => ({
   professionals: many(professionals),
@@ -1516,6 +1659,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   pushTokens: many(pushTokens),
   notifications: many(notifications),
   shiftReminders: many(shiftReminders),
+  rosterReadinessAcknowledgements: many(rosterReadinessAcknowledgements),
 }));
 
 export const hospitalsRelations = relations(hospitals, ({ one, many }) => ({
@@ -1529,6 +1673,7 @@ export const hospitalsRelations = relations(hospitals, ({ one, many }) => ({
   shiftInstances: many(shiftInstances),
   shiftAssignments: many(shiftAssignmentsV2),
   monthlyRosters: many(monthlyRosters),
+  rosterReadinessAcknowledgements: many(rosterReadinessAcknowledgements),
   swapRequests: many(swapRequests),
 }));
 
@@ -1715,7 +1860,7 @@ export const shiftAssignmentsRelations = relations(
   }),
 );
 
-export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
+export const monthlyRostersRelations = relations(monthlyRosters, ({ one, many }) => ({
   institution: one(institutions, {
     fields: [monthlyRosters.institutionId],
     references: [institutions.id],
@@ -1724,7 +1869,30 @@ export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
     fields: [monthlyRosters.hospitalId],
     references: [hospitals.id],
   }),
+  readinessAcknowledgements: many(rosterReadinessAcknowledgements),
 }));
+
+export const rosterReadinessAcknowledgementsRelations = relations(
+  rosterReadinessAcknowledgements,
+  ({ one }) => ({
+    institution: one(institutions, {
+      fields: [rosterReadinessAcknowledgements.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [rosterReadinessAcknowledgements.hospitalId],
+      references: [hospitals.id],
+    }),
+    monthlyRoster: one(monthlyRosters, {
+      fields: [rosterReadinessAcknowledgements.monthlyRosterId],
+      references: [monthlyRosters.id],
+    }),
+    actor: one(users, {
+      fields: [rosterReadinessAcknowledgements.actorUserId],
+      references: [users.id],
+    }),
+  }),
+);
 
 export const swapRequestsRelations = relations(swapRequests, ({ one, many }) => ({
   institution: one(institutions, {
