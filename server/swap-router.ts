@@ -30,6 +30,7 @@ import {
   listAuthorizedScheduleContexts,
 } from "./schedule-contexts";
 import { enqueueSwapTakenSignals } from "./swap-offer-signal";
+import { recordSwapLifecycleShadowEventInTransaction } from "./swap-lifecycle-operational-events";
 import type { TrpcContext } from "./_core/context";
 import {
   assertPublishedSwapMonthsForUpdate,
@@ -890,6 +891,20 @@ async function applySwapAssignmentTransfer(
     { db: tx, strict: true },
   );
   const approvedVersion = currentSwap.version + 1;
+  if (!actor.professionalId) {
+    throw topologyDenied("Ator sem identidade profissional canônica");
+  }
+  await recordSwapLifecycleShadowEventInTransaction(tx, {
+    eventType: "SWAP_ACCEPTED",
+    previousStatus: input.expectedStatus,
+    swapId: currentSwap.id,
+    institutionId: currentSwap.institutionId,
+    expectedVersion: approvedVersion,
+    actor: {
+      userId: actor.userId,
+      professionalId: actor.professionalId,
+    },
+  });
   await enqueueSwapCompletionNotifications(
     tx,
     currentSwap,
@@ -2151,6 +2166,7 @@ export const swapRouter = router({
       if (!actor.professionalId) {
         throw topologyDenied("Ator sem identidade profissional canônica");
       }
+      const actorProfessionalId = actor.professionalId;
 
       await db.transaction(async (tx) => {
         const current = await lockSwapRequestForUpdate(
@@ -2166,7 +2182,7 @@ export const swapRouter = router({
           });
         }
 
-        await lockSwapMutationTopology(tx, current, [actor.professionalId]);
+        await lockSwapMutationTopology(tx, current, [actorProfessionalId]);
         const recipient = await requirePendingSwapForRecipient(
           tx,
           current,
@@ -2248,6 +2264,21 @@ export const swapRouter = router({
           },
           { db: tx, strict: true },
         );
+        // A dismiss individual de oferta aberta continua PENDING e não é uma
+        // transição global; somente a rejeição dirigida produz fato SHADOW.
+        if (!isOpenSwapOffer(current)) {
+          await recordSwapLifecycleShadowEventInTransaction(tx, {
+            eventType: "SWAP_REJECTED",
+            previousStatus: "PENDING",
+            swapId: current.id,
+            institutionId: current.institutionId,
+            expectedVersion: current.version + 1,
+            actor: {
+              userId: actor.userId,
+              professionalId: actorProfessionalId,
+            },
+          });
+        }
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       return { ok: true };
@@ -2374,6 +2405,7 @@ export const swapRouter = router({
       if (!actor.professionalId) {
         throw topologyDenied("Ator sem identidade profissional canônica");
       }
+      const actorProfessionalId = actor.professionalId;
 
       await db.transaction(async (tx) => {
         const current = await lockSwapRequestForUpdate(
@@ -2382,8 +2414,15 @@ export const swapRouter = router({
           institutionId,
         );
         assertExpectedSwapStatus(current, ["PENDING", "ACCEPTED"]);
+        const previousStatus = current.status;
+        if (previousStatus !== "PENDING" && previousStatus !== "ACCEPTED") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A solicitação não possui estado cancelável canônico.",
+          });
+        }
         if (current.status === "PENDING") {
-          await lockSwapMutationTopology(tx, current, [actor.professionalId]);
+          await lockSwapMutationTopology(tx, current, [actorProfessionalId]);
         }
         const reviewer = await requireSwapCancelActor(
           tx,
@@ -2422,6 +2461,17 @@ export const swapRouter = router({
           },
           { db: tx, strict: true },
         );
+        await recordSwapLifecycleShadowEventInTransaction(tx, {
+          eventType: "SWAP_CANCELLED",
+          previousStatus,
+          swapId: current.id,
+          institutionId: current.institutionId,
+          expectedVersion: current.version + 1,
+          actor: {
+            userId: actor.userId,
+            professionalId: actorProfessionalId,
+          },
+        });
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       return { ok: true };

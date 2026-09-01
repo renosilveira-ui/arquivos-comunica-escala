@@ -75,6 +75,9 @@ export default defineConfig({
       "tests/operational-events-migration.test.ts",
       "tests/operational-events-emission-mode-migration.test.ts",
       "tests/operational-events-foundation.test.ts",
+      "tests/swap-lifecycle-operational-contract.test.ts",
+      "tests/swap-lifecycle-operational-events.test.ts",
+      "tests/swap-lifecycle-operational-wiring.test.ts",
     ],
   },
 });

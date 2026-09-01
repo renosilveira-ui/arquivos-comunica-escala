@@ -334,6 +334,12 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
 
 type CanonicalEventTransitionContract = {
   from: OperationalTransitionState | null;
+  /**
+   * Exceção fechada para fluxos legados que convergem no mesmo estado final.
+   * O writer ainda precisa declarar uma origem concreta; este campo não
+   * representa curingas nem permite que o caller escolha outro estado.
+   */
+  additionalAllowedFrom?: readonly OperationalTransitionState[];
   to: OperationalTransitionState | null;
   aggregateStatus: string;
 };
@@ -361,9 +367,28 @@ export const OPERATIONAL_EVENT_TRANSITION_CONTRACTS: Record<
   SCHEDULE_INVITE_REVOKED: null,
   SCHEDULE_INVITE_EXPIRED: null,
   SWAP_OFFERED: { from: null, to: "PENDING", aggregateStatus: "PENDING" },
-  SWAP_ACCEPTED: null,
-  SWAP_REJECTED: null,
-  SWAP_CANCELLED: null,
+  // O fluxo atual efetiva a troca diretamente (PENDING → APPROVED), mas
+  // candidaturas residuais antigas ainda podem estar ACCEPTED. Ambas são
+  // transições explícitas, com versão final CAS, e não um "qualquer estado".
+  SWAP_ACCEPTED: {
+    from: "PENDING",
+    additionalAllowedFrom: ["ACCEPTED"],
+    to: "APPROVED",
+    aggregateStatus: "APPROVED",
+  },
+  // REJECTED_BY_PEER é a representação física específica do domínio de
+  // troca; o ledger mantém a semântica operacional genérica REJECTED.
+  SWAP_REJECTED: {
+    from: "PENDING",
+    to: "REJECTED",
+    aggregateStatus: "REJECTED_BY_PEER",
+  },
+  SWAP_CANCELLED: {
+    from: "PENDING",
+    additionalAllowedFrom: ["ACCEPTED"],
+    to: "CANCELLED",
+    aggregateStatus: "CANCELLED",
+  },
   SWAP_OFFER_DISMISSED: null,
   SWAP_EXPIRED: null,
   ROSTER_PUBLISHED: {
@@ -1392,8 +1417,14 @@ function validateCreateInput(
       "Evento ainda não possui contrato canônico de transição; emissão bloqueada",
     );
   }
+  const transitionFrom = input.transition?.from ?? null;
+  const transitionFromAllowed =
+    transitionFrom === canonicalTransition.from ||
+    (transitionFrom !== null &&
+      canonicalTransition.additionalAllowedFrom?.includes(transitionFrom) ===
+        true);
   if (
-    (input.transition?.from ?? null) !== canonicalTransition.from ||
+    !transitionFromAllowed ||
     (input.transition?.to ?? null) !== canonicalTransition.to
   ) {
     throw new OperationalEventValidationError(

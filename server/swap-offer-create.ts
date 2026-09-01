@@ -11,6 +11,7 @@ import { getDb } from "./db";
 import { swapRequests } from "../drizzle/schema";
 import { recordAudit } from "./audit-trail";
 import { lockAssignmentProfessionalsForUpdate } from "./shift-validations-v2";
+import { recordSwapLifecycleShadowEventInTransaction } from "./swap-lifecycle-operational-events";
 import { enqueueSwapOfferSignals } from "./swap-offer-signal";
 import {
   assertPublishedSwapMonthsForUpdate,
@@ -282,6 +283,17 @@ export async function createSwapOffer(
         message: "Oferta criada sem snapshot transacional de retorno",
       });
     }
+    await recordSwapLifecycleShadowEventInTransaction(tx, {
+      eventType: "SWAP_OFFERED",
+      previousStatus: null,
+      swapId: created.id,
+      institutionId: created.institutionId,
+      expectedVersion: created.version,
+      actor: {
+        userId,
+        professionalId: locked.source.professional.professionalId,
+      },
+    });
     await enqueueSwapOfferSignals({
       db: tx,
       swap: created,
