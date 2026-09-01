@@ -24,6 +24,7 @@ import {
   professionalInstitutions,
   professionals,
   pushTokens,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -107,6 +108,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   let titularProId: number;
   let subUserId: number;
   let subProId: number;
+  let allSpecialtiesContextId: number;
+  let sectorOnlyContextId: number;
   const userIds: number[] = [];
   const proIds: number[] = [];
   let pushSpy: ReturnType<typeof vi.spyOn>;
@@ -141,10 +144,22 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     return { userId: u.id, proId: p.id };
   }
 
-  async function shiftWithTitular(type: "ON_DUTY" | "ON_CALL" = "ON_DUTY") {
+  async function shiftWithTitular(
+    type: "ON_DUTY" | "ON_CALL" = "ON_DUTY",
+    scheduleContextId?: number | null,
+  ) {
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, label: `CN ${stamp}`, startAt: start, endAt: end, status: "OCUPADO" })
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        ...(scheduleContextId === undefined ? {} : { scheduleContextId }),
+        label: `CN ${stamp}`,
+        startAt: start,
+        endAt: end,
+        status: "OCUPADO",
+      })
       .$returningId();
     const [a] = await db
       .insert(shiftAssignmentsV2)
@@ -398,6 +413,28 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     hospitalId = h.id;
     const [sec] = await db.insert(sectors).values({ institutionId, hospitalId, name: `CN Setor ${stamp}`, category: "cirurgico", color: "#2563EB" }).$returningId();
     sectorId = sec.id;
+    const [allSpecialtiesContext] = await db
+      .insert(scheduleContexts)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        admissionPolicy: "ALL_CFM_SPECIALTIES",
+        active: true,
+      })
+      .$returningId();
+    allSpecialtiesContextId = allSpecialtiesContext.id;
+    const [sectorOnlyContext] = await db
+      .insert(scheduleContexts)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        admissionPolicy: "QUALIFICATION_ALLOWLIST",
+        active: true,
+      })
+      .$returningId();
+    sectorOnlyContextId = sectorOnlyContext.id;
     const t = await person("titular");
     titularUserId = t.userId;
     titularProId = t.proId;
@@ -455,6 +492,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       await db.delete(shiftAssignmentsV2).where(inArray(shiftAssignmentsV2.shiftInstanceId, ids));
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, ids));
     }
+    await db
+      .delete(scheduleContexts)
+      .where(inArray(scheduleContexts.id, [allSpecialtiesContextId, sectorOnlyContextId]));
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
     await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
@@ -466,6 +506,91 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     await db.delete(users).where(inArray(users.id, userIds));
     pushSpy.mockRestore();
+  });
+
+  it("lista substituto com ACL válida mesmo sem especialidade em contexto classificado", async () => {
+    const { shiftId, assignmentId } = await shiftWithTitular(
+      "ON_DUTY",
+      allSpecialtiesContextId,
+    );
+    const conf = await declined(assignmentId, shiftId);
+
+    const candidates = await confirmationRouter
+      .createCaller(ctx(titularUserId))
+      .listReplacementCandidates({ confirmationToken: conf.confirmationToken });
+
+    expect(candidates.map((candidate) => candidate.id)).toContain(subProId);
+  });
+
+  it("mantém ACL ativa como requisito para contexto classificado", async () => {
+    const { shiftId, assignmentId } = await shiftWithTitular(
+      "ON_DUTY",
+      allSpecialtiesContextId,
+    );
+    const conf = await declined(assignmentId, shiftId);
+    await db
+      .update(professionalAccess)
+      .set({ canAccess: false })
+      .where(eq(professionalAccess.professionalId, subProId));
+
+    try {
+      const candidates = await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .listReplacementCandidates({ confirmationToken: conf.confirmationToken });
+
+      expect(candidates.map((candidate) => candidate.id)).not.toContain(subProId);
+    } finally {
+      await db
+        .update(professionalAccess)
+        .set({ canAccess: true })
+        .where(eq(professionalAccess.professionalId, subProId));
+    }
+  });
+
+  it("exige ACL setorial exata quando o contexto a declara", async () => {
+    const { shiftId, assignmentId } = await shiftWithTitular(
+      "ON_DUTY",
+      sectorOnlyContextId,
+    );
+    const conf = await declined(assignmentId, shiftId);
+    const exactSectorCandidates = await confirmationRouter
+      .createCaller(ctx(titularUserId))
+      .listReplacementCandidates({ confirmationToken: conf.confirmationToken });
+    expect(exactSectorCandidates.map((candidate) => candidate.id)).toContain(
+      subProId,
+    );
+    await db
+      .update(professionalAccess)
+      .set({ sectorId: null })
+      .where(eq(professionalAccess.professionalId, subProId));
+
+    try {
+      const candidates = await confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .listReplacementCandidates({ confirmationToken: conf.confirmationToken });
+
+      expect(candidates.map((candidate) => candidate.id)).not.toContain(subProId);
+    } finally {
+      await db
+        .update(professionalAccess)
+        .set({ sectorId })
+        .where(eq(professionalAccess.professionalId, subProId));
+    }
+  });
+
+  it("falha fechado para turno sem escala operacional classificada", async () => {
+    const { shiftId, assignmentId } = await shiftWithTitular();
+    const conf = await declined(assignmentId, shiftId);
+
+    await expect(
+      confirmationRouter
+        .createCaller(ctx(titularUserId))
+        .listReplacementCandidates({ confirmationToken: conf.confirmationToken }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message:
+        "Plantão sem escala operacional classificada; solicite regularização ao gestor.",
+    });
   });
 
   it("acceptNomination: substituto assume com tipo preservado e turno OCUPADO; segunda tentativa → CONFLICT", async () => {

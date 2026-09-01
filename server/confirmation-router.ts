@@ -292,8 +292,8 @@ export const confirmationRouter = router({
       }
 
       // A lista usa a mesma verdade canônica da mutation: contexto ativo,
-      // topologia composta, qualificação estruturada e ACL setorial. O texto
-      // legado de especialidade nunca concede nem nega um candidato.
+      // topologia composta, vínculo e ACL setorial. Especialidade/perfil são
+      // metadados e nunca concedem nem negam um candidato.
       const result = await db.execute(sql`
         SELECT DISTINCT p.id, p.name, p.role
         FROM professionals p
@@ -328,54 +328,8 @@ export const confirmationRouter = router({
              AND (pa.sector_id IS NULL OR pa.sector_id = ${current.shift.sectorId})
            )
          )
-        LEFT JOIN medical_specialties ms
-          ON ms.id = sc.medical_specialty_id
-         AND ms.active = true
         WHERE p.id != ${current.original.professionalId}
           AND p.user_id != ${current.original.userId}
-          AND (
-            (
-              sc.admission_policy = 'ALL_CFM_SPECIALTIES'
-              AND p.medical_specialty_id IS NOT NULL
-            )
-            OR
-            (
-              sc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
-              AND p.medical_specialty_id IS NOT NULL
-              AND p.operational_profile_code IS NULL
-            )
-            OR
-            (
-              sc.medical_specialty_id IS NOT NULL
-              AND ms.id IS NOT NULL
-              AND p.medical_specialty_id = sc.medical_specialty_id
-            )
-            OR
-            (
-              sc.operational_profile_code IS NOT NULL
-              AND p.operational_profile_code = sc.operational_profile_code
-            )
-            OR
-            (
-              sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-              AND EXISTS (
-                SELECT 1
-                  FROM schedule_context_allowed_qualifications aq
-                 WHERE aq.schedule_context_id = sc.id
-                   AND (
-                     (
-                       aq.medical_specialty_id IS NOT NULL
-                       AND p.medical_specialty_id = aq.medical_specialty_id
-                     )
-                     OR
-                     (
-                       aq.operational_profile_code IS NOT NULL
-                       AND p.operational_profile_code = aq.operational_profile_code
-                     )
-                   )
-              )
-            )
-          )
           AND NOT EXISTS (
             SELECT 1
             FROM shift_assignments_v2 conflict_assignment
