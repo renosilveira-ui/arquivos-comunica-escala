@@ -5,6 +5,11 @@
  * instalação interrompida permanece bloqueada para inspeção humana, exceto
  * pelo estado PREPARED estritamente verificável (duas tabelas exatas, zero
  * triggers V1 e zero recibo), que é seguro retomar após schema-push.
+ *
+ * Uso deliberado:
+ * READINESS_FENCE_V1_APPLY=1 \
+ * READINESS_FENCE_V1_DATABASE_URL='mysql://.../escala?ssl-mode=REQUIRED' \
+ * pnpm apply:readiness-fence-v1
  */
 import "dotenv/config";
 import { createHash } from "node:crypto";
