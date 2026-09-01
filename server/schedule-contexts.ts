@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -80,6 +80,12 @@ export type ActiveScheduleContext = ScheduleContextQualification & {
   sectorName: string;
   medicalSpecialtyCode: string | null;
   medicalSpecialtyName: string | null;
+  /**
+   * Estado do catálogo canônico quando o contexto pinado referencia uma
+   * especialidade. Ausente somente em fixtures/consumidores legados; a
+   * consulta de produção sempre o projeta.
+   */
+  medicalSpecialtyActive?: boolean | null;
   admissionPolicy: ScheduleContextAdmissionPolicy;
   active: boolean;
   /**
@@ -89,10 +95,18 @@ export type ActiveScheduleContext = ScheduleContextQualification & {
   serviceSpecialties?: readonly SectorServiceSpecialtyDescriptor[];
 };
 
+/**
+ * Aviso de apresentação para um contexto PINNED degradado. Não é um estado
+ * de autorização: tenant, topologia, vínculo, ACL e manager_scope seguem
+ * sendo a única fronteira para descobrir ou operar uma escala.
+ */
+export type ScheduleContextClinicalMetadataStatus = "PENDING" | "INACTIVE";
+
 export type AuthorizedScheduleContext = ActiveScheduleContext & {
   qualificationKind: "SPECIALTY" | "OPERATIONAL_PROFILE" | "SECTOR_POLICY";
   qualificationCode: string;
   qualificationName: string;
+  clinicalMetadataStatus?: ScheduleContextClinicalMetadataStatus;
   displayName: string;
   canManage: boolean;
 };
@@ -115,6 +129,67 @@ const OPERATIONAL_PROFILE_LABELS: Record<
   MEDICO_GENERALISTA: "Médico generalista",
   RESIDENTE_ANESTESIOLOGIA: "Residente em anestesiologia",
 };
+
+const CLINICAL_METADATA_PENDING = "Metadado clínico pendente";
+const CLINICAL_METADATA_INACTIVE = "Metadado clínico inativo";
+
+function stableContextDisplayPart(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : fallback;
+}
+
+/**
+ * Identidade de apresentação que continua verdadeira mesmo quando o rótulo
+ * clínico legado não pode ser exibido com segurança.
+ */
+export function scheduleContextDisplayIdentity(
+  context: Pick<
+    ActiveScheduleContext,
+    "id" | "hospitalId" | "hospitalName" | "sectorId" | "sectorName"
+  >,
+): string {
+  const hospitalName = stableContextDisplayPart(
+    context.hospitalName,
+    `Hospital #${context.hospitalId}`,
+  );
+  const sectorName = stableContextDisplayPart(
+    context.sectorName,
+    `Setor #${context.sectorId}`,
+  );
+  return `${hospitalName} — ${sectorName} — Escala #${context.id}`;
+}
+
+function clinicalMetadataDescription(
+  status: ScheduleContextClinicalMetadataStatus,
+): string {
+  return status === "INACTIVE"
+    ? CLINICAL_METADATA_INACTIVE
+    : CLINICAL_METADATA_PENDING;
+}
+
+function describePinnedClinicalMetadataIssue(
+  context: ActiveScheduleContext,
+  canManage: boolean,
+  status: ScheduleContextClinicalMetadataStatus,
+): AuthorizedScheduleContext {
+  const description = clinicalMetadataDescription(status);
+  return {
+    ...context,
+    // O kind ainda identifica o campo legado que existe no contexto; o
+    // status explícito impede que a UI/use case o trate como rótulo clínico
+    // válido. Nenhuma decisão de autorização usa esses campos.
+    qualificationKind:
+      context.medicalSpecialtyId !== null
+        ? "SPECIALTY"
+        : "OPERATIONAL_PROFILE",
+    qualificationCode: `CLINICAL_METADATA_${status}`,
+    qualificationName: description,
+    clinicalMetadataStatus: status,
+    displayName: scheduleContextDisplayIdentity(context),
+    canManage,
+  };
+}
 
 function resolveAdmissionPolicy(
   context: ScheduleContextQualification,
@@ -298,27 +373,72 @@ export function describeScheduleContext(
     };
   }
 
-  const qualificationKind =
-    context.medicalSpecialtyId !== null
-      ? ("SPECIALTY" as const)
-      : ("OPERATIONAL_PROFILE" as const);
-  const qualificationCode =
-    context.medicalSpecialtyId !== null
-      ? context.medicalSpecialtyCode!
-      : context.operationalProfileCode!;
-  const qualificationName =
-    context.medicalSpecialtyId !== null
-      ? context.medicalSpecialtyName!
-      : OPERATIONAL_PROFILE_LABELS[context.operationalProfileCode!];
+  const hasExactlyOneLegacyQualification =
+    (context.medicalSpecialtyId === null) !==
+    (context.operationalProfileCode === null);
+  if (!hasExactlyOneLegacyQualification) {
+    return describePinnedClinicalMetadataIssue(context, canManage, "PENDING");
+  }
+
+  if (context.medicalSpecialtyId !== null) {
+    if (context.medicalSpecialtyActive === false) {
+      return describePinnedClinicalMetadataIssue(
+        context,
+        canManage,
+        "INACTIVE",
+      );
+    }
+    const specialtyCode = context.medicalSpecialtyCode?.trim();
+    const specialtyName = context.medicalSpecialtyName?.trim();
+    if (!specialtyCode || !specialtyName) {
+      return describePinnedClinicalMetadataIssue(context, canManage, "PENDING");
+    }
+    return {
+      ...context,
+      qualificationKind: "SPECIALTY",
+      qualificationCode: specialtyCode,
+      qualificationName: specialtyName,
+      displayName: `${context.hospitalName} — ${context.sectorName} — ${specialtyName}`,
+      canManage,
+    };
+  }
+
+  const operationalProfileCode = context.operationalProfileCode;
+  const operationalProfileName = operationalProfileCode
+    ? OPERATIONAL_PROFILE_LABELS[operationalProfileCode]
+    : undefined;
+  if (!operationalProfileCode || !operationalProfileName) {
+    return describePinnedClinicalMetadataIssue(context, canManage, "PENDING");
+  }
 
   return {
     ...context,
-    qualificationKind,
-    qualificationCode,
-    qualificationName,
-    displayName: `${context.hospitalName} — ${context.sectorName} — ${qualificationName}`,
+    qualificationKind: "OPERATIONAL_PROFILE",
+    qualificationCode: operationalProfileCode,
+    qualificationName: operationalProfileName,
+    displayName: `${context.hospitalName} — ${context.sectorName} — ${operationalProfileName}`,
     canManage,
   };
+}
+
+/**
+ * O aviso de metadado é transitório de apresentação. Nunca o copie para
+ * shift_instances.specialty ao abrir ou replicar calendário: o turno fica
+ * semanticamente não classificado até o gestor corrigir o metadado clínico.
+ */
+export function specialtyForScheduleContextShift(
+  context: Pick<
+    AuthorizedScheduleContext,
+    "qualificationName" | "clinicalMetadataStatus"
+  >,
+): string | null {
+  if (
+    context.clinicalMetadataStatus === "PENDING" ||
+    context.clinicalMetadataStatus === "INACTIVE"
+  ) {
+    return null;
+  }
+  return context.qualificationName;
 }
 
 function agendaScheduleContextPolicyRank(
@@ -729,41 +849,7 @@ export async function selectActiveScheduleContexts(
   institutionId: number,
   filters: { id?: number; hospitalId?: number; sectorId?: number } = {},
   lockForShare = false,
-  options: { requireQualificationConfiguration?: boolean } = {},
 ): Promise<ActiveScheduleContext[]> {
-  const qualificationConfigurationCondition =
-    options.requireQualificationConfiguration === false
-      ? []
-      : [
-          or(
-            and(
-              eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
-              isNotNull(scheduleContexts.medicalSpecialtyId),
-              isNull(scheduleContexts.operationalProfileCode),
-              eq(medicalSpecialties.active, true),
-            ),
-            and(
-              eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
-              isNull(scheduleContexts.medicalSpecialtyId),
-              isNotNull(scheduleContexts.operationalProfileCode),
-            ),
-            and(
-              eq(scheduleContexts.admissionPolicy, "ALL_CFM_SPECIALTIES"),
-              isNull(scheduleContexts.medicalSpecialtyId),
-              isNull(scheduleContexts.operationalProfileCode),
-            ),
-            and(
-              eq(scheduleContexts.admissionPolicy, "ALL_CFM_EXCEPT_GENERALIST"),
-              isNull(scheduleContexts.medicalSpecialtyId),
-              isNull(scheduleContexts.operationalProfileCode),
-            ),
-            and(
-              eq(scheduleContexts.admissionPolicy, "QUALIFICATION_ALLOWLIST"),
-              isNull(scheduleContexts.medicalSpecialtyId),
-              isNull(scheduleContexts.operationalProfileCode),
-            ),
-          ),
-        ];
   const query = db
     .select({
       id: scheduleContexts.id,
@@ -775,6 +861,7 @@ export async function selectActiveScheduleContexts(
       medicalSpecialtyId: scheduleContexts.medicalSpecialtyId,
       medicalSpecialtyCode: medicalSpecialties.code,
       medicalSpecialtyName: medicalSpecialties.name,
+      medicalSpecialtyActive: medicalSpecialties.active,
       operationalProfileCode: scheduleContexts.operationalProfileCode,
       admissionPolicy: scheduleContexts.admissionPolicy,
       active: scheduleContexts.active,
@@ -819,7 +906,6 @@ export async function selectActiveScheduleContexts(
         ...(filters.sectorId !== undefined
           ? [eq(scheduleContexts.sectorId, filters.sectorId)]
           : []),
-        ...qualificationConfigurationCondition,
       ),
     )
     .orderBy(
@@ -903,11 +989,7 @@ export async function resolveScheduleContextAclSelection(input: {
   requestedScheduleContextIds: number[] | undefined;
 }): Promise<ActiveScheduleContext[]> {
   const activeTenantContexts = (
-    await selectActiveScheduleContexts(input.db, input.institutionId, {}, true, {
-      // A escolha administrativa de ACL só usa atividade e topologia. Um
-      // metadado clínico desatualizado nunca pode bloquear esse vínculo.
-      requireQualificationConfiguration: false,
-    })
+    await selectActiveScheduleContexts(input.db, input.institutionId, {}, true)
   ).filter(
     (context) =>
       context.active && context.institutionId === input.institutionId,

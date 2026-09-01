@@ -58,6 +58,7 @@ import {
   assertActiveScheduleContextTopology,
   listReadableScheduleContexts,
   resolveScheduleContextForShiftCreation,
+  specialtyForScheduleContextShift,
 } from "./schedule-contexts";
 import { pickShiftTemplatesForSector } from "../lib/shift-template-options";
 import { buildShiftTimestamps as buildHospitalShiftTimestamps } from "../lib/hospital-time";
@@ -771,6 +772,7 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
           sectorId: c.source.sectorId,
           scheduleContextId: c.source.scheduleContextId,
           label: c.source.label,
+          // Replicação preserva literalmente o dado histórico do turno-fonte.
           specialty: c.source.specialty,
           startAt: c.startAt,
           endAt: c.endAt,
@@ -1016,7 +1018,7 @@ async function buildTemplateMonthCandidates(
         hospitalId: input.hospitalId,
         sectorId: context.sectorId,
         scheduleContextId: context.id,
-        specialty: context.qualificationName,
+        specialty: specialtyForScheduleContextShift(context),
       });
     }
   }
@@ -1080,6 +1082,7 @@ async function replicateMonthCalendar(
       hospitalId: source.hospitalId,
       sectorId: source.sectorId,
       scheduleContextId: source.scheduleContextId,
+      // Replicação preserva literalmente o dado histórico do turno-fonte.
       specialty: source.specialty,
       modality: source.modality,
       coverageType: source.coverageType,
@@ -1349,7 +1352,7 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
         hospitalId: input.hospitalId,
         sectorId: context.sectorId,
         scheduleContextId: context.id,
-        specialty: context.qualificationName,
+        specialty: specialtyForScheduleContextShift(context),
       };
     });
     for (const candidate of candidates) {
@@ -1630,7 +1633,7 @@ export const shiftsRouter = router({
           sectorId,
           scheduleContextId: selectedContext.id,
           label: template.name,
-          specialty: activeContext.qualificationName,
+          specialty: specialtyForScheduleContextShift(activeContext),
           startAt,
           endAt,
           status: "VAGO",

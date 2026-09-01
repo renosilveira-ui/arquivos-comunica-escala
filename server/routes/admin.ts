@@ -1098,6 +1098,7 @@ adminRouter.get(
         medicalSpecialtyCode: context.medicalSpecialtyCode,
         operationalProfileCode: context.operationalProfileCode,
         qualificationName: context.qualificationName,
+        clinicalMetadataStatus: context.clinicalMetadataStatus ?? null,
         displayName: context.displayName,
         // Rótulo assistencial do setor: não é usado para autorizar ou
         // selecionar profissionais nesta leitura administrativa.

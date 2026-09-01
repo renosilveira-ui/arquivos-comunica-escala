@@ -190,7 +190,11 @@ describe("concessão administrativa de ACL por contexto", () => {
     expect(resolver).not.toMatch(/\bqualificationMatches\s*\(/);
     expect(resolver).not.toContain("medicalSpecialtyId");
     expect(resolver).not.toContain("operationalProfileCode");
-    expect(resolver).toContain("requireQualificationConfiguration: false");
+    expect(resolver).not.toContain("requireQualificationConfiguration");
+    expect(activeSelection).not.toContain("requireQualificationConfiguration");
+    expect(activeSelection).not.toContain(
+      "qualificationConfigurationCondition",
+    );
     expect(activeSelection).toContain(
       "eq(scheduleContexts.institutionId, institutionId)",
     );
