@@ -408,6 +408,12 @@ describe("foundation de eventos operacionais", () => {
       "PREPARE operational_events_contract_restore_session_stmt",
     );
     expect(migration).toContain(
+      "DROP TEMPORARY TABLE _operational_events_contract_expected;",
+    );
+    expect(migration).not.toContain(
+      "DROP TEMPORARY TABLE IF EXISTS _operational_events_contract_expected",
+    );
+    expect(migration).toContain(
       "__operational_events_contract_preflight_rejected__",
     );
     expect(migration).toContain(

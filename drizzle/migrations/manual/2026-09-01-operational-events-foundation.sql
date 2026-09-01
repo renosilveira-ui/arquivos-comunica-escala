@@ -748,3 +748,8 @@ PREPARE operational_events_contract_restore_session_stmt
   FROM @operational_events_contract_restore_session_sql;
 EXECUTE operational_events_contract_restore_session_stmt;
 DEALLOCATE PREPARE operational_events_contract_restore_session_stmt;
+
+-- A tabela temporária existe apenas durante esta aplicação. A remoção ocorre
+-- somente depois de todo o contrato passar; se ela já existia antes, o CREATE
+-- inicial falha fechado e nenhuma limpeza pode mascarar esse estado.
+DROP TEMPORARY TABLE _operational_events_contract_expected;

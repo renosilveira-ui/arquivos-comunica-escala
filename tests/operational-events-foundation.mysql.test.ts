@@ -22,6 +22,18 @@ const foundationTables = [
 const foundationTableSqlList = foundationTables
   .map((tableName) => "'" + tableName + "'")
   .join(", ");
+const minimalFoundationParentsSql = [
+  "CREATE TABLE institutions (id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE users (id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE professionals (id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE hospitals (id INT NOT NULL, institution_id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE sectors (id INT NOT NULL, institution_id INT NOT NULL, hospital_id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE schedule_contexts (id INT NOT NULL, institution_id INT NOT NULL, hospital_id INT NOT NULL, sector_id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE shift_instances (id INT NOT NULL, institution_id INT NOT NULL, hospital_id INT NOT NULL, sector_id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE shift_assignments_v2 (id INT NOT NULL, institution_id INT NOT NULL, hospital_id INT NOT NULL, sector_id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE schedule_invites (id INT NOT NULL, institution_id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+  "CREATE TABLE professional_institutions (user_id INT NOT NULL, institution_id INT NOT NULL) ENGINE=InnoDB",
+].join(";\n") + ";";
 
 const isEnabled =
   process.env.OPERATIONAL_EVENTS_MIGRATION_MYSQL_TEST === "1";
@@ -42,6 +54,10 @@ type TableRow = RowDataPacket & {
 
 type ColumnRow = RowDataPacket & {
   COLUMN_NAME: string;
+};
+
+type SessionValueRow = RowDataPacket & {
+  group_concat_max_len: number | string;
 };
 
 function localMySqlConnectionOptions(): LocalMySqlConnectionOptions {
@@ -87,24 +103,37 @@ describeDisposableMySql(
   () => {
     let adminConnection: Awaited<ReturnType<typeof mysql.createConnection>>;
     let connectionOptions: LocalMySqlConnectionOptions;
-    let databaseName = "";
-    let databaseCreated = false;
+    let negativeDatabaseName = "";
+    let negativeDatabaseCreated = false;
+    let positiveDatabaseName = "";
+    let positiveDatabaseCreated = false;
 
     beforeAll(async () => {
       connectionOptions = localMySqlConnectionOptions();
-      databaseName =
+      negativeDatabaseName =
         "escala_events_contract_test_" + randomBytes(6).toString("hex");
       adminConnection = await mysql.createConnection(connectionOptions);
       await adminConnection.query(
-        "CREATE DATABASE " + quoteTemporaryDatabaseName(databaseName),
+        "CREATE DATABASE " + quoteTemporaryDatabaseName(negativeDatabaseName),
       );
-      databaseCreated = true;
+      negativeDatabaseCreated = true;
+      positiveDatabaseName =
+        "escala_events_contract_test_" + randomBytes(6).toString("hex");
+      await adminConnection.query(
+        "CREATE DATABASE " + quoteTemporaryDatabaseName(positiveDatabaseName),
+      );
+      positiveDatabaseCreated = true;
     });
 
     afterAll(async () => {
-      if (databaseCreated && databaseName && adminConnection) {
+      if (positiveDatabaseCreated && positiveDatabaseName && adminConnection) {
         await adminConnection.query(
-          "DROP DATABASE " + quoteTemporaryDatabaseName(databaseName),
+          "DROP DATABASE " + quoteTemporaryDatabaseName(positiveDatabaseName),
+        );
+      }
+      if (negativeDatabaseCreated && negativeDatabaseName && adminConnection) {
+        await adminConnection.query(
+          "DROP DATABASE " + quoteTemporaryDatabaseName(negativeDatabaseName),
         );
       }
       await adminConnection?.end();
@@ -113,7 +142,7 @@ describeDisposableMySql(
     it("rejeita tabela parcial sem mascará-la nem criar as demais tabelas", async () => {
       const connection = await mysql.createConnection({
         ...connectionOptions,
-        database: databaseName,
+        database: negativeDatabaseName,
         multipleStatements: true,
       });
 
@@ -147,6 +176,60 @@ describeDisposableMySql(
         expect(tables.map(({ TABLE_NAME }) => TABLE_NAME)).toEqual([
           "operational_events",
         ]);
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("reaplica na mesma conexão após limpar a tabela temporária, mas rejeita uma inesperada", async () => {
+      const connection = await mysql.createConnection({
+        ...connectionOptions,
+        database: positiveDatabaseName,
+        multipleStatements: true,
+      });
+
+      try {
+        await connection.query(minimalFoundationParentsSql);
+        const [beforeRows] = await connection.query<SessionValueRow[]>(
+          "SELECT @@SESSION.group_concat_max_len AS group_concat_max_len",
+        );
+        const groupConcatMaxLen = Number(
+          beforeRows[0]?.group_concat_max_len,
+        );
+
+        await connection.query(migration);
+        await connection.query(migration);
+
+        const [afterRows] = await connection.query<SessionValueRow[]>(
+          "SELECT @@SESSION.group_concat_max_len AS group_concat_max_len",
+        );
+        expect(Number(afterRows[0]?.group_concat_max_len)).toBe(
+          groupConcatMaxLen,
+        );
+
+        const [tables] = await connection.query<TableRow[]>(
+          "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (" +
+            foundationTableSqlList +
+            ") ORDER BY TABLE_NAME",
+        );
+        expect(tables.map(({ TABLE_NAME }) => TABLE_NAME)).toEqual([
+          ...foundationTables,
+        ]);
+
+        await connection.query(
+          "CREATE TEMPORARY TABLE _operational_events_contract_expected (id INT NOT NULL PRIMARY KEY) ENGINE=MEMORY",
+        );
+
+        let rejection: unknown;
+        try {
+          await connection.query(migration);
+        } catch (error) {
+          rejection = error;
+        }
+        expect(rejection).toBeDefined();
+        expect(String(rejection)).toContain(
+          "_operational_events_contract_expected",
+        );
       } finally {
         await connection.end();
       }
