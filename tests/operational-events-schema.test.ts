@@ -130,6 +130,11 @@ describe("schema da foundation de eventos operacionais", () => {
     });
   });
 
+  it("expõe revisão operacional persistida para os quatro fatos fechados de assignment", () => {
+    expect(shiftAssignmentsV2.operationalRevision.notNull).toBe(true);
+    expect(shiftAssignmentsV2.operationalRevision.hasDefault).toBe(true);
+  });
+
   it("aceita somente usuário ou convite persistido como destinatário", () => {
     const config = getTableConfig(operationalEventRecipients);
     const uniqueColumns = Object.fromEntries(

@@ -50,6 +50,10 @@ import {
   assertActiveScheduleContextTopology,
   assertProfessionalEligibleForScheduleContext,
 } from "./schedule-contexts";
+import {
+  captureCanonicalAssignmentShadowRecipient,
+  recordAssignmentShadowEventInTransaction,
+} from "./assignment-operational-events";
 
 type ConfirmationDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -1012,6 +1016,24 @@ export const confirmationRouter = router({
           sectorId: current.shift.sectorId,
           activeDelta: 0,
         });
+        const originalAssignmentId = current.original.assignmentId;
+        if (originalAssignmentId === null) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A alocação original não possui identidade canônica.",
+          });
+        }
+        // Captura a identidade do titular sob lock antes de qualquer
+        // desativação. O fato posterior confirma o mesmo userId após o CAS.
+        const capturedOriginalRecipient =
+          await captureCanonicalAssignmentShadowRecipient(tx, {
+            institutionId: current.shift.institutionId,
+            hospitalId: current.shift.hospitalId,
+            sectorId: current.shift.sectorId,
+            scheduleContextId: current.shift.scheduleContextId,
+            shiftInstanceId: current.shift.id,
+            assignmentId: originalAssignmentId,
+          });
         // O CAS conquista a indicação antes de tocar nas alocações. Se
         // qualquer escrita posterior falhar, a própria transação também
         // reverte a transição e não há efeito externo.
@@ -1026,10 +1048,26 @@ export const confirmationRouter = router({
 
         const [deactivated] = await tx
           .update(shiftAssignmentsV2)
-          .set({ isActive: false })
+          .set({
+            isActive: false,
+            operationalRevision:
+              capturedOriginalRecipient.operationalRevision + 1,
+          })
           .where(
             and(
-              eq(shiftAssignmentsV2.id, current.original.assignmentId!),
+              eq(shiftAssignmentsV2.id, originalAssignmentId),
+              eq(shiftAssignmentsV2.institutionId, current.shift.institutionId),
+              eq(shiftAssignmentsV2.hospitalId, current.shift.hospitalId),
+              eq(shiftAssignmentsV2.sectorId, current.shift.sectorId),
+              eq(shiftAssignmentsV2.shiftInstanceId, current.shift.id),
+              eq(
+                shiftAssignmentsV2.professionalId,
+                current.original.professionalId,
+              ),
+              eq(
+                shiftAssignmentsV2.operationalRevision,
+                capturedOriginalRecipient.operationalRevision,
+              ),
               eq(shiftAssignmentsV2.isActive, true),
             ),
           );
@@ -1040,18 +1078,50 @@ export const confirmationRouter = router({
               "A alocação original já foi alterada — esta indicação não vale mais.",
           });
         }
-        await tx.insert(shiftAssignmentsV2).values({
-          shiftInstanceId: current.shift.id,
-          institutionId: current.shift.institutionId,
-          hospitalId: current.shift.hospitalId,
-          sectorId: current.shift.sectorId,
-          professionalId: replacementPro.professionalId,
-          assignmentType: current.original.assignmentType,
-          status: "OCUPADO",
-          isActive: true,
-          createdBy: ctx.user.id,
-        });
+        const [replacementAssignment] = await tx
+          .insert(shiftAssignmentsV2)
+          .values({
+            shiftInstanceId: current.shift.id,
+            institutionId: current.shift.institutionId,
+            hospitalId: current.shift.hospitalId,
+            sectorId: current.shift.sectorId,
+            professionalId: replacementPro.professionalId,
+            assignmentType: current.original.assignmentType,
+            status: "OCUPADO",
+            isActive: true,
+            operationalRevision: 1,
+            createdBy: ctx.user.id,
+          })
+          .$returningId();
+        if (!replacementAssignment?.id) {
+          throw new Error("Alocação substituta não foi persistida");
+        }
+        const capturedReplacementRecipient =
+          await captureCanonicalAssignmentShadowRecipient(tx, {
+            institutionId: current.shift.institutionId,
+            hospitalId: current.shift.hospitalId,
+            sectorId: current.shift.sectorId,
+            scheduleContextId: current.shift.scheduleContextId,
+            shiftInstanceId: current.shift.id,
+            assignmentId: replacementAssignment.id,
+          });
         await recomputeShiftStatus(tx, current.shift.id);
+        await recordAssignmentShadowEventInTransaction(tx, {
+          operation: "SUBSTITUTION_REMOVAL",
+          capturedRecipient: capturedOriginalRecipient,
+          actor: {
+            userId: ctx.user.id,
+            professionalId: replacementPro.professionalId,
+          },
+        });
+        await recordAssignmentShadowEventInTransaction(tx, {
+          operation: "SUBSTITUTION_ASSIGNMENT",
+          capturedRecipient: capturedReplacementRecipient,
+          actor: {
+            userId: ctx.user.id,
+            professionalId: replacementPro.professionalId,
+          },
+        });
 
         const intent: TrackedPushInput = {
           institutionId: current.shift.institutionId,

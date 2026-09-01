@@ -75,6 +75,9 @@ export default defineConfig({
       "tests/operational-events-migration.test.ts",
       "tests/operational-events-emission-mode-migration.test.ts",
       "tests/operational-events-foundation.test.ts",
+      "tests/shift-assignments-operational-revision-migration.test.ts",
+      "tests/assignment-operational-events.test.ts",
+      "tests/assignment-events-shadow-source.test.ts",
     ],
   },
 });
