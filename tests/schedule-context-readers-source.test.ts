@@ -36,7 +36,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     const assumable = source.slice(start, end);
     expect(assumable).toContain("managerScopeCoversContext");
     expect(assumable).toContain("accessCoversScheduleContext");
-    expect(assumable).toContain("qualificationMatches");
+    expect(assumable).not.toMatch(/\bqualificationMatches\s*\(/);
     expect(assumable).toContain('roleInInstitution === "GESTOR_MEDICO"');
     expect(assumable).toContain('roleInInstitution === "GESTOR_PLUS"');
     expect(assumable).toContain("if (scoped) return true");

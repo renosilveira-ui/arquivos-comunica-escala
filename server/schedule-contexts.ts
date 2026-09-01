@@ -389,12 +389,14 @@ export function filterScheduleContextsForActor(input: {
       context.active && context.institutionId === actor.institutionId,
   );
 
+  // A descoberta de escala é regida por vínculo profissional e ACL topológica.
+  // Qualificação clínica continua sendo metadado e não pode negar um contexto
+  // para o qual o profissional já possui acesso institucional explícito.
   const canPracticeInContext = (context: ActiveScheduleContext) =>
     actor.professionalId !== null &&
     input.professional !== null &&
-    qualificationMatches(input.professional, context) &&
     input.accesses.some((access) =>
-      accessCoversContext(access, actor.professionalId!, context),
+      accessCoversScheduleContext(access, actor.professionalId!, context),
     );
 
   let authorized: AuthorizedScheduleContext[];
@@ -407,8 +409,8 @@ export function filterScheduleContextsForActor(input: {
     actor.professionalId !== null
   ) {
     // O papel de gestor não apaga o vínculo assistencial. Fora de sua
-    // manager_scope, ele ainda pode ler uma escala coberta pela própria
-    // qualificação + professional_access, mas não gerenciá-la.
+    // manager_scope, ele ainda pode ler uma escala coberta pelo próprio
+    // professional_access, mas não gerenciá-la.
     authorized = tenantContexts.flatMap((context) => {
       const canManage = input.managerScopes.some((scope) =>
         managerScopeCoversContext(scope, actor.professionalId!, context),
@@ -957,6 +959,10 @@ export function scheduleContextsToSpecificAccessTargets(
 export function projectEffectiveScheduleContextIds(input: {
   institutionId: number;
   professionalId: number;
+  /**
+   * Mantido para compatibilidade de contrato. A qualificação é metadado e
+   * não participa da projeção de contextos efetivamente autorizados.
+   */
   qualification: ProfessionalQualification;
   contexts: ActiveScheduleContext[];
   accesses: ScheduleContextAccess[];
@@ -966,7 +972,6 @@ export function projectEffectiveScheduleContextIds(input: {
       (context) =>
         context.active &&
         context.institutionId === input.institutionId &&
-        qualificationMatches(input.qualification, context) &&
         input.accesses.some((access) =>
           accessCoversScheduleContext(access, input.professionalId, context),
         ),
@@ -1007,19 +1012,16 @@ async function loadProfessionalQualification(
   };
 }
 
-/** Qualificação + papel no tenant, numa query só — USER não paga manager_scope. */
-async function loadProfessionalQualificationForAssumable(
+/** Vínculo profissional + papel no tenant, numa query só — USER não paga manager_scope. */
+async function loadProfessionalInstitutionRoleForAssumable(
   db: ContextDb,
   institutionId: number,
   professionalId: number,
 ): Promise<{
-  qualification: ProfessionalQualification;
   roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS" | null;
 } | null> {
   const [row] = await db
     .select({
-      medicalSpecialtyId: professionals.medicalSpecialtyId,
-      operationalProfileCode: professionals.operationalProfileCode,
       roleInInstitution: professionalInstitutions.roleInInstitution,
     })
     .from(professionals)
@@ -1036,11 +1038,6 @@ async function loadProfessionalQualificationForAssumable(
     .limit(1);
   if (!row) return null;
   return {
-    qualification: {
-      medicalSpecialtyId: row.medicalSpecialtyId,
-      operationalProfileCode: row.operationalProfileCode as
-        "MEDICO_GENERALISTA" | null,
-    },
     roleInInstitution: row.roleInInstitution ?? null,
   };
 }
@@ -1161,7 +1158,7 @@ export async function listAssumableScheduleContextIds(
   // Também roda dentro de transações de candidatura; consultas sequenciais
   // evitam concorrência de comandos na mesma conexão MySQL.
   const contexts = await selectActiveScheduleContexts(database, institutionId);
-  const professional = await loadProfessionalQualificationForAssumable(
+  const professional = await loadProfessionalInstitutionRoleForAssumable(
     database,
     institutionId,
     professionalId,
@@ -1184,12 +1181,11 @@ export async function listAssumableScheduleContextIds(
       const scoped = scopes.some((scope) =>
         managerScopeCoversContext(scope, professionalId, context),
       );
-      // listAssumable = vagas que o próprio plantonista vê. Qualificação
-      // ainda vale aqui. Alocação pelo gestor (assert + picker) não filtra
-      // especialidade — ver assertProfessionalEligibleForScheduleContext.
+      // listAssumable = vagas que o próprio plantonista vê. A decisão é
+      // topológica: manager_scope ou professional_access ativo e compatível
+      // com instituição/hospital/setor. Qualificação não substitui ACL.
       if (scoped) return true;
       return (
-        qualificationMatches(professional.qualification, context) &&
         accesses.some((access) =>
           accessCoversScheduleContext(access, professionalId, context),
         )
