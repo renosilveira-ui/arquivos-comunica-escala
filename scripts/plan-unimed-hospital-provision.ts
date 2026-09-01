@@ -88,6 +88,7 @@ type InformationSchemaForeignKeyRow = RowDataPacket & {
   constraintName: string;
   sequence: number;
   columnName: string;
+  referencedTableSchema: string;
   referencedTableName: string;
   referencedColumnName: string;
   updateRule: string;
@@ -179,6 +180,12 @@ function parseCliArgs(argv: readonly string[]): void {
   }
 }
 
+const LOOPBACK_DATABASE_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+function normalizedDatabaseHost(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
+}
+
 function buildConnectionOptions(env: NodeJS.ProcessEnv) {
   const rawUrl = requireNonEmpty(env.DATABASE_URL, "DATABASE_URL");
   const url = new URL(rawUrl);
@@ -187,9 +194,11 @@ function buildConnectionOptions(env: NodeJS.ProcessEnv) {
       "DATABASE_URL deve usar mysql:// e não pode conter fragmento.",
     );
   }
-  const sslMode = url.searchParams.get("ssl-mode")?.toUpperCase() ?? null;
+  const sslModes = url.searchParams.getAll("ssl-mode");
+  const sslMode = sslModes[0]?.toUpperCase() ?? null;
   if (
     ![...url.searchParams.keys()].every((key) => key === "ssl-mode") ||
+    sslModes.length > 1 ||
     (sslMode !== null && sslMode !== "REQUIRED")
   ) {
     throw new Error(
@@ -198,9 +207,21 @@ function buildConnectionOptions(env: NodeJS.ProcessEnv) {
   }
   const database = url.pathname.replace(/^\//, "");
   if (!database) throw new Error("DATABASE_URL deve informar o banco.");
+  const host = normalizedDatabaseHost(url.hostname);
+  if (!host) throw new Error("DATABASE_URL deve informar o host.");
+  const port = url.port ? Number(url.port) : 3306;
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("DATABASE_URL deve informar uma porta entre 1 e 65535.");
+  }
+  const isLoopback = LOOPBACK_DATABASE_HOSTS.has(host);
+  if (!isLoopback && sslMode !== "REQUIRED") {
+    throw new Error(
+      "DATABASE_URL de host remoto exige ssl-mode=REQUIRED com verificação de certificado.",
+    );
+  }
   return {
-    host: url.hostname,
-    port: url.port ? Number(url.port) : 3306,
+    host,
+    port,
     user: decodeURIComponent(url.username),
     password: decodeURIComponent(url.password),
     database,
@@ -527,6 +548,7 @@ export async function assertSectorServiceSpecialtiesMigrationCompatible(
     `SELECT kcu.CONSTRAINT_NAME AS constraintName,
             kcu.ORDINAL_POSITION AS sequence,
             kcu.COLUMN_NAME AS columnName,
+            kcu.REFERENCED_TABLE_SCHEMA AS referencedTableSchema,
             kcu.REFERENCED_TABLE_NAME AS referencedTableName,
             kcu.REFERENCED_COLUMN_NAME AS referencedColumnName,
             rc.UPDATE_RULE AS updateRule,
@@ -538,7 +560,8 @@ export async function assertSectorServiceSpecialtiesMigrationCompatible(
         AND rc.TABLE_NAME = kcu.TABLE_NAME
       WHERE kcu.CONSTRAINT_SCHEMA = DATABASE()
         AND kcu.TABLE_NAME = 'sector_service_specialties'
-        AND kcu.REFERENCED_TABLE_NAME IS NOT NULL`,
+        AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+        AND kcu.REFERENCED_TABLE_SCHEMA = DATABASE()`,
   );
   assertExpectedForeignKeys(foreignKeys);
 }

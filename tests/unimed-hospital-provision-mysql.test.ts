@@ -4,8 +4,9 @@ import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 import { runUnimedHospitalProvisionPlan } from "../scripts/plan-unimed-hospital-provision";
 
 const TEST_SERVER_URL = process.env.UNIMED_HOSPITAL_PROVISION_TEST_SERVER_URL;
-const TEMPORARY_DATABASE_PREFIX = "escala_unimed_provision_validation_";
+const TEMPORARY_DATABASE_PREFIX = "escala_unimed_plan_";
 const NESTED_TEMPORARY_DATABASE_PREFIX = "escala_unimed_partial_";
+const FOREIGN_TEMPORARY_DATABASE_PREFIX = "escala_unimed_foreign_";
 
 type TestServer = Readonly<{
   host: string;
@@ -41,7 +42,7 @@ function temporaryDatabaseName(prefix = TEMPORARY_DATABASE_PREFIX): string {
   const name = `${prefix}${process.pid}_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2, 10)}`;
-  if (!/^[a-z0-9_]+$/.test(name)) {
+  if (!/^[a-z0-9_]+$/.test(name) || name.length > 64) {
     throw new Error("Nome de schema de teste inválido.");
   }
   return name;
@@ -364,6 +365,57 @@ describeWithIsolatedMysql("plano Unimed em MySQL isolado", () => {
       if (partialSchema.startsWith(NESTED_TEMPORARY_DATABASE_PREFIX)) {
         await admin.query(
           `DROP DATABASE IF EXISTS ${quoteIdentifier(partialSchema)}`,
+        );
+      }
+    }
+  });
+
+  it("rejeita relação N:N que aponta para uma topologia de outro schema", async () => {
+    if (!server) throw new Error("Servidor MySQL isolado ausente.");
+    const foreignSchema = temporaryDatabaseName(
+      FOREIGN_TEMPORARY_DATABASE_PREFIX,
+    );
+    try {
+      await admin.query(`CREATE DATABASE ${quoteIdentifier(foreignSchema)}`);
+      await admin.query(`
+        CREATE TABLE ${quoteIdentifier(foreignSchema)}.${quoteIdentifier("institutions")} (
+          id INT NOT NULL PRIMARY KEY
+        ) ENGINE=InnoDB
+      `);
+      await admin.query(
+        `INSERT INTO ${quoteIdentifier(foreignSchema)}.${quoteIdentifier("institutions")} (id) VALUES (1)`,
+      );
+      await database.query(`
+        ALTER TABLE sector_service_specialties
+          DROP FOREIGN KEY fk_sector_service_specialty_institution;
+        ALTER TABLE sector_service_specialties
+          ADD CONSTRAINT fk_sector_service_specialty_institution
+          FOREIGN KEY (institution_id)
+          REFERENCES ${quoteIdentifier(foreignSchema)}.${quoteIdentifier("institutions")} (id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT;
+      `);
+      await expect(
+        runUnimedHospitalProvisionPlan([], testEnv(schemaName)),
+      ).rejects.toThrow(/migration N:N incompatível: chaves estrangeiras/i);
+    } finally {
+      try {
+        await database.query(`
+          ALTER TABLE sector_service_specialties
+            DROP FOREIGN KEY fk_sector_service_specialty_institution;
+          ALTER TABLE sector_service_specialties
+            ADD CONSTRAINT fk_sector_service_specialty_institution
+            FOREIGN KEY (institution_id)
+            REFERENCES institutions (id)
+            ON UPDATE RESTRICT
+            ON DELETE RESTRICT;
+        `);
+      } catch {
+        // A limpeza do schema efêmero no afterAll permanece a última barreira.
+      }
+      if (foreignSchema.startsWith(FOREIGN_TEMPORARY_DATABASE_PREFIX)) {
+        await admin.query(
+          `DROP DATABASE IF EXISTS ${quoteIdentifier(foreignSchema)}`,
         );
       }
     }

@@ -56,6 +56,24 @@ describe("plano de provisão Unimed", () => {
     ).rejects.toThrow(/não pode conter espaços nas extremidades/i);
   });
 
+  it("exige TLS verificado para um alvo remoto antes de abrir conexão", async () => {
+    await expect(
+      runUnimedHospitalProvisionPlan([], {
+        DATABASE_URL: "mysql://reader:secret@db.example.test:3306/escalas",
+        UNIMED_INSTITUTION_ID: "1",
+        UNIMED_INSTITUTION_NAME: "Unimed",
+      }),
+    ).rejects.toThrow(/host remoto exige ssl-mode=REQUIRED/i);
+    await expect(
+      runUnimedHospitalProvisionPlan([], {
+        DATABASE_URL:
+          "mysql://reader:secret@db.example.test:0/escalas?ssl-mode=REQUIRED",
+        UNIMED_INSTITUTION_ID: "1",
+        UNIMED_INSTITUTION_NAME: "Unimed",
+      }),
+    ).rejects.toThrow(/porta entre 1 e 65535/i);
+  });
+
   it("não contém DML produtiva nem reutiliza o mutador de substituição", () => {
     expect(source).toContain("SET TRANSACTION READ ONLY");
     expect(source).toContain("BLOCKED_UNTIL_AUTHENTICATED_MUTATION");
