@@ -8,16 +8,24 @@
 // está em dia). Erro tem que parecer erro.
 
 import { View, Text, TouchableOpacity } from "react-native";
-import { CloudOff } from "lucide-react-native";
+import { AlertCircle, CloudOff } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+import { presentQueryError } from "@/lib/query-error-presentation";
 
 export function QueryErrorState({
   title = "Não foi possível carregar",
+  error,
+  description,
   onRetry,
 }: {
   title?: string;
+  error?: unknown;
+  description?: string;
   onRetry: () => void;
 }) {
+  const presentation = presentQueryError(error);
+  const Icon = presentation.kind === "NETWORK" ? CloudOff : AlertCircle;
+
   return (
     <View
       style={{
@@ -27,7 +35,7 @@ export function QueryErrorState({
         gap: theme.space[4],
       }}
     >
-      <CloudOff size={40} color={theme.colors.textDisabled} />
+      <Icon size={40} color={theme.colors.textDisabled} />
       <Text
         style={{
           fontSize: 15,
@@ -45,7 +53,7 @@ export function QueryErrorState({
           textAlign: "center",
         }}
       >
-        Verifique sua conexão e tente novamente.
+        {description ?? presentation.body}
       </Text>
       <TouchableOpacity
         onPress={onRetry}

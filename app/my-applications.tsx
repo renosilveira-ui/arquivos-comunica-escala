@@ -7,6 +7,8 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, Inbox, Clock, AlertCircle, CalendarClock } from "lucide-react-native";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { resolveMyApplicationsContentState } from "@/lib/operational-screen-state";
 
 /**
  * Tela "Suas candidaturas" — RECEIVER counterpart de /my-offers.
@@ -69,13 +71,24 @@ export default function MyApplicationsScreen() {
   const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
 
-  const { data, isLoading } = trpc.swaps.list.useQuery(
+  const {
+    data,
+    isLoading,
+    isPending: applicationsPending,
+    isError: applicationsHasError,
+    error: applicationsError,
+    refetch: refetchApplications,
+  } = trpc.swaps.list.useQuery(
     { role: "RECEIVER" },
     { enabled: !!user?.id },
   );
   const {
     data: vacancyRequestsData,
     isLoading: vacancyRequestsLoading,
+    isPending: vacancyRequestsPending,
+    isError: vacancyRequestsHasError,
+    error: vacancyRequestsError,
+    refetch: refetchVacancyRequests,
   } = trpc.shiftAssignments.listMyVacancyRequests.useQuery(undefined, { enabled: !!user?.id });
 
   const handleBack = () => {
@@ -109,7 +122,15 @@ export default function MyApplicationsScreen() {
   const applications = (data ?? []) as any[];
   const vacancyRequests = vacancyRequestsData ?? [];
   const others = applications;
-  const hasNoApplications = applications.length === 0 && vacancyRequests.length === 0;
+  const contentState = resolveMyApplicationsContentState({
+    isLoading: isLoading || vacancyRequestsLoading,
+    isPending: applicationsPending || vacancyRequestsPending,
+    hasError: applicationsHasError || vacancyRequestsHasError,
+    hasResolvedApplications: data !== undefined,
+    hasResolvedVacancyRequests: vacancyRequestsData !== undefined,
+    applicationCount: applications.length,
+    vacancyRequestCount: vacancyRequests.length,
+  });
 
   return (
     <ScreenGradient>
@@ -129,14 +150,30 @@ export default function MyApplicationsScreen() {
           </Text>
         </View>
 
-        {isLoading || vacancyRequestsLoading ? (
+        {contentState === "LOADING" ? (
           <View className="items-center py-20">
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>
               Carregando candidaturas...
             </Text>
           </View>
-        ) : hasNoApplications ? (
+        ) : contentState === "ERROR" ? (
+          <QueryErrorState
+            title="Não foi possível carregar suas candidaturas"
+            error={applicationsError ?? vacancyRequestsError}
+            onRetry={() => {
+              void Promise.all([refetchApplications(), refetchVacancyRequests()]);
+            }}
+          />
+        ) : contentState === "UNRESOLVED" ? (
+          <QueryErrorState
+            title="Ainda estamos aguardando suas candidaturas"
+            description="A lista ainda não foi confirmada pelo sistema. Tente novamente para atualizar."
+            onRetry={() => {
+              void Promise.all([refetchApplications(), refetchVacancyRequests()]);
+            }}
+          />
+        ) : contentState === "EMPTY" ? (
           <View className="items-center justify-center py-20">
             <Inbox size={64} color={theme.colors.textMuted} />
             <Text

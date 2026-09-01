@@ -15,6 +15,7 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
+import { resolveOperationalListState } from "@/lib/operational-screen-state";
 
 export interface AvailableSwap {
   id: number;
@@ -61,11 +62,26 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
   const feedback = useActionFeedback();
   const [acting, setActing] = useState<{ id: number; action: "accept" | "reject" } | null>(null);
 
-  const { data, isLoading, isError, refetch } = trpc.swaps.listAvailable.useQuery(
+  const {
+    data,
+    isLoading,
+    isPending,
+    isError,
+    error,
+    refetch,
+  } = trpc.swaps.listAvailable.useQuery(
     {},
     { enabled: !!user?.id },
   );
   const swaps = (data ?? []) as AvailableSwap[];
+  const contentState = resolveOperationalListState({
+    isLoading,
+    isPending,
+    isError,
+    hasResolvedData: data !== undefined,
+    itemCount: swaps.length,
+    error,
+  });
 
   const invalidateSwapQueries = () =>
     Promise.all([
@@ -120,18 +136,34 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
     else rejectSwap.mutate(input);
   }
 
-  // Erro com dados em cache (cold start do servidor) mantém a lista.
-  if (isError && !data) {
-    return <QueryErrorState title="Não foi possível carregar as ofertas" onRetry={() => refetch()} />;
+  // Dados já confirmados continuam disponíveis em refresh falho; zero stale
+  // nunca vira "Nenhuma oferta" sem uma consulta atual bem-sucedida.
+  if (contentState === "ERROR") {
+    return (
+      <QueryErrorState
+        title="Não foi possível carregar as ofertas"
+        error={error}
+        onRetry={() => refetch()}
+      />
+    );
   }
-  if (isLoading) {
+  if (contentState === "LOADING") {
     return (
       <View style={{ paddingVertical: theme.space[6], alignItems: "center" }}>
         <ActivityIndicator color={theme.colors.primary} />
       </View>
     );
   }
-  if (swaps.length === 0) {
+  if (contentState === "UNRESOLVED") {
+    return (
+      <QueryErrorState
+        title="Ainda estamos aguardando as ofertas"
+        description="A lista ainda não foi confirmada pelo sistema. Tente novamente para atualizar."
+        onRetry={() => refetch()}
+      />
+    );
+  }
+  if (contentState === "EMPTY") {
     if (!showEmpty) return null;
     return (
       <View

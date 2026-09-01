@@ -14,6 +14,8 @@ import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { AppButton } from "@/components/ui/AppButton";
 import { AvailableSwapsList } from "@/components/swaps/AvailableSwapsList";
 import { theme } from "@/lib/theme";
+import { useOperationalQueryRefresh } from "@/hooks/use-operational-query-refresh";
+import { useNativeOperationalQueryRecovery } from "@/hooks/use-native-operational-query-recovery";
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -21,6 +23,11 @@ export default function TrocasScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isDesktop = Platform.OS === "web" && width >= MOBILE_BREAKPOINT;
+  const { captureLease, refreshSwapQueries } = useOperationalQueryRefresh();
+  useNativeOperationalQueryRecovery({
+    captureLease,
+    refresh: refreshSwapQueries,
+  });
 
   const go = (path: string) => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
