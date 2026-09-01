@@ -19,7 +19,7 @@ import { getDb } from "../server/db";
 import { shiftsRouter } from "../server/shifts-crud";
 import { scheduleContextsRouter } from "../server/schedule-contexts";
 import { planOpenMonthShifts } from "../lib/open-month-shifts";
-import { yearMonthBrt } from "../server/local-time";
+import { addMonthsYearMonth, yearMonthBrt } from "../server/local-time";
 
 const OFFSET = "-03:00";
 const at = (date: string, time: string) => new Date(`${date}T${time}${OFFSET}`);
@@ -734,7 +734,12 @@ describe("escala operacional genérica por instituição", () => {
           eq(scheduleContexts.sectorId, sectorB),
         ),
       );
-    const yearMonth = yearMonthBrt(new Date());
+    const currentYearMonth = yearMonthBrt(new Date());
+    const yearMonth =
+      (await countMonth(institutionB, sectorB, currentYearMonth)).length === 0
+        ? currentYearMonth
+        : addMonthsYearMonth(currentYearMonth, 1);
+    expect(await countMonth(institutionB, sectorB, yearMonth)).toHaveLength(0);
     const result = await callerShifts(
       scopedUserId,
       "manager",
