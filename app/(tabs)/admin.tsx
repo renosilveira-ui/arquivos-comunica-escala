@@ -41,7 +41,6 @@ import {
 } from "@/lib/medical-specialties";
 import {
   ScheduleContextAccessPicker,
-  compatibleScheduleContextIds,
   type ScheduleContextAccessOption,
 } from "@/components/ScheduleContextAccessPicker";
 import { formatDateTimeBR } from "@/lib/datetime";
@@ -97,9 +96,7 @@ interface PendingSignup {
 }
 
 type RecentRegistrationStatus =
-  | "PENDING_APPROVAL"
-  | "AWAITING_SCALE"
-  | "ACTIVE";
+  "PENDING_APPROVAL" | "AWAITING_SCALE" | "ACTIVE";
 
 interface RecentRegistration {
   id: number;
@@ -262,9 +259,7 @@ function CreateUserModal({
             professionalRole === "doctor" ? qualification : null,
           ),
           ...(professionalRole === "doctor" ? { scheduleContextIds } : {}),
-          ...(roleInInstitution === "GESTOR_MEDICO"
-            ? { managerScopes }
-            : {}),
+          ...(roleInInstitution === "GESTOR_MEDICO" ? { managerScopes } : {}),
         }),
       },
     );
@@ -465,22 +460,12 @@ function CreateUserModal({
             <View style={{ marginBottom: 20 }}>
               <ProfessionalQualificationPicker
                 value={qualification}
-                onChange={(value) => {
-                  setQualification(value);
-                  setScheduleContextIds((current) =>
-                    compatibleScheduleContextIds({
-                      contexts: scheduleContexts,
-                      qualification: value,
-                      selectedIds: current,
-                    }),
-                  );
-                }}
+                onChange={setQualification}
                 required
               />
               <View style={{ marginTop: 14 }}>
                 <ScheduleContextAccessPicker
                   contexts={scheduleContexts}
-                  qualification={qualification}
                   selectedIds={scheduleContextIds}
                   onChange={setScheduleContextIds}
                   required
@@ -830,21 +815,11 @@ function EditUserModal({
             <View style={{ marginBottom: 14, gap: 14 }}>
               <ProfessionalQualificationPicker
                 value={qualification}
-                onChange={(value) => {
-                  setQualification(value);
-                  setScheduleContextIds((current) =>
-                    compatibleScheduleContextIds({
-                      contexts: scheduleContexts,
-                      qualification: value,
-                      selectedIds: current,
-                    }),
-                  );
-                }}
+                onChange={setQualification}
                 required
               />
               <ScheduleContextAccessPicker
                 contexts={scheduleContexts}
-                qualification={qualification}
                 selectedIds={scheduleContextIds}
                 onChange={setScheduleContextIds}
                 required
@@ -1239,9 +1214,7 @@ export default function AdminScreen() {
     return (
       (u.name ?? "").toLowerCase().includes(query) ||
       (u.email ?? "").toLowerCase().includes(query) ||
-      INSTITUTION_ROLE_LABELS[u.roleInInstitution]
-        .toLowerCase()
-        .includes(query)
+      INSTITUTION_ROLE_LABELS[u.roleInInstitution].toLowerCase().includes(query)
     );
   });
 
@@ -1600,21 +1573,12 @@ export default function AdminScreen() {
                         ...current,
                         [p.id]: value,
                       }));
-                      setPendingScheduleContextIds((current) => ({
-                        ...current,
-                        [p.id]: compatibleScheduleContextIds({
-                          contexts: scheduleContexts,
-                          qualification: value,
-                          selectedIds: current[p.id] ?? [],
-                        }),
-                      }));
                     }}
                     required
                     tone="dark"
                   />
                   <ScheduleContextAccessPicker
                     contexts={scheduleContexts}
-                    qualification={pendingQualifications[p.id] ?? null}
                     selectedIds={pendingScheduleContextIds[p.id] ?? []}
                     onChange={(ids) =>
                       setPendingScheduleContextIds((current) => ({

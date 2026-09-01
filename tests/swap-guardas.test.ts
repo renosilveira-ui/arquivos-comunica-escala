@@ -14,6 +14,7 @@ import { getDb } from "../server/db";
 import { hospitals, institutions, monthlyRosters, notifications, professionals, sectors, shiftAssignmentsV2, shiftInstances, swapRequests } from "../drizzle/schema";
 import { swapRouter } from "../server/swap-router";
 import { yearMonthBrt } from "../server/local-time";
+import { openTestScale } from "./helpers/open-test-scale";
 
 vi.mock("../server/integrations/comunica-plus", () => ({
   enqueueComunicaSwapApproved: vi.fn(async () => 1),
@@ -26,6 +27,7 @@ describe("swaps: guardas de alocação ativa, oferta única e tipo preservado", 
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
   let userAId: number;
   let userBId: number;
   let proAId: number;
@@ -72,6 +74,11 @@ describe("swaps: guardas de alocação ativa, oferta única e tipo preservado", 
     institutionId = institution!.id;
     hospitalId = hospital!.id;
     sectorId = sector!.id;
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
     const [pedro] = await db.select().from(professionals).where(eq(professionals.name, "Dr. Pedro Costa")).limit(1);
     const [ana] = await db.select().from(professionals).where(eq(professionals.name, "Dra. Ana Lima")).limit(1);
     const [maria] = await db.select().from(professionals).where(eq(professionals.name, "Dra. Maria Santos")).limit(1);
@@ -105,7 +112,7 @@ describe("swaps: guardas de alocação ativa, oferta única e tipo preservado", 
       .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, label: `${PREFIX}${opts.label}`, startAt, endAt: at(14, opts.dayOffset), status: "OCUPADO" })
+      .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: `${PREFIX}${opts.label}`, startAt, endAt: at(14, opts.dayOffset), status: "OCUPADO" })
       .$returningId();
     const [a] = await db
       .insert(shiftAssignmentsV2)

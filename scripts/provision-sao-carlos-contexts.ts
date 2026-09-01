@@ -60,6 +60,7 @@ export function assertExactSaoCarlosSectorTopology(
 type ContextRow = RowDataPacket & {
   id: number;
   active: number | boolean;
+  admissionPolicy?: string;
 };
 
 type CountRow = RowDataPacket & { count: number };
@@ -281,7 +282,6 @@ async function findContextId(
         AND medical_specialty_id <=> ?
         AND operational_profile_code <=> ?
       ORDER BY id
-      LIMIT 1
       FOR SHARE`,
     [
       input.institutionId,
@@ -292,6 +292,11 @@ async function findContextId(
       input.operationalProfileCode,
     ],
   );
+  if (rows.length > 1) {
+    throw new Error(
+      "Mais de um contexto ativo/inativo corresponde à mesma configuração; regularize antes de provisionar",
+    );
+  }
   return rows[0]?.id ?? null;
 }
 
@@ -368,6 +373,53 @@ async function consolidateLegacyPinnedContexts(
   return legacy.length;
 }
 
+async function assertUnifiedSectorContextIntegrity(
+  connection: Connection,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    expectedContextId: number;
+  },
+): Promise<void> {
+  const [contexts] = await connection.execute<
+    (RowDataPacket & { id: number; admissionPolicy: string })[]
+  >(
+    `SELECT id, admission_policy AS admissionPolicy
+       FROM schedule_contexts
+      WHERE institution_id = ?
+        AND hospital_id = ?
+        AND sector_id = ?
+        AND active = TRUE
+      ORDER BY id
+      FOR SHARE`,
+    [input.institutionId, input.hospitalId, input.sectorId],
+  );
+  if (
+    contexts.length !== 1 ||
+    contexts[0]?.id !== input.expectedContextId ||
+    contexts[0]?.admissionPolicy !== "QUALIFICATION_ALLOWLIST"
+  ) {
+    throw new Error(
+      "O setor deve ter exatamente uma escala unificada ativa antes da consolidação",
+    );
+  }
+  const [allowlist] = await connection.execute<
+    (RowDataPacket & { id: number })[]
+  >(
+    `SELECT id
+       FROM schedule_context_allowed_qualifications
+      WHERE schedule_context_id = ?
+      FOR SHARE`,
+    [input.expectedContextId],
+  );
+  if (allowlist.length === 0) {
+    throw new Error(
+      "A escala unificada está sem metadado clínico de allowlist",
+    );
+  }
+}
+
 async function ensureUnifiedAllowlistContext(
   connection: Connection,
   input: {
@@ -410,6 +462,14 @@ async function ensureUnifiedAllowlistContext(
     });
     if (retired > 0) {
       allowlistActions.push(`retired=${retired}`);
+    }
+    if (input.apply) {
+      await assertUnifiedSectorContextIntegrity(connection, {
+        institutionId: input.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+        expectedContextId: contextId,
+      });
     }
   }
   return `QUALIFICATION_ALLOWLIST=${contextAction}; ${allowlistActions.join(", ")}`;
@@ -464,21 +524,25 @@ async function assertPriorityPilotReady(
   if (!sector) throw new Error("Sala de Recuperação ainda não foi criada");
 
   if (recovery.admission.mode !== "QUALIFICATION_ALLOWLIST") {
-    throw new Error("Sala de Recuperação deve ter lista fechada de qualificações");
+    throw new Error(
+      "Sala de Recuperação deve ter lista fechada de qualificações",
+    );
   }
   const [contexts] = await connection.execute<ContextRow[]>(
-    `SELECT id, active
+    `SELECT id, active, admission_policy AS admissionPolicy
        FROM schedule_contexts
       WHERE institution_id = ?
         AND hospital_id = ?
         AND sector_id = ?
-        AND admission_policy = 'QUALIFICATION_ALLOWLIST'
         AND active = TRUE
       ORDER BY id
       FOR SHARE`,
     [input.institutionId, input.hospitalId, sector.id],
   );
-  if (contexts.length !== 1) {
+  if (
+    contexts.length !== 1 ||
+    contexts[0]?.admissionPolicy !== "QUALIFICATION_ALLOWLIST"
+  ) {
     throw new Error(
       "Sala de Recuperação deve ter exatamente uma escala unificada ativa",
     );
@@ -529,26 +593,13 @@ async function assertPriorityPilotReady(
          ON access.professional_id = professional.id
         AND access.institution_id = ?
         AND access.hospital_id = ?
-        AND (access.sector_id IS NULL OR access.sector_id = ?)
-        AND access.can_access = TRUE
-      WHERE (
-        professional.medical_specialty_id IN (
-          SELECT id FROM medical_specialties
-           WHERE code IN ('CLINICA_MEDICA', 'MEDICINA_DE_EMERGENCIA', 'ANESTESIOLOGIA', 'MEDICINA_INTENSIVA')
-             AND active = TRUE
-        )
-        OR professional.operational_profile_code = 'RESIDENTE_ANESTESIOLOGIA'
-      )`,
-    [
-      input.institutionId,
-      input.institutionId,
-      input.hospitalId,
-      sector.id,
-    ],
+        AND access.sector_id = ?
+        AND access.can_access = TRUE`,
+    [input.institutionId, input.institutionId, input.hospitalId, sector.id],
   );
   if (Number(eligible[0]?.count ?? 0) < 1) {
     throw new Error(
-      "Sala de Recuperação não possui profissional aprovado, qualificado e autorizado",
+      "Sala de Recuperação não possui profissional aprovado com acesso setorial ativo",
     );
   }
 }
@@ -646,7 +697,9 @@ export async function provisionSaoCarlosContexts(): Promise<void> {
           qualification: item.admission.qualification,
           apply,
         });
-        contextActions.push(`${item.admission.qualification.code}=${contextAction}`);
+        contextActions.push(
+          `${item.admission.qualification.code}=${contextAction}`,
+        );
       } else if (sector && item.admission.mode !== "PINNED_QUALIFICATION") {
         const contextAction = await ensureContext(connection, {
           institutionId: target.institutionId,

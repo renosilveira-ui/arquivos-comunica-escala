@@ -51,7 +51,10 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
   });
 
   it("elegibilidade de push reusa o ramo plantonista e não o atalho gerencial", () => {
-    const eligibility = readFileSync("server/swap-offer-eligibility.ts", "utf8");
+    const eligibility = readFileSync(
+      "server/swap-offer-eligibility.ts",
+      "utf8",
+    );
     const plantonista = readFileSync(
       "server/plantonista-shift-eligibility.ts",
       "utf8",
@@ -62,24 +65,29 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
       listAvailable.indexOf("async function queryListAvailableRows"),
       listAvailable.indexOf("async function countActionableSwapOffers"),
     );
-    expect(eligibility).toContain("export async function eligibleRecipientUserIdsForSwapOffer");
-    expect(eligibility).toContain("plantonistaXorQualificationSql");
-    expect(eligibility).toContain("plantonistaQualificationMatchesSql");
-    expect(eligibility).toContain("plantonistaAccessCoversShiftSql");
-    expect(plantonista).toContain(
-      '${col(ap, "medical_specialty_id")} = aq.medical_specialty_id',
+    expect(eligibility).toContain(
+      "export async function eligibleRecipientUserIdsForSwapOffer",
     );
-    expect(plantonista).toContain("actor_source_access.sector_id = ${col(si, \"sector_id\")}");
-    expect(sql).toContain("sr.to_professional_id = ap.id AND sr.to_user_id = au.id");
+    expect(eligibility).toContain("plantonistaAccessCoversShiftSql");
+    expect(eligibility).not.toContain("plantonistaXorQualificationSql");
+    expect(eligibility).not.toContain("plantonistaQualificationMatchesSql");
+    expect(plantonista).not.toContain("medical_specialty_id");
+    expect(plantonista).not.toContain("operational_profile_code");
+    expect(plantonista).toContain(
+      'actor_source_access.sector_id = ${col(si, "sector_id")}',
+    );
+    expect(sql).toContain(
+      "sr.to_professional_id = ap.id AND sr.to_user_id = au.id",
+    );
     expect(sql).not.toContain("api.role_in_institution = 'GESTOR_PLUS'");
     expect(sql).not.toContain("actor_mgr");
     expect(sql).not.toContain("actor_source_scope");
     expect(sql).not.toContain("actor_directed_scope");
-    expect(plantonista).toContain(
-      "(${col(ap, \"medical_specialty_id\")} IS NULL) != (${col(ap, \"operational_profile_code\")} IS NULL)",
+    expect(listSlice).not.toContain("medical_specialty_id");
+    expect(listSlice).not.toContain("operational_profile_code");
+    expect(listSlice).toContain(
+      "actor_source_access.sector_id = fsi.sector_id",
     );
-    expect(listSlice).toContain("ap.medical_specialty_id = aq.medical_specialty_id");
-    expect(listSlice).toContain("actor_source_access.sector_id = fsi.sector_id");
     expect(listSlice).toContain("GESTOR_PLUS");
     expect(listSlice).toContain("manager_scope");
   });
@@ -92,20 +100,25 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(signal).toContain("SWAP_OFFER_DEEP_LINK");
     expect(signal).not.toContain("listScaleManagerUserIds");
     expect(signal).not.toContain("offererName");
-    expect(signal).not.toContain("roleInInstitution, \"GESTOR_MEDICO\"");
+    expect(signal).not.toContain('roleInInstitution, "GESTOR_MEDICO"');
     expect(SWAP_OFFER_PUSH_TITLE).toBe("Plantão disponível");
     expect(SWAP_OFFER_DEEP_LINK).toBe("/(tabs)/trocas");
   });
 
   it("push recebido invalida countActionable e listAvailable sem navegar", () => {
-    const listener = readFileSync("components/NotificationListener.tsx", "utf8");
+    const listener = readFileSync(
+      "components/NotificationListener.tsx",
+      "utf8",
+    );
     const refreshMatrix = readFileSync(
       "lib/notification-query-refresh.ts",
       "utf8",
     );
     expect(listener).toContain("addNotificationReceivedListener");
     expect(listener).toContain("notificationQueryRefreshTargets");
-    expect(refreshMatrix).toContain("shouldInvalidateSwapQueriesOnNotification");
+    expect(refreshMatrix).toContain(
+      "shouldInvalidateSwapQueriesOnNotification",
+    );
     expect(listener).toContain("utils.swaps.countActionable.invalidate()");
     expect(listener).toContain("utils.swaps.listAvailable.invalidate()");
     const received = listener.slice(
@@ -146,14 +159,21 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(tabsEffect).not.toContain("queryClient.clear");
     expect(tabsEffect).not.toContain("keep_verified_tree");
     expect(tabsEffect).not.toContain("runTenantAuthorizationAttempt");
-    expect(tabsEffect).not.toContain("shouldSoftRevalidateNativeSessionOnForeground");
+    expect(tabsEffect).not.toContain(
+      "shouldSoftRevalidateNativeSessionOnForeground",
+    );
     expect(helper).not.toContain("queryClient.clear");
     expect(root).toContain('treeIntent === "keep_verified_tree"');
-    expect(root).toContain("shouldSoftRevalidateNativeSessionOnForeground(Platform.OS)");
+    expect(root).toContain(
+      "shouldSoftRevalidateNativeSessionOnForeground(Platform.OS)",
+    );
   });
 
   it("aceitar/ofertar no cliente já invalida o badge", () => {
-    const list = readFileSync("components/swaps/AvailableSwapsList.tsx", "utf8");
+    const list = readFileSync(
+      "components/swaps/AvailableSwapsList.tsx",
+      "utf8",
+    );
     const offer = readFileSync("app/request-swap.tsx", "utf8");
     expect(list).toContain("utils.swaps.countActionable.invalidate()");
     expect(list).toContain("utils.swaps.listAvailable.invalidate()");
@@ -162,7 +182,10 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
   });
 
   it("aceite local reconcilia a escala; recusa atualiza somente Trocas", () => {
-    const list = readFileSync("components/swaps/AvailableSwapsList.tsx", "utf8");
+    const list = readFileSync(
+      "components/swaps/AvailableSwapsList.tsx",
+      "utf8",
+    );
     const acceptBlock = list.slice(
       list.indexOf("const acceptSwap"),
       list.indexOf("const rejectSwap"),

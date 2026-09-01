@@ -12,10 +12,12 @@ import {
 
 describe("aviso de plantão vago — contratos de fonte", () => {
   it("invalida Plantões em aberto só em vacancy_available", () => {
-    expect(shouldInvalidateVacancyQueriesOnNotification("vacancy_available")).toBe(
-      true,
+    expect(
+      shouldInvalidateVacancyQueriesOnNotification("vacancy_available"),
+    ).toBe(true);
+    expect(shouldInvalidateVacancyQueriesOnNotification("swap_offer")).toBe(
+      false,
     );
-    expect(shouldInvalidateVacancyQueriesOnNotification("swap_offer")).toBe(false);
     expect(shouldInvalidateVacancyQueriesOnNotification("shift_assigned")).toBe(
       false,
     );
@@ -115,25 +117,34 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     );
     const swap = readFileSync("server/swap-offer-eligibility.ts", "utf8");
     const sql = eligibility.slice(eligibility.indexOf("SELECT DISTINCT au.id"));
-    expect(eligibility).toContain("export async function eligibleProfessionalUserIdsForShift");
+    expect(eligibility).toContain(
+      "export async function eligibleProfessionalUserIdsForShift",
+    );
     expect(sql).not.toContain("GESTOR_PLUS");
     expect(sql).not.toContain("manager_scope");
     expect(sql).not.toContain("role_in_institution");
-    expect(swap).toContain("plantonistaXorQualificationSql");
-    expect(swap).toContain("plantonistaQualificationMatchesSql");
     expect(swap).toContain("plantonistaAccessCoversShiftSql");
+    expect(swap).not.toContain("plantonistaXorQualificationSql");
+    expect(swap).not.toContain("plantonistaQualificationMatchesSql");
+    expect(eligibility).not.toContain("medical_specialty_id");
+    expect(eligibility).not.toContain("operational_profile_code");
   });
 
   it("UI do gestor só mostra Avisar equipe em plantão vago", () => {
     const details = readFileSync("app/shift-details.tsx", "utf8");
-    expect(details).toContain('label={notifyVacancy.isPending ? "Enviando aviso..." : "Avisar equipe"}');
+    expect(details).toContain(
+      'label={notifyVacancy.isPending ? "Enviando aviso..." : "Avisar equipe"}',
+    );
     expect(details).toContain('shift.status === "VAGO"');
     expect(details).toContain("trpc.shifts.notifyVacancy");
     expect(details).toContain("vacancyBroadcastFeedbackMessage");
   });
 
   it("tap abre Plantões em aberto; recebido invalida lista e contadores", () => {
-    const listener = readFileSync("components/NotificationListener.tsx", "utf8");
+    const listener = readFileSync(
+      "components/NotificationListener.tsx",
+      "utf8",
+    );
     const refreshMatrix = readFileSync(
       "lib/notification-query-refresh.ts",
       "utf8",
@@ -145,7 +156,9 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(refreshMatrix).toContain(
       "shouldInvalidateVacancyQueriesOnNotification",
     );
-    expect(listener).toContain("utils.shiftInstances.listVacancies.invalidate()");
+    expect(listener).toContain(
+      "utils.shiftInstances.listVacancies.invalidate()",
+    );
     expect(listener).toContain("utils.filters.summaryCounts.invalidate()");
     const vacancyCase = listener.slice(
       listener.indexOf('case "vacancy_available"'),
@@ -169,7 +182,9 @@ describe("aviso de plantão vago — contratos de fonte", () => {
   it("rota canônica de Assumir plantão existe no mobile", () => {
     const vacancies = readFileSync("app/(tabs)/vacancies.tsx", "utf8");
     const tabs = readFileSync("app/(tabs)/_layout.tsx", "utf8");
-    expect(vacancies).toContain('title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}');
+    expect(vacancies).toContain(
+      'title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}',
+    );
     expect(tabs).toContain('name="vacancies"');
     expect(tabs).toContain('href: can("view:vacancies") ? undefined : null');
   });

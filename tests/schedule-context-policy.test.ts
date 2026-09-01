@@ -47,14 +47,40 @@ const userActor = {
 };
 
 describe("política canônica de contextos de escala", () => {
+  it("descobre Sala de Recuperação por vínculo e ACL exata mesmo sem metadado clínico", () => {
+    const recovery: ActiveScheduleContext = {
+      ...context(15, 10, null),
+      sectorName: "Sala de Recuperação",
+      medicalSpecialtyCode: null,
+      medicalSpecialtyName: null,
+      operationalProfileCode: null,
+      admissionPolicy: "QUALIFICATION_ALLOWLIST",
+      allowedQualifications: [],
+    };
+
+    const result = filterScheduleContextsForActor({
+      actor: userActor,
+      contexts: [recovery],
+      accesses: [
+        {
+          institutionId: 1,
+          professionalId: 55,
+          hospitalId: 100,
+          sectorId: 10,
+          canAccess: true,
+        },
+      ],
+      managerScopes: [],
+    });
+
+    expect(result.map((row) => row.id)).toEqual([15]);
+    expect(result[0]?.qualificationName).toBe("Acesso setorial");
+  });
+
   it("direciona USER aos setores A e B autorizados, sem vazar C", () => {
     const result = filterScheduleContextsForActor({
       actor: userActor,
       contexts: [context(1, 101), context(2, 102), context(3, 103)],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -88,10 +114,6 @@ describe("política canônica de contextos de escala", () => {
         context(3, 103),
         context(9, 901, 10, 2),
       ],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -112,10 +134,6 @@ describe("política canônica de contextos de escala", () => {
     const result = filterScheduleContextsForRosterRead({
       actor: { ...userActor, roleInInstitution: "GESTOR_MEDICO" },
       contexts: [context(1, 101), context(2, 102), context(3, 103)],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -201,15 +219,10 @@ describe("política canônica de contextos de escala", () => {
 
   it("projeta broad legado e ACL setorial sem confundir TRR com Emergência", () => {
     const contexts = [context(1, 101, null), context(2, 102, null)];
-    const qualification = {
-      medicalSpecialtyId: null,
-      operationalProfileCode: "MEDICO_GENERALISTA" as const,
-    };
     expect(
       projectEffectiveScheduleContextIds({
         institutionId: 1,
         professionalId: 55,
-        qualification,
         contexts,
         accesses: [
           {
@@ -226,7 +239,6 @@ describe("política canônica de contextos de escala", () => {
       projectEffectiveScheduleContextIds({
         institutionId: 1,
         professionalId: 55,
-        qualification,
         contexts,
         accesses: [
           {
@@ -256,7 +268,6 @@ describe("política canônica de contextos de escala", () => {
         roleInInstitution: "GESTOR_MEDICO",
       },
       contexts: [context(1, 101), context(2, 102), context(3, 103)],
-      professional: null,
       accesses: [],
       managerScopes: [
         {
@@ -280,14 +291,10 @@ describe("política canônica de contextos de escala", () => {
     expect(result.every((row) => row.canManage)).toBe(true);
   });
 
-  it("GESTOR_MEDICO combina manager_scope A com ACL clínica B sem gerenciar B", () => {
+  it("GESTOR_MEDICO combina manager_scope A com ACL operacional B sem gerenciar B", () => {
     const result = filterScheduleContextsForActor({
       actor: { ...userActor, roleInInstitution: "GESTOR_MEDICO" },
       contexts: [context(1, 101), context(2, 102), context(3, 103)],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -318,10 +325,6 @@ describe("política canônica de contextos de escala", () => {
     const [authorizedA] = filterScheduleContextsForActor({
       actor: userActor,
       contexts: [context(1, 101)],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -382,10 +385,6 @@ describe("política canônica de contextos de escala", () => {
     const result = filterScheduleContextsForActor({
       actor: userActor,
       contexts: [context(1, 101), context(99, 901, 10, 9)],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -422,10 +421,6 @@ describe("política canônica de contextos de escala", () => {
     const denied = filterScheduleContextsForActor({
       actor: userActor,
       contexts: [context(1, 101)],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -441,10 +436,6 @@ describe("política canônica de contextos de escala", () => {
     const hidden = filterScheduleContextsForActor({
       actor: userActor,
       contexts: [inactive],
-      professional: {
-        medicalSpecialtyId: 10,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -488,7 +479,6 @@ describe("política canônica de contextos de escala", () => {
         isGlobalAdmin: false,
       },
       contexts: legacyContexts,
-      professional: null,
       accesses: [],
       managerScopes: [],
     });
@@ -523,10 +513,6 @@ describe("política canônica de contextos de escala", () => {
     const result = filterScheduleContextsForActor({
       actor: userActor,
       contexts: [allowlist, legacyPinned],
-      professional: {
-        medicalSpecialtyId: 11,
-        operationalProfileCode: null,
-      },
       accesses: [
         {
           institutionId: 1,
@@ -610,8 +596,8 @@ describe("política canônica de contextos de escala", () => {
     expect(qualificationMatches(specialist, icu)).toBe(true);
     expect(qualificationMatches(resident, emergency)).toBe(false);
     expect(qualificationMatches(resident, icu)).toBe(false);
-    expect(
-      describeScheduleContext(emergency, false).displayName,
-    ).toBe("Hospital São Carlos — Emergência");
+    expect(describeScheduleContext(emergency, false).displayName).toBe(
+      "Hospital São Carlos — Emergência",
+    );
   });
 });

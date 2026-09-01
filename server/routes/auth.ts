@@ -2646,7 +2646,8 @@ authRouter.post(
       requestedManagerScopes = parseManagerScopes(managerScopes);
     } catch (error) {
       res.status(400).json({
-        error: error instanceof Error ? error.message : "managerScopes inválido",
+        error:
+          error instanceof Error ? error.message : "managerScopes inválido",
       });
       return;
     }
@@ -2673,7 +2674,10 @@ authRouter.post(
     }
 
     const existing = await getUserByEmail(normalizedEmail);
-    if (existing?.deletedAt || (existing && hasUsablePasswordHash(existing.passwordHash))) {
+    if (
+      existing?.deletedAt ||
+      (existing && hasUsablePasswordHash(existing.passwordHash))
+    ) {
       res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
       return;
     }
@@ -2723,10 +2727,6 @@ authRouter.post(
             ? await resolveScheduleContextAclSelection({
                 db: tx,
                 institutionId: targetInstitutionId,
-                qualification: {
-                  medicalSpecialtyId,
-                  operationalProfileCode: qualification.operationalProfileCode,
-                },
                 requestedScheduleContextIds,
               })
             : [];
@@ -3046,12 +3046,13 @@ authRouter.post(
       medicalSpecialtyCode,
       operationalProfileCode,
       legacySpecialty: specialty,
-      // Sem instituição: a especialidade é obrigatória para o gestor
-      // filtrar quem pode receber o convite da escala.
+      // Sem instituição: a qualificação ainda identifica o perfil clínico do
+      // profissional. Com instituição, o acesso operacional é escolhido pelo
+      // hospital e setor, independentemente desse metadado.
       allowMissing: Boolean(
         institutionId !== undefined &&
-          institutionId !== null &&
-          institutionId !== "",
+        institutionId !== null &&
+        institutionId !== "",
       ),
     });
     if (!parsedQualification.ok) {
@@ -3074,9 +3075,12 @@ authRouter.post(
     }
 
     const wantsInstitution =
-      institutionId !== undefined && institutionId !== null && institutionId !== "";
+      institutionId !== undefined &&
+      institutionId !== null &&
+      institutionId !== "";
     const instId = Number(institutionId);
-    const hasInstitution = wantsInstitution && Number.isInteger(instId) && instId > 0;
+    const hasInstitution =
+      wantsInstitution && Number.isInteger(instId) && instId > 0;
     if (wantsInstitution && !hasInstitution) {
       res.status(400).json({ error: "Instituição inválida" });
       return;
@@ -3086,7 +3090,9 @@ authRouter.post(
       ? await db
           .select({ id: institutions.id })
           .from(institutions)
-          .where(and(eq(institutions.id, instId), eq(institutions.isActive, true)))
+          .where(
+            and(eq(institutions.id, instId), eq(institutions.isActive, true)),
+          )
           .limit(1)
       : [];
     if (hasInstitution && !institution) {
@@ -3096,7 +3102,10 @@ authRouter.post(
 
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await getUserByEmail(normalizedEmail);
-    if (existing?.deletedAt || (existing && hasUsablePasswordHash(existing.passwordHash))) {
+    if (
+      existing?.deletedAt ||
+      (existing && hasUsablePasswordHash(existing.passwordHash))
+    ) {
       sendNeutralSignupAccepted(res, hasInstitution);
       return;
     }
@@ -3385,8 +3394,6 @@ authRouter.post(
         const [professional] = await tx
           .select({
             id: professionals.id,
-            medicalSpecialtyId: professionals.medicalSpecialtyId,
-            operationalProfileCode: professionals.operationalProfileCode,
           })
           .from(professionals)
           .where(eq(professionals.userId, authUser.id))
@@ -3399,10 +3406,6 @@ authRouter.post(
           code: parsedInvite,
           userId: authUser.id,
           professionalId: professional.id,
-          qualification: {
-            medicalSpecialtyId: professional.medicalSpecialtyId,
-            operationalProfileCode: professional.operationalProfileCode,
-          },
         });
       });
       await enqueueScheduleInviteAcceptedSignal({
@@ -3428,7 +3431,9 @@ authRouter.post(
         return;
       }
       console.error("[redeem-invite] Falha transacional");
-      res.status(500).json({ error: "Falha ao entrar na escala. Tente novamente." });
+      res
+        .status(500)
+        .json({ error: "Falha ao entrar na escala. Tente novamente." });
     }
   },
 );
@@ -3494,7 +3499,9 @@ authRouter.post(
         return;
       }
       console.error("[decline-invite] Falha transacional");
-      res.status(500).json({ error: "Falha ao recusar o convite. Tente novamente." });
+      res
+        .status(500)
+        .json({ error: "Falha ao recusar o convite. Tente novamente." });
     }
   },
 );

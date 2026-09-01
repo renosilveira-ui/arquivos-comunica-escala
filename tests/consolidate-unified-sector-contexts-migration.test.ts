@@ -10,11 +10,13 @@ const migration = readFileSync(
 );
 
 describe("migration manual de consolidação de escalas unificadas", () => {
-  it("move plantões legados e desativa contextos PINNED duplicados", () => {
-    expect(migration).toContain("QUALIFICATION_ALLOWLIST");
-    expect(migration).toContain("PINNED_QUALIFICATION");
-    expect(migration).toContain("UPDATE shift_instances");
-    expect(migration).toContain("SET legacy.active = FALSE");
+  it("recusa consolidação ambígua e encaminha para o provisionador transacional", () => {
+    expect(migration).toContain("SIGNAL SQLSTATE '45000'");
+    expect(migration).toContain("MIGRACAO_SCHEDULE_CONTEXT_LEGADA_BLOQUEADA");
+    expect(migration).toContain("pnpm provision:sao-carlos -- --apply");
+    expect(migration).toContain("MIN(id)");
+    expect(migration).not.toContain("UPDATE shift_instances");
+    expect(migration).not.toContain("SET legacy.active = FALSE");
     expect(migration).not.toMatch(/\bDROP\s+TABLE\b/i);
     expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
   });

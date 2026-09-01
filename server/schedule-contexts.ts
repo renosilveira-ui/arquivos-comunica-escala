@@ -1,5 +1,15 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -28,7 +38,10 @@ import {
 import { protectedProcedure, router } from "./_core/trpc";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
-import { ensureDefaultSectorScale, listManageableTopology } from "./sector-scale";
+import {
+  ensureDefaultSectorScale,
+  listManageableTopology,
+} from "./sector-scale";
 import {
   isSectorServiceSpecialtiesTableMissing,
   loadSectorServiceSpecialtiesByTopology,
@@ -44,14 +57,13 @@ import { z } from "zod";
 export type AllowedScheduleContextQualification = {
   medicalSpecialtyId: number | null;
   operationalProfileCode:
-    | "MEDICO_GENERALISTA"
-    | "RESIDENTE_ANESTESIOLOGIA"
-    | null;
+    "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null;
 };
 
 export type ScheduleContextQualification = {
   medicalSpecialtyId: number | null;
-  operationalProfileCode: "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null;
+  operationalProfileCode:
+    "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null;
   admissionPolicy?: ScheduleContextAdmissionPolicy;
   allowedQualifications?: readonly AllowedScheduleContextQualification[];
 };
@@ -141,6 +153,8 @@ export function qualificationMatches(
   professional: ProfessionalQualification,
   context: ScheduleContextQualification,
 ): boolean {
+  // Legado de classificação clínica. Esta função não é uma regra de ACL,
+  // elegibilidade, convite, candidatura ou alocação.
   const professionalHasExactlyOne =
     (professional.medicalSpecialtyId === null) !==
     (professional.operationalProfileCode === null);
@@ -175,9 +189,7 @@ export function qualificationMatches(
   if (context.medicalSpecialtyId !== null) {
     return professional.medicalSpecialtyId === context.medicalSpecialtyId;
   }
-  return (
-    professional.operationalProfileCode === context.operationalProfileCode
-  );
+  return professional.operationalProfileCode === context.operationalProfileCode;
 }
 
 export function accessCoversContext(
@@ -300,7 +312,7 @@ export function describeScheduleContext(
       ...context,
       qualificationKind: "SECTOR_POLICY",
       qualificationCode: "QUALIFICATION_ALLOWLIST",
-      qualificationName: "",
+      qualificationName: "Acesso setorial",
       displayName: `${context.hospitalName} — ${context.sectorName}`,
       canManage,
     };
@@ -355,7 +367,10 @@ export function pickCanonicalAgendaScheduleContext(
     return left.id - right.id;
   });
   const picked = sorted[0]!;
-  if (picked.canManage || !candidates.some((candidate) => candidate.canManage)) {
+  if (
+    picked.canManage ||
+    !candidates.some((candidate) => candidate.canManage)
+  ) {
     return picked;
   }
   return { ...picked, canManage: true };
@@ -387,7 +402,6 @@ export function filterScheduleContextsForActor(input: {
     "institutionId" | "professionalId" | "roleInInstitution" | "isGlobalAdmin"
   >;
   contexts: ActiveScheduleContext[];
-  professional: ProfessionalQualification | null;
   accesses: ScheduleContextAccess[];
   managerScopes: ScheduleContextManagerScope[];
 }): AuthorizedScheduleContext[] {
@@ -399,10 +413,8 @@ export function filterScheduleContextsForActor(input: {
 
   const canPracticeInContext = (context: ActiveScheduleContext) =>
     actor.professionalId !== null &&
-    input.professional !== null &&
-    qualificationMatches(input.professional, context) &&
     input.accesses.some((access) =>
-      accessCoversContext(access, actor.professionalId!, context),
+      accessCoversScheduleContext(access, actor.professionalId!, context),
     );
 
   let authorized: AuthorizedScheduleContext[];
@@ -415,8 +427,8 @@ export function filterScheduleContextsForActor(input: {
     actor.professionalId !== null
   ) {
     // O papel de gestor não apaga o vínculo assistencial. Fora de sua
-    // manager_scope, ele ainda pode ler uma escala coberta pela própria
-    // qualificação + professional_access, mas não gerenciá-la.
+    // manager_scope, ele ainda pode ler uma escala coberta pelo próprio
+    // professional_access, mas não gerenciá-la.
     authorized = tenantContexts.flatMap((context) => {
       const canManage = input.managerScopes.some((scope) =>
         managerScopeCoversContext(scope, actor.professionalId!, context),
@@ -425,7 +437,7 @@ export function filterScheduleContextsForActor(input: {
         ? [describeScheduleContext(context, canManage)]
         : [];
     });
-  } else if (actor.professionalId !== null && input.professional !== null) {
+  } else if (actor.professionalId !== null) {
     authorized = tenantContexts
       .filter(canPracticeInContext)
       .map((context) => describeScheduleContext(context, false));
@@ -448,7 +460,6 @@ export function filterScheduleContextsForRosterRead(input: {
     "institutionId" | "professionalId" | "roleInInstitution" | "isGlobalAdmin"
   >;
   contexts: ActiveScheduleContext[];
-  professional: ProfessionalQualification | null;
   accesses: ScheduleContextAccess[];
   managerScopes: ScheduleContextManagerScope[];
 }): AuthorizedScheduleContext[] {
@@ -464,7 +475,8 @@ export function filterScheduleContextsForRosterRead(input: {
   return dedupeAuthorizedScheduleContextsForAgenda(
     tenantContexts.map(
       (context) =>
-        authorizedById.get(context.id) ?? describeScheduleContext(context, false),
+        authorizedById.get(context.id) ??
+        describeScheduleContext(context, false),
     ),
   );
 }
@@ -504,10 +516,9 @@ async function loadScheduleContextAllowlists(
     })
     .from(scheduleContextAllowedQualifications)
     .where(
-      inArray(
-        scheduleContextAllowedQualifications.scheduleContextId,
-        [...contextIds],
-      ),
+      inArray(scheduleContextAllowedQualifications.scheduleContextId, [
+        ...contextIds,
+      ]),
     );
   const map = new Map<number, AllowedScheduleContextQualification[]>();
   for (const row of rows) {
@@ -515,9 +526,7 @@ async function loadScheduleContextAllowlists(
     list.push({
       medicalSpecialtyId: row.medicalSpecialtyId,
       operationalProfileCode: row.operationalProfileCode as
-        | "MEDICO_GENERALISTA"
-        | "RESIDENTE_ANESTESIOLOGIA"
-        | null,
+        "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null,
     });
     map.set(row.scheduleContextId, list);
   }
@@ -548,10 +557,7 @@ async function enrichActiveScheduleContexts(
  */
 export async function attachSectorServiceSpecialtiesToContexts<
   T extends ActiveScheduleContext,
->(
-  db: ContextDb,
-  contexts: readonly T[],
-): Promise<T[]> {
+>(db: ContextDb, contexts: readonly T[]): Promise<T[]> {
   let serviceSpecialtiesByTopology: Map<
     string,
     SectorServiceSpecialtyDescriptor[]
@@ -811,7 +817,6 @@ export async function selectActiveScheduleContexts(
             eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
             isNotNull(scheduleContexts.medicalSpecialtyId),
             isNull(scheduleContexts.operationalProfileCode),
-            eq(medicalSpecialties.active, true),
           ),
           and(
             eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
@@ -851,9 +856,7 @@ export async function selectActiveScheduleContexts(
       ...row,
       active: true as const,
       operationalProfileCode: row.operationalProfileCode as
-        | "MEDICO_GENERALISTA"
-        | "RESIDENTE_ANESTESIOLOGIA"
-        | null,
+        "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null,
       admissionPolicy: row.admissionPolicy,
     })),
   );
@@ -902,66 +905,96 @@ export function parseScheduleContextIds(value: unknown): number[] | undefined {
   return ids;
 }
 
-function assertExactlyOneProfessionalQualification(
-  qualification: ProfessionalQualification,
-): void {
-  if (
-    (qualification.medicalSpecialtyId === null) ===
-    (qualification.operationalProfileCode === null)
-  ) {
-    throw new ScheduleContextAclError(
-      409,
-      "Médico deve possuir exatamente uma qualificação ativa",
-    );
-  }
-}
-
 /**
  * Revalida no banco, dentro da transacao chamadora, tenant, topologia,
- * atividade e qualificacao de cada contexto selecionado. Para compatibilidade
- * com uma build antiga, a omissao so e resolvida quando existe exatamente um
- * contexto compativel.
+ * atividade de cada contexto selecionado. A especialidade clínica é metadado
+ * descritivo e não participa da ACL. Para compatibilidade com uma build
+ * antiga, a omissão só é resolvida quando existe exatamente um contexto ativo
+ * no tenant.
  */
 export async function resolveScheduleContextAclSelection(input: {
   db: ContextDb;
   institutionId: number;
-  qualification: ProfessionalQualification;
   requestedScheduleContextIds: number[] | undefined;
 }): Promise<ActiveScheduleContext[]> {
-  assertExactlyOneProfessionalQualification(input.qualification);
-  const compatible = (
+  const activeTenantContexts = (
     await selectActiveScheduleContexts(input.db, input.institutionId, {}, true)
-  ).filter((context) => qualificationMatches(input.qualification, context));
+  ).filter(
+    (context) =>
+      context.active && context.institutionId === input.institutionId,
+  );
 
   if (input.requestedScheduleContextIds === undefined) {
-    if (compatible.length === 0) {
+    if (activeTenantContexts.length === 0) {
       throw new ScheduleContextAclError(
         409,
-        "Nenhuma escala ativa é compatível com a qualificação médica",
+        "Nenhuma escala ativa está configurada nesta instituição",
       );
     }
-    if (compatible.length > 1) {
+    if (activeTenantContexts.length > 1) {
       throw new ScheduleContextAclError(
         409,
-        "Há mais de uma escala compatível; selecione explicitamente onde o médico poderá atuar",
+        "Há mais de uma escala ativa; selecione explicitamente onde o médico poderá atuar",
       );
     }
-    return compatible;
+    assertSelectedContextsHaveUniqueActiveTopology(
+      activeTenantContexts,
+      activeTenantContexts,
+    );
+    return activeTenantContexts;
   }
 
-  const compatibleById = new Map(
-    compatible.map((context) => [context.id, context] as const),
+  const activeContextById = new Map(
+    activeTenantContexts.map((context) => [context.id, context] as const),
   );
   const selected = input.requestedScheduleContextIds.map((id) =>
-    compatibleById.get(id),
+    activeContextById.get(id),
   );
   if (selected.some((context) => context === undefined)) {
     throw new ScheduleContextAclError(
       409,
-      "Escala inexistente, inativa, fora do tenant ou incompatível com a qualificação",
+      "Escala inexistente, inativa ou fora da instituição ativa",
     );
   }
-  return selected as ActiveScheduleContext[];
+  const resolved = selected as ActiveScheduleContext[];
+  assertSelectedContextsHaveUniqueActiveTopology(
+    activeTenantContexts,
+    resolved,
+  );
+  return resolved;
+}
+
+/**
+ * Uma edição de especialidade não pode regravar o acesso operacional. Só uma
+ * seleção explícita de contextos altera professional_access.
+ */
+export function shouldRewriteScheduleContextAccess(input: {
+  isDoctor: boolean;
+  requestedScheduleContextIds: readonly number[] | undefined;
+}): boolean {
+  return input.isDoctor && input.requestedScheduleContextIds !== undefined;
+}
+
+function assertSelectedContextsHaveUniqueActiveTopology(
+  allActiveContexts: readonly ActiveScheduleContext[],
+  selectedContexts: readonly ActiveScheduleContext[],
+): void {
+  const countByTopology = new Map<string, number>();
+  for (const context of allActiveContexts) {
+    const key = `${context.hospitalId}:${context.sectorId}`;
+    countByTopology.set(key, (countByTopology.get(key) ?? 0) + 1);
+  }
+  if (
+    selectedContexts.some(
+      (context) =>
+        countByTopology.get(`${context.hospitalId}:${context.sectorId}`) !== 1,
+    )
+  ) {
+    throw new ScheduleContextAclError(
+      409,
+      "Setor com mais de uma escala operacional ativa; regularize a topologia antes de conceder acesso.",
+    );
+  }
 }
 
 export function scheduleContextsToSpecificAccessTargets(
@@ -980,7 +1013,6 @@ export function scheduleContextsToSpecificAccessTargets(
 export function projectEffectiveScheduleContextIds(input: {
   institutionId: number;
   professionalId: number;
-  qualification: ProfessionalQualification;
   contexts: ActiveScheduleContext[];
   accesses: ScheduleContextAccess[];
 }): number[] {
@@ -989,7 +1021,6 @@ export function projectEffectiveScheduleContextIds(input: {
       (context) =>
         context.active &&
         context.institutionId === input.institutionId &&
-        qualificationMatches(input.qualification, context) &&
         input.accesses.some((access) =>
           accessCoversScheduleContext(access, input.professionalId, context),
         ),
@@ -1010,43 +1041,20 @@ export async function listAdministrativeScheduleContexts(
   return contexts.map((context) => describeScheduleContext(context, true));
 }
 
-async function loadProfessionalQualification(
-  db: ContextDb,
-  professionalId: number,
-): Promise<ProfessionalQualification | null> {
-  const [professional] = await db
-    .select({
-      medicalSpecialtyId: professionals.medicalSpecialtyId,
-      operationalProfileCode: professionals.operationalProfileCode,
-    })
-    .from(professionals)
-    .where(eq(professionals.id, professionalId))
-    .limit(1);
-  if (!professional) return null;
-  return {
-    medicalSpecialtyId: professional.medicalSpecialtyId,
-    operationalProfileCode: professional.operationalProfileCode as
-      "MEDICO_GENERALISTA" | null,
-  };
-}
-
-/** Qualificação + papel no tenant, numa query só — USER não paga manager_scope. */
-async function loadProfessionalQualificationForAssumable(
+/** Vínculo institucional ativo + papel, numa query só — USER não paga manager_scope. */
+async function loadProfessionalInstitutionRoleForAssumable(
   db: ContextDb,
   institutionId: number,
   professionalId: number,
 ): Promise<{
-  qualification: ProfessionalQualification;
   roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS" | null;
 } | null> {
   const [row] = await db
     .select({
-      medicalSpecialtyId: professionals.medicalSpecialtyId,
-      operationalProfileCode: professionals.operationalProfileCode,
       roleInInstitution: professionalInstitutions.roleInInstitution,
     })
     .from(professionals)
-    .leftJoin(
+    .innerJoin(
       professionalInstitutions,
       and(
         eq(professionalInstitutions.professionalId, professionals.id),
@@ -1059,11 +1067,6 @@ async function loadProfessionalQualificationForAssumable(
     .limit(1);
   if (!row) return null;
   return {
-    qualification: {
-      medicalSpecialtyId: row.medicalSpecialtyId,
-      operationalProfileCode: row.operationalProfileCode as
-        "MEDICO_GENERALISTA" | null,
-    },
     roleInInstitution: row.roleInInstitution ?? null,
   };
 }
@@ -1119,7 +1122,6 @@ async function loadActorScheduleContextPolicy(
   database: ContextDb,
 ): Promise<{
   contexts: ActiveScheduleContext[];
-  professional: ProfessionalQualification | null;
   accesses: ScheduleContextAccess[];
   managerScopes: ScheduleContextManagerScope[];
 }> {
@@ -1127,10 +1129,6 @@ async function loadActorScheduleContextPolicy(
     database,
     actor.institutionId,
   );
-  const professional =
-    actor.professionalId === null
-      ? null
-      : await loadProfessionalQualification(database, actor.professionalId);
   const accesses =
     actor.professionalId === null
       ? []
@@ -1147,7 +1145,7 @@ async function loadActorScheduleContextPolicy(
           actor.professionalId,
         )
       : [];
-  return { contexts, professional, accesses, managerScopes };
+  return { contexts, accesses, managerScopes };
 }
 
 export async function listAuthorizedScheduleContexts(
@@ -1184,7 +1182,7 @@ export async function listAssumableScheduleContextIds(
   // Também roda dentro de transações de candidatura; consultas sequenciais
   // evitam concorrência de comandos na mesma conexão MySQL.
   const contexts = await selectActiveScheduleContexts(database, institutionId);
-  const professional = await loadProfessionalQualificationForAssumable(
+  const professional = await loadProfessionalInstitutionRoleForAssumable(
     database,
     institutionId,
     professionalId,
@@ -1207,15 +1205,11 @@ export async function listAssumableScheduleContextIds(
       const scoped = scopes.some((scope) =>
         managerScopeCoversContext(scope, professionalId, context),
       );
-      // listAssumable = vagas que o próprio plantonista vê. Qualificação
-      // ainda vale aqui. Alocação pelo gestor (assert + picker) não filtra
-      // especialidade — ver assertProfessionalEligibleForScheduleContext.
+      // listAssumable = vagas que o próprio plantonista vê. A política é
+      // institucional/topológica: vínculo ativo, escopo ou acesso setorial.
       if (scoped) return true;
-      return (
-        qualificationMatches(professional.qualification, context) &&
-        accesses.some((access) =>
-          accessCoversScheduleContext(access, professionalId, context),
-        )
+      return accesses.some((access) =>
+        accessCoversScheduleContext(access, professionalId, context),
       );
     })
     .map((context) => context.id);
@@ -1240,37 +1234,25 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
   }
   const database = input.db ?? (await getDb());
   if (!database) throw new Error("Database not available");
-  if (input.lockForShare) {
-    const [lockedContext] = await database
-      .select({ id: scheduleContexts.id })
-      .from(scheduleContexts)
-      .where(
-        and(
-          eq(scheduleContexts.id, input.scheduleContextId),
-          eq(scheduleContexts.institutionId, input.institutionId),
-          eq(scheduleContexts.active, true),
-        ),
-      )
-      .limit(1)
-      .for("share");
-    if (!lockedContext) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "Escala inexistente, inativa ou fora do tenant ativo.",
-      });
-    }
-  }
-  const [context] = await selectActiveScheduleContexts(
+  const [selectedContext] = await selectActiveScheduleContexts(
     database,
     input.institutionId,
     { id: input.scheduleContextId },
+    input.lockForShare,
   );
-  if (!context) {
+  if (!selectedContext) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Escala inexistente, inativa ou fora do tenant ativo.",
     });
   }
+  const context = await assertActiveScheduleContextTopology({
+    institutionId: input.institutionId,
+    hospitalId: selectedContext.hospitalId,
+    sectorId: selectedContext.sectorId,
+    scheduleContextId: input.scheduleContextId,
+    db: database,
+  });
 
   const [professional] = await database
     .select({ userId: professionals.userId })
@@ -1300,7 +1282,13 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
       ),
     )
     .limit(1);
-  if (membership?.roleInInstitution === "GESTOR_PLUS") {
+  if (!membership) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Profissional sem vínculo ativo nesta instituição.",
+    });
+  }
+  if (membership.roleInInstitution === "GESTOR_PLUS") {
     return;
   }
   const scopes = await loadManagerScopes(
@@ -1361,19 +1349,29 @@ export async function assertActiveScheduleContextTopology(input: {
   }
   const database = input.db ?? (await getDb());
   if (!database) throw new Error("Database not available");
-  const [context] = await selectActiveScheduleContexts(
+  const contexts = await selectActiveScheduleContexts(
     database,
     input.institutionId,
     {
-      id: input.scheduleContextId,
       hospitalId: input.hospitalId,
       sectorId: input.sectorId,
     },
+    true,
+  );
+  const context = contexts.find(
+    (candidate) => candidate.id === input.scheduleContextId,
   );
   if (!context) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Escala inativa ou fora da topologia do plantão.",
+    });
+  }
+  if (contexts.length !== 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "Setor com mais de uma escala operacional ativa; regularize a topologia antes de continuar.",
     });
   }
   return context;
@@ -1446,16 +1444,23 @@ export async function resolveScheduleContextForShiftCreation(input: {
       message: "Escala inexistente, inativa ou fora do tenant ativo.",
     });
   }
+  const verifiedContext = await assertActiveScheduleContextTopology({
+    institutionId: input.institutionId,
+    hospitalId: context.hospitalId,
+    sectorId: context.sectorId,
+    scheduleContextId: context.id,
+    db: database,
+  });
   if (
     input.templateSectorId !== null &&
-    input.templateSectorId !== context.sectorId
+    input.templateSectorId !== verifiedContext.sectorId
   ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "O template informado pertence a outro setor.",
     });
   }
-  return describeScheduleContext(context, true);
+  return describeScheduleContext(verifiedContext, true);
 }
 
 export const scheduleContextsRouter = router({
@@ -1531,9 +1536,13 @@ export const scheduleContextsRouter = router({
         sectorId: input.sectorId,
         sectorName: input.sectorName,
       });
-      const [opened] = await selectActiveScheduleContexts(db, ctx.institutionId, {
-        id: result.scheduleContextId,
-      });
+      const [opened] = await selectActiveScheduleContexts(
+        db,
+        ctx.institutionId,
+        {
+          id: result.scheduleContextId,
+        },
+      );
       return {
         hospitalId: result.hospitalId,
         hospitalName: result.hospitalName,
@@ -1620,7 +1629,8 @@ export const scheduleContextsRouter = router({
                 entityId: input.sectorId,
                 hospitalId: input.hospitalId,
                 sectorId: input.sectorId,
-                description: "Especialidades assistenciais do setor atualizadas",
+                description:
+                  "Especialidades assistenciais do setor atualizadas",
                 metadata: {
                   addedCodes: result.addedCodes,
                   removedCodes: result.removedCodes,

@@ -13,6 +13,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftAuditLog,
@@ -29,6 +30,7 @@ import {
   getDutySyncLocalStatusForConfirmation,
 } from "../server/sso/duty-sync-status";
 import { enqueueDutySyncIntervalRewrite } from "../server/sso/duty-sync-lifecycle";
+import { openTestScale } from "./helpers/open-test-scale";
 
 const keyState = vi.hoisted(() => ({ privateKey: null as CryptoKey | null }));
 const orgMappingState = vi.hoisted(() => ({
@@ -68,6 +70,7 @@ describe("duty-sync V2 lifecycle", () => {
   let otherInstitutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
   let managerUserId: number;
   let managerProId: number;
   let titularUserId: number;
@@ -173,6 +176,7 @@ describe("duty-sync V2 lifecycle", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `DV2 ${stamp}-${shiftSeq}`,
         startAt: shiftStart,
         endAt: shiftEnd,
@@ -290,6 +294,11 @@ describe("duty-sync V2 lifecycle", () => {
       })
       .$returningId();
     sectorId = sector.id;
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
 
     const manager = await person("manager", "manager");
     managerUserId = manager.userId;
@@ -374,6 +383,9 @@ describe("duty-sync V2 lifecycle", () => {
     if (userIds.length) {
       await db.delete(users).where(inArray(users.id, userIds));
     }
+    await db
+      .delete(scheduleContexts)
+      .where(eq(scheduleContexts.institutionId, institutionId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));

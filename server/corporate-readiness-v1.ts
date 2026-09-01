@@ -7,6 +7,7 @@ import {
   professionalInstitutions,
   professionals,
   pushTokens,
+  scheduleContextAllowedQualifications,
   scheduleContexts,
   sectors,
   shiftAssignmentsV2,
@@ -71,6 +72,8 @@ export type SectorReadinessMetricsV1 = Readonly<{
   allocatedProfessionalCount: number;
   allocatedProfessionalsWithPushTokenCount: number;
   confirmationCompatibleShiftCount: number;
+  qualificationAllowlistMetadataEntryCount: number;
+  shiftsWithEmptyQualificationAllowlistMetadataCount: number;
   serviceSpecialtyCount: number;
 }>;
 
@@ -118,6 +121,8 @@ type ReadinessMembership = Readonly<{
 type ReadinessScheduleContext = Readonly<{
   id: number;
   sectorId: number;
+  admissionPolicy: string;
+  qualificationAllowlistMetadataEntryCount: number;
   active: boolean;
 }>;
 
@@ -243,6 +248,9 @@ function buildSnapshotFingerprint(source: ReadinessSource) {
       .map((context) => ({
         id: context.id,
         sectorId: context.sectorId,
+        admissionPolicy: context.admissionPolicy,
+        qualificationAllowlistMetadataEntryCount:
+          context.qualificationAllowlistMetadataEntryCount,
         active: context.active,
       }))
       .sort((left, right) => left.id - right.id),
@@ -442,6 +450,24 @@ export function buildCorporateReadinessReport(
       const sectorContexts = source.scheduleContexts.filter(
         (context) => context.sectorId === sector.id && context.active,
       );
+      const allowlistContexts = sectorContexts.filter(
+        (context) => context.admissionPolicy === "QUALIFICATION_ALLOWLIST",
+      );
+      const emptyAllowlistContextIds = new Set(
+        allowlistContexts
+          .filter(
+            (context) => context.qualificationAllowlistMetadataEntryCount === 0,
+          )
+          .map((context) => context.id),
+      );
+      const qualificationAllowlistMetadataEntryCount = allowlistContexts.reduce(
+        (total, context) =>
+          total + context.qualificationAllowlistMetadataEntryCount,
+        0,
+      );
+      const hospitalWideAccessCoversSector = sectorContexts.some(
+        (context) => context.admissionPolicy !== "QUALIFICATION_ALLOWLIST",
+      );
       const sectorSpecificTemplates = source.activeTemplates.filter(
         (template) => template.sectorId === sector.id,
       );
@@ -468,17 +494,32 @@ export function buildCorporateReadinessReport(
         ...validAccesses
           .filter(
             (access) =>
-              access.sectorId === null || access.sectorId === sector.id,
+              access.sectorId === sector.id ||
+              (access.sectorId === null && hospitalWideAccessCoversSector),
           )
           .map((access) => access.professionalId),
       ]);
       const allocatedProfessionalIds = new Set<number>();
       let allocatedShiftCount = 0;
       let pendingShiftCount = 0;
+      let shiftsWithEmptyQualificationAllowlistMetadataCount = 0;
 
       if (sectorContexts.length === 0) {
         addIssue(
           "MISSING_ACTIVE_SCHEDULE_CONTEXT",
+          "OPERATIONAL_WARNING",
+          sector.id,
+        );
+      } else if (sectorContexts.length > 1) {
+        addIssue(
+          "MULTIPLE_ACTIVE_SCHEDULE_CONTEXTS",
+          "SECURITY_BLOCKER",
+          sector.id,
+        );
+      }
+      if (emptyAllowlistContextIds.size > 0) {
+        addIssue(
+          "EMPTY_QUALIFICATION_ALLOWLIST_METADATA",
           "OPERATIONAL_WARNING",
           sector.id,
         );
@@ -596,11 +637,7 @@ export function buildCorporateReadinessReport(
         }
 
         if (shift.scheduleContextId === null) {
-          addIssue(
-            "UNCLASSIFIED_SHIFT_CONTEXT",
-            "OPERATIONAL_WARNING",
-            sector.id,
-          );
+          addIssue("UNCLASSIFIED_SHIFT_CONTEXT", "SECURITY_BLOCKER", sector.id);
         } else {
           const context = contextById.get(shift.scheduleContextId);
           if (!context || context.sectorId !== sector.id) {
@@ -610,8 +647,17 @@ export function buildCorporateReadinessReport(
               sector.id,
             );
           } else if (!context.active) {
+            addIssue("INACTIVE_SHIFT_CONTEXT", "SECURITY_BLOCKER", sector.id);
+          } else if (sectorContexts.length !== 1) {
             addIssue(
-              "INACTIVE_SHIFT_CONTEXT",
+              "SHIFT_CONTEXT_TOPOLOGY_AMBIGUOUS",
+              "SECURITY_BLOCKER",
+              sector.id,
+            );
+          } else if (emptyAllowlistContextIds.has(context.id)) {
+            shiftsWithEmptyQualificationAllowlistMetadataCount += 1;
+            addIssue(
+              "SHIFTS_ON_EMPTY_QUALIFICATION_ALLOWLIST_METADATA",
               "OPERATIONAL_WARNING",
               sector.id,
             );
@@ -664,6 +710,8 @@ export function buildCorporateReadinessReport(
           confirmationCompatibleShiftCount: sectorShifts.filter((shift) =>
             isCurrentConfirmationCompatibleStart(shift.startAt),
           ).length,
+          qualificationAllowlistMetadataEntryCount,
+          shiftsWithEmptyQualificationAllowlistMetadataCount,
           serviceSpecialtyCount: serviceSpecialtyIds.length,
         },
         issues: [],
@@ -932,6 +980,7 @@ async function loadCorporateReadinessSource(
       institutionId: scheduleContexts.institutionId,
       hospitalId: scheduleContexts.hospitalId,
       sectorId: scheduleContexts.sectorId,
+      admissionPolicy: scheduleContexts.admissionPolicy,
       active: scheduleContexts.active,
     })
     .from(scheduleContexts)
@@ -1023,6 +1072,38 @@ async function loadCorporateReadinessSource(
       rowBelongsToHospitalTopology(row, scope, hospitalSectorIds) &&
       (row.sectorId === null || selectedSectorIdSet.has(row.sectorId)),
   );
+  const activeScheduleContextIds = uniquePositiveIntegers(
+    validContexts
+      .filter((context) => context.active)
+      .map((context) => context.id),
+  );
+  const allowlistMetadataRows =
+    activeScheduleContextIds.length === 0
+      ? []
+      : await db
+          .select({
+            scheduleContextId:
+              scheduleContextAllowedQualifications.scheduleContextId,
+          })
+          .from(scheduleContextAllowedQualifications)
+          .where(
+            inArray(
+              scheduleContextAllowedQualifications.scheduleContextId,
+              activeScheduleContextIds,
+            ),
+          );
+  const qualificationAllowlistMetadataEntryCountByContext = new Map<
+    number,
+    number
+  >();
+  for (const row of allowlistMetadataRows) {
+    qualificationAllowlistMetadataEntryCountByContext.set(
+      row.scheduleContextId,
+      (qualificationAllowlistMetadataEntryCountByContext.get(
+        row.scheduleContextId,
+      ) ?? 0) + 1,
+    );
+  }
   const validShiftById = new Map(validShifts.map((shift) => [shift.id, shift]));
   const validShiftIds = uniquePositiveIntegers(
     validShifts.map((shift) => shift.id),
@@ -1094,6 +1175,9 @@ async function loadCorporateReadinessSource(
     scheduleContexts: validContexts.map((context) => ({
       id: context.id,
       sectorId: context.sectorId,
+      admissionPolicy: context.admissionPolicy,
+      qualificationAllowlistMetadataEntryCount:
+        qualificationAllowlistMetadataEntryCountByContext.get(context.id) ?? 0,
       active: context.active,
     })),
     activeTemplates: validTemplates.map((template) => ({

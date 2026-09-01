@@ -29,6 +29,7 @@ import {
   listAssumableScheduleContextIds,
   listAuthorizedScheduleContexts,
 } from "./schedule-contexts";
+import { plantonistaAccessCoversShiftSql } from "./plantonista-shift-eligibility";
 import { enqueueSwapTakenSignals } from "./swap-offer-signal";
 import type { TrpcContext } from "./_core/context";
 import {
@@ -54,9 +55,7 @@ import {
 } from "./swap-domain";
 import { createSwapOffer } from "./swap-offer-create";
 
-
 // ─── helpers ────────────────────────────────────────────────────────────────
-
 
 type AvailableSwapRow = {
   id: number;
@@ -83,16 +82,24 @@ type AvailableSwapRow = {
   toUserId: number | string | null;
 };
 
-function isOpenSwapOffer(swap: Pick<SwapRow, "toProfessionalId" | "toUserId">): boolean {
+function isOpenSwapOffer(
+  swap: Pick<SwapRow, "toProfessionalId" | "toUserId">,
+): boolean {
   return swap.toProfessionalId === null && swap.toUserId === null;
 }
 
 function isMysqlDuplicateKey(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  if ("code" in error && (error as { code?: unknown }).code === "ER_DUP_ENTRY") {
+  if (
+    "code" in error &&
+    (error as { code?: unknown }).code === "ER_DUP_ENTRY"
+  ) {
     return true;
   }
-  return "cause" in error && isMysqlDuplicateKey((error as { cause?: unknown }).cause);
+  return (
+    "cause" in error &&
+    isMysqlDuplicateKey((error as { cause?: unknown }).cause)
+  );
 }
 
 export function isExpectedSwapVisibilityDenial(error: unknown): boolean {
@@ -101,7 +108,6 @@ export function isExpectedSwapVisibilityDenial(error: unknown): boolean {
     (error.code === "FORBIDDEN" || error.code === "NOT_FOUND")
   );
 }
-
 
 function assertSwapShape(swap: SwapRow): void {
   const hasToProfessional = swap.toProfessionalId !== null;
@@ -453,7 +459,6 @@ async function filterReadableSwaps(
   return readable;
 }
 
-
 async function lockSwapRequestForUpdate(
   tx: any,
   swapRequestId: number,
@@ -610,7 +615,6 @@ function assignmentWriteCandidatesForSwap(
     scheduleContextId: source.shift.scheduleContextId,
     startAt: source.shift.startAt,
     endAt: source.shift.endAt,
-    requiredSpecialty: source.shift.specialty,
     excludeAssignmentIds: toTuple ? [toTuple.assignmentId] : undefined,
   };
   if (isOneWay(swap.type)) return [recipientCandidate];
@@ -626,7 +630,6 @@ function assignmentWriteCandidatesForSwap(
       scheduleContextId: toTuple.shift.scheduleContextId,
       startAt: toTuple.shift.startAt,
       endAt: toTuple.shift.endAt,
-      requiredSpecialty: toTuple.shift.specialty,
       excludeAssignmentIds: [source.assignmentId],
     },
   ];
@@ -688,7 +691,10 @@ async function deactivateActiveAssignment(
         eq(shiftAssignmentsV2.institutionId, tuple.shift.institutionId),
         eq(shiftAssignmentsV2.hospitalId, tuple.shift.hospitalId),
         eq(shiftAssignmentsV2.sectorId, tuple.shift.sectorId),
-        eq(shiftAssignmentsV2.professionalId, tuple.professional.professionalId),
+        eq(
+          shiftAssignmentsV2.professionalId,
+          tuple.professional.professionalId,
+        ),
         eq(shiftAssignmentsV2.isActive, true),
       ),
     );
@@ -938,7 +944,10 @@ function leftoverUnwindReason(error: unknown): string {
   if (message.includes("expirad")) {
     return "Candidatura antiga cancelada: a solicitação expirou.";
   }
-  if (message.includes("Conflito de horário") || message.includes("já alocado")) {
+  if (
+    message.includes("Conflito de horário") ||
+    message.includes("já alocado")
+  ) {
     return "Candidatura antiga cancelada: conflito de horário impede a transferência.";
   }
   if (message.includes("publicad") || message.includes("trancad")) {
@@ -1244,12 +1253,7 @@ async function healReadableAcceptedLeftovers(
   for (const swap of swaps) {
     if (swap.status !== "ACCEPTED") continue;
     try {
-      await healLeftoverAcceptedSwap(
-        db,
-        swap,
-        actor,
-        expectedSessionVersion,
-      );
+      await healLeftoverAcceptedSwap(db, swap, actor, expectedSessionVersion);
       healedIds.add(swap.id);
     } catch (error) {
       if (!isExpectedLeftoverHealDenial(error)) throw error;
@@ -1264,7 +1268,6 @@ async function healReadableAcceptedLeftovers(
 }
 
 // ─── router ─────────────────────────────────────────────────────────────────
-
 
 const listAvailableInputSchema = z.object({
   type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
@@ -1306,53 +1309,53 @@ async function queryListAvailableRows(
   ctx: TrpcContext,
   input: ListAvailableInput,
 ): Promise<ListAvailableRow[]> {
-      const db = await getDb();
-      if (!db)
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "DB unavailable",
-        });
+  const db = await getDb();
+  if (!db)
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "DB unavailable",
+    });
 
-      if (!ctx.user || ctx.institutionId == null) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "Não autenticado" });
-      }
+  if (!ctx.user || ctx.institutionId == null) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Não autenticado" });
+  }
 
-      const userId = ctx.user.id;
-      const institutionId = ctx.institutionId;
-      const actor = await getTenantActorFromContext(ctx);
-      if (!actor.professionalId)
-        throw topologyDenied("Ator sem identidade profissional canônica");
-      await requireCurrentListAvailableActor(db, {
-        institutionId,
-        professionalId: actor.professionalId,
-        userId,
-        expectedSessionVersion: ctx.user.sessionVersion,
-      });
-      const assumableContextIds = await listAssumableScheduleContextIds(
-        institutionId,
-        actor.professionalId,
-        db,
-      );
-      const managedContextIds = isInstitutionManager(actor)
-        ? (await listAuthorizedScheduleContexts(actor, db))
-            .filter((context) => context.canManage)
-            .map((context) => context.id)
-        : [];
-      const visibleContextIds = [
-        ...new Set([...assumableContextIds, ...managedContextIds]),
-      ];
-      if (
-        input.scheduleContextId !== undefined &&
-        !visibleContextIds.includes(input.scheduleContextId)
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Escala fora do acesso ou qualificação do profissional.",
-        });
-      }
-      if (visibleContextIds.length === 0) return [];
+  const userId = ctx.user.id;
+  const institutionId = ctx.institutionId;
+  const actor = await getTenantActorFromContext(ctx);
+  if (!actor.professionalId)
+    throw topologyDenied("Ator sem identidade profissional canônica");
+  await requireCurrentListAvailableActor(db, {
+    institutionId,
+    professionalId: actor.professionalId,
+    userId,
+    expectedSessionVersion: ctx.user.sessionVersion,
+  });
+  const assumableContextIds = await listAssumableScheduleContextIds(
+    institutionId,
+    actor.professionalId,
+    db,
+  );
+  const managedContextIds = isInstitutionManager(actor)
+    ? (await listAuthorizedScheduleContexts(actor, db))
+        .filter((context) => context.canManage)
+        .map((context) => context.id)
+    : [];
+  const visibleContextIds = [
+    ...new Set([...assumableContextIds, ...managedContextIds]),
+  ];
+  if (
+    input.scheduleContextId !== undefined &&
+    !visibleContextIds.includes(input.scheduleContextId)
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala fora do acesso operacional do profissional.",
+    });
+  }
+  if (visibleContextIds.length === 0) return [];
 
-      const result = await db.execute(sql`
+  const result = await db.execute(sql`
         SELECT
           sr.id,
           sr.type,
@@ -1391,9 +1394,6 @@ async function queryListAvailableRows(
          AND fsc.hospital_id = fsi.hospital_id
          AND fsc.sector_id = fsi.sector_id
          AND fsc.active = 1
-        LEFT JOIN medical_specialties fms
-          ON fms.id = fsc.medical_specialty_id
-         AND fms.active = 1
         JOIN hospitals fh
           ON fh.id = fsi.hospital_id
          AND fh.institution_id = fsi.institution_id
@@ -1563,50 +1563,7 @@ async function queryListAvailableRows(
                 AND (actor_mgr.sector_id IS NULL OR actor_mgr.sector_id = fsi.sector_id)
                 AND actor_mgr.active = 1
             )
-            OR
-            (
-              (
-                fsc.admission_policy = 'ALL_CFM_SPECIALTIES'
-                AND ap.medical_specialty_id IS NOT NULL
-              )
-              OR
-              (
-                fsc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
-                AND ap.medical_specialty_id IS NOT NULL
-                AND ap.operational_profile_code IS NULL
-              )
-              OR
-              (
-                fsc.medical_specialty_id IS NOT NULL
-                AND fms.id IS NOT NULL
-                AND ap.medical_specialty_id = fsc.medical_specialty_id
-              )
-              OR
-              (
-                fsc.operational_profile_code IS NOT NULL
-                AND ap.operational_profile_code = fsc.operational_profile_code
-              )
-              OR
-              (
-                fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-                AND EXISTS (
-                  SELECT 1
-                    FROM schedule_context_allowed_qualifications aq
-                   WHERE aq.schedule_context_id = fsc.id
-                     AND (
-                       (
-                         aq.medical_specialty_id IS NOT NULL
-                         AND ap.medical_specialty_id = aq.medical_specialty_id
-                       )
-                       OR
-                       (
-                         aq.operational_profile_code IS NOT NULL
-                         AND ap.operational_profile_code = aq.operational_profile_code
-                       )
-                     )
-                )
-              )
-            )
+            OR ${plantonistaAccessCoversShiftSql("ap", "fsi", "fsc")}
           )
           AND (
             api.role_in_institution = 'GESTOR_PLUS'
@@ -1650,10 +1607,7 @@ async function queryListAvailableRows(
                 AND (actor_specialty_scope.sector_id IS NULL OR actor_specialty_scope.sector_id = fsi.sector_id)
                 AND actor_specialty_scope.active = 1
             )
-            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
-            OR NULLIF(TRIM(fp.specialty), '') IS NULL
-            OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(fp.specialty))
+            OR ${plantonistaAccessCoversShiftSql("ap", "fsi", "fsc")}
           )
           AND (
             api.role_in_institution = 'GESTOR_PLUS'
@@ -1666,10 +1620,7 @@ async function queryListAvailableRows(
                 AND (actor_peer_specialty_scope.sector_id IS NULL OR actor_peer_specialty_scope.sector_id = fsi.sector_id)
                 AND actor_peer_specialty_scope.active = 1
             )
-            OR fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-            OR NULLIF(TRIM(fsi.specialty), '') IS NULL
-            OR NULLIF(TRIM(ap.specialty), '') IS NULL
-            OR LOWER(TRIM(fsi.specialty)) = LOWER(TRIM(ap.specialty))
+            OR ${plantonistaAccessCoversShiftSql("ap", "fsi", "fsc")}
           )
           AND (
             NOT EXISTS (
@@ -1789,16 +1740,6 @@ async function queryListAvailableRows(
                     )
                   )
               )
-              AND (
-                NULLIF(TRIM(tsi.specialty), '') IS NULL
-                OR NULLIF(TRIM(ap.specialty), '') IS NULL
-                OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(ap.specialty))
-              )
-              AND (
-                NULLIF(TRIM(tsi.specialty), '') IS NULL
-                OR NULLIF(TRIM(fp.specialty), '') IS NULL
-                OR LOWER(TRIM(tsi.specialty)) = LOWER(TRIM(fp.specialty))
-              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM shift_assignments_v2 source_target_conflict
@@ -1853,45 +1794,45 @@ async function queryListAvailableRows(
         ORDER BY fsi.start_at ASC, sr.id ASC
       `);
 
-      return rowsFromExecute<AvailableSwapRow>(result).map((r) => ({
-        id: r.id,
-        type: r.type,
-        reason: r.reason,
-        expiresAt: r.expiresAt === null ? null : dateFromExecute(r.expiresAt),
-        createdAt: dateFromExecute(r.createdAt),
-        fromProfessional: {
-          name: r.fromProfessionalName,
-          role: r.fromProfessionalRole,
-        },
-        fromShift: {
-          id: r.fromShiftInstanceId,
-          scheduleContextId: r.fromScheduleContextId,
-          label: r.fromShiftLabel,
-          startAt: dateFromExecute(r.fromShiftStartAt),
-          endAt: dateFromExecute(r.fromShiftEndAt),
-          hospitalName: r.fromHospitalName,
-          sectorName: r.fromSectorName,
-        },
-        toShift: r.toShiftInstanceId
-          ? {
-              id: r.toShiftInstanceId,
-              label: r.toShiftLabel!,
-              startAt: dateFromExecute(r.toShiftStartAt!),
-              endAt: dateFromExecute(r.toShiftEndAt!),
-              hospitalName: r.toHospitalName!,
-              sectorName: r.toSectorName!,
-            }
-          : null,
-        toProfessionalId:
-          r.toProfessionalId == null ? null : Number(r.toProfessionalId),
-        toUserId: r.toUserId == null ? null : Number(r.toUserId),
-        canRespond: listedOfferCanRespond(
-          r.toProfessionalId,
-          r.toUserId,
-          actor.professionalId,
-          userId,
-        ),
-      }));
+  return rowsFromExecute<AvailableSwapRow>(result).map((r) => ({
+    id: r.id,
+    type: r.type,
+    reason: r.reason,
+    expiresAt: r.expiresAt === null ? null : dateFromExecute(r.expiresAt),
+    createdAt: dateFromExecute(r.createdAt),
+    fromProfessional: {
+      name: r.fromProfessionalName,
+      role: r.fromProfessionalRole,
+    },
+    fromShift: {
+      id: r.fromShiftInstanceId,
+      scheduleContextId: r.fromScheduleContextId,
+      label: r.fromShiftLabel,
+      startAt: dateFromExecute(r.fromShiftStartAt),
+      endAt: dateFromExecute(r.fromShiftEndAt),
+      hospitalName: r.fromHospitalName,
+      sectorName: r.fromSectorName,
+    },
+    toShift: r.toShiftInstanceId
+      ? {
+          id: r.toShiftInstanceId,
+          label: r.toShiftLabel!,
+          startAt: dateFromExecute(r.toShiftStartAt!),
+          endAt: dateFromExecute(r.toShiftEndAt!),
+          hospitalName: r.toHospitalName!,
+          sectorName: r.toSectorName!,
+        }
+      : null,
+    toProfessionalId:
+      r.toProfessionalId == null ? null : Number(r.toProfessionalId),
+    toUserId: r.toUserId == null ? null : Number(r.toUserId),
+    canRespond: listedOfferCanRespond(
+      r.toProfessionalId,
+      r.toUserId,
+      actor.professionalId,
+      userId,
+    ),
+  }));
 }
 
 async function countActionableSwapOffers(ctx: TrpcContext): Promise<number> {
@@ -2540,7 +2481,11 @@ export const swapRouter = router({
               ),
             )
         : [];
-      const readableSwaps = await filterReadableSwaps(db, actor, candidateSwaps);
+      const readableSwaps = await filterReadableSwaps(
+        db,
+        actor,
+        candidateSwaps,
+      );
       const readableIds = new Set(readableSwaps.map((swap) => swap.id));
       const { healedIds, cancelledById } = await healReadableAcceptedLeftovers(
         db,
@@ -2564,49 +2509,49 @@ export const swapRouter = router({
             (status === "ACCEPTED" &&
               (r.fromUserId === userId || r.toUserId === userId));
           return {
-          id: r.id,
-          type: r.type,
-          status,
-          reason: r.reason,
-          reviewNote: cancelledNote ?? r.reviewNote,
-          expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
-          createdAt: new Date(r.createdAt),
-          reviewedAt: r.reviewedAt ? new Date(r.reviewedAt) : null,
-          fromProfessional: {
-            id: r.fromProfessionalId,
-            name: r.fromProfessionalName,
-            role: r.fromProfessionalRole,
-          },
-          toProfessional: r.toProfessionalId
-            ? {
-                id: r.toProfessionalId,
-                name: r.toProfessionalName,
-                role: r.toProfessionalRole,
-              }
-            : null,
-          fromShift: {
-            id: r.fromShiftInstanceId,
-            label: r.fromShiftLabel,
-            startAt: new Date(r.fromShiftStartAt),
-            endAt: new Date(r.fromShiftEndAt),
-            hospitalName: r.fromHospitalName,
-            sectorName: r.fromSectorName,
-          },
-          toShift: r.toShiftInstanceId
-            ? {
-                id: r.toShiftInstanceId,
-                label: r.toShiftLabel,
-                startAt: new Date(r.toShiftStartAt),
-                endAt: new Date(r.toShiftEndAt),
-                hospitalName: r.toHospitalName,
-                sectorName: r.toSectorName,
-              }
-            : null,
-          reviewerName: r.reviewerName ?? null,
-          // Sem botão de aprovação. Residual que não completa é
-          // cancelado; se ainda estiver ACCEPTED, dono/candidato desfaz.
-          awaitingMyApproval: false,
-          canCancel,
+            id: r.id,
+            type: r.type,
+            status,
+            reason: r.reason,
+            reviewNote: cancelledNote ?? r.reviewNote,
+            expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
+            createdAt: new Date(r.createdAt),
+            reviewedAt: r.reviewedAt ? new Date(r.reviewedAt) : null,
+            fromProfessional: {
+              id: r.fromProfessionalId,
+              name: r.fromProfessionalName,
+              role: r.fromProfessionalRole,
+            },
+            toProfessional: r.toProfessionalId
+              ? {
+                  id: r.toProfessionalId,
+                  name: r.toProfessionalName,
+                  role: r.toProfessionalRole,
+                }
+              : null,
+            fromShift: {
+              id: r.fromShiftInstanceId,
+              label: r.fromShiftLabel,
+              startAt: new Date(r.fromShiftStartAt),
+              endAt: new Date(r.fromShiftEndAt),
+              hospitalName: r.fromHospitalName,
+              sectorName: r.fromSectorName,
+            },
+            toShift: r.toShiftInstanceId
+              ? {
+                  id: r.toShiftInstanceId,
+                  label: r.toShiftLabel,
+                  startAt: new Date(r.toShiftStartAt),
+                  endAt: new Date(r.toShiftEndAt),
+                  hospitalName: r.toHospitalName,
+                  sectorName: r.toSectorName,
+                }
+              : null,
+            reviewerName: r.reviewerName ?? null,
+            // Sem botão de aprovação. Residual que não completa é
+            // cancelado; se ainda estiver ACCEPTED, dono/candidato desfaz.
+            awaitingMyApproval: false,
+            canCancel,
           };
         });
     }),

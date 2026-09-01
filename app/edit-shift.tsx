@@ -492,8 +492,8 @@ export default function EditShiftScreen() {
                 marginTop: 10,
               }}
             >
-              Para mudar hospital, setor ou qualificação, crie o turno na escala
-              correta.
+              Para mudar hospital ou setor, crie o turno na escala correta. A
+              referência clínica é informativa e não altera o acesso.
             </Text>
           </TintedGlassCard>
 

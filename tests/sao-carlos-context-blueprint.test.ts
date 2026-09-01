@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   HSC_SCHEDULE_CONTEXT_BLUEPRINT,
@@ -20,13 +21,15 @@ describe("blueprint multissetorial do Hospital São Carlos", () => {
   });
 
   it("usa escala unificada com lista fechada na Sala de Recuperação e no TRR", () => {
-    expect(SAO_CARLOS_RECOVERY_QUALIFICATIONS.map((item) => item.code)).toEqual([
-      "CLINICA_MEDICA",
-      "RESIDENTE_ANESTESIOLOGIA",
-      "MEDICINA_DE_EMERGENCIA",
-      "ANESTESIOLOGIA",
-      "MEDICINA_INTENSIVA",
-    ]);
+    expect(SAO_CARLOS_RECOVERY_QUALIFICATIONS.map((item) => item.code)).toEqual(
+      [
+        "CLINICA_MEDICA",
+        "RESIDENTE_ANESTESIOLOGIA",
+        "MEDICINA_DE_EMERGENCIA",
+        "ANESTESIOLOGIA",
+        "MEDICINA_INTENSIVA",
+      ],
+    );
     const recovery = HSC_SCHEDULE_CONTEXT_BLUEPRINT.find(
       (item) => item.sectorName === "Sala de Recuperação",
     );
@@ -102,5 +105,25 @@ describe("blueprint multissetorial do Hospital São Carlos", () => {
         { institutionId: 1, hospitalId: 10, name: "Sala de Recuperação" },
       ),
     ).not.toThrow();
+  });
+
+  it("não escolhe contexto unificado por ordem ou menor ID", () => {
+    const source = readFileSync(
+      "scripts/provision-sao-carlos-contexts.ts",
+      "utf8",
+    );
+    const resolver = source.slice(
+      source.indexOf("async function findContextId"),
+      source.indexOf("async function ensureAllowlistQualification"),
+    );
+    const integrity = source.slice(
+      source.indexOf("async function assertUnifiedSectorContextIntegrity"),
+      source.indexOf("async function ensureUnifiedAllowlistContext"),
+    );
+
+    expect(resolver).toContain("rows.length > 1");
+    expect(resolver).not.toContain("LIMIT 1");
+    expect(integrity).toContain("contexts.length !== 1");
+    expect(integrity).toContain("allowlist.length === 0");
   });
 });

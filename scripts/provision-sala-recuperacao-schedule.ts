@@ -20,10 +20,7 @@
  *     --apply --repair-month ...
  */
 import "dotenv/config";
-import mysql, {
-  type Connection,
-  type RowDataPacket,
-} from "mysql2/promise";
+import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 import { pathToFileURL } from "node:url";
 import { resolveSslConfig } from "../server/_core/db-ssl";
 import {
@@ -70,7 +67,10 @@ type MembershipRow = RowDataPacket & {
   roleInInstitution: string;
 };
 
-type ContextRow = RowDataPacket & { id: number };
+type ContextRow = RowDataPacket & {
+  id: number;
+  admissionPolicy: string;
+};
 
 function requirePositiveInteger(name: string): number {
   const value = Number(process.env[name]);
@@ -266,24 +266,47 @@ async function resolveUnifiedSectorContextId(
   },
 ): Promise<number> {
   const [rows] = await connection.execute<ContextRow[]>(
-    `SELECT sc.id
+    `SELECT sc.id, sc.admission_policy AS admissionPolicy
        FROM schedule_contexts sc
       WHERE sc.institution_id = ?
         AND sc.hospital_id = ?
         AND sc.sector_id = ?
-        AND sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
         AND sc.active = TRUE
       ORDER BY sc.id
-      LIMIT 1
       FOR SHARE`,
     [input.institutionId, input.hospitalId, input.sectorId],
   );
-  if (!rows[0]) {
+  if (rows.length === 0) {
     throw new Error(
       "Escala unificada da Sala de Recuperação ainda não foi provisionada — rode provision:sao-carlos --apply",
     );
   }
-  return rows[0].id;
+  if (rows.length !== 1) {
+    throw new Error(
+      "Sala de Recuperação possui mais de uma escala operacional ativa; regularize a topologia antes de semear o calendário",
+    );
+  }
+  const context = rows[0]!;
+  if (context.admissionPolicy !== "QUALIFICATION_ALLOWLIST") {
+    throw new Error(
+      "A escala unificada da Sala de Recuperação não usa a política configurada pelo piloto",
+    );
+  }
+  const [allowlist] = await connection.execute<
+    (RowDataPacket & { id: number })[]
+  >(
+    `SELECT id
+       FROM schedule_context_allowed_qualifications
+      WHERE schedule_context_id = ?
+      FOR SHARE`,
+    [context.id],
+  );
+  if (allowlist.length === 0) {
+    throw new Error(
+      "A escala unificada da Sala de Recuperação está sem metadado clínico de allowlist; regularize antes de semear o calendário",
+    );
+  }
+  return context.id;
 }
 
 async function findProfessionalByName(
@@ -315,7 +338,10 @@ async function ensureGestorMedico(
     apply: boolean;
   },
 ): Promise<string> {
-  const professional = await findProfessionalByName(connection, input.gestorName);
+  const professional = await findProfessionalByName(
+    connection,
+    input.gestorName,
+  );
   if (!professional) {
     return `gestor=missing (${input.gestorName} não encontrado — cadastre no Admin e reexecute)`;
   }
@@ -385,12 +411,7 @@ async function ensureGestorMedico(
         AND sector_id = ?
       ORDER BY id
       FOR UPDATE`,
-    [
-      input.institutionId,
-      professional.id,
-      input.hospitalId,
-      input.sectorId,
-    ],
+    [input.institutionId, professional.id, input.hospitalId, input.sectorId],
   );
   let scopeAction = "exists";
   if (!scopes[0]) {
@@ -465,7 +486,9 @@ async function seedMonthCalendar(
         template.startTime,
         template.endTime,
       );
-      const [existing] = await connection.execute<(RowDataPacket & { id: number })[]>(
+      const [existing] = await connection.execute<
+        (RowDataPacket & { id: number })[]
+      >(
         `SELECT id FROM shift_instances
           WHERE institution_id = ?
             AND hospital_id = ?
@@ -570,8 +593,7 @@ async function repairMonthCalendar(
         missing += 1;
         continue;
       }
-      const startOk =
-        existing.startAt.getTime() === expectedStart.getTime();
+      const startOk = existing.startAt.getTime() === expectedStart.getTime();
       const endOk = existing.endAt.getTime() === expectedEnd.getTime();
       if (startOk && endOk) {
         alreadyCorrect += 1;
@@ -602,9 +624,7 @@ export async function provisionSalaRecuperacaoSchedule(): Promise<void> {
     : undefined;
 
   if (apply && process.env.HSC_PROVISION_CONFIRM !== PROVISION_CONFIRM) {
-    throw new Error(
-      `--apply exige HSC_PROVISION_CONFIRM=${PROVISION_CONFIRM}`,
-    );
+    throw new Error(`--apply exige HSC_PROVISION_CONFIRM=${PROVISION_CONFIRM}`);
   }
   if (seedMonth && !/^\d{4}-\d{2}$/.test(seedMonth)) {
     throw new Error("HSC_SEED_MONTH deve ser YYYY-MM");
@@ -633,7 +653,9 @@ export async function provisionSalaRecuperacaoSchedule(): Promise<void> {
       (RowDataPacket & { acquired: number | null })[]
     >("SELECT GET_LOCK(?, 10) AS acquired", [lockName]);
     if (lockRows[0]?.acquired !== 1) {
-      throw new Error("Outra configuração da Sala de Recuperação está em andamento");
+      throw new Error(
+        "Outra configuração da Sala de Recuperação está em andamento",
+      );
     }
     locked = true;
     await connection.beginTransaction();
@@ -674,11 +696,14 @@ export async function provisionSalaRecuperacaoSchedule(): Promise<void> {
     let seedLine = "seed=skipped";
     if (seedMonth || repairMonth) {
       const yearMonth = seedMonth ?? repairMonth!;
-      const scheduleContextId = await resolveUnifiedSectorContextId(connection, {
-        institutionId: target.institutionId,
-        hospitalId: target.hospitalId,
-        sectorId: sector.id,
-      });
+      const scheduleContextId = await resolveUnifiedSectorContextId(
+        connection,
+        {
+          institutionId: target.institutionId,
+          hospitalId: target.hospitalId,
+          sectorId: sector.id,
+        },
+      );
       if (repairMonth) {
         const repair = await repairMonthCalendar(connection, {
           institutionId: target.institutionId,

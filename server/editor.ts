@@ -491,13 +491,16 @@ export const editorRouter = router({
           lockedById,
           repeatRule,
         );
-        const occupiedIds = await listActiveAssignmentShiftIds(tx, lockedShift.institutionId, [
-          ...matchingTargets.map((row) => row.id),
-        ]);
+        const occupiedIds = await listActiveAssignmentShiftIds(
+          tx,
+          lockedShift.institutionId,
+          [...matchingTargets.map((row) => row.id)],
+        );
         const vacantTargets = matchingTargets.filter(
           (target) => target.status === "VAGO" && !occupiedIds.has(target.id),
         );
-        const skippedOccupiedCount = matchingTargets.length - vacantTargets.length;
+        const skippedOccupiedCount =
+          matchingTargets.length - vacantTargets.length;
         const toAssign = [lockedShift, ...vacantTargets];
 
         await assertAssignmentWritesAllowedForUpdate(
@@ -510,7 +513,6 @@ export const editorRouter = router({
             scheduleContextId: target.scheduleContextId,
             startAt: target.startAt,
             endAt: target.endAt,
-            requiredSpecialty: target.specialty,
           })),
           { additionalProfessionalIds: [managerId] },
         );

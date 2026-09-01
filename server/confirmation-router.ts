@@ -12,7 +12,6 @@ import {
   shiftAssignmentsV2,
   users,
 } from "../drizzle/schema";
-import { assertSpecialtyCompatible } from "./specialty";
 import { rowsFromExecute } from "./_core/db-results";
 import { recordAudit } from "./audit-trail";
 import {
@@ -83,17 +82,14 @@ async function assertDutySyncLocalStatusAccess(
 
   const actorKind =
     conf.userId === input.userId
-      ? "ORIGINAL" as const
+      ? ("ORIGINAL" as const)
       : conf.replacementUserId === input.userId
-        ? "REPLACEMENT" as const
+        ? ("REPLACEMENT" as const)
         : null;
   if (!actorKind) {
     throw new TRPCError({ code: "FORBIDDEN" });
   }
-  if (
-    actorKind === "REPLACEMENT" &&
-    conf.replacementUserId !== input.userId
-  ) {
+  if (actorKind === "REPLACEMENT" && conf.replacementUserId !== input.userId) {
     throw new TRPCError({ code: "FORBIDDEN" });
   }
 
@@ -292,8 +288,8 @@ export const confirmationRouter = router({
       }
 
       // A lista usa a mesma verdade canônica da mutation: contexto ativo,
-      // topologia composta, qualificação estruturada e ACL setorial. O texto
-      // legado de especialidade nunca concede nem nega um candidato.
+      // topologia composta e ACL setorial. Metadados clínicos não concedem
+      // nem negam um candidato.
       const result = await db.execute(sql`
         SELECT DISTINCT p.id, p.name, p.role
         FROM professionals p
@@ -328,54 +324,8 @@ export const confirmationRouter = router({
              AND (pa.sector_id IS NULL OR pa.sector_id = ${current.shift.sectorId})
            )
          )
-        LEFT JOIN medical_specialties ms
-          ON ms.id = sc.medical_specialty_id
-         AND ms.active = true
         WHERE p.id != ${current.original.professionalId}
           AND p.user_id != ${current.original.userId}
-          AND (
-            (
-              sc.admission_policy = 'ALL_CFM_SPECIALTIES'
-              AND p.medical_specialty_id IS NOT NULL
-            )
-            OR
-            (
-              sc.admission_policy = 'ALL_CFM_EXCEPT_GENERALIST'
-              AND p.medical_specialty_id IS NOT NULL
-              AND p.operational_profile_code IS NULL
-            )
-            OR
-            (
-              sc.medical_specialty_id IS NOT NULL
-              AND ms.id IS NOT NULL
-              AND p.medical_specialty_id = sc.medical_specialty_id
-            )
-            OR
-            (
-              sc.operational_profile_code IS NOT NULL
-              AND p.operational_profile_code = sc.operational_profile_code
-            )
-            OR
-            (
-              sc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-              AND EXISTS (
-                SELECT 1
-                  FROM schedule_context_allowed_qualifications aq
-                 WHERE aq.schedule_context_id = sc.id
-                   AND (
-                     (
-                       aq.medical_specialty_id IS NOT NULL
-                       AND p.medical_specialty_id = aq.medical_specialty_id
-                     )
-                     OR
-                     (
-                       aq.operational_profile_code IS NOT NULL
-                       AND p.operational_profile_code = aq.operational_profile_code
-                     )
-                   )
-              )
-            )
-          )
           AND NOT EXISTS (
             SELECT 1
             FROM shift_assignments_v2 conflict_assignment
@@ -760,13 +710,12 @@ export const confirmationRouter = router({
         // chegar aos efeitos externos abaixo.
         // A autoridade do candidato já foi travada por
         // additionalAuthorityTargets. Esta releitura simples e corrente evita
-        // reutilizar nome/especialidade de um snapshot RR anterior ao mutex.
+        // reutilizar dados de um snapshot anterior ao mutex.
         const candidateQuery = tx
           .select({
             id: professionals.id,
             userId: professionals.userId,
             name: professionals.name,
-            specialty: professionals.specialty,
           })
           .from(professionals)
           .where(
@@ -796,26 +745,26 @@ export const confirmationRouter = router({
         }
 
         if (current.shift.scheduleContextId === null) {
-          assertSpecialtyCompatible(
-            current.shift.specialty,
-            candidate.specialty,
-          );
-        } else {
-          await assertProfessionalEligibleForScheduleContext({
-            institutionId: current.shift.institutionId,
-            professionalId: candidate.id,
-            scheduleContextId: current.shift.scheduleContextId,
-            db: tx,
-            lockForShare: true,
-          });
-          await assertActiveScheduleContextTopology({
-            institutionId: current.shift.institutionId,
-            hospitalId: current.shift.hospitalId,
-            sectorId: current.shift.sectorId,
-            scheduleContextId: current.shift.scheduleContextId,
-            db: tx,
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Plantão sem escala operacional classificada; solicite regularização ao gestor.",
           });
         }
+        await assertProfessionalEligibleForScheduleContext({
+          institutionId: current.shift.institutionId,
+          professionalId: candidate.id,
+          scheduleContextId: current.shift.scheduleContextId,
+          db: tx,
+          lockForShare: true,
+        });
+        await assertActiveScheduleContextTopology({
+          institutionId: current.shift.institutionId,
+          hospitalId: current.shift.hospitalId,
+          sectorId: current.shift.sectorId,
+          scheduleContextId: current.shift.scheduleContextId,
+          db: tx,
+        });
         await transitionDutyConfirmation(tx, {
           kind: "NOMINATE",
           ...dutyConfirmationCasIdentity(current.confirmation),
@@ -1002,7 +951,6 @@ export const confirmationRouter = router({
             scheduleContextId: current.shift.scheduleContextId,
             startAt: current.shift.startAt,
             endAt: current.shift.endAt,
-            requiredSpecialty: current.shift.specialty,
           },
         ]);
         await assertShiftAssignmentCapacityForUpdate(tx, {
@@ -1167,7 +1115,11 @@ export const confirmationRouter = router({
         institutionId: ctx.institutionId,
         userId: ctx.user.id,
       });
-      return { ok: true, status: "REPLACEMENT_CONFIRMED" as const, dutySyncLocal };
+      return {
+        ok: true,
+        status: "REPLACEMENT_CONFIRMED" as const,
+        dutySyncLocal,
+      };
     }),
 
   /**

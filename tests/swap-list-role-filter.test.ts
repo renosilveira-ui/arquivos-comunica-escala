@@ -11,6 +11,7 @@ import {
   swapRequests,
 } from "../drizzle/schema";
 import { swapRouter } from "../server/swap-router";
+import { openTestScale } from "./helpers/open-test-scale";
 
 /**
  * `swaps.list` ganhou:
@@ -29,6 +30,7 @@ describe("swaps.list — role filter + awaitingMyApproval", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
   let proAId: number;
   let proBId: number;
   let userAId: number;
@@ -57,6 +59,11 @@ describe("swaps.list — role filter + awaitingMyApproval", () => {
     institutionId = institution!.id;
     hospitalId = hospital!.id;
     sectorId = sector!.id;
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
 
     const [pedro] = await db
       .select()
@@ -87,6 +94,7 @@ describe("swaps.list — role filter + awaitingMyApproval", () => {
       institutionId,
       hospitalId,
       sectorId,
+      scheduleContextId,
       label: `${FIXTURE_PREFIX}shift-A`,
       startAt: future,
       endAt: futureEnd,

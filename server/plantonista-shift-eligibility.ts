@@ -16,68 +16,6 @@ function col(alias: string, column: string): SQL {
 }
 
 /**
- * XOR de qualificationMatches: exatamente uma de especialidade CFM / perfil.
- * Alias do profissional plantonista = `ap` (mesmo da oferta #323).
- */
-export function plantonistaXorQualificationSql(ap = "ap"): SQL {
-  return sql`(${col(ap, "medical_specialty_id")} IS NULL) != (${col(ap, "operational_profile_code")} IS NULL)`;
-}
-
-/**
- * qualificationMatches em SQL. Sem atalho GESTOR_PLUS / manager_scope.
- * `sc` = schedule_contexts, `ms` = medical_specialties do contexto.
- */
-export function plantonistaQualificationMatchesSql(
-  ap = "ap",
-  sc = "sc",
-  ms = "ms",
-): SQL {
-  return sql`(
-        (
-          ${col(sc, "admission_policy")} = 'ALL_CFM_SPECIALTIES'
-          AND ${col(ap, "medical_specialty_id")} IS NOT NULL
-        )
-        OR
-        (
-          ${col(sc, "admission_policy")} = 'ALL_CFM_EXCEPT_GENERALIST'
-          AND ${col(ap, "medical_specialty_id")} IS NOT NULL
-          AND ${col(ap, "operational_profile_code")} IS NULL
-        )
-        OR
-        (
-          ${col(sc, "medical_specialty_id")} IS NOT NULL
-          AND ${col(ms, "id")} IS NOT NULL
-          AND ${col(ap, "medical_specialty_id")} = ${col(sc, "medical_specialty_id")}
-        )
-        OR
-        (
-          ${col(sc, "operational_profile_code")} IS NOT NULL
-          AND ${col(ap, "operational_profile_code")} = ${col(sc, "operational_profile_code")}
-        )
-        OR
-        (
-          ${col(sc, "admission_policy")} = 'QUALIFICATION_ALLOWLIST'
-          AND EXISTS (
-            SELECT 1
-              FROM schedule_context_allowed_qualifications aq
-             WHERE aq.schedule_context_id = ${col(sc, "id")}
-               AND (
-                 (
-                   aq.medical_specialty_id IS NOT NULL
-                   AND ${col(ap, "medical_specialty_id")} = aq.medical_specialty_id
-                 )
-                 OR
-                 (
-                   aq.operational_profile_code IS NOT NULL
-                   AND ${col(ap, "operational_profile_code")} = aq.operational_profile_code
-                 )
-               )
-          )
-        )
-      )`;
-}
-
-/**
  * professional_access do plantonista: #317 exige setor exato;
  * hospital-wide (sector_id NULL) só no contexto legado.
  */
@@ -113,8 +51,8 @@ export type VacantShiftEligibilityTarget = {
 };
 
 /**
- * Plantonistas que poderiam assumir este plantão vago: mesma regra de
- * qualificação + professional_access da #323, **sem** atalho gerencial.
+ * Plantonistas que poderiam assumir este plantão vago: vínculo institucional
+ * ativo + professional_access, **sem** atalho gerencial.
  * GESTOR_MEDICO / GESTOR_PLUS só entram se passarem como médico.
  */
 export async function eligibleProfessionalUserIdsForShift(
@@ -133,9 +71,6 @@ export async function eligibleProfessionalUserIdsForShift(
      AND sc.hospital_id = si.hospital_id
      AND sc.sector_id = si.sector_id
      AND sc.active = 1
-    LEFT JOIN medical_specialties ms
-      ON ms.id = sc.medical_specialty_id
-     AND ms.active = 1
     JOIN professional_institutions api
       ON api.institution_id = si.institution_id
      AND api.active = 1
@@ -150,8 +85,6 @@ export async function eligibleProfessionalUserIdsForShift(
       AND si.institution_id = ${shift.institutionId}
       AND si.status = 'VAGO'
       AND si.start_at > NOW()
-      AND ${plantonistaXorQualificationSql("ap")}
-      AND ${plantonistaQualificationMatchesSql("ap", "sc", "ms")}
       AND ${plantonistaAccessCoversShiftSql("ap", "si", "sc")}
       AND NOT EXISTS (
         SELECT 1 FROM monthly_rosters mr

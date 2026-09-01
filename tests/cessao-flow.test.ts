@@ -16,6 +16,7 @@ import {
 import { swapRouter } from "../server/swap-router";
 import { yearMonthFromDate } from "../lib/date-utils";
 import { yearMonthBrt } from "../server/local-time";
+import { openTestScale } from "./helpers/open-test-scale";
 
 vi.mock("../server/integrations/comunica-plus", () => ({
   enqueueComunicaSwapApproved: vi.fn(async () => 1),
@@ -45,6 +46,7 @@ describe("Cessão sem gestor (approveByOwner)", () => {
   let institutionId: number;
   let hospitalId: number;
   let sectorId: number;
+  let scheduleContextId: number;
   let userAId: number;
   let userBId: number;
   let proAId: number;
@@ -78,6 +80,11 @@ describe("Cessão sem gestor (approveByOwner)", () => {
     institutionId = institution!.id;
     hospitalId = hospital!.id;
     sectorId = sector!.id;
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
 
     const [pedro] = await db
       .select()
@@ -171,6 +178,7 @@ describe("Cessão sem gestor (approveByOwner)", () => {
       institutionId,
       hospitalId,
       sectorId,
+      scheduleContextId,
       label: `${FIXTURE_PREFIX}A-${opts.type}-${offset}`,
       startAt: at(8, offset),
       endAt: at(14, offset),
@@ -197,6 +205,7 @@ describe("Cessão sem gestor (approveByOwner)", () => {
         institutionId,
         hospitalId,
         sectorId,
+        scheduleContextId,
         label: `${FIXTURE_PREFIX}B-${opts.type}-${offset}`,
         startAt: at(15, offset),
         endAt: at(21, offset),
@@ -331,6 +340,7 @@ describe("Cessão sem gestor (approveByOwner)", () => {
       institutionId,
       hospitalId,
       sectorId,
+      scheduleContextId,
       label: `${FIXTURE_PREFIX}conflict-4`,
       startAt: at(10, 4),
       endAt: at(16, 4),

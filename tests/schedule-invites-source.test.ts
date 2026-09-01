@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 describe("wiring fail-closed dos convites nominais", () => {
   it("o cadastro público não resgata convite e a conta sem instituição nasce aprovada", () => {
     const source = readFileSync("server/routes/auth.ts", "utf8");
-    expect(source).toContain('const nextApproval = awaitingApproval ? "PENDING" : "APPROVED"');
+    expect(source).toContain(
+      'const nextApproval = awaitingApproval ? "PENDING" : "APPROVED"',
+    );
     expect(source).toContain("approvalStatus: nextApproval");
     expect(source).toContain("let awaitingApproval = hasInstitution");
     expect(source).toContain("O cadastro não usa código de convite");
@@ -15,11 +17,17 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).not.toContain("peekScheduleInviteInstitution");
   });
 
-  it("o resgate recusa especialidade incompatível, convite alheio e escala já liberada", () => {
+  it("o resgate exige topologia única, convite nominal e acesso setorial", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
-    expect(source).toContain("qualificationMatches(input.qualification, context)");
-    expect(source).toContain("eq(professionalAccess.sectorId, invite.sectorId)");
-    expect(source).toContain("Sua especialidade não é aceita nesta escala");
+    expect(source).not.toContain("qualificationMatches");
+    expect(source).not.toContain("Sua especialidade não é aceita nesta escala");
+    expect(source).toContain("contexts.length !== 1");
+    expect(source).toContain(
+      "mais de uma escala ativa; regularize a topologia",
+    );
+    expect(source).toContain(
+      "eq(professionalAccess.sectorId, invite.sectorId)",
+    );
     expect(source).toContain("Você já está nesta escala");
     expect(source).toContain("Convite inválido ou expirado");
     expect(source).toContain("Este convite já foi recusado");
@@ -47,7 +55,9 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).toContain("notExists");
     expect(source).toContain("eq(professionalInstitutions.active, true)");
     expect(source).toContain("name: z.string().trim().max(120).optional()");
-    expect(source).toContain("foldCandidateSearch(row.name ?? \"\").includes(nameNeedle)");
+    expect(source).toContain(
+      'foldCandidateSearch(row.name ?? "").includes(nameNeedle)',
+    );
   });
 
   it("o app não importa o gerador de código com crypto de Node", () => {

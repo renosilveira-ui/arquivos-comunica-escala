@@ -13,7 +13,6 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
-import { assertSpecialtyCompatible } from "./specialty";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import {
   assertActiveScheduleContextTopology,
@@ -43,7 +42,6 @@ export type AssignmentWriteCandidate = {
   scheduleContextId: number | null;
   startAt: Date;
   endAt: Date;
-  requiredSpecialty?: string | null;
   excludeAssignmentIds?: readonly number[];
 };
 
@@ -276,7 +274,7 @@ export async function lockAssignmentProfessionalsForUpdate(
 
 /**
  * Revalida, na própria transação da escrita, identidade canônica, vínculo,
- * acesso, especialidade e anti-overlap. O caller deve manter o turno/mês alvo
+ * acesso, contexto operacional e anti-overlap. O caller deve manter o turno/mês alvo
  * sob lock; este helper acrescenta o mutex global por profissional.
  */
 export async function assertAssignmentWritesAllowedForUpdate(
@@ -333,6 +331,9 @@ export async function assertAssignmentWritesAllowedForUpdate(
         expectedUserId: candidate.expectedUserId,
         expectedSessionVersion: candidate.expectedSessionVersion,
       });
+    }
+    if (candidate.scheduleContextId === null) {
+      throw assignmentForbidden("Plantão sem escala operacional classificada.");
     }
   }
 
@@ -627,27 +628,17 @@ export async function assertAssignmentWritesAllowedForUpdate(
       );
     }
 
-    // Em turnos classificados, a autorização é exclusivamente estruturada e
-    // revalidada abaixo contra schedule_context_id. O texto legado pode
-    // conter aliases corretos (ex.: Clínica Geral/Médico generalista,
-    // Ortopedia/Ortopedia e Traumatologia) e nunca deve negar nem conceder.
-    // Gestor com manager_scope/GESTOR_PLUS já passou a porta de receive:
-    // especialidade e allowlist não podem 500/bloquear a efetivação.
+    // A autorização é exclusivamente estruturada e revalidada contra o
+    // schedule_context_id. O texto clínico é descritivo e nunca concede nem
+    // nega uma alocação.
     if (managerCoveredProfessionalIds.has(professional.id)) {
-      if (candidate.scheduleContextId !== null) {
-        await assertActiveScheduleContextTopology({
-          institutionId: candidate.institutionId,
-          hospitalId: candidate.hospitalId,
-          sectorId: candidate.sectorId,
-          scheduleContextId: candidate.scheduleContextId,
-          db: tx,
-        });
-      }
-    } else if (candidate.scheduleContextId === null) {
-      assertSpecialtyCompatible(
-        candidate.requiredSpecialty,
-        professional.specialty,
-      );
+      await assertActiveScheduleContextTopology({
+        institutionId: candidate.institutionId,
+        hospitalId: candidate.hospitalId,
+        sectorId: candidate.sectorId,
+        scheduleContextId: candidate.scheduleContextId,
+        db: tx,
+      });
     } else {
       await assertProfessionalEligibleForScheduleContext({
         institutionId: candidate.institutionId,
