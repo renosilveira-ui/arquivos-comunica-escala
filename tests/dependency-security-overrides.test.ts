@@ -26,9 +26,16 @@ type YamlApi = {
   parse: (source: string) => unknown;
 };
 
+type BrowserslistApi = (queries?: string | string[]) => string[];
+
 const projectRequire = createRequire(import.meta.url);
 const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const BROWSERSLIST_CONSUMERS = [
+  "@babel/helper-compilation-targets",
+  "@expo/cli",
+  "core-js-compat",
+] as const;
 
 function requireFrom(packageName: string) {
   return createRequire(projectRequire.resolve(packageName));
@@ -62,6 +69,24 @@ function resolvedPackageVersion(entryPath: string, expectedName: string) {
 }
 
 describe("dependency security overrides", () => {
+  it("resolves browserslist to the audited version for every affected consumer", () => {
+    const browserslistEntry = projectRequire.resolve("browserslist");
+    const browserslist = projectRequire("browserslist") as BrowserslistApi;
+
+    expect(resolvedPackageVersion(browserslistEntry, "browserslist")).toBe(
+      "4.28.7",
+    );
+    for (const consumer of BROWSERSLIST_CONSUMERS) {
+      const consumerRequire = requireFrom(consumer);
+      const consumerBrowserslistEntry = consumerRequire.resolve("browserslist");
+
+      expect(
+        resolvedPackageVersion(consumerBrowserslistEntry, "browserslist"),
+      ).toBe("4.28.7");
+    }
+    expect(browserslist("last 1 Chrome version")).toHaveLength(1);
+  });
+
   it("resolves ngrok to patched CommonJS uuid and yaml versions", () => {
     const ngrokRequire = requireFrom("@expo/ngrok");
     const uuidEntry = ngrokRequire.resolve("uuid");
