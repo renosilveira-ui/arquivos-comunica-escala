@@ -345,7 +345,7 @@ describe("foundation de eventos operacionais", () => {
       assignmentId: 16,
     };
     expect(() => operationalEventHash(sectorEvent)).toThrow(
-      "Agregado ainda não possui revisão canônica",
+      "Evento ainda não possui contrato canônico de transição",
     );
   });
 
@@ -472,7 +472,7 @@ describe("foundation de eventos operacionais", () => {
     expect(() => operationalEventHash(silent)).not.toThrow();
   });
 
-  it("bloqueia divulgação coletiva até o agregado de turno ter revisão canônica", () => {
+  it("mantém divulgação coletiva bloqueada até haver transição canônica", () => {
     const broadcastWithoutEligibleRecipients = hospitalEvent();
     broadcastWithoutEligibleRecipients.eventType = "VACANCY_BROADCAST";
     broadcastWithoutEligibleRecipients.aggregate = {
@@ -493,7 +493,7 @@ describe("foundation de eventos operacionais", () => {
       "NO_ELIGIBLE_RECIPIENTS";
     expect(() =>
       operationalEventHash(broadcastWithoutEligibleRecipients),
-    ).toThrow("Agregado ainda não possui revisão canônica");
+    ).toThrow("Evento ainda não possui contrato canônico de transição");
 
     const notifyWithoutRecipient = hospitalEvent();
     notifyWithoutRecipient.recipients = [];

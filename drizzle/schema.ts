@@ -714,6 +714,9 @@ export const shiftInstances = mysqlTable(
     startAt: timestamp("start_at").notNull(),
     endAt: timestamp("end_at").notNull(),
     status: varchar("status", { length: 20 }).notNull().default("VAGO"),
+    // Revisão monotônica do agregado. Escritas produtivas usam CAS e nunca
+    // aceitam este valor do cliente; ela será a versão canônica do ledger.
+    operationalRevision: int("operational_revision").notNull().default(0),
 
     // Modalidade estruturada (docs/product/escala-ux.md §5).
     // Antes destes campos, `label` era texto livre ("Plantão", "Sobreaviso")

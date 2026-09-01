@@ -430,7 +430,7 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     expectGuardBeforeWrite(
       update,
       "assertAssignmentWritesAllowedForUpdate",
-      ".update(shiftInstances)",
+      "advanceShiftInstanceRevision",
     );
   });
 });

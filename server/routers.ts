@@ -15,6 +15,7 @@ import {
 } from "./shift-validations-v2";
 import { recordAudit } from "./audit-trail";
 import { recomputeShiftStatus } from "./shift-status";
+import { advanceShiftInstanceRevision } from "./shift-instance-revision";
 import {
   actorCapabilities,
   assertCanEditScheduleDate,
@@ -55,6 +56,7 @@ type VacancyShiftTarget = {
   scheduleContextId: number | null;
   specialty: string | null;
   status: string;
+  operationalRevision: number;
   startAt: Date;
   endAt: Date;
 };
@@ -89,6 +91,7 @@ async function requireCanonicalVacancyShiftTarget(
       scheduleContextId: shiftInstances.scheduleContextId,
       specialty: shiftInstances.specialty,
       status: shiftInstances.status,
+      operationalRevision: shiftInstances.operationalRevision,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
     })
@@ -143,6 +146,7 @@ function assertSameVacancyShiftTarget(
     authorized.sectorId !== locked.sectorId ||
     authorized.scheduleContextId !== locked.scheduleContextId ||
     authorized.specialty !== locked.specialty ||
+    authorized.operationalRevision !== locked.operationalRevision ||
     authorized.startAt.getTime() !== locked.startAt.getTime() ||
     authorized.endAt.getTime() !== locked.endAt.getTime()
   ) {
@@ -398,24 +402,19 @@ const shiftAssignmentsRouter = router({
           expectedCurrentActiveCount: 0,
         });
 
-        const [claimed] = await tx
-          .update(shiftInstances)
-          .set({ status: "PENDENTE" })
-          .where(
-            and(
-              eq(shiftInstances.id, input.shiftInstanceId),
-              eq(shiftInstances.institutionId, lockedShift.institutionId),
-              eq(shiftInstances.hospitalId, lockedShift.hospitalId),
-              eq(shiftInstances.sectorId, lockedShift.sectorId),
-              eq(shiftInstances.status, "VAGO"),
-            ),
-          );
-        if (!claimed.affectedRows) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message:
-              "Este plantão acabou de ser assumido por outro profissional.",
+        try {
+          await advanceShiftInstanceRevision(tx, lockedShift, {
+            status: "PENDENTE",
           });
+        } catch (error) {
+          if (error instanceof TRPCError && error.code === "CONFLICT") {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Este plantão acabou de ser assumido por outro profissional.",
+            });
+          }
+          throw error;
         }
         const [result] = await tx.insert(shiftAssignmentsV2).values({
           shiftInstanceId: input.shiftInstanceId,

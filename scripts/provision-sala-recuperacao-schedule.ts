@@ -580,7 +580,8 @@ async function repairMonthCalendar(
       if (input.apply) {
         await connection.execute(
           `UPDATE shift_instances
-              SET start_at = ?, end_at = ?
+              SET start_at = ?, end_at = ?,
+                  operational_revision = operational_revision + 1
             WHERE id = ?`,
           [expectedStart, expectedEnd, existing.id],
         );
