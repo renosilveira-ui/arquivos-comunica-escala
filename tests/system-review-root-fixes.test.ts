@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, gte, inArray, lt } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lt } from "drizzle-orm";
 import {
   auditTrail,
   hospitals,
@@ -42,6 +42,7 @@ describe("system review — correções de raiz", () => {
   let hospitalA: number;
   let hospitalA2: number;
   let hospitalBare: number;
+  let hospitalRevocation: number;
   let hospitalB: number;
   let sectorA: number;
   let sectorDry: number;
@@ -59,6 +60,8 @@ describe("system review — correções de raiz", () => {
   let doctorAProId: number;
   let plusAUserId: number;
   let plusAProId: number;
+  let adminAUserId: number;
+  let adminAProId: number;
 
   const currentYm = yearMonthBrt(new Date());
   const nextYm = addMonthsYearMonth(currentYm, 1);
@@ -136,6 +139,14 @@ describe("system review — correções de raiz", () => {
       })
       .$returningId();
     hospitalBare = hBare.id;
+    const [hRevocation] = await db
+      .insert(hospitals)
+      .values({
+        institutionId: institutionA,
+        name: `Hospital revogação ${stamp}`,
+      })
+      .$returningId();
+    hospitalRevocation = hRevocation.id;
     const [hB] = await db
       .insert(hospitals)
       .values({ institutionId: institutionB, name: `Hospital B ${stamp}` })
@@ -202,6 +213,8 @@ describe("system review — correções de raiz", () => {
       tag: string,
       institutionId: number,
       roleInInstitution: "GESTOR_MEDICO" | "GESTOR_PLUS" | "USER",
+      globalRole: "admin" | "manager" | "doctor" =
+        roleInInstitution === "USER" ? "doctor" : "manager",
     ) {
       const [u] = await db
         .insert(users)
@@ -209,7 +222,7 @@ describe("system review — correções de raiz", () => {
           name: `Review ${tag} ${stamp}`,
           email: `review-${tag}-${stamp}@test.local`,
           passwordHash: "test",
-          role: roleInInstitution === "USER" ? "doctor" : "manager",
+          role: globalRole,
         })
         .$returningId();
       const [p] = await db
@@ -247,6 +260,14 @@ describe("system review — correções de raiz", () => {
     const plusA = await person("plus-a", institutionA, "GESTOR_PLUS");
     plusAUserId = plusA.userId;
     plusAProId = plusA.proId;
+    const adminA = await person(
+      "admin-a",
+      institutionA,
+      "USER",
+      "admin",
+    );
+    adminAUserId = adminA.userId;
+    adminAProId = adminA.proId;
 
     await db.insert(managerScope).values([
       {
@@ -267,6 +288,13 @@ describe("system review — correções de raiz", () => {
         institutionId: institutionA,
         managerProfessionalId: medicoAProId,
         hospitalId: hospitalBare,
+        sectorId: null,
+        active: true,
+      },
+      {
+        institutionId: institutionA,
+        managerProfessionalId: medicoAProId,
+        hospitalId: hospitalRevocation,
         sectorId: null,
         active: true,
       },
@@ -327,6 +355,7 @@ describe("system review — correções de raiz", () => {
           medicoBProId,
           doctorAProId,
           plusAProId,
+          adminAProId,
         ]),
       );
     await db.delete(sectors).where(inArray(sectors.institutionId, tenantIds));
@@ -341,6 +370,7 @@ describe("system review — correções de raiz", () => {
           medicoBUserId,
           doctorAUserId,
           plusAUserId,
+          adminAUserId,
         ]),
       );
   });
@@ -734,6 +764,162 @@ describe("system review — correções de raiz", () => {
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
+  });
+
+  it("8b: escopo hospitalar não atravessa hospital irmão; Gestor+ e admin operam", async () => {
+    // medicoA é gestor de todo o hospitalBare, mas hospitalA2 é irmão no
+    // mesmo tenant. A jurisdição não pode cair para institutionId.
+    const hospitalActor = await resolveTenantActor(
+      medicoAUserId,
+      institutionA,
+      false,
+    );
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).publish({
+        institutionId: institutionA,
+        hospitalId: hospitalA2,
+        yearMonth: nextYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição/),
+    });
+    await expect(
+      publishMonth(institutionA, hospitalA2, nextYm, hospitalActor, 1),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(
+      callerShifts(plusAUserId, "manager", institutionA).publish({
+        institutionId: institutionA,
+        hospitalId: hospitalA2,
+        yearMonth: plus2Ym,
+      }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      callerShifts(plusAUserId, "manager", institutionA).lock({
+        institutionId: institutionA,
+        hospitalId: hospitalA2,
+        yearMonth: plus2Ym,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const adminYm = addMonthsYearMonth(plus2Ym, 1);
+    await expect(
+      callerShifts(adminAUserId, "admin", institutionA).publish({
+        institutionId: institutionA,
+        hospitalId: hospitalA2,
+        yearMonth: adminYm,
+      }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      callerShifts(adminAUserId, "admin", institutionA).lock({
+        institutionId: institutionA,
+        hospitalId: hospitalA2,
+        yearMonth: adminYm,
+      }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("8c: revogação sob transação impede publicar ou trancar sem escrita", async () => {
+    // O ator é resolvido antes da revogação para simular uma requisição que
+    // chega com credencial válida, mas perde a jurisdição antes da mutation.
+    const actorResolvedBeforeRevocation = await resolveTenantActor(
+      medicoAUserId,
+      institutionA,
+      false,
+    );
+    const [hospitalScope] = await db
+      .select({ id: managerScope.id })
+      .from(managerScope)
+      .where(
+        and(
+          eq(managerScope.institutionId, institutionA),
+          eq(managerScope.managerProfessionalId, medicoAProId),
+          eq(managerScope.hospitalId, hospitalRevocation),
+          isNull(managerScope.sectorId),
+          eq(managerScope.active, true),
+        ),
+      )
+      .limit(1);
+    if (!hospitalScope) {
+      throw new Error("Fixture sem escopo hospitalar para teste de revogação");
+    }
+
+    await db.insert(monthlyRosters).values({
+      institutionId: institutionA,
+      hospitalId: hospitalRevocation,
+      yearMonth: currentYm,
+      status: "PUBLISHED",
+      publishedAt: new Date(),
+      publishedByUserId: plusAUserId,
+      version: 1,
+    });
+    await db
+      .update(managerScope)
+      .set({ active: false })
+      .where(eq(managerScope.id, hospitalScope.id));
+
+    try {
+      await expect(
+        publishMonth(
+          institutionA,
+          hospitalRevocation,
+          nextYm,
+          actorResolvedBeforeRevocation,
+          1,
+        ),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(
+        lockMonth(
+          institutionA,
+          hospitalRevocation,
+          currentYm,
+          actorResolvedBeforeRevocation,
+          1,
+        ),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      const [deniedPublishRoster] = await db
+        .select({ id: monthlyRosters.id })
+        .from(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionA),
+            eq(monthlyRosters.hospitalId, hospitalRevocation),
+            eq(monthlyRosters.yearMonth, nextYm),
+          ),
+        )
+        .limit(1);
+      expect(deniedPublishRoster).toBeUndefined();
+
+      const [publishedRoster] = await db
+        .select({
+          status: monthlyRosters.status,
+          version: monthlyRosters.version,
+          lockedAt: monthlyRosters.lockedAt,
+          lockedByUserId: monthlyRosters.lockedByUserId,
+        })
+        .from(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionA),
+            eq(monthlyRosters.hospitalId, hospitalRevocation),
+            eq(monthlyRosters.yearMonth, currentYm),
+          ),
+        )
+        .limit(1);
+      expect(publishedRoster).toMatchObject({
+        status: "PUBLISHED",
+        version: 1,
+        lockedAt: null,
+        lockedByUserId: null,
+      });
+    } finally {
+      await db
+        .update(managerScope)
+        .set({ active: true })
+        .where(eq(managerScope.id, hospitalScope.id));
+    }
   });
 
   it("9: Gestor+ cria hospital no próprio tenant; gestor médico e tenant B não", async () => {
