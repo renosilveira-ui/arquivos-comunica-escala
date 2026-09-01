@@ -15,8 +15,10 @@ import {
   useTenantState,
   type ActiveTenantSnapshot,
 } from "@/lib/tenant-state";
-import { shouldInvalidateSwapQueriesOnNotification } from "@/lib/swap-offer-badge-refresh";
-import { shouldInvalidateVacancyQueriesOnNotification } from "@/lib/vacancy-broadcast";
+import {
+  notificationQueryRefreshTargets,
+  type NotificationQueryRefreshTarget,
+} from "@/lib/notification-query-refresh";
 
 type NotificationData = Readonly<Record<string, unknown>>;
 
@@ -617,17 +619,50 @@ export function NotificationListener() {
     const receivedSubscription = Notifications.addNotificationReceivedListener(
       (notification) => {
         if (!scopeActive || !isSessionAuthorizationCurrent()) return;
-        const type = notification.request.content.data?.type;
-        if (shouldInvalidateSwapQueriesOnNotification(type)) {
-          void Promise.all([
-            utils.swaps.countActionable.invalidate(),
-            utils.swaps.listAvailable.invalidate(),
-            utils.swaps.list.invalidate(),
-          ]);
+        const data = notification.request.content.data;
+        const notificationInstitutionId = parseNotificationInstitutionId(
+          data?.institutionId,
+        );
+        const activeTenant = getActiveTenantSnapshot();
+        if (
+          notificationInstitutionId === null ||
+          notificationInstitutionId !== activeTenant.institutionId
+        ) {
           return;
         }
-        if (!shouldInvalidateVacancyQueriesOnNotification(type)) return;
-        void utils.shiftInstances.listVacancies.invalidate();
+        const type = data?.type;
+        const invalidations = notificationQueryRefreshTargets(type).map(
+          (target: NotificationQueryRefreshTarget) => {
+            switch (target) {
+              case "SWAPS":
+                return Promise.all([
+                  utils.swaps.countActionable.invalidate(),
+                  utils.swaps.listAvailable.invalidate(),
+                  utils.swaps.list.invalidate(),
+                ]);
+              case "VACANCIES":
+                return utils.shiftInstances.listVacancies.invalidate();
+              case "SCHEDULES":
+                return Promise.all([
+                  utils.shifts.listAgenda.invalidate(),
+                  utils.shifts.getNextShift.invalidate(),
+                  utils.shifts.listByPeriod.invalidate(),
+                  utils.shifts.get.invalidate(),
+                  utils.confirmations.getPending.invalidate(),
+                ]);
+              case "PENDING_ASSIGNMENTS":
+                return utils.shiftAssignments.listPending.invalidate();
+              case "SCHEDULE_INVITES":
+                return Promise.all([
+                  utils.scheduleInvites.listActive.invalidate(),
+                  utils.scheduleInvites.listCandidates.invalidate(),
+                ]);
+              case "SUMMARY_COUNTS":
+                return utils.filters.summaryCounts.invalidate();
+            }
+          },
+        );
+        if (invalidations.length > 0) void Promise.all(invalidations);
       },
     );
     responseConsumerRef.current = consumeResponse;

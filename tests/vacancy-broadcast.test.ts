@@ -28,7 +28,12 @@ import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
-import { yearMonthBrt } from "../server/local-time";
+import {
+  addDaysToKey,
+  addMonthsYearMonth,
+  SCHEDULE_TIME_ZONE_OFFSET,
+  yearMonthBrt,
+} from "../server/local-time";
 import {
   VACANCY_AVAILABLE_DEEP_LINK,
   VACANCY_AVAILABLE_PUSH_TITLE,
@@ -60,12 +65,14 @@ describe("aviso deliberado de plantão vago", () => {
   const userIds: number[] = [];
   const professionalIds: number[] = [];
   const stamp = Date.now();
+  const fixtureMonth = addMonthsYearMonth(yearMonthBrt(new Date()), 1);
 
   const at = (dayOffset: number, hour: number): Date => {
-    const value = new Date();
-    value.setUTCDate(value.getUTCDate() + 10 + dayOffset);
-    value.setUTCHours(hour, 0, 0, 0);
-    return value;
+    const day = addDaysToKey(`${fixtureMonth}-01`, dayOffset);
+    const wallClockHour = String(hour).padStart(2, "0");
+    return new Date(
+      `${day}T${wallClockHour}:00:00${SCHEDULE_TIME_ZONE_OFFSET}`,
+    );
   };
 
   async function createIdentity(

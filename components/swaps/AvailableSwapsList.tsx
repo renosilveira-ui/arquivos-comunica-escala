@@ -67,25 +67,34 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
   );
   const swaps = (data ?? []) as AvailableSwap[];
 
-  const invalidate = () =>
+  const invalidateSwapQueries = () =>
     Promise.all([
       utils.swaps.listAvailable.invalidate(),
       utils.swaps.countActionable.invalidate(),
       utils.swaps.list.invalidate(),
     ]);
+  const invalidateAcceptedSwapQueries = () =>
+    Promise.all([
+      invalidateSwapQueries(),
+      utils.shifts.listAgenda.invalidate(),
+      utils.shifts.getNextShift.invalidate(),
+      utils.shifts.listByPeriod.invalidate(),
+      utils.shifts.get.invalidate(),
+      utils.confirmations.getPending.invalidate(),
+    ]);
 
   const acceptSwap = trpc.swaps.accept.useMutation({
     onSuccess: async () => {
-      await invalidate();
       feedback.success("Plantão assumido. A escala já foi atualizada.");
+      await invalidateAcceptedSwapQueries();
     },
     onError: (error) => feedback.error(error.message || "Não foi possível aceitar a oferta."),
     onSettled: () => setActing(null),
   });
   const rejectSwap = trpc.swaps.reject.useMutation({
     onSuccess: async () => {
-      await invalidate();
       feedback.success("Oferta recusada.");
+      await invalidateSwapQueries();
     },
     onError: (error) => feedback.error(error.message || "Não foi possível recusar a oferta."),
     onSettled: () => setActing(null),

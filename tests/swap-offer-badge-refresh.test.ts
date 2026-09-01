@@ -99,8 +99,13 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
 
   it("push recebido invalida countActionable e listAvailable sem navegar", () => {
     const listener = readFileSync("components/NotificationListener.tsx", "utf8");
+    const refreshMatrix = readFileSync(
+      "lib/notification-query-refresh.ts",
+      "utf8",
+    );
     expect(listener).toContain("addNotificationReceivedListener");
-    expect(listener).toContain("shouldInvalidateSwapQueriesOnNotification");
+    expect(listener).toContain("notificationQueryRefreshTargets");
+    expect(refreshMatrix).toContain("shouldInvalidateSwapQueriesOnNotification");
     expect(listener).toContain("utils.swaps.countActionable.invalidate()");
     expect(listener).toContain("utils.swaps.listAvailable.invalidate()");
     const received = listener.slice(
@@ -137,6 +142,7 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     );
     expect(tabsEffect).toContain("utils.swaps.countActionable.invalidate()");
     expect(tabsEffect).toContain("utils.swaps.listAvailable.invalidate()");
+    expect(tabsEffect).toContain("isSessionAuthorizationCurrent()");
     expect(tabsEffect).not.toContain("queryClient.clear");
     expect(tabsEffect).not.toContain("keep_verified_tree");
     expect(tabsEffect).not.toContain("runTenantAuthorizationAttempt");
@@ -153,5 +159,30 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(list).toContain("utils.swaps.listAvailable.invalidate()");
     expect(offer).toContain("utils.swaps.countActionable.invalidate()");
     expect(offer).toContain("utils.swaps.listAvailable.invalidate()");
+  });
+
+  it("aceite local reconcilia a escala; recusa atualiza somente Trocas", () => {
+    const list = readFileSync("components/swaps/AvailableSwapsList.tsx", "utf8");
+    const acceptBlock = list.slice(
+      list.indexOf("const acceptSwap"),
+      list.indexOf("const rejectSwap"),
+    );
+    const rejectBlock = list.slice(
+      list.indexOf("const rejectSwap"),
+      list.indexOf("const busy"),
+    );
+
+    expect(list).toContain("utils.shifts.listAgenda.invalidate()");
+    expect(list).toContain("utils.shifts.getNextShift.invalidate()");
+    expect(list).toContain("utils.shifts.listByPeriod.invalidate()");
+    expect(list).toContain("utils.shifts.get.invalidate()");
+    expect(list).toContain("utils.confirmations.getPending.invalidate()");
+    expect(acceptBlock).toContain("invalidateAcceptedSwapQueries");
+    expect(acceptBlock).toContain("onSuccess: async");
+    expect(acceptBlock).toContain("await invalidateAcceptedSwapQueries()");
+    expect(rejectBlock).toContain("invalidateSwapQueries");
+    expect(rejectBlock).toContain("onSuccess: async");
+    expect(rejectBlock).toContain("await invalidateSwapQueries()");
+    expect(rejectBlock).not.toContain("invalidateAcceptedSwapQueries");
   });
 });

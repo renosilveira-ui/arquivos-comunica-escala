@@ -157,6 +157,8 @@ export function createTRPCClient() {
     links: [
       sessionTransportProofLink(),
       httpBatchLink({
+        // Limita o head-of-line blocking quando uma tela dispara muitas queries.
+        maxItems: 5,
         url: `${getApiBaseUrl()}/api/trpc`,
         transformer: superjson,
         headers: ({ opList }) => buildTRPCRequestHeaders(opList),

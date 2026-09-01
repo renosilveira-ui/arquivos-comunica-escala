@@ -132,13 +132,21 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(details).toContain("vacancyBroadcastFeedbackMessage");
   });
 
-  it("tap do push abre Plantões em aberto; recebido só invalida a lista", () => {
+  it("tap abre Plantões em aberto; recebido invalida lista e contadores", () => {
     const listener = readFileSync("components/NotificationListener.tsx", "utf8");
+    const refreshMatrix = readFileSync(
+      "lib/notification-query-refresh.ts",
+      "utf8",
+    );
     expect(listener).toContain('case "vacancy_available"');
     expect(listener).toContain("navigateToVacancies");
     expect(listener).toContain('router.push("/(tabs)/vacancies"');
-    expect(listener).toContain("shouldInvalidateVacancyQueriesOnNotification");
+    expect(listener).toContain("notificationQueryRefreshTargets");
+    expect(refreshMatrix).toContain(
+      "shouldInvalidateVacancyQueriesOnNotification",
+    );
     expect(listener).toContain("utils.shiftInstances.listVacancies.invalidate()");
+    expect(listener).toContain("utils.filters.summaryCounts.invalidate()");
     const vacancyCase = listener.slice(
       listener.indexOf('case "vacancy_available"'),
       listener.indexOf('case "swap_taken"'),

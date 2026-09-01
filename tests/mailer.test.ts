@@ -7,6 +7,13 @@ const SAMPLE = {
   text: "corpo-sem-segredo",
 };
 
+const REDACTED_FALLBACK_RECORD = {
+  eventType: "TRANSACTIONAL_EMAIL_NOT_SENT",
+  channel: "EMAIL",
+  providerConfigured: false,
+  delivered: false,
+};
+
 describe("mailer sem provedor", () => {
   const previousKey = process.env.RESEND_API_KEY;
 
@@ -16,6 +23,7 @@ describe("mailer sem provedor", () => {
     } else {
       process.env.RESEND_API_KEY = previousKey;
     }
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -26,9 +34,61 @@ describe("mailer sem provedor", () => {
     const result = await mailer.sendMail(SAMPLE);
 
     expect(result).toEqual({ delivered: false, transport: "console" });
-    expect(log.mock.calls.join("\n")).toContain("sem RESEND_API_KEY");
-    expect(log.mock.calls.join("\n")).toContain("e-mail NÃO enviado");
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      `[mailer] ${JSON.stringify(REDACTED_FALLBACK_RECORD)}`,
+    );
   });
+
+  it.each([
+    {
+      scenario: "senha temporária",
+      message: {
+        to: "temporary-password-recipient@test.local",
+        subject: "temporary-password-subject",
+        text: "temporary-password=TEMP_PASSWORD_FORBIDDEN_IN_LOGS",
+        html: "<strong>TEMP_PASSWORD_FORBIDDEN_IN_LOGS</strong>",
+      },
+    },
+    {
+      scenario: "redefinição de senha",
+      message: {
+        to: "forgot-password-recipient@test.local",
+        subject: "forgot-password-subject",
+        text: "https://example.test/reset-password?token=FORGOT_PASSWORD_TOKEN_FORBIDDEN_IN_LOGS",
+        html: '<a href="https://example.test/reset-password?token=FORGOT_PASSWORD_TOKEN_FORBIDDEN_IN_LOGS">redefinir</a>',
+      },
+    },
+    {
+      scenario: "convite nominal",
+      message: {
+        to: "schedule-invite-recipient@test.local",
+        subject: "schedule-invite-subject",
+        text: "https://example.test/convites/aceitar?token=SCHEDULE_INVITE_TOKEN_FORBIDDEN_IN_LOGS",
+        html: '<a href="https://example.test/convites/aceitar?token=SCHEDULE_INVITE_TOKEN_FORBIDDEN_IN_LOGS">aceitar convite</a>',
+      },
+    },
+  ])(
+    "nunca registra conteúdo de $scenario sem provedor",
+    async ({ message }) => {
+      delete process.env.RESEND_API_KEY;
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await mailer.sendMail(message);
+
+      expect(result).toEqual({ delivered: false, transport: "console" });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledExactlyOnceWith(
+        `[mailer] ${JSON.stringify(REDACTED_FALLBACK_RECORD)}`,
+      );
+
+      const logged = log.mock.calls.flat().join(" ");
+      for (const value of Object.values(message)) {
+        expect(logged).not.toContain(value);
+      }
+    },
+  );
 });
 
 describe("mailer via Resend", () => {

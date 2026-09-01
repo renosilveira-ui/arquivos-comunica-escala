@@ -1,0 +1,100 @@
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+type PackageManifest = {
+  name?: string;
+  version?: string;
+};
+
+type UuidApi = {
+  v4: () => string;
+};
+
+type XcodeProject = {
+  hash: { project: { objects: Record<string, unknown> } };
+  generateUuid: () => string;
+};
+
+type XcodeApi = {
+  project: (filename: string) => XcodeProject;
+};
+
+type YamlApi = {
+  parse: (source: string) => unknown;
+};
+
+const projectRequire = createRequire(import.meta.url);
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function requireFrom(packageName: string) {
+  return createRequire(projectRequire.resolve(packageName));
+}
+
+function resolvedPackageVersion(entryPath: string, expectedName: string) {
+  let currentDirectory = dirname(entryPath);
+
+  while (true) {
+    const manifestPath = join(currentDirectory, "package.json");
+
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(
+        readFileSync(manifestPath, "utf8"),
+      ) as PackageManifest;
+
+      if (manifest.name === expectedName && manifest.version) {
+        return manifest.version;
+      }
+    }
+
+    const parentDirectory = dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      throw new Error(
+        `Package manifest for ${expectedName} was not found from ${entryPath}`,
+      );
+    }
+
+    currentDirectory = parentDirectory;
+  }
+}
+
+describe("dependency security overrides", () => {
+  it("resolves ngrok to patched CommonJS uuid and yaml versions", () => {
+    const ngrokRequire = requireFrom("@expo/ngrok");
+    const uuidEntry = ngrokRequire.resolve("uuid");
+    const yamlEntry = ngrokRequire.resolve("yaml");
+    const uuid = ngrokRequire("uuid") as UuidApi;
+    const yaml = ngrokRequire("yaml") as YamlApi;
+
+    expect(resolvedPackageVersion(uuidEntry, "uuid")).toBe("11.1.1");
+    expect(resolvedPackageVersion(yamlEntry, "yaml")).toBe("1.10.3");
+    expect(uuid.v4()).toMatch(UUID_V4_PATTERN);
+    expect(yaml.parse("tunnels: {}\n")).toEqual({ tunnels: {} });
+  });
+
+  it("keeps xcode generateUuid compatible with patched CommonJS uuid", () => {
+    const xcodeRequire = requireFrom("xcode");
+    const uuidEntry = xcodeRequire.resolve("uuid");
+    const uuid = xcodeRequire("uuid") as UuidApi;
+    const xcode = projectRequire("xcode") as XcodeApi;
+    const project = xcode.project(
+      join(tmpdir(), "dependency-security-overrides-not-read.pbxproj"),
+    );
+
+    project.hash = { project: { objects: {} } };
+
+    expect(resolvedPackageVersion(uuidEntry, "uuid")).toBe("11.1.1");
+    expect(uuid.v4()).toMatch(UUID_V4_PATTERN);
+    expect(project.generateUuid()).toMatch(/^[0-9A-F]{24}$/);
+  });
+
+  it("preserves the patched yaml 2.x line required by Metro", () => {
+    const metroConfigRequire = requireFrom("metro-config");
+    const yamlEntry = metroConfigRequire.resolve("yaml");
+
+    expect(resolvedPackageVersion(yamlEntry, "yaml")).toMatch(/^2\./);
+  });
+});

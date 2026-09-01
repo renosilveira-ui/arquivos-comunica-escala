@@ -44,6 +44,7 @@ import { resolvePendingContentState } from "@/lib/permission-screen-state";
 
 export default function PendingScreen() {
   const router = useRouter();
+  const utils = trpc.useUtils();
   const { user, isLoading: authLoading } = useAuth();
   const {
     canApproveAssignments,
@@ -180,6 +181,23 @@ export default function PendingScreen() {
   // alertas "Sucesso" seguidos no nativo).
   const approveAssignment = trpc.shiftInstances.approveAssignment.useMutation();
   const rejectAssignment = trpc.shiftInstances.rejectAssignment.useMutation();
+  const invalidateAssignmentDecisionCaches = useCallback(
+    () =>
+      Promise.all([
+        utils.shiftAssignments.listPending.invalidate(),
+        utils.filters.summaryCounts.invalidate(),
+        utils.shiftInstances.listVacancies.invalidate(),
+        utils.shifts.listAgenda.invalidate(),
+        utils.shifts.getNextShift.invalidate(),
+        utils.shifts.listByPeriod.invalidate(),
+        utils.shifts.get.invalidate(),
+        utils.confirmations.getPending.invalidate(),
+        utils.swaps.countActionable.invalidate(),
+        utils.swaps.listAvailable.invalidate(),
+        utils.swaps.list.invalidate(),
+      ]),
+    [utils],
+  );
 
   const handleApprove = async (assignmentId: number, professionalName: string) => {
     const confirmed = await feedback.confirmDestructive(
@@ -193,7 +211,7 @@ export default function PendingScreen() {
       { assignmentId },
       {
         onSuccess: () => {
-          refetch();
+          void invalidateAssignmentDecisionCaches();
           feedback.success(`Alocação de ${professionalName} aprovada.`);
         },
         onError: (err: any) => {
@@ -215,7 +233,7 @@ export default function PendingScreen() {
       { assignmentId, reason: "Rejeitado pelo gestor" },
       {
         onSuccess: () => {
-          refetch();
+          void invalidateAssignmentDecisionCaches();
           feedback.success(`Alocação de ${professionalName} rejeitada.`);
         },
         onError: (err: any) => {

@@ -19,6 +19,7 @@
     "lint": "expo lint",
     "format": "prettier --write .",
     "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
+    "security:audit": "node scripts/security/audit-dependencies.mjs",
     "test": "vitest run",
     "test:e2e": "cross-env NODE_ENV=test vitest run --config vitest.e2e-guard.config.ts",
     "e2e:workflow:destructive": "tsx scripts/run-e2e-workflow.ts",
@@ -32,6 +33,7 @@
     "provision:sao-carlos": "tsx scripts/provision-sao-carlos-contexts.ts",
     "provision:sala-recuperacao": "tsx scripts/provision-sala-recuperacao-schedule.ts",
     "provision:institution-scale": "tsx scripts/provision-institution-scale.ts",
+    "normalize:corporate-structure": "tsx scripts/normalize-corporate-schedule-structure.ts",
     "apply:migration": "tsx scripts/apply-manual-migration.ts",
     "android": "expo start --android",
     "ios": "expo start --ios",
@@ -88,6 +90,7 @@
     "fontfaceobserver": "^2.3.0",
     "helmet": "^8.3.0",
     "jose": "6.2.9",
+    "libphonenumber-js": "^1.13.12",
     "lucide-react-native": "^0.563.0",
     "mysql2": "^3.23.3",
     "nativewind": "^4.2.6",
@@ -155,7 +158,14 @@
       "body-parser@>=1.0.0 <2.0.0": "1.20.6",
       "esbuild@<0.25.0": "0.25.0",
       "postcss@>=8.0.0 <8.5.23": "8.5.23",
-      "qs@>=6.0.0 <6.15.2": "6.15.2"
+      "qs@>=6.0.0 <6.15.2": "6.15.2",
+      "@expo/ngrok@4.1.3>uuid": "11.1.1",
+      "@expo/ngrok@4.1.3>yaml": "1.10.3",
+      "xcode@3.0.1>uuid": "11.1.1"
+    },
+    "patchedDependencies": {
+      "decode-uri-component@0.2.2": "patches/decode-uri-component@0.2.2.patch",
+      "image-size@1.2.1": "patches/image-size@1.2.1.patch"
     }
   }
 }
