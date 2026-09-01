@@ -27,6 +27,18 @@ export function yearMonthBrt(date: Date): string {
   return dayKeyBrt(date).slice(0, 7);
 }
 
+/**
+ * "YYYY-MM" já codificado em uma chave civil "YYYY-MM-DD".
+ *
+ * Chaves date-only não representam um instante: `new Date("YYYY-MM-DD")`
+ * passa a meia-noite UTC e, no relógio do hospital, pode cair no dia/mês
+ * anterior. Quem já recebeu uma chave validada deve preservar seus sete
+ * primeiros caracteres em vez de reinterpretá-la no fuso do processo.
+ */
+export function yearMonthFromDayKey(dayKey: string): string {
+  return dayKey.slice(0, 7);
+}
+
 /** Janela [início, fim) de um dia "YYYY-MM-DD" no relógio do hospital. */
 export function dayWindowBrt(dayKey: string): { start: Date; end: Date } {
   const start = new Date(`${dayKey}T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`);
