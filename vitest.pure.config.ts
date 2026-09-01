@@ -100,6 +100,8 @@ export default defineConfig({
       "tests/readiness-fence-v1-installer-guard.test.ts",
       "tests/readiness-fence-v1-ci-wiring.test.ts",
       "tests/operational-events-foundation.test.ts",
+      "tests/corporate-readiness-v1.test.ts",
+      "tests/corporate-readiness-router.test.ts",
     ],
   },
 });
