@@ -38,6 +38,7 @@ As audiências são identificadores semânticos, nunca nomes de pessoas, hospita
 | `shifts.publish`                                                    | `NOTIFY` consolidado por profissional quando há alocações; calendário vazio é silencioso.                                   |
 | `shifts.replicateRange`                                             | `NOTIFY` consolidado somente com `includeAssignments=true` e cópia efetiva; dry-run e calendário puro são silenciosos.      |
 | `shifts.replicateMonthCalendar`, `replicateWeek`, `openMonthShifts` | `SILENT_AUDITED`, pois não criam alocações.                                                                                 |
+| `scheduleContexts.replaceSectorServiceSpecialties`                  | `SILENT_AUDITED`: altera somente metadado assistencial descritivo, sem mudar acesso, elegibilidade ou alocação.                |
 | `shifts.notifyVacancy`                                              | `BROADCAST` aos profissionais elegíveis.                                                                                    |
 | `swaps.offer`                                                       | Oferta aberta faz `BROADCAST`; oferta com `toProfessionalId` faz `NOTIFY` dirigido.                                         |
 | `swaps.reject` e `swaps.cancel`                                     | Avisam contraparte somente quando ela existe; dispensa/cancelamento de oferta aberta sem contraparte é silencioso.          |
