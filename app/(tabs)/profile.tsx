@@ -79,6 +79,12 @@ import {
   profileRoleBadgeLabel,
   SCHEDULE_INVITE_SUBTITLE,
 } from "@/lib/institution-roles";
+import {
+  actionableBadgeAccessibilityLabel,
+  actionableBadgeValue,
+  combineActionableBadgeStates,
+  deriveActionableBadgeState,
+} from "@/lib/actionable-badge";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -169,14 +175,36 @@ export default function ProfileScreen() {
   // grupo Gestão não existe (vai para a sidebar), então nem consulta. NÃO usar
   // filters.summaryCounts.pendingByHospital — aquele é filtrado por "hoje" e
   // não representa a fila inteira.
-  const { data: pendingAssignments } = trpc.shiftAssignments.listPending.useQuery(
+  const {
+    data: pendingAssignments,
+    isError: pendingAssignmentsHasError,
+  } = trpc.shiftAssignments.listPending.useQuery(
     {},
     {
       enabled: !!user?.id && canApproveAssignments && !isDesktopWeb,
       staleTime: 60_000,
     },
   );
-  const pendingCount = pendingAssignments?.length ?? 0;
+  const assignmentBadgeState = deriveActionableBadgeState({
+    count: pendingAssignments?.length,
+    hasError: pendingAssignmentsHasError,
+  });
+  const {
+    data: actionableSwapCount,
+    isError: actionableSwapCountHasError,
+  } = trpc.swaps.countActionable.useQuery(undefined, {
+    enabled: !!user?.id && canApproveAssignments && !isDesktopWeb,
+    staleTime: 15_000,
+  });
+  const swapBadgeState = deriveActionableBadgeState({
+    count: actionableSwapCount?.swapOffers,
+    hasError: actionableSwapCountHasError,
+  });
+  const pendingBadgeState = combineActionableBadgeStates([
+    assignmentBadgeState,
+    swapBadgeState,
+  ]);
+  const pendingBadge = actionableBadgeValue(pendingBadgeState, 99);
 
   // ── Estatísticas do mês atual ──────────────────────────────────────────
   const now = new Date();
@@ -487,17 +515,27 @@ export default function ProfileScreen() {
                   <ListRow
                     key={link.key}
                     title={link.title}
-                    subtitle={link.subtitle}
+                    subtitle={
+                      link.key === "pending" && pendingBadgeState.status === "UNAVAILABLE"
+                        ? "Não foi possível atualizar a contagem; abra para verificar"
+                        : link.key === "pending" && pendingBadgeState.status === "STALE"
+                          ? "Contagem desatualizada; abra para conferir"
+                          : link.subtitle
+                    }
                     Icon={link.Icon}
                     tone={link.tone}
                     divided={i > 0}
-                    // Só a fila de aprovação tem contagem, e só quando há fila.
-                    value={link.key === "pending" && pendingCount > 0 ? String(pendingCount) : undefined}
+                    // Solicitações agrega trocas acionáveis + alocações;
+                    // zero confirmado some e fonte indisponível vira "!".
+                    value={link.key === "pending" && pendingBadge !== undefined ? String(pendingBadge) : undefined}
                     valueTone="count"
                     onPress={go(link.href)}
                     accessibilityLabel={
-                      link.key === "pending" && pendingCount > 0
-                        ? `Abrir Solicitações, ${pendingCount} aguardando aprovação`
+                      link.key === "pending"
+                        ? actionableBadgeAccessibilityLabel(
+                            "Abrir Solicitações",
+                            pendingBadgeState,
+                          )
                         : `Abrir ${link.title}`
                     }
                   />
