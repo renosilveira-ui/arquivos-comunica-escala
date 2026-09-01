@@ -85,6 +85,10 @@ export default defineConfig({
       "tests/readiness-fence-migration.test.ts",
       "tests/readiness-fence.test.ts",
       "tests/apply-readiness-fence-migration.test.ts",
+      "tests/readiness-fence-v2-schema.test.ts",
+      "tests/readiness-fence-v2-migration.test.ts",
+      "tests/readiness-fence-v2.test.ts",
+      "tests/apply-readiness-fence-v2-migration.test.ts",
     ],
   },
 });

@@ -177,6 +177,30 @@ export type InstitutionReadinessFenceInstallation =
   typeof institutionReadinessFenceInstallations.$inferSelect;
 
 /**
+ * Recibos imutáveis de extensões da fence. Cada extensão declara a cobertura
+ * própria e a versão/hash V1 que ela verificou, sem reclassificar o marker V1.
+ */
+export const institutionReadinessFenceExtensionInstallations = mysqlTable(
+  "institution_readiness_fence_extension_installations",
+  {
+    extensionKey: varchar("extension_key", { length: 64 }).primaryKey(),
+    coverageVersion: varchar("coverage_version", { length: 64 }).notNull(),
+    coverageHash: varchar("coverage_hash", { length: 64 }).notNull(),
+    baseInstallationId: tinyint("base_installation_id", { unsigned: true })
+      .notNull()
+      .references(() => institutionReadinessFenceInstallations.id),
+    baseCoverageVersion: varchar("base_coverage_version", {
+      length: 64,
+    }).notNull(),
+    baseCoverageHash: varchar("base_coverage_hash", { length: 64 }).notNull(),
+    installedAt: timestamp("installed_at").notNull().defaultNow(),
+  },
+);
+
+export type InstitutionReadinessFenceExtensionInstallation =
+  typeof institutionReadinessFenceExtensionInstallations.$inferSelect;
+
+/**
  * Hospitais (pertence a uma instituição)
  * Ex: "Hospital Copa D'Or", "Hospital São Luiz Itaim"
  */
@@ -336,11 +360,7 @@ export const sectorServiceSpecialties = mysqlTable(
     ).on(table.medicalSpecialtyId, table.institutionId),
     fkSectorServiceSpecialtyTopology: foreignKey({
       columns: [table.institutionId, table.hospitalId, table.sectorId],
-      foreignColumns: [
-        sectors.institutionId,
-        sectors.hospitalId,
-        sectors.id,
-      ],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
       name: "fk_sector_service_specialty_topology",
     }),
   }),
@@ -1803,29 +1823,32 @@ export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
   }),
 }));
 
-export const swapRequestsRelations = relations(swapRequests, ({ one, many }) => ({
-  institution: one(institutions, {
-    fields: [swapRequests.institutionId],
-    references: [institutions.id],
+export const swapRequestsRelations = relations(
+  swapRequests,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [swapRequests.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [swapRequests.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [swapRequests.sectorId],
+      references: [sectors.id],
+    }),
+    fromProfessional: one(professionals, {
+      fields: [swapRequests.fromProfessionalId],
+      references: [professionals.id],
+    }),
+    toProfessional: one(professionals, {
+      fields: [swapRequests.toProfessionalId],
+      references: [professionals.id],
+    }),
+    dismissals: many(swapRequestDismissals),
   }),
-  hospital: one(hospitals, {
-    fields: [swapRequests.hospitalId],
-    references: [hospitals.id],
-  }),
-  sector: one(sectors, {
-    fields: [swapRequests.sectorId],
-    references: [sectors.id],
-  }),
-  fromProfessional: one(professionals, {
-    fields: [swapRequests.fromProfessionalId],
-    references: [professionals.id],
-  }),
-  toProfessional: one(professionals, {
-    fields: [swapRequests.toProfessionalId],
-    references: [professionals.id],
-  }),
-  dismissals: many(swapRequestDismissals),
-}));
+);
 
 export const swapRequestDismissalsRelations = relations(
   swapRequestDismissals,

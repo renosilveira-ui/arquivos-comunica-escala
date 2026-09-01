@@ -27,6 +27,16 @@ const READINESS_FENCE_INSTALLATION_LOCK =
   "escalas:institution-readiness-fence:2026-08-31-v1";
 const READINESS_FENCE_INSTALLATION_LOCK_TIMEOUT_SECONDS = 30;
 
+export type ReadinessFenceSourceColumns = Readonly<
+  Record<string, readonly string[]>
+>;
+
+export type ReadinessFenceCoveragePredecessor = Readonly<{
+  installationId: number;
+  coverageVersion: string;
+  coverageHash: string;
+}>;
+
 export const READINESS_FENCE_SOURCE_COLUMNS = {
   institutions: ["id", "is_active"],
   hospitals: ["id", "institution_id"],
@@ -106,21 +116,20 @@ export const READINESS_FENCE_SOURCE_COLUMNS = {
   users: ["id", "email", "approval_status", "deleted_at"],
   professionals: ["id", "user_id"],
   push_tokens: ["user_id"],
-} as const;
+} as const satisfies ReadinessFenceSourceColumns;
 
 export const READINESS_FENCE_OWNED_TABLES = [
   "institution_readiness_fences",
   "institution_readiness_fence_installations",
 ] as const;
 
-type SourceTableName = keyof typeof READINESS_FENCE_SOURCE_COLUMNS;
 type OwnedTableName = (typeof READINESS_FENCE_OWNED_TABLES)[number];
 
 export type IdempotentTriggerDefinition = Readonly<{
   name: string;
   timing: "BEFORE" | "AFTER";
   event: "INSERT" | "UPDATE" | "DELETE";
-  table: SourceTableName;
+  table: string;
   actionStatement: string;
   statement: string;
 }>;
@@ -176,7 +185,7 @@ function requireNonEmpty(name: string): string {
   return value;
 }
 
-function buildConnectionOptions() {
+export function buildReadinessFenceConnectionOptions() {
   const rawUrl = requireNonEmpty("DATABASE_URL");
   const url = new URL(rawUrl);
   if (url.protocol !== "mysql:") {
@@ -218,6 +227,7 @@ function compareCanonicalAscii(left: string, right: string): number {
 
 function parseIdempotentTrigger(
   statement: string,
+  allowedSourceTables: ReadonlySet<string>,
 ): IdempotentTriggerDefinition {
   const parsed =
     /^CREATE\s+TRIGGER\s+`?([A-Za-z0-9_]+)`?\s+(BEFORE|AFTER)\s+(INSERT|UPDATE|DELETE)\s+ON\s+`?([A-Za-z0-9_]+)`?\s+FOR\s+EACH\s+ROW\s+([\s\S]+);\s*$/i.exec(
@@ -229,8 +239,8 @@ function parseIdempotentTrigger(
     );
   }
   const [, name, timing, event, table, rawActionStatement] = parsed;
-  const normalizedTable = normalizeIdentifier(table) as SourceTableName;
-  if (!(normalizedTable in READINESS_FENCE_SOURCE_COLUMNS)) {
+  const normalizedTable = normalizeIdentifier(table);
+  if (!allowedSourceTables.has(normalizedTable)) {
     throw new Error(`Trigger aponta para fonte não autorizada: ${table}`);
   }
   const actionStatement = rawActionStatement.trim();
@@ -255,10 +265,19 @@ function parseIdempotentTrigger(
  * isso evita parser SQL genérico e permite executar o CREATE diretamente, sem
  * PREPARE (não suportado para CREATE TRIGGER pelo MySQL).
  */
-export function extractIdempotentTriggerStatements(sql: string): {
+export function extractIdempotentTriggerStatementsForSources(
+  sql: string,
+  sourceTables: readonly string[],
+): {
   executableSql: string;
   triggers: IdempotentTriggerDefinition[];
 } {
+  const allowedSourceTables = new Set(
+    sourceTables.map((table) => normalizeIdentifier(table)),
+  );
+  if (allowedSourceTables.size === 0) {
+    throw new Error("@idempotent-trigger requer ao menos uma fonte autorizada");
+  }
   const directive = /^\s*--\s*@idempotent-trigger\s*$/gim;
   const executableParts: string[] = [];
   const triggers: IdempotentTriggerDefinition[] = [];
@@ -279,6 +298,7 @@ export function extractIdempotentTriggerStatements(sql: string): {
     }
     const trigger = parseIdempotentTrigger(
       sql.slice(statementStart, statementEnd + 1).trim(),
+      allowedSourceTables,
     );
     if (names.has(trigger.name)) {
       throw new Error(`@idempotent-trigger duplicado: ${trigger.name}`);
@@ -291,6 +311,16 @@ export function extractIdempotentTriggerStatements(sql: string): {
   executableParts.push(sql.slice(cursor));
 
   return { executableSql: executableParts.join(""), triggers };
+}
+
+export function extractIdempotentTriggerStatements(sql: string): {
+  executableSql: string;
+  triggers: IdempotentTriggerDefinition[];
+} {
+  return extractIdempotentTriggerStatementsForSources(
+    sql,
+    Object.keys(READINESS_FENCE_SOURCE_COLUMNS),
+  );
 }
 
 /**
@@ -341,11 +371,14 @@ export function extractReadinessFenceTableStatements(sql: string): string[] {
   return statements;
 }
 
-export function calculateReadinessFenceCoverageHash(
+export function calculateReadinessFenceCoverageHashForDefinition(
+  coverageVersion: string,
+  sourceColumnsDefinition: ReadinessFenceSourceColumns,
   triggers: readonly IdempotentTriggerDefinition[],
+  predecessor?: ReadinessFenceCoveragePredecessor,
 ): string {
   const sourceColumns = Object.fromEntries(
-    Object.entries(READINESS_FENCE_SOURCE_COLUMNS)
+    Object.entries(sourceColumnsDefinition)
       .sort(([left], [right]) => compareCanonicalAscii(left, right))
       .map(([table, columns]) => [table, [...columns].sort()]),
   );
@@ -361,12 +394,23 @@ export function calculateReadinessFenceCoverageHash(
   return createHash("sha256")
     .update(
       JSON.stringify({
-        coverageVersion: READINESS_FENCE_COVERAGE_VERSION,
+        coverageVersion,
         sourceColumns,
         triggerDefinitions,
+        ...(predecessor ? { predecessor } : {}),
       }),
     )
     .digest("hex");
+}
+
+export function calculateReadinessFenceCoverageHash(
+  triggers: readonly IdempotentTriggerDefinition[],
+): string {
+  return calculateReadinessFenceCoverageHashForDefinition(
+    READINESS_FENCE_COVERAGE_VERSION,
+    READINESS_FENCE_SOURCE_COLUMNS,
+    triggers,
+  );
 }
 
 export function idempotentTriggerMatchesExisting(
@@ -694,12 +738,22 @@ function assertAllReadinessFenceOwnedTablesPresent(
   }
 }
 
-async function readCatalog(
+export async function readReadinessFenceCatalog(
   connection: Connection,
+  additionalCatalogTables: readonly string[] = [],
 ): Promise<ReadinessFenceCatalog> {
+  const normalizedAdditionalCatalogTables =
+    additionalCatalogTables.map(normalizeIdentifier);
   const tableNames = [
-    ...Object.keys(READINESS_FENCE_SOURCE_COLUMNS),
+    ...new Set([
+      ...Object.keys(READINESS_FENCE_SOURCE_COLUMNS),
+      ...READINESS_FENCE_OWNED_TABLES,
+      ...normalizedAdditionalCatalogTables,
+    ]),
+  ];
+  const keyTableNames = [
     ...READINESS_FENCE_OWNED_TABLES,
+    ...normalizedAdditionalCatalogTables,
   ];
   const [tableRows] = await connection.query(
     `SELECT TABLE_NAME AS tableName,
@@ -731,7 +785,7 @@ async function readCatalog(
      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
      WHERE TABLE_SCHEMA = DATABASE()
        AND TABLE_NAME IN (?)`,
-    [READINESS_FENCE_OWNED_TABLES],
+    [keyTableNames],
   );
   const [triggerRows] = await connection.query(
     `SELECT TRIGGER_NAME AS triggerName,
@@ -759,7 +813,7 @@ async function readCatalog(
   };
 }
 
-async function readInstallationMarkers(
+export async function readReadinessFenceInstallationMarkers(
   connection: Connection,
 ): Promise<ExistingInstallationMarker[]> {
   const [rows] = await connection.query(
@@ -771,7 +825,9 @@ async function readInstallationMarkers(
   return Array.isArray(rows) ? (rows as ExistingInstallationMarker[]) : [];
 }
 
-async function acquireInstallationLock(connection: Connection): Promise<void> {
+export async function acquireReadinessFenceInstallationLock(
+  connection: Connection,
+): Promise<void> {
   const [rows] = await connection.query("SELECT GET_LOCK(?, ?) AS acquired", [
     READINESS_FENCE_INSTALLATION_LOCK,
     READINESS_FENCE_INSTALLATION_LOCK_TIMEOUT_SECONDS,
@@ -784,7 +840,9 @@ async function acquireInstallationLock(connection: Connection): Promise<void> {
   }
 }
 
-async function releaseInstallationLock(connection: Connection): Promise<void> {
+export async function releaseReadinessFenceInstallationLock(
+  connection: Connection,
+): Promise<void> {
   await connection.query("SELECT RELEASE_LOCK(?)", [
     READINESS_FENCE_INSTALLATION_LOCK,
   ]);
@@ -799,7 +857,7 @@ async function createTableStatements(
   }
 }
 
-async function createMissingTriggers(
+export async function createMissingReadinessFenceTriggers(
   connection: Connection,
   triggers: readonly IdempotentTriggerDefinition[],
 ): Promise<void> {
@@ -846,13 +904,15 @@ export async function applyReadinessFenceMigration(): Promise<void> {
   assertCoverageHash(triggers);
   const tableStatements = extractReadinessFenceTableStatements(executableSql);
 
-  const connection = await mysql.createConnection(buildConnectionOptions());
+  const connection = await mysql.createConnection(
+    buildReadinessFenceConnectionOptions(),
+  );
   let lockAcquired = false;
   try {
-    await acquireInstallationLock(connection);
+    await acquireReadinessFenceInstallationLock(connection);
     lockAcquired = true;
 
-    const preflight = await readCatalog(connection);
+    const preflight = await readReadinessFenceCatalog(connection);
     const missingTriggers = assertCompleteReadinessFenceCatalog(
       preflight,
       triggers,
@@ -862,7 +922,7 @@ export async function applyReadinessFenceMigration(): Promise<void> {
       "institution_readiness_fence_installations",
     )
       ? requireSingletonInstallationMarker(
-          await readInstallationMarkers(connection),
+          await readReadinessFenceInstallationMarkers(connection),
         )
       : undefined;
 
@@ -876,9 +936,9 @@ export async function applyReadinessFenceMigration(): Promise<void> {
     }
 
     await createTableStatements(connection, tableStatements);
-    await createMissingTriggers(connection, missingTriggers);
+    await createMissingReadinessFenceTriggers(connection, missingTriggers);
 
-    const postflight = await readCatalog(connection);
+    const postflight = await readReadinessFenceCatalog(connection);
     assertAllReadinessFenceOwnedTablesPresent(postflight);
     const remainingTriggers = assertCompleteReadinessFenceCatalog(
       postflight,
@@ -888,7 +948,7 @@ export async function applyReadinessFenceMigration(): Promise<void> {
       throw new Error("READINESS_FENCE_POSTFLIGHT_INCOMPLETE");
     }
     const postflightMarker = requireSingletonInstallationMarker(
-      await readInstallationMarkers(connection),
+      await readReadinessFenceInstallationMarkers(connection),
     );
     if (postflightMarker) {
       throw new Error("READINESS_FENCE_INSTALLATION_MARKER_RACE");
@@ -900,7 +960,7 @@ export async function applyReadinessFenceMigration(): Promise<void> {
     console.log("Migration da fence de prontidão aplicada");
   } finally {
     if (lockAcquired) {
-      await releaseInstallationLock(connection);
+      await releaseReadinessFenceInstallationLock(connection);
     }
     await connection.end();
   }
