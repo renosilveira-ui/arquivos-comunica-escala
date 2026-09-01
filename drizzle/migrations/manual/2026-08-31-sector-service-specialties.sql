@@ -172,6 +172,8 @@ SET @audit_action_contract_matches := (
     AND COLUMN_NAME = 'action'
     AND LOWER(COLUMN_TYPE) LIKE 'enum(%'
     AND IS_NULLABLE = 'NO'
+    AND COLUMN_DEFAULT IS NULL
+    AND COLUMN_COMMENT = ''
 );
 SET @audit_action_precondition := IF(
   @audit_action_contract_matches = 1,
@@ -189,12 +191,30 @@ SET @action_column_type := (
     AND COLUMN_NAME = 'action'
   LIMIT 1
 );
+SET @action_character_set := (
+  SELECT CHARACTER_SET_NAME FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'audit_trail'
+    AND COLUMN_NAME = 'action'
+  LIMIT 1
+);
+SET @action_collation := (
+  SELECT COLLATION_NAME FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'audit_trail'
+    AND COLUMN_NAME = 'action'
+  LIMIT 1
+);
 SET @ddl := IF(
   LOCATE('''SECTOR_SERVICE_SPECIALTIES_UPDATED''', @action_column_type) = 0,
   CONCAT(
     'ALTER TABLE audit_trail MODIFY COLUMN action ',
     LEFT(@action_column_type, CHAR_LENGTH(@action_column_type) - 1),
-    ', ''SECTOR_SERVICE_SPECIALTIES_UPDATED'') NOT NULL'
+    ', ''SECTOR_SERVICE_SPECIALTIES_UPDATED'') CHARACTER SET ',
+    @action_character_set,
+    ' COLLATE ',
+    @action_collation,
+    ' NOT NULL'
   ),
   'SELECT 1'
 );
@@ -209,6 +229,8 @@ SET @audit_entity_contract_matches := (
     AND COLUMN_NAME = 'entity_type'
     AND LOWER(COLUMN_TYPE) LIKE 'enum(%'
     AND IS_NULLABLE = 'NO'
+    AND COLUMN_DEFAULT IS NULL
+    AND COLUMN_COMMENT = ''
 );
 SET @audit_entity_precondition := IF(
   @audit_entity_contract_matches = 1,
@@ -226,12 +248,30 @@ SET @entity_column_type := (
     AND COLUMN_NAME = 'entity_type'
   LIMIT 1
 );
+SET @entity_character_set := (
+  SELECT CHARACTER_SET_NAME FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'audit_trail'
+    AND COLUMN_NAME = 'entity_type'
+  LIMIT 1
+);
+SET @entity_collation := (
+  SELECT COLLATION_NAME FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'audit_trail'
+    AND COLUMN_NAME = 'entity_type'
+  LIMIT 1
+);
 SET @ddl := IF(
   LOCATE('''SECTOR''', @entity_column_type) = 0,
   CONCAT(
     'ALTER TABLE audit_trail MODIFY COLUMN entity_type ',
     LEFT(@entity_column_type, CHAR_LENGTH(@entity_column_type) - 1),
-    ', ''SECTOR'') NOT NULL'
+    ', ''SECTOR'') CHARACTER SET ',
+    @entity_character_set,
+    ' COLLATE ',
+    @entity_collation,
+    ' NOT NULL'
   ),
   'SELECT 1'
 );

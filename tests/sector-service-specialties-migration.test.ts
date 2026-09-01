@@ -58,6 +58,9 @@ describe("migration de especialidades assistenciais por setor", () => {
       "sector_service_specialties_audit_entity_contract_mismatch",
     );
     expect(migration).toContain("LOWER(COLUMN_TYPE) LIKE 'enum(%'");
+    expect(migration).toContain("CHARACTER SET ',");
+    expect(migration).toContain("COLLATE ',");
+    expect(migration).toContain("COLUMN_COMMENT = ''");
     expect(migration).not.toContain("MODIFY COLUMN action ENUM(");
     expect(migration).not.toContain("MODIFY COLUMN entity_type ENUM(");
   });
