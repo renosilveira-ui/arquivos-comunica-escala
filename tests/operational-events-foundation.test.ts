@@ -25,13 +25,19 @@ import {
   operationalEventRelatedContexts,
   operationalEventRecipients,
   operationalEvents,
+  institutions,
+  managerScope,
   monthlyRosters,
+  professionalAccess,
+  professionals,
   professionalInstitutions,
   scheduleInvites,
   shiftAssignmentsV2,
   shiftInstances,
   swapRequests,
+  users,
 } from "../drizzle/schema";
+import { hashProfessionalInstitutionAccessState } from "../server/professional-institution-access";
 
 function hospitalEvent(): CreateOperationalEventInput {
   return {
@@ -45,6 +51,34 @@ function hospitalEvent(): CreateOperationalEventInput {
       hospitalId: 10,
       scopeKind: "HOSPITAL",
     },
+    actor: { kind: "USER", userId: 7, role: "GESTOR_MEDICO" },
+    recipients: [{ kind: "USER", userId: 20, channels: ["PUSH", "EMAIL"] }],
+  };
+}
+
+function accessUpdatedEvent(): CreateOperationalEventInput {
+  const accessStateHash = hashProfessionalInstitutionAccessState({
+    membershipId: 44,
+    operationalRevision: 1,
+    userId: 20,
+    professionalId: 200,
+    institutionId: 1,
+    roleInInstitution: "USER",
+    accessTargets: [{ hospitalId: 10, sectorId: 4 }],
+    managerScopes: [{ hospitalId: 11, sectorId: null }],
+  });
+  return {
+    idempotencyKey: "professional-institution-access:44:revision:1",
+    eventType: "ACCESS_UPDATED",
+    deliveryPolicy: "NOTIFY",
+    aggregate: {
+      type: "PROFESSIONAL_INSTITUTION_ACCESS",
+      id: 44,
+      version: 1,
+    },
+    accessStateHash,
+    transition: { from: "ACTIVE", to: "ACTIVE" },
+    context: { institutionId: 1, scopeKind: "INSTITUTION" },
     actor: { kind: "USER", userId: 7, role: "GESTOR_MEDICO" },
     recipients: [{ kind: "USER", userId: 20, channels: ["PUSH", "EMAIL"] }],
   };
@@ -89,6 +123,31 @@ function inMemoryOperationalEventTransaction(options?: {
     sectorId: number;
     scheduleContextId?: number | null;
   }[];
+  accessState?: {
+    membership?: {
+      id?: number;
+      operationalRevision?: number;
+      userId?: number;
+      professionalId?: number;
+      institutionId?: number;
+      roleInInstitution?: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
+      active?: boolean;
+    };
+    professional?: {
+      id?: number;
+      userId?: number;
+    };
+    accessTargets?: {
+      hospitalId: number;
+      sectorId: number | null;
+      canAccess: boolean;
+    }[];
+    managerScopes?: {
+      hospitalId: number;
+      sectorId: number | null;
+      active: boolean;
+    }[];
+  };
 }) {
   let event: { id: number; eventHash: string } | undefined;
   let persistedEvent: Record<string, unknown> | undefined;
@@ -102,6 +161,33 @@ function inMemoryOperationalEventTransaction(options?: {
   const aggregateChecks = [...(options?.aggregateChecks ?? [])];
   const shiftRows = [...(options?.shiftRows ?? [])];
   const assignmentRows = [...(options?.assignmentRows ?? [])];
+  const accessState = {
+    membership: {
+      id: 44,
+      operationalRevision: 1,
+      userId: 20,
+      professionalId: 200,
+      institutionId: 1,
+      roleInInstitution: "USER" as const,
+      active: true,
+      ...options?.accessState?.membership,
+    },
+    professional: {
+      id: 200,
+      userId: 20,
+      ...options?.accessState?.professional,
+    },
+    accessTargets: [
+      ...(options?.accessState?.accessTargets ?? [
+        { hospitalId: 10, sectorId: 4, canAccess: true },
+      ]),
+    ],
+    managerScopes: [
+      ...(options?.accessState?.managerScopes ?? [
+        { hospitalId: 11, sectorId: null, active: true },
+      ]),
+    ],
+  };
 
   function lockableRows<T>(rows: T[]) {
     const result = Promise.resolve(rows) as Promise<T[]> & {
@@ -155,109 +241,146 @@ function inMemoryOperationalEventTransaction(options?: {
       }
       throw new Error("Tabela inesperada no teste de transaction");
     },
-    select() {
+    select(fields?: Record<string, unknown>) {
       return {
         from(table: unknown) {
-          return {
+          const query = {
+            innerJoin() {
+              return query;
+            },
             where() {
-              return {
-                limit() {
-                  if (!didRunFirstAsyncRead) {
-                    didRunFirstAsyncRead = true;
-                    options?.onFirstAsyncRead?.();
-                  }
-                  if (table === operationalEvents) {
-                    return lockableRows(
-                      event
-                        ? [{ id: event.id, eventHash: event.eventHash }]
-                        : [],
-                    );
-                  }
-                  if (table === professionalInstitutions) {
-                    return lockableRows(
-                      membershipChecks.shift() === false
-                        ? []
-                        : [
-                            {
-                              id: 1,
-                              roleInInstitution:
-                                membershipRoles.shift() ?? "GESTOR_MEDICO",
-                            },
-                          ],
-                    );
-                  }
-                  if (table === scheduleInvites) {
-                    return lockableRows(
-                      options?.inviteBelongsToInstitution === false
-                        ? []
-                        : [{ id: 1 }],
-                    );
-                  }
-                  if (table === monthlyRosters) {
-                    return lockableRows(
-                      aggregateChecks.shift() === false
-                        ? []
-                        : [
-                            options?.rosterRow ?? {
-                              id: 1,
-                              version: 3,
-                              status: "PUBLISHED" as const,
-                            },
-                          ],
-                    );
-                  }
-                  if (table === swapRequests) {
-                    return lockableRows(
-                      aggregateChecks.shift() === false
-                        ? []
-                        : [
-                            options?.swapRow ?? {
-                              id: 1,
-                              version: 1,
-                              status: "PENDING" as const,
-                              fromShiftInstanceId: 12,
-                              fromAssignmentId: 16,
-                              toShiftInstanceId: null,
-                              toAssignmentId: null,
-                            },
-                          ],
-                    );
-                  }
-                  if (table === shiftInstances) {
-                    return lockableRows(
-                      resourceChecks.shift() === false
-                        ? []
-                        : [
-                            shiftRows.shift() ?? {
-                              id: 1,
-                              institutionId: 1,
-                              hospitalId: 10,
-                              sectorId: 4,
-                              scheduleContextId: 8,
-                            },
-                          ],
-                    );
-                  }
-                  if (table === shiftAssignmentsV2) {
-                    return lockableRows(
-                      resourceChecks.shift() === false
-                        ? []
-                        : [
-                            assignmentRows.shift() ?? {
-                              id: 1,
-                              institutionId: 1,
-                              hospitalId: 10,
-                              sectorId: 4,
-                              scheduleContextId: 8,
-                            },
-                          ],
-                    );
-                  }
-                  return lockableRows([]);
-                },
-              };
+              return query;
+            },
+            orderBy() {
+              return query;
+            },
+            for() {
+              if (table === professionalAccess) {
+                return lockableRows(accessState.accessTargets);
+              }
+              if (table === managerScope) {
+                return lockableRows(accessState.managerScopes);
+              }
+              return query.limit();
+            },
+            limit() {
+              if (!didRunFirstAsyncRead) {
+                didRunFirstAsyncRead = true;
+                options?.onFirstAsyncRead?.();
+              }
+              if (table === operationalEvents) {
+                return lockableRows(
+                  event ? [{ id: event.id, eventHash: event.eventHash }] : [],
+                );
+              }
+              if (table === professionalInstitutions) {
+                if (
+                  fields &&
+                  ("operationalRevision" in fields ||
+                    "professionalId" in fields)
+                ) {
+                  return lockableRows([accessState.membership]);
+                }
+                return lockableRows(
+                  membershipChecks.shift() === false
+                    ? []
+                    : [
+                        {
+                          id: 1,
+                          roleInInstitution:
+                            membershipRoles.shift() ?? "GESTOR_MEDICO",
+                        },
+                      ],
+                );
+              }
+              if (table === users) {
+                return lockableRows([
+                  { id: 20, approvalStatus: "APPROVED", deletedAt: null },
+                ]);
+              }
+              if (table === professionals) {
+                return lockableRows([accessState.professional]);
+              }
+              if (table === institutions) {
+                return lockableRows([{ id: 1, hospitalId: 10, sectorId: 4 }]);
+              }
+              if (table === professionalAccess) {
+                return lockableRows(accessState.accessTargets);
+              }
+              if (table === managerScope) {
+                return lockableRows(accessState.managerScopes);
+              }
+              if (table === scheduleInvites) {
+                return lockableRows(
+                  options?.inviteBelongsToInstitution === false
+                    ? []
+                    : [{ id: 1 }],
+                );
+              }
+              if (table === monthlyRosters) {
+                return lockableRows(
+                  aggregateChecks.shift() === false
+                    ? []
+                    : [
+                        options?.rosterRow ?? {
+                          id: 1,
+                          version: 3,
+                          status: "PUBLISHED" as const,
+                        },
+                      ],
+                );
+              }
+              if (table === swapRequests) {
+                return lockableRows(
+                  aggregateChecks.shift() === false
+                    ? []
+                    : [
+                        options?.swapRow ?? {
+                          id: 1,
+                          version: 1,
+                          status: "PENDING" as const,
+                          fromShiftInstanceId: 12,
+                          fromAssignmentId: 16,
+                          toShiftInstanceId: null,
+                          toAssignmentId: null,
+                        },
+                      ],
+                );
+              }
+              if (table === shiftInstances) {
+                return lockableRows(
+                  resourceChecks.shift() === false
+                    ? []
+                    : [
+                        shiftRows.shift() ?? {
+                          id: 1,
+                          institutionId: 1,
+                          hospitalId: 10,
+                          sectorId: 4,
+                          scheduleContextId: 8,
+                        },
+                      ],
+                );
+              }
+              if (table === shiftAssignmentsV2) {
+                return lockableRows(
+                  resourceChecks.shift() === false
+                    ? []
+                    : [
+                        assignmentRows.shift() ?? {
+                          id: 1,
+                          institutionId: 1,
+                          hospitalId: 10,
+                          sectorId: 4,
+                          scheduleContextId: 8,
+                        },
+                      ],
+                );
+              }
+              return lockableRows([]);
             },
           };
+          return query;
         },
       };
     },
@@ -274,9 +397,7 @@ function inMemoryOperationalEventTransaction(options?: {
 
 describe("foundation de eventos operacionais", () => {
   it("fixa o modo SHADOW no catálogo e no fato persistido", async () => {
-    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe(
-      "SHADOW",
-    );
+    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe("SHADOW");
 
     const memory = inMemoryOperationalEventTransaction();
     await expect(
@@ -502,22 +623,187 @@ describe("foundation de eventos operacionais", () => {
     );
   });
 
-  it("bloqueia evento institucional enquanto o vínculo não tiver revisão canônica", () => {
-    const accessExpiry = hospitalEvent();
-    accessExpiry.eventType = "ACCESS_UPDATED";
-    accessExpiry.aggregate = {
-      type: "PROFESSIONAL_INSTITUTION_ACCESS",
-      id: 44,
-      version: 1,
-    };
-    accessExpiry.deliveryPolicy = "SILENT_AUDITED";
-    accessExpiry.context = { institutionId: 1, scopeKind: "INSTITUTION" };
-    accessExpiry.actor = { kind: "SYSTEM", role: "SCHEDULE_EXPIRY_WORKER" };
-    accessExpiry.recipients = [];
-
-    expect(() => operationalEventHash(accessExpiry)).toThrow(
-      "Agregado ainda não possui revisão canônica",
+  it("exige hash, política NOTIFY e a matriz canônica de recipient para ACCESS_UPDATED", () => {
+    const missingHash = accessUpdatedEvent();
+    delete missingHash.accessStateHash;
+    expect(() => operationalEventHash(missingHash)).toThrow(
+      "ACCESS_UPDATED exige accessStateHash",
     );
+
+    const silent = accessUpdatedEvent();
+    silent.deliveryPolicy = "SILENT_AUDITED";
+    silent.recipients = [];
+    expect(() => operationalEventHash(silent)).toThrow(
+      OperationalEventValidationError,
+    );
+
+    const nonAccessHash = hospitalEvent();
+    nonAccessHash.accessStateHash = "a".repeat(64);
+    expect(() => operationalEventHash(nonAccessHash)).toThrow(
+      "accessStateHash só é permitido para ACCESS_UPDATED",
+    );
+  });
+
+  it("revalida o pós-estado de acesso sob lock e mantém SHADOW sem deliveries", async () => {
+    const memory = inMemoryOperationalEventTransaction();
+    await expect(
+      createOperationalEventInTransaction(memory.tx, accessUpdatedEvent()),
+    ).resolves.toMatchObject({ eventId: 1, created: true });
+
+    expect(memory.getPersistedEvent()).toMatchObject({
+      eventType: "ACCESS_UPDATED",
+      aggregateType: "PROFESSIONAL_INSTITUTION_ACCESS",
+      aggregateId: 44,
+      aggregateVersion: 1,
+      accessStateHash: accessUpdatedEvent().accessStateHash,
+      emissionMode: "SHADOW",
+      deliveryPolicy: "NOTIFY",
+      recipientResolution: "RESOLVED",
+    });
+    expect(memory.counters).toEqual({
+      relatedContexts: 2,
+      recipients: 1,
+      deliveries: 0,
+    });
+    expect(memory.getRecipients()).toEqual([
+      expect.objectContaining({
+        recipientKind: "USER",
+        userId: 20,
+      }),
+    ]);
+    expect(memory.getRelatedContexts()).toEqual([
+      expect.objectContaining({
+        relationKind: "AFFECTED_SCOPE",
+        institutionId: 1,
+        hospitalId: 10,
+        sectorId: 4,
+      }),
+      expect.objectContaining({
+        relationKind: "AFFECTED_SCOPE",
+        institutionId: 1,
+        hospitalId: 11,
+        sectorId: null,
+      }),
+    ]);
+  });
+
+  it("recusa PI apontando para profissional de outro usuário antes de persistir fatos", async () => {
+    const memory = inMemoryOperationalEventTransaction({
+      accessState: {
+        professional: { id: 200, userId: 21 },
+      },
+    });
+
+    await expect(
+      createOperationalEventInTransaction(memory.tx, accessUpdatedEvent()),
+    ).rejects.toThrow(
+      "Profissional não corresponde ao usuário do vínculo institucional",
+    );
+
+    expect(memory.getPersistedEvent()).toBeUndefined();
+    expect(memory.getRelatedContexts()).toEqual([]);
+    expect(memory.getRecipients()).toEqual([]);
+    expect(memory.counters).toEqual({
+      relatedContexts: 0,
+      recipients: 0,
+      deliveries: 0,
+    });
+  });
+
+  it("rejeita revisão, hash ou matriz de recipient que não correspondem ao acesso canônico", async () => {
+    const staleRevision = accessUpdatedEvent();
+    staleRevision.aggregate = { ...staleRevision.aggregate, version: 2 };
+    await expect(
+      createOperationalEventInTransaction(
+        inMemoryOperationalEventTransaction().tx,
+        staleRevision,
+      ),
+    ).rejects.toThrow(OperationalEventValidationError);
+
+    const staleHash = accessUpdatedEvent();
+    staleHash.accessStateHash = "a".repeat(64);
+    await expect(
+      createOperationalEventInTransaction(
+        inMemoryOperationalEventTransaction().tx,
+        staleHash,
+      ),
+    ).rejects.toThrow(OperationalEventValidationError);
+
+    const unrelatedRecipient = accessUpdatedEvent();
+    unrelatedRecipient.recipients = [
+      { kind: "USER", userId: 21, channels: ["PUSH", "EMAIL"] },
+    ];
+    await expect(
+      createOperationalEventInTransaction(
+        inMemoryOperationalEventTransaction().tx,
+        unrelatedRecipient,
+      ),
+    ).rejects.toThrow(
+      "ACCESS_UPDATED exige o usuário afetado nos canais PUSH e EMAIL",
+    );
+
+    const missingChannel = accessUpdatedEvent();
+    missingChannel.recipients = [
+      { kind: "USER", userId: 20, channels: ["PUSH"] },
+    ];
+    await expect(
+      createOperationalEventInTransaction(
+        inMemoryOperationalEventTransaction().tx,
+        missingChannel,
+      ),
+    ).rejects.toThrow(
+      "ACCESS_UPDATED exige o usuário afetado nos canais PUSH e EMAIL",
+    );
+
+    const extraRecipient = accessUpdatedEvent();
+    extraRecipient.recipients = [
+      { kind: "USER", userId: 20, channels: ["PUSH", "EMAIL"] },
+      { kind: "USER", userId: 21, channels: ["PUSH", "EMAIL"] },
+    ];
+    await expect(
+      createOperationalEventInTransaction(
+        inMemoryOperationalEventTransaction().tx,
+        extraRecipient,
+      ),
+    ).rejects.toThrow(
+      "ACCESS_UPDATED exige o usuário afetado nos canais PUSH e EMAIL",
+    );
+
+    const membershipRevokedBeforeRecipientCheck =
+      inMemoryOperationalEventTransaction({ membershipChecks: [true, false] });
+    await expect(
+      createOperationalEventInTransaction(
+        membershipRevokedBeforeRecipientCheck.tx,
+        accessUpdatedEvent(),
+      ),
+    ).rejects.toThrow("Destinatário USER sem vínculo institucional ativo");
+    expect(membershipRevokedBeforeRecipientCheck.counters).toEqual({
+      relatedContexts: 0,
+      recipients: 0,
+      deliveries: 0,
+    });
+  });
+
+  it("mantém o próprio ator como destinatário canônico quando ele altera o próprio acesso", async () => {
+    const selfUpdate = accessUpdatedEvent();
+    selfUpdate.actor = {
+      kind: "USER",
+      userId: 20,
+      professionalId: 200,
+      role: "USER",
+    };
+    const memory = inMemoryOperationalEventTransaction({
+      membershipRoles: ["USER"],
+    });
+
+    await expect(
+      createOperationalEventInTransaction(memory.tx, selfUpdate),
+    ).resolves.toMatchObject({ eventId: 1, created: true });
+    expect(memory.counters).toEqual({
+      relatedContexts: 2,
+      recipients: 1,
+      deliveries: 0,
+    });
   });
 
   it("deriva contrapartida de troca do agregado canônico", async () => {

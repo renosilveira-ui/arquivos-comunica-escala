@@ -14,6 +14,11 @@ import {
   swapRequests,
 } from "../drizzle/schema";
 import { getDb } from "./db";
+import {
+  affectedScopesForProfessionalInstitutionAccess,
+  hashProfessionalInstitutionAccessState,
+  readCanonicalProfessionalInstitutionAccessStateForUpdate,
+} from "./professional-institution-access";
 
 /**
  * Catálogo fechado da primeira versão. Nenhuma mutação é ligada a ele nesta
@@ -103,10 +108,9 @@ export type OperationalAggregateType =
   (typeof OPERATIONAL_AGGREGATE_TYPES)[number];
 
 /**
- * Apenas MONTHLY_ROSTER e SWAP_REQUEST já possuem revisão monotônica gravada
- * no modelo atual. Para os demais agregados, emitir evento seria registrar
- * uma versão inventada; a fundação falha fechada até a frente própria adicionar
- * revisão/CAS à entidade e aos seus writers.
+ * Apenas agregados com revisão monotônica gravada podem emitir fatos. Para os
+ * demais, emitir evento seria registrar uma versão inventada; a fundação falha
+ * fechada até a frente própria adicionar revisão/CAS à entidade e aos writers.
  */
 export const OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES = {
   SHIFT_ASSIGNMENT: "UNAVAILABLE",
@@ -115,7 +119,7 @@ export const OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES = {
   SWAP_REQUEST: "ROW_VERSION",
   SCHEDULE_INVITE: "UNAVAILABLE",
   MONTHLY_ROSTER: "ROW_VERSION",
-  PROFESSIONAL_INSTITUTION_ACCESS: "UNAVAILABLE",
+  PROFESSIONAL_INSTITUTION_ACCESS: "ROW_VERSION",
   SCHEDULE_CONTEXT: "UNAVAILABLE",
 } as const satisfies Record<
   OperationalAggregateType,
@@ -320,7 +324,7 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
   },
   ACCESS_UPDATED: {
     aggregateType: "PROFESSIONAL_INSTITUTION_ACCESS",
-    deliveryPolicies: ["NOTIFY", "SILENT_AUDITED"],
+    deliveryPolicies: ["NOTIFY"],
     scopeKinds: ["INSTITUTION"],
   },
   SCHEDULE_CONTEXT_CREATED: {
@@ -377,7 +381,11 @@ export const OPERATIONAL_EVENT_TRANSITION_CONTRACTS: Record<
     aggregateStatus: "LOCKED",
   },
   SCHEDULE_REPLICATED: null,
-  ACCESS_UPDATED: null,
+  ACCESS_UPDATED: {
+    from: "ACTIVE",
+    to: "ACTIVE",
+    aggregateStatus: "ACTIVE",
+  },
   SCHEDULE_CONTEXT_CREATED: null,
 };
 
@@ -506,6 +514,11 @@ export type CreateOperationalEventInput = {
     id: number;
     version: number;
   };
+  /**
+   * Compromisso do pós-estado ID-only para ACCESS_UPDATED. Não aceita texto
+   * livre nem substitui a releitura canônica do agregado sob lock.
+   */
+  accessStateHash?: string;
   transition?: {
     from?: OperationalTransitionState | null;
     to?: OperationalTransitionState | null;
@@ -923,6 +936,7 @@ type CanonicalOperationalEventInput = {
     id: number;
     version: number;
   }>;
+  accessStateHash?: string;
   transition: Readonly<{
     from: OperationalTransitionState | null;
     to: OperationalTransitionState | null;
@@ -1278,6 +1292,48 @@ async function resolveCanonicalAggregateContexts(
       }
       return [];
     }
+    case "PROFESSIONAL_INSTITUTION_ACCESS": {
+      const accessState =
+        await readCanonicalProfessionalInstitutionAccessStateForUpdate(tx, {
+          membershipId: aggregate.id,
+          institutionId: context.institutionId,
+        });
+      const accessStateHash =
+        hashProfessionalInstitutionAccessState(accessState);
+      if (
+        transitionContract.aggregateStatus !== "ACTIVE" ||
+        accessState.operationalRevision !== aggregate.version ||
+        input.accessStateHash !== accessStateHash
+      ) {
+        throw new OperationalEventValidationError(
+          "Acesso institucional não corresponde à revisão ou pós-estado canônico do evento",
+        );
+      }
+      const [recipient] = input.recipients;
+      if (
+        input.recipients.length !== 1 ||
+        recipient?.kind !== "USER" ||
+        recipient.userId !== accessState.userId ||
+        recipient.channels.length !== 2 ||
+        recipient.channels[0] !== "EMAIL" ||
+        recipient.channels[1] !== "PUSH"
+      ) {
+        throw new OperationalEventValidationError(
+          "ACCESS_UPDATED exige o usuário afetado nos canais PUSH e EMAIL",
+        );
+      }
+      return affectedScopesForProfessionalInstitutionAccess(accessState).map(
+        (scope) => ({
+          relationKind: "AFFECTED_SCOPE" as const,
+          context: {
+            institutionId: accessState.institutionId,
+            hospitalId: scope.hospitalId,
+            scopeKind: scope.sectorId === null ? "HOSPITAL" : "SECTOR",
+            sectorId: scope.sectorId,
+          },
+        }),
+      );
+    }
     default:
       throw new OperationalEventValidationError(
         "Agregado sem revisão canônica não pode emitir evento operacional",
@@ -1400,6 +1456,22 @@ function validateCreateInput(
       "transition não corresponde ao contrato canônico do evento",
     );
   }
+  let accessStateHash: string | undefined;
+  if (input.eventType === "ACCESS_UPDATED") {
+    if (
+      typeof input.accessStateHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(input.accessStateHash)
+    ) {
+      throw new OperationalEventValidationError(
+        "ACCESS_UPDATED exige accessStateHash SHA-256 canônico",
+      );
+    }
+    accessStateHash = input.accessStateHash;
+  } else if (input.accessStateHash !== undefined) {
+    throw new OperationalEventValidationError(
+      "accessStateHash só é permitido para ACCESS_UPDATED",
+    );
+  }
   if ("metadata" in (input as object)) {
     throw new OperationalEventValidationError(
       "Evento operacional não aceita metadata livre",
@@ -1458,6 +1530,7 @@ function validateCreateInput(
       id: input.aggregate.id,
       version: input.aggregate.version,
     }),
+    ...(accessStateHash === undefined ? {} : { accessStateHash }),
     transition: Object.freeze({
       from: input.transition?.from ?? null,
       to: input.transition?.to ?? null,
@@ -1489,6 +1562,9 @@ function identityProjection(
       id: input.aggregate.id,
       version: input.aggregate.version,
     },
+    ...(input.accessStateHash === undefined
+      ? {}
+      : { accessStateHash: input.accessStateHash }),
     transition: {
       from: input.transition.from,
       to: input.transition.to,
@@ -1582,6 +1658,7 @@ export async function createOperationalEventInTransaction(
     await tx.insert(operationalEvents).values({
       idempotencyKeyHash,
       eventHash,
+      accessStateHash: eventInput.accessStateHash ?? null,
       eventType: eventInput.eventType,
       emissionMode: eventInput.emissionMode,
       deliveryPolicy: eventInput.deliveryPolicy,

@@ -59,6 +59,14 @@ import {
   replaceManagerScopesForProfessional,
   resolveManagerScopesForRole,
 } from "../manager-scope-write";
+import {
+  createOperationalEventInTransaction,
+  type OperationalEventTx,
+} from "../operational-events";
+import {
+  hashProfessionalInstitutionAccessState,
+  readCanonicalProfessionalInstitutionAccessStateForUpdate,
+} from "../professional-institution-access";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -1028,6 +1036,56 @@ function affectedRows(result: unknown): number {
   );
 }
 
+async function emitAccessUpdatedShadowInTransaction(
+  tx: OperationalEventTx,
+  input: Readonly<{
+    institutionId: number;
+    membershipId: number;
+    targetUserId: number;
+    targetProfessionalId: number;
+    actor: {
+      userId: number;
+      professionalId: number;
+      role: InstitutionRole;
+    };
+  }>,
+): Promise<void> {
+  const state = await readCanonicalProfessionalInstitutionAccessStateForUpdate(
+    tx,
+    {
+      membershipId: input.membershipId,
+      institutionId: input.institutionId,
+      expectedUserId: input.targetUserId,
+      expectedProfessionalId: input.targetProfessionalId,
+    },
+  );
+  await createOperationalEventInTransaction(tx, {
+    idempotencyKey: `professional-institution-access:${state.membershipId}:revision:${state.operationalRevision}`,
+    eventType: "ACCESS_UPDATED",
+    deliveryPolicy: "NOTIFY",
+    aggregate: {
+      type: "PROFESSIONAL_INSTITUTION_ACCESS",
+      id: state.membershipId,
+      version: state.operationalRevision,
+    },
+    accessStateHash: hashProfessionalInstitutionAccessState(state),
+    transition: { from: "ACTIVE", to: "ACTIVE" },
+    context: { institutionId: state.institutionId, scopeKind: "INSTITUTION" },
+    actor: {
+      kind: "USER",
+      userId: input.actor.userId,
+      professionalId: input.actor.professionalId,
+      role: input.actor.role,
+    },
+    // SHADOW registra a matriz operacional pretendida. A revalidação de
+    // token, confiança de e-mail e vínculo no momento da entrega pertence ao
+    // worker futuro, não a esta frente de fatos canônicos.
+    recipients: [
+      { kind: "USER", userId: state.userId, channels: ["PUSH", "EMAIL"] },
+    ],
+  });
+}
+
 export const adminRouter = Router();
 
 /** Middleware: require authenticated admin */
@@ -1365,7 +1423,8 @@ adminRouter.put(
       requestedManagerScopes = parseManagerScopes(managerScopes);
     } catch (error) {
       res.status(400).json({
-        error: error instanceof Error ? error.message : "managerScopes inválido",
+        error:
+          error instanceof Error ? error.message : "managerScopes inválido",
       });
       return;
     }
@@ -1533,6 +1592,25 @@ adminRouter.put(
                 );
               }
 
+              // O agregado de acesso é limitado a papel institucional, ACL de
+              // escala e escopos de gestão. A releitura sob lock preserva a
+              // topologia e não introduz qualquer trava por especialidade.
+              const accessMutationRequested =
+                shouldRewriteScheduleAccess ||
+                requestedInstitutionRole !== undefined ||
+                requestedManagerScopes !== undefined;
+              const accessStateBefore = accessMutationRequested
+                ? await readCanonicalProfessionalInstitutionAccessStateForUpdate(
+                    tx,
+                    {
+                      membershipId: target.membershipId,
+                      institutionId,
+                      expectedUserId: target.userId,
+                      expectedProfessionalId: target.professionalId,
+                    },
+                  )
+                : null;
+
               if (Object.keys(updates).length > 0) {
                 const userUpdate = await tx
                   .update(users)
@@ -1654,6 +1732,91 @@ adminRouter.put(
                     404,
                     "Vínculo institucional deixou de estar ativo",
                   );
+                }
+              }
+
+              if (accessStateBefore) {
+                const accessStateAfterWrite =
+                  await readCanonicalProfessionalInstitutionAccessStateForUpdate(
+                    tx,
+                    {
+                      membershipId: target.membershipId,
+                      institutionId,
+                      expectedUserId: target.userId,
+                      expectedProfessionalId: target.professionalId,
+                    },
+                  );
+                const accessStateChanged =
+                  hashProfessionalInstitutionAccessState(accessStateBefore) !==
+                  hashProfessionalInstitutionAccessState(accessStateAfterWrite);
+                if (accessStateChanged) {
+                  const revisionUpdate = await tx
+                    .update(professionalInstitutions)
+                    .set({
+                      operationalRevision: sql`${professionalInstitutions.operationalRevision} + 1`,
+                    })
+                    .where(
+                      and(
+                        eq(professionalInstitutions.id, target.membershipId),
+                        eq(professionalInstitutions.userId, target.userId),
+                        eq(
+                          professionalInstitutions.professionalId,
+                          target.professionalId,
+                        ),
+                        eq(
+                          professionalInstitutions.institutionId,
+                          institutionId,
+                        ),
+                        eq(professionalInstitutions.active, true),
+                        eq(
+                          professionalInstitutions.operationalRevision,
+                          accessStateAfterWrite.operationalRevision,
+                        ),
+                      ),
+                    );
+                  if (affectedRows(revisionUpdate) !== 1) {
+                    throw new AdminTenantError(
+                      409,
+                      "Acesso institucional mudou durante a atualização",
+                    );
+                  }
+
+                  const accessStateAfterRevision =
+                    await readCanonicalProfessionalInstitutionAccessStateForUpdate(
+                      tx,
+                      {
+                        membershipId: target.membershipId,
+                        institutionId,
+                        expectedUserId: target.userId,
+                        expectedProfessionalId: target.professionalId,
+                      },
+                    );
+                  if (
+                    accessStateAfterRevision.operationalRevision !==
+                    accessStateAfterWrite.operationalRevision + 1
+                  ) {
+                    throw new AdminTenantError(
+                      409,
+                      "Revisão do acesso institucional ficou inconsistente",
+                    );
+                  }
+
+                  await emitAccessUpdatedShadowInTransaction(tx, {
+                    institutionId,
+                    membershipId: target.membershipId,
+                    targetUserId: target.userId,
+                    targetProfessionalId: target.professionalId,
+                    actor: {
+                      userId: locked.caller.userId,
+                      professionalId: locked.caller.professionalId,
+                      // Se o administrador alterou o próprio papel, o ledger
+                      // precisa registrar e validar o papel já efetivo.
+                      role:
+                        locked.caller.userId === target.userId
+                          ? accessStateAfterRevision.roleInInstitution
+                          : locked.caller.roleInInstitution,
+                    },
+                  });
                 }
               }
 
