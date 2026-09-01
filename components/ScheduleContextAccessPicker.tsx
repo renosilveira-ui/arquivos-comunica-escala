@@ -1,29 +1,28 @@
 import { useMemo, useState } from "react";
 import { FlatList, Modal, Text, TouchableOpacity, View } from "react-native";
 import { Check, ChevronDown, X } from "lucide-react-native";
-import type { ProfessionalQualificationSelection } from "./ProfessionalQualificationPicker";
 import { theme } from "@/lib/theme";
 import {
-  scheduleContextMatchesQualification,
+  availableScheduleContextOptions,
+  scheduleContextClinicalReference,
   type ScheduleContextAccessOption,
 } from "./ScheduleContextAccessPicker.logic";
 
 export {
-  compatibleScheduleContextIds,
-  scheduleContextMatchesQualification,
+  availableScheduleContextOptions,
+  isScheduleContextAvailableForAcl,
+  scheduleContextClinicalReference,
   type ScheduleContextAccessOption,
 } from "./ScheduleContextAccessPicker.logic";
 
 export function ScheduleContextAccessPicker({
   contexts,
-  qualification,
   selectedIds,
   onChange,
   required = false,
   tone = "light",
 }: {
   contexts: ScheduleContextAccessOption[];
-  qualification: ProfessionalQualificationSelection | null;
   selectedIds: number[];
   onChange: (ids: number[]) => void;
   required?: boolean;
@@ -31,14 +30,11 @@ export function ScheduleContextAccessPicker({
 }) {
   const [visible, setVisible] = useState(false);
   const options = useMemo(
-    () =>
-      contexts.filter((context) =>
-        scheduleContextMatchesQualification(context, qualification),
-      ),
-    [contexts, qualification],
+    () => availableScheduleContextOptions(contexts),
+    [contexts],
   );
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const disabled = !qualification;
+  const disabled = options.length === 0;
   const fieldBackground =
     tone === "dark" ? theme.palette.neutral[900] : theme.colors.surface;
   const fieldText =
@@ -98,13 +94,11 @@ export function ScheduleContextAccessPicker({
             color: selectedIds.length ? fieldText : theme.colors.textMuted,
           }}
         >
-          {!qualification
-            ? "Selecione primeiro a qualificação"
-            : selectedIds.length > 0
-              ? `${selectedIds.length} escala(s) selecionada(s)`
-              : options.length > 0
-                ? "Selecionar escalas"
-                : "Nenhuma escala compatível configurada"}
+          {selectedIds.length > 0
+            ? `${selectedIds.length} escala(s) selecionada(s)`
+            : options.length > 0
+              ? "Selecionar escalas"
+              : "Nenhuma escala ativa disponível"}
         </Text>
         <ChevronDown size={18} color={theme.colors.textMuted} />
       </TouchableOpacity>
@@ -159,8 +153,8 @@ export function ScheduleContextAccessPicker({
                     marginTop: 4,
                   }}
                 >
-                  Cada item é uma escala distinta por hospital, setor e
-                  qualificação.
+                  Escolha explicitamente por hospital e setor. A referência
+                  clínica abaixo é somente informativa e não altera o acesso.
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setVisible(false)} hitSlop={12}>
@@ -183,7 +177,7 @@ export function ScheduleContextAccessPicker({
                     paddingVertical: 18,
                   }}
                 >
-                  Nenhuma escala ativa é compatível com essa qualificação.
+                  Nenhuma escala ativa está disponível nesta instituição.
                 </Text>
               }
               renderItem={({ item }) => {
@@ -245,7 +239,8 @@ export function ScheduleContextAccessPicker({
                           marginTop: 2,
                         }}
                       >
-                        {item.hospitalName} · {item.qualificationName}
+                        {item.hospitalName} · Referência clínica:{" "}
+                        {scheduleContextClinicalReference(item)}
                       </Text>
                     </View>
                   </TouchableOpacity>

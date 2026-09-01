@@ -41,7 +41,6 @@ import {
 } from "@/lib/medical-specialties";
 import {
   ScheduleContextAccessPicker,
-  compatibleScheduleContextIds,
   type ScheduleContextAccessOption,
 } from "@/components/ScheduleContextAccessPicker";
 import { formatDateTimeBR } from "@/lib/datetime";
@@ -465,22 +464,12 @@ function CreateUserModal({
             <View style={{ marginBottom: 20 }}>
               <ProfessionalQualificationPicker
                 value={qualification}
-                onChange={(value) => {
-                  setQualification(value);
-                  setScheduleContextIds((current) =>
-                    compatibleScheduleContextIds({
-                      contexts: scheduleContexts,
-                      qualification: value,
-                      selectedIds: current,
-                    }),
-                  );
-                }}
+                onChange={setQualification}
                 required
               />
               <View style={{ marginTop: 14 }}>
                 <ScheduleContextAccessPicker
                   contexts={scheduleContexts}
-                  qualification={qualification}
                   selectedIds={scheduleContextIds}
                   onChange={setScheduleContextIds}
                   required
@@ -830,21 +819,11 @@ function EditUserModal({
             <View style={{ marginBottom: 14, gap: 14 }}>
               <ProfessionalQualificationPicker
                 value={qualification}
-                onChange={(value) => {
-                  setQualification(value);
-                  setScheduleContextIds((current) =>
-                    compatibleScheduleContextIds({
-                      contexts: scheduleContexts,
-                      qualification: value,
-                      selectedIds: current,
-                    }),
-                  );
-                }}
+                onChange={setQualification}
                 required
               />
               <ScheduleContextAccessPicker
                 contexts={scheduleContexts}
-                qualification={qualification}
                 selectedIds={scheduleContextIds}
                 onChange={setScheduleContextIds}
                 required
@@ -1600,21 +1579,12 @@ export default function AdminScreen() {
                         ...current,
                         [p.id]: value,
                       }));
-                      setPendingScheduleContextIds((current) => ({
-                        ...current,
-                        [p.id]: compatibleScheduleContextIds({
-                          contexts: scheduleContexts,
-                          qualification: value,
-                          selectedIds: current[p.id] ?? [],
-                        }),
-                      }));
                     }}
                     required
                     tone="dark"
                   />
                   <ScheduleContextAccessPicker
                     contexts={scheduleContexts}
-                    qualification={pendingQualifications[p.id] ?? null}
                     selectedIds={pendingScheduleContextIds[p.id] ?? []}
                     onChange={(ids) =>
                       setPendingScheduleContextIds((current) => ({
