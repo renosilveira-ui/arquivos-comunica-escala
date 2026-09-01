@@ -406,6 +406,7 @@ describe("pontuais da auditoria: escopo de tenant, jurisdição e contexto", () 
 
       vi.doMock("expo-router", () => ({ useRouter: vi.fn() }));
       vi.doMock("expo-notifications", () => ({
+        setNotificationHandler: vi.fn(),
         addNotificationResponseReceivedListener: vi.fn(),
       }));
       vi.doMock("@/hooks/use-auth", () => ({ useAuth: vi.fn() }));

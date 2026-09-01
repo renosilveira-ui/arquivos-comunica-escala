@@ -3,17 +3,40 @@ import { Platform } from 'react-native';
 
 /** Marca navy (`theme.palette.brand[500]` / plugin expo-notifications). Sem import de theme: testes SSO mockam react-native sem Platform.select. */
 const ANDROID_NOTIFICATION_COLOR = "#01304A";
+const LOCAL_NEUTRAL_NOTIFICATION_TITLE = "Escala+";
+const LOCAL_NEUTRAL_NOTIFICATION_BODY =
+  "Há uma atualização disponível. Abra o aplicativo para consultar.";
 
-// Configurar comportamento das notificações
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+export type AccountScopedLocalNotification = Readonly<{
+  recipientUserId: number;
+  data?: Readonly<Record<string, unknown>>;
+}>;
+
+function accountScopedNotificationContent(
+  input: AccountScopedLocalNotification,
+) {
+  if (!input || !Number.isSafeInteger(input.recipientUserId) || input.recipientUserId <= 0) {
+    throw new Error("Destinatário da notificação local inválido");
+  }
+  if (
+    input.data !== undefined &&
+    (typeof input.data !== "object" || input.data === null || Array.isArray(input.data))
+  ) {
+    throw new Error("Dados da notificação local inválidos");
+  }
+  return {
+    // O SO pode apresentar lembrete local em background/killed sem executar o
+    // handler JS. A cópia local é sempre neutra; o app busca detalhes apenas
+    // depois de confirmar a sessão e o destinatário.
+    title: LOCAL_NEUTRAL_NOTIFICATION_TITLE,
+    body: LOCAL_NEUTRAL_NOTIFICATION_BODY,
+    data: {
+      ...(input.data ?? {}),
+      recipientUserId: input.recipientUserId,
+    },
+    sound: true,
+  };
+}
 
 /**
  * Solicitar permissões de notificação
@@ -39,39 +62,26 @@ export async function requestNotificationPermissions(): Promise<boolean> {
   return finalStatus === 'granted';
 }
 
-/**
- * Enviar notificação local imediata
- */
+/** Envia somente uma notificação local neutra e vinculada a uma conta. */
 export async function sendLocalNotification(
-  title: string,
-  body: string,
-  data?: Record<string, any>
+  input: AccountScopedLocalNotification,
 ) {
   await Notifications.scheduleNotificationAsync({
-    content: {
-      title,
-      body,
-      data: data || {},
-    },
+    content: accountScopedNotificationContent(input),
     trigger: null, // Imediato
   });
 }
 
-/**
- * Agendar notificação para data/hora específica
- */
+/** Agenda somente uma notificação local neutra e vinculada a uma conta. */
 export async function scheduleNotification(
-  title: string,
-  body: string,
+  input: AccountScopedLocalNotification,
   date: Date,
-  data?: Record<string, any>
 ) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    throw new Error("Data da notificação local inválida");
+  }
   await Notifications.scheduleNotificationAsync({
-    content: {
-      title,
-      body,
-      data: data || {},
-    },
+    content: accountScopedNotificationContent(input),
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date,
@@ -83,10 +93,12 @@ export async function scheduleNotification(
  * Lembrete de plantão (30 minutos antes)
  */
 export async function scheduleShiftReminder(
-  sectorName: string,
+  userId: number,
   shiftDate: Date,
-  shiftTime: string
 ) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error("Destinatário do lembrete local inválido");
+  }
   const reminderDate = new Date(shiftDate);
   reminderDate.setMinutes(reminderDate.getMinutes() - 30);
   
@@ -94,10 +106,14 @@ export async function scheduleShiftReminder(
   if (reminderDate < new Date()) return;
   
   await scheduleNotification(
-    '⏰ Lembrete de Plantão',
-    `Seu plantão começa em 30 minutos: ${sectorName} às ${shiftTime}`,
+    {
+      recipientUserId: userId,
+      data: {
+        type: 'reminder',
+        shiftDate: shiftDate.toISOString(),
+      },
+    },
     reminderDate,
-    { type: 'reminder', shiftDate: shiftDate.toISOString() }
   );
 }
 

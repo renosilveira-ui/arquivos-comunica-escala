@@ -4,7 +4,6 @@
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as Notifications from "expo-notifications";
 
 // ============================================================================
 // CONSTANTS
@@ -80,7 +79,9 @@ export async function recordSuccess(): Promise<void> {
 
 /**
  * Registra falha de sincronização
- * Se atingir threshold e cooldown expirou, exibe notificação
+ * Se atingir threshold e cooldown expirou, registra a ocorrência. A integração
+ * HospitalAlert é legada e não tem um destinatário de conta comprovado; por
+ * isso ela não pode disparar nenhuma notificação local do sistema operacional.
  */
 export async function recordFailure(
   error: string,
@@ -109,9 +110,11 @@ export async function recordFailure(
     const shouldNotify = await checkCooldown(state.lastNotificationAt);
     
     if (shouldNotify) {
-      await showNotification(error);
+      console.warn(
+        "[SyncErrorNotifier] Aviso local legado suprimido por não possuir vínculo de conta",
+      );
       newState.lastNotificationAt = new Date().toISOString();
-      newState.consecutiveFailures = 0; // Reset após notificar
+      newState.consecutiveFailures = 0; // Reset após registrar no cooldown
     }
   }
   
@@ -128,31 +131,6 @@ async function checkCooldown(lastNotificationAt: string | null): Promise<boolean
   const elapsed = Date.now() - lastNotification.getTime();
   
   return elapsed >= COOLDOWN_MS;
-}
-
-/**
- * Exibe notificação de erro
- */
-async function showNotification(error: string): Promise<void> {
-  try {
-    console.log("[SyncErrorNotifier] Exibindo notificação de erro");
-    
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: "Falha na sincronização com HospitalAlert",
-        body: `Não foi possível sincronizar com o HospitalAlert após múltiplas tentativas. Toque para tentar novamente.`,
-        data: { 
-          type: "sync_error",
-          error,
-        },
-        sound: true,
-        priority: Notifications.AndroidNotificationPriority.HIGH,
-      },
-      trigger: null, // Imediato
-    });
-  } catch (error) {
-    console.error("[SyncErrorNotifier] Erro ao exibir notificação:", error);
-  }
 }
 
 /**

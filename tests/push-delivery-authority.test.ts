@@ -339,6 +339,69 @@ describe("autoridade atual no outbox de confirmação", () => {
     }
   });
 
+  it("aceita a retry exata de outbox legado, mas entrega com recipient autoritativo", async () => {
+    const legacyIntent = intent("legacy-recipient-fence");
+    const queued = await enqueueTrackedPushNotification(legacyIntent, now);
+    const [storedBefore] = await db
+      .select({ providerReceipt: notifications.providerReceipt })
+      .from(notifications)
+      .where(eq(notifications.id, queued.notificationId));
+    const state = storedBefore.providerReceipt as {
+      payloadData: Record<string, unknown>;
+    };
+    const { recipientUserId: _discardedRecipient, ...legacyPayloadData } =
+      state.payloadData;
+    await db
+      .update(notifications)
+      .set({
+        providerReceipt: {
+          ...state,
+          payloadData: legacyPayloadData,
+        },
+      })
+      .where(eq(notifications.id, queued.notificationId));
+
+    await expect(
+      enqueueTrackedPushNotification(legacyIntent, now),
+    ).resolves.toMatchObject({ notificationId: queued.notificationId });
+
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        data: { status: "ok", id: `ticket-legacy-recipient-${stamp}` },
+      }),
+    );
+    await processPendingPushDeliveries(now);
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      data: {
+        institutionId,
+        recipientUserId: userId,
+      },
+    });
+  });
+
+  it("não aceita retry com recipientUserId divergente sob dedupKey existente", async () => {
+    const trackedIntent = intent("recipient-spoof-collision");
+    await enqueueTrackedPushNotification(trackedIntent, now);
+
+    await expect(
+      enqueueTrackedPushNotification(
+        {
+          ...trackedIntent,
+          payload: {
+            ...trackedIntent.payload,
+            data: {
+              ...trackedIntent.payload.data,
+              recipientUserId: userId + 1,
+            },
+          },
+        },
+        now,
+      ),
+    ).rejects.toThrow("Colisão de dedupKey em notificação rastreada");
+  });
+
   it("terminaliza sem rede quando a instituição destino é desativada", async () => {
     const queued = await enqueueTrackedPushNotification(intent("inactive-institution"), now);
     await db.update(institutions).set({ isActive: false }).where(

@@ -36,6 +36,7 @@ import {
   openPushRegistrationAdmission,
   waitForPushRegistrationIdle,
 } from "@/lib/push-registration";
+import { clearVerifiedNotificationForegroundSubject } from "@/lib/notification-foreground-subject";
 import { appSessionEpoch, type SessionEpochTicket } from "@/lib/session-epoch";
 import { onSessionUnauthorized } from "@/lib/session-events";
 import {
@@ -320,6 +321,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [sessionValidation, user]);
 
   const closeAsyncSessionAdmission = useCallback(() => {
+    // BEGIN é síncrono: entre A sair e B obter VERIFIED, nenhum payload pode
+    // aparecer visualmente no processo, inclusive antes do rerender React.
+    clearVerifiedNotificationForegroundSubject();
     Auth.closeSessionTokenTransportAdmission();
     closePushRegistrationAdmission();
     fenceQueryCachePersistence();
@@ -1253,8 +1257,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       state.pending += 1;
       const intentGeneration = ++state.intentGeneration;
       // A aquisição do Web Lock pode aguardar outra aba. O transporte local
-      // e todo refetch anterior precisam cair na intenção, antes dessa espera.
-      Auth.closeSessionTokenTransportAdmission();
+      // e todo refetch anterior, inclusive o sujeito visual de foreground,
+      // precisam cair na intenção antes dessa espera.
+      closeAsyncSessionAdmission();
       const intentSequence = ++latestAuthRefetchSequence;
       setSessionValidation({ status: "CHECKING", sequence: intentSequence });
 

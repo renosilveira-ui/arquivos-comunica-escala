@@ -4,6 +4,7 @@ import * as Device from "expo-device";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { trpc } from "@/lib/trpc";
+import { scheduleNotification as scheduleAccountScopedNotification } from "@/lib/notifications";
 import {
   getServerRegisteredPushToken,
   hydrateServerRegisteredPushToken,
@@ -23,16 +24,6 @@ import {
 /** Marca navy (`theme.palette.brand[500]` / plugin expo-notifications). Sem import de theme: testes SSO mockam react-native sem Platform.select. */
 const ANDROID_NOTIFICATION_COLOR = "#01304A";
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
-
 function pushPlatform(): "ios" | "android" | "web" {
   return Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
 }
@@ -50,6 +41,14 @@ export function useNotifications(expectedUserId: number) {
   const registrationGeneration = useRef(0);
   const registerMutation = trpc.confirmations.registerPushToken.useMutation();
   const registerPushToken = registerMutation.mutateAsync;
+  const scheduleNotification = (
+    date: Date,
+    data?: Record<string, unknown>,
+  ) =>
+    scheduleAccountScopedNotification(
+      { recipientUserId: expectedUserId, data },
+      date,
+    );
 
   useEffect(() => {
     const scopeGeneration = ++registrationGeneration.current;
@@ -354,24 +353,6 @@ export function useNotifications(expectedUserId: number) {
     scheduleNotification,
     cancelAllNotifications,
   };
-}
-
-// Agendar notificação local
-export async function scheduleNotification(
-  title: string,
-  body: string,
-  data?: any,
-  trigger?: Notifications.NotificationTriggerInput,
-) {
-  await Notifications.scheduleNotificationAsync({
-    content: {
-      title,
-      body,
-      data,
-      sound: true,
-    },
-    trigger: trigger || null,
-  });
 }
 
 // Cancelar todas as notificações agendadas

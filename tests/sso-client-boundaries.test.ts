@@ -209,7 +209,7 @@ function notificationResponse(
     notification: {
       request: {
         identifier,
-        content: { data },
+        content: { data: { recipientUserId: 7, ...data } },
       },
     },
   };
@@ -252,6 +252,13 @@ async function renderRealNotificationListener(options: {
     | ((notification: {
         request: { content: { data: Record<string, unknown> } };
       }) => void)
+    | undefined;
+  let foregroundNotificationHandler:
+    | {
+        handleNotification: (notification: {
+          request: { content: { data: Record<string, unknown> | undefined } };
+        }) => Promise<unknown>;
+      }
     | undefined;
   let user = options.user === undefined ? { id: 7 } : options.user;
   let sessionVerified = options.sessionVerified ?? true;
@@ -297,6 +304,11 @@ async function renderRealNotificationListener(options: {
   vi.doMock("expo-router", () => ({ useRouter: () => ({ push: routerPush }) }));
   vi.doMock("expo-notifications", () => ({
     DEFAULT_ACTION_IDENTIFIER: "expo.modules.notifications.actions.DEFAULT",
+    setNotificationHandler: vi.fn(
+      (handler: NonNullable<typeof foregroundNotificationHandler>) => {
+        foregroundNotificationHandler = handler;
+      },
+    ),
     addNotificationResponseReceivedListener: vi.fn(
       (listener: typeof responseListener) => {
         responseListener = listener;
@@ -426,11 +438,15 @@ async function renderRealNotificationListener(options: {
     sessionValidationIsCurrent,
     getLastNotificationResponse,
     clearLastNotificationResponse,
+    foregroundBehavior: (data: Record<string, unknown> | undefined) =>
+      foregroundNotificationHandler?.handleNotification({
+        request: { content: { data } },
+      }) ?? Promise.resolve(null),
     emit: (response: ReturnType<typeof notificationResponse>) =>
       responseListener?.(response),
     emitReceived: (data: Record<string, unknown>) =>
       receivedListener?.({
-        request: { content: { data } },
+        request: { content: { data: { recipientUserId: user?.id, ...data } } },
       }),
     setUser: (next: { id: number } | null) => {
       user = next;
@@ -441,6 +457,9 @@ async function renderRealNotificationListener(options: {
     },
     setSessionAuthorizationCurrent: (next: boolean) => {
       sessionAuthorizationCurrent = next;
+    },
+    setVerifiedSessionUserId: (nextUserId: number) => {
+      sessionValidation.userId = nextUserId;
     },
     activeTenant: () => activeTenant,
   };
@@ -695,6 +714,7 @@ vi.mock("@/lib/_core/api", () => ({
 
 vi.mock("expo-notifications", () => ({
   DEFAULT_ACTION_IDENTIFIER: "expo.modules.notifications.actions.DEFAULT",
+  setNotificationHandler: vi.fn(),
   addNotificationResponseReceivedListener: vi.fn(() => ({ remove: vi.fn() })),
   addNotificationReceivedListener: vi.fn(() => ({ remove: vi.fn() })),
   getLastNotificationResponse: vi.fn(() => null),
@@ -1988,6 +2008,7 @@ describe("SSO client tenant boundaries", () => {
     }));
     vi.doMock("expo-notifications", () => ({
       DEFAULT_ACTION_IDENTIFIER: "expo.modules.notifications.actions.DEFAULT",
+      setNotificationHandler: vi.fn(),
       addNotificationResponseReceivedListener: vi.fn(
         (listener: (response: any) => void) => {
           responseListener = listener;
@@ -2065,6 +2086,7 @@ describe("SSO client tenant boundaries", () => {
               type: "duty_confirmation",
               institutionId: 11,
               confirmationToken: "stale-token",
+              recipientUserId: 7,
             },
           },
         },
@@ -2106,6 +2128,46 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.routerPush).not.toHaveBeenCalled();
     expect(harness.clearLastNotificationResponse).not.toHaveBeenCalled();
     (cleanup as () => void)();
+  });
+
+  it("handler visual não publica render stale sem proof VERIFIED viva", async () => {
+    const hidden = {
+      shouldShowAlert: false,
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+      shouldShowBanner: false,
+      shouldShowList: false,
+    };
+    const visible = {
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    };
+    const stale = await renderRealNotificationListener({
+      user: { id: 7 },
+      sessionVerified: true,
+      sessionAuthorizationCurrent: false,
+    });
+    stale.render();
+    const staleCleanup = stale.runLatestEffect();
+    await expect(
+      stale.foregroundBehavior({ recipientUserId: 7 }),
+    ).resolves.toEqual(hidden);
+    (staleCleanup as () => void)();
+
+    const verified = await renderRealNotificationListener({
+      user: { id: 7 },
+      sessionVerified: true,
+      sessionAuthorizationCurrent: true,
+    });
+    verified.render();
+    const verifiedCleanup = verified.runLatestEffect();
+    await expect(
+      verified.foregroundBehavior({ recipientUserId: 7 }),
+    ).resolves.toEqual(visible);
+    (verifiedCleanup as () => void)();
   });
 
   it("push swap_offer recebido invalida countActionable e listAvailable sem navegar", async () => {
@@ -2382,11 +2444,12 @@ describe("SSO client tenant boundaries", () => {
     (cleanup as (() => void) | undefined)?.();
   });
 
-  it("Listener real descarta cold sync_error da conta A após logout e login B", async () => {
-    const staleResponse = notificationResponse("cold-sync-error-a", {
-      type: "sync_error",
+  it("Listener real consome tap da conta A após logout e login B na mesma instituição", async () => {
+    const staleResponse = notificationResponse("cold-account-a", {
+      type: "duty_confirmation",
       institutionId: 11,
-      previousUserId: 7,
+      confirmationToken: "must-not-open-under-b",
+      recipientUserId: 7,
     });
     const refetch = vi.fn(async () => ({
       isError: false,
@@ -2405,9 +2468,12 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.getLastNotificationResponse).not.toHaveBeenCalled();
     (loggedOutCleanup as (() => void) | undefined)?.();
 
-    // Após o login B, o cold tap legado é limpo e termina sem sequer consultar
-    // a allowlist, trocar tenant, invalidar cache ou alcançar uma rota.
+    // Após o login B, o cold tap dirigido a A é limpo e termina sem sequer
+    // consultar a allowlist, trocar tenant, invalidar cache ou alcançar rota.
     harness.setUser({ id: 8 });
+    // B recebeu uma nova proof VERIFIED; a proof de A não pode autorizar
+    // sequer a limpeza/routing sob a identidade sucessora.
+    harness.setVerifiedSessionUserId(8);
     harness.render();
     const accountBCleanup = harness.runLatestEffect();
     await vi.waitFor(() => {
@@ -2415,14 +2481,15 @@ describe("SSO client tenant boundaries", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // Mesmo identifier/action, agora com conteúdo roteável: se sync_error
-    // tivesse sido liberado como retryable, este evento LIVE consultaria a
-    // allowlist e abriria a confirmação sob a conta B.
+    // Mesmo identifier/action, agora com conteúdo dirigido a B: como o tap A
+    // foi consumido terminalmente, ele não pode ressurgir para ganhar a sessão
+    // de B pelo mesmo receipt físico.
     harness.emit(
-      notificationResponse("cold-sync-error-a", {
+      notificationResponse("cold-account-a", {
         type: "duty_confirmation",
         institutionId: 11,
         confirmationToken: "must-not-open",
+        recipientUserId: 8,
       }),
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2433,6 +2500,64 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.routerPush).not.toHaveBeenCalled();
     expect(harness.activeTenant()).toEqual({ institutionId: 22, revision: 6 });
     (accountBCleanup as (() => void) | undefined)?.();
+  });
+
+  it("Listener consome tap legado sem recipient antes de qualquer roteamento", async () => {
+    const legacy = notificationResponse("legacy-without-recipient", {
+      type: "duty_confirmation",
+      institutionId: 11,
+      confirmationToken: "legacy-must-not-open",
+    });
+    delete (legacy.notification.request.content.data as Record<string, unknown>)
+      .recipientUserId;
+    const harness = await renderRealNotificationListener({
+      user: { id: 7 },
+      activeTenant: { institutionId: 22, revision: 1 },
+      lastResponse: legacy,
+    });
+
+    harness.render();
+    const cleanup = harness.runLatestEffect();
+    await vi.waitFor(() =>
+      expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1),
+    );
+
+    expect(harness.refetch).not.toHaveBeenCalled();
+    expect(harness.setActiveInstitutionId).not.toHaveBeenCalled();
+    expect(harness.invalidateQueries).not.toHaveBeenCalled();
+    expect(harness.routerPush).not.toHaveBeenCalled();
+    (cleanup as (() => void) | undefined)?.();
+  });
+
+  it("Listener ignora push recebido legado ou dirigido a outra conta antes de invalidar", async () => {
+    const harness = await renderRealNotificationListener({
+      user: { id: 7 },
+      sessionVerified: true,
+      sessionAuthorizationCurrent: true,
+      activeTenant: { institutionId: 22, revision: 1 },
+    });
+
+    harness.render();
+    const cleanup = harness.runLatestEffect();
+    harness.emitReceived({
+      type: "swap_offer",
+      institutionId: 22,
+      recipientUserId: 8,
+    });
+    harness.emitReceived({
+      type: "swap_offer",
+      institutionId: 22,
+      recipientUserId: undefined,
+    });
+    await Promise.resolve();
+
+    expect(harness.invalidateCountActionable).not.toHaveBeenCalled();
+    expect(harness.invalidateListAvailable).not.toHaveBeenCalled();
+    expect(harness.invalidateSwapList).not.toHaveBeenCalled();
+    expect(harness.invalidateQueries).not.toHaveBeenCalled();
+    expect(harness.setActiveInstitutionId).not.toHaveBeenCalled();
+    expect(harness.routerPush).not.toHaveBeenCalled();
+    (cleanup as (() => void) | undefined)?.();
   });
 
   it("Listener real deduplica last+LIVE enquanto in-flight e só navega uma vez", async () => {

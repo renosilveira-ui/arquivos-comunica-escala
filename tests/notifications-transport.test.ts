@@ -299,6 +299,68 @@ describe("transporte tipado de push Expo", () => {
     expect(sent.priority).toBe("high");
   });
 
+  it("sela o destinatário revalidado e sobrescreve recipientUserId forjado", async () => {
+    const { db } = database([
+      { id: 111, token: "ExponentPushToken[recipient-fence]" },
+    ]);
+    dbModule.getDb.mockResolvedValue(db);
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: "ticket-recipient-fence" } }),
+    );
+
+    await expect(
+      sendPushNotification(
+        7,
+        {
+          ...payload,
+          data: { ...payload.data, recipientUserId: 999 },
+        },
+        99,
+      ),
+    ).resolves.toMatchObject({ status: "TICKETS_ACCEPTED" });
+
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(sent.data).toEqual({
+      type: "duty_confirmation",
+      recipientUserId: 7,
+    });
+  });
+
+  it("envia apresentação Expo neutra e preserva detalhes somente no payload autenticável", async () => {
+    const { db } = database([{ id: 112, token: "ExponentPushToken[neutral-copy]" }]);
+    dbModule.getDb.mockResolvedValue(db);
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: "ticket-neutral-copy" } }),
+    );
+    const sensitivePayload = {
+      title: "Dra. Ana — UTI Hospital Central",
+      body: "Plantão de 12h no setor crítico às 19:00.",
+      data: {
+        type: "duty_confirmation",
+        professionalName: "Dra. Ana",
+        hospitalName: "Hospital Central",
+        sectorName: "UTI",
+        shiftTime: "19:00",
+      },
+    };
+
+    await sendPushNotification(7, sensitivePayload, 99);
+
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(sent).toMatchObject({
+      title: "Escala+",
+      body: "Há uma atualização disponível. Abra o aplicativo para consultar.",
+      data: {
+        ...sensitivePayload.data,
+        recipientUserId: 7,
+      },
+    });
+    expect(sent.title).not.toContain("Ana");
+    expect(sent.title).not.toContain("Hospital");
+    expect(sent.body).not.toContain("UTI");
+    expect(sent.body).not.toContain("19:00");
+  });
+
   it("HTTP 200 com ticket error é falha terminal e remove DeviceNotRegistered", async () => {
     const { db, deleteWhere } = database([{ id: 12, token: "ExponentPushToken[stale]" }]);
     dbModule.getDb.mockResolvedValue(db);

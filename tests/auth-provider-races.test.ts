@@ -230,6 +230,7 @@ async function renderRealAuthProvider(
   const openPushRegistrationAdmission = vi.fn();
   const waitForPushRegistrationIdle = vi.fn(async () => undefined);
   const fenceQueryCachePersistence = vi.fn();
+  const clearVerifiedNotificationForegroundSubject = vi.fn();
   const resumeQueryCachePersistence = vi.fn(() => true);
   const suspendQueryCachePersistence = vi.fn(() => resumeQueryCachePersistence);
   const loginApi = vi.fn(
@@ -489,6 +490,9 @@ async function renderRealAuthProvider(
     fenceQueryCachePersistence,
     suspendQueryCachePersistence,
   }));
+  vi.doMock("@/lib/notification-foreground-subject", () => ({
+    clearVerifiedNotificationForegroundSubject,
+  }));
   vi.doMock("@/lib/push-registration", () => ({
     clearPushRegistrationState,
     closePushRegistrationAdmission,
@@ -589,6 +593,7 @@ async function renderRealAuthProvider(
     revokePreparedSessionToken,
     setLastPushToken,
     closeSessionTokenTransportAdmission,
+    clearVerifiedNotificationForegroundSubject,
     admitSessionTokenTransport,
   };
 }
@@ -604,6 +609,26 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
 
     expect(harness.auth.isAuthenticated).toBe(false);
     expect(harness.meDetailedApi).not.toHaveBeenCalled();
+  });
+
+  it("BEGIN de runSessionMutation limpa o sujeito visual antes da operação assíncrona", async () => {
+    const loginReply = deferred<LoginResult>();
+    const harness = await renderRealAuthProvider({
+      loginRequest: () => loginReply.promise,
+    });
+
+    const login = harness.auth.login(userB.email, "senha-B");
+    await vi.waitFor(() => expect(harness.loginApi).toHaveBeenCalledTimes(1));
+
+    expect(
+      harness.clearVerifiedNotificationForegroundSubject.mock.invocationCallOrder[0],
+    ).toBeLessThan(harness.loginApi.mock.invocationCallOrder[0]);
+
+    loginReply.resolve({ ok: false, error: "Credenciais inválidas" });
+    await expect(login).resolves.toEqual({
+      ok: false,
+      error: "Credenciais inválidas",
+    });
   });
 
   it("intenção de login invalida /me A que já estava aguardando o workflow", async () => {
