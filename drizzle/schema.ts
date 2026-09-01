@@ -193,8 +193,8 @@ export const institutions = mysqlTable("institutions", {
  *
  * Esta tabela não guarda uma decisão de prontidão e não é consultada pelos
  * fluxos atuais de publicação. A migration manual V1 instala os observadores
- * que avançam a revisão; um uso futuro deve validar o recibo de instalação
- * antes de confiar nela.
+ * que avançam a revisão; um uso futuro deve validar catálogo e cobertura de
+ * triggers na mesma transação. O recibo de instalação isolado não basta.
  */
 export const institutionReadinessFences = mysqlTable(
   "institution_readiness_fences",
