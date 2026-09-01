@@ -24,6 +24,7 @@ export default defineConfig({
       "tests/sector-service-specialties-plan.test.ts",
       "tests/sector-service-specialties-router.test.ts",
       "tests/sector-service-specialties-ui.test.ts",
+      "tests/unimed-hospital-provision.test.ts",
       "tests/schedule-contexts-schema.test.ts",
       "tests/schedule-contexts-migration.test.ts",
       "tests/schedule-context-policy.test.ts",
