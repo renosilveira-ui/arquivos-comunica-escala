@@ -33,6 +33,7 @@
     "provision:sala-recuperacao": "tsx scripts/provision-sala-recuperacao-schedule.ts",
     "provision:institution-scale": "tsx scripts/provision-institution-scale.ts",
     "apply:migration": "tsx scripts/apply-manual-migration.ts",
+    "apply:readiness-fence-migration": "tsx scripts/apply-readiness-fence-migration.ts",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "qr": "node scripts/generate_qr.mjs"
