@@ -20,10 +20,12 @@ import {
   openTestScale,
 } from "./helpers/open-test-scale";
 import { getDb } from "../server/db";
+import { resolveTenantActor } from "../server/_core/policy";
 import { appRouter } from "../server/routers";
 import { scheduleContextsRouter } from "../server/schedule-contexts";
 import { shiftsRouter } from "../server/shifts-crud";
 import { addMonthsYearMonth, yearMonthBrt } from "../server/local-time";
+import { lockMonth, publishMonth } from "../server/month-guards";
 
 /**
  * Janela operacional do GESTOR_MEDICO: mês corrente e o imediatamente
@@ -530,9 +532,38 @@ describe("system review — correções de raiz", () => {
     ]);
   });
 
-  it("5: gestor de setor publica o mês do próprio hospital e não o de outro", async () => {
-    const published = await callerShifts(
+  it("5: escopo setorial não publica o mês; Gestor+ publica", async () => {
+    // medicoA cobre dois setores de hospitalA, mas não o hospital inteiro.
+    const sectorActor = await resolveTenantActor(
       medicoAUserId,
+      institutionA,
+      false,
+    );
+
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).publish({
+        institutionId: institutionA,
+        hospitalId: hospitalA,
+        yearMonth: nextYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição/),
+    });
+    await expect(
+      publishMonth(institutionA, hospitalA, nextYm, sectorActor, 1),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).publish({
+        institutionId: institutionA,
+        hospitalId: hospitalBare,
+        yearMonth: nextYm,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const published = await callerShifts(
+      plusAUserId,
       "manager",
       institutionA,
     ).publish({
@@ -541,20 +572,9 @@ describe("system review — correções de raiz", () => {
       yearMonth: nextYm,
     });
     expect(published).toEqual({ ok: true });
-    const [roster] = await db
-      .select({ status: monthlyRosters.status })
-      .from(monthlyRosters)
-      .where(
-        and(
-          eq(monthlyRosters.institutionId, institutionA),
-          eq(monthlyRosters.hospitalId, hospitalA),
-          eq(monthlyRosters.yearMonth, nextYm),
-        ),
-      );
-    expect(roster?.status).toBe("PUBLISHED");
 
     await expect(
-      callerShifts(medicoAUserId, "manager", institutionA).publish({
+      callerShifts(medicoA2UserId, "manager", institutionA).publish({
         institutionId: institutionA,
         hospitalId: hospitalA2,
         yearMonth: nextYm,
@@ -636,9 +656,9 @@ describe("system review — correções de raiz", () => {
     });
   });
 
-  it("8: gestor de setor tranca o mês do próprio hospital e não o de outro", async () => {
+  it("8: escopo setorial não tranca o mês; Gestor+ tranca", async () => {
     const published = await callerShifts(
-      medicoAUserId,
+      plusAUserId,
       "manager",
       institutionA,
     ).publish({
@@ -648,11 +668,35 @@ describe("system review — correções de raiz", () => {
     });
     expect(published).toEqual({ ok: true });
 
-    const locked = await callerShifts(
+    const sectorActor = await resolveTenantActor(
       medicoAUserId,
-      "manager",
       institutionA,
-    ).lock({
+      false,
+    );
+    await expect(
+      callerShifts(medicoAUserId, "manager", institutionA).lock({
+        institutionId: institutionA,
+        hospitalId: hospitalA,
+        yearMonth: currentYm,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringMatching(/jurisdição/),
+    });
+    await expect(
+      lockMonth(institutionA, hospitalA, currentYm, sectorActor, 1),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await callerShifts(medicoAUserId, "manager", institutionA).publish({
+      institutionId: institutionA,
+      hospitalId: hospitalBare,
+      yearMonth: currentYm,
+    });
+    await expect(
+      lockMonth(institutionA, hospitalBare, currentYm, sectorActor, 1),
+    ).resolves.toBeUndefined();
+
+    const locked = await callerShifts(plusAUserId, "manager", institutionA).lock({
       institutionId: institutionA,
       hospitalId: hospitalA,
       yearMonth: currentYm,
@@ -671,7 +715,7 @@ describe("system review — correções de raiz", () => {
     expect(roster?.status).toBe("LOCKED");
 
     await expect(
-      callerShifts(medicoAUserId, "manager", institutionA).lock({
+      callerShifts(medicoA2UserId, "manager", institutionA).lock({
         institutionId: institutionA,
         hospitalId: hospitalA2,
         yearMonth: currentYm,

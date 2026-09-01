@@ -834,6 +834,12 @@ describe("hierarquia institution → hospital → sector", () => {
     await expect(
       lockMonth(institutionAId, hospitalBId, lockYearMonth, adminActor, 1),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      publishMonth(institutionAId, hospitalAId, deepPublishYearMonth, adminActor, 1),
+    ).resolves.toBeUndefined();
+    await expect(
+      lockMonth(institutionAId, hospitalAId, deepPublishYearMonth, adminActor, 1),
+    ).resolves.toBeUndefined();
 
     const directPublishRows = await db
       .select({ id: monthlyRosters.id })
