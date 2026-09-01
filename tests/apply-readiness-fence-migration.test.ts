@@ -255,14 +255,28 @@ describe("instalador dedicado da fence de prontidão", () => {
     expect(installerSource).toContain("GET_LOCK");
     expect(installerSource).toContain("RELEASE_LOCK");
     expect(installerSource).toContain("await createTableStatements");
-    expect(installerSource).toContain("await createMissingTriggers");
+    expect(installerSource).toContain(
+      "await createMissingReadinessFenceTriggers",
+    );
     expect(installerSource).toContain("await insertInstallationMarker");
-    expect(
-      installerSource.indexOf("const preflight = await readCatalog"),
-    ).toBeLessThan(installerSource.indexOf("await createTableStatements"));
-    expect(
-      installerSource.indexOf("const postflight = await readCatalog"),
-    ).toBeLessThan(installerSource.indexOf("await insertInstallationMarker"));
+    const preflightIndex = installerSource.indexOf(
+      "const preflight = await readReadinessFenceCatalog",
+    );
+    const postflightIndex = installerSource.indexOf(
+      "const postflight = await readReadinessFenceCatalog",
+    );
+    const createTablesIndex = installerSource.indexOf(
+      "await createTableStatements",
+    );
+    const insertMarkerIndex = installerSource.indexOf(
+      "await insertInstallationMarker",
+    );
+    expect(preflightIndex).toBeGreaterThanOrEqual(0);
+    expect(postflightIndex).toBeGreaterThanOrEqual(0);
+    expect(createTablesIndex).toBeGreaterThanOrEqual(0);
+    expect(insertMarkerIndex).toBeGreaterThanOrEqual(0);
+    expect(preflightIndex).toBeLessThan(createTablesIndex);
+    expect(postflightIndex).toBeLessThan(insertMarkerIndex);
   });
 
   it("rejeita marcador sem um CREATE TRIGGER de uma instrução", () => {
