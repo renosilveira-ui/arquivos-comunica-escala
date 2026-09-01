@@ -335,6 +335,7 @@ describe("foundation de eventos operacionais", () => {
     const sectorEvent = hospitalEvent();
     sectorEvent.eventType = "SHIFT_UPDATED";
     sectorEvent.aggregate = { type: "SHIFT_INSTANCE", id: 12, version: 3 };
+    sectorEvent.transition = { from: null, to: null };
     sectorEvent.context = {
       institutionId: 1,
       hospitalId: 10,
@@ -344,9 +345,7 @@ describe("foundation de eventos operacionais", () => {
       shiftInstanceId: 12,
       assignmentId: 16,
     };
-    expect(() => operationalEventHash(sectorEvent)).toThrow(
-      "Evento ainda não possui contrato canônico de transição",
-    );
+    expect(() => operationalEventHash(sectorEvent)).not.toThrow();
   });
 
   it("exige o recurso canônico previsto pelo contrato de cada evento", () => {

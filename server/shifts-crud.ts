@@ -75,6 +75,11 @@ import {
   type ShiftInstanceRevisionPatch,
 } from "./shift-instance-revision";
 import {
+  hasMaterialShiftUpdatedChange,
+  planShiftOperationalRevision,
+  recordShiftUpdatedShadowEventInTransaction,
+} from "./shift-operational-events";
+import {
   enqueueVacancyAvailableSignals,
   recentVacancyBroadcastExists,
 } from "./vacancy-broadcast-signal";
@@ -2133,40 +2138,7 @@ export const shiftsRouter = router({
         patch.coverageType = null;
       }
 
-      const revisionPatch: ShiftInstanceRevisionPatch = {};
-      if (
-        patch.startAt !== undefined &&
-        patch.startAt.getTime() !== existing.startAt.getTime()
-      ) {
-        revisionPatch.startAt = patch.startAt;
-      }
-      if (
-        patch.endAt !== undefined &&
-        patch.endAt.getTime() !== existing.endAt.getTime()
-      ) {
-        revisionPatch.endAt = patch.endAt;
-      }
-      if (patch.modality !== undefined && patch.modality !== existing.modality) {
-        revisionPatch.modality = patch.modality;
-      }
-      if (
-        patch.coverageType !== undefined &&
-        patch.coverageType !== existing.coverageType
-      ) {
-        revisionPatch.coverageType = patch.coverageType;
-      }
-      if (
-        patch.paymentModel !== undefined &&
-        patch.paymentModel !== existing.paymentModel
-      ) {
-        revisionPatch.paymentModel = patch.paymentModel;
-      }
-      if (
-        patch.productivityCapBrl !== undefined &&
-        patch.productivityCapBrl !== existing.productivityCapBrl
-      ) {
-        revisionPatch.productivityCapBrl = patch.productivityCapBrl;
-      }
+      const revisionPatch = planShiftOperationalRevision(existing, patch);
       // Data ATUAL e data nova: validar só o destino deixava GESTOR_MEDICO
       // puxar um turno de outro mês para o corrente (auditoria 22/08, M2).
       assertCanEditScheduleDate(actor, existing.startAt);
@@ -2346,8 +2318,54 @@ export const shiftsRouter = router({
           });
         }
 
+        const previousShiftUpdatedSnapshot = {
+          startAt: locked.startAt,
+          endAt: locked.endAt,
+          modality: locked.modality,
+        } as const;
+        const nextShiftUpdatedSnapshot = {
+          startAt: effectiveStartAt,
+          endAt: effectiveEndAt,
+          modality: patch.modality ?? locked.modality,
+        } as const;
+        const hasMaterialShiftUpdated = hasMaterialShiftUpdatedChange(
+          previousShiftUpdatedSnapshot,
+          nextShiftUpdatedSnapshot,
+        );
+
+        let nextOperationalRevision: number | null = null;
         if (Object.keys(revisionPatch).length > 0) {
-          await advanceShiftInstanceRevision(tx, locked, revisionPatch);
+          nextOperationalRevision = await advanceShiftInstanceRevision(
+            tx,
+            locked,
+            revisionPatch,
+          );
+        }
+        if (hasMaterialShiftUpdated) {
+          if (nextOperationalRevision === null) {
+            throw new Error(
+              "Alteração material de turno não avançou sua revisão operacional.",
+            );
+          }
+          await recordShiftUpdatedShadowEventInTransaction(tx, {
+            context: {
+              institutionId: locked.institutionId,
+              hospitalId: locked.hospitalId,
+              sectorId: locked.sectorId,
+              scheduleContextId: locked.scheduleContextId,
+              shiftInstanceId: locked.id,
+            },
+            previous: {
+              ...previousShiftUpdatedSnapshot,
+              operationalRevision: locked.operationalRevision,
+            },
+            nextOperationalRevision,
+            actor: {
+              userId: ctx.user.id,
+              professionalId: actor.professionalId,
+              role: actor.roleInInstitution,
+            },
+          });
         }
         const nextDutyType =
           (patch.modality ?? locked.modality) === "SOBREAVISO"
