@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   createOperationalEventInTransaction,
+  getOperationalEventEmissionMode,
   hashOperationalEmailAddress,
   isOperationalDeliveryRetryExhausted,
   isTerminalOperationalDeliveryStatus,
@@ -268,6 +269,32 @@ function inMemoryOperationalEventTransaction(options?: {
 }
 
 describe("foundation de eventos operacionais", () => {
+  it("fixa o modo SHADOW no catálogo e no fato persistido", async () => {
+    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe(
+      "SHADOW",
+    );
+
+    const memory = inMemoryOperationalEventTransaction();
+    await expect(
+      createOperationalEventInTransaction(memory.tx, hospitalEvent()),
+    ).resolves.toMatchObject({ eventId: 1, created: true });
+    expect(memory.getPersistedEvent()).toMatchObject({
+      eventType: "ROSTER_PUBLISHED",
+      emissionMode: "SHADOW",
+    });
+  });
+
+  it("recusa modo de emissão escolhido pelo caller", () => {
+    const selectedByCaller = {
+      ...hospitalEvent(),
+      emissionMode: "ACTIVE",
+    } as unknown as CreateOperationalEventInput;
+
+    expect(() => operationalEventHash(selectedByCaller)).toThrow(
+      "Modo de emissão é definido exclusivamente pelo servidor",
+    );
+  });
+
   it("gera hash estável sem depender da ordem dos destinatários", () => {
     const first = hospitalEvent();
     const second = hospitalEvent();
@@ -791,6 +818,7 @@ describe("foundation de eventos operacionais", () => {
     });
     expect(memory.getPersistedEvent()).toMatchObject({
       eventType: "ROSTER_PUBLISHED",
+      emissionMode: "SHADOW",
       deliveryPolicy: "NOTIFY",
       aggregateId: 50,
       aggregateVersion: 3,
@@ -939,6 +967,7 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 1,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
         recipient,
         channel: "PUSH",
       }),
@@ -946,6 +975,7 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 1,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
         recipient,
         channel: "EMAIL",
       }),
@@ -954,6 +984,7 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 1,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
         recipient,
         channel: "PUSH",
       }),
@@ -961,6 +992,24 @@ describe("foundation de eventos operacionais", () => {
       operationalDeliveryDedupKey({
         institutionId: 2,
         eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
+        recipient,
+        channel: "PUSH",
+      }),
+    );
+    expect(
+      operationalDeliveryDedupKey({
+        institutionId: 1,
+        eventIdempotencyKey: "event:1",
+        emissionMode: "SHADOW",
+        recipient,
+        channel: "PUSH",
+      }),
+    ).not.toBe(
+      operationalDeliveryDedupKey({
+        institutionId: 1,
+        eventIdempotencyKey: "event:1",
+        emissionMode: "ACTIVE",
         recipient,
         channel: "PUSH",
       }),

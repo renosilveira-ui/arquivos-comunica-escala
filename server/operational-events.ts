@@ -48,6 +48,47 @@ export const OPERATIONAL_EVENT_TYPES = [
 
 export type OperationalEventType = (typeof OPERATIONAL_EVENT_TYPES)[number];
 
+/**
+ * O modo é imutável e vem exclusivamente do catálogo fechado do servidor.
+ * Nesta etapa, todos os fatos permanecem em SHADOW; uma promoção a ACTIVE
+ * exige frente própria, nunca payload, endpoint ou variável de ambiente.
+ */
+export const OPERATIONAL_EVENT_EMISSION_MODES = ["SHADOW", "ACTIVE"] as const;
+export type OperationalEventEmissionMode =
+  (typeof OPERATIONAL_EVENT_EMISSION_MODES)[number];
+
+export const OPERATIONAL_EVENT_EMISSION_POLICIES = Object.freeze({
+  ASSIGNMENT_CREATED: "SHADOW",
+  ASSIGNMENT_REMOVED: "SHADOW",
+  VACANCY_REQUESTED: "SHADOW",
+  ASSIGNMENT_APPROVED: "SHADOW",
+  ASSIGNMENT_REJECTED: "SHADOW",
+  SHIFT_UPDATED: "SHADOW",
+  VACANCY_BROADCAST: "SHADOW",
+  SCHEDULE_INVITE_CREATED: "SHADOW",
+  SCHEDULE_INVITE_ACCEPTED: "SHADOW",
+  SCHEDULE_INVITE_DECLINED: "SHADOW",
+  SCHEDULE_INVITE_REVOKED: "SHADOW",
+  SCHEDULE_INVITE_EXPIRED: "SHADOW",
+  SWAP_OFFERED: "SHADOW",
+  SWAP_ACCEPTED: "SHADOW",
+  SWAP_REJECTED: "SHADOW",
+  SWAP_CANCELLED: "SHADOW",
+  SWAP_OFFER_DISMISSED: "SHADOW",
+  SWAP_EXPIRED: "SHADOW",
+  ROSTER_PUBLISHED: "SHADOW",
+  ROSTER_LOCKED: "SHADOW",
+  SCHEDULE_REPLICATED: "SHADOW",
+  ACCESS_UPDATED: "SHADOW",
+  SCHEDULE_CONTEXT_CREATED: "SHADOW",
+} satisfies Record<OperationalEventType, OperationalEventEmissionMode>);
+
+export function getOperationalEventEmissionMode(
+  eventType: OperationalEventType,
+): OperationalEventEmissionMode {
+  return OPERATIONAL_EVENT_EMISSION_POLICIES[eventType];
+}
+
 export const OPERATIONAL_AGGREGATE_TYPES = [
   "SHIFT_ASSIGNMENT",
   "SHIFT_INSTANCE",
@@ -437,6 +478,8 @@ export type OperationalEventRecipient =
 export type CreateOperationalEventInput = {
   idempotencyKey: string;
   eventType: OperationalEventType;
+  /** O caller não pode definir o modo de emissão do fato. */
+  emissionMode?: never;
   deliveryPolicy: OperationalDeliveryPolicy;
   aggregate: {
     type: OperationalAggregateType;
@@ -853,6 +896,7 @@ function resolveRecipientResolution(
 type CanonicalOperationalEventInput = {
   idempotencyKey: string;
   eventType: OperationalEventType;
+  emissionMode: OperationalEventEmissionMode;
   deliveryPolicy: OperationalDeliveryPolicy;
   aggregate: Readonly<{
     type: OperationalAggregateType;
@@ -1232,6 +1276,11 @@ function validateCreateInput(
   if (!isOperationalEventType(input.eventType)) {
     throw new OperationalEventValidationError("eventType inválido");
   }
+  if ("emissionMode" in (input as object)) {
+    throw new OperationalEventValidationError(
+      "Modo de emissão é definido exclusivamente pelo servidor",
+    );
+  }
   if (!isDeliveryPolicy(input.deliveryPolicy)) {
     throw new OperationalEventValidationError("deliveryPolicy inválida");
   }
@@ -1382,6 +1431,7 @@ function validateCreateInput(
   return Object.freeze({
     idempotencyKey: input.idempotencyKey,
     eventType: input.eventType,
+    emissionMode: getOperationalEventEmissionMode(input.eventType),
     deliveryPolicy: input.deliveryPolicy,
     aggregate: Object.freeze({
       type: input.aggregate.type,
@@ -1412,6 +1462,7 @@ function identityProjection(
 ): Record<string, unknown> {
   return {
     eventType: input.eventType,
+    emissionMode: input.emissionMode,
     deliveryPolicy: input.deliveryPolicy,
     aggregate: {
       type: input.aggregate.type,
@@ -1456,6 +1507,7 @@ export function operationalEventHash(
 export function operationalDeliveryDedupKey(input: {
   institutionId: number;
   eventIdempotencyKey: string;
+  emissionMode: OperationalEventEmissionMode;
   recipient: OperationalEventRecipient;
   channel: OperationalDeliveryChannel;
 }): string {
@@ -1463,6 +1515,7 @@ export function operationalDeliveryDedupKey(input: {
     canonicalJson({
       institutionId: input.institutionId,
       eventIdempotencyKey: input.eventIdempotencyKey,
+      emissionMode: input.emissionMode,
       recipient: targetKey(input.recipient),
       channel: input.channel,
     }),
@@ -1509,6 +1562,7 @@ export async function createOperationalEventInTransaction(
       idempotencyKeyHash,
       eventHash,
       eventType: eventInput.eventType,
+      emissionMode: eventInput.emissionMode,
       deliveryPolicy: eventInput.deliveryPolicy,
       recipientResolution: eventInput.recipientResolution,
       aggregateType: eventInput.aggregate.type,
@@ -1611,6 +1665,7 @@ export async function createOperationalEventInTransaction(
         dedupKey: operationalDeliveryDedupKey({
           institutionId: eventInput.context.institutionId,
           eventIdempotencyKey: eventInput.idempotencyKey,
+          emissionMode: eventInput.emissionMode,
           recipient,
           channel,
         }),

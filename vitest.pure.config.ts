@@ -73,6 +73,7 @@ export default defineConfig({
       "tests/vacancy-broadcast-source.test.ts",
       "tests/operational-events-schema.test.ts",
       "tests/operational-events-migration.test.ts",
+      "tests/operational-events-emission-mode-migration.test.ts",
       "tests/operational-events-foundation.test.ts",
     ],
   },

@@ -986,6 +986,11 @@ export const operationalEvents = mysqlTable(
     }).notNull(),
     eventHash: varchar("event_hash", { length: 64 }).notNull(),
     eventType: varchar("event_type", { length: 80 }).notNull(),
+    // O modo é gravado com o fato para que um retry não possa promover um
+    // registro histórico de sombra a entrega ativa.
+    emissionMode: mysqlEnum("emission_mode", ["SHADOW", "ACTIVE"])
+      .notNull()
+      .default("SHADOW"),
     deliveryPolicy: mysqlEnum("delivery_policy", [
       "NOTIFY",
       "BROADCAST",
