@@ -12,14 +12,15 @@ import { formatHospitalTimeRange } from "@/lib/hospital-time";
  * Tela "Suas candidaturas" — RECEIVER counterpart de /my-offers.
  *
  * Lista swaps onde o usuário logado se candidatou (to_user_id = me).
- * É passiva por design: per spec docs/product/escala-ux.md §6, depois
- * que B aceita, só A (o dono) aprova ou rejeita. B não retracta.
+ * É passiva por design: a conclusão de uma candidatura legada ACCEPTED
+ * pertence explicitamente ao ofertante em Minhas ofertas.
  *
  * Fluxo do usuário:
  *   - Acessa via Perfil → "Suas candidaturas".
  *   - "Histórico recente": APPROVED (assumiu o plantão), EXPIRED, etc.
- *     ACCEPTED residual efetiva ao listar; se não puder completar,
- *     cancela com motivo — sem pedir aprovação do dono.
+ *     ACCEPTED residual permanece registrada até o ofertante concluir ou
+ *     até uma das partes cancelá-la explicitamente. Consultar não altera a
+ *     escala.
  */
 
 type SwapType = "SWAP" | "TRANSFER" | "CESSAO";

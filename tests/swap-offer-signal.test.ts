@@ -1172,7 +1172,7 @@ describe("sinal de oferta de plantão", () => {
     }
   });
 
-  it("ACL do hospital A não expõe, conta ou permite aceitar oferta do hospital B", async () => {
+  it("escopo do gestor no hospital A não expõe nem permite operar oferta do hospital B", async () => {
     const [otherHospital] = await db
       .insert(hospitals)
       .values({ institutionId, name: `Isolation Hospital B ${stamp}` })
@@ -1227,13 +1227,20 @@ describe("sinal de oferta de plantão", () => {
       });
       offerId = Number(offer.id);
 
-      const listAtHospitalA = await callerFor(peer).listAvailable({});
+      const callerAtHospitalA = callerFor(gestor);
+      const listedOffers = await callerAtHospitalA.list({ role: "ANY" });
+      expect(listedOffers.map((row) => Number(row.id))).not.toContain(offerId);
+      await expect(
+        callerAtHospitalA.getById({ id: offerId }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      const listAtHospitalA = await callerAtHospitalA.listAvailable({});
       expect(listAtHospitalA.map((row) => Number(row.id))).not.toContain(offerId);
-      await expect(callerFor(peer).countActionable()).resolves.toEqual({
+      await expect(callerAtHospitalA.countActionable()).resolves.toEqual({
         swapOffers: 0,
       });
       await expect(
-        callerFor(peer).accept({ swapRequestId: offerId }),
+        callerAtHospitalA.accept({ swapRequestId: offerId }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
     } finally {
       if (shiftId) {

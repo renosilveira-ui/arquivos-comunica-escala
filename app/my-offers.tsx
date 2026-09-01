@@ -14,8 +14,8 @@ import { formatHospitalTimeRange } from "@/lib/hospital-time";
 /**
  * Tela "Minhas ofertas" — consome `swaps.list({ role: "OFFERER" })`.
  * Quem assume transfere o plantão no aceite; o dono acompanha e pode
- * cancelar PENDING ou uma candidatura antiga em ACCEPTED que não
- * completou. Sem botão de aprovar.
+ * concluir ou cancelar uma candidatura antiga em ACCEPTED. A conclusão é
+ * sempre uma mutation explícita do dono, nunca um efeito da consulta.
  */
 
 type SwapType = "SWAP" | "TRANSFER" | "CESSAO";
@@ -36,7 +36,7 @@ const TYPE_LABEL: Record<SwapType, string> = {
 
 const STATUS_LABEL: Record<SwapStatus, string> = {
   PENDING: "Aguardando quem assuma",
-  ACCEPTED: "Não foi possível assumir",
+  ACCEPTED: "Aguardando sua conclusão",
   APPROVED: "Assumida",
   REJECTED_BY_PEER: "Recusada pelo profissional",
   REJECTED_BY_MANAGER: "Recusada pelo gestor",
@@ -76,6 +76,28 @@ export default function MyOffersScreen() {
     },
   });
 
+  const approveMutation = trpc.swaps.approveByOwner.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.swaps.list.invalidate(),
+        utils.swaps.listAvailable.invalidate(),
+        utils.swaps.countActionable.invalidate(),
+        utils.shifts.listAgenda.invalidate(),
+        utils.shifts.getNextShift.invalidate(),
+        utils.shifts.listByPeriod.invalidate(),
+        utils.shifts.get.invalidate(),
+        utils.confirmations.getPending.invalidate(),
+      ]);
+      await refetch();
+      feedback.success("Candidatura concluída. A escala foi atualizada.");
+    },
+    onError: (error) => {
+      feedback.error(
+        error.message || "Não foi possível concluir a candidatura.",
+      );
+    },
+  });
+
   const handleCancel = async (offer: any) => {
     const leftover = offer.status === "ACCEPTED";
     const confirmed = await confirmAction(
@@ -85,6 +107,14 @@ export default function MyOffersScreen() {
     );
     if (!confirmed) return;
     cancelMutation.mutate({ swapRequestId: offer.id });
+  };
+
+  const handleApprove = async (offer: any) => {
+    const confirmed = await confirmAction(
+      "Concluir esta candidatura antiga?\n\nO plantão será transferido para o profissional indicado.",
+    );
+    if (!confirmed) return;
+    approveMutation.mutate({ swapRequestId: offer.id });
   };
 
   const handleBack = () => {
@@ -174,6 +204,11 @@ export default function MyOffersScreen() {
                         ? () => handleCancel(offer)
                         : null
                     }
+                    onApprove={
+                      offer.awaitingMyApproval === true
+                        ? () => handleApprove(offer)
+                        : null
+                    }
                   />
                 ))}
               </View>
@@ -185,7 +220,12 @@ export default function MyOffersScreen() {
                   Histórico
                 </Text>
                 {history.map((offer) => (
-                  <OfferCard key={offer.id} offer={offer} onCancel={null} />
+                  <OfferCard
+                    key={offer.id}
+                    offer={offer}
+                    onCancel={null}
+                    onApprove={null}
+                  />
                 ))}
               </View>
             )}
@@ -199,9 +239,11 @@ export default function MyOffersScreen() {
 function OfferCard({
   offer,
   onCancel,
+  onApprove,
 }: {
   offer: any;
   onCancel: (() => void) | null;
+  onApprove: (() => void) | null;
 }) {
   const type = (offer.type ?? "TRANSFER") as SwapType;
   const status = (offer.status ?? "PENDING") as SwapStatus;
@@ -287,6 +329,12 @@ function OfferCard({
         </Text>
       ) : null}
 
+      {offer.cancellationOnly === true ? (
+        <Text className="text-xs" style={{ color: theme.colors.textSecondary }}>
+          Esta candidatura antiga não pode mais ser concluída porque a escala ou o acesso mudou. Você pode desfazê-la.
+        </Text>
+      ) : null}
+
       {/* Expira em */}
       {expiresAt && status === "PENDING" && (
         <View className="flex-row items-center gap-1">
@@ -295,6 +343,21 @@ function OfferCard({
             Expira em {formatDate(expiresAt)}
           </Text>
         </View>
+      )}
+
+      {onApprove && (
+        <TouchableOpacity
+          onPress={onApprove}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Concluir candidatura antiga"
+          className="rounded-xl py-2 items-center justify-center"
+          style={{ backgroundColor: theme.colors.primary }}
+        >
+          <Text className="text-sm font-medium" style={{ color: theme.colors.onDark.text }}>
+            Concluir candidatura
+          </Text>
+        </TouchableOpacity>
       )}
 
       {/* Cancelar PENDING ou ACCEPTED residual que não completou */}
