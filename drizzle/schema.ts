@@ -319,18 +319,10 @@ export const sectorServiceSpecialties = mysqlTable(
   "sector_service_specialties",
   {
     id: int("id").primaryKey().autoincrement(),
-    institutionId: int("institution_id")
-      .notNull()
-      .references(() => institutions.id),
-    hospitalId: int("hospital_id")
-      .notNull()
-      .references(() => hospitals.id),
-    sectorId: int("sector_id")
-      .notNull()
-      .references(() => sectors.id),
-    medicalSpecialtyId: int("medical_specialty_id")
-      .notNull()
-      .references(() => medicalSpecialties.id),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id").notNull(),
+    sectorId: int("sector_id").notNull(),
+    medicalSpecialtyId: int("medical_specialty_id").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -343,6 +335,26 @@ export const sectorServiceSpecialties = mysqlTable(
     idxSectorServiceSpecialtySpecialty: index(
       "idx_sector_service_specialty_specialty",
     ).on(table.medicalSpecialtyId, table.institutionId),
+    fkSectorServiceSpecialtyInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_sector_service_specialty_institution",
+    }),
+    fkSectorServiceSpecialtyHospital: foreignKey({
+      columns: [table.hospitalId],
+      foreignColumns: [hospitals.id],
+      name: "fk_sector_service_specialty_hospital",
+    }),
+    fkSectorServiceSpecialtySector: foreignKey({
+      columns: [table.sectorId],
+      foreignColumns: [sectors.id],
+      name: "fk_sector_service_specialty_sector",
+    }),
+    fkSectorServiceSpecialtyMedicalSpecialty: foreignKey({
+      columns: [table.medicalSpecialtyId],
+      foreignColumns: [medicalSpecialties.id],
+      name: "fk_sector_service_specialty_medical_specialty",
+    }),
     fkSectorServiceSpecialtyTopology: foreignKey({
       columns: [table.institutionId, table.hospitalId, table.sectorId],
       foreignColumns: [

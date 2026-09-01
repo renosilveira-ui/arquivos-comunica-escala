@@ -1101,6 +1101,8 @@ adminRouter.get(
         // Rótulo assistencial do setor: não é usado para autorizar ou
         // selecionar profissionais nesta leitura administrativa.
         serviceSpecialties: context.serviceSpecialties ?? [],
+        serviceSpecialtiesAvailability:
+          context.serviceSpecialtiesAvailability ?? "AVAILABLE",
       })),
       hospitals: topology.hospitals,
       sectors: topology.sectors,

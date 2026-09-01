@@ -30,10 +30,13 @@ import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
 import { ensureDefaultSectorScale, listManageableTopology } from "./sector-scale";
 import {
-  listSectorServiceSpecialties,
+  isSectorServiceSpecialtiesTableMissing,
   loadSectorServiceSpecialtiesByTopology,
+  readSectorServiceSpecialties,
   replaceSectorServiceSpecialties,
+  sectorServiceSpecialtiesMigrationPendingError,
   sectorServiceSpecialtyTopologyKey,
+  type SectorServiceSpecialtiesAvailability,
   type SectorServiceSpecialtyDescriptor,
 } from "./sector-service-specialties";
 import { z } from "zod";
@@ -87,6 +90,11 @@ export type ActiveScheduleContext = ScheduleContextQualification & {
    * qualificationMatches, ACL ou escrita de alocação.
    */
   serviceSpecialties?: readonly SectorServiceSpecialtyDescriptor[];
+  /**
+   * A relation é ativada por migration manual. A pendência só afeta sua
+   * apresentação administrativa; não altera a escala nem suas permissões.
+   */
+  serviceSpecialtiesAvailability?: SectorServiceSpecialtiesAvailability;
 };
 
 export type AuthorizedScheduleContext = ActiveScheduleContext & {
@@ -544,8 +552,12 @@ export async function attachSectorServiceSpecialtiesToContexts<
   db: ContextDb,
   contexts: readonly T[],
 ): Promise<T[]> {
-  const serviceSpecialtiesByTopology =
-    await loadSectorServiceSpecialtiesByTopology(
+  let serviceSpecialtiesByTopology: Map<
+    string,
+    SectorServiceSpecialtyDescriptor[]
+  >;
+  try {
+    serviceSpecialtiesByTopology = await loadSectorServiceSpecialtiesByTopology(
       db,
       contexts.map((context) => ({
         institutionId: context.institutionId,
@@ -553,12 +565,23 @@ export async function attachSectorServiceSpecialtiesToContexts<
         sectorId: context.sectorId,
       })),
     );
+  } catch (error) {
+    if (isSectorServiceSpecialtiesTableMissing(error)) {
+      return contexts.map((context) => ({
+        ...context,
+        serviceSpecialties: [],
+        serviceSpecialtiesAvailability: "MIGRATION_PENDING" as const,
+      }));
+    }
+    throw error;
+  }
   return contexts.map((context) => ({
     ...context,
     serviceSpecialties:
       serviceSpecialtiesByTopology.get(
         sectorServiceSpecialtyTopologyKey(context),
       ) ?? [],
+    serviceSpecialtiesAvailability: "AVAILABLE" as const,
   }));
 }
 
@@ -1538,14 +1561,15 @@ export const scheduleContextsRouter = router({
       await assertManagerScopeAccess(actor, input.hospitalId, input.sectorId);
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      const result = await readSectorServiceSpecialties(db, {
+        institutionId: actor.institutionId,
+        hospitalId: input.hospitalId,
+        sectorId: input.sectorId,
+      });
       return {
         hospitalId: input.hospitalId,
         sectorId: input.sectorId,
-        specialties: await listSectorServiceSpecialties(db, {
-          institutionId: actor.institutionId,
-          hospitalId: input.hospitalId,
-          sectorId: input.sectorId,
-        }),
+        ...result,
       };
     }),
 
@@ -1569,46 +1593,53 @@ export const scheduleContextsRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
-      return db.transaction(async (tx) => {
-        const actorRole = await assertManagerScopeAccessForUpdate(
-          tx,
-          actor,
-          ctx.user!.sessionVersion,
-          input.hospitalId,
-          input.sectorId,
-        );
-        const result = await replaceSectorServiceSpecialties(tx, {
-          institutionId: actor.institutionId,
-          hospitalId: input.hospitalId,
-          sectorId: input.sectorId,
-          medicalSpecialtyCodes: input.medicalSpecialtyCodes,
-        });
-        if (result.changed) {
-          await recordAudit(
-            {
-              institutionId: actor.institutionId,
-              actorUserId: actor.userId,
-              actorRole,
-              actorName: ctx.user!.name ?? undefined,
-              action: "SECTOR_SERVICE_SPECIALTIES_UPDATED",
-              entityType: "SECTOR",
-              entityId: input.sectorId,
-              hospitalId: input.hospitalId,
-              sectorId: input.sectorId,
-              description: "Especialidades assistenciais do setor atualizadas",
-              metadata: {
-                addedCodes: result.addedCodes,
-                removedCodes: result.removedCodes,
-              },
-            },
-            { db: tx, strict: true },
+      try {
+        return await db.transaction(async (tx) => {
+          const actorRole = await assertManagerScopeAccessForUpdate(
+            tx,
+            actor,
+            ctx.user!.sessionVersion,
+            input.hospitalId,
+            input.sectorId,
           );
+          const result = await replaceSectorServiceSpecialties(tx, {
+            institutionId: actor.institutionId,
+            hospitalId: input.hospitalId,
+            sectorId: input.sectorId,
+            medicalSpecialtyCodes: input.medicalSpecialtyCodes,
+          });
+          if (result.changed) {
+            await recordAudit(
+              {
+                institutionId: actor.institutionId,
+                actorUserId: actor.userId,
+                actorRole,
+                actorName: ctx.user!.name ?? undefined,
+                action: "SECTOR_SERVICE_SPECIALTIES_UPDATED",
+                entityType: "SECTOR",
+                entityId: input.sectorId,
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+                description: "Especialidades assistenciais do setor atualizadas",
+                metadata: {
+                  addedCodes: result.addedCodes,
+                  removedCodes: result.removedCodes,
+                },
+              },
+              { db: tx, strict: true },
+            );
+          }
+          return {
+            hospitalId: input.hospitalId,
+            sectorId: input.sectorId,
+            ...result,
+          };
+        });
+      } catch (error) {
+        if (isSectorServiceSpecialtiesTableMissing(error)) {
+          throw sectorServiceSpecialtiesMigrationPendingError();
         }
-        return {
-          hospitalId: input.hospitalId,
-          sectorId: input.sectorId,
-          ...result,
-        };
-      });
+        throw error;
+      }
     }),
 });

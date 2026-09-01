@@ -166,6 +166,8 @@ export function ManagerActionsMenu({
   );
   const replaceSectorServiceSpecialties =
     trpc.scheduleContexts.replaceSectorServiceSpecialties.useMutation();
+  const serviceSpecialtiesAvailable =
+    sectorServiceSpecialties.data?.availability === "AVAILABLE";
   const busy =
     replicate.isPending ||
     replicateMonthCalendar.isPending ||
@@ -241,6 +243,7 @@ export function ManagerActionsMenu({
       step !== "specialties" ||
       !serviceSpecialtyScopeKey ||
       !sectorServiceSpecialties.data ||
+      sectorServiceSpecialties.data.availability !== "AVAILABLE" ||
       serviceSpecialtiesInitializedFor === serviceSpecialtyScopeKey
     ) {
       return;
@@ -300,6 +303,12 @@ export function ManagerActionsMenu({
 
   async function saveServiceSpecialties() {
     if (!selectedScheduleContext) return;
+    if (!serviceSpecialtiesAvailable) {
+      feedback.error(
+        "As especialidades assistenciais ainda não foram habilitadas neste ambiente.",
+      );
+      return;
+    }
     setStep("busy");
     try {
       const result = await replaceSectorServiceSpecialties.mutateAsync({
@@ -619,6 +628,12 @@ export function ManagerActionsMenu({
                       }}
                     />
                   </View>
+                ) : sectorServiceSpecialties.data?.availability === "MIGRATION_PENDING" ? (
+                  <View style={{ gap: theme.space[3] }}>
+                    <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                      As especialidades assistenciais ainda não foram habilitadas neste ambiente. As escalas e permissões seguem funcionando normalmente.
+                    </Text>
+                  </View>
                 ) : (
                   <>
                     <TextInput
@@ -685,7 +700,12 @@ export function ManagerActionsMenu({
                     <AppButton
                       title="Salvar"
                       onPress={saveServiceSpecialties}
-                      disabled={sectorServiceSpecialties.isLoading || sectorServiceSpecialties.isError || busy}
+                      disabled={
+                        sectorServiceSpecialties.isLoading ||
+                        sectorServiceSpecialties.isError ||
+                        !serviceSpecialtiesAvailable ||
+                        busy
+                      }
                     />
                   </View>
                 </View>

@@ -198,6 +198,15 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  "scheduleContexts.replaceSectorServiceSpecialties": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando somente o metadado assistencial descritivo do setor é alterado sem mudar acesso, elegibilidade ou alocação",
+        audience: [],
+      },
+    ],
+  },
   "scheduleInvites.create": {
     targets: [
       {

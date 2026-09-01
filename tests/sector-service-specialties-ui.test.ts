@@ -18,6 +18,9 @@ describe("administração visual de especialidades assistenciais", () => {
     expect(ui).toContain(
       "Não restringem convite, elegibilidade, alocação ou troca",
     );
+    expect(ui).toContain('availability === "MIGRATION_PENDING"');
+    expect(ui).toContain("As escalas e permissões seguem funcionando normalmente.");
+    expect(ui).toContain("!serviceSpecialtiesAvailable");
     expect(service).toContain("eq(medicalSpecialties.active, true)");
     expect(service).toContain(
       "Especialidade assistencial inexistente ou inativa no catálogo.",

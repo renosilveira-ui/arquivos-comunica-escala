@@ -21,6 +21,7 @@
     "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "security:audit": "node scripts/security/audit-dependencies.mjs",
     "test": "vitest run",
+    "test:sector-service-specialties-migration": "vitest run --config vitest.migration.config.ts",
     "test:e2e": "cross-env NODE_ENV=test vitest run --config vitest.e2e-guard.config.ts",
     "e2e:workflow:destructive": "tsx scripts/run-e2e-workflow.ts",
     "gate": "pnpm test:e2e",

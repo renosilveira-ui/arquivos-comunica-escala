@@ -1,9 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { qualificationMatches } from "../server/schedule-contexts";
 import {
+  attachSectorServiceSpecialtiesToContexts,
+  qualificationMatches,
+} from "../server/schedule-contexts";
+import {
+  isSectorServiceSpecialtiesTableMissing,
   loadSectorServiceSpecialtiesByTopology,
   normalizeSectorServiceSpecialtyCodes,
+  readSectorServiceSpecialties,
 } from "../server/sector-service-specialties";
 
 function sourceBlock(source: string, start: string, end: string): string {
@@ -12,6 +17,18 @@ function sourceBlock(source: string, start: string, end: string): string {
   expect(startAt, `âncora ausente: ${start}`).toBeGreaterThanOrEqual(0);
   expect(endAt, `âncora ausente: ${end}`).toBeGreaterThan(startAt);
   return source.slice(startAt, endAt);
+}
+
+function dbThatRejectsSectorServiceSpecialtiesRead(error: unknown) {
+  const chain: any = {
+    from: () => chain,
+    innerJoin: () => chain,
+    where: () => chain,
+    orderBy: () => chain,
+    then: (resolve: (value: never) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.reject(error).then(resolve, reject),
+  };
+  return { select: () => chain };
 }
 
 describe("especialidades assistenciais são somente descritivas", () => {
@@ -174,5 +191,101 @@ describe("especialidades assistenciais são somente descritivas", () => {
       },
     ]);
     expect(result.has("1:99:20")).toBe(false);
+  });
+
+  it("mantém leituras de escala disponíveis quando só a tabela opcional ainda não migrou", async () => {
+    const missingTableError = {
+      message:
+        "Failed query: select * from `sector_service_specialties` where 1 = 1",
+      cause: {
+        code: "ER_NO_SUCH_TABLE",
+        errno: 1146,
+        sqlState: "42S02",
+        sqlMessage:
+          "Table 'escalas_test.sector_service_specialties' doesn't exist",
+      },
+    };
+    const db = dbThatRejectsSectorServiceSpecialtiesRead(missingTableError);
+
+    expect(isSectorServiceSpecialtiesTableMissing(missingTableError)).toBe(true);
+    await expect(
+      readSectorServiceSpecialties(db as any, {
+        institutionId: 1,
+        hospitalId: 10,
+        sectorId: 20,
+      }),
+    ).resolves.toEqual({
+      availability: "MIGRATION_PENDING",
+      specialties: [],
+    });
+    await expect(
+      attachSectorServiceSpecialtiesToContexts(db as any, [
+        {
+          id: 99,
+          institutionId: 1,
+          hospitalId: 10,
+          sectorId: 20,
+          hospitalName: "Hospital A",
+          sectorName: "Setor A",
+          medicalSpecialtyId: null,
+          medicalSpecialtyCode: null,
+          medicalSpecialtyName: null,
+          operationalProfileCode: null,
+          admissionPolicy: "ALL_CFM_SPECIALTIES",
+          active: true,
+        },
+      ] as any),
+    ).resolves.toMatchObject([
+      {
+        serviceSpecialties: [],
+        serviceSpecialtiesAvailability: "MIGRATION_PENDING",
+      },
+    ]);
+  });
+
+  it("não mascara falhas diferentes da ausência da tabela opcional", async () => {
+    const authorizationError = {
+      message:
+        "Failed query: select * from `sector_service_specialties` where 1 = 1",
+      cause: { code: "ER_TABLEACCESS_DENIED_ERROR" },
+    };
+    const db = dbThatRejectsSectorServiceSpecialtiesRead(authorizationError);
+
+    expect(isSectorServiceSpecialtiesTableMissing(authorizationError)).toBe(false);
+    await expect(
+      attachSectorServiceSpecialtiesToContexts(db as any, [
+        {
+          id: 99,
+          institutionId: 1,
+          hospitalId: 10,
+          sectorId: 20,
+        },
+      ] as any),
+    ).rejects.toBe(authorizationError);
+
+    const differentMissingTableError = {
+      message:
+        "Failed query: select * from `sector_service_specialties` inner join `medical_specialties`",
+      cause: {
+        code: "ER_NO_SUCH_TABLE",
+        errno: 1146,
+        sqlState: "42S02",
+        sqlMessage:
+          "Table 'escalas_test.medical_specialties' doesn't exist",
+      },
+    };
+    const dbWithDifferentMissingTable =
+      dbThatRejectsSectorServiceSpecialtiesRead(differentMissingTableError);
+
+    expect(
+      isSectorServiceSpecialtiesTableMissing(differentMissingTableError),
+    ).toBe(false);
+    await expect(
+      readSectorServiceSpecialties(dbWithDifferentMissingTable as any, {
+        institutionId: 1,
+        hospitalId: 10,
+        sectorId: 20,
+      }),
+    ).rejects.toBe(differentMissingTableError);
   });
 });

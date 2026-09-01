@@ -50,6 +50,15 @@ describe("schema de especialidades assistenciais por setor", () => {
         ["institution_id", "hospital_id", "sector_id"],
       ]),
     );
+    expect(config.foreignKeys.map((foreignKey) => foreignKey.getName())).toEqual(
+      expect.arrayContaining([
+        "fk_sector_service_specialty_institution",
+        "fk_sector_service_specialty_hospital",
+        "fk_sector_service_specialty_sector",
+        "fk_sector_service_specialty_medical_specialty",
+        "fk_sector_service_specialty_topology",
+      ]),
+    );
   });
 
   it("referencia o catálogo médico existente, sem criar outro catálogo", () => {

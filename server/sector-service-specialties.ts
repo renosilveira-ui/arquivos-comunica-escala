@@ -27,6 +27,21 @@ export type SectorServiceSpecialtyChange = {
   changed: boolean;
 };
 
+/**
+ * A migration desta relação é manual e aditiva. Durante a ativação gradual,
+ * leituras de agenda não podem transformar sua ausência em indisponibilidade
+ * de escala. Já a edição permanece explicitamente indisponível até a tabela
+ * existir, para não confundir "não carregado" com "sem especialidades".
+ */
+export type SectorServiceSpecialtiesAvailability =
+  | "AVAILABLE"
+  | "MIGRATION_PENDING";
+
+export type SectorServiceSpecialtiesRead = {
+  availability: SectorServiceSpecialtiesAvailability;
+  specialties: SectorServiceSpecialtyDescriptor[];
+};
+
 type SectorTopology = {
   institutionId: number;
   hospitalId: number;
@@ -41,6 +56,72 @@ export function sectorServiceSpecialtyTopologyKey(
 
 function invalidServiceSpecialtyInput(message: string): TRPCError {
   return new TRPCError({ code: "BAD_REQUEST", message });
+}
+
+type DatabaseErrorLike = {
+  code?: unknown;
+  errno?: unknown;
+  sqlState?: unknown;
+  sqlMessage?: unknown;
+  sql?: unknown;
+  message?: unknown;
+  cause?: unknown;
+};
+
+const SECTOR_SERVICE_SPECIALTIES_TABLE = "sector_service_specialties";
+
+/**
+ * Só aceita a ausência desta tabela opcional. Não converte indisponibilidade
+ * de banco, erro de autorização, tabela diferente ou falha de consulta em
+ * uma lista vazia, pois isso esconderia um defeito operacional.
+ */
+export function isSectorServiceSpecialtiesTableMissing(
+  error: unknown,
+): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as DatabaseErrorLike;
+    const code = String(candidate.code ?? "");
+    const errno = Number(candidate.errno);
+    const sqlState = String(candidate.sqlState ?? "");
+    const hasMissingTableCode =
+      code === "ER_NO_SUCH_TABLE" ||
+      errno === 1146 ||
+      sqlState === "42S02";
+
+    const details = [
+      candidate.message,
+      candidate.sqlMessage,
+      candidate.sql,
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .join("\n")
+      .toLowerCase();
+    // O código de tabela ausente e a referência à tabela esperada precisam
+    // vir do mesmo erro da cadeia. A consulta externa pode mencionar ambas
+    // as tabelas de um JOIN; combinar sinais de objetos distintos esconderia
+    // a ausência de medical_specialties, por exemplo.
+    if (
+      hasMissingTableCode &&
+      details.includes(SECTOR_SERVICE_SPECIALTIES_TABLE)
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+
+  return false;
+}
+
+export function sectorServiceSpecialtiesMigrationPendingError(): TRPCError {
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "As especialidades assistenciais ainda não foram habilitadas neste ambiente. Aplique a migration antes de editá-las.",
+  });
 }
 
 /**
@@ -109,7 +190,7 @@ async function resolveActiveServiceSpecialties(
   return rows;
 }
 
-export async function listSectorServiceSpecialties(
+async function querySectorServiceSpecialties(
   db: ReadDb,
   input: SectorTopology,
 ): Promise<SectorServiceSpecialtyDescriptor[]> {
@@ -134,6 +215,30 @@ export async function listSectorServiceSpecialties(
       ),
     )
     .orderBy(asc(medicalSpecialties.sortOrder), asc(medicalSpecialties.code));
+}
+
+export async function readSectorServiceSpecialties(
+  db: ReadDb,
+  input: SectorTopology,
+): Promise<SectorServiceSpecialtiesRead> {
+  try {
+    return {
+      availability: "AVAILABLE",
+      specialties: await querySectorServiceSpecialties(db, input),
+    };
+  } catch (error) {
+    if (isSectorServiceSpecialtiesTableMissing(error)) {
+      return { availability: "MIGRATION_PENDING", specialties: [] };
+    }
+    throw error;
+  }
+}
+
+export async function listSectorServiceSpecialties(
+  db: ReadDb,
+  input: SectorTopology,
+): Promise<SectorServiceSpecialtyDescriptor[]> {
+  return (await readSectorServiceSpecialties(db, input)).specialties;
 }
 
 /**
