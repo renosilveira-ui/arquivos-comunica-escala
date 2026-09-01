@@ -23,6 +23,11 @@ const schemaSource = readFileSync(
   "utf8",
 );
 
+const ciWorkflow = readFileSync(
+  new URL("../.github/workflows/ci.yml", import.meta.url),
+  "utf8",
+);
+
 type ForeignKeyContract = {
   name: string;
   columns: string[];
@@ -437,5 +442,20 @@ describe("foundation de eventos operacionais", () => {
     for (const hash of expectedFoundationContractHashes) {
       expect(migration).toContain(hash);
     }
+  });
+
+  it("executa a prova MySQL descartável no serviço local da CI", () => {
+    expect(ciWorkflow).toContain(
+      "- name: Test operational events migration contract",
+    );
+    expect(ciWorkflow).toContain(
+      'OPERATIONAL_EVENTS_MIGRATION_MYSQL_TEST: "1"',
+    );
+    expect(ciWorkflow).toContain(
+      "OPERATIONAL_EVENTS_MIGRATION_MYSQL_URL: mysql://root:root@127.0.0.1:3306",
+    );
+    expect(ciWorkflow).toContain(
+      "pnpm exec vitest run --config vitest.operational-events-mysql.config.ts",
+    );
   });
 });

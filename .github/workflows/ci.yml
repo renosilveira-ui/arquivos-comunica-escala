@@ -97,6 +97,13 @@ jobs:
       - name: Build web
         run: pnpm build:web
 
+      - name: Test operational events migration contract
+        # O teste cria bancos aleatórios apenas no service MySQL local da CI.
+        env:
+          OPERATIONAL_EVENTS_MIGRATION_MYSQL_TEST: "1"
+          OPERATIONAL_EVENTS_MIGRATION_MYSQL_URL: mysql://root:root@127.0.0.1:3306
+        run: pnpm exec vitest run --config vitest.operational-events-mysql.config.ts
+
       - name: Test
         run: pnpm test
 
