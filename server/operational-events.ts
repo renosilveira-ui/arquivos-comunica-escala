@@ -332,11 +332,19 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
   },
 };
 
-type CanonicalEventTransitionContract = {
-  from: OperationalTransitionState | null;
-  to: OperationalTransitionState | null;
-  aggregateStatus: string;
-};
+type CanonicalEventTransitionContract =
+  | {
+      kind: "TRANSITION";
+      from: OperationalTransitionState | null;
+      to: OperationalTransitionState | null;
+      aggregateStatus: string;
+    }
+  | {
+      /** Fato versionado sem mudança de estado do agregado. */
+      kind: "FACT";
+      from: null;
+      to: null;
+    };
 
 /**
  * Uma linha no ledger só é emitível quando a transição do agregado já possui
@@ -353,25 +361,35 @@ export const OPERATIONAL_EVENT_TRANSITION_CONTRACTS: Record<
   VACANCY_REQUESTED: null,
   ASSIGNMENT_APPROVED: null,
   ASSIGNMENT_REJECTED: null,
-  SHIFT_UPDATED: null,
+  // Alterar horário ou modalidade é um fato operacional versionado, não uma
+  // transição de status. Não inventamos estado de turno apenas para emitir o
+  // ledger: o CAS de shift_instances é a autoridade desta versão.
+  SHIFT_UPDATED: { kind: "FACT", from: null, to: null },
   VACANCY_BROADCAST: null,
   SCHEDULE_INVITE_CREATED: null,
   SCHEDULE_INVITE_ACCEPTED: null,
   SCHEDULE_INVITE_DECLINED: null,
   SCHEDULE_INVITE_REVOKED: null,
   SCHEDULE_INVITE_EXPIRED: null,
-  SWAP_OFFERED: { from: null, to: "PENDING", aggregateStatus: "PENDING" },
+  SWAP_OFFERED: {
+    kind: "TRANSITION",
+    from: null,
+    to: "PENDING",
+    aggregateStatus: "PENDING",
+  },
   SWAP_ACCEPTED: null,
   SWAP_REJECTED: null,
   SWAP_CANCELLED: null,
   SWAP_OFFER_DISMISSED: null,
   SWAP_EXPIRED: null,
   ROSTER_PUBLISHED: {
+    kind: "TRANSITION",
     from: "DRAFT",
     to: "PUBLISHED",
     aggregateStatus: "PUBLISHED",
   },
   ROSTER_LOCKED: {
+    kind: "TRANSITION",
     from: "PUBLISHED",
     to: "LOCKED",
     aggregateStatus: "LOCKED",
@@ -1149,7 +1167,47 @@ async function resolveCanonicalAggregateContexts(
     );
   }
   switch (aggregate.type) {
+    case "SHIFT_INSTANCE": {
+      if (transitionContract.kind !== "FACT") {
+        throw new OperationalEventValidationError(
+          "Instância de turno exige contrato canônico de fato versionado",
+        );
+      }
+      const [shift] = await tx
+        .select({
+          id: shiftInstances.id,
+          operationalRevision: shiftInstances.operationalRevision,
+          scheduleContextId: shiftInstances.scheduleContextId,
+        })
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, aggregate.id),
+            eq(shiftInstances.institutionId, context.institutionId),
+            eq(shiftInstances.hospitalId, context.hospitalId!),
+            eq(shiftInstances.sectorId, context.sectorId!),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (
+        !shift ||
+        shift.operationalRevision !== aggregate.version ||
+        shift.id !== context.shiftInstanceId ||
+        shift.scheduleContextId !== context.scheduleContextId
+      ) {
+        throw new OperationalEventValidationError(
+          "Turno não pertence ao contexto ou revisão canônica do evento",
+        );
+      }
+      return [];
+    }
     case "SWAP_REQUEST": {
+      if (transitionContract.kind !== "TRANSITION") {
+        throw new OperationalEventValidationError(
+          "Troca exige contrato canônico de transição",
+        );
+      }
       const [swap] = await tx
         .select({
           id: swapRequests.id,
@@ -1251,6 +1309,11 @@ async function resolveCanonicalAggregateContexts(
       ];
     }
     case "MONTHLY_ROSTER": {
+      if (transitionContract.kind !== "TRANSITION") {
+        throw new OperationalEventValidationError(
+          "Escala mensal exige contrato canônico de transição",
+        );
+      }
       const [roster] = await tx
         .select({
           id: monthlyRosters.id,
