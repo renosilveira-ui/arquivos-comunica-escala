@@ -810,6 +810,11 @@ export const shiftAssignmentsV2 = mysqlTable(
     assignmentType: assignmentTypeEnum.notNull().default("ON_DUTY"),
     status: varchar("status", { length: 20 }).notNull().default("PENDENTE"),
     isActive: boolean("is_active").notNull().default(true),
+    /**
+     * Revisão monotônica do ciclo operacional. Escrita somente pelos flows
+     * que emitem fatos de assignment, sob o mesmo lock/CAS da mutação.
+     */
+    operationalRevision: int("operational_revision").notNull().default(0),
     createdBy: int("created_by").references(() => users.id),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),

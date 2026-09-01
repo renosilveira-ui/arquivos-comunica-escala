@@ -6,6 +6,7 @@ import {
   operationalEventRecipients,
   operationalEvents,
   monthlyRosters,
+  professionals,
   professionalInstitutions,
   scheduleContexts,
   shiftAssignmentsV2,
@@ -23,6 +24,10 @@ import { getDb } from "./db";
 export const OPERATIONAL_EVENT_TYPES = [
   "ASSIGNMENT_CREATED",
   "ASSIGNMENT_REMOVED",
+  "ASSIGNMENT_DIRECT_ASSIGNED",
+  "ASSIGNMENT_DIRECT_REMOVED",
+  "ASSIGNMENT_SUBSTITUTION_ASSIGNED",
+  "ASSIGNMENT_SUBSTITUTION_REMOVED",
   "VACANCY_REQUESTED",
   "ASSIGNMENT_APPROVED",
   "ASSIGNMENT_REJECTED",
@@ -60,6 +65,10 @@ export type OperationalEventEmissionMode =
 export const OPERATIONAL_EVENT_EMISSION_POLICIES = Object.freeze({
   ASSIGNMENT_CREATED: "SHADOW",
   ASSIGNMENT_REMOVED: "SHADOW",
+  ASSIGNMENT_DIRECT_ASSIGNED: "SHADOW",
+  ASSIGNMENT_DIRECT_REMOVED: "SHADOW",
+  ASSIGNMENT_SUBSTITUTION_ASSIGNED: "SHADOW",
+  ASSIGNMENT_SUBSTITUTION_REMOVED: "SHADOW",
   VACANCY_REQUESTED: "SHADOW",
   ASSIGNMENT_APPROVED: "SHADOW",
   ASSIGNMENT_REJECTED: "SHADOW",
@@ -104,9 +113,10 @@ export type OperationalAggregateType =
 
 /**
  * Apenas MONTHLY_ROSTER e SWAP_REQUEST já possuem revisão monotônica gravada
- * no modelo atual. Para os demais agregados, emitir evento seria registrar
- * uma versão inventada; a fundação falha fechada até a frente própria adicionar
- * revisão/CAS à entidade e aos seus writers.
+ * no modelo atual. SHIFT_ASSIGNMENT continua bloqueado genericamente: os
+ * quatro fatos fechados abaixo são a única exceção e usam a revisão
+ * operacional persistida na própria alocação. Os demais writers/eventTypes
+ * não recebem esta capability.
  */
 export const OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES = {
   SHIFT_ASSIGNMENT: "UNAVAILABLE",
@@ -181,6 +191,12 @@ type OperationalEventContract = {
   )[];
   aggregateIdContextId?:
     "scheduleContextId" | "shiftInstanceId" | "assignmentId";
+  /** Capability privada aos quatro fatos que usam operational_revision real. */
+  aggregateRevision?: "SHIFT_ASSIGNMENT_OPERATIONAL";
+  /** O recipient é rederivado da alocação bloqueada, não do caller. */
+  canonicalRecipient?: "ASSIGNMENT_USER";
+  /** Remoção SHADOW pode auditar o vínculo canônico já revogado. */
+  recipientMembership?: "ACTIVE" | "CANONICAL_ASSIGNMENT_HISTORICAL";
 };
 
 /**
@@ -205,6 +221,44 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
     scopeKinds: ["SECTOR"],
     requiredContextIds: ["shiftInstanceId", "assignmentId"],
     aggregateIdContextId: "assignmentId",
+  },
+  ASSIGNMENT_DIRECT_ASSIGNED: {
+    aggregateType: "SHIFT_ASSIGNMENT",
+    deliveryPolicies: ["NOTIFY"],
+    scopeKinds: ["SECTOR"],
+    requiredContextIds: ["shiftInstanceId", "assignmentId"],
+    aggregateIdContextId: "assignmentId",
+    aggregateRevision: "SHIFT_ASSIGNMENT_OPERATIONAL",
+    canonicalRecipient: "ASSIGNMENT_USER",
+  },
+  ASSIGNMENT_DIRECT_REMOVED: {
+    aggregateType: "SHIFT_ASSIGNMENT",
+    deliveryPolicies: ["NOTIFY"],
+    scopeKinds: ["SECTOR"],
+    requiredContextIds: ["shiftInstanceId", "assignmentId"],
+    aggregateIdContextId: "assignmentId",
+    aggregateRevision: "SHIFT_ASSIGNMENT_OPERATIONAL",
+    canonicalRecipient: "ASSIGNMENT_USER",
+    recipientMembership: "CANONICAL_ASSIGNMENT_HISTORICAL",
+  },
+  ASSIGNMENT_SUBSTITUTION_ASSIGNED: {
+    aggregateType: "SHIFT_ASSIGNMENT",
+    deliveryPolicies: ["NOTIFY"],
+    scopeKinds: ["SECTOR"],
+    requiredContextIds: ["shiftInstanceId", "assignmentId"],
+    aggregateIdContextId: "assignmentId",
+    aggregateRevision: "SHIFT_ASSIGNMENT_OPERATIONAL",
+    canonicalRecipient: "ASSIGNMENT_USER",
+  },
+  ASSIGNMENT_SUBSTITUTION_REMOVED: {
+    aggregateType: "SHIFT_ASSIGNMENT",
+    deliveryPolicies: ["NOTIFY"],
+    scopeKinds: ["SECTOR"],
+    requiredContextIds: ["shiftInstanceId", "assignmentId"],
+    aggregateIdContextId: "assignmentId",
+    aggregateRevision: "SHIFT_ASSIGNMENT_OPERATIONAL",
+    canonicalRecipient: "ASSIGNMENT_USER",
+    recipientMembership: "CANONICAL_ASSIGNMENT_HISTORICAL",
   },
   VACANCY_REQUESTED: {
     aggregateType: "VACANCY_REQUEST",
@@ -335,7 +389,11 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
 type CanonicalEventTransitionContract = {
   from: OperationalTransitionState | null;
   to: OperationalTransitionState | null;
-  aggregateStatus: string;
+  aggregateStatus?: string;
+  assignmentState?: {
+    status: string;
+    isActive: boolean;
+  };
 };
 
 /**
@@ -350,6 +408,26 @@ export const OPERATIONAL_EVENT_TRANSITION_CONTRACTS: Record<
 > = {
   ASSIGNMENT_CREATED: null,
   ASSIGNMENT_REMOVED: null,
+  ASSIGNMENT_DIRECT_ASSIGNED: {
+    from: "NONE",
+    to: "ASSIGNED",
+    assignmentState: { status: "OCUPADO", isActive: true },
+  },
+  ASSIGNMENT_DIRECT_REMOVED: {
+    from: "ASSIGNED",
+    to: "REMOVED",
+    assignmentState: { status: "OCUPADO", isActive: false },
+  },
+  ASSIGNMENT_SUBSTITUTION_ASSIGNED: {
+    from: "NONE",
+    to: "ASSIGNED",
+    assignmentState: { status: "OCUPADO", isActive: true },
+  },
+  ASSIGNMENT_SUBSTITUTION_REMOVED: {
+    from: "ASSIGNED",
+    to: "REMOVED",
+    assignmentState: { status: "OCUPADO", isActive: false },
+  },
   VACANCY_REQUESTED: null,
   ASSIGNMENT_APPROVED: null,
   ASSIGNMENT_REJECTED: null,
@@ -918,31 +996,38 @@ type CanonicalOperationalEventInput = {
  * Destinatários são sempre resolvidos por IDs canônicos, mas a referência
  * precisa também pertencer ao tenant do fato. A FK composta protege o evento
  * e o convite; para usuário, o vínculo ativo é revalidado na própria
- * transação. O worker futuro repetirá essa checagem imediatamente antes de
- * uma entrega para cobrir revogações posteriores ao commit.
+ * transação. Somente remoção SHADOW pode manter o vínculo canônico já
+ * revogado para não impedir a retirada; o worker fail-closed repetirá a
+ * checagem ativa imediatamente antes de qualquer entrega.
  */
 async function assertRecipientsInInstitution(
   tx: OperationalEventTx,
   institutionId: number,
   recipients: readonly OperationalEventRecipient[],
+  contract: OperationalEventContract,
 ): Promise<void> {
+  const requiresActiveMembership =
+    contract.recipientMembership !== "CANONICAL_ASSIGNMENT_HISTORICAL";
   for (const recipient of recipients) {
     if (recipient.kind === "USER") {
+      const membershipConditions = [
+        eq(professionalInstitutions.userId, recipient.userId),
+        eq(professionalInstitutions.institutionId, institutionId),
+        ...(requiresActiveMembership
+          ? [eq(professionalInstitutions.active, true)]
+          : []),
+      ];
       const [membership] = await tx
         .select({ id: professionalInstitutions.id })
         .from(professionalInstitutions)
-        .where(
-          and(
-            eq(professionalInstitutions.userId, recipient.userId),
-            eq(professionalInstitutions.institutionId, institutionId),
-            eq(professionalInstitutions.active, true),
-          ),
-        )
+        .where(and(...membershipConditions))
         .limit(1)
         .for("update");
       if (!membership) {
         throw new OperationalEventValidationError(
-          "Destinatário USER sem vínculo institucional ativo",
+          requiresActiveMembership
+            ? "Destinatário USER sem vínculo institucional ativo"
+            : "Destinatário USER sem vínculo institucional canônico",
         );
       }
       continue;
@@ -1123,12 +1208,69 @@ async function resolveCanonicalAggregateContexts(
   const { aggregate, context } = input;
   const transitionContract =
     OPERATIONAL_EVENT_TRANSITION_CONTRACTS[input.eventType];
+  const eventContract = OPERATIONAL_EVENT_CONTRACTS[input.eventType];
   if (!transitionContract) {
     throw new OperationalEventValidationError(
       "Evento ainda não possui contrato canônico de transição",
     );
   }
   switch (aggregate.type) {
+    case "SHIFT_ASSIGNMENT": {
+      if (
+        eventContract.aggregateRevision !== "SHIFT_ASSIGNMENT_OPERATIONAL" ||
+        eventContract.canonicalRecipient !== "ASSIGNMENT_USER" ||
+        !transitionContract.assignmentState
+      ) {
+        throw new OperationalEventValidationError(
+          "Alocação sem capability operacional canônica não pode emitir evento",
+        );
+      }
+      const [assignment] = await tx
+        .select({
+          id: shiftAssignmentsV2.id,
+          professionalId: shiftAssignmentsV2.professionalId,
+          userId: professionals.userId,
+          operationalRevision: shiftAssignmentsV2.operationalRevision,
+          status: shiftAssignmentsV2.status,
+          isActive: shiftAssignmentsV2.isActive,
+        })
+        .from(shiftAssignmentsV2)
+        .innerJoin(
+          professionals,
+          eq(professionals.id, shiftAssignmentsV2.professionalId),
+        )
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, aggregate.id),
+            eq(shiftAssignmentsV2.institutionId, context.institutionId),
+            eq(shiftAssignmentsV2.hospitalId, context.hospitalId!),
+            eq(shiftAssignmentsV2.sectorId, context.sectorId!),
+            eq(shiftAssignmentsV2.shiftInstanceId, context.shiftInstanceId!),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (
+        !assignment ||
+        assignment.operationalRevision !== aggregate.version ||
+        assignment.status !== transitionContract.assignmentState.status ||
+        assignment.isActive !== transitionContract.assignmentState.isActive
+      ) {
+        throw new OperationalEventValidationError(
+          "Alocação não pertence à revisão ou transição canônica do evento",
+        );
+      }
+      if (
+        input.recipients.length !== 1 ||
+        input.recipients[0]?.kind !== "USER" ||
+        input.recipients[0].userId !== assignment.userId
+      ) {
+        throw new OperationalEventValidationError(
+          "Destinatário não corresponde ao usuário canônico da alocação",
+        );
+      }
+      return [];
+    }
     case "SWAP_REQUEST": {
       const [swap] = await tx
         .select({
@@ -1298,6 +1440,7 @@ function validateCreateInput(
   }
   validateOperationalContext(input.context, "context");
   const contract = OPERATIONAL_EVENT_CONTRACTS[input.eventType];
+  const emissionMode = getOperationalEventEmissionMode(input.eventType);
   if (contract.aggregateType !== input.aggregate.type) {
     throw new OperationalEventValidationError(
       "aggregate.type não corresponde ao eventType",
@@ -1311,6 +1454,14 @@ function validateCreateInput(
   if (!contract.scopeKinds.includes(input.context.scopeKind)) {
     throw new OperationalEventValidationError(
       "scopeKind não corresponde ao eventType",
+    );
+  }
+  if (
+    contract.recipientMembership === "CANONICAL_ASSIGNMENT_HISTORICAL" &&
+    emissionMode !== "SHADOW"
+  ) {
+    throw new OperationalEventValidationError(
+      "Destinatário histórico só é permitido em emissão SHADOW",
     );
   }
   for (const contextId of contract.requiredContextIds ?? []) {
@@ -1327,9 +1478,14 @@ function validateCreateInput(
       "aggregate.id não corresponde ao recurso canônico do contexto",
     );
   }
+  const usesAssignmentOperationalRevision =
+    contract.aggregateRevision === "SHIFT_ASSIGNMENT_OPERATIONAL" &&
+    contract.aggregateType === "SHIFT_ASSIGNMENT" &&
+    input.aggregate.type === "SHIFT_ASSIGNMENT";
   if (
+    !usesAssignmentOperationalRevision &&
     OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES[input.aggregate.type] !==
-    "ROW_VERSION"
+      "ROW_VERSION"
   ) {
     throw new OperationalEventValidationError(
       "Agregado ainda não possui revisão canônica; emissão operacional bloqueada",
@@ -1431,7 +1587,7 @@ function validateCreateInput(
   return Object.freeze({
     idempotencyKey: input.idempotencyKey,
     eventType: input.eventType,
-    emissionMode: getOperationalEventEmissionMode(input.eventType),
+    emissionMode,
     deliveryPolicy: input.deliveryPolicy,
     aggregate: Object.freeze({
       type: input.aggregate.type,
@@ -1553,6 +1709,7 @@ export async function createOperationalEventInTransaction(
     tx,
     eventInput.context.institutionId,
     eventInput.recipients,
+    OPERATIONAL_EVENT_CONTRACTS[eventInput.eventType],
   );
 
   let created = false;

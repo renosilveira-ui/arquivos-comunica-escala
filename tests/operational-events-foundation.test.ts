@@ -13,6 +13,7 @@ import {
   operationalEventHash,
   OperationalEventIdempotencyCollisionError,
   OperationalEventValidationError,
+  OPERATIONAL_EVENT_CONTRACTS,
   type CreateOperationalEventInput,
 } from "../server/operational-events";
 import {
@@ -49,6 +50,33 @@ function hospitalEvent(): CreateOperationalEventInput {
   };
 }
 
+function assignmentShadowEvent(): CreateOperationalEventInput {
+  return {
+    idempotencyKey:
+      "assignment-shadow:revision:1:operation:DIRECT_ASSIGNMENT:assignment:16:action:ASSIGN",
+    eventType: "ASSIGNMENT_DIRECT_ASSIGNED",
+    deliveryPolicy: "NOTIFY",
+    aggregate: { type: "SHIFT_ASSIGNMENT", id: 16, version: 1 },
+    transition: { from: "NONE", to: "ASSIGNED" },
+    context: {
+      institutionId: 1,
+      hospitalId: 10,
+      scopeKind: "SECTOR",
+      sectorId: 4,
+      scheduleContextId: 8,
+      shiftInstanceId: 12,
+      assignmentId: 16,
+    },
+    actor: {
+      kind: "USER",
+      userId: 7,
+      professionalId: 70,
+      role: "GESTOR_MEDICO",
+    },
+    recipients: [{ kind: "USER", userId: 20, channels: ["PUSH", "EMAIL"] }],
+  };
+}
+
 type FoundationTransaction = Parameters<
   typeof createOperationalEventInTransaction
 >[0];
@@ -59,6 +87,7 @@ function inMemoryOperationalEventTransaction(options?: {
   inviteBelongsToInstitution?: boolean;
   resourceChecks?: boolean[];
   aggregateChecks?: boolean[];
+  failOnRecipientInsert?: boolean;
   onFirstAsyncRead?: () => void;
   rosterRow?: {
     id?: number;
@@ -83,10 +112,17 @@ function inMemoryOperationalEventTransaction(options?: {
   }[];
   assignmentRows?: {
     id?: number;
+    assignmentId?: number;
     institutionId: number;
     hospitalId: number;
     sectorId: number;
     scheduleContextId?: number | null;
+    shiftInstanceId?: number;
+    professionalId?: number;
+    userId?: number;
+    operationalRevision?: number;
+    status?: string;
+    isActive?: boolean;
   }[];
 }) {
   let event: { id: number; eventHash: string } | undefined;
@@ -129,6 +165,9 @@ function inMemoryOperationalEventTransaction(options?: {
         return {
           values: () => ({
             $returningId: async () => {
+              if (options?.failOnRecipientInsert) {
+                throw new Error("falha forçada ao persistir destinatário");
+              }
               counters.recipients += 1;
               return [{ id: counters.recipients }];
             },
@@ -153,126 +192,156 @@ function inMemoryOperationalEventTransaction(options?: {
       throw new Error("Tabela inesperada no teste de transaction");
     },
     select() {
-      return {
+      let selectedTable: unknown;
+      const query = {
         from(table: unknown) {
-          return {
-            where() {
-              return {
-                limit() {
-                  if (!didRunFirstAsyncRead) {
-                    didRunFirstAsyncRead = true;
-                    options?.onFirstAsyncRead?.();
-                  }
-                  if (table === operationalEvents) {
-                    return lockableRows(
-                      event
-                        ? [{ id: event.id, eventHash: event.eventHash }]
-                        : [],
-                    );
-                  }
-                  if (table === professionalInstitutions) {
-                    return lockableRows(
-                      membershipChecks.shift() === false
-                        ? []
-                        : [
-                            {
-                              id: 1,
-                              roleInInstitution:
-                                membershipRoles.shift() ?? "GESTOR_MEDICO",
-                            },
-                          ],
-                    );
-                  }
-                  if (table === scheduleInvites) {
-                    return lockableRows(
-                      options?.inviteBelongsToInstitution === false
-                        ? []
-                        : [{ id: 1 }],
-                    );
-                  }
-                  if (table === monthlyRosters) {
-                    return lockableRows(
-                      aggregateChecks.shift() === false
-                        ? []
-                        : [
-                            options?.rosterRow ?? {
-                              id: 1,
-                              version: 3,
-                              status: "PUBLISHED" as const,
-                            },
-                          ],
-                    );
-                  }
-                  if (table === swapRequests) {
-                    return lockableRows(
-                      aggregateChecks.shift() === false
-                        ? []
-                        : [
-                            options?.swapRow ?? {
-                              id: 1,
-                              version: 1,
-                              status: "PENDING" as const,
-                              fromShiftInstanceId: 12,
-                              fromAssignmentId: 16,
-                              toShiftInstanceId: null,
-                              toAssignmentId: null,
-                            },
-                          ],
-                    );
-                  }
-                  if (table === shiftInstances) {
-                    return lockableRows(
-                      resourceChecks.shift() === false
-                        ? []
-                        : [
-                            shiftRows.shift() ?? {
-                              id: 1,
-                              institutionId: 1,
-                              hospitalId: 10,
-                              sectorId: 4,
-                              scheduleContextId: 8,
-                            },
-                          ],
-                    );
-                  }
-                  if (table === shiftAssignmentsV2) {
-                    return lockableRows(
-                      resourceChecks.shift() === false
-                        ? []
-                        : [
-                            assignmentRows.shift() ?? {
-                              id: 1,
-                              institutionId: 1,
-                              hospitalId: 10,
-                              sectorId: 4,
-                              scheduleContextId: 8,
-                            },
-                          ],
-                    );
-                  }
-                  return lockableRows([]);
-                },
-              };
-            },
-          };
+          selectedTable = table;
+          return query;
+        },
+        innerJoin() {
+          return query;
+        },
+        where() {
+          return query;
+        },
+        limit() {
+          if (!didRunFirstAsyncRead) {
+            didRunFirstAsyncRead = true;
+            options?.onFirstAsyncRead?.();
+          }
+          if (selectedTable === operationalEvents) {
+            return lockableRows(
+              event ? [{ id: event.id, eventHash: event.eventHash }] : [],
+            );
+          }
+          if (selectedTable === professionalInstitutions) {
+            return lockableRows(
+              membershipChecks.shift() === false
+                ? []
+                : [
+                    {
+                      id: 1,
+                      roleInInstitution:
+                        membershipRoles.shift() ?? "GESTOR_MEDICO",
+                    },
+                  ],
+            );
+          }
+          if (selectedTable === scheduleInvites) {
+            return lockableRows(
+              options?.inviteBelongsToInstitution === false ? [] : [{ id: 1 }],
+            );
+          }
+          if (selectedTable === monthlyRosters) {
+            return lockableRows(
+              aggregateChecks.shift() === false
+                ? []
+                : [
+                    options?.rosterRow ?? {
+                      id: 1,
+                      version: 3,
+                      status: "PUBLISHED" as const,
+                    },
+                  ],
+            );
+          }
+          if (selectedTable === swapRequests) {
+            return lockableRows(
+              aggregateChecks.shift() === false
+                ? []
+                : [
+                    options?.swapRow ?? {
+                      id: 1,
+                      version: 1,
+                      status: "PENDING" as const,
+                      fromShiftInstanceId: 12,
+                      fromAssignmentId: 16,
+                      toShiftInstanceId: null,
+                      toAssignmentId: null,
+                    },
+                  ],
+            );
+          }
+          if (selectedTable === shiftInstances) {
+            return lockableRows(
+              resourceChecks.shift() === false
+                ? []
+                : [
+                    shiftRows.shift() ?? {
+                      id: 1,
+                      institutionId: 1,
+                      hospitalId: 10,
+                      sectorId: 4,
+                      scheduleContextId: 8,
+                    },
+                  ],
+            );
+          }
+          if (selectedTable === shiftAssignmentsV2) {
+            return lockableRows(
+              resourceChecks.shift() === false
+                ? []
+                : [
+                    assignmentRows.shift() ?? {
+                      id: 16,
+                      assignmentId: 16,
+                      institutionId: 1,
+                      hospitalId: 10,
+                      sectorId: 4,
+                      scheduleContextId: 8,
+                      shiftInstanceId: 12,
+                      professionalId: 200,
+                      userId: 20,
+                      operationalRevision: 1,
+                      status: "OCUPADO",
+                      isActive: true,
+                    },
+                  ],
+            );
+          }
+          return lockableRows([]);
         },
       };
+      return query;
     },
   };
+
+  async function runInTransaction<T>(
+    work: (transaction: FoundationTransaction) => Promise<T>,
+  ): Promise<T> {
+    const snapshot = {
+      event,
+      persistedEvent,
+      relatedContextValues: [...relatedContextValues],
+      counters: { ...counters },
+    };
+    try {
+      return await work(tx as unknown as FoundationTransaction);
+    } catch (error) {
+      event = snapshot.event;
+      persistedEvent = snapshot.persistedEvent;
+      relatedContextValues.splice(
+        0,
+        relatedContextValues.length,
+        ...snapshot.relatedContextValues,
+      );
+      Object.assign(counters, snapshot.counters);
+      throw error;
+    }
+  }
 
   return {
     tx: tx as unknown as FoundationTransaction,
     counters,
     getPersistedEvent: () => persistedEvent,
     getRelatedContexts: () => relatedContextValues,
+    runInTransaction,
   };
 }
 
 describe("foundation de eventos operacionais", () => {
   it("fixa o modo SHADOW no catálogo e no fato persistido", async () => {
-    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe(
-      "SHADOW",
-    );
+    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe("SHADOW");
 
     const memory = inMemoryOperationalEventTransaction();
     await expect(
@@ -281,6 +350,142 @@ describe("foundation de eventos operacionais", () => {
     expect(memory.getPersistedEvent()).toMatchObject({
       eventType: "ROSTER_PUBLISHED",
       emissionMode: "SHADOW",
+    });
+  });
+
+  it("libera somente os quatro fatos fechados de assignment com revisão persistida", async () => {
+    expect(getOperationalEventEmissionMode("ASSIGNMENT_DIRECT_ASSIGNED")).toBe(
+      "SHADOW",
+    );
+    expect(getOperationalEventEmissionMode("ASSIGNMENT_DIRECT_REMOVED")).toBe(
+      "SHADOW",
+    );
+    expect(
+      getOperationalEventEmissionMode("ASSIGNMENT_SUBSTITUTION_ASSIGNED"),
+    ).toBe("SHADOW");
+    expect(
+      getOperationalEventEmissionMode("ASSIGNMENT_SUBSTITUTION_REMOVED"),
+    ).toBe("SHADOW");
+    expect(
+      OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_DIRECT_ASSIGNED.aggregateRevision,
+    ).toBe("SHIFT_ASSIGNMENT_OPERATIONAL");
+    expect(
+      OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_DIRECT_ASSIGNED
+        .recipientMembership,
+    ).toBeUndefined();
+    expect(
+      OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_SUBSTITUTION_ASSIGNED
+        .canonicalRecipient,
+    ).toBe("ASSIGNMENT_USER");
+    expect(
+      OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_DIRECT_REMOVED.canonicalRecipient,
+    ).toBe("ASSIGNMENT_USER");
+    expect(
+      OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_DIRECT_REMOVED.recipientMembership,
+    ).toBe("CANONICAL_ASSIGNMENT_HISTORICAL");
+    expect(
+      OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_SUBSTITUTION_REMOVED
+        .recipientMembership,
+    ).toBe("CANONICAL_ASSIGNMENT_HISTORICAL");
+    expect(
+      OPERATIONAL_EVENT_CONTRACTS.ASSIGNMENT_CREATED.aggregateRevision,
+    ).toBeUndefined();
+
+    const memory = inMemoryOperationalEventTransaction();
+    await expect(
+      createOperationalEventInTransaction(memory.tx, assignmentShadowEvent()),
+    ).resolves.toMatchObject({ eventId: 1, created: true });
+    expect(memory.getPersistedEvent()).toMatchObject({
+      eventType: "ASSIGNMENT_DIRECT_ASSIGNED",
+      emissionMode: "SHADOW",
+      aggregateType: "SHIFT_ASSIGNMENT",
+      aggregateId: 16,
+      aggregateVersion: 1,
+      assignmentId: 16,
+    });
+    expect(memory.counters).toEqual({
+      relatedContexts: 0,
+      recipients: 1,
+      deliveries: 2,
+    });
+
+    const genericAssignment = assignmentShadowEvent();
+    genericAssignment.eventType = "ASSIGNMENT_CREATED";
+    expect(() => operationalEventHash(genericAssignment)).toThrow(
+      "Agregado ainda não possui revisão canônica",
+    );
+  });
+
+  it("rejeita revisão defasada ou destinatário diferente da alocação canônica", async () => {
+    const staleRevision = inMemoryOperationalEventTransaction({
+      assignmentRows: [
+        {
+          id: 16,
+          assignmentId: 16,
+          institutionId: 1,
+          hospitalId: 10,
+          sectorId: 4,
+          scheduleContextId: 8,
+          shiftInstanceId: 12,
+          professionalId: 200,
+          userId: 20,
+          operationalRevision: 1,
+          status: "OCUPADO",
+          isActive: true,
+        },
+        {
+          id: 16,
+          assignmentId: 16,
+          institutionId: 1,
+          hospitalId: 10,
+          sectorId: 4,
+          scheduleContextId: 8,
+          shiftInstanceId: 12,
+          professionalId: 200,
+          userId: 20,
+          operationalRevision: 2,
+          status: "OCUPADO",
+          isActive: true,
+        },
+      ],
+    });
+    await expect(
+      createOperationalEventInTransaction(
+        staleRevision.tx,
+        assignmentShadowEvent(),
+      ),
+    ).rejects.toThrow("Alocação não pertence à revisão ou transição canônica");
+
+    const wrongRecipient = assignmentShadowEvent();
+    wrongRecipient.recipients = [
+      { kind: "USER", userId: 21, channels: ["PUSH", "EMAIL"] },
+    ];
+    const memory = inMemoryOperationalEventTransaction();
+    await expect(
+      createOperationalEventInTransaction(memory.tx, wrongRecipient),
+    ).rejects.toThrow("Destinatário não corresponde ao usuário canônico");
+    expect(memory.counters).toEqual({
+      relatedContexts: 0,
+      recipients: 0,
+      deliveries: 0,
+    });
+  });
+
+  it("reverte fato SHADOW e recipient juntos quando a persistência do recipient falha", async () => {
+    const memory = inMemoryOperationalEventTransaction({
+      failOnRecipientInsert: true,
+    });
+
+    await expect(
+      memory.runInTransaction((tx) =>
+        createOperationalEventInTransaction(tx, assignmentShadowEvent()),
+      ),
+    ).rejects.toThrow("falha forçada ao persistir destinatário");
+    expect(memory.getPersistedEvent()).toBeUndefined();
+    expect(memory.counters).toEqual({
+      relatedContexts: 0,
+      recipients: 0,
+      deliveries: 0,
     });
   });
 
