@@ -10,6 +10,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { shiftAssignmentsV2, shiftInstances } from "../drizzle/schema";
 import type { getDb } from "./db";
+import { advanceShiftInstanceRevision } from "./shift-instance-revision";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 /** db ou transação (mesma interface estrutural para select/update). */
@@ -29,14 +30,17 @@ export async function recomputeShiftStatus(
 ): Promise<ShiftStatus> {
   const [shift] = await tx
     .select({
+      id: shiftInstances.id,
       institutionId: shiftInstances.institutionId,
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
+      status: shiftInstances.status,
+      operationalRevision: shiftInstances.operationalRevision,
     })
     .from(shiftInstances)
     .where(eq(shiftInstances.id, shiftInstanceId))
     .limit(1)
-    .for("share");
+    .for("update");
   if (!shift) {
     throw new TRPCError({ code: "CONFLICT", message: "Turno inexistente durante a derivação de status." });
   }
@@ -68,6 +72,8 @@ export async function recomputeShiftStatus(
     });
   }
   const status = deriveShiftStatus(rows.map((r) => r.status));
-  await tx.update(shiftInstances).set({ status }).where(eq(shiftInstances.id, shiftInstanceId));
+  if (status !== shift.status) {
+    await advanceShiftInstanceRevision(tx, shift, { status });
+  }
   return status;
 }

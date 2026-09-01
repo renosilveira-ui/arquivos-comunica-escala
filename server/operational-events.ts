@@ -103,14 +103,14 @@ export type OperationalAggregateType =
   (typeof OPERATIONAL_AGGREGATE_TYPES)[number];
 
 /**
- * Apenas MONTHLY_ROSTER e SWAP_REQUEST já possuem revisão monotônica gravada
- * no modelo atual. Para os demais agregados, emitir evento seria registrar
+ * MONTHLY_ROSTER, SWAP_REQUEST e SHIFT_INSTANCE já possuem revisão monotônica
+ * gravada no modelo atual. Para os demais agregados, emitir evento seria registrar
  * uma versão inventada; a fundação falha fechada até a frente própria adicionar
  * revisão/CAS à entidade e aos seus writers.
  */
 export const OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES = {
   SHIFT_ASSIGNMENT: "UNAVAILABLE",
-  SHIFT_INSTANCE: "UNAVAILABLE",
+  SHIFT_INSTANCE: "ROW_VERSION",
   VACANCY_REQUEST: "UNAVAILABLE",
   SWAP_REQUEST: "ROW_VERSION",
   SCHEDULE_INVITE: "UNAVAILABLE",

@@ -71,6 +71,10 @@ import {
 } from "./sector-scale";
 import { deriveShiftStatus } from "./shift-status";
 import {
+  advanceShiftInstanceRevision,
+  type ShiftInstanceRevisionPatch,
+} from "./shift-instance-revision";
+import {
   enqueueVacancyAvailableSignals,
   recentVacancyBroadcastExists,
 } from "./vacancy-broadcast-signal";
@@ -2102,16 +2106,19 @@ export const shiftsRouter = router({
 
       assertModalityCoherent(input, existing.modality);
 
-      const patch: Partial<typeof shiftInstances.$inferInsert> = {};
+      const patch: ShiftInstanceRevisionPatch = {};
       if (input.startAt !== undefined) patch.startAt = new Date(input.startAt);
       if (input.endAt !== undefined) patch.endAt = new Date(input.endAt);
       if (input.modality !== undefined) patch.modality = input.modality;
-      if (input.coverageType !== undefined)
+      if (input.coverageType !== undefined) {
         patch.coverageType = input.coverageType;
-      if (input.paymentModel !== undefined)
+      }
+      if (input.paymentModel !== undefined) {
         patch.paymentModel = input.paymentModel;
-      if (input.productivityCapBrl !== undefined)
+      }
+      if (input.productivityCapBrl !== undefined) {
         patch.productivityCapBrl = input.productivityCapBrl;
+      }
 
       // Mantém o invariante "SOBREAVISO ⇒ coverageType IS NULL". Se a
       // transição é PLANTAO → SOBREAVISO sem coverageType explícito no
@@ -2126,8 +2133,39 @@ export const shiftsRouter = router({
         patch.coverageType = null;
       }
 
-      if (Object.keys(patch).length === 0) {
-        return existing;
+      const revisionPatch: ShiftInstanceRevisionPatch = {};
+      if (
+        patch.startAt !== undefined &&
+        patch.startAt.getTime() !== existing.startAt.getTime()
+      ) {
+        revisionPatch.startAt = patch.startAt;
+      }
+      if (
+        patch.endAt !== undefined &&
+        patch.endAt.getTime() !== existing.endAt.getTime()
+      ) {
+        revisionPatch.endAt = patch.endAt;
+      }
+      if (patch.modality !== undefined && patch.modality !== existing.modality) {
+        revisionPatch.modality = patch.modality;
+      }
+      if (
+        patch.coverageType !== undefined &&
+        patch.coverageType !== existing.coverageType
+      ) {
+        revisionPatch.coverageType = patch.coverageType;
+      }
+      if (
+        patch.paymentModel !== undefined &&
+        patch.paymentModel !== existing.paymentModel
+      ) {
+        revisionPatch.paymentModel = patch.paymentModel;
+      }
+      if (
+        patch.productivityCapBrl !== undefined &&
+        patch.productivityCapBrl !== existing.productivityCapBrl
+      ) {
+        revisionPatch.productivityCapBrl = patch.productivityCapBrl;
       }
       // Data ATUAL e data nova: validar só o destino deixava GESTOR_MEDICO
       // puxar um turno de outro mês para o corrente (auditoria 22/08, M2).
@@ -2178,7 +2216,8 @@ export const shiftsRouter = router({
           locked.modality !== existing.modality ||
           locked.coverageType !== existing.coverageType ||
           locked.paymentModel !== existing.paymentModel ||
-          locked.productivityCapBrl !== existing.productivityCapBrl
+          locked.productivityCapBrl !== existing.productivityCapBrl ||
+          locked.operationalRevision !== existing.operationalRevision
         ) {
           throw new TRPCError({
             code: "CONFLICT",
@@ -2307,10 +2346,9 @@ export const shiftsRouter = router({
           });
         }
 
-        await tx
-          .update(shiftInstances)
-          .set(patch)
-          .where(eq(shiftInstances.id, input.id));
+        if (Object.keys(revisionPatch).length > 0) {
+          await advanceShiftInstanceRevision(tx, locked, revisionPatch);
+        }
         const nextDutyType =
           (patch.modality ?? locked.modality) === "SOBREAVISO"
             ? "SOBREAVISO"

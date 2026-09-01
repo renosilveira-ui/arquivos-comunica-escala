@@ -9,6 +9,7 @@ import { recordAudit } from "./audit-trail";
 import { and, eq } from "drizzle-orm";
 import { shiftAssignmentsV2, shiftInstances } from "../drizzle/schema";
 import { recomputeShiftStatus } from "./shift-status";
+import { advanceShiftInstanceRevision } from "./shift-instance-revision";
 import {
   assertCanEditScheduleDate,
   assertCanManageInstitutionSchedule,
@@ -49,6 +50,7 @@ type ShiftTarget = {
   startAt: Date;
   endAt: Date;
   status: string;
+  operationalRevision: number;
 };
 
 type AssignmentTarget = ShiftTarget & {
@@ -76,6 +78,7 @@ async function getShiftTarget(
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       status: shiftInstances.status,
+      operationalRevision: shiftInstances.operationalRevision,
     })
     .from(shiftInstances)
     .where(
@@ -138,6 +141,7 @@ async function getAssignmentTarget(
         startAt: shiftInstances.startAt,
         endAt: shiftInstances.endAt,
         status: shiftInstances.status,
+        operationalRevision: shiftInstances.operationalRevision,
       })
       .from(shiftInstances)
       .where(
@@ -211,6 +215,7 @@ async function getAssignmentTarget(
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       status: shiftInstances.status,
+      operationalRevision: shiftInstances.operationalRevision,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -259,6 +264,7 @@ function assertSameShiftTarget(
     authorized.specialty !== locked.specialty ||
     authorized.label !== locked.label ||
     authorized.status !== locked.status ||
+    authorized.operationalRevision !== locked.operationalRevision ||
     !sameInstant(authorized.startAt, locked.startAt) ||
     !sameInstant(authorized.endAt, locked.endAt)
   ) {
@@ -681,23 +687,18 @@ export const editorRouter = router({
           );
 
         if (lockedShift.status !== "VAGO") {
-          const [updatedShift] = await tx
-            .update(shiftInstances)
-            .set({ status: "VAGO" })
-            .where(
-              and(
-                eq(shiftInstances.id, shiftInstanceId),
-                eq(shiftInstances.institutionId, lockedShift.institutionId),
-                eq(shiftInstances.hospitalId, lockedShift.hospitalId),
-                eq(shiftInstances.sectorId, lockedShift.sectorId),
-                eq(shiftInstances.status, lockedShift.status),
-              ),
-            );
-          if (updatedShift.affectedRows !== 1) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: "O turno mudou antes de ser marcado como vago.",
+          try {
+            await advanceShiftInstanceRevision(tx, lockedShift, {
+              status: "VAGO",
             });
+          } catch (error) {
+            if (error instanceof TRPCError && error.code === "CONFLICT") {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "O turno mudou antes de ser marcado como vago.",
+              });
+            }
+            throw error;
           }
         }
 

@@ -355,9 +355,11 @@ async function consolidateLegacyPinnedContexts(
   const placeholders = legacyIds.map(() => "?").join(", ");
   await connection.execute(
     `UPDATE shift_instances
-        SET schedule_context_id = ?
-      WHERE schedule_context_id IN (${placeholders})`,
-    [input.unifiedContextId, ...legacyIds],
+        SET schedule_context_id = ?,
+            operational_revision = operational_revision + 1
+      WHERE schedule_context_id IN (${placeholders})
+        AND schedule_context_id <> ?`,
+    [input.unifiedContextId, ...legacyIds, input.unifiedContextId],
   );
   await connection.execute(
     `UPDATE schedule_contexts
