@@ -15,6 +15,9 @@ import {
   foreignKey,
   customType,
   check,
+  tinyint,
+  bigint,
+  char,
 } from "drizzle-orm/mysql-core";
 import { relations, sql } from "drizzle-orm";
 
@@ -184,6 +187,53 @@ export const institutions = mysqlTable("institutions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 });
+
+/**
+ * Journal imutável de invalidações de prontidão por instituição.
+ *
+ * Não há foreign key intencionalmente: uma FK com cascade apagaria a prova
+ * histórica no delete da instituição, enquanto uma FK restrict impediria a
+ * própria exclusão. Qualquer retenção, expurgo ou tombstone futuro precisa de
+ * uma política explícita e auditada; nunca de uma exclusão referencial
+ * implícita. Esta tabela tampouco guarda uma decisão de prontidão.
+ */
+export const institutionReadinessFenceEvents = mysqlTable(
+  "institution_readiness_fence_events",
+  {
+    id: bigint("id", { mode: "bigint", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    institutionId: int("institution_id").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    idxReadinessFenceEventInstitutionId: index(
+      "idx_rdf_event_institution_id",
+    ).on(table.institutionId, table.id),
+  }),
+);
+
+export type InstitutionReadinessFenceEvent =
+  typeof institutionReadinessFenceEvents.$inferSelect;
+
+/**
+ * Recibo singleton da instalação integral da fence V1.
+ *
+ * A ausência, multiplicidade ou divergência deste recibo deve permanecer uma
+ * falha fechada em qualquer consumidor futuro.
+ */
+export const institutionReadinessFenceInstallations = mysqlTable(
+  "institution_readiness_fence_installations",
+  {
+    id: tinyint("id", { unsigned: true }).primaryKey(),
+    coverageVersion: varchar("coverage_version", { length: 64 }).notNull(),
+    coverageHash: char("coverage_hash", { length: 64 }).notNull(),
+    installedAt: timestamp("installed_at").notNull().defaultNow(),
+  },
+);
+
+export type InstitutionReadinessFenceInstallation =
+  typeof institutionReadinessFenceInstallations.$inferSelect;
 
 /**
  * Hospitais (pertence a uma instituição)

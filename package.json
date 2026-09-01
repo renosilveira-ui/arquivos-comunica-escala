@@ -22,6 +22,7 @@
     "security:audit": "node scripts/security/audit-dependencies.mjs",
     "test": "vitest run",
     "test:sector-service-specialties-migration": "vitest run --config vitest.migration.config.ts",
+    "test:readiness-fence-v1-mysql": "vitest run --config vitest.readiness-fence-v1-mysql.config.ts",
     "test:e2e": "cross-env NODE_ENV=test vitest run --config vitest.e2e-guard.config.ts",
     "e2e:workflow:destructive": "tsx scripts/run-e2e-workflow.ts",
     "gate": "pnpm test:e2e",
@@ -38,6 +39,7 @@
     "provision:institution-scale": "tsx scripts/provision-institution-scale.ts",
     "normalize:corporate-structure": "tsx scripts/normalize-corporate-schedule-structure.ts",
     "apply:migration": "tsx scripts/apply-manual-migration.ts",
+    "apply:readiness-fence-v1": "tsx scripts/apply-readiness-fence-v1-migration.ts",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "qr": "node scripts/generate_qr.mjs"

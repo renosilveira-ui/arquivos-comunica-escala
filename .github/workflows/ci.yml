@@ -93,6 +93,31 @@ jobs:
       - name: Validate sector specialties manual migration
         run: pnpm test:sector-service-specialties-migration
 
+      - name: Validate readiness fence V1 over Drizzle PREPARED schema
+        # Exercita o único estado retomável: o schema foi criado pelo Drizzle,
+        # mas os triggers e o recibo ainda não existem. Continua restrito ao
+        # MySQL efêmero da CI, nunca ao DATABASE_URL de outro ambiente.
+        env:
+          READINESS_FENCE_V1_APPLY: "1"
+          READINESS_FENCE_V1_DATABASE_URL: mysql://root:root@127.0.0.1:3306/escalas_test
+          READINESS_FENCE_V1_ALLOW_INSECURE_LOOPBACK_FOR_TEST: "1"
+        run: pnpm apply:readiness-fence-v1
+
+      - name: Prove readiness fence V1 manual migration
+        # Somente esta etapa pode autorizar a criação/remoção do schema
+        # efêmero; os demais testes não recebem esse opt-in.
+        env:
+          READINESS_FENCE_V1_PROOF_ALLOW_DESTRUCTIVE: "1"
+          READINESS_FENCE_V1_PROOF_SERVER_URL: mysql://root:root@127.0.0.1:3306/
+        run: pnpm exec tsx scripts/prove-readiness-fence-v1-migration.ts
+
+      - name: Validate readiness fence V1 event journal concurrency
+        # Reaproveita a URL já declarada para a prova manual. O teste cria seu
+        # próprio schema efêmero e não recebe a DATABASE_URL da aplicação.
+        env:
+          READINESS_FENCE_V1_MYSQL_TEST_SERVER_URL: ${{ env.READINESS_FENCE_V1_PROOF_SERVER_URL }}
+        run: pnpm test:readiness-fence-v1-mysql
+
       - name: Validate Unimed hospital provision plan
         run: pnpm test:unimed-hospital-provision
 
