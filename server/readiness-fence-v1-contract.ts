@@ -6,7 +6,7 @@
  * se reescreve o contrato V1 já instalado.
  */
 export const READINESS_FENCE_V1_INSTALLATION_ID = 1;
-export const READINESS_FENCE_V1_COVERAGE_VERSION = "2026-09-01-v1-clean";
+export const READINESS_FENCE_V1_COVERAGE_VERSION = "2026-09-01-v1-journal";
 
 /**
  * O recibo só prova que esta versão do instalador terminou uma vez. Ele não
@@ -15,8 +15,8 @@ export const READINESS_FENCE_V1_COVERAGE_VERSION = "2026-09-01-v1-clean";
  * prontidão por si só.
  *
  * Um consumidor futuro deve validar o catálogo e a cobertura de triggers na
- * mesma transação em que usar a revisão institucional. A V1 não fornece esse
- * consumidor nem uma projeção booleana de "pronto".
+ * mesma transação em que usar o high-watermark institucional. A V1 não
+ * fornece esse consumidor nem uma projeção booleana de "pronto".
  */
 export const READINESS_FENCE_V1_RECEIPT_ROLE =
   "INSTALLATION_PREREQUISITE_ONLY" as const;
@@ -24,6 +24,8 @@ export const READINESS_FENCE_V1_RECEIPT_ROLE =
 export const READINESS_FENCE_V1_FUTURE_CONSUMER_REQUIREMENTS = Object.freeze([
   "VERIFY_CURRENT_CATALOG_IN_SAME_TRANSACTION",
   "VERIFY_TRIGGER_COVERAGE_IN_SAME_TRANSACTION",
+  "CAPTURE_SERVER_ISSUED_HIGH_WATERMARK",
+  "LOCK_NORMAL_RESOURCES_BEFORE_EVENT_RANGE",
 ] as const);
 
 /**
@@ -33,4 +35,4 @@ export const READINESS_FENCE_V1_FUTURE_CONSUMER_REQUIREMENTS = Object.freeze([
  * grava o marcador se houver correspondência exata.
  */
 export const READINESS_FENCE_V1_COVERAGE_HASH =
-  "6c0ab9a884aaae6b1e36cb38ccab61b5e2ec10d9de9f8d7de34279db2590af3c";
+  "220fdde506ea227bc8bd4be227c180b8aedd699b74c43700c0814ef165b9c320";

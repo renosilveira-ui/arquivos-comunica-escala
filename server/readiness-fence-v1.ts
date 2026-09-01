@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
+  institutionReadinessFenceEvents,
   institutionReadinessFenceInstallations,
-  institutionReadinessFences,
 } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
 import { getDb } from "./db";
@@ -13,27 +13,11 @@ import {
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type SqlExecutor = Pick<Db, "execute">;
 
-export type InstitutionReadinessFenceV1Lock = Readonly<{
+export type InstitutionReadinessFenceV1HighWatermark = Readonly<{
   institutionId: number;
-  revision: bigint;
-}>;
-
-/**
- * O símbolo não é exportado: somente o wrapper abaixo consegue criar uma
- * scope válida. Isso evita que uma interface estrutural com `execute`/`insert`
- * aceite, por engano, um db em autocommit como se fosse uma transação.
- */
-const readinessFenceV1ScopeBrand = Symbol("readinessFenceV1Scope");
-
-export type ReadinessFenceV1Scope = Readonly<{
-  readonly [readinessFenceV1ScopeBrand]: true;
-  materializeAndLockInstitution(
-    institutionId: number,
-  ): Promise<InstitutionReadinessFenceV1Lock>;
-  assertInstitutionUnchanged(
-    expected: InstitutionReadinessFenceV1Lock,
-  ): Promise<InstitutionReadinessFenceV1Lock>;
+  eventId: bigint;
 }>;
 
 type ReadinessFenceV1InstallationReceipt = Readonly<{
@@ -43,9 +27,15 @@ type ReadinessFenceV1InstallationReceipt = Readonly<{
 }>;
 
 const MAX_MYSQL_SIGNED_INT = 2_147_483_647;
-const issuedScopes = new WeakSet<object>();
-const activeScopes = new WeakSet<object>();
-const issuedLocks = new WeakMap<object, ReadinessFenceV1Scope>();
+const EVENT_RANGE_INDEX = sql.raw("`idx_rdf_event_institution_id`");
+// Em READ COMMITTED, o InnoDB não conserva o gap lock vazio necessário para
+// impedir o próximo INSERT no intervalo. A decisão final pede RR apenas para
+// a sua transação curta; nunca altera a configuração da pool/sessão geral.
+const FINAL_DECISION_TRANSACTION_CONFIG = {
+  isolationLevel: "repeatable read",
+} as const;
+const issuedHighWatermarks = new WeakSet<object>();
+const consumedHighWatermarks = new WeakSet<object>();
 
 function assertInstitutionId(institutionId: number): void {
   if (
@@ -71,9 +61,9 @@ function parseInstitutionId(value: unknown): number | null {
     : null;
 }
 
-function parseRevision(value: unknown): bigint | null {
+function parseEventId(value: unknown): bigint | null {
   try {
-    const revision =
+    const eventId =
       typeof value === "bigint"
         ? value
         : typeof value === "number"
@@ -83,81 +73,56 @@ function parseRevision(value: unknown): bigint | null {
           : typeof value === "string" && /^(?:0|[1-9]\d*)$/.test(value)
             ? BigInt(value)
             : null;
-    return revision !== null && revision >= 0n ? revision : null;
+    return eventId !== null && eventId >= 0n ? eventId : null;
   } catch {
     return null;
   }
 }
 
-function assertActiveScope(scope: ReadinessFenceV1Scope): void {
-  if (!issuedScopes.has(scope) || !activeScopes.has(scope)) {
-    throw new Error("READINESS_FENCE_V1_SCOPE_INACTIVE");
-  }
-}
-
-function issueLock(
-  scope: ReadinessFenceV1Scope,
-  institutionId: number,
-  revision: bigint,
-): InstitutionReadinessFenceV1Lock {
-  const lock = Object.freeze({ institutionId, revision });
-  issuedLocks.set(lock, scope);
-  return lock;
-}
-
-function assertIssuedLock(
-  scope: ReadinessFenceV1Scope,
-  lock: InstitutionReadinessFenceV1Lock,
+function assertIssuedHighWatermark(
+  highWatermark: InstitutionReadinessFenceV1HighWatermark,
 ): void {
-  const owner = issuedLocks.get(lock);
-  if (!owner) {
-    throw new Error("READINESS_FENCE_V1_UNISSUED_LOCK");
+  if (
+    !highWatermark ||
+    typeof highWatermark !== "object" ||
+    !issuedHighWatermarks.has(highWatermark)
+  ) {
+    throw new Error("READINESS_FENCE_V1_UNISSUED_HIGH_WATERMARK");
   }
-  if (owner !== scope) {
-    throw new Error("READINESS_FENCE_V1_LOCK_TRANSACTION_MISMATCH");
+  if (consumedHighWatermarks.has(highWatermark)) {
+    throw new Error("READINESS_FENCE_V1_HIGH_WATERMARK_CONSUMED");
   }
-}
-
-async function selectFenceForUpdate(
-  tx: DbTransaction,
-  scope: ReadinessFenceV1Scope,
-  institutionId: number,
-): Promise<InstitutionReadinessFenceV1Lock> {
-  const result = await tx.execute(sql`
-    SELECT ${institutionReadinessFences.institutionId} AS institutionId,
-           ${institutionReadinessFences.revision} AS revision
-    FROM ${institutionReadinessFences}
-    WHERE ${institutionReadinessFences.institutionId} = ${institutionId}
-    LIMIT 1
-    FOR UPDATE
-  `);
-  const [row] = rowsFromExecute<{
-    institutionId: number | string;
-    revision: bigint | number | string;
-  }>(result);
-  const rowInstitutionId = parseInstitutionId(row?.institutionId);
-  const revision = parseRevision(row?.revision);
-  if (rowInstitutionId !== institutionId || revision === null) {
-    throw new Error("READINESS_FENCE_V1_INTEGRITY_FAILURE");
+  assertInstitutionId(highWatermark.institutionId);
+  if (typeof highWatermark.eventId !== "bigint" || highWatermark.eventId < 0n) {
+    throw new TypeError("READINESS_FENCE_V1_INVALID_HIGH_WATERMARK");
   }
-  return issueLock(scope, rowInstitutionId, revision);
 }
 
 /**
- * Confere somente o recibo de instalação. Não é exportada porque esse recibo
- * não é prova de prontidão nem de saúde atual do catálogo/triggers.
+ * Confere somente o recibo de instalação. Não representa prontidão nem
+ * certifica o catálogo/triggers atuais; um consumidor futuro continua
+ * responsável por essas verificações na mesma transação da decisão.
  */
 async function assertInstallationReceipt(
-  tx: DbTransaction,
+  executor: SqlExecutor,
+  lockForFinalDecision: boolean,
 ): Promise<ReadinessFenceV1InstallationReceipt> {
-  const result = await tx.execute(sql`
-    SELECT ${institutionReadinessFenceInstallations.id} AS installationId,
-           ${institutionReadinessFenceInstallations.coverageVersion} AS coverageVersion,
-           ${institutionReadinessFenceInstallations.coverageHash} AS coverageHash
-    FROM ${institutionReadinessFenceInstallations}
-    ORDER BY ${institutionReadinessFenceInstallations.id}
-    LOCK IN SHARE MODE
-  `);
+  const result = lockForFinalDecision
+    ? await executor.execute(sql`
+        SELECT ${institutionReadinessFenceInstallations.id} AS installationId,
+               ${institutionReadinessFenceInstallations.coverageVersion} AS coverageVersion,
+               ${institutionReadinessFenceInstallations.coverageHash} AS coverageHash
+        FROM ${institutionReadinessFenceInstallations}
+        ORDER BY ${institutionReadinessFenceInstallations.id}
+        LOCK IN SHARE MODE
+      `)
+    : await executor.execute(sql`
+        SELECT ${institutionReadinessFenceInstallations.id} AS installationId,
+               ${institutionReadinessFenceInstallations.coverageVersion} AS coverageVersion,
+               ${institutionReadinessFenceInstallations.coverageHash} AS coverageHash
+        FROM ${institutionReadinessFenceInstallations}
+        ORDER BY ${institutionReadinessFenceInstallations.id}
+      `);
   const rows = rowsFromExecute<{
     installationId: number | string;
     coverageVersion: string;
@@ -180,64 +145,92 @@ async function assertInstallationReceipt(
   });
 }
 
-async function materializeAndLockInstitution(
-  tx: DbTransaction,
-  scope: ReadinessFenceV1Scope,
+/**
+ * Captura uma observação imutável do último evento já confirmado para a
+ * instituição. A observação não é aprovação e pode ficar velha a qualquer
+ * instante; ela só pode ser consumida uma vez no fechamento transacional.
+ */
+export async function captureInstitutionReadinessFenceV1HighWatermark(
   institutionId: number,
-): Promise<InstitutionReadinessFenceV1Lock> {
+): Promise<InstitutionReadinessFenceV1HighWatermark> {
   assertInstitutionId(institutionId);
-  await assertInstallationReceipt(tx);
+  const db = await getDb();
+  if (!db) {
+    throw new Error("READINESS_FENCE_V1_DATABASE_UNAVAILABLE");
+  }
 
-  await tx
-    .insert(institutionReadinessFences)
-    .values({ institutionId })
-    .onDuplicateKeyUpdate({
-      set: { revision: sql`${institutionReadinessFences.revision}` },
-    });
-  return selectFenceForUpdate(tx, scope, institutionId);
+  await assertInstallationReceipt(db, false);
+  const result = await db.execute(sql`
+    SELECT COALESCE(MAX(${institutionReadinessFenceEvents.id}), 0) AS eventId
+    FROM ${institutionReadinessFenceEvents}
+    WHERE ${institutionReadinessFenceEvents.institutionId} = ${institutionId}
+  `);
+  const [row] = rowsFromExecute<{ eventId: bigint | number | string }>(result);
+  const eventId = parseEventId(row?.eventId);
+  if (eventId === null) {
+    throw new Error("READINESS_FENCE_V1_HIGH_WATERMARK_INTEGRITY_FAILURE");
+  }
+  const highWatermark = Object.freeze({ institutionId, eventId });
+  issuedHighWatermarks.add(highWatermark);
+  return highWatermark;
 }
 
-async function assertInstitutionUnchanged(
+async function assertNoEventsAfterHighWatermark(
   tx: DbTransaction,
-  scope: ReadinessFenceV1Scope,
-  expected: InstitutionReadinessFenceV1Lock,
-): Promise<InstitutionReadinessFenceV1Lock> {
-  assertIssuedLock(scope, expected);
-  assertInstitutionId(expected.institutionId);
-  if (typeof expected.revision !== "bigint" || expected.revision < 0n) {
-    throw new TypeError("READINESS_FENCE_V1_INVALID_REVISION");
+  highWatermark: InstitutionReadinessFenceV1HighWatermark,
+): Promise<void> {
+  const result = await tx.execute(sql`
+    SELECT ${institutionReadinessFenceEvents.id} AS eventId
+    FROM ${institutionReadinessFenceEvents} FORCE INDEX (${EVENT_RANGE_INDEX})
+    WHERE ${institutionReadinessFenceEvents.institutionId} = ${highWatermark.institutionId}
+      AND ${institutionReadinessFenceEvents.id} > ${highWatermark.eventId}
+    FOR UPDATE
+  `);
+  const rows = rowsFromExecute<{ eventId: bigint | number | string }>(result);
+  for (const row of rows) {
+    if (parseEventId(row.eventId) === null) {
+      throw new Error("READINESS_FENCE_V1_HIGH_WATERMARK_INTEGRITY_FAILURE");
+    }
   }
-  await assertInstallationReceipt(tx);
-  const observed = await selectFenceForUpdate(
-    tx,
-    scope,
-    expected.institutionId,
-  );
-  if (observed.revision !== expected.revision) {
-    throw new Error("READINESS_FENCE_V1_CHANGED");
+  if (rows.length !== 0) {
+    throw new Error("READINESS_FENCE_V1_STALE");
   }
-  return observed;
 }
 
 /**
- * Abre e mantém a transação que materializa, bloqueia e relê a revisão.
+ * Executa o curtíssimo fechamento de uma decisão futura de prontidão.
  *
- * Esta é uma fundação técnica inativa: ela não calcula relatório, não recebe
- * snapshot do cliente e não autoriza publicação. O recibo verificado no
- * início é apenas pré-requisito de instalação; um futuro consumidor deve
- * validar catálogo e cobertura de triggers na mesma transação antes de usar
- * a revisão como parte de uma decisão de prontidão.
+ * `lockNormalResources` recebe a transação real primeiro e deve adquirir
+ * nela os locks usuais do recurso (escala, alocação, publicação etc.). Só
+ * depois o helper valida o recibo e faz um locking read da faixa
+ * `(institution_id, id > high-watermark)`. Uma mutação posterior da mesma
+ * instituição espera até o commit/rollback da decisão final, sem criar uma
+ * trava de fence longa ou inverter a ordem dos locks normais.
  *
- * A scope expira quando o callback termina e locks emitidos por ela não podem
- * ser reutilizados em outra transação. Nenhum helper público aceita um `tx`
- * estrutural, portanto um db em autocommit não pode simular essa garantia.
+ * A API não entrega uma scope nem uma `Promise` interna ao consumidor: isso
+ * impede commit enquanto uma finalização disparada sem `await` ainda usa a
+ * transação. A V1 continua inativa: não calcula relatório, não publica escala
+ * e não aceita snapshot ou ciência do cliente.
  */
-export async function withReadinessFenceV1Transaction<T>(
-  operation: (scope: ReadinessFenceV1Scope) => Promise<T> | T,
-): Promise<T> {
-  if (typeof operation !== "function") {
-    throw new TypeError("READINESS_FENCE_V1_OPERATION_REQUIRED");
+export async function withReadinessFenceV1FinalDecisionTransaction<
+  TPrepared,
+  TResult,
+>(
+  highWatermark: InstitutionReadinessFenceV1HighWatermark,
+  lockNormalResources: (tx: DbTransaction) => Promise<TPrepared> | TPrepared,
+  decide: (
+    tx: DbTransaction,
+    prepared: TPrepared,
+  ) => Promise<TResult> | TResult,
+): Promise<TResult> {
+  if (
+    typeof lockNormalResources !== "function" ||
+    typeof decide !== "function"
+  ) {
+    throw new TypeError("READINESS_FENCE_V1_FINALIZATION_CALLBACK_REQUIRED");
   }
+  assertIssuedHighWatermark(highWatermark);
+
   const db = await getDb();
   if (!db) {
     throw new Error("READINESS_FENCE_V1_DATABASE_UNAVAILABLE");
@@ -245,32 +238,12 @@ export async function withReadinessFenceV1Transaction<T>(
   if (typeof db.transaction !== "function") {
     throw new Error("READINESS_FENCE_V1_TRANSACTION_UNAVAILABLE");
   }
+  consumedHighWatermarks.add(highWatermark);
 
   return db.transaction(async (tx) => {
-    // O callback não começa sem o recibo técnico. A confirmação continua
-    // sendo revalidada ao materializar e ao reler a revisão, sempre no mesmo
-    // tx; isto não a transforma em autorização de prontidão.
-    await assertInstallationReceipt(tx);
-    let scope!: ReadinessFenceV1Scope;
-    scope = Object.freeze({
-      [readinessFenceV1ScopeBrand]: true as const,
-      materializeAndLockInstitution: (institutionId: number) => {
-        assertActiveScope(scope);
-        return materializeAndLockInstitution(tx, scope, institutionId);
-      },
-      assertInstitutionUnchanged: (
-        expected: InstitutionReadinessFenceV1Lock,
-      ) => {
-        assertActiveScope(scope);
-        return assertInstitutionUnchanged(tx, scope, expected);
-      },
-    });
-    issuedScopes.add(scope);
-    activeScopes.add(scope);
-    try {
-      return await operation(scope);
-    } finally {
-      activeScopes.delete(scope);
-    }
-  });
+    const prepared = await lockNormalResources(tx);
+    await assertInstallationReceipt(tx, true);
+    await assertNoEventsAfterHighWatermark(tx, highWatermark);
+    return await decide(tx, prepared);
+  }, FINAL_DECISION_TRANSACTION_CONFIG);
 }

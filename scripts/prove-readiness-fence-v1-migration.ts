@@ -188,7 +188,7 @@ function proofColumnDefinition(columnName: string): string {
   return `\`${columnName}\` VARCHAR(255) NULL`;
 }
 
-async function createMinimalSourceSchema(
+export async function createReadinessFenceV1MinimalSourceSchema(
   connection: Connection,
 ): Promise<void> {
   for (const [tableName, columns] of Object.entries(
@@ -204,19 +204,19 @@ async function createMinimalSourceSchema(
   }
 }
 
-async function readRevision(
+async function readEventCount(
   connection: Connection,
-  expectedRevision: number,
+  expectedEventCount: number,
 ): Promise<void> {
   const [rows] = await connection.query(
-    "SELECT revision FROM institution_readiness_fences WHERE institution_id = 1",
+    "SELECT COUNT(*) AS eventCount FROM institution_readiness_fence_events WHERE institution_id = 1",
   );
-  const revision = Number(
-    (rows as readonly { revision?: number | string }[])[0]?.revision,
+  const eventCount = Number(
+    (rows as readonly { eventCount?: number | string }[])[0]?.eventCount,
   );
-  if (revision !== expectedRevision) {
+  if (eventCount !== expectedEventCount) {
     throw new Error(
-      `READINESS_FENCE_V1_PROOF_REVISION_EXPECTED_${expectedRevision}_GOT_${revision}`,
+      `READINESS_FENCE_V1_PROOF_EVENT_COUNT_EXPECTED_${expectedEventCount}_GOT_${eventCount}`,
     );
   }
 }
@@ -233,9 +233,9 @@ async function assertTriggerCoverage(connection: Connection): Promise<void> {
   const triggerCount = Number(
     (rows as readonly { triggerCount?: number | string }[])[0]?.triggerCount,
   );
-  if (triggerCount !== 40) {
+  if (triggerCount !== 42) {
     throw new Error(
-      `READINESS_FENCE_V1_PROOF_TRIGGER_COUNT_EXPECTED_40_GOT_${triggerCount}`,
+      `READINESS_FENCE_V1_PROOF_TRIGGER_COUNT_EXPECTED_42_GOT_${triggerCount}`,
     );
   }
 }
@@ -256,7 +256,7 @@ async function assertExactInstallationMarker(
   }
 }
 
-async function proveRevisionTriggers(connection: Connection): Promise<void> {
+async function proveJournalTriggers(connection: Connection): Promise<void> {
   await connection.query(
     "INSERT INTO users (id, email, approval_status, deleted_at) VALUES (10, 'proof-before@example.test', 'APPROVED', NULL)",
   );
@@ -267,78 +267,107 @@ async function proveRevisionTriggers(connection: Connection): Promise<void> {
   await connection.query(
     "INSERT INTO institutions (id, is_active) VALUES (1, 1)",
   );
-  await readRevision(connection, 1);
+  await readEventCount(connection, 1);
   await connection.query(
     "INSERT INTO hospitals (id, institution_id) VALUES (2, 1)",
   );
-  await readRevision(connection, 2);
+  await readEventCount(connection, 2);
   await connection.query(
     "INSERT INTO sectors (id, institution_id, hospital_id) VALUES (3, 1, 2)",
   );
-  await readRevision(connection, 3);
+  await readEventCount(connection, 3);
   await connection.query(
     "INSERT INTO schedule_contexts (id, institution_id, hospital_id, sector_id, active) VALUES (4, 1, 2, 3, 1)",
   );
-  await readRevision(connection, 4);
+  await readEventCount(connection, 4);
   await connection.query(
     "INSERT INTO shift_templates (id, institution_id, hospital_id, sector_id) VALUES (5, 1, 2, 3)",
   );
-  await readRevision(connection, 5);
+  await readEventCount(connection, 5);
   await connection.query(
     "INSERT INTO shift_instances (id, institution_id, hospital_id, sector_id, schedule_context_id) VALUES (6, 1, 2, 3, 4)",
   );
-  await readRevision(connection, 6);
+  await readEventCount(connection, 6);
   await connection.query(
     "INSERT INTO shift_assignments_v2 (id, institution_id, hospital_id, sector_id, shift_instance_id, professional_id) VALUES (7, 1, 2, 3, 6, 20)",
   );
-  await readRevision(connection, 7);
+  await readEventCount(connection, 7);
   await connection.query(
     "INSERT INTO professional_institutions (id, institution_id, professional_id, user_id, active) VALUES (8, 1, 20, 10, 1)",
   );
-  await readRevision(connection, 8);
+  await readEventCount(connection, 8);
   await connection.query(
     "INSERT INTO professional_access (id, institution_id, professional_id, hospital_id, sector_id, can_access) VALUES (9, 1, 20, 2, 3, 1)",
   );
-  await readRevision(connection, 9);
+  await readEventCount(connection, 9);
   await connection.query(
     "INSERT INTO manager_scope (id, institution_id, manager_professional_id, hospital_id, sector_id, active) VALUES (10, 1, 20, 2, 3, 1)",
   );
-  await readRevision(connection, 10);
+  await readEventCount(connection, 10);
   await connection.query(
     "INSERT INTO monthly_rosters (id, institution_id, hospital_id) VALUES (11, 1, 2)",
   );
-  await readRevision(connection, 11);
+  await readEventCount(connection, 11);
   await connection.query(
     "INSERT INTO push_tokens (id, user_id) VALUES (12, 10)",
   );
-  await readRevision(connection, 12);
+  await readEventCount(connection, 12);
   await connection.query(
     "UPDATE schedule_contexts SET active = 0 WHERE id = 4",
   );
-  await readRevision(connection, 13);
+  await readEventCount(connection, 13);
   await connection.query(
     "UPDATE users SET email = 'proof-after@example.test' WHERE id = 10",
   );
-  await readRevision(connection, 14);
+  await readEventCount(connection, 14);
   await connection.query("DELETE FROM push_tokens WHERE id = 12");
-  await readRevision(connection, 15);
+  await readEventCount(connection, 15);
 
   await connection.query("DELETE FROM institutions WHERE id = 1");
-  const [fenceRows] = await connection.query(
-    "SELECT institution_id FROM institution_readiness_fences WHERE institution_id = 1",
+  await readEventCount(connection, 16);
+  const [eventRows] = await connection.query(
+    "SELECT institution_id FROM institution_readiness_fence_events WHERE institution_id = 1",
   );
-  if ((fenceRows as readonly unknown[]).length !== 0) {
-    throw new Error("READINESS_FENCE_V1_PROOF_CASCADE_DELETE_FAILED");
+  if ((eventRows as readonly unknown[]).length !== 16) {
+    throw new Error("READINESS_FENCE_V1_PROOF_EVENT_RETENTION_FAILED");
+  }
+}
+
+async function assertJournalImmutability(connection: Connection): Promise<void> {
+  const [rows] = await connection.query(
+    "SELECT id FROM institution_readiness_fence_events ORDER BY id LIMIT 1",
+  );
+  const eventId = Number((rows as readonly { id?: number | string }[])[0]?.id);
+  if (!Number.isSafeInteger(eventId) || eventId <= 0) {
+    throw new Error("READINESS_FENCE_V1_PROOF_EVENT_MISSING");
+  }
+  const operations = [
+    "UPDATE institution_readiness_fence_events SET institution_id = institution_id WHERE id = ?",
+    "DELETE FROM institution_readiness_fence_events WHERE id = ?",
+  ];
+  for (const statement of operations) {
+    try {
+      await connection.query(statement, [eventId]);
+    } catch (error) {
+      const mysqlError = error as { code?: unknown; sqlMessage?: unknown };
+      if (
+        mysqlError.code === "ER_SIGNAL_EXCEPTION" &&
+        mysqlError.sqlMessage === "READINESS_FENCE_V1_EVENT_IMMUTABLE"
+      ) {
+        continue;
+      }
+    }
+    throw new Error("READINESS_FENCE_V1_PROOF_EVENT_IMMUTABILITY_FAILED");
   }
 }
 
 /**
- * Cria a fixture mínima, aplica a migration duas vezes e comprova revisões
+ * Cria a fixture mínima, aplica a migration duas vezes e comprova eventos
  * reais. Não é incluída no test runner padrão; é uma prova explícita de MySQL.
  */
 export async function runReadinessFenceV1MigrationProof(
   env: Environment = process.env,
-): Promise<Readonly<{ databaseName: string; finalRevision: number }>> {
+): Promise<Readonly<{ databaseName: string; finalEventCount: number }>> {
   const proof = validateReadinessFenceV1ProofEnvironment(env);
   const serverConnection = await mysql.createConnection(proof.serverUrl);
   let schemaCreated = false;
@@ -351,7 +380,7 @@ export async function runReadinessFenceV1MigrationProof(
     schemaCreated = true;
     const connection = await mysql.createConnection(proof.databaseUrl);
     try {
-      await createMinimalSourceSchema(connection);
+      await createReadinessFenceV1MinimalSourceSchema(connection);
       await applyReadinessFenceV1Migration({
         explicitApproval: true,
         databaseUrl: proof.databaseUrl,
@@ -364,11 +393,12 @@ export async function runReadinessFenceV1MigrationProof(
       });
       await assertTriggerCoverage(connection);
       await assertExactInstallationMarker(connection);
-      await proveRevisionTriggers(connection);
+      await proveJournalTriggers(connection);
+      await assertJournalImmutability(connection);
       proofCompleted = true;
       return Object.freeze({
         databaseName: proof.databaseName,
-        finalRevision: 15,
+        finalEventCount: 16,
       });
     } finally {
       await connection.end();
@@ -402,9 +432,9 @@ if (
     fileURLToPath(pathToFileURL(process.argv[1]))
 ) {
   runReadinessFenceV1MigrationProof()
-    .then(({ databaseName, finalRevision }) => {
+    .then(({ databaseName, finalEventCount }) => {
       console.log(
-        `Readiness fence V1 comprovada em schema efêmero ${databaseName} (revisão ${finalRevision}).`,
+        `Readiness fence V1 comprovada em schema efêmero ${databaseName} (${finalEventCount} eventos).`,
       );
     })
     .catch((error) => {

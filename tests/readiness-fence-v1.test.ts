@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as readinessFence from "../server/readiness-fence-v1";
 import {
-  withReadinessFenceV1Transaction,
-  type InstitutionReadinessFenceV1Lock,
-  type ReadinessFenceV1Scope,
+  captureInstitutionReadinessFenceV1HighWatermark,
+  withReadinessFenceV1FinalDecisionTransaction,
 } from "../server/readiness-fence-v1";
 import {
   READINESS_FENCE_V1_COVERAGE_HASH,
@@ -26,17 +25,35 @@ const validMarker = [
   },
 ];
 
-function transactionHarness(executeRows: unknown[][]) {
-  const events: string[] = [];
-  const onDuplicateKeyUpdate = vi.fn().mockResolvedValue(undefined);
-  const values = vi.fn().mockReturnValue({ onDuplicateKeyUpdate });
-  const insert = vi.fn().mockReturnValue({ values });
-  const rows = [...executeRows];
-  const execute = vi.fn().mockImplementation(async () => {
-    events.push("transaction.execute");
-    return [rows.shift() ?? [], []];
+function deferred(): Readonly<{
+  promise: Promise<void>;
+  resolve: () => void;
+}> {
+  let resolve!: () => void;
+  const promise = new Promise<void>((nextResolve) => {
+    resolve = nextResolve;
   });
-  const tx = { insert, execute };
+  return Object.freeze({ promise, resolve });
+}
+
+function databaseHarness(
+  input: Readonly<{
+    captureRows?: unknown[][];
+    transactionRows?: unknown[][];
+  }>,
+) {
+  const events: string[] = [];
+  const captureRows = [...(input.captureRows ?? [])];
+  const transactionRows = [...(input.transactionRows ?? [])];
+  const execute = vi.fn().mockImplementation(async () => {
+    events.push("capture.execute");
+    return [captureRows.shift() ?? [], []];
+  });
+  const transactionExecute = vi.fn().mockImplementation(async () => {
+    events.push("transaction.execute");
+    return [transactionRows.shift() ?? [], []];
+  });
+  const tx = { execute: transactionExecute };
   const transaction = vi.fn(
     async (operation: (value: typeof tx) => unknown) => {
       events.push("transaction.begin");
@@ -47,23 +64,8 @@ function transactionHarness(executeRows: unknown[][]) {
       }
     },
   );
-  const autocommit = {
-    execute: vi.fn(),
-    insert: vi.fn(),
-  };
-  getDbMock.mockResolvedValue({
-    ...autocommit,
-    transaction,
-  } as never);
-  return {
-    autocommit,
-    events,
-    execute,
-    insert,
-    onDuplicateKeyUpdate,
-    transaction,
-    values,
-  };
+  getDbMock.mockResolvedValue({ execute, transaction } as never);
+  return { events, execute, transaction, transactionExecute, tx };
 }
 
 beforeEach(() => {
@@ -71,22 +73,21 @@ beforeEach(() => {
 });
 
 describe("readiness fence V1", () => {
-  it("não expõe aprovação, snapshot nem helpers que aceitem tx estrutural", () => {
+  it("não expõe aprovação, snapshot ou a antiga trava longa por revisão", () => {
     expect("createReadinessFenceAcknowledgementBinding" in readinessFence).toBe(
       false,
     );
     expect("approveReadinessFence" in readinessFence).toBe(false);
     expect("bindClientReadinessSnapshot" in readinessFence).toBe(false);
+    expect("materializeAndLockInstitution" in readinessFence).toBe(false);
+    expect("assertInstitutionUnchanged" in readinessFence).toBe(false);
+    expect("withReadinessFenceV1Transaction" in readinessFence).toBe(false);
     expect(
-      "materializeAndLockInstitutionReadinessFenceV1" in readinessFence,
-    ).toBe(false);
-    expect("assertInstitutionReadinessFenceV1Unchanged" in readinessFence).toBe(
-      false,
-    );
-    expect("assertCompleteReadinessFenceV1Installation" in readinessFence).toBe(
-      false,
-    );
-    expect("withReadinessFenceV1Transaction" in readinessFence).toBe(true);
+      "captureInstitutionReadinessFenceV1HighWatermark" in readinessFence,
+    ).toBe(true);
+    expect(
+      "withReadinessFenceV1FinalDecisionTransaction" in readinessFence,
+    ).toBe(true);
   });
 
   it("trata recibo como pré-requisito técnico, nunca autoridade de prontidão", () => {
@@ -96,162 +97,199 @@ describe("readiness fence V1", () => {
     expect(READINESS_FENCE_V1_FUTURE_CONSUMER_REQUIREMENTS).toEqual([
       "VERIFY_CURRENT_CATALOG_IN_SAME_TRANSACTION",
       "VERIFY_TRIGGER_COVERAGE_IN_SAME_TRANSACTION",
+      "CAPTURE_SERVER_ISSUED_HIGH_WATERMARK",
+      "LOCK_NORMAL_RESOURCES_BEFORE_EVENT_RANGE",
     ]);
   });
 
-  it("rejeita objeto de db estrutural em autocommit antes de qualquer query", async () => {
-    const autocommit = { execute: vi.fn(), insert: vi.fn() };
-    getDbMock.mockResolvedValue(autocommit as never);
+  it("captura somente watermark emitido pelo servidor após validar o recibo", async () => {
+    const fixture = databaseHarness({
+      captureRows: [validMarker, [{ eventId: "9007199254740993" }]],
+    });
 
     await expect(
-      withReadinessFenceV1Transaction(async () => undefined),
+      captureInstitutionReadinessFenceV1HighWatermark(7),
+    ).resolves.toEqual({ institutionId: 7, eventId: 9007199254740993n });
+    expect(fixture.execute).toHaveBeenCalledTimes(2);
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it("falha fechada sem recibo antes de consultar o high-watermark", async () => {
+    const fixture = databaseHarness({ captureRows: [[]] });
+
+    await expect(
+      captureInstitutionReadinessFenceV1HighWatermark(7),
+    ).rejects.toThrow("READINESS_FENCE_V1_INSTALLATION_UNVERIFIED");
+    expect(fixture.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejeita db sem transação antes de abrir a decisão final", async () => {
+    databaseHarness({
+      captureRows: [validMarker, [{ eventId: "1" }]],
+    });
+    const highWatermark =
+      await captureInstitutionReadinessFenceV1HighWatermark(7);
+    const execute = vi.fn();
+    getDbMock.mockResolvedValue({ execute } as never);
+
+    await expect(
+      withReadinessFenceV1FinalDecisionTransaction(
+        highWatermark,
+        async () => undefined,
+        async () => undefined,
+      ),
     ).rejects.toThrow("READINESS_FENCE_V1_TRANSACTION_UNAVAILABLE");
-    expect(autocommit.execute).not.toHaveBeenCalled();
-    expect(autocommit.insert).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it("falha fechada sem recibo antes de executar o callback", async () => {
-    const fixture = transactionHarness([[]]);
-    const operation = vi.fn(async () => undefined);
+  it("ordena locks normais antes da faixa da fence e decide só após ela", async () => {
+    const fixture = databaseHarness({
+      captureRows: [validMarker, [{ eventId: "12" }]],
+      transactionRows: [validMarker, []],
+    });
+    const sequence: string[] = [];
 
-    await expect(withReadinessFenceV1Transaction(operation)).rejects.toThrow(
-      "READINESS_FENCE_V1_INSTALLATION_UNVERIFIED",
-    );
-    expect(operation).not.toHaveBeenCalled();
-    expect(fixture.transaction).toHaveBeenCalledTimes(1);
-    expect(fixture.autocommit.execute).not.toHaveBeenCalled();
-  });
-
-  it("mantém leitura, lock e rechecagem na mesma transação real", async () => {
-    const fixture = transactionHarness([
-      validMarker,
-      validMarker,
-      [{ institutionId: "7", revision: "9007199254740993" }],
-      validMarker,
-      [{ institutionId: "7", revision: "9007199254740993" }],
-    ]);
-
+    const highWatermark =
+      await captureInstitutionReadinessFenceV1HighWatermark(7);
     await expect(
-      withReadinessFenceV1Transaction(async (scope) => {
-        expect(Object.isFrozen(scope)).toBe(true);
-        const lock = await scope.materializeAndLockInstitution(7);
-        expect(lock).toEqual({ institutionId: 7, revision: 9007199254740993n });
-        return scope.assertInstitutionUnchanged(lock);
-      }),
-    ).resolves.toEqual({ institutionId: 7, revision: 9007199254740993n });
+      withReadinessFenceV1FinalDecisionTransaction(
+        highWatermark,
+        async (tx) => {
+          expect(tx).toBe(fixture.tx);
+          expect(fixture.transactionExecute).not.toHaveBeenCalled();
+          sequence.push("normal-locks");
+          return "prepared";
+        },
+        async (tx, prepared) => {
+          expect(tx).toBe(fixture.tx);
+          expect(prepared).toBe("prepared");
+          sequence.push("decision");
+          return "published";
+        },
+      ),
+    ).resolves.toBe("published");
 
-    expect(fixture.transaction).toHaveBeenCalledTimes(1);
-    expect(fixture.values).toHaveBeenCalledWith({ institutionId: 7 });
-    expect(fixture.onDuplicateKeyUpdate).toHaveBeenCalledTimes(1);
-    expect(fixture.autocommit.execute).not.toHaveBeenCalled();
-    expect(fixture.autocommit.insert).not.toHaveBeenCalled();
+    expect(sequence).toEqual(["normal-locks", "decision"]);
+    expect(fixture.transactionExecute).toHaveBeenCalledTimes(2);
     expect(fixture.events).toEqual([
+      "capture.execute",
+      "capture.execute",
       "transaction.begin",
-      "transaction.execute",
-      "transaction.execute",
-      "transaction.execute",
       "transaction.execute",
       "transaction.execute",
       "transaction.end",
     ]);
-  });
-
-  it("rejeita recibo divergente, duplicado ou malformado", async () => {
-    for (const rows of [
-      [
-        {
-          ...validMarker[0],
-          coverageHash: "b".repeat(64),
-        },
-      ],
-      [...validMarker, { ...validMarker[0], installationId: 2 }],
-      [{ ...validMarker[0], installationId: "01" }],
-    ]) {
-      transactionHarness([rows]);
-      await expect(
-        withReadinessFenceV1Transaction(async (scope) =>
-          scope.materializeAndLockInstitution(7),
-        ),
-      ).rejects.toThrow("READINESS_FENCE_V1_INSTALLATION_UNVERIFIED");
-    }
-  });
-
-  it("rejeita resultado de driver com instituição ou revisão não canônica", async () => {
-    for (const row of [
-      { institutionId: 8, revision: "2" },
-      { institutionId: 7, revision: "-1" },
-      { institutionId: 7, revision: "01" },
-    ]) {
-      transactionHarness([validMarker, validMarker, [row]]);
-      await expect(
-        withReadinessFenceV1Transaction(async (scope) =>
-          scope.materializeAndLockInstitution(7),
-        ),
-      ).rejects.toThrow("READINESS_FENCE_V1_INTEGRITY_FAILURE");
-    }
-  });
-
-  it("não aceita lock criado pelo chamador", async () => {
-    transactionHarness([validMarker]);
-    await expect(
-      withReadinessFenceV1Transaction(async (scope) =>
-        scope.assertInstitutionUnchanged({ institutionId: 7, revision: 1n }),
-      ),
-    ).rejects.toThrow("READINESS_FENCE_V1_UNISSUED_LOCK");
-  });
-
-  it("invalida scope retida depois do commit da transação", async () => {
-    const fixture = transactionHarness([
-      validMarker,
-      validMarker,
-      [{ institutionId: 7, revision: "12" }],
-    ]);
-    let retainedScope!: ReadinessFenceV1Scope;
-    let lock!: InstitutionReadinessFenceV1Lock;
-
-    await withReadinessFenceV1Transaction(async (scope) => {
-      retainedScope = scope;
-      lock = await scope.materializeAndLockInstitution(7);
+    expect(fixture.transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "repeatable read",
     });
+  });
 
-    expect(() => retainedScope.assertInstitutionUnchanged(lock)).toThrow(
-      "READINESS_FENCE_V1_SCOPE_INACTIVE",
+  it("rejeita uma alteração confirmada entre captura e fechamento", async () => {
+    const fixture = databaseHarness({
+      captureRows: [validMarker, [{ eventId: "4" }]],
+      transactionRows: [validMarker, [{ eventId: "5" }]],
+    });
+    const decision = vi.fn(async () => "should-not-run");
+    const highWatermark =
+      await captureInstitutionReadinessFenceV1HighWatermark(7);
+
+    await expect(
+      withReadinessFenceV1FinalDecisionTransaction(
+        highWatermark,
+        async () => "prepared",
+        decision,
+      ),
+    ).rejects.toThrow("READINESS_FENCE_V1_STALE");
+    expect(decision).not.toHaveBeenCalled();
+    expect(fixture.transactionExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("recusa watermark forjado ou dado de driver não canônico", async () => {
+    databaseHarness({
+      captureRows: [validMarker, [{ eventId: "01" }]],
+    });
+    await expect(
+      captureInstitutionReadinessFenceV1HighWatermark(7),
+    ).rejects.toThrow("READINESS_FENCE_V1_HIGH_WATERMARK_INTEGRITY_FAILURE");
+
+    const fixture = databaseHarness({ transactionRows: [] });
+    await expect(
+      withReadinessFenceV1FinalDecisionTransaction(
+        { institutionId: 7, eventId: 1n },
+        async () => undefined,
+        async () => undefined,
+      ),
+    ).rejects.toThrow("READINESS_FENCE_V1_UNISSUED_HIGH_WATERMARK");
+    expect(fixture.transactionExecute).not.toHaveBeenCalled();
+  });
+
+  it("consome o high-watermark após uma decisão final", async () => {
+    const fixture = databaseHarness({
+      captureRows: [validMarker, [{ eventId: "1" }]],
+      transactionRows: [validMarker, []],
+    });
+    const highWatermark =
+      await captureInstitutionReadinessFenceV1HighWatermark(7);
+
+    await withReadinessFenceV1FinalDecisionTransaction(
+      highWatermark,
+      async () => undefined,
+      async () => undefined,
     );
-    expect(fixture.execute).toHaveBeenCalledTimes(3);
-  });
 
-  it("vincula lock à transação que o emitiu", async () => {
-    transactionHarness([
-      validMarker,
-      validMarker,
-      [{ institutionId: 7, revision: "12" }],
-    ]);
-    let firstLock!: InstitutionReadinessFenceV1Lock;
-    await withReadinessFenceV1Transaction(async (scope) => {
-      firstLock = await scope.materializeAndLockInstitution(7);
-    });
-
-    transactionHarness([validMarker]);
     await expect(
-      withReadinessFenceV1Transaction(async (scope) =>
-        scope.assertInstitutionUnchanged(firstLock),
+      withReadinessFenceV1FinalDecisionTransaction(
+        highWatermark,
+        async () => undefined,
+        async () => undefined,
       ),
-    ).rejects.toThrow("READINESS_FENCE_V1_LOCK_TRANSACTION_MISMATCH");
+    ).rejects.toThrow("READINESS_FENCE_V1_HIGH_WATERMARK_CONSUMED");
+    expect(fixture.transaction).toHaveBeenCalledTimes(1);
   });
 
-  it("rejeita revisão alterada entre leitura e rechecagem", async () => {
-    transactionHarness([
-      validMarker,
-      validMarker,
-      [{ institutionId: 7, revision: "11" }],
-      validMarker,
-      [{ institutionId: 7, revision: "12" }],
-    ]);
+  it("mantém a transação aberta até locks normais e decisão terminarem", async () => {
+    const fixture = databaseHarness({
+      captureRows: [validMarker, [{ eventId: "1" }]],
+      transactionRows: [validMarker, []],
+    });
+    const highWatermark =
+      await captureInstitutionReadinessFenceV1HighWatermark(7);
+    const normalLocksStarted = deferred();
+    const releaseNormalLocks = deferred();
+
+    const operation = withReadinessFenceV1FinalDecisionTransaction(
+      highWatermark,
+      async () => {
+        normalLocksStarted.resolve();
+        await releaseNormalLocks.promise;
+      },
+      async () => "decision",
+    );
+
+    await normalLocksStarted.promise;
+    expect(fixture.events).toContain("transaction.begin");
+    expect(fixture.events).not.toContain("transaction.end");
+    releaseNormalLocks.resolve();
+    await expect(operation).resolves.toBe("decision");
+    expect(fixture.events).toContain("transaction.end");
+  });
+
+  it("propaga falha dos locks normais e encerra a transação", async () => {
+    const fixture = databaseHarness({
+      captureRows: [validMarker, [{ eventId: "1" }]],
+    });
+    const highWatermark =
+      await captureInstitutionReadinessFenceV1HighWatermark(7);
+
     await expect(
-      withReadinessFenceV1Transaction(async (scope) => {
-        const lock = await scope.materializeAndLockInstitution(7);
-        return scope.assertInstitutionUnchanged(lock);
-      }),
-    ).rejects.toThrow("READINESS_FENCE_V1_CHANGED");
+      withReadinessFenceV1FinalDecisionTransaction(
+        highWatermark,
+        async () => {
+          throw new Error("NORMAL_LOCK_FAILED");
+        },
+        async () => undefined,
+      ),
+    ).rejects.toThrow("NORMAL_LOCK_FAILED");
+    expect(fixture.events).toContain("transaction.end");
   });
 });

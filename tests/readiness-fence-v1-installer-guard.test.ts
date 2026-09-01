@@ -24,7 +24,7 @@ describe("proteções do instalador dedicado da readiness fence V1", () => {
     expect(() =>
       assertGenericManualMigrationAllowed(
         "/tmp/copia-sem-diretiva.sql",
-        "CREATE TABLE institution_readiness_fences (institution_id INT)",
+        "CREATE TABLE institution_readiness_fence_events (institution_id INT)",
       ),
     ).toThrow("READINESS_FENCE_V1_DEDICATED_INSTALLER_REQUIRED");
     expect(() =>

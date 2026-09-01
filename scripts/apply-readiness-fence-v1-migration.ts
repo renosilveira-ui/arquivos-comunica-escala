@@ -121,10 +121,9 @@ export const READINESS_FENCE_V1_SOURCE_COLUMNS = {
 } as const;
 
 export const READINESS_FENCE_V1_OWNED_TABLES = [
-  "institution_readiness_fences",
+  "institution_readiness_fence_events",
   "institution_readiness_fence_installations",
 ] as const;
-const READINESS_FENCE_V1_FOREIGN_KEY_NAME = "fk_rdf_institution";
 
 type OwnedTableName = (typeof READINESS_FENCE_V1_OWNED_TABLES)[number];
 /**
@@ -167,6 +166,14 @@ export type ExistingKeyDefinition = Readonly<{
   ordinalPosition: number;
 }>;
 
+export type ExistingIndexDefinition = Readonly<{
+  tableName: string;
+  indexName: string;
+  columnName: string;
+  seqInIndex: number;
+  nonUnique: number | string;
+}>;
+
 export type ExistingForeignKeyDefinition = Readonly<{
   constraintSchema: string;
   tableName: string;
@@ -198,6 +205,7 @@ export type ReadinessFenceV1Catalog = Readonly<{
   tables: readonly ExistingTableDefinition[];
   columns: readonly ExistingColumnDefinition[];
   keys: readonly ExistingKeyDefinition[];
+  indexes: readonly ExistingIndexDefinition[];
   foreignKeys: readonly ExistingForeignKeyDefinition[];
   triggers: readonly ExistingTriggerDefinition[];
 }>;
@@ -263,7 +271,10 @@ export function extractReadinessFenceV1Migration(
   tableSql: string;
   triggers: readonly IdempotentTriggerDefinition[];
 }> {
-  const allowedTables = new Set(sourceTableNames());
+  const allowedTables = new Set([
+    ...sourceTableNames(),
+    "institution_readiness_fence_events",
+  ]);
   const directive = /^\s*--\s*@readiness-fence-trigger\s*$/gim;
   const tableSqlParts: string[] = [];
   const triggers: IdempotentTriggerDefinition[] = [];
@@ -502,25 +513,25 @@ type OwnedColumnRequirement = Readonly<{
 }>;
 
 const DEFAULT_NONE = (value: string | null) => value === null;
-const DEFAULT_ZERO = (value: string | null) => value === "0";
 const DEFAULT_CURRENT_TIMESTAMP = (value: string | null) =>
   value !== null && /^(?:current_timestamp|now)(?:\(\))?$/i.test(value);
 
 const OWNED_COLUMNS: Record<OwnedTableName, readonly OwnedColumnRequirement[]> =
   {
-    institution_readiness_fences: [
+    institution_readiness_fence_events: [
+      {
+        name: "id",
+        type: /^bigint(?:\(\d+\))? unsigned$/i,
+        nullable: "NO",
+        default: DEFAULT_NONE,
+        extra: /^auto_increment$/i,
+        primary: true,
+      },
       {
         name: "institution_id",
         type: /^int(?:\(\d+\))?$/i,
         nullable: "NO",
         default: DEFAULT_NONE,
-        primary: true,
-      },
-      {
-        name: "revision",
-        type: /^bigint(?:\(\d+\))? unsigned$/i,
-        nullable: "NO",
-        default: DEFAULT_ZERO,
       },
       {
         name: "created_at",
@@ -528,13 +539,6 @@ const OWNED_COLUMNS: Record<OwnedTableName, readonly OwnedColumnRequirement[]> =
         nullable: "NO",
         default: DEFAULT_CURRENT_TIMESTAMP,
         extra: /^(?:default_generated)?$/i,
-      },
-      {
-        name: "updated_at",
-        type: /^timestamp$/i,
-        nullable: "NO",
-        default: DEFAULT_CURRENT_TIMESTAMP,
-        extra: /^(?:default_generated )?on update current_timestamp(?:\(\))?$/i,
       },
     ],
     institution_readiness_fence_installations: [
@@ -612,28 +616,50 @@ function assertOwnedTableShape(
     throw new Error("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
   }
 
+  const secondaryIndexes = catalog.indexes
+    .filter(
+      (index) =>
+        normalizeIdentifier(index.tableName) === tableName &&
+        normalizeIdentifier(index.indexName) !== "primary",
+    )
+    .sort((left, right) => {
+      const byName = compareCanonicalAscii(left.indexName, right.indexName);
+      return byName === 0 ? left.seqInIndex - right.seqInIndex : byName;
+    });
+  const expectedSecondaryIndexes =
+    tableName === "institution_readiness_fence_events"
+      ? [
+          {
+            indexName: "idx_rdf_event_institution_id",
+            columnName: "institution_id",
+            seqInIndex: 1,
+          },
+          {
+            indexName: "idx_rdf_event_institution_id",
+            columnName: "id",
+            seqInIndex: 2,
+          },
+        ]
+      : [];
+  if (
+    secondaryIndexes.length !== expectedSecondaryIndexes.length ||
+    secondaryIndexes.some((index, position) => {
+      const expected = expectedSecondaryIndexes[position]!;
+      return (
+        normalizeIdentifier(index.indexName) !== expected.indexName ||
+        normalizeIdentifier(index.columnName) !== expected.columnName ||
+        Number(index.seqInIndex) !== expected.seqInIndex ||
+        Number(index.nonUnique) !== 1
+      );
+    })
+  ) {
+    throw new Error("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
+  }
+
   const foreignKeys = catalog.foreignKeys.filter(
     (foreignKey) => normalizeIdentifier(foreignKey.tableName) === tableName,
   );
-  if (tableName === "institution_readiness_fences") {
-    if (
-      foreignKeys.length !== 1 ||
-      normalizeIdentifier(foreignKeys[0]!.constraintName) !==
-        "fk_rdf_institution" ||
-      normalizeIdentifier(foreignKeys[0]!.columnName) !== "institution_id" ||
-      normalizeIdentifier(foreignKeys[0]!.constraintSchema) !==
-        normalizeIdentifier(foreignKeys[0]!.referencedTableSchema) ||
-      normalizeIdentifier(foreignKeys[0]!.referencedTableName) !==
-        "institutions" ||
-      normalizeIdentifier(foreignKeys[0]!.referencedColumnName) !== "id" ||
-      foreignKeys[0]!.deleteRule.toUpperCase() !== "CASCADE" ||
-      !["RESTRICT", "NO ACTION"].includes(
-        foreignKeys[0]!.updateRule.toUpperCase(),
-      )
-    ) {
-      throw new Error("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
-    }
-  } else if (foreignKeys.length !== 0) {
+  if (foreignKeys.length !== 0) {
     throw new Error("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
   }
 }
@@ -644,34 +670,25 @@ function ownedTablePresence(catalog: ReadinessFenceV1Catalog): number {
     .length;
 }
 
-function assertNoOwnedTableTriggers(catalog: ReadinessFenceV1Catalog): void {
-  const hasOwnedTrigger = catalog.triggers.some((trigger) =>
-    READINESS_FENCE_V1_OWNED_TABLES.includes(
-      normalizeIdentifier(trigger.eventObjectTable) as OwnedTableName,
-    ),
-  );
-  if (hasOwnedTrigger) {
-    throw new Error("READINESS_FENCE_V1_OWNED_TRIGGER_UNSUPPORTED");
-  }
-}
-
-/**
- * Nomes de foreign key pertencem ao namespace do schema InnoDB. Uma colisão
- * fora da tabela própria precisa falhar antes do primeiro CREATE TABLE,
- * nunca deixar o instalador descobrir isso depois de iniciar o DDL.
- */
-function assertNoReadinessFenceV1ForeignKeyNameCollision(
+function assertNoUnexpectedOwnedTableTriggers(
   catalog: ReadinessFenceV1Catalog,
+  expectedTriggers: readonly IdempotentTriggerDefinition[],
 ): void {
-  const collision = catalog.foreignKeys.some(
-    (foreignKey) =>
-      normalizeIdentifier(foreignKey.constraintName) ===
-        READINESS_FENCE_V1_FOREIGN_KEY_NAME &&
-      normalizeIdentifier(foreignKey.tableName) !==
-        "institution_readiness_fences",
+  const expectedByName = new Map(
+    expectedTriggers.map((trigger) => [trigger.name, trigger]),
   );
-  if (collision) {
-    throw new Error("READINESS_FENCE_V1_FOREIGN_KEY_NAME_COLLISION");
+  for (const trigger of catalog.triggers) {
+    if (
+      !READINESS_FENCE_V1_OWNED_TABLES.includes(
+        normalizeIdentifier(trigger.eventObjectTable) as OwnedTableName,
+      )
+    ) {
+      continue;
+    }
+    const expected = expectedByName.get(trigger.triggerName);
+    if (!expected || !idempotentTriggerMatchesExisting(expected, trigger)) {
+      throw new Error("READINESS_FENCE_V1_OWNED_TRIGGER_UNSUPPORTED");
+    }
   }
 }
 
@@ -705,8 +722,7 @@ export function classifyReadinessFenceV1Installation(
   markers: readonly ExistingInstallationMarker[] | undefined,
 ): InstallationState {
   assertReadinessFenceV1SourceSchema(catalog);
-  assertNoReadinessFenceV1ForeignKeyNameCollision(catalog);
-  assertNoOwnedTableTriggers(catalog);
+  assertNoUnexpectedOwnedTableTriggers(catalog, expectedTriggers);
   const missingTriggers = missingOrIncompatibleReadinessFenceV1Triggers(
     expectedTriggers,
     catalog.triggers,
@@ -872,6 +888,19 @@ export async function readReadinessFenceV1Catalog(
     ].join("\n"),
     [READINESS_FENCE_V1_OWNED_TABLES],
   );
+  const [indexRows] = await connection.query(
+    [
+      "SELECT TABLE_NAME AS tableName,",
+      "       INDEX_NAME AS indexName,",
+      "       COLUMN_NAME AS columnName,",
+      "       SEQ_IN_INDEX AS seqInIndex,",
+      "       NON_UNIQUE AS nonUnique",
+      "FROM INFORMATION_SCHEMA.STATISTICS",
+      "WHERE TABLE_SCHEMA = DATABASE()",
+      "  AND TABLE_NAME IN (?)",
+    ].join("\n"),
+    [READINESS_FENCE_V1_OWNED_TABLES],
+  );
   const [foreignKeyRows] = await connection.query(
     [
       "SELECT kcu.CONSTRAINT_SCHEMA AS constraintSchema,",
@@ -889,10 +918,10 @@ export async function readReadinessFenceV1Catalog(
       " AND rc.TABLE_NAME = kcu.TABLE_NAME",
       " AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME",
       "WHERE kcu.CONSTRAINT_SCHEMA = DATABASE()",
-      "  AND (kcu.TABLE_NAME IN (?) OR kcu.CONSTRAINT_NAME = ?)",
+      "  AND kcu.TABLE_NAME IN (?)",
       "  AND kcu.REFERENCED_TABLE_NAME IS NOT NULL",
     ].join("\n"),
-    [READINESS_FENCE_V1_OWNED_TABLES, READINESS_FENCE_V1_FOREIGN_KEY_NAME],
+    [READINESS_FENCE_V1_OWNED_TABLES],
   );
   const [triggerRows] = await connection.query(
     [
@@ -917,6 +946,9 @@ export async function readReadinessFenceV1Catalog(
       ? (columnRows as ExistingColumnDefinition[])
       : [],
     keys: Array.isArray(keyRows) ? (keyRows as ExistingKeyDefinition[]) : [],
+    indexes: Array.isArray(indexRows)
+      ? (indexRows as ExistingIndexDefinition[])
+      : [],
     foreignKeys: Array.isArray(foreignKeyRows)
       ? (foreignKeyRows as ExistingForeignKeyDefinition[])
       : [],
@@ -966,8 +998,7 @@ async function assertPostDdlBeforeMarker(
     expectedTriggers,
   );
   assertReadinessFenceV1SourceSchema(catalog);
-  assertNoReadinessFenceV1ForeignKeyNameCollision(catalog);
-  assertNoOwnedTableTriggers(catalog);
+  assertNoUnexpectedOwnedTableTriggers(catalog, expectedTriggers);
   if (ownedTablePresence(catalog) !== READINESS_FENCE_V1_OWNED_TABLES.length) {
     throw new Error("READINESS_FENCE_V1_POSTFLIGHT_INCOMPLETE");
   }

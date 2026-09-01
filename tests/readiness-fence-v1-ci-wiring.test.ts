@@ -20,6 +20,9 @@ describe("wiring da prova MySQL da readiness fence V1 na CI", () => {
     const proofStep = CI_WORKFLOW.indexOf(
       "- name: Prove readiness fence V1 manual migration",
     );
+    const concurrencyStep = CI_WORKFLOW.indexOf(
+      "- name: Validate readiness fence V1 event journal concurrency",
+    );
     const preparedStep = CI_WORKFLOW.indexOf(
       "- name: Validate readiness fence V1 over Drizzle PREPARED schema",
     );
@@ -27,6 +30,7 @@ describe("wiring da prova MySQL da readiness fence V1 na CI", () => {
     expect(preparedStep).toBeGreaterThan(schemaStep);
     expect(proofStep).toBeGreaterThan(schemaStep);
     expect(proofStep).toBeGreaterThan(preparedStep);
+    expect(concurrencyStep).toBeGreaterThan(proofStep);
     const preparedBlock = CI_WORKFLOW.slice(preparedStep, proofStep);
     expect(preparedBlock).toContain('READINESS_FENCE_V1_APPLY: "1"');
     expect(preparedBlock).toContain(
@@ -38,5 +42,12 @@ describe("wiring da prova MySQL da readiness fence V1 na CI", () => {
       "run: pnpm exec tsx scripts/prove-readiness-fence-v1-migration.ts",
     );
     expect(proofBlock).toContain("env:");
+    const concurrencyBlock = CI_WORKFLOW.slice(concurrencyStep);
+    expect(concurrencyBlock).toContain(
+      "READINESS_FENCE_V1_MYSQL_TEST_SERVER_URL: ${{ env.READINESS_FENCE_V1_PROOF_SERVER_URL }}",
+    );
+    expect(concurrencyBlock).toContain(
+      "run: pnpm test:readiness-fence-v1-mysql",
+    );
   });
 });

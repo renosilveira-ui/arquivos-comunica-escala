@@ -34,6 +34,7 @@ export default defineConfig({
       "**/lib/**",
       "**/.expo/**",
       "tests/sector-service-specialties-migration-mysql.test.ts",
+      "tests/readiness-fence-v1-mysql.test.ts",
     ],
   },
   define: {

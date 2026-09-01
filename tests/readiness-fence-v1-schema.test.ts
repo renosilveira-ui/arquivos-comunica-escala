@@ -1,37 +1,31 @@
 import { getTableConfig } from "drizzle-orm/mysql-core";
 import { describe, expect, it } from "vitest";
 import {
+  institutionReadinessFenceEvents,
   institutionReadinessFenceInstallations,
-  institutionReadinessFences,
 } from "../drizzle/schema";
 
 describe("schema da readiness fence V1", () => {
-  it("mantém uma revisão monotônica por instituição", () => {
-    const config = getTableConfig(institutionReadinessFences);
+  it("mantém journal append-only sem FK ou cascade silencioso", () => {
+    const config = getTableConfig(institutionReadinessFenceEvents);
 
-    expect(institutionReadinessFences.institutionId.primary).toBe(true);
-    expect(institutionReadinessFences.institutionId.notNull).toBe(true);
-    expect(institutionReadinessFences.revision.dataType).toBe("bigint");
-    expect(institutionReadinessFences.revision.notNull).toBe(true);
-    expect(institutionReadinessFences.revision.hasDefault).toBe(true);
+    expect(institutionReadinessFenceEvents.id.primary).toBe(true);
+    expect(institutionReadinessFenceEvents.id.notNull).toBe(true);
+    expect(institutionReadinessFenceEvents.id.dataType).toBe("bigint");
+    expect(institutionReadinessFenceEvents.id.hasDefault).toBe(true);
+    expect(institutionReadinessFenceEvents.institutionId.notNull).toBe(true);
+    expect(config.foreignKeys).toEqual([]);
     expect(
-      config.foreignKeys.map((foreignKey) =>
-        foreignKey.reference().columns.map(({ name }) => name),
-      ),
-    ).toEqual(expect.arrayContaining([["institution_id"]]));
-    expect(
-      config.foreignKeys.map((foreignKey) => foreignKey.getName()),
-    ).toEqual(["fk_rdf_institution"]);
-    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
-  });
-
-  it("usa default SQL serializável, nunca literal BigInt no schema", () => {
-    expect(() =>
-      JSON.stringify(institutionReadinessFences.revision.default),
-    ).not.toThrow();
-    expect(
-      JSON.stringify(institutionReadinessFences.revision.default),
-    ).toContain("0");
+      config.indexes.map((index) => ({
+        name: index.config.name,
+        columns: index.config.columns.map((column) => column.name),
+      })),
+    ).toEqual([
+      {
+        name: "idx_rdf_event_institution_id",
+        columns: ["institution_id", "id"],
+      },
+    ]);
   });
 
   it("expõe recibo singleton de cobertura instalado", () => {

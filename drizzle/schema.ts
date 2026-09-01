@@ -189,37 +189,32 @@ export const institutions = mysqlTable("institutions", {
 });
 
 /**
- * Revisão monotônica por instituição para um futuro diagnóstico corporativo.
+ * Journal imutável de invalidações de prontidão por instituição.
  *
- * Esta tabela não guarda uma decisão de prontidão e não é consultada pelos
- * fluxos atuais de publicação. A migration manual V1 instala os observadores
- * que avançam a revisão; um uso futuro deve validar catálogo e cobertura de
- * triggers na mesma transação. O recibo de instalação isolado não basta.
+ * Não há foreign key intencionalmente: uma FK com cascade apagaria a prova
+ * histórica no delete da instituição, enquanto uma FK restrict impediria a
+ * própria exclusão. Qualquer retenção, expurgo ou tombstone futuro precisa de
+ * uma política explícita e auditada; nunca de uma exclusão referencial
+ * implícita. Esta tabela tampouco guarda uma decisão de prontidão.
  */
-export const institutionReadinessFences = mysqlTable(
-  "institution_readiness_fences",
+export const institutionReadinessFenceEvents = mysqlTable(
+  "institution_readiness_fence_events",
   {
-    // A FK fica no callback com nome estável. O nome automático do Drizzle
-    // diverge do contrato que o instalador manual valida no INFORMATION_SCHEMA.
-    institutionId: int("institution_id").primaryKey(),
-    // SQL literal, em vez de 0n, evita serialização BigInt pelo drizzle-kit.
-    revision: bigint("revision", { mode: "bigint", unsigned: true })
-      .notNull()
-      .default(sql`0`),
+    id: bigint("id", { mode: "bigint", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    institutionId: int("institution_id").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
   (table) => ({
-    fkReadinessFenceInstitution: foreignKey({
-      columns: [table.institutionId],
-      foreignColumns: [institutions.id],
-      name: "fk_rdf_institution",
-    }).onDelete("cascade"),
+    idxReadinessFenceEventInstitutionId: index(
+      "idx_rdf_event_institution_id",
+    ).on(table.institutionId, table.id),
   }),
 );
 
-export type InstitutionReadinessFence =
-  typeof institutionReadinessFences.$inferSelect;
+export type InstitutionReadinessFenceEvent =
+  typeof institutionReadinessFenceEvents.$inferSelect;
 
 /**
  * Recibo singleton da instalação integral da fence V1.

@@ -34,6 +34,7 @@ import {
   readReadinessFenceV1Catalog,
   type ExistingColumnDefinition,
   type ExistingForeignKeyDefinition,
+  type ExistingIndexDefinition,
   type ExistingKeyDefinition,
   type ExistingTableDefinition,
   type ExistingTriggerDefinition,
@@ -88,7 +89,14 @@ function sourceCatalog(): ReadinessFenceV1Catalog {
       extra: "",
     })),
   );
-  return { tables, columns, keys: [], foreignKeys: [], triggers: [] };
+  return {
+    tables,
+    columns,
+    keys: [],
+    indexes: [],
+    foreignKeys: [],
+    triggers: [],
+  };
 }
 
 function existingTrigger(
@@ -107,10 +115,11 @@ function existingTrigger(
 function completeCatalog(
   triggers: readonly IdempotentTriggerDefinition[],
 ): ReadinessFenceV1Catalog {
-  const catalog = sourceCatalog();
-  catalog.tables.push(
+  const source = sourceCatalog();
+  const tables: ExistingTableDefinition[] = [
+    ...source.tables,
     {
-      tableName: "institution_readiness_fences",
+      tableName: "institution_readiness_fence_events",
       tableType: "BASE TABLE",
       engine: "InnoDB",
     },
@@ -119,10 +128,19 @@ function completeCatalog(
       tableType: "BASE TABLE",
       engine: "InnoDB",
     },
-  );
-  catalog.columns.push(
+  ];
+  const columns: ExistingColumnDefinition[] = [
+    ...source.columns,
     {
-      tableName: "institution_readiness_fences",
+      tableName: "institution_readiness_fence_events",
+      columnName: "id",
+      columnType: "bigint unsigned",
+      isNullable: "NO",
+      columnDefault: null,
+      extra: "auto_increment",
+    },
+    {
+      tableName: "institution_readiness_fence_events",
       columnName: "institution_id",
       columnType: "int",
       isNullable: "NO",
@@ -130,28 +148,12 @@ function completeCatalog(
       extra: "",
     },
     {
-      tableName: "institution_readiness_fences",
-      columnName: "revision",
-      columnType: "bigint unsigned",
-      isNullable: "NO",
-      columnDefault: "0",
-      extra: "",
-    },
-    {
-      tableName: "institution_readiness_fences",
+      tableName: "institution_readiness_fence_events",
       columnName: "created_at",
       columnType: "timestamp",
       isNullable: "NO",
       columnDefault: "CURRENT_TIMESTAMP",
       extra: "DEFAULT_GENERATED",
-    },
-    {
-      tableName: "institution_readiness_fences",
-      columnName: "updated_at",
-      columnType: "timestamp",
-      isNullable: "NO",
-      columnDefault: "CURRENT_TIMESTAMP",
-      extra: "DEFAULT_GENERATED on update CURRENT_TIMESTAMP",
     },
     {
       tableName: "institution_readiness_fence_installations",
@@ -185,12 +187,12 @@ function completeCatalog(
       columnDefault: "CURRENT_TIMESTAMP",
       extra: "DEFAULT_GENERATED",
     },
-  );
+  ];
   const keys: ExistingKeyDefinition[] = [
     {
-      tableName: "institution_readiness_fences",
+      tableName: "institution_readiness_fence_events",
       constraintName: "PRIMARY",
-      columnName: "institution_id",
+      columnName: "id",
       ordinalPosition: 1,
     },
     {
@@ -200,32 +202,45 @@ function completeCatalog(
       ordinalPosition: 1,
     },
   ];
-  const foreignKeys: ExistingForeignKeyDefinition[] = [
+  const indexes: ExistingIndexDefinition[] = [
     {
-      constraintSchema: "escalas",
-      tableName: "institution_readiness_fences",
-      constraintName: "fk_rdf_institution",
+      tableName: "institution_readiness_fence_events",
+      indexName: "idx_rdf_event_institution_id",
       columnName: "institution_id",
-      referencedTableSchema: "escalas",
-      referencedTableName: "institutions",
-      referencedColumnName: "id",
-      deleteRule: "CASCADE",
-      updateRule: "RESTRICT",
+      seqInIndex: 1,
+      nonUnique: 1,
+    },
+    {
+      tableName: "institution_readiness_fence_events",
+      indexName: "idx_rdf_event_institution_id",
+      columnName: "id",
+      seqInIndex: 2,
+      nonUnique: 1,
     },
   ];
   return {
-    ...catalog,
+    tables,
+    columns,
     keys,
-    foreignKeys,
+    indexes,
+    foreignKeys: [],
     triggers: triggers.map(existingTrigger),
   };
 }
 
+const exactMarker = [
+  {
+    id: READINESS_FENCE_V1_INSTALLATION_ID,
+    coverageVersion: READINESS_FENCE_V1_COVERAGE_VERSION,
+    coverageHash: READINESS_FENCE_V1_COVERAGE_HASH,
+  },
+];
+
 describe("migration da readiness fence V1", () => {
   const parsed = extractReadinessFenceV1Migration(MIGRATION_SQL);
 
-  it("pina a cobertura canônica de 40 triggers sem specialty como autoridade", () => {
-    expect(parsed.triggers).toHaveLength(40);
+  it("pina 40 observadores e dois guardas append-only sem specialty como autoridade", () => {
+    expect(parsed.triggers).toHaveLength(42);
     expect(new Set(parsed.triggers.map((trigger) => trigger.name)).size).toBe(
       parsed.triggers.length,
     );
@@ -240,6 +255,32 @@ describe("migration da readiness fence V1", () => {
       ]),
     );
     expect(MIGRATION_SQL).not.toContain("specialty <=>");
+    expect(MIGRATION_SQL).not.toContain("institution_readiness_fences");
+    const journalGuards = parsed.triggers.filter(
+      (trigger) => trigger.table === "institution_readiness_fence_events",
+    );
+    expect(journalGuards.map((trigger) => trigger.name).sort()).toEqual([
+      "trg_rdf_evt_bd",
+      "trg_rdf_evt_bu",
+    ]);
+    for (const trigger of journalGuards) {
+      expect(trigger.timing).toBe("BEFORE");
+      expect(["UPDATE", "DELETE"]).toContain(trigger.event);
+      expect(trigger.actionStatement).toContain("SIGNAL SQLSTATE '45000'");
+      expect(trigger.actionStatement).toContain(
+        "READINESS_FENCE_V1_EVENT_IMMUTABLE",
+      );
+    }
+    const sourceObservers = parsed.triggers.filter(
+      (trigger) => trigger.table !== "institution_readiness_fence_events",
+    );
+    expect(sourceObservers).toHaveLength(40);
+    for (const trigger of sourceObservers) {
+      expect(trigger.actionStatement).toContain(
+        "institution_readiness_fence_events",
+      );
+      expect(trigger.actionStatement).not.toMatch(/ON\s+DUPLICATE\s+KEY/i);
+    }
   });
 
   it("só declara fontes e colunas existentes no schema canônico", () => {
@@ -260,15 +301,20 @@ describe("migration da readiness fence V1", () => {
     }
   });
 
-  it("aceita somente os dois CREATE TABLE explícitos da própria fence", () => {
-    expect(
-      extractReadinessFenceV1TableStatements(parsed.tableSql),
-    ).toHaveLength(READINESS_FENCE_V1_OWNED_TABLES.length);
+  it("aceita somente as duas tabelas explícitas do journal e recibo", () => {
+    const tableStatements = extractReadinessFenceV1TableStatements(
+      parsed.tableSql,
+    );
+    expect(tableStatements).toHaveLength(
+      READINESS_FENCE_V1_OWNED_TABLES.length,
+    );
+    expect(tableStatements.join("\n")).not.toMatch(/FOREIGN\s+KEY/i);
+    expect(tableStatements.join("\n")).not.toMatch(/ON\s+DELETE\s+CASCADE/i);
     expect(() =>
       extractReadinessFenceV1TableStatements(
         parsed.tableSql.replace(
-          "CREATE TABLE institution_readiness_fences",
-          "CREATE TABLE IF NOT EXISTS institution_readiness_fences",
+          "CREATE TABLE institution_readiness_fence_events",
+          "CREATE TABLE IF NOT EXISTS institution_readiness_fence_events",
         ),
       ),
     ).toThrow("READINESS_FENCE_V1_TABLE_DDL_INVALID");
@@ -285,11 +331,9 @@ describe("migration da readiness fence V1", () => {
   });
 
   it("reconhece somente schema-push integral sem trigger nem recibo como PREPARED", () => {
-    const schemaPushCatalog = completeCatalog([]);
-
     expect(
       classifyReadinessFenceV1Installation(
-        schemaPushCatalog,
+        completeCatalog([]),
         parsed.triggers,
         [],
       ),
@@ -297,11 +341,11 @@ describe("migration da readiness fence V1", () => {
   });
 
   it("aceita as formas equivalentes now() geradas pelo Drizzle para timestamps", () => {
-    const schemaPushCatalog = completeCatalog([]);
+    const compatible = completeCatalog([]);
     const drizzleSchemaPushCatalog: ReadinessFenceV1Catalog = {
-      ...schemaPushCatalog,
-      columns: schemaPushCatalog.columns.map((column) =>
-        ["created_at", "updated_at", "installed_at"].includes(column.columnName)
+      ...compatible,
+      columns: compatible.columns.map((column) =>
+        ["created_at", "installed_at"].includes(column.columnName)
           ? { ...column, columnDefault: "now()" }
           : column,
       ),
@@ -317,10 +361,13 @@ describe("migration da readiness fence V1", () => {
   });
 
   it("falha fechada para fonte ausente ou instalação parcial", () => {
-    const noSource = sourceCatalog();
-    noSource.tables = noSource.tables.filter(
-      (table) => table.tableName !== "shift_instances",
-    );
+    const missingSource = sourceCatalog();
+    const noSource: ReadinessFenceV1Catalog = {
+      ...missingSource,
+      tables: missingSource.tables.filter(
+        (table) => table.tableName !== "shift_instances",
+      ),
+    };
     expect(() =>
       classifyReadinessFenceV1Installation(
         noSource,
@@ -330,50 +377,74 @@ describe("migration da readiness fence V1", () => {
     ).toThrow("READINESS_FENCE_V1_SOURCE_SCHEMA_UNVERIFIED");
 
     const partial = completeCatalog(parsed.triggers);
-    partial.tables.pop();
-    expect(() =>
-      classifyReadinessFenceV1Installation(partial, parsed.triggers, undefined),
-    ).toThrow("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
-
-    const partiallyTriggered = completeCatalog([parsed.triggers[0]!]);
     expect(() =>
       classifyReadinessFenceV1Installation(
-        partiallyTriggered,
+        { ...partial, tables: partial.tables.slice(0, -1) },
+        parsed.triggers,
+        undefined,
+      ),
+    ).toThrow("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
+
+    expect(() =>
+      classifyReadinessFenceV1Installation(
+        completeCatalog([parsed.triggers[0]!]),
         parsed.triggers,
         [],
       ),
     ).toThrow("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
 
-    const markerWithoutCoverage = completeCatalog([]);
     expect(() =>
       classifyReadinessFenceV1Installation(
-        markerWithoutCoverage,
+        completeCatalog([]),
         parsed.triggers,
-        [
-          {
-            id: READINESS_FENCE_V1_INSTALLATION_ID,
-            coverageVersion: READINESS_FENCE_V1_COVERAGE_VERSION,
-            coverageHash: READINESS_FENCE_V1_COVERAGE_HASH,
-          },
-        ],
+        exactMarker,
       ),
     ).toThrow("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
   });
 
-  it("recusa tabela preparada cujo contrato não é exatamente o do schema/manual", () => {
+  it("recusa journal preparado sem índice, com coluna divergente ou FK", () => {
     const compatible = completeCatalog([]);
-    const incompatible: ReadinessFenceV1Catalog = {
-      ...compatible,
-      columns: compatible.columns.map((column) =>
-        column.tableName === "institution_readiness_fence_installations" &&
-        column.columnName === "coverage_hash"
-          ? { ...column, columnType: "varchar(64)" }
-          : column,
-      ),
-    };
-
     expect(() =>
-      classifyReadinessFenceV1Installation(incompatible, parsed.triggers, []),
+      classifyReadinessFenceV1Installation(
+        { ...compatible, indexes: [] },
+        parsed.triggers,
+        [],
+      ),
+    ).toThrow("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
+    expect(() =>
+      classifyReadinessFenceV1Installation(
+        {
+          ...compatible,
+          columns: compatible.columns.map((column) =>
+            column.tableName === "institution_readiness_fence_events" &&
+            column.columnName === "id"
+              ? { ...column, extra: "" }
+              : column,
+          ),
+        },
+        parsed.triggers,
+        [],
+      ),
+    ).toThrow("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
+    const foreignKeys: ExistingForeignKeyDefinition[] = [
+      {
+        constraintSchema: "escalas",
+        tableName: "institution_readiness_fence_events",
+        constraintName: "fk_rdf_event_institution",
+        columnName: "institution_id",
+        referencedTableSchema: "outro_schema",
+        referencedTableName: "institutions",
+        referencedColumnName: "id",
+        deleteRule: "CASCADE",
+        updateRule: "RESTRICT",
+      },
+    ];
+    expect(() =>
+      classifyReadinessFenceV1Installation(
+        { ...compatible, foreignKeys },
+        parsed.triggers,
+        [],
+      ),
     ).toThrow("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
   });
 
@@ -393,7 +464,7 @@ describe("migration da readiness fence V1", () => {
     ).toThrow("READINESS_FENCE_V1_TRIGGER_SLOT_OCCUPIED");
   });
 
-  it("recusa uma colisão global de nome de trigger esperado", () => {
+  it("recusa trigger conhecido divergente e trigger externo no journal", () => {
     const expected = parsed.triggers[0]!;
     expect(() =>
       missingOrIncompatibleReadinessFenceV1Triggers(parsed.triggers, [
@@ -407,83 +478,44 @@ describe("migration da readiness fence V1", () => {
         },
       ]),
     ).toThrow("READINESS_FENCE_V1_TRIGGER_CATALOG_DIVERGENT");
-  });
 
-  it("recusa trigger externo nas próprias tabelas da fence", () => {
     const catalog = completeCatalog(parsed.triggers);
-    catalog.triggers.push({
-      triggerName: "trg_rdf_externo",
-      actionTiming: "AFTER",
-      eventManipulation: "UPDATE",
-      eventObjectTable: "institution_readiness_fences",
-      actionOrientation: "ROW",
-      actionStatement: "SET @unexpected = 1",
-    });
-
     expect(() =>
-      classifyReadinessFenceV1Installation(catalog, parsed.triggers, [
+      classifyReadinessFenceV1Installation(
         {
-          id: READINESS_FENCE_V1_INSTALLATION_ID,
-          coverageVersion: READINESS_FENCE_V1_COVERAGE_VERSION,
-          coverageHash: READINESS_FENCE_V1_COVERAGE_HASH,
+          ...catalog,
+          triggers: [
+            ...catalog.triggers,
+            {
+              triggerName: "trg_rdf_externo",
+              actionTiming: "AFTER",
+              eventManipulation: "UPDATE",
+              eventObjectTable: "institution_readiness_fence_events",
+              actionOrientation: "ROW",
+              actionStatement: "SET @unexpected = 1",
+            },
+          ],
         },
-      ]),
+        parsed.triggers,
+        exactMarker,
+      ),
     ).toThrow("READINESS_FENCE_V1_OWNED_TRIGGER_UNSUPPORTED");
   });
 
-  it("recusa a foreign key da fence quando aponta para outro schema", () => {
-    const catalog = completeCatalog(parsed.triggers);
-    catalog.foreignKeys[0] = {
-      ...catalog.foreignKeys[0]!,
-      referencedTableSchema: "outro_schema",
-    };
-
-    expect(() =>
-      classifyReadinessFenceV1Installation(catalog, parsed.triggers, [
-        {
-          id: READINESS_FENCE_V1_INSTALLATION_ID,
-          coverageVersion: READINESS_FENCE_V1_COVERAGE_VERSION,
-          coverageHash: READINESS_FENCE_V1_COVERAGE_HASH,
-        },
-      ]),
-    ).toThrow("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
-  });
-
-  it("recusa uma colisão global do nome da foreign key antes do DDL", () => {
-    const catalog = sourceCatalog();
-    catalog.foreignKeys.push({
-      constraintSchema: "escalas",
-      tableName: "tabela_externa",
-      constraintName: "fk_rdf_institution",
-      columnName: "institution_id",
-      referencedTableSchema: "escalas",
-      referencedTableName: "institutions",
-      referencedColumnName: "id",
-      deleteRule: "CASCADE",
-      updateRule: "RESTRICT",
-    });
-
-    expect(() =>
-      classifyReadinessFenceV1Installation(catalog, parsed.triggers, undefined),
-    ).toThrow("READINESS_FENCE_V1_FOREIGN_KEY_NAME_COLLISION");
-  });
-
-  it("consulta colisões de nomes de trigger e foreign key fora das tabelas próprias", async () => {
+  it("consulta índice e foreign keys somente nas tabelas próprias", async () => {
     const query = vi.fn().mockResolvedValue([[], []]);
     await readReadinessFenceV1Catalog({ query } as never, parsed.triggers);
 
-    const [, foreignKeyParams] = query.mock.calls[3]!;
-    expect(query.mock.calls[3]![0]).toContain("kcu.CONSTRAINT_NAME = ?");
-    expect(query.mock.calls[3]![0]).toContain(
-      "kcu.REFERENCED_TABLE_SCHEMA AS referencedTableSchema",
-    );
-    expect(foreignKeyParams).toEqual([
-      READINESS_FENCE_V1_OWNED_TABLES,
-      "fk_rdf_institution",
-    ]);
+    const [, indexParams] = query.mock.calls[3]!;
+    expect(query.mock.calls[3]![0]).toContain("INFORMATION_SCHEMA.STATISTICS");
+    expect(indexParams).toEqual([READINESS_FENCE_V1_OWNED_TABLES]);
 
-    const [, triggerParams] = query.mock.calls[4]!;
-    expect(query.mock.calls[4]![0]).toContain("TRIGGER_NAME IN (?)");
+    const [, foreignKeyParams] = query.mock.calls[4]!;
+    expect(query.mock.calls[4]![0]).not.toContain("CONSTRAINT_NAME = ?");
+    expect(foreignKeyParams).toEqual([READINESS_FENCE_V1_OWNED_TABLES]);
+
+    const [, triggerParams] = query.mock.calls[5]!;
+    expect(query.mock.calls[5]![0]).toContain("TRIGGER_NAME IN (?)");
     expect(triggerParams).toEqual([
       expect.any(Array),
       parsed.triggers.map((trigger) => trigger.name),
@@ -492,13 +524,6 @@ describe("migration da readiness fence V1", () => {
 
   it("só reconhece complete com marcador singleton exato e todos triggers", () => {
     const catalog = completeCatalog(parsed.triggers);
-    const exactMarker = [
-      {
-        id: READINESS_FENCE_V1_INSTALLATION_ID,
-        coverageVersion: READINESS_FENCE_V1_COVERAGE_VERSION,
-        coverageHash: READINESS_FENCE_V1_COVERAGE_HASH,
-      },
-    ];
     expect(
       classifyReadinessFenceV1Installation(
         catalog,

@@ -17,7 +17,7 @@ const READINESS_FENCE_V1_MIGRATION_BASENAME =
   "2026-09-01-readiness-fence-v1-clean.sql";
 const READINESS_FENCE_V1_DEDICATED_DIRECTIVE = "@readiness-fence-trigger";
 const READINESS_FENCE_V1_STRUCTURAL_IDENTIFIERS =
-  /\b(?:institution_readiness_fences|institution_readiness_fence_installations|trg_rdf_[a-z0-9_]+)\b/i;
+  /\b(?:institution_readiness_fence_events|institution_readiness_fences|institution_readiness_fence_installations|trg_rdf_[a-z0-9_]+)\b/i;
 
 function requireNonEmpty(name: string): string {
   const value = process.env[name]?.trim();
