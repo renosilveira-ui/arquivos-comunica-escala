@@ -2718,10 +2718,6 @@ authRouter.post(
             ? await resolveScheduleContextAclSelection({
                 db: tx,
                 institutionId: targetInstitutionId,
-                qualification: {
-                  medicalSpecialtyId,
-                  operationalProfileCode: qualification.operationalProfileCode,
-                },
                 requestedScheduleContextIds,
               })
             : [];

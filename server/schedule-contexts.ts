@@ -729,7 +729,41 @@ export async function selectActiveScheduleContexts(
   institutionId: number,
   filters: { id?: number; hospitalId?: number; sectorId?: number } = {},
   lockForShare = false,
+  options: { requireQualificationConfiguration?: boolean } = {},
 ): Promise<ActiveScheduleContext[]> {
+  const qualificationConfigurationCondition =
+    options.requireQualificationConfiguration === false
+      ? []
+      : [
+          or(
+            and(
+              eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
+              isNotNull(scheduleContexts.medicalSpecialtyId),
+              isNull(scheduleContexts.operationalProfileCode),
+              eq(medicalSpecialties.active, true),
+            ),
+            and(
+              eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
+              isNull(scheduleContexts.medicalSpecialtyId),
+              isNotNull(scheduleContexts.operationalProfileCode),
+            ),
+            and(
+              eq(scheduleContexts.admissionPolicy, "ALL_CFM_SPECIALTIES"),
+              isNull(scheduleContexts.medicalSpecialtyId),
+              isNull(scheduleContexts.operationalProfileCode),
+            ),
+            and(
+              eq(scheduleContexts.admissionPolicy, "ALL_CFM_EXCEPT_GENERALIST"),
+              isNull(scheduleContexts.medicalSpecialtyId),
+              isNull(scheduleContexts.operationalProfileCode),
+            ),
+            and(
+              eq(scheduleContexts.admissionPolicy, "QUALIFICATION_ALLOWLIST"),
+              isNull(scheduleContexts.medicalSpecialtyId),
+              isNull(scheduleContexts.operationalProfileCode),
+            ),
+          ),
+        ];
   const query = db
     .select({
       id: scheduleContexts.id,
@@ -785,34 +819,7 @@ export async function selectActiveScheduleContexts(
         ...(filters.sectorId !== undefined
           ? [eq(scheduleContexts.sectorId, filters.sectorId)]
           : []),
-        or(
-          and(
-            eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
-            isNotNull(scheduleContexts.medicalSpecialtyId),
-            isNull(scheduleContexts.operationalProfileCode),
-            eq(medicalSpecialties.active, true),
-          ),
-          and(
-            eq(scheduleContexts.admissionPolicy, "PINNED_QUALIFICATION"),
-            isNull(scheduleContexts.medicalSpecialtyId),
-            isNotNull(scheduleContexts.operationalProfileCode),
-          ),
-          and(
-            eq(scheduleContexts.admissionPolicy, "ALL_CFM_SPECIALTIES"),
-            isNull(scheduleContexts.medicalSpecialtyId),
-            isNull(scheduleContexts.operationalProfileCode),
-          ),
-          and(
-            eq(scheduleContexts.admissionPolicy, "ALL_CFM_EXCEPT_GENERALIST"),
-            isNull(scheduleContexts.medicalSpecialtyId),
-            isNull(scheduleContexts.operationalProfileCode),
-          ),
-          and(
-            eq(scheduleContexts.admissionPolicy, "QUALIFICATION_ALLOWLIST"),
-            isNull(scheduleContexts.medicalSpecialtyId),
-            isNull(scheduleContexts.operationalProfileCode),
-          ),
-        ),
+        ...qualificationConfigurationCondition,
       ),
     )
     .orderBy(
@@ -881,66 +888,72 @@ export function parseScheduleContextIds(value: unknown): number[] | undefined {
   return ids;
 }
 
-function assertExactlyOneProfessionalQualification(
-  qualification: ProfessionalQualification,
-): void {
-  if (
-    (qualification.medicalSpecialtyId === null) ===
-    (qualification.operationalProfileCode === null)
-  ) {
-    throw new ScheduleContextAclError(
-      409,
-      "Médico deve possuir exatamente uma qualificação ativa",
-    );
-  }
-}
-
 /**
- * Revalida no banco, dentro da transacao chamadora, tenant, topologia,
- * atividade e qualificacao de cada contexto selecionado. Para compatibilidade
- * com uma build antiga, a omissao so e resolvida quando existe exatamente um
- * contexto compativel.
+ * Revalida no banco, dentro da transacao chamadora, tenant, topologia e
+ * atividade de cada contexto selecionado. A especialidade e o perfil medico
+ * sao metadados clinicos: nunca autorizam nem negam professional_access.
+ *
+ * Para compatibilidade com builds antigas, a omissao so e resolvida quando
+ * existe exatamente um contexto ativo no tenant. Com dois ou mais contextos,
+ * o gestor deve escolher os IDs explicitamente.
  */
 export async function resolveScheduleContextAclSelection(input: {
   db: ContextDb;
   institutionId: number;
-  qualification: ProfessionalQualification;
   requestedScheduleContextIds: number[] | undefined;
 }): Promise<ActiveScheduleContext[]> {
-  assertExactlyOneProfessionalQualification(input.qualification);
-  const compatible = (
-    await selectActiveScheduleContexts(input.db, input.institutionId, {}, true)
-  ).filter((context) => qualificationMatches(input.qualification, context));
+  const activeTenantContexts = (
+    await selectActiveScheduleContexts(input.db, input.institutionId, {}, true, {
+      // A escolha administrativa de ACL só usa atividade e topologia. Um
+      // metadado clínico desatualizado nunca pode bloquear esse vínculo.
+      requireQualificationConfiguration: false,
+    })
+  ).filter(
+    (context) =>
+      context.active && context.institutionId === input.institutionId,
+  );
 
   if (input.requestedScheduleContextIds === undefined) {
-    if (compatible.length === 0) {
+    if (activeTenantContexts.length === 0) {
       throw new ScheduleContextAclError(
         409,
-        "Nenhuma escala ativa é compatível com a qualificação médica",
+        "Nenhuma escala operacional ativa está disponível neste tenant",
       );
     }
-    if (compatible.length > 1) {
+    if (activeTenantContexts.length > 1) {
       throw new ScheduleContextAclError(
         409,
-        "Há mais de uma escala compatível; selecione explicitamente onde o médico poderá atuar",
+        "Há mais de uma escala ativa; selecione explicitamente onde o médico poderá atuar",
       );
     }
-    return compatible;
+    return activeTenantContexts;
   }
 
-  const compatibleById = new Map(
-    compatible.map((context) => [context.id, context] as const),
+  const activeContextById = new Map(
+    activeTenantContexts.map((context) => [context.id, context] as const),
   );
   const selected = input.requestedScheduleContextIds.map((id) =>
-    compatibleById.get(id),
+    activeContextById.get(id),
   );
   if (selected.some((context) => context === undefined)) {
     throw new ScheduleContextAclError(
       409,
-      "Escala inexistente, inativa, fora do tenant ou incompatível com a qualificação",
+      "Escala inexistente, inativa ou fora do tenant",
     );
   }
   return selected as ActiveScheduleContext[];
+}
+
+/**
+ * Uma alteração de metadado clínico não pode revogar, limpar ou recriar a
+ * ACL assistencial. A troca de professional_access exige uma seleção de
+ * contextos enviada explicitamente pelo gestor.
+ */
+export function shouldRewriteScheduleContextAccess(input: {
+  isDoctor: boolean;
+  requestedScheduleContextIds: readonly number[] | undefined;
+}): boolean {
+  return input.isDoctor && input.requestedScheduleContextIds !== undefined;
 }
 
 export function scheduleContextsToSpecificAccessTargets(

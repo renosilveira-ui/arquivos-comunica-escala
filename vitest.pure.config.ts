@@ -28,6 +28,7 @@ export default defineConfig({
       "tests/schedule-contexts-migration.test.ts",
       "tests/schedule-context-policy.test.ts",
       "tests/schedule-context-specialty-discovery.test.ts",
+      "tests/schedule-context-acl-selection.test.ts",
       "tests/access-allowlist-enforcement.test.ts",
       "tests/medical-qualification.test.ts",
       "tests/sao-carlos-context-blueprint.test.ts",

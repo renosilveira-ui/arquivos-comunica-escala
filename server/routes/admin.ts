@@ -50,6 +50,7 @@ import {
   resolveScheduleContextAclSelection,
   scheduleContextsToSpecificAccessTargets,
   ScheduleContextAclError,
+  shouldRewriteScheduleContextAccess,
 } from "../schedule-contexts";
 import { parseManagerScopes } from "../../lib/manager-scope-admin";
 import {
@@ -1511,17 +1512,14 @@ adminRouter.put(
               }
 
               const shouldRewriteScheduleAccess =
-                target.globalRole === "doctor" &&
-                (requestedScheduleContextIds !== undefined ||
-                  qualificationUpdateRequested);
+                shouldRewriteScheduleContextAccess({
+                  isDoctor: target.globalRole === "doctor",
+                  requestedScheduleContextIds,
+                });
               const selectedScheduleContexts = shouldRewriteScheduleAccess
                 ? await resolveScheduleContextAclSelection({
                     db: tx,
                     institutionId,
-                    qualification: {
-                      medicalSpecialtyId: effectiveMedicalSpecialtyId,
-                      operationalProfileCode: effectiveOperationalProfileCode,
-                    },
                     requestedScheduleContextIds,
                   })
                 : [];
@@ -2417,24 +2415,10 @@ adminRouter.post(
             );
           }
         }
-        if (
-          (effectiveMedicalSpecialtyId === null) ===
-          (effectiveOperationalProfileCode === null)
-        ) {
-          throw new AdminTenantError(
-            409,
-            "Defina uma especialidade ou o perfil médico generalista antes de aprovar",
-          );
-        }
-
         const selectedScheduleContexts =
           await resolveScheduleContextAclSelection({
             db: tx,
             institutionId,
-            qualification: {
-              medicalSpecialtyId: effectiveMedicalSpecialtyId,
-              operationalProfileCode: effectiveOperationalProfileCode,
-            },
             requestedScheduleContextIds,
           });
 

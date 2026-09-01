@@ -54,6 +54,7 @@ describe("auto-cadastro público e aprovação", () => {
   let anesthesiaContextId: number;
   let trrContextId: number;
   let emergencyContextId: number;
+  let inactiveContextId: number;
   let otherTenantContextId: number;
   let adminId: number;
   let adminCookie: string;
@@ -202,9 +203,20 @@ describe("auto-cadastro público e aprovação", () => {
         operationalProfileCode: "MEDICO_GENERALISTA",
       })
       .$returningId();
+    const [inactiveContext] = await db
+      .insert(scheduleContexts)
+      .values({
+        institutionId,
+        hospitalId: hospitalA,
+        sectorId: recoverySectorId,
+        operationalProfileCode: "MEDICO_GENERALISTA",
+        active: false,
+      })
+      .$returningId();
     anesthesiaContextId = anesthesiaContext.id;
     trrContextId = trrContext.id;
     emergencyContextId = emergencyContext.id;
+    inactiveContextId = inactiveContext.id;
     const [otherHospital] = await db
       .insert(hospitals)
       .values({
@@ -528,7 +540,7 @@ describe("auto-cadastro público e aprovação", () => {
     expect(professional.medicalSpecialtyId).toBeTypeOf("number");
   });
 
-  it("cadastro direto separa dois generalistas por setor e rejeita ambiguidade/incompatibilidade sem escrever", async () => {
+  it("cadastro direto concede ACL por contexto, sem usar especialidade como trava", async () => {
     const email = `signup-generalist-${STAMP}@test.local`;
     const generalistSignup = await request(app).post("/api/auth/signup").send({
       name: "Signup Generalista",
@@ -562,6 +574,25 @@ describe("auto-cadastro público e aprovação", () => {
       .send({ scheduleContextIds: [trrContextId] });
     expect(explicitApproval.status).toBe(200);
 
+    const noSpecialtyEmail = `signup-sem-especialidade-${STAMP}@test.local`;
+    const noSpecialtySignup = await request(app).post("/api/auth/signup").send({
+      name: "Signup sem especialidade",
+      email: noSpecialtyEmail,
+      password: PASSWORD,
+      institutionId,
+    });
+    expect(noSpecialtySignup.status).toBe(201);
+    const [pendingWithoutSpecialty] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, noSpecialtyEmail));
+    const noSpecialtyApproval = await request(app)
+      .post(`/api/admin/pending-signups/${pendingWithoutSpecialty.id}/approve`)
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionId))
+      .send({ scheduleContextIds: [trrContextId] });
+    expect(noSpecialtyApproval.status).toBe(200);
+
     const create = (tag: string, scheduleContextIds?: number[]) =>
       request(app)
         .post("/api/auth/register")
@@ -583,6 +614,9 @@ describe("auto-cadastro público e aprovação", () => {
     expect(trr.status).toBe(201);
     expect(emergency.status).toBe(201);
 
+    const crossSpecialty = await create("cross-specialty", [anesthesiaContextId]);
+    expect(crossSpecialty.status).toBe(201);
+
     const created = await db
       .select({
         email: users.email,
@@ -599,6 +633,7 @@ describe("auto-cadastro público e aprovação", () => {
         inArray(users.email, [
           `signup-direct-trr-${STAMP}@test.local`,
           `signup-direct-emergency-${STAMP}@test.local`,
+          `signup-direct-cross-specialty-${STAMP}@test.local`,
         ]),
       );
     expect(created).toEqual(
@@ -612,6 +647,11 @@ describe("auto-cadastro público e aprovação", () => {
           email: `signup-direct-emergency-${STAMP}@test.local`,
           hospitalId: hospitalB,
           sectorId: emergencySectorId,
+        },
+        {
+          email: `signup-direct-cross-specialty-${STAMP}@test.local`,
+          hospitalId: hospitalA,
+          sectorId: recoverySectorId,
         },
       ]),
     );
@@ -644,7 +684,7 @@ describe("auto-cadastro público e aprovação", () => {
         .where(eq(professionalAccess.professionalId, trrProfessional.id)),
     ).toEqual([{ hospitalId: hospitalB, sectorId: emergencySectorId }]);
 
-    const invalidEdit = await request(app)
+    const crossSpecialtyEdit = await request(app)
       .put(`/api/admin/users/${trr.body.user.id}`)
       .set("Cookie", adminCookie)
       .set("x-tenant-id", String(institutionId))
@@ -653,20 +693,36 @@ describe("auto-cadastro público e aprovação", () => {
         medicalSpecialtyCode: null,
         scheduleContextIds: [anesthesiaContextId],
       });
-    expect(invalidEdit.status).toBe(409);
+    expect(crossSpecialtyEdit.status).toBe(200);
     expect(
       await db
         .select({ sectorId: professionalAccess.sectorId })
         .from(professionalAccess)
         .where(eq(professionalAccess.professionalId, trrProfessional.id)),
-    ).toEqual([{ sectorId: emergencySectorId }]);
+    ).toEqual([{ sectorId: recoverySectorId }]);
+
+    const specialtyOnlyEdit = await request(app)
+      .put(`/api/admin/users/${trr.body.user.id}`)
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionId))
+      .send({
+        operationalProfileCode: "MEDICO_GENERALISTA",
+        medicalSpecialtyCode: null,
+      });
+    expect(specialtyOnlyEdit.status).toBe(200);
+    expect(
+      await db
+        .select({ sectorId: professionalAccess.sectorId })
+        .from(professionalAccess)
+        .where(eq(professionalAccess.professionalId, trrProfessional.id)),
+    ).toEqual([{ sectorId: recoverySectorId }]);
 
     const ambiguous = await create("ambiguous");
     expect(ambiguous.status).toBe(409);
     expect(ambiguous.body.error).toMatch(/mais de uma escala/i);
-    const incompatible = await create("mismatch", [anesthesiaContextId]);
-    expect(incompatible.status).toBe(409);
-    expect(incompatible.body.error).toMatch(/incompatível/i);
+    const inactive = await create("inactive", [inactiveContextId]);
+    expect(inactive.status).toBe(409);
+    expect(inactive.body.error).toMatch(/inativa/i);
     const crossTenant = await create("cross-tenant", [otherTenantContextId]);
     expect(crossTenant.status).toBe(409);
     const forbiddenWrites = await db
@@ -675,7 +731,7 @@ describe("auto-cadastro público e aprovação", () => {
       .where(
         inArray(users.email, [
           `signup-direct-ambiguous-${STAMP}@test.local`,
-          `signup-direct-mismatch-${STAMP}@test.local`,
+          `signup-direct-inactive-${STAMP}@test.local`,
           `signup-direct-cross-tenant-${STAMP}@test.local`,
         ]),
       );
