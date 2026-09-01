@@ -8,6 +8,7 @@ import {
   isTerminalOperationalDeliveryStatus,
   OPERATIONAL_DELIVERY_MAX_ATTEMPTS,
   isTrustedOperationalEmail,
+  operationalDeliveryChannelsForEmission,
   operationalDeliveryDedupKey,
   operationalDeliveryRetryDelayMs,
   operationalEventHash,
@@ -93,6 +94,7 @@ function inMemoryOperationalEventTransaction(options?: {
   let persistedEvent: Record<string, unknown> | undefined;
   let didRunFirstAsyncRead = false;
   const relatedContextValues: Record<string, unknown>[] = [];
+  const recipientValues: Record<string, unknown>[] = [];
   const counters = { relatedContexts: 0, recipients: 0, deliveries: 0 };
   const membershipChecks = [...(options?.membershipChecks ?? [])];
   const membershipRoles = [...(options?.membershipRoles ?? [])];
@@ -127,9 +129,10 @@ function inMemoryOperationalEventTransaction(options?: {
       }
       if (table === operationalEventRecipients) {
         return {
-          values: () => ({
+          values: (value: Record<string, unknown>) => ({
             $returningId: async () => {
               counters.recipients += 1;
+              recipientValues.push(value);
               return [{ id: counters.recipients }];
             },
           }),
@@ -265,6 +268,7 @@ function inMemoryOperationalEventTransaction(options?: {
     counters,
     getPersistedEvent: () => persistedEvent,
     getRelatedContexts: () => relatedContextValues,
+    getRecipients: () => recipientValues,
   };
 }
 
@@ -763,7 +767,7 @@ describe("foundation de eventos operacionais", () => {
     });
   });
 
-  it("cria fato, recipients e deliveries no mesmo transaction e torna retry idempotente", async () => {
+  it("em SHADOW grava fato e destinatário canônico, sem delivery, e mantém retry idempotente", async () => {
     const memory = inMemoryOperationalEventTransaction();
     const input = hospitalEvent();
 
@@ -773,8 +777,20 @@ describe("foundation de eventos operacionais", () => {
     expect(memory.counters).toEqual({
       relatedContexts: 0,
       recipients: 1,
-      deliveries: 2,
+      deliveries: 0,
     });
+    expect(memory.getPersistedEvent()).toMatchObject({
+      eventType: "ROSTER_PUBLISHED",
+      emissionMode: "SHADOW",
+      deliveryPolicy: "NOTIFY",
+    });
+    expect(memory.getRecipients()).toEqual([
+      expect.objectContaining({
+        recipientKind: "USER",
+        institutionId: 1,
+        userId: 20,
+      }),
+    ]);
 
     await expect(
       createOperationalEventInTransaction(memory.tx, input),
@@ -782,7 +798,7 @@ describe("foundation de eventos operacionais", () => {
     expect(memory.counters).toEqual({
       relatedContexts: 0,
       recipients: 1,
-      deliveries: 2,
+      deliveries: 0,
     });
 
     const collision = hospitalEvent();
@@ -792,6 +808,24 @@ describe("foundation de eventos operacionais", () => {
     await expect(
       createOperationalEventInTransaction(memory.tx, collision),
     ).rejects.toBeInstanceOf(OperationalEventIdempotencyCollisionError);
+  });
+
+  it("preserva PUSH e EMAIL para uma promoção futura explícita a ACTIVE", () => {
+    const channels = ["PUSH", "EMAIL"] as const;
+
+    expect(operationalDeliveryChannelsForEmission("SHADOW", channels)).toEqual(
+      [],
+    );
+    expect(operationalDeliveryChannelsForEmission("ACTIVE", channels)).toEqual([
+      "PUSH",
+      "EMAIL",
+    ]);
+    expect(
+      operationalDeliveryChannelsForEmission(
+        "UNRECOGNIZED" as unknown as "SHADOW" | "ACTIVE",
+        channels,
+      ),
+    ).toEqual([]);
   });
 
   it("usa snapshot imutável e não relê input mutado após o primeiro await", async () => {

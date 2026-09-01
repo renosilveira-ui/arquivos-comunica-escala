@@ -402,6 +402,26 @@ export const OPERATIONAL_DELIVERY_CHANNELS = ["PUSH", "EMAIL"] as const;
 export type OperationalDeliveryChannel =
   (typeof OPERATIONAL_DELIVERY_CHANNELS)[number];
 
+const NO_OPERATIONAL_DELIVERY_CHANNELS: readonly OperationalDeliveryChannel[] =
+  Object.freeze([]);
+
+/**
+ * A fila só nasce para fatos promovidos explicitamente pelo catálogo fechado.
+ * SHADOW preserva o fato e seus destinatários para auditoria, sem criar uma
+ * entrega latente que poderia ser promovida por um worker futuro.
+ *
+ * O teste literal de ACTIVE também falha fechado para valores inválidos que
+ * eventualmente atravessem uma fronteira JavaScript sem a tipagem TypeScript.
+ */
+export function operationalDeliveryChannelsForEmission(
+  emissionMode: OperationalEventEmissionMode,
+  channels: readonly OperationalDeliveryChannel[],
+): readonly OperationalDeliveryChannel[] {
+  return emissionMode === "ACTIVE"
+    ? channels
+    : NO_OPERATIONAL_DELIVERY_CHANNELS;
+}
+
 export const OPERATIONAL_DELIVERY_STATUSES = [
   "QUEUED",
   "PROCESSING",
@@ -1523,11 +1543,12 @@ export function operationalDeliveryDedupKey(input: {
 }
 
 /**
- * Insere o fato, seus destinatários e a fila multicanal no mesmo commit da
- * mutação de negócio que o chamar. A função relê e bloqueia a topologia, o
- * agregado e os vínculos envolvidos antes de persistir o ledger; ela recusa
- * contexto incompleto em vez de tentar derivar autoridade de texto ou de
- * estado do cliente.
+ * Insere o fato e seus destinatários no mesmo commit da mutação de negócio que
+ * o chamar. A fila multicanal só é persistida para um fato ACTIVE; SHADOW
+ * registra a auditoria sem criar entregas latentes. A função relê e bloqueia a
+ * topologia, o agregado e os vínculos envolvidos antes de persistir o ledger;
+ * ela recusa contexto incompleto em vez de tentar derivar autoridade de texto
+ * ou de estado do cliente.
  */
 export async function createOperationalEventInTransaction(
   tx: OperationalEventTx,
@@ -1657,7 +1678,10 @@ export async function createOperationalEventInTransaction(
     if (!recipientRow?.id) {
       throw new Error("Destinatário operacional não foi persistido");
     }
-    for (const channel of recipient.channels) {
+    for (const channel of operationalDeliveryChannelsForEmission(
+      eventInput.emissionMode,
+      recipient.channels,
+    )) {
       await tx.insert(notificationDeliveries).values({
         operationalEventRecipientId: recipientRow.id,
         channel,
