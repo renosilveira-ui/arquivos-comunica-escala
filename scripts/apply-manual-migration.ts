@@ -8,10 +8,14 @@
  */
 import "dotenv/config";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import mysql from "mysql2/promise";
 import { pathToFileURL } from "node:url";
 import { resolveSslConfig } from "../server/_core/db-ssl";
+
+const READINESS_FENCE_V1_MIGRATION_BASENAME =
+  "2026-09-01-readiness-fence-v1-clean.sql";
+const READINESS_FENCE_V1_DEDICATED_DIRECTIVE = "@readiness-fence-trigger";
 
 function requireNonEmpty(name: string): string {
   const value = process.env[name]?.trim();
@@ -42,10 +46,29 @@ function buildConnectionOptions() {
   };
 }
 
+/**
+ * A readiness fence não pode passar pelo executor genérico: ela precisa de
+ * preflight do catálogo, lock de instalação e classificação PREPARED antes
+ * de qualquer DDL. Também bloqueamos cópias com a diretiva dedicada, para
+ * que renomear o arquivo não remova essa proteção.
+ */
+export function assertGenericManualMigrationAllowed(
+  absolutePath: string,
+  sql: string,
+): void {
+  if (
+    basename(absolutePath) === READINESS_FENCE_V1_MIGRATION_BASENAME ||
+    sql.includes(READINESS_FENCE_V1_DEDICATED_DIRECTIVE)
+  ) {
+    throw new Error("READINESS_FENCE_V1_DEDICATED_INSTALLER_REQUIRED");
+  }
+}
+
 export async function applyManualMigration(sqlPath: string): Promise<void> {
   const absolutePath = resolve(sqlPath);
   const sql = readFileSync(absolutePath, "utf8");
   if (!sql.trim()) throw new Error(`Arquivo SQL vazio: ${absolutePath}`);
+  assertGenericManualMigrationAllowed(absolutePath, sql);
 
   const connection = await mysql.createConnection(buildConnectionOptions());
   try {

@@ -4,7 +4,7 @@ import {
   institutionReadinessFences,
 } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
-import type { getDb } from "./db";
+import { getDb } from "./db";
 import {
   READINESS_FENCE_V1_COVERAGE_HASH,
   READINESS_FENCE_V1_COVERAGE_VERSION,
@@ -14,28 +14,38 @@ import {
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-/**
- * Só use dentro de uma transação real. A linha da fence precisa permanecer
- * bloqueada desde a leitura de um diagnóstico futuro até sua decisão final.
- */
-export type ReadinessFenceV1Transaction = Pick<
-  DbTransaction,
-  "execute" | "insert"
->;
-
 export type InstitutionReadinessFenceV1Lock = Readonly<{
   institutionId: number;
   revision: bigint;
 }>;
 
-export type ReadinessFenceV1InstallationReceipt = Readonly<{
+/**
+ * O símbolo não é exportado: somente o wrapper abaixo consegue criar uma
+ * scope válida. Isso evita que uma interface estrutural com `execute`/`insert`
+ * aceite, por engano, um db em autocommit como se fosse uma transação.
+ */
+const readinessFenceV1ScopeBrand = Symbol("readinessFenceV1Scope");
+
+export type ReadinessFenceV1Scope = Readonly<{
+  readonly [readinessFenceV1ScopeBrand]: true;
+  materializeAndLockInstitution(
+    institutionId: number,
+  ): Promise<InstitutionReadinessFenceV1Lock>;
+  assertInstitutionUnchanged(
+    expected: InstitutionReadinessFenceV1Lock,
+  ): Promise<InstitutionReadinessFenceV1Lock>;
+}>;
+
+type ReadinessFenceV1InstallationReceipt = Readonly<{
   installationId: number;
   coverageVersion: string;
   coverageHash: string;
 }>;
 
 const MAX_MYSQL_SIGNED_INT = 2_147_483_647;
-const issuedLocks = new WeakSet<object>();
+const issuedScopes = new WeakSet<object>();
+const activeScopes = new WeakSet<object>();
+const issuedLocks = new WeakMap<object, ReadinessFenceV1Scope>();
 
 function assertInstitutionId(institutionId: number): void {
   if (
@@ -79,23 +89,38 @@ function parseRevision(value: unknown): bigint | null {
   }
 }
 
+function assertActiveScope(scope: ReadinessFenceV1Scope): void {
+  if (!issuedScopes.has(scope) || !activeScopes.has(scope)) {
+    throw new Error("READINESS_FENCE_V1_SCOPE_INACTIVE");
+  }
+}
+
 function issueLock(
+  scope: ReadinessFenceV1Scope,
   institutionId: number,
   revision: bigint,
 ): InstitutionReadinessFenceV1Lock {
   const lock = Object.freeze({ institutionId, revision });
-  issuedLocks.add(lock);
+  issuedLocks.set(lock, scope);
   return lock;
 }
 
-function assertIssuedLock(lock: InstitutionReadinessFenceV1Lock): void {
-  if (!issuedLocks.has(lock)) {
+function assertIssuedLock(
+  scope: ReadinessFenceV1Scope,
+  lock: InstitutionReadinessFenceV1Lock,
+): void {
+  const owner = issuedLocks.get(lock);
+  if (!owner) {
     throw new Error("READINESS_FENCE_V1_UNISSUED_LOCK");
+  }
+  if (owner !== scope) {
+    throw new Error("READINESS_FENCE_V1_LOCK_TRANSACTION_MISMATCH");
   }
 }
 
 async function selectFenceForUpdate(
-  tx: ReadinessFenceV1Transaction,
+  tx: DbTransaction,
+  scope: ReadinessFenceV1Scope,
   institutionId: number,
 ): Promise<InstitutionReadinessFenceV1Lock> {
   const result = await tx.execute(sql`
@@ -115,16 +140,15 @@ async function selectFenceForUpdate(
   if (rowInstitutionId !== institutionId || revision === null) {
     throw new Error("READINESS_FENCE_V1_INTEGRITY_FAILURE");
   }
-  return issueLock(rowInstitutionId, revision);
+  return issueLock(scope, rowInstitutionId, revision);
 }
 
 /**
- * Exige o recibo canônico de cobertura completa. Ausência, duplicidade ou
- * divergência não devolvem "false": lançam erro e não podem ser confundidas
- * com uma prontidão aprovada.
+ * Confere somente o recibo de instalação. Não é exportada porque esse recibo
+ * não é prova de prontidão nem de saúde atual do catálogo/triggers.
  */
-export async function assertCompleteReadinessFenceV1Installation(
-  tx: ReadinessFenceV1Transaction,
+async function assertInstallationReceipt(
+  tx: DbTransaction,
 ): Promise<ReadinessFenceV1InstallationReceipt> {
   const result = await tx.execute(sql`
     SELECT ${institutionReadinessFenceInstallations.id} AS installationId,
@@ -156,18 +180,13 @@ export async function assertCompleteReadinessFenceV1Installation(
   });
 }
 
-/**
- * Materializa e bloqueia somente uma revisão por instituição. Esta função não
- * calcula relatório, não recebe snapshot do cliente e não autoriza
- * publicação; ela fornece apenas uma barreira transacional para uma frente
- * futura que revalide um diagnóstico canônico no próprio servidor.
- */
-export async function materializeAndLockInstitutionReadinessFenceV1(
-  tx: ReadinessFenceV1Transaction,
+async function materializeAndLockInstitution(
+  tx: DbTransaction,
+  scope: ReadinessFenceV1Scope,
   institutionId: number,
 ): Promise<InstitutionReadinessFenceV1Lock> {
   assertInstitutionId(institutionId);
-  await assertCompleteReadinessFenceV1Installation(tx);
+  await assertInstallationReceipt(tx);
 
   await tx
     .insert(institutionReadinessFences)
@@ -175,26 +194,83 @@ export async function materializeAndLockInstitutionReadinessFenceV1(
     .onDuplicateKeyUpdate({
       set: { revision: sql`${institutionReadinessFences.revision}` },
     });
-  return selectFenceForUpdate(tx, institutionId);
+  return selectFenceForUpdate(tx, scope, institutionId);
 }
 
-/**
- * Releitura final da mesma transação. Um lock fabricado pelo chamador não é
- * aceito, e qualquer revisão diferente invalida o fluxo.
- */
-export async function assertInstitutionReadinessFenceV1Unchanged(
-  tx: ReadinessFenceV1Transaction,
+async function assertInstitutionUnchanged(
+  tx: DbTransaction,
+  scope: ReadinessFenceV1Scope,
   expected: InstitutionReadinessFenceV1Lock,
 ): Promise<InstitutionReadinessFenceV1Lock> {
-  assertIssuedLock(expected);
+  assertIssuedLock(scope, expected);
   assertInstitutionId(expected.institutionId);
   if (typeof expected.revision !== "bigint" || expected.revision < 0n) {
     throw new TypeError("READINESS_FENCE_V1_INVALID_REVISION");
   }
-  await assertCompleteReadinessFenceV1Installation(tx);
-  const observed = await selectFenceForUpdate(tx, expected.institutionId);
+  await assertInstallationReceipt(tx);
+  const observed = await selectFenceForUpdate(
+    tx,
+    scope,
+    expected.institutionId,
+  );
   if (observed.revision !== expected.revision) {
     throw new Error("READINESS_FENCE_V1_CHANGED");
   }
   return observed;
+}
+
+/**
+ * Abre e mantém a transação que materializa, bloqueia e relê a revisão.
+ *
+ * Esta é uma fundação técnica inativa: ela não calcula relatório, não recebe
+ * snapshot do cliente e não autoriza publicação. O recibo verificado no
+ * início é apenas pré-requisito de instalação; um futuro consumidor deve
+ * validar catálogo e cobertura de triggers na mesma transação antes de usar
+ * a revisão como parte de uma decisão de prontidão.
+ *
+ * A scope expira quando o callback termina e locks emitidos por ela não podem
+ * ser reutilizados em outra transação. Nenhum helper público aceita um `tx`
+ * estrutural, portanto um db em autocommit não pode simular essa garantia.
+ */
+export async function withReadinessFenceV1Transaction<T>(
+  operation: (scope: ReadinessFenceV1Scope) => Promise<T> | T,
+): Promise<T> {
+  if (typeof operation !== "function") {
+    throw new TypeError("READINESS_FENCE_V1_OPERATION_REQUIRED");
+  }
+  const db = await getDb();
+  if (!db) {
+    throw new Error("READINESS_FENCE_V1_DATABASE_UNAVAILABLE");
+  }
+  if (typeof db.transaction !== "function") {
+    throw new Error("READINESS_FENCE_V1_TRANSACTION_UNAVAILABLE");
+  }
+
+  return db.transaction(async (tx) => {
+    // O callback não começa sem o recibo técnico. A confirmação continua
+    // sendo revalidada ao materializar e ao reler a revisão, sempre no mesmo
+    // tx; isto não a transforma em autorização de prontidão.
+    await assertInstallationReceipt(tx);
+    let scope!: ReadinessFenceV1Scope;
+    scope = Object.freeze({
+      [readinessFenceV1ScopeBrand]: true as const,
+      materializeAndLockInstitution: (institutionId: number) => {
+        assertActiveScope(scope);
+        return materializeAndLockInstitution(tx, scope, institutionId);
+      },
+      assertInstitutionUnchanged: (
+        expected: InstitutionReadinessFenceV1Lock,
+      ) => {
+        assertActiveScope(scope);
+        return assertInstitutionUnchanged(tx, scope, expected);
+      },
+    });
+    issuedScopes.add(scope);
+    activeScopes.add(scope);
+    try {
+      return await operation(scope);
+    } finally {
+      activeScopes.delete(scope);
+    }
+  });
 }

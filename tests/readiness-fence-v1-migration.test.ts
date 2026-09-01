@@ -203,7 +203,9 @@ function completeCatalog(
     {
       tableName: "institution_readiness_fences",
       constraintName: "fk_rdf_institution",
+      columnName: "institution_id",
       referencedTableName: "institutions",
+      referencedColumnName: "id",
       deleteRule: "CASCADE",
       updateRule: "RESTRICT",
     },
@@ -279,6 +281,18 @@ describe("migration da readiness fence V1", () => {
     ).toBe("FRESH");
   });
 
+  it("reconhece somente schema-push integral sem trigger nem recibo como PREPARED", () => {
+    const schemaPushCatalog = completeCatalog([]);
+
+    expect(
+      classifyReadinessFenceV1Installation(
+        schemaPushCatalog,
+        parsed.triggers,
+        [],
+      ),
+    ).toBe("PREPARED");
+  });
+
   it("falha fechada para fonte ausente ou instalação parcial", () => {
     const noSource = sourceCatalog();
     noSource.tables = noSource.tables.filter(
@@ -297,6 +311,47 @@ describe("migration da readiness fence V1", () => {
     expect(() =>
       classifyReadinessFenceV1Installation(partial, parsed.triggers, undefined),
     ).toThrow("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
+
+    const partiallyTriggered = completeCatalog([parsed.triggers[0]!]);
+    expect(() =>
+      classifyReadinessFenceV1Installation(
+        partiallyTriggered,
+        parsed.triggers,
+        [],
+      ),
+    ).toThrow("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
+
+    const markerWithoutCoverage = completeCatalog([]);
+    expect(() =>
+      classifyReadinessFenceV1Installation(
+        markerWithoutCoverage,
+        parsed.triggers,
+        [
+          {
+            id: READINESS_FENCE_V1_INSTALLATION_ID,
+            coverageVersion: READINESS_FENCE_V1_COVERAGE_VERSION,
+            coverageHash: READINESS_FENCE_V1_COVERAGE_HASH,
+          },
+        ],
+      ),
+    ).toThrow("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
+  });
+
+  it("recusa tabela preparada cujo contrato não é exatamente o do schema/manual", () => {
+    const compatible = completeCatalog([]);
+    const incompatible: ReadinessFenceV1Catalog = {
+      ...compatible,
+      columns: compatible.columns.map((column) =>
+        column.tableName === "institution_readiness_fence_installations" &&
+        column.columnName === "coverage_hash"
+          ? { ...column, columnType: "varchar(64)" }
+          : column,
+      ),
+    };
+
+    expect(() =>
+      classifyReadinessFenceV1Installation(incompatible, parsed.triggers, []),
+    ).toThrow("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
   });
 
   it("não ocupa nem sobrescreve um trigger externo no mesmo slot", () => {

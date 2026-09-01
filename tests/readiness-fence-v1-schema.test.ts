@@ -19,6 +19,10 @@ describe("schema da readiness fence V1", () => {
         foreignKey.reference().columns.map(({ name }) => name),
       ),
     ).toEqual(expect.arrayContaining([["institution_id"]]));
+    expect(
+      config.foreignKeys.map((foreignKey) => foreignKey.getName()),
+    ).toEqual(["fk_rdf_institution"]);
+    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
   });
 
   it("usa default SQL serializável, nunca literal BigInt no schema", () => {
@@ -41,6 +45,9 @@ describe("schema da readiness fence V1", () => {
     expect(institutionReadinessFenceInstallations.coverageHash.notNull).toBe(
       true,
     );
+    expect(
+      institutionReadinessFenceInstallations.coverageHash.getSQLType(),
+    ).toBe("char(64)");
     expect(config.columns.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "id",

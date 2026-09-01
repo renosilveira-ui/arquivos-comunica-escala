@@ -11,9 +11,15 @@
 -- recibo singleton depois de reler toda a cobertura. Não execute este arquivo
 -- no executor SQL genérico: ele não faz o preflight do catálogo nem recusa
 -- uma instalação parcial antes de acrescentar DDL.
+-- Se um schema-push tiver criado exatamente as duas tabelas abaixo, ainda sem
+-- triggers V1 nem recibo, o instalador dedicado reconhece somente esse estado
+-- PREPARED e instala os observadores. Trigger ou recibo parcial continua
+-- bloqueado para auditoria humana.
 --
--- O contrato V1 observa topologia, contextos, templates, calendário,
--- alocações, cobertura de gestores/profissionais e disponibilidade de push.
+-- O contrato V1 observa alterações em fontes de topologia, contextos,
+-- templates, calendário, alocações, cobertura de gestores/profissionais e
+-- disponibilidade de push. Seu preflight valida apenas presença de tabelas e
+-- colunas necessárias; ele não certifica a topologia nem prontidão clínica.
 -- Especialidade textual, vínculo N:N setor-especialidade, confiança de e-mail,
 -- UI, ciência de publicação e regras de autorização pertencem a frentes
 -- posteriores e NÃO entram nesta cobertura.

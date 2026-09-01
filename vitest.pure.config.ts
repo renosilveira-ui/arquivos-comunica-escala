@@ -85,6 +85,11 @@ export default defineConfig({
       "tests/dependency-audit-policy.test.ts",
       "tests/dependency-security-overrides.test.ts",
       "tests/image-size-dos-regression.test.ts",
+      "tests/readiness-fence-v1.test.ts",
+      "tests/readiness-fence-v1-migration.test.ts",
+      "tests/readiness-fence-v1-schema.test.ts",
+      "tests/readiness-fence-v1-proof.test.ts",
+      "tests/readiness-fence-v1-installer-guard.test.ts",
     ],
   },
 });

@@ -1,14 +1,15 @@
 /**
  * Instalador manual da fence de prontidão V1.
  *
- * Não é chamado pelo servidor. Uma instalação interrompida permanece
- * bloqueada para inspeção humana: DDL do MySQL não é transacional e completar
- * automaticamente um estado parcial esconderia perda de cobertura.
+ * Não é chamado pelo servidor. Como DDL do MySQL não é transacional, uma
+ * instalação interrompida permanece bloqueada para inspeção humana, exceto
+ * pelo estado PREPARED estritamente verificável (duas tabelas exatas, zero
+ * triggers V1 e zero recibo), que é seguro retomar após schema-push.
  */
 import "dotenv/config";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import mysql, { type Connection } from "mysql2/promise";
 import {
   READINESS_FENCE_V1_COVERAGE_HASH,
@@ -120,7 +121,14 @@ export const READINESS_FENCE_V1_OWNED_TABLES = [
 ] as const;
 
 type OwnedTableName = (typeof READINESS_FENCE_V1_OWNED_TABLES)[number];
-type InstallationState = "FRESH" | "COMPLETE";
+/**
+ * FRESH: nada próprio existe.
+ * PREPARED: o schema-push já materializou as duas tabelas exatamente como o
+ * contrato V1 exige, mas ainda não há triggers V1 nem recibo. É o único
+ * estado interrompido que pode ser retomado sem esconder perda de cobertura.
+ * COMPLETE: tabelas, triggers e recibo canônicos estão presentes.
+ */
+export type InstallationState = "FRESH" | "PREPARED" | "COMPLETE";
 
 export type IdempotentTriggerDefinition = Readonly<{
   name: string;
@@ -156,7 +164,9 @@ export type ExistingKeyDefinition = Readonly<{
 export type ExistingForeignKeyDefinition = Readonly<{
   tableName: string;
   constraintName: string;
+  columnName: string;
   referencedTableName: string;
+  referencedColumnName: string;
   deleteRule: string;
   updateRule: string;
 }>;
@@ -602,8 +612,10 @@ function assertOwnedTableShape(
       foreignKeys.length !== 1 ||
       normalizeIdentifier(foreignKeys[0]!.constraintName) !==
         "fk_rdf_institution" ||
+      normalizeIdentifier(foreignKeys[0]!.columnName) !== "institution_id" ||
       normalizeIdentifier(foreignKeys[0]!.referencedTableName) !==
         "institutions" ||
+      normalizeIdentifier(foreignKeys[0]!.referencedColumnName) !== "id" ||
       foreignKeys[0]!.deleteRule.toUpperCase() !== "CASCADE" ||
       !["RESTRICT", "NO ACTION"].includes(
         foreignKeys[0]!.updateRule.toUpperCase(),
@@ -651,8 +663,11 @@ function exactMarker(
 }
 
 /**
- * Antes de qualquer DDL a instalação só pode estar totalmente ausente ou
- * totalmente completa. Qualquer meio-termo exige auditoria humana.
+ * Antes de qualquer DDL a instalação só pode estar totalmente ausente,
+ * totalmente completa ou PREPARED. PREPARED é estritamente as duas tabelas
+ * próprias com contrato exato, zero triggers V1 e zero recibos: é o estado
+ * que um schema-push pode deixar antes do instalador dedicado acrescentar os
+ * triggers. Qualquer outro meio-termo continua exigindo auditoria humana.
  */
 export function classifyReadinessFenceV1Installation(
   catalog: ReadinessFenceV1Catalog,
@@ -683,14 +698,41 @@ export function classifyReadinessFenceV1Installation(
   for (const table of READINESS_FENCE_V1_OWNED_TABLES) {
     assertOwnedTableShape(catalog, table);
   }
-  if (missingTriggers.length !== 0 || markers === undefined) {
+
+  if (markers === undefined) {
+    throw new Error("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
+  }
+
+  if (
+    missingTriggers.length === expectedTriggers.length &&
+    markers.length === 0
+  ) {
+    return "PREPARED";
+  }
+
+  if (missingTriggers.length !== 0) {
     throw new Error("READINESS_FENCE_V1_PARTIAL_INSTALLATION");
   }
   exactMarker(markers);
   return "COMPLETE";
 }
 
-export function buildReadinessFenceV1ConnectionOptions(rawUrl: string) {
+const LOOPBACK_DATABASE_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "[::1]",
+]);
+
+/**
+ * A instalação normal exige TLS. A exceção de loopback só existe para a
+ * prova efêmera explicitamente autorizada em NODE_ENV=test; ela não é um
+ * fallback implícito para desenvolvimento ou produção.
+ */
+export function buildReadinessFenceV1ConnectionOptions(
+  rawUrl: string,
+  options: Readonly<{ allowInsecureLoopbackForTest?: boolean }> = {},
+) {
   if (!rawUrl.trim()) {
     throw new Error("READINESS_FENCE_V1_DATABASE_URL é obrigatória");
   }
@@ -720,6 +762,13 @@ export function buildReadinessFenceV1ConnectionOptions(rawUrl: string) {
     throw new Error(
       "READINESS_FENCE_V1_DATABASE_URL aceita somente ssl-mode=REQUIRED",
     );
+  }
+  const isLoopback = LOOPBACK_DATABASE_HOSTS.has(url.hostname.toLowerCase());
+  if (
+    sslMode !== "REQUIRED" &&
+    !(isLoopback && options.allowInsecureLoopbackForTest)
+  ) {
+    throw new Error("READINESS_FENCE_V1_DATABASE_TLS_REQUIRED");
   }
   return {
     host: url.hostname,
@@ -775,14 +824,21 @@ export async function readReadinessFenceV1Catalog(
   );
   const [foreignKeyRows] = await connection.query(
     [
-      "SELECT TABLE_NAME AS tableName,",
-      "       CONSTRAINT_NAME AS constraintName,",
-      "       REFERENCED_TABLE_NAME AS referencedTableName,",
-      "       DELETE_RULE AS deleteRule,",
-      "       UPDATE_RULE AS updateRule",
-      "FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS",
-      "WHERE CONSTRAINT_SCHEMA = DATABASE()",
-      "  AND TABLE_NAME IN (?)",
+      "SELECT kcu.TABLE_NAME AS tableName,",
+      "       kcu.CONSTRAINT_NAME AS constraintName,",
+      "       kcu.COLUMN_NAME AS columnName,",
+      "       kcu.REFERENCED_TABLE_NAME AS referencedTableName,",
+      "       kcu.REFERENCED_COLUMN_NAME AS referencedColumnName,",
+      "       rc.DELETE_RULE AS deleteRule,",
+      "       rc.UPDATE_RULE AS updateRule",
+      "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS kcu",
+      "JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS rc",
+      "  ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA",
+      " AND rc.TABLE_NAME = kcu.TABLE_NAME",
+      " AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME",
+      "WHERE kcu.CONSTRAINT_SCHEMA = DATABASE()",
+      "  AND kcu.TABLE_NAME IN (?)",
+      "  AND kcu.REFERENCED_TABLE_NAME IS NOT NULL",
     ].join("\n"),
     [READINESS_FENCE_V1_OWNED_TABLES],
   );
@@ -896,6 +952,8 @@ export async function applyReadinessFenceV1Migration(
   options: Readonly<{
     explicitApproval: true;
     databaseUrl: string;
+    /** Só aceito pela prova isolada, que também exige NODE_ENV=test. */
+    allowInsecureLoopbackForTest?: true;
   }>,
 ): Promise<InstallationState> {
   if (options.explicitApproval !== true) {
@@ -912,7 +970,11 @@ export async function applyReadinessFenceV1Migration(
   }
   const tableStatements = extractReadinessFenceV1TableStatements(tableSql);
   const connection = await mysql.createConnection(
-    buildReadinessFenceV1ConnectionOptions(options.databaseUrl),
+    buildReadinessFenceV1ConnectionOptions(options.databaseUrl, {
+      allowInsecureLoopbackForTest:
+        process.env.NODE_ENV === "test" &&
+        options.allowInsecureLoopbackForTest === true,
+    }),
   );
   let lockAcquired = false;
 
@@ -935,8 +997,10 @@ export async function applyReadinessFenceV1Migration(
       return state;
     }
 
-    for (const statement of tableStatements) {
-      await connection.query(statement);
+    if (state === "FRESH") {
+      for (const statement of tableStatements) {
+        await connection.query(statement);
+      }
     }
     for (const trigger of triggers) {
       await connection.query(trigger.statement);
@@ -962,4 +1026,66 @@ export async function applyReadinessFenceV1Migration(
     }
     await connection.end();
   }
+}
+
+type DedicatedCliEnvironment = Readonly<Record<string, string | undefined>>;
+
+/**
+ * O comando dedicado nunca usa DATABASE_URL por acidente. A escolha do alvo
+ * é explícita e a senha não aparece em nenhuma mensagem de uso ou de erro.
+ */
+export function readReadinessFenceV1DedicatedCliOptions(
+  env: DedicatedCliEnvironment = process.env,
+): Readonly<{
+  explicitApproval: true;
+  databaseUrl: string;
+  allowInsecureLoopbackForTest?: true;
+}> {
+  if (env.READINESS_FENCE_V1_APPLY !== "1") {
+    throw new Error("READINESS_FENCE_V1_EXPLICIT_APPROVAL_REQUIRED");
+  }
+  const databaseUrl = env.READINESS_FENCE_V1_DATABASE_URL?.trim();
+  if (!databaseUrl) {
+    throw new Error("READINESS_FENCE_V1_DATABASE_URL_REQUIRED");
+  }
+  if (env.READINESS_FENCE_V1_ALLOW_INSECURE_LOOPBACK_FOR_TEST === "1") {
+    if (env.NODE_ENV !== "test") {
+      throw new Error("READINESS_FENCE_V1_INSECURE_LOOPBACK_TEST_ONLY");
+    }
+    return Object.freeze({
+      explicitApproval: true,
+      databaseUrl,
+      allowInsecureLoopbackForTest: true,
+    });
+  }
+  return Object.freeze({ explicitApproval: true, databaseUrl });
+}
+
+function safeReadinessFenceV1CliErrorCode(error: unknown): string {
+  if (
+    error instanceof Error &&
+    /^READINESS_FENCE_V1_[A-Z0-9_]+$/.test(error.message)
+  ) {
+    return error.message;
+  }
+  return "READINESS_FENCE_V1_INSTALLATION_FAILED";
+}
+
+if (
+  process.argv[1] &&
+  fileURLToPath(import.meta.url) ===
+    fileURLToPath(pathToFileURL(process.argv[1]))
+) {
+  void (async () => {
+    await applyReadinessFenceV1Migration(
+      readReadinessFenceV1DedicatedCliOptions(),
+    );
+  })().catch((error) => {
+    // Não expõe URL, usuário, senha ou mensagem bruta do driver.
+    console.error(
+      "Falha ao instalar readiness fence V1:",
+      safeReadinessFenceV1CliErrorCode(error),
+    );
+    process.exitCode = 1;
+  });
 }

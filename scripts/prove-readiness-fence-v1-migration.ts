@@ -355,10 +355,12 @@ export async function runReadinessFenceV1MigrationProof(
       await applyReadinessFenceV1Migration({
         explicitApproval: true,
         databaseUrl: proof.databaseUrl,
+        allowInsecureLoopbackForTest: true,
       });
       await applyReadinessFenceV1Migration({
         explicitApproval: true,
         databaseUrl: proof.databaseUrl,
+        allowInsecureLoopbackForTest: true,
       });
       await assertTriggerCoverage(connection);
       await assertExactInstallationMarker(connection);

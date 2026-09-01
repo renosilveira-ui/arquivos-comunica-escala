@@ -17,6 +17,7 @@ import {
   check,
   tinyint,
   bigint,
+  char,
 } from "drizzle-orm/mysql-core";
 import { relations, sql } from "drizzle-orm";
 
@@ -198,9 +199,9 @@ export const institutions = mysqlTable("institutions", {
 export const institutionReadinessFences = mysqlTable(
   "institution_readiness_fences",
   {
-    institutionId: int("institution_id")
-      .primaryKey()
-      .references(() => institutions.id, { onDelete: "cascade" }),
+    // A FK fica no callback com nome estável. O nome automático do Drizzle
+    // diverge do contrato que o instalador manual valida no INFORMATION_SCHEMA.
+    institutionId: int("institution_id").primaryKey(),
     // SQL literal, em vez de 0n, evita serialização BigInt pelo drizzle-kit.
     revision: bigint("revision", { mode: "bigint", unsigned: true })
       .notNull()
@@ -208,6 +209,13 @@ export const institutionReadinessFences = mysqlTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },
+  (table) => ({
+    fkReadinessFenceInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_rdf_institution",
+    }).onDelete("cascade"),
+  }),
 );
 
 export type InstitutionReadinessFence =
@@ -224,7 +232,7 @@ export const institutionReadinessFenceInstallations = mysqlTable(
   {
     id: tinyint("id", { unsigned: true }).primaryKey(),
     coverageVersion: varchar("coverage_version", { length: 64 }).notNull(),
-    coverageHash: varchar("coverage_hash", { length: 64 }).notNull(),
+    coverageHash: char("coverage_hash", { length: 64 }).notNull(),
     installedAt: timestamp("installed_at").notNull().defaultNow(),
   },
 );
