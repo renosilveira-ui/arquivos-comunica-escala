@@ -410,7 +410,7 @@ describe("foundation de eventos operacionais", () => {
     expect(memory.counters).toEqual({
       relatedContexts: 0,
       recipients: 1,
-      deliveries: 2,
+      deliveries: 0,
     });
 
     const genericAssignment = assignmentShadowEvent();

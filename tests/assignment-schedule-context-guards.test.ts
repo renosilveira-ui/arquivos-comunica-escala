@@ -325,7 +325,7 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     expectGuardBeforeWrite(
       approve,
       "assertAssignmentWritesAllowedForUpdate",
-      '.set({ status: "OCUPADO" })',
+      ".update(shiftAssignmentsV2)",
     );
 
     expect(confirmation).toContain(

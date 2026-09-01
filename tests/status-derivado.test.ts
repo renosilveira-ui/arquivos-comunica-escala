@@ -64,6 +64,11 @@ describe("status do turno derivado das alocações", () => {
   }
 
   async function insertAssignment(professionalId: number, status: "PENDENTE" | "OCUPADO" | "REJEITADO", isActive = true) {
+    const requesterIndex = doctorProfessionalIds.indexOf(professionalId);
+    const requesterUserId = doctorUserIds[requesterIndex];
+    if (requesterIndex < 0 || !requesterUserId) {
+      throw new Error("Solicitante de teste não possui usuário canônico");
+    }
     const [row] = await db
       .insert(shiftAssignmentsV2)
       .values({
@@ -75,7 +80,7 @@ describe("status do turno derivado das alocações", () => {
         assignmentType: "ON_DUTY",
         status,
         isActive,
-        createdBy: managerUserId,
+        createdBy: requesterUserId,
       })
       .$returningId();
     return row.id;

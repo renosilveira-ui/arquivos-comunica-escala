@@ -43,6 +43,12 @@ import {
   scheduleContextsRouter,
 } from "./schedule-contexts";
 import { scheduleInvitesRouter } from "./schedule-invites";
+import {
+  captureCanonicalVacancyRequest,
+  captureVacancyRequestForDecisionOrLegacyAudit,
+  LEGACY_REQUESTER_IDENTITY_UNPROVEN,
+  recordVacancyRequestShadowEventInTransaction,
+} from "./vacancy-request-operational-events";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type AssignmentDecisionDb = Pick<Db, "select">;
@@ -67,6 +73,7 @@ type AssignmentDecisionTarget = {
   sectorId: number;
   scheduleContextId: number | null;
   professionalId: number;
+  operationalRevision: number;
   status: string;
   isActive: boolean;
   specialty: string | null;
@@ -205,6 +212,7 @@ async function requireCanonicalAssignmentDecisionTarget(
         hospitalId: shiftAssignmentsV2.hospitalId,
         sectorId: shiftAssignmentsV2.sectorId,
         professionalId: shiftAssignmentsV2.professionalId,
+        operationalRevision: shiftAssignmentsV2.operationalRevision,
         status: shiftAssignmentsV2.status,
         isActive: shiftAssignmentsV2.isActive,
       })
@@ -256,6 +264,7 @@ async function requireCanonicalAssignmentDecisionTarget(
       sectorId: shiftAssignmentsV2.sectorId,
       scheduleContextId: shiftInstances.scheduleContextId,
       professionalId: shiftAssignmentsV2.professionalId,
+      operationalRevision: shiftAssignmentsV2.operationalRevision,
       status: shiftAssignmentsV2.status,
       isActive: shiftAssignmentsV2.isActive,
       specialty: shiftInstances.specialty,
@@ -309,6 +318,7 @@ function assertSameDecisionTarget(
     authorized.sectorId !== locked.sectorId ||
     authorized.scheduleContextId !== locked.scheduleContextId ||
     authorized.professionalId !== locked.professionalId ||
+    authorized.operationalRevision !== locked.operationalRevision ||
     authorized.specialty !== locked.specialty ||
     authorized.startAt.getTime() !== locked.startAt.getTime() ||
     authorized.endAt.getTime() !== locked.endAt.getTime()
@@ -426,6 +436,7 @@ const shiftAssignmentsRouter = router({
           assignmentType: input.assignmentType,
           status: "PENDENTE",
           isActive: true,
+          operationalRevision: 1,
           createdBy: userId,
         });
         const createdAssignmentId = Number(result.insertId);
@@ -443,6 +454,19 @@ const shiftAssignmentsRouter = router({
           },
           { db: tx },
         );
+        const capturedRequest = await captureCanonicalVacancyRequest(tx, {
+          institutionId: lockedShift.institutionId,
+          hospitalId: lockedShift.hospitalId,
+          sectorId: lockedShift.sectorId,
+          scheduleContextId: lockedShift.scheduleContextId,
+          shiftInstanceId: lockedShift.id,
+          assignmentId: createdAssignmentId,
+        });
+        await recordVacancyRequestShadowEventInTransaction(tx, {
+          operation: "REQUESTED",
+          capturedRequest,
+          actor: { userId, professionalId },
+        });
         return createdAssignmentId;
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
@@ -773,15 +797,50 @@ const shiftInstancesRouter = router({
           sectorId: lockedAssignment.sectorId,
           activeDelta: 0,
         });
+        const vacancyRequestCapture =
+          await captureVacancyRequestForDecisionOrLegacyAudit(() =>
+            captureCanonicalVacancyRequest(tx, {
+              institutionId: lockedAssignment.institutionId,
+              hospitalId: lockedAssignment.hospitalId,
+              sectorId: lockedAssignment.sectorId,
+              scheduleContextId: lockedAssignment.scheduleContextId,
+              shiftInstanceId: lockedAssignment.shiftInstanceId,
+              assignmentId: lockedAssignment.assignmentId,
+            }),
+          );
+        const legacyIdentityAuditMetadata =
+          vacancyRequestCapture.kind === LEGACY_REQUESTER_IDENTITY_UNPROVEN
+            ? {
+                operationalEventSuppressionReason:
+                  LEGACY_REQUESTER_IDENTITY_UNPROVEN,
+              }
+            : undefined;
 
         const [approved] = await tx
           .update(shiftAssignmentsV2)
-          .set({ status: "OCUPADO" })
+          .set({
+            status: "OCUPADO",
+            operationalRevision: lockedAssignment.operationalRevision + 1,
+          })
           .where(
             and(
               eq(shiftAssignmentsV2.id, input.assignmentId),
+              eq(
+                shiftAssignmentsV2.institutionId,
+                lockedAssignment.institutionId,
+              ),
+              eq(shiftAssignmentsV2.hospitalId, lockedAssignment.hospitalId),
+              eq(shiftAssignmentsV2.sectorId, lockedAssignment.sectorId),
+              eq(
+                shiftAssignmentsV2.shiftInstanceId,
+                lockedAssignment.shiftInstanceId,
+              ),
               eq(shiftAssignmentsV2.isActive, true),
               eq(shiftAssignmentsV2.status, "PENDENTE"),
+              eq(
+                shiftAssignmentsV2.operationalRevision,
+                lockedAssignment.operationalRevision,
+              ),
             ),
           );
         if (!approved.affectedRows) {
@@ -797,10 +856,21 @@ const shiftInstancesRouter = router({
             shiftInstanceId: assignment.shiftInstanceId,
             institutionId: assignment.institutionId,
             professionalId: managerProfessionalId,
-            metadata: { assignmentId: input.assignmentId, approvedBy: userId },
+            metadata: {
+              assignmentId: input.assignmentId,
+              approvedBy: userId,
+              ...(legacyIdentityAuditMetadata ?? {}),
+            },
           },
           { db: tx },
         );
+        if (vacancyRequestCapture.kind === "CANONICAL") {
+          await recordVacancyRequestShadowEventInTransaction(tx, {
+            operation: "APPROVED",
+            capturedRequest: vacancyRequestCapture.capturedRequest,
+            actor: { userId, professionalId: managerProfessionalId },
+          });
+        }
         await recordAudit(
           {
             actorUserId: userId,
@@ -814,6 +884,9 @@ const shiftInstancesRouter = router({
             shiftInstanceId: assignment.shiftInstanceId,
             hospitalId: assignment.hospitalId,
             sectorId: assignment.sectorId,
+            ...(legacyIdentityAuditMetadata
+              ? { metadata: legacyIdentityAuditMetadata }
+              : {}),
           },
           { db: tx, strict: true },
         );
@@ -885,14 +958,51 @@ const shiftInstancesRouter = router({
           [lockedAssignment.startAt],
         );
 
+        const vacancyRequestCapture =
+          await captureVacancyRequestForDecisionOrLegacyAudit(() =>
+            captureCanonicalVacancyRequest(tx, {
+              institutionId: lockedAssignment.institutionId,
+              hospitalId: lockedAssignment.hospitalId,
+              sectorId: lockedAssignment.sectorId,
+              scheduleContextId: lockedAssignment.scheduleContextId,
+              shiftInstanceId: lockedAssignment.shiftInstanceId,
+              assignmentId: lockedAssignment.assignmentId,
+            }),
+          );
+        const legacyIdentityAuditMetadata =
+          vacancyRequestCapture.kind === LEGACY_REQUESTER_IDENTITY_UNPROVEN
+            ? {
+                operationalEventSuppressionReason:
+                  LEGACY_REQUESTER_IDENTITY_UNPROVEN,
+              }
+            : undefined;
+
         const [rejected] = await tx
           .update(shiftAssignmentsV2)
-          .set({ isActive: false, status: "REJEITADO" })
+          .set({
+            isActive: false,
+            status: "REJEITADO",
+            operationalRevision: lockedAssignment.operationalRevision + 1,
+          })
           .where(
             and(
               eq(shiftAssignmentsV2.id, input.assignmentId),
+              eq(
+                shiftAssignmentsV2.institutionId,
+                lockedAssignment.institutionId,
+              ),
+              eq(shiftAssignmentsV2.hospitalId, lockedAssignment.hospitalId),
+              eq(shiftAssignmentsV2.sectorId, lockedAssignment.sectorId),
+              eq(
+                shiftAssignmentsV2.shiftInstanceId,
+                lockedAssignment.shiftInstanceId,
+              ),
               eq(shiftAssignmentsV2.isActive, true),
               eq(shiftAssignmentsV2.status, "PENDENTE"),
+              eq(
+                shiftAssignmentsV2.operationalRevision,
+                lockedAssignment.operationalRevision,
+              ),
             ),
           );
         if (!rejected.affectedRows) {
@@ -909,10 +1019,21 @@ const shiftInstancesRouter = router({
             institutionId: assignment.institutionId,
             professionalId: managerProfessionalId,
             reason: input.reason ?? null,
-            metadata: { assignmentId: input.assignmentId, rejectedBy: userId },
+            metadata: {
+              assignmentId: input.assignmentId,
+              rejectedBy: userId,
+              ...(legacyIdentityAuditMetadata ?? {}),
+            },
           },
           { db: tx },
         );
+        if (vacancyRequestCapture.kind === "CANONICAL") {
+          await recordVacancyRequestShadowEventInTransaction(tx, {
+            operation: "REJECTED",
+            capturedRequest: vacancyRequestCapture.capturedRequest,
+            actor: { userId, professionalId: managerProfessionalId },
+          });
+        }
         await recordAudit(
           {
             actorUserId: userId,
@@ -927,10 +1048,13 @@ const shiftInstancesRouter = router({
             shiftInstanceId: assignment.shiftInstanceId,
             hospitalId: assignment.hospitalId,
             sectorId: assignment.sectorId,
+            ...(legacyIdentityAuditMetadata
+              ? { metadata: legacyIdentityAuditMetadata }
+              : {}),
           },
           { db: tx, strict: true },
         );
-      });
+      }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       return { ok: true };
     }),

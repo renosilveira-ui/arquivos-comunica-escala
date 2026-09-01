@@ -78,6 +78,9 @@ export default defineConfig({
       "tests/shift-assignments-operational-revision-migration.test.ts",
       "tests/assignment-operational-events.test.ts",
       "tests/assignment-events-shadow-source.test.ts",
+      "tests/vacancy-request-recipients.test.ts",
+      "tests/vacancy-request-operational-events.test.ts",
+      "tests/vacancy-request-events-shadow-source.test.ts",
     ],
   },
 });

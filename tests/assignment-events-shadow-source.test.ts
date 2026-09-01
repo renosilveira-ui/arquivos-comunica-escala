@@ -38,8 +38,13 @@ describe("wiring dos fatos SHADOW de assignment", () => {
     expect(swapRouter).not.toContain("operationalRevision");
     expect(shiftsCrud).not.toContain("assignment-operational-events");
     expect(shiftsCrud).not.toContain("operationalRevision");
+    // Esta frente empilhada pode usar revisão em `routers.ts` para o fluxo
+    // distinto de solicitação de vaga, mas não pode puxar o emissor de
+    // assignment direto para os writers legados.
     expect(legacyRouters).not.toContain("assignment-operational-events");
-    expect(legacyRouters).not.toContain("operationalRevision");
+    expect(legacyRouters).not.toContain(
+      "recordAssignmentShadowEventInTransaction",
+    );
   });
 
   it("cria alocação direta com revisão 1 e emite no mesmo tx", () => {

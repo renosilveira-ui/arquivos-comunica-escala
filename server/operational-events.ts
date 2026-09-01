@@ -15,6 +15,12 @@ import {
   swapRequests,
 } from "../drizzle/schema";
 import { getDb } from "./db";
+import {
+  canonicalVacancyRequestManagerUserIds,
+  isCanonicalVacancyRequestManagerActor,
+  isCanonicalVacancyRequestRequesterDeliverable,
+  resolveCanonicalVacancyRequestManagers,
+} from "./vacancy-request-recipients";
 
 /**
  * Catálogo fechado da primeira versão. Nenhuma mutação é ligada a ele nesta
@@ -191,10 +197,17 @@ type OperationalEventContract = {
   )[];
   aggregateIdContextId?:
     "scheduleContextId" | "shiftInstanceId" | "assignmentId";
-  /** Capability privada aos quatro fatos que usam operational_revision real. */
-  aggregateRevision?: "SHIFT_ASSIGNMENT_OPERATIONAL";
-  /** O recipient é rederivado da alocação bloqueada, não do caller. */
-  canonicalRecipient?: "ASSIGNMENT_USER";
+  /** Capability privada a fatos com operational_revision persistida. */
+  aggregateRevision?:
+    "SHIFT_ASSIGNMENT_OPERATIONAL" | "VACANCY_REQUEST_OPERATIONAL";
+  /** O recipient é rederivado do agregado bloqueado, não do caller. */
+  canonicalRecipient?:
+    | "ASSIGNMENT_USER"
+    | "VACANCY_REQUEST_REQUESTER"
+    | "VACANCY_REQUEST_RESPONSIBLE_MANAGERS";
+  /** O ator também é rederivado para evitar fato emitido por terceiro. */
+  canonicalActor?:
+    "VACANCY_REQUEST_REQUESTER" | "VACANCY_REQUEST_RESPONSIBLE_MANAGER";
   /** Remoção SHADOW pode auditar o vínculo canônico já revogado. */
   recipientMembership?: "ACTIVE" | "CANONICAL_ASSIGNMENT_HISTORICAL";
 };
@@ -264,9 +277,12 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
     aggregateType: "VACANCY_REQUEST",
     deliveryPolicies: ["NOTIFY"],
     scopeKinds: ["SECTOR"],
-    // No modelo atual, a solicitação de vaga é a alocação PENDENTE.
     requiredContextIds: ["shiftInstanceId", "assignmentId"],
     aggregateIdContextId: "assignmentId",
+    // No modelo atual, a solicitação é a alocação PENDENTE com revisão própria.
+    aggregateRevision: "VACANCY_REQUEST_OPERATIONAL",
+    canonicalRecipient: "VACANCY_REQUEST_RESPONSIBLE_MANAGERS",
+    canonicalActor: "VACANCY_REQUEST_REQUESTER",
   },
   ASSIGNMENT_APPROVED: {
     aggregateType: "VACANCY_REQUEST",
@@ -274,6 +290,9 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
     scopeKinds: ["SECTOR"],
     requiredContextIds: ["shiftInstanceId", "assignmentId"],
     aggregateIdContextId: "assignmentId",
+    aggregateRevision: "VACANCY_REQUEST_OPERATIONAL",
+    canonicalRecipient: "VACANCY_REQUEST_REQUESTER",
+    canonicalActor: "VACANCY_REQUEST_RESPONSIBLE_MANAGER",
   },
   ASSIGNMENT_REJECTED: {
     aggregateType: "VACANCY_REQUEST",
@@ -281,6 +300,9 @@ export const OPERATIONAL_EVENT_CONTRACTS: Record<
     scopeKinds: ["SECTOR"],
     requiredContextIds: ["shiftInstanceId", "assignmentId"],
     aggregateIdContextId: "assignmentId",
+    aggregateRevision: "VACANCY_REQUEST_OPERATIONAL",
+    canonicalRecipient: "VACANCY_REQUEST_REQUESTER",
+    canonicalActor: "VACANCY_REQUEST_RESPONSIBLE_MANAGER",
   },
   SHIFT_UPDATED: {
     aggregateType: "SHIFT_INSTANCE",
@@ -428,9 +450,21 @@ export const OPERATIONAL_EVENT_TRANSITION_CONTRACTS: Record<
     to: "REMOVED",
     assignmentState: { status: "OCUPADO", isActive: false },
   },
-  VACANCY_REQUESTED: null,
-  ASSIGNMENT_APPROVED: null,
-  ASSIGNMENT_REJECTED: null,
+  VACANCY_REQUESTED: {
+    from: "NONE",
+    to: "PENDING",
+    assignmentState: { status: "PENDENTE", isActive: true },
+  },
+  ASSIGNMENT_APPROVED: {
+    from: "PENDING",
+    to: "APPROVED",
+    assignmentState: { status: "OCUPADO", isActive: true },
+  },
+  ASSIGNMENT_REJECTED: {
+    from: "PENDING",
+    to: "REJECTED",
+    assignmentState: { status: "REJEITADO", isActive: false },
+  },
   SHIFT_UPDATED: null,
   VACANCY_BROADCAST: null,
   SCHEDULE_INVITE_CREATED: null,
@@ -1215,6 +1249,106 @@ async function assertResourceContextConsistency(
   }
 }
 
+function isPushAndEmailUserRecipient(
+  recipient: OperationalEventRecipient | undefined,
+  userId: number,
+): boolean {
+  return (
+    recipient?.kind === "USER" &&
+    recipient.userId === userId &&
+    recipient.channels.length === 2 &&
+    recipient.channels.includes("PUSH") &&
+    recipient.channels.includes("EMAIL")
+  );
+}
+
+function assertCanonicalVacancyRequesterActor(
+  input: CanonicalOperationalEventInput,
+  assignment: { professionalId: number; requesterUserId: number },
+): void {
+  if (
+    input.actor.kind !== "USER" ||
+    input.actor.userId !== assignment.requesterUserId ||
+    input.actor.professionalId !== assignment.professionalId
+  ) {
+    throw new OperationalEventValidationError(
+      "Ator não corresponde ao solicitante canônico da vaga",
+    );
+  }
+}
+
+function assertCanonicalVacancyRequesterRecipient(
+  input: CanonicalOperationalEventInput,
+  requesterUserId: number,
+  requesterDeliverable: boolean,
+): void {
+  if (!requesterDeliverable) {
+    if (
+      input.recipients.length !== 0 ||
+      input.recipientResolution !== "NO_DELIVERABLE_RECIPIENTS"
+    ) {
+      throw new OperationalEventValidationError(
+        "Solicitante não entregável exige resolução canônica vazia",
+      );
+    }
+    return;
+  }
+  if (
+    input.recipientResolution !== "RESOLVED" ||
+    input.recipients.length !== 1 ||
+    !isPushAndEmailUserRecipient(input.recipients[0], requesterUserId)
+  ) {
+    throw new OperationalEventValidationError(
+      "Destinatário não corresponde ao solicitante canônico da vaga",
+    );
+  }
+}
+
+function assertCanonicalVacancyManagerRecipients(
+  input: CanonicalOperationalEventInput,
+  responsibleManagerUserIds: readonly number[],
+  requesterUserId: number,
+): void {
+  const recipientUserIds = responsibleManagerUserIds.filter(
+    (userId) => userId !== requesterUserId,
+  );
+  if (recipientUserIds.length === 0) {
+    const expectedResolution =
+      responsibleManagerUserIds.length === 0
+        ? "NO_RESPONSIBLE_MANAGERS"
+        : "NO_DELIVERABLE_RECIPIENTS";
+    if (
+      input.recipients.length !== 0 ||
+      input.recipientResolution !== expectedResolution
+    ) {
+      throw new OperationalEventValidationError(
+        "Solicitação sem destinatário gestor exige resolução canônica vazia",
+      );
+    }
+    return;
+  }
+  if (
+    input.recipientResolution !== "RESOLVED" ||
+    input.recipients.length !== recipientUserIds.length
+  ) {
+    throw new OperationalEventValidationError(
+      "Destinatários não correspondem aos gestores responsáveis canônicos",
+    );
+  }
+  for (let index = 0; index < recipientUserIds.length; index += 1) {
+    if (
+      !isPushAndEmailUserRecipient(
+        input.recipients[index],
+        recipientUserIds[index],
+      )
+    ) {
+      throw new OperationalEventValidationError(
+        "Destinatários não correspondem aos gestores responsáveis canônicos",
+      );
+    }
+  }
+}
+
 /**
  * O agregado também é uma referência de autoridade: ele não pode ser um ID
  * solto, nem pertencer a outro tenant. Relações adicionais não são aceitas do
@@ -1287,6 +1421,153 @@ async function resolveCanonicalAggregateContexts(
       ) {
         throw new OperationalEventValidationError(
           "Destinatário não corresponde ao usuário canônico da alocação",
+        );
+      }
+      return [];
+    }
+    case "VACANCY_REQUEST": {
+      if (
+        eventContract.aggregateRevision !== "VACANCY_REQUEST_OPERATIONAL" ||
+        !eventContract.canonicalRecipient ||
+        !eventContract.canonicalActor ||
+        !transitionContract.assignmentState
+      ) {
+        throw new OperationalEventValidationError(
+          "Solicitação de vaga sem capability operacional canônica não pode emitir evento",
+        );
+      }
+      const scheduleContextPredicate =
+        context.scheduleContextId === null
+          ? isNull(shiftInstances.scheduleContextId)
+          : eq(shiftInstances.scheduleContextId, context.scheduleContextId);
+      const [assignment] = await tx
+        .select({
+          id: shiftAssignmentsV2.id,
+          professionalId: shiftAssignmentsV2.professionalId,
+          createdByUserId: shiftAssignmentsV2.createdBy,
+          requesterUserId: professionals.userId,
+          operationalRevision: shiftAssignmentsV2.operationalRevision,
+          status: shiftAssignmentsV2.status,
+          isActive: shiftAssignmentsV2.isActive,
+        })
+        .from(shiftAssignmentsV2)
+        .innerJoin(
+          professionals,
+          eq(professionals.id, shiftAssignmentsV2.professionalId),
+        )
+        .innerJoin(
+          shiftInstances,
+          and(
+            eq(shiftInstances.id, shiftAssignmentsV2.shiftInstanceId),
+            eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
+            eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
+            eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+          ),
+        )
+        .where(
+          and(
+            eq(shiftAssignmentsV2.id, aggregate.id),
+            eq(shiftAssignmentsV2.institutionId, context.institutionId),
+            eq(shiftAssignmentsV2.hospitalId, context.hospitalId!),
+            eq(shiftAssignmentsV2.sectorId, context.sectorId!),
+            eq(shiftAssignmentsV2.shiftInstanceId, context.shiftInstanceId!),
+            eq(shiftInstances.id, context.shiftInstanceId!),
+            eq(shiftInstances.institutionId, context.institutionId),
+            eq(shiftInstances.hospitalId, context.hospitalId!),
+            eq(shiftInstances.sectorId, context.sectorId!),
+            scheduleContextPredicate,
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!assignment) {
+        throw new OperationalEventValidationError(
+          "Solicitação de vaga não pertence à revisão, solicitante ou transição canônica do evento",
+        );
+      }
+      const createdByUserId = assignment.createdByUserId;
+      const requesterUserId = assignment.requesterUserId;
+      const isVacancyRequestCreation = input.eventType === "VACANCY_REQUESTED";
+      if (
+        typeof createdByUserId !== "number" ||
+        !Number.isSafeInteger(createdByUserId) ||
+        createdByUserId <= 0 ||
+        !Number.isSafeInteger(requesterUserId) ||
+        requesterUserId <= 0 ||
+        createdByUserId !== requesterUserId ||
+        assignment.operationalRevision !== aggregate.version ||
+        (isVacancyRequestCreation &&
+          (aggregate.version !== 1 || assignment.operationalRevision !== 1)) ||
+        assignment.status !== transitionContract.assignmentState.status ||
+        assignment.isActive !== transitionContract.assignmentState.isActive
+      ) {
+        throw new OperationalEventValidationError(
+          "Solicitação de vaga não pertence à revisão, solicitante ou transição canônica do evento",
+        );
+      }
+
+      const managers = await resolveCanonicalVacancyRequestManagers(tx, {
+        institutionId: context.institutionId,
+        hospitalId: context.hospitalId!,
+        sectorId: context.sectorId!,
+      });
+      const managerUserIds = canonicalVacancyRequestManagerUserIds(managers);
+      const requester = {
+        institutionId: context.institutionId,
+        professionalId: assignment.professionalId,
+        userId: assignment.requesterUserId,
+      };
+      if (eventContract.canonicalActor === "VACANCY_REQUEST_REQUESTER") {
+        assertCanonicalVacancyRequesterActor(input, assignment);
+      } else if (
+        eventContract.canonicalActor === "VACANCY_REQUEST_RESPONSIBLE_MANAGER"
+      ) {
+        if (
+          input.actor.kind !== "USER" ||
+          !isCanonicalVacancyRequestManagerActor(managers, input.actor)
+        ) {
+          throw new OperationalEventValidationError(
+            "Ator não corresponde a gestor responsável canônico da vaga",
+          );
+        }
+      } else {
+        throw new OperationalEventValidationError(
+          "Ator canônico da solicitação de vaga é inválido",
+        );
+      }
+
+      const requesterDeliverable =
+        eventContract.canonicalActor === "VACANCY_REQUEST_REQUESTER" ||
+        eventContract.canonicalRecipient === "VACANCY_REQUEST_REQUESTER"
+          ? await isCanonicalVacancyRequestRequesterDeliverable(tx, requester)
+          : undefined;
+      if (
+        eventContract.canonicalActor === "VACANCY_REQUEST_REQUESTER" &&
+        !requesterDeliverable
+      ) {
+        throw new OperationalEventValidationError(
+          "Solicitante da vaga não possui vínculo entregável no momento do pedido",
+        );
+      }
+
+      if (eventContract.canonicalRecipient === "VACANCY_REQUEST_REQUESTER") {
+        assertCanonicalVacancyRequesterRecipient(
+          input,
+          assignment.requesterUserId,
+          requesterDeliverable === true,
+        );
+      } else if (
+        eventContract.canonicalRecipient ===
+        "VACANCY_REQUEST_RESPONSIBLE_MANAGERS"
+      ) {
+        assertCanonicalVacancyManagerRecipients(
+          input,
+          managerUserIds,
+          assignment.requesterUserId,
+        );
+      } else {
+        throw new OperationalEventValidationError(
+          "Destinatário canônico da solicitação de vaga é inválido",
         );
       }
       return [];
@@ -1502,8 +1783,13 @@ function validateCreateInput(
     contract.aggregateRevision === "SHIFT_ASSIGNMENT_OPERATIONAL" &&
     contract.aggregateType === "SHIFT_ASSIGNMENT" &&
     input.aggregate.type === "SHIFT_ASSIGNMENT";
+  const usesVacancyRequestOperationalRevision =
+    contract.aggregateRevision === "VACANCY_REQUEST_OPERATIONAL" &&
+    contract.aggregateType === "VACANCY_REQUEST" &&
+    input.aggregate.type === "VACANCY_REQUEST";
   if (
     !usesAssignmentOperationalRevision &&
+    !usesVacancyRequestOperationalRevision &&
     OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES[input.aggregate.type] !==
       "ROW_VERSION"
   ) {
