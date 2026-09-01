@@ -202,9 +202,11 @@ function completeCatalog(
   ];
   const foreignKeys: ExistingForeignKeyDefinition[] = [
     {
+      constraintSchema: "escalas",
       tableName: "institution_readiness_fences",
       constraintName: "fk_rdf_institution",
       columnName: "institution_id",
+      referencedTableSchema: "escalas",
       referencedTableName: "institutions",
       referencedColumnName: "id",
       deleteRule: "CASCADE",
@@ -299,9 +301,7 @@ describe("migration da readiness fence V1", () => {
     const drizzleSchemaPushCatalog: ReadinessFenceV1Catalog = {
       ...schemaPushCatalog,
       columns: schemaPushCatalog.columns.map((column) =>
-        ["created_at", "updated_at", "installed_at"].includes(
-          column.columnName,
-        )
+        ["created_at", "updated_at", "installed_at"].includes(column.columnName)
           ? { ...column, columnDefault: "now()" }
           : column,
       ),
@@ -431,12 +431,32 @@ describe("migration da readiness fence V1", () => {
     ).toThrow("READINESS_FENCE_V1_OWNED_TRIGGER_UNSUPPORTED");
   });
 
+  it("recusa a foreign key da fence quando aponta para outro schema", () => {
+    const catalog = completeCatalog(parsed.triggers);
+    catalog.foreignKeys[0] = {
+      ...catalog.foreignKeys[0]!,
+      referencedTableSchema: "outro_schema",
+    };
+
+    expect(() =>
+      classifyReadinessFenceV1Installation(catalog, parsed.triggers, [
+        {
+          id: READINESS_FENCE_V1_INSTALLATION_ID,
+          coverageVersion: READINESS_FENCE_V1_COVERAGE_VERSION,
+          coverageHash: READINESS_FENCE_V1_COVERAGE_HASH,
+        },
+      ]),
+    ).toThrow("READINESS_FENCE_V1_OWNED_SCHEMA_DIVERGENT");
+  });
+
   it("recusa uma colisão global do nome da foreign key antes do DDL", () => {
     const catalog = sourceCatalog();
     catalog.foreignKeys.push({
+      constraintSchema: "escalas",
       tableName: "tabela_externa",
       constraintName: "fk_rdf_institution",
       columnName: "institution_id",
+      referencedTableSchema: "escalas",
       referencedTableName: "institutions",
       referencedColumnName: "id",
       deleteRule: "CASCADE",
@@ -453,8 +473,9 @@ describe("migration da readiness fence V1", () => {
     await readReadinessFenceV1Catalog({ query } as never, parsed.triggers);
 
     const [, foreignKeyParams] = query.mock.calls[3]!;
+    expect(query.mock.calls[3]![0]).toContain("kcu.CONSTRAINT_NAME = ?");
     expect(query.mock.calls[3]![0]).toContain(
-      "kcu.CONSTRAINT_NAME = ?",
+      "kcu.REFERENCED_TABLE_SCHEMA AS referencedTableSchema",
     );
     expect(foreignKeyParams).toEqual([
       READINESS_FENCE_V1_OWNED_TABLES,

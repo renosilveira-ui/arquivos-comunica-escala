@@ -168,9 +168,11 @@ export type ExistingKeyDefinition = Readonly<{
 }>;
 
 export type ExistingForeignKeyDefinition = Readonly<{
+  constraintSchema: string;
   tableName: string;
   constraintName: string;
   columnName: string;
+  referencedTableSchema: string;
   referencedTableName: string;
   referencedColumnName: string;
   deleteRule: string;
@@ -619,6 +621,8 @@ function assertOwnedTableShape(
       normalizeIdentifier(foreignKeys[0]!.constraintName) !==
         "fk_rdf_institution" ||
       normalizeIdentifier(foreignKeys[0]!.columnName) !== "institution_id" ||
+      normalizeIdentifier(foreignKeys[0]!.constraintSchema) !==
+        normalizeIdentifier(foreignKeys[0]!.referencedTableSchema) ||
       normalizeIdentifier(foreignKeys[0]!.referencedTableName) !==
         "institutions" ||
       normalizeIdentifier(foreignKeys[0]!.referencedColumnName) !== "id" ||
@@ -870,9 +874,11 @@ export async function readReadinessFenceV1Catalog(
   );
   const [foreignKeyRows] = await connection.query(
     [
-      "SELECT kcu.TABLE_NAME AS tableName,",
+      "SELECT kcu.CONSTRAINT_SCHEMA AS constraintSchema,",
+      "       kcu.TABLE_NAME AS tableName,",
       "       kcu.CONSTRAINT_NAME AS constraintName,",
       "       kcu.COLUMN_NAME AS columnName,",
+      "       kcu.REFERENCED_TABLE_SCHEMA AS referencedTableSchema,",
       "       kcu.REFERENCED_TABLE_NAME AS referencedTableName,",
       "       kcu.REFERENCED_COLUMN_NAME AS referencedColumnName,",
       "       rc.DELETE_RULE AS deleteRule,",
@@ -955,7 +961,10 @@ async function assertPostDdlBeforeMarker(
   connection: Connection,
   expectedTriggers: readonly IdempotentTriggerDefinition[],
 ): Promise<void> {
-  const catalog = await readReadinessFenceV1Catalog(connection, expectedTriggers);
+  const catalog = await readReadinessFenceV1Catalog(
+    connection,
+    expectedTriggers,
+  );
   assertReadinessFenceV1SourceSchema(catalog);
   assertNoReadinessFenceV1ForeignKeyNameCollision(catalog);
   assertNoOwnedTableTriggers(catalog);
