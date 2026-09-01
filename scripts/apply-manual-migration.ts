@@ -16,6 +16,8 @@ import { resolveSslConfig } from "../server/_core/db-ssl";
 const READINESS_FENCE_V1_MIGRATION_BASENAME =
   "2026-09-01-readiness-fence-v1-clean.sql";
 const READINESS_FENCE_V1_DEDICATED_DIRECTIVE = "@readiness-fence-trigger";
+const READINESS_FENCE_V1_STRUCTURAL_IDENTIFIERS =
+  /\b(?:institution_readiness_fences|institution_readiness_fence_installations|trg_rdf_[a-z0-9_]+)\b/i;
 
 function requireNonEmpty(name: string): string {
   const value = process.env[name]?.trim();
@@ -50,7 +52,9 @@ function buildConnectionOptions() {
  * A readiness fence não pode passar pelo executor genérico: ela precisa de
  * preflight do catálogo, lock de instalação e classificação PREPARED antes
  * de qualquer DDL. Também bloqueamos cópias com a diretiva dedicada, para
- * que renomear o arquivo não remova essa proteção.
+ * que renomear o arquivo ou remover o comentário de diretiva não remova essa
+ * proteção. Esses identificadores pertencem exclusivamente à fence V1; uma
+ * evolução futura deve ter seu próprio instalador dedicado.
  */
 export function assertGenericManualMigrationAllowed(
   absolutePath: string,
@@ -58,7 +62,8 @@ export function assertGenericManualMigrationAllowed(
 ): void {
   if (
     basename(absolutePath) === READINESS_FENCE_V1_MIGRATION_BASENAME ||
-    sql.includes(READINESS_FENCE_V1_DEDICATED_DIRECTIVE)
+    sql.includes(READINESS_FENCE_V1_DEDICATED_DIRECTIVE) ||
+    READINESS_FENCE_V1_STRUCTURAL_IDENTIFIERS.test(sql)
   ) {
     throw new Error("READINESS_FENCE_V1_DEDICATED_INSTALLER_REQUIRED");
   }

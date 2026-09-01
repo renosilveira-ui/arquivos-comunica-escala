@@ -23,6 +23,18 @@ describe("proteções do instalador dedicado da readiness fence V1", () => {
     ).toThrow("READINESS_FENCE_V1_DEDICATED_INSTALLER_REQUIRED");
     expect(() =>
       assertGenericManualMigrationAllowed(
+        "/tmp/copia-sem-diretiva.sql",
+        "CREATE TABLE institution_readiness_fences (institution_id INT)",
+      ),
+    ).toThrow("READINESS_FENCE_V1_DEDICATED_INSTALLER_REQUIRED");
+    expect(() =>
+      assertGenericManualMigrationAllowed(
+        "/tmp/copia-sem-diretiva.sql",
+        "CREATE TRIGGER trg_rdf_i_ai AFTER INSERT ON institutions FOR EACH ROW SELECT 1",
+      ),
+    ).toThrow("READINESS_FENCE_V1_DEDICATED_INSTALLER_REQUIRED");
+    expect(() =>
+      assertGenericManualMigrationAllowed(
         "/tmp/outra-migration.sql",
         "CREATE TABLE unrelated_example (id INT)",
       ),
@@ -99,6 +111,16 @@ describe("proteções do instalador dedicado da readiness fence V1", () => {
         { allowInsecureLoopbackForTest: true },
       ).ssl,
     ).toBeUndefined();
+    expect(() =>
+      buildReadinessFenceV1ConnectionOptions(
+        "mysql:///escala_test?ssl-mode=REQUIRED",
+      ),
+    ).toThrow("READINESS_FENCE_V1_DATABASE_HOST_REQUIRED");
+    expect(() =>
+      buildReadinessFenceV1ConnectionOptions(
+        "mysql://root:root@127.0.0.1:0/escala_test?ssl-mode=REQUIRED",
+      ),
+    ).toThrow("READINESS_FENCE_V1_DATABASE_PORT_INVALID");
   });
 
   it("recusa falta de aprovação antes de abrir conexão com qualquer banco", async () => {

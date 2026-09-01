@@ -124,6 +124,7 @@ export const READINESS_FENCE_V1_OWNED_TABLES = [
   "institution_readiness_fences",
   "institution_readiness_fence_installations",
 ] as const;
+const READINESS_FENCE_V1_FOREIGN_KEY_NAME = "fk_rdf_institution";
 
 type OwnedTableName = (typeof READINESS_FENCE_V1_OWNED_TABLES)[number];
 /**
@@ -650,6 +651,26 @@ function assertNoOwnedTableTriggers(catalog: ReadinessFenceV1Catalog): void {
   }
 }
 
+/**
+ * Nomes de foreign key pertencem ao namespace do schema InnoDB. Uma colisão
+ * fora da tabela própria precisa falhar antes do primeiro CREATE TABLE,
+ * nunca deixar o instalador descobrir isso depois de iniciar o DDL.
+ */
+function assertNoReadinessFenceV1ForeignKeyNameCollision(
+  catalog: ReadinessFenceV1Catalog,
+): void {
+  const collision = catalog.foreignKeys.some(
+    (foreignKey) =>
+      normalizeIdentifier(foreignKey.constraintName) ===
+        READINESS_FENCE_V1_FOREIGN_KEY_NAME &&
+      normalizeIdentifier(foreignKey.tableName) !==
+        "institution_readiness_fences",
+  );
+  if (collision) {
+    throw new Error("READINESS_FENCE_V1_FOREIGN_KEY_NAME_COLLISION");
+  }
+}
+
 function exactMarker(
   markers: readonly ExistingInstallationMarker[],
 ): ExistingInstallationMarker {
@@ -680,6 +701,7 @@ export function classifyReadinessFenceV1Installation(
   markers: readonly ExistingInstallationMarker[] | undefined,
 ): InstallationState {
   assertReadinessFenceV1SourceSchema(catalog);
+  assertNoReadinessFenceV1ForeignKeyNameCollision(catalog);
   assertNoOwnedTableTriggers(catalog);
   const missingTriggers = missingOrIncompatibleReadinessFenceV1Triggers(
     expectedTriggers,
@@ -741,7 +763,12 @@ export function buildReadinessFenceV1ConnectionOptions(
   if (!rawUrl.trim()) {
     throw new Error("READINESS_FENCE_V1_DATABASE_URL é obrigatória");
   }
-  const url = new URL(rawUrl);
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error("READINESS_FENCE_V1_DATABASE_URL_INVALID");
+  }
   if (url.protocol !== "mysql:") {
     throw new Error("READINESS_FENCE_V1_DATABASE_URL deve usar mysql://");
   }
@@ -762,13 +789,22 @@ export function buildReadinessFenceV1ConnectionOptions(
     );
   }
 
+  const host = url.hostname.trim().toLowerCase();
+  if (!host) {
+    throw new Error("READINESS_FENCE_V1_DATABASE_HOST_REQUIRED");
+  }
+  const port = url.port ? Number(url.port) : 3306;
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("READINESS_FENCE_V1_DATABASE_PORT_INVALID");
+  }
+
   const sslMode = url.searchParams.get("ssl-mode")?.toUpperCase();
   if (sslMode && sslMode !== "REQUIRED") {
     throw new Error(
       "READINESS_FENCE_V1_DATABASE_URL aceita somente ssl-mode=REQUIRED",
     );
   }
-  const isLoopback = LOOPBACK_DATABASE_HOSTS.has(url.hostname.toLowerCase());
+  const isLoopback = LOOPBACK_DATABASE_HOSTS.has(host);
   if (
     sslMode !== "REQUIRED" &&
     !(isLoopback && options.allowInsecureLoopbackForTest)
@@ -776,8 +812,8 @@ export function buildReadinessFenceV1ConnectionOptions(
     throw new Error("READINESS_FENCE_V1_DATABASE_TLS_REQUIRED");
   }
   return {
-    host: url.hostname,
-    port: url.port ? Number(url.port) : 3306,
+    host,
+    port,
     user: decodeURIComponent(url.username),
     password: decodeURIComponent(url.password),
     database,
@@ -787,9 +823,14 @@ export function buildReadinessFenceV1ConnectionOptions(
 
 export async function readReadinessFenceV1Catalog(
   connection: Connection,
+  expectedTriggers: readonly Pick<IdempotentTriggerDefinition, "name">[],
 ): Promise<ReadinessFenceV1Catalog> {
+  if (expectedTriggers.length === 0) {
+    throw new Error("READINESS_FENCE_V1_EXPECTED_TRIGGERS_REQUIRED");
+  }
   const sourceTables = sourceTableNames();
   const tableNames = [...sourceTables, ...READINESS_FENCE_V1_OWNED_TABLES];
+  const expectedTriggerNames = expectedTriggers.map((trigger) => trigger.name);
   const [tableRows] = await connection.query(
     [
       "SELECT TABLE_NAME AS tableName,",
@@ -842,10 +883,10 @@ export async function readReadinessFenceV1Catalog(
       " AND rc.TABLE_NAME = kcu.TABLE_NAME",
       " AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME",
       "WHERE kcu.CONSTRAINT_SCHEMA = DATABASE()",
-      "  AND kcu.TABLE_NAME IN (?)",
+      "  AND (kcu.TABLE_NAME IN (?) OR kcu.CONSTRAINT_NAME = ?)",
       "  AND kcu.REFERENCED_TABLE_NAME IS NOT NULL",
     ].join("\n"),
-    [READINESS_FENCE_V1_OWNED_TABLES],
+    [READINESS_FENCE_V1_OWNED_TABLES, READINESS_FENCE_V1_FOREIGN_KEY_NAME],
   );
   const [triggerRows] = await connection.query(
     [
@@ -857,9 +898,9 @@ export async function readReadinessFenceV1Catalog(
       "       ACTION_STATEMENT AS actionStatement",
       "FROM INFORMATION_SCHEMA.TRIGGERS",
       "WHERE TRIGGER_SCHEMA = DATABASE()",
-      "  AND EVENT_OBJECT_TABLE IN (?)",
+      "  AND (EVENT_OBJECT_TABLE IN (?) OR TRIGGER_NAME IN (?))",
     ].join("\n"),
-    [tableNames],
+    [tableNames, expectedTriggerNames],
   );
 
   return {
@@ -914,8 +955,9 @@ async function assertPostDdlBeforeMarker(
   connection: Connection,
   expectedTriggers: readonly IdempotentTriggerDefinition[],
 ): Promise<void> {
-  const catalog = await readReadinessFenceV1Catalog(connection);
+  const catalog = await readReadinessFenceV1Catalog(connection, expectedTriggers);
   assertReadinessFenceV1SourceSchema(catalog);
+  assertNoReadinessFenceV1ForeignKeyNameCollision(catalog);
   assertNoOwnedTableTriggers(catalog);
   if (ownedTablePresence(catalog) !== READINESS_FENCE_V1_OWNED_TABLES.length) {
     throw new Error("READINESS_FENCE_V1_POSTFLIGHT_INCOMPLETE");
@@ -986,7 +1028,7 @@ export async function applyReadinessFenceV1Migration(
   try {
     await acquireInstallationLock(connection);
     lockAcquired = true;
-    const preflight = await readReadinessFenceV1Catalog(connection);
+    const preflight = await readReadinessFenceV1Catalog(connection, triggers);
     const ownedCount = ownedTablePresence(preflight);
     const markers =
       ownedCount === READINESS_FENCE_V1_OWNED_TABLES.length
@@ -1014,7 +1056,7 @@ export async function applyReadinessFenceV1Migration(
     await assertPostDdlBeforeMarker(connection, triggers);
     await insertExactInstallationMarker(connection);
 
-    const postflight = await readReadinessFenceV1Catalog(connection);
+    const postflight = await readReadinessFenceV1Catalog(connection, triggers);
     const completeState = classifyReadinessFenceV1Installation(
       postflight,
       triggers,

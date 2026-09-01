@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getTableConfig } from "drizzle-orm/mysql-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   hospitals,
   institutions,
@@ -31,6 +31,7 @@ import {
   extractReadinessFenceV1Migration,
   extractReadinessFenceV1TableStatements,
   missingOrIncompatibleReadinessFenceV1Triggers,
+  readReadinessFenceV1Catalog,
   type ExistingColumnDefinition,
   type ExistingForeignKeyDefinition,
   type ExistingKeyDefinition,
@@ -370,6 +371,22 @@ describe("migration da readiness fence V1", () => {
     ).toThrow("READINESS_FENCE_V1_TRIGGER_SLOT_OCCUPIED");
   });
 
+  it("recusa uma colisão global de nome de trigger esperado", () => {
+    const expected = parsed.triggers[0]!;
+    expect(() =>
+      missingOrIncompatibleReadinessFenceV1Triggers(parsed.triggers, [
+        {
+          triggerName: expected.name,
+          actionTiming: expected.timing,
+          eventManipulation: expected.event,
+          eventObjectTable: "tabela_externa",
+          actionOrientation: "ROW",
+          actionStatement: "SET @unexpected = 1",
+        },
+      ]),
+    ).toThrow("READINESS_FENCE_V1_TRIGGER_CATALOG_DIVERGENT");
+  });
+
   it("recusa trigger externo nas próprias tabelas da fence", () => {
     const catalog = completeCatalog(parsed.triggers);
     catalog.triggers.push({
@@ -390,6 +407,44 @@ describe("migration da readiness fence V1", () => {
         },
       ]),
     ).toThrow("READINESS_FENCE_V1_OWNED_TRIGGER_UNSUPPORTED");
+  });
+
+  it("recusa uma colisão global do nome da foreign key antes do DDL", () => {
+    const catalog = sourceCatalog();
+    catalog.foreignKeys.push({
+      tableName: "tabela_externa",
+      constraintName: "fk_rdf_institution",
+      columnName: "institution_id",
+      referencedTableName: "institutions",
+      referencedColumnName: "id",
+      deleteRule: "CASCADE",
+      updateRule: "RESTRICT",
+    });
+
+    expect(() =>
+      classifyReadinessFenceV1Installation(catalog, parsed.triggers, undefined),
+    ).toThrow("READINESS_FENCE_V1_FOREIGN_KEY_NAME_COLLISION");
+  });
+
+  it("consulta colisões de nomes de trigger e foreign key fora das tabelas próprias", async () => {
+    const query = vi.fn().mockResolvedValue([[], []]);
+    await readReadinessFenceV1Catalog({ query } as never, parsed.triggers);
+
+    const [, foreignKeyParams] = query.mock.calls[3]!;
+    expect(query.mock.calls[3]![0]).toContain(
+      "kcu.CONSTRAINT_NAME = ?",
+    );
+    expect(foreignKeyParams).toEqual([
+      READINESS_FENCE_V1_OWNED_TABLES,
+      "fk_rdf_institution",
+    ]);
+
+    const [, triggerParams] = query.mock.calls[4]!;
+    expect(query.mock.calls[4]![0]).toContain("TRIGGER_NAME IN (?)");
+    expect(triggerParams).toEqual([
+      expect.any(Array),
+      parsed.triggers.map((trigger) => trigger.name),
+    ]);
   });
 
   it("só reconhece complete com marcador singleton exato e todos triggers", () => {

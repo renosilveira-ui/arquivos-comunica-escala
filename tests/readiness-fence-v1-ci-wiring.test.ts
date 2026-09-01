@@ -20,8 +20,19 @@ describe("wiring da prova MySQL da readiness fence V1 na CI", () => {
     const proofStep = CI_WORKFLOW.indexOf(
       "- name: Prove readiness fence V1 manual migration",
     );
+    const preparedStep = CI_WORKFLOW.indexOf(
+      "- name: Validate readiness fence V1 over Drizzle PREPARED schema",
+    );
     expect(schemaStep).toBeGreaterThanOrEqual(0);
+    expect(preparedStep).toBeGreaterThan(schemaStep);
     expect(proofStep).toBeGreaterThan(schemaStep);
+    expect(proofStep).toBeGreaterThan(preparedStep);
+    const preparedBlock = CI_WORKFLOW.slice(preparedStep, proofStep);
+    expect(preparedBlock).toContain('READINESS_FENCE_V1_APPLY: "1"');
+    expect(preparedBlock).toContain(
+      "READINESS_FENCE_V1_DATABASE_URL: mysql://root:root@127.0.0.1:3306/escalas_test",
+    );
+    expect(preparedBlock).toContain("pnpm apply:readiness-fence-v1");
     const proofBlock = CI_WORKFLOW.slice(proofStep);
     expect(proofBlock).toContain(
       "run: pnpm exec tsx scripts/prove-readiness-fence-v1-migration.ts",
