@@ -624,6 +624,86 @@ describe("take em um passo: quem assume leva o plantão", () => {
     );
   });
 
+  it("participantes veem residual ACCEPTED com ACL revogada só para desfazê-lo", async () => {
+    const leftover = await insertLeftoverAccepted(peer, 61);
+    const before = await readResidualState(leftover.swapId, leftover.shiftId);
+    const peerAccess = and(
+      eq(professionalAccess.institutionId, institutionId),
+      eq(professionalAccess.hospitalId, hospitalId),
+      eq(professionalAccess.sectorId, sectorId),
+      eq(professionalAccess.professionalId, peer.professionalId),
+    );
+    await db
+      .update(professionalAccess)
+      .set({ canAccess: false })
+      .where(peerAccess);
+
+    try {
+      const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
+      const ownerRow = ownerRows.find((item) => Number(item.id) === leftover.swapId);
+      expect(ownerRow).toMatchObject({
+        status: "ACCEPTED",
+        cancellationOnly: true,
+        awaitingMyApproval: false,
+        canCancel: true,
+        fromProfessional: null,
+        toProfessional: null,
+        fromShift: null,
+        toShift: null,
+      });
+
+      const receiverRows = await callerFor(peer).list({ role: "RECEIVER" });
+      expect(
+        receiverRows.find((item) => Number(item.id) === leftover.swapId),
+      ).toMatchObject({
+        status: "ACCEPTED",
+        cancellationOnly: true,
+        awaitingMyApproval: false,
+        canCancel: true,
+        fromShift: null,
+      });
+      await expect(
+        callerFor(offerer).getById({ id: leftover.swapId }),
+      ).resolves.toMatchObject({
+        status: "ACCEPTED",
+        cancellationOnly: true,
+        fromProfessional: null,
+        toProfessional: null,
+        fromShift: null,
+        toShift: null,
+        hospitalId: null,
+        sectorId: null,
+      });
+
+      const managerRows = await callerFor(gestor).list({ role: "ANY" });
+      expect(managerRows.map((item) => Number(item.id))).not.toContain(
+        leftover.swapId,
+      );
+      await expect(
+        callerFor(gestor).getById({ id: leftover.swapId }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      expect(await readResidualState(leftover.swapId, leftover.shiftId)).toEqual(
+        before,
+      );
+      await expect(
+        callerFor(peer).cancel({ swapRequestId: leftover.swapId }),
+      ).resolves.toEqual({ ok: true });
+    } finally {
+      await db
+        .update(professionalAccess)
+        .set({ canAccess: true })
+        .where(peerAccess);
+    }
+
+    const [swap] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, leftover.swapId))
+      .limit(1);
+    expect(swap?.status).toBe("CANCELLED");
+  });
+
   it("somente o ofertante conclui ACCEPTED residual pela mutation explícita", async () => {
     const leftover = await insertLeftoverAccepted(gestor, 7);
 

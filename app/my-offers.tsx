@@ -329,6 +329,12 @@ function OfferCard({
         </Text>
       ) : null}
 
+      {offer.cancellationOnly === true ? (
+        <Text className="text-xs" style={{ color: theme.colors.textSecondary }}>
+          Esta candidatura antiga não pode mais ser concluída porque a escala ou o acesso mudou. Você pode desfazê-la.
+        </Text>
+      ) : null}
+
       {/* Expira em */}
       {expiresAt && status === "PENDING" && (
         <View className="flex-row items-center gap-1">

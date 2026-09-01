@@ -441,22 +441,111 @@ async function assertActorCanReadSwap(
   throw topologyDenied("Solicitação não pertence ao profissional autenticado");
 }
 
+function isRecordedSwapParticipant(
+  actor: TenantActor,
+  swap: SwapRow,
+): boolean {
+  if (!actor.professionalId) return false;
+  return (
+    (swap.fromUserId === actor.userId &&
+      swap.fromProfessionalId === actor.professionalId) ||
+    (swap.toUserId === actor.userId &&
+      swap.toProfessionalId === actor.professionalId)
+  );
+}
+
+/**
+ * Uma candidatura ACCEPTED legada pode sobreviver a uma revogação de acesso
+ * ou a uma alocação que deixou de ser válida. O participante registrado ainda
+ * precisa enxergar uma representação mínima para cancelá-la; o gestor que
+ * não participa continua submetido à topologia atual. A representação mínima
+ * nunca usa os joins de turno/profissional potencialmente corrompidos.
+ */
+type SwapReadView = "FULL" | "STALE_ACCEPTED_PARTICIPANT";
+
+async function resolveSwapReadView(
+  db: any,
+  actor: TenantActor,
+  swap: SwapRow,
+): Promise<SwapReadView> {
+  await assertActorCanReadSwap(actor, swap);
+  try {
+    await requireSwapTopologyForRead(db, swap);
+    return "FULL";
+  } catch (error) {
+    if (
+      swap.status === "ACCEPTED" &&
+      isRecordedSwapParticipant(actor, swap) &&
+      isExpectedSwapVisibilityDenial(error)
+    ) {
+      return "STALE_ACCEPTED_PARTICIPANT";
+    }
+    throw error;
+  }
+}
+
 async function filterReadableSwaps(
   db: any,
   actor: TenantActor,
   swaps: SwapRow[],
-): Promise<SwapRow[]> {
-  const readable: SwapRow[] = [];
+): Promise<readonly { swap: SwapRow; view: SwapReadView }[]> {
+  const readable: { swap: SwapRow; view: SwapReadView }[] = [];
   for (const swap of swaps) {
     try {
-      await requireSwapTopologyForRead(db, swap);
-      await assertActorCanReadSwap(actor, swap);
-      readable.push(swap);
+      const view = await resolveSwapReadView(db, actor, swap);
+      readable.push({ swap, view });
     } catch (error) {
       if (!isExpectedSwapVisibilityDenial(error)) throw error;
     }
   }
   return readable;
+}
+
+function staleAcceptedResidualListItem(swap: SwapRow) {
+  return {
+    id: swap.id,
+    type: swap.type,
+    status: swap.status,
+    reason: swap.reason,
+    reviewNote: swap.reviewNote,
+    expiresAt: swap.expiresAt,
+    createdAt: swap.createdAt,
+    reviewedAt: swap.reviewedAt,
+    fromProfessional: null,
+    toProfessional: null,
+    fromShift: null,
+    toShift: null,
+    reviewerName: null,
+    awaitingMyApproval: false,
+    canCancel: true,
+    cancellationOnly: true,
+  };
+}
+
+function staleAcceptedResidualDetails(swap: SwapRow) {
+  return {
+    id: swap.id,
+    type: swap.type,
+    status: swap.status,
+    reason: swap.reason,
+    reviewNote: swap.reviewNote,
+    expiresAt: swap.expiresAt,
+    createdAt: swap.createdAt,
+    updatedAt: swap.updatedAt,
+    reviewedAt: swap.reviewedAt,
+    version: swap.version,
+    fromProfessional: null,
+    toProfessional: null,
+    fromShift: null,
+    toShift: null,
+    fromAssignmentId: null,
+    toAssignmentId: null,
+    reviewerName: null,
+    institutionId: swap.institutionId,
+    hospitalId: null,
+    sectorId: null,
+    cancellationOnly: true,
+  };
 }
 
 async function lockSwapRequestForUpdate(
@@ -2248,11 +2337,20 @@ export const swapRouter = router({
         actor,
         candidateSwaps,
       );
-      const readableIds = new Set(readableSwaps.map((swap) => swap.id));
+      const readableById = new Map(
+        readableSwaps.map((entry) => [entry.swap.id, entry]),
+      );
 
       return data
-        .filter((r: any) => readableIds.has(Number(r.id)))
+        .filter((r: any) => readableById.has(Number(r.id)))
         .map((r: any) => {
+          const readable = readableById.get(Number(r.id));
+          if (!readable) {
+            throw new Error("SWAP_READABILITY_INTEGRITY_FAILURE");
+          }
+          if (readable.view === "STALE_ACCEPTED_PARTICIPANT") {
+            return staleAcceptedResidualListItem(readable.swap);
+          }
           const status = r.status;
           const isOwner =
             Number(r.fromUserId) === actor.userId &&
@@ -2307,6 +2405,7 @@ export const swapRouter = router({
             // dono, vínculo e topologia dentro da transação de escrita.
             awaitingMyApproval: status === "ACCEPTED" && isOwner,
             canCancel,
+            cancellationOnly: false,
           };
         });
     }),
@@ -2338,8 +2437,10 @@ export const swapRouter = router({
           code: "NOT_FOUND",
           message: "Solicitação não encontrada",
         });
-      await requireSwapTopologyForRead(db, swap);
-      await assertActorCanReadSwap(actor, swap);
+      const readView = await resolveSwapReadView(db, actor, swap);
+      if (readView === "STALE_ACCEPTED_PARTICIPANT") {
+        return staleAcceptedResidualDetails(swap);
+      }
 
       const rows = await db.execute(sql`
         SELECT
@@ -2429,6 +2530,7 @@ export const swapRouter = router({
         institutionId: r.institution_id,
         hospitalId: r.hospital_id,
         sectorId: r.sector_id,
+        cancellationOnly: false,
       };
     }),
 
