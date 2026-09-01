@@ -643,6 +643,8 @@ export const scheduleInvites = mysqlTable(
     invitedEmail: varchar("invited_email", { length: 320 }),
     maxRedemptions: int("max_redemptions").notNull().default(1),
     redeemedCount: int("redeemed_count").notNull().default(0),
+    /** Revisão monotônica usada pelo ledger operacional de convites. */
+    operationalRevision: int("operational_revision").notNull().default(0),
     expiresAt: timestamp("expires_at").notNull(),
     revokedAt: timestamp("revoked_at"),
     declinedAt: timestamp("declined_at"),

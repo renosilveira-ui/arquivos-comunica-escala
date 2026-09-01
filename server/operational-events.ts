@@ -113,7 +113,7 @@ export const OPERATIONAL_AGGREGATE_VERSION_CAPABILITIES = {
   SHIFT_INSTANCE: "UNAVAILABLE",
   VACANCY_REQUEST: "UNAVAILABLE",
   SWAP_REQUEST: "ROW_VERSION",
-  SCHEDULE_INVITE: "UNAVAILABLE",
+  SCHEDULE_INVITE: "ROW_VERSION",
   MONTHLY_ROSTER: "ROW_VERSION",
   PROFESSIONAL_INSTITUTION_ACCESS: "UNAVAILABLE",
   SCHEDULE_CONTEXT: "UNAVAILABLE",
@@ -355,10 +355,22 @@ export const OPERATIONAL_EVENT_TRANSITION_CONTRACTS: Record<
   ASSIGNMENT_REJECTED: null,
   SHIFT_UPDATED: null,
   VACANCY_BROADCAST: null,
-  SCHEDULE_INVITE_CREATED: null,
-  SCHEDULE_INVITE_ACCEPTED: null,
+  SCHEDULE_INVITE_CREATED: {
+    from: null,
+    to: "PENDING",
+    aggregateStatus: "PENDING",
+  },
+  SCHEDULE_INVITE_ACCEPTED: {
+    from: "PENDING",
+    to: "ACCEPTED",
+    aggregateStatus: "ACCEPTED",
+  },
   SCHEDULE_INVITE_DECLINED: null,
-  SCHEDULE_INVITE_REVOKED: null,
+  SCHEDULE_INVITE_REVOKED: {
+    from: "PENDING",
+    to: "REVOKED",
+    aggregateStatus: "REVOKED",
+  },
   SCHEDULE_INVITE_EXPIRED: null,
   SWAP_OFFERED: { from: null, to: "PENDING", aggregateStatus: "PENDING" },
   SWAP_ACCEPTED: null,
@@ -1249,6 +1261,50 @@ async function resolveCanonicalAggregateContexts(
           },
         },
       ];
+    }
+    case "SCHEDULE_INVITE": {
+      const [invite] = await tx
+        .select({
+          id: scheduleInvites.id,
+          operationalRevision: scheduleInvites.operationalRevision,
+          revokedAt: scheduleInvites.revokedAt,
+          declinedAt: scheduleInvites.declinedAt,
+          redeemedCount: scheduleInvites.redeemedCount,
+          maxRedemptions: scheduleInvites.maxRedemptions,
+          expiresAt: scheduleInvites.expiresAt,
+        })
+        .from(scheduleInvites)
+        .where(
+          and(
+            eq(scheduleInvites.id, aggregate.id),
+            eq(scheduleInvites.institutionId, context.institutionId),
+            eq(scheduleInvites.hospitalId, context.hospitalId!),
+            eq(scheduleInvites.sectorId, context.sectorId!),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const inviteStatus = invite?.revokedAt
+        ? "REVOKED"
+        : invite?.declinedAt
+          ? "DECLINED"
+          : invite && invite.redeemedCount >= invite.maxRedemptions
+            ? "ACCEPTED"
+            : invite &&
+                invite.expiresAt.getTime() <=
+                  (input.occurredAt ?? new Date()).getTime()
+              ? "EXPIRED"
+              : "PENDING";
+      if (
+        !invite ||
+        invite.operationalRevision !== aggregate.version ||
+        inviteStatus !== transitionContract.aggregateStatus
+      ) {
+        throw new OperationalEventValidationError(
+          "Convite não pertence ao contexto, estado ou revisão canônica do evento",
+        );
+      }
+      return [];
     }
     case "MONTHLY_ROSTER": {
       const [roster] = await tx

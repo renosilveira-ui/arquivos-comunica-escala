@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -8,6 +8,7 @@ import {
   professionals,
   scheduleInvites,
   sectors,
+  type ScheduleInvite,
   users,
 } from "../drizzle/schema";
 import { mailer } from "./mailer";
@@ -21,9 +22,18 @@ import {
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
 import {
+  assertManagerScopeAccessForUpdate,
   getTenantActorFromContext,
   type TenantActor,
 } from "./_core/policy";
+import {
+  recordScheduleInviteAcceptedInTransaction,
+  recordScheduleInviteCreatedInTransaction,
+  recordScheduleInviteRevokedInTransaction,
+  type ScheduleInviteOperationalActor,
+  type ScheduleInviteOperationalSnapshot,
+} from "./schedule-invite-operational-events";
+import type { OperationalEventTx } from "./operational-events";
 import {
   listAuthorizedScheduleContexts,
   qualificationMatches,
@@ -57,6 +67,38 @@ type InviteDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
   "select" | "insert" | "update"
 >;
+type InviteTx = OperationalEventTx;
+
+function operationalActorFromTenant(
+  actor: TenantActor,
+): ScheduleInviteOperationalActor {
+  return {
+    kind: "USER",
+    userId: actor.userId,
+    professionalId: actor.professionalId,
+    role: actor.roleInInstitution,
+  };
+}
+
+function inviteOperationalSnapshot(input: {
+  id: number;
+  institutionId: number;
+  hospitalId: number;
+  sectorId: number;
+  operationalRevision: number;
+  createdByUserId: number;
+  invitedUserId: number | null;
+}): ScheduleInviteOperationalSnapshot {
+  return {
+    id: input.id,
+    institutionId: input.institutionId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    operationalRevision: input.operationalRevision,
+    createdByUserId: input.createdByUserId,
+    invitedUserId: input.invitedUserId,
+  };
+}
 
 function updateAffectedRows(result: unknown): number {
   if (result && typeof result === "object" && "affectedRows" in result) {
@@ -132,7 +174,7 @@ async function assertCanManageSector(
 }
 
 export async function redeemScheduleInviteInTransaction(
-  tx: InviteDb,
+  tx: InviteTx,
   input: {
     code: string;
     userId: number;
@@ -152,10 +194,50 @@ export async function redeemScheduleInviteInTransaction(
 }> {
   const now = input.now ?? new Date();
   const codeHash = hashScheduleInviteCode(input.code);
+  // Aceite e criação concorrente podem tocar o mesmo convidado. Primeiro
+  // identificamos o convite sem lock, depois travamos os vínculos do médico e
+  // só então a linha do convite; a revalidação abaixo impede que a primeira
+  // leitura autorize uma transição que tenha mudado entre os dois pontos.
+  const [invitePreview] = await tx
+    .select({
+      id: scheduleInvites.id,
+      invitedUserId: scheduleInvites.invitedUserId,
+    })
+    .from(scheduleInvites)
+    .where(eq(scheduleInvites.codeHash, codeHash))
+    .limit(1);
+  if (!invitePreview) {
+    throw new ScheduleInviteError(400, "Convite inválido ou expirado");
+  }
+  if (
+    !invitePreview.invitedUserId ||
+    invitePreview.invitedUserId !== input.userId
+  ) {
+    throw new ScheduleInviteError(
+      403,
+      "Este convite não foi emitido para a sua conta",
+    );
+  }
+
+  const memberships = await tx
+    .select({
+      id: professionalInstitutions.id,
+      institutionId: professionalInstitutions.institutionId,
+      active: professionalInstitutions.active,
+      roleInInstitution: professionalInstitutions.roleInInstitution,
+    })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, input.userId))
+    .for("update");
   const [invite] = await tx
     .select()
     .from(scheduleInvites)
-    .where(eq(scheduleInvites.codeHash, codeHash))
+    .where(
+      and(
+        eq(scheduleInvites.id, invitePreview.id),
+        eq(scheduleInvites.codeHash, codeHash),
+      ),
+    )
     .limit(1)
     .for("update");
   if (
@@ -222,15 +304,6 @@ export async function redeemScheduleInviteInTransaction(
     );
   }
 
-  const memberships = await tx
-    .select({
-      id: professionalInstitutions.id,
-      institutionId: professionalInstitutions.institutionId,
-      active: professionalInstitutions.active,
-    })
-    .from(professionalInstitutions)
-    .where(eq(professionalInstitutions.userId, input.userId))
-    .for("update");
   const membership = memberships.find(
     (row) => row.institutionId === invite.institutionId,
   );
@@ -297,18 +370,37 @@ export async function redeemScheduleInviteInTransaction(
 
   const increment = await tx
     .update(scheduleInvites)
-    .set({ redeemedCount: sql`${scheduleInvites.redeemedCount} + 1` })
+    .set({
+      redeemedCount: sql`${scheduleInvites.redeemedCount} + 1`,
+      operationalRevision: sql`${scheduleInvites.operationalRevision} + 1`,
+    })
     .where(
       and(
         eq(scheduleInvites.id, invite.id),
         isNull(scheduleInvites.revokedAt),
         isNull(scheduleInvites.declinedAt),
         sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
+        gt(scheduleInvites.expiresAt, now),
+        eq(scheduleInvites.operationalRevision, invite.operationalRevision),
       ),
     );
   if (updateAffectedRows(increment) !== 1) {
     throw new ScheduleInviteError(400, "Convite inválido ou expirado");
   }
+
+  await recordScheduleInviteAcceptedInTransaction(tx, {
+    snapshot: inviteOperationalSnapshot({
+      ...invite,
+      operationalRevision: invite.operationalRevision + 1,
+    }),
+    actor: {
+      kind: "USER",
+      userId: input.userId,
+      professionalId: input.professionalId,
+      role: membership?.roleInInstitution ?? "USER",
+    },
+    occurredAt: now,
+  });
 
   await recordAudit(
     {
@@ -343,7 +435,7 @@ export async function redeemScheduleInviteInTransaction(
 }
 
 export async function declineScheduleInviteInTransaction(
-  tx: InviteDb,
+  tx: InviteTx,
   input: {
     code: string;
     userId: number;
@@ -424,6 +516,7 @@ export async function declineScheduleInviteInTransaction(
     .set({
       declinedAt: now,
       declinedByUserId: input.userId,
+      operationalRevision: sql`${scheduleInvites.operationalRevision} + 1`,
     })
     .where(
       and(
@@ -432,6 +525,7 @@ export async function declineScheduleInviteInTransaction(
         isNull(scheduleInvites.declinedAt),
         sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
         sql`${scheduleInvites.expiresAt} > ${now}`,
+        eq(scheduleInvites.operationalRevision, invite.operationalRevision),
       ),
     );
   if (updateAffectedRows(declined) !== 1) {
@@ -480,6 +574,117 @@ export async function declineScheduleInviteInTransaction(
     scheduleInviteId: invite.id,
     createdByUserId: invite.createdByUserId,
     invitedUserId: invite.invitedUserId,
+  };
+}
+
+function isPendingScheduleInvite(
+  invite: Pick<
+    ScheduleInvite,
+    | "revokedAt"
+    | "declinedAt"
+    | "expiresAt"
+    | "redeemedCount"
+    | "maxRedemptions"
+  >,
+  now: Date,
+): boolean {
+  return (
+    !invite.revokedAt &&
+    !invite.declinedAt &&
+    invite.expiresAt.getTime() > now.getTime() &&
+    invite.redeemedCount < invite.maxRedemptions
+  );
+}
+
+async function revokeLockedPendingScheduleInviteInTransaction(
+  tx: InviteTx,
+  input: {
+    invite: ScheduleInvite;
+    actor: ScheduleInviteOperationalActor;
+    now: Date;
+  },
+): Promise<boolean> {
+  if (!isPendingScheduleInvite(input.invite, input.now)) return false;
+
+  const revoked = await tx
+    .update(scheduleInvites)
+    .set({
+      revokedAt: input.now,
+      operationalRevision: sql`${scheduleInvites.operationalRevision} + 1`,
+    })
+    .where(
+      and(
+        eq(scheduleInvites.id, input.invite.id),
+        eq(scheduleInvites.institutionId, input.invite.institutionId),
+        isNull(scheduleInvites.revokedAt),
+        isNull(scheduleInvites.declinedAt),
+        gt(scheduleInvites.expiresAt, input.now),
+        sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
+        eq(
+          scheduleInvites.operationalRevision,
+          input.invite.operationalRevision,
+        ),
+      ),
+    );
+  if (updateAffectedRows(revoked) !== 1) {
+    throw new ScheduleInviteError(
+      409,
+      "O convite foi alterado por outra operação. Atualize e tente novamente.",
+    );
+  }
+
+  await recordScheduleInviteRevokedInTransaction(tx, {
+    snapshot: inviteOperationalSnapshot({
+      ...input.invite,
+      operationalRevision: input.invite.operationalRevision + 1,
+    }),
+    actor: input.actor,
+    occurredAt: input.now,
+  });
+  return true;
+}
+
+export async function revokeScheduleInviteInTransaction(
+  tx: InviteTx,
+  input: {
+    inviteId: number;
+    actor: TenantActor;
+    expectedActorSessionVersion: number;
+    now?: Date;
+  },
+): Promise<{ didRevoke: boolean }> {
+  const now = input.now ?? new Date();
+  const [invite] = await tx
+    .select()
+    .from(scheduleInvites)
+    .where(
+      and(
+        eq(scheduleInvites.id, input.inviteId),
+        eq(scheduleInvites.institutionId, input.actor.institutionId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!invite) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Convite não encontrado",
+    });
+  }
+
+  await assertManagerScopeAccessForUpdate(
+    tx,
+    input.actor,
+    input.expectedActorSessionVersion,
+    invite.hospitalId,
+    invite.sectorId,
+  );
+  return {
+    didRevoke: await revokeLockedPendingScheduleInviteInTransaction(tx, {
+      invite,
+      actor: operationalActorFromTenant(input.actor),
+      now,
+    }),
   };
 }
 
@@ -831,49 +1036,193 @@ export const scheduleInvitesRouter = router({
         const plaintext = generateScheduleInviteCode();
         const normalized = normalizeScheduleInviteCode(plaintext);
         const codeHash = hashScheduleInviteCode(normalized);
-        const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
         const formatted = formatScheduleInviteCode(normalized);
 
-        const [inserted] = await db.insert(scheduleInvites).values({
-          institutionId: actor.institutionId,
-          hospitalId: input.hospitalId,
-          sectorId: input.sectorId,
-          codeHash,
-          createdByUserId: actor.userId,
-          invitedUserId: invitee.userId,
-          invitedEmail: invitee.email,
-          maxRedemptions: NAMED_MAX_REDEMPTIONS,
-          expiresAt,
-        }).$returningId();
+        let created:
+          | {
+              inviteId: number;
+              inviteeName: string | null;
+              inviteeEmail: string;
+              expiresAt: Date;
+            }
+          | undefined;
+        try {
+          created = await db.transaction(async (tx) => {
+            const [lockedInvitee] = await tx
+              .select({
+                userId: users.id,
+                name: users.name,
+                email: users.email,
+                deletedAt: users.deletedAt,
+                approvalStatus: users.approvalStatus,
+                medicalSpecialtyId: professionals.medicalSpecialtyId,
+                operationalProfileCode: professionals.operationalProfileCode,
+              })
+              .from(users)
+              .innerJoin(professionals, eq(professionals.userId, users.id))
+              .where(eq(users.id, userId))
+              .limit(1)
+              .for("update");
+            if (
+              !lockedInvitee ||
+              lockedInvitee.deletedAt ||
+              lockedInvitee.approvalStatus !== "APPROVED" ||
+              !lockedInvitee.email
+            ) {
+              throw new ScheduleInviteError(409, "Médico não encontrado");
+            }
 
-        await db
-          .update(scheduleInvites)
-          .set({ revokedAt: new Date() })
-          .where(
-            and(
-              eq(scheduleInvites.institutionId, actor.institutionId),
-              eq(scheduleInvites.hospitalId, input.hospitalId),
-              eq(scheduleInvites.sectorId, input.sectorId),
-              eq(scheduleInvites.invitedUserId, invitee.userId),
-              isNull(scheduleInvites.revokedAt),
-              isNull(scheduleInvites.declinedAt),
-              sql`${scheduleInvites.id} <> ${inserted.id}`,
-              sql`${scheduleInvites.redeemedCount} = 0`,
-            ),
-          );
+            const lockedHouses = await tx
+              .select({
+                institutionId: professionalInstitutions.institutionId,
+                active: professionalInstitutions.active,
+              })
+              .from(professionalInstitutions)
+              .where(eq(professionalInstitutions.userId, lockedInvitee.userId))
+              .for("update");
+            const stillInThisHouse = lockedHouses.some(
+              (row) => row.active && row.institutionId === actor.institutionId,
+            );
+            const stillInOtherHouse = lockedHouses.some(
+              (row) => row.active && row.institutionId !== actor.institutionId,
+            );
+            if (stillInOtherHouse && !stillInThisHouse) {
+              throw new ScheduleInviteError(409, "Médico não encontrado");
+            }
+
+            // O precheck de escopo já ocorreu antes da transaction. Dentro
+            // dela, travamos primeiro o convidado porque o aceite nominal
+            // também o trava antes de validar o emissor; manter esta ordem
+            // evita um ciclo emissor↔convidado entre criar e aceitar.
+            await assertManagerScopeAccessForUpdate(
+              tx,
+              actor,
+              ctx.user.sessionVersion,
+              input.hospitalId,
+              input.sectorId,
+            );
+
+            const now = new Date();
+            const expiresAt = new Date(now.getTime() + NAMED_TTL_MS);
+            // Aceite trava primeiro o convite e depois os contextos. Seguir a
+            // mesma ordem aqui evita ciclo se uma nova emissão substituir um
+            // convite que está sendo aceito simultaneamente.
+            const previousInvites = await tx
+              .select()
+              .from(scheduleInvites)
+              .where(
+                and(
+                  eq(scheduleInvites.institutionId, actor.institutionId),
+                  eq(scheduleInvites.hospitalId, input.hospitalId),
+                  eq(scheduleInvites.sectorId, input.sectorId),
+                  eq(scheduleInvites.invitedUserId, lockedInvitee.userId),
+                  isNull(scheduleInvites.revokedAt),
+                  isNull(scheduleInvites.declinedAt),
+                  gt(scheduleInvites.expiresAt, now),
+                  sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
+                ),
+              )
+              .for("update");
+
+            const lockedContexts = await selectActiveScheduleContexts(
+              tx,
+              actor.institutionId,
+              {
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+              },
+              true,
+            );
+            if (lockedContexts.length === 0) {
+              throw new ScheduleInviteError(
+                409,
+                "Esta escala ainda não está aberta",
+              );
+            }
+
+            const [inserted] = await tx
+              .insert(scheduleInvites)
+              .values({
+                institutionId: actor.institutionId,
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+                codeHash,
+                createdByUserId: actor.userId,
+                invitedUserId: lockedInvitee.userId,
+                invitedEmail: lockedInvitee.email,
+                maxRedemptions: NAMED_MAX_REDEMPTIONS,
+                operationalRevision: 1,
+                expiresAt,
+              })
+              .$returningId();
+            if (!inserted?.id) {
+              throw new Error("Convite nominal não foi persistido");
+            }
+
+            for (const previousInvite of previousInvites) {
+              await revokeLockedPendingScheduleInviteInTransaction(tx, {
+                invite: previousInvite,
+                actor: operationalActorFromTenant(actor),
+                now,
+              });
+            }
+
+            await recordScheduleInviteCreatedInTransaction(tx, {
+              snapshot: inviteOperationalSnapshot({
+                id: inserted.id,
+                institutionId: actor.institutionId,
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+                operationalRevision: 1,
+                createdByUserId: actor.userId,
+                invitedUserId: lockedInvitee.userId,
+              }),
+              actor: operationalActorFromTenant(actor),
+              occurredAt: now,
+            });
+
+            return {
+              inviteId: inserted.id,
+              inviteeName: lockedInvitee.name,
+              inviteeEmail: lockedInvitee.email,
+              expiresAt,
+            };
+          });
+        } catch (error) {
+          if (error instanceof ScheduleInviteError) {
+            failed.push({ userId, error: error.message });
+            continue;
+          }
+          throw error;
+        }
 
         const mail = buildScheduleInviteMail({
-          to: invitee.email,
+          to: created.inviteeEmail,
           hospitalName: contexts[0].hospitalName,
           sectorName: contexts[0].sectorName,
           code: formatted,
-          expiresAt,
+          expiresAt: created.expiresAt,
         });
         if (!mail) {
-          await db
-            .update(scheduleInvites)
-            .set({ revokedAt: new Date() })
-            .where(eq(scheduleInvites.id, inserted.id));
+          await db.transaction(async (tx) => {
+            const [lockedInvite] = await tx
+              .select()
+              .from(scheduleInvites)
+              .where(
+                and(
+                  eq(scheduleInvites.id, created.inviteId),
+                  eq(scheduleInvites.institutionId, actor.institutionId),
+                ),
+              )
+              .limit(1)
+              .for("update");
+            if (!lockedInvite) return;
+            await revokeLockedPendingScheduleInviteInTransaction(tx, {
+              invite: lockedInvite,
+              actor: operationalActorFromTenant(actor),
+              now: new Date(),
+            });
+          });
           failed.push({
             userId,
             error: "Não foi possível montar o e-mail de convite",
@@ -886,10 +1235,25 @@ export const scheduleInvitesRouter = router({
         // Não confirmar envio se o correio não entregou — o gestor via
         // "saíram por e-mail" e o médico não recebia nada.
         if (!delivery.delivered) {
-          await db
-            .update(scheduleInvites)
-            .set({ revokedAt: new Date() })
-            .where(eq(scheduleInvites.id, inserted.id));
+          await db.transaction(async (tx) => {
+            const [lockedInvite] = await tx
+              .select()
+              .from(scheduleInvites)
+              .where(
+                and(
+                  eq(scheduleInvites.id, created.inviteId),
+                  eq(scheduleInvites.institutionId, actor.institutionId),
+                ),
+              )
+              .limit(1)
+              .for("update");
+            if (!lockedInvite) return;
+            await revokeLockedPendingScheduleInviteInTransaction(tx, {
+              invite: lockedInvite,
+              actor: operationalActorFromTenant(actor),
+              now: new Date(),
+            });
+          });
           failed.push({
             userId,
             error: "O e-mail de convite não saiu. Tente novamente.",
@@ -902,13 +1266,13 @@ export const scheduleInvitesRouter = router({
             institutionId: actor.institutionId,
             action: "USER_UPDATED",
             entityType: "USER",
-            entityId: invitee.userId,
+            entityId: userId,
             actorUserId: actor.userId,
             actorRole: actor.roleInInstitution,
             description: `Convite nominal enviado para a escala ${contexts[0].hospitalName} / ${contexts[0].sectorName}`,
             metadata: {
-              scheduleInviteId: inserted.id,
-              invitedUserId: invitee.userId,
+              scheduleInviteId: created.inviteId,
+              invitedUserId: userId,
               hospitalId: input.hospitalId,
               sectorId: input.sectorId,
             },
@@ -918,7 +1282,7 @@ export const scheduleInvitesRouter = router({
           { strict: true },
         );
 
-        sent.push({ userId: invitee.userId, name: invitee.name });
+        sent.push({ userId, name: created.inviteeName });
       }
 
       if (sent.length === 0) {
@@ -961,10 +1325,13 @@ export const scheduleInvitesRouter = router({
         });
       }
       await assertCanManageSector(actor, invite.hospitalId, invite.sectorId);
-      await db
-        .update(scheduleInvites)
-        .set({ revokedAt: new Date() })
-        .where(eq(scheduleInvites.id, invite.id));
+      await db.transaction((tx) =>
+        revokeScheduleInviteInTransaction(tx, {
+          inviteId: invite.id,
+          actor,
+          expectedActorSessionVersion: ctx.user.sessionVersion,
+        }),
+      );
       return { ok: true as const };
     }),
 });

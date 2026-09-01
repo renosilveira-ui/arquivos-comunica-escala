@@ -13,6 +13,7 @@ describe("schema de convites de escala", () => {
     expect(scheduleInvites.invitedEmail.notNull).toBe(false);
     expect(scheduleInvites.maxRedemptions.notNull).toBe(true);
     expect(scheduleInvites.redeemedCount.notNull).toBe(true);
+    expect(scheduleInvites.operationalRevision.notNull).toBe(true);
     expect(scheduleInvites.expiresAt.notNull).toBe(true);
     expect(scheduleInvites.revokedAt.notNull).toBe(false);
     expect(scheduleInvites.declinedAt.notNull).toBe(false);

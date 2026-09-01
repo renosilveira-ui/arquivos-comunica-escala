@@ -50,6 +50,47 @@ function hospitalEvent(): CreateOperationalEventInput {
   };
 }
 
+function scheduleInviteEvent(input: {
+  eventType:
+    | "SCHEDULE_INVITE_CREATED"
+    | "SCHEDULE_INVITE_ACCEPTED"
+    | "SCHEDULE_INVITE_REVOKED";
+  version: number;
+}): CreateOperationalEventInput {
+  const isCreated = input.eventType === "SCHEDULE_INVITE_CREATED";
+  const isRevoked = input.eventType === "SCHEDULE_INVITE_REVOKED";
+  return {
+    idempotencyKey: `invite:${input.eventType}:${input.version}`,
+    eventType: input.eventType,
+    deliveryPolicy: isRevoked ? "SILENT_AUDITED" : "NOTIFY",
+    aggregate: { type: "SCHEDULE_INVITE", id: 91, version: input.version },
+    transition: isCreated
+      ? { from: null, to: "PENDING" }
+      : isRevoked
+        ? { from: "PENDING", to: "REVOKED" }
+        : { from: "PENDING", to: "ACCEPTED" },
+    context: {
+      institutionId: 1,
+      hospitalId: 10,
+      scopeKind: "SECTOR",
+      sectorId: 4,
+    },
+    actor: { kind: "USER", userId: 7, role: "GESTOR_MEDICO" },
+    recipients: isRevoked
+      ? []
+      : isCreated
+        ? [
+            {
+              kind: "SCHEDULE_INVITE",
+              scheduleInviteId: 91,
+              channels: ["EMAIL"],
+            },
+          ]
+        : [{ kind: "USER", userId: 20, channels: ["PUSH", "EMAIL"] }],
+    ...(isRevoked ? { recipientResolution: "NOT_APPLICABLE" as const } : {}),
+  };
+}
+
 type FoundationTransaction = Parameters<
   typeof createOperationalEventInTransaction
 >[0];
@@ -58,6 +99,15 @@ function inMemoryOperationalEventTransaction(options?: {
   membershipChecks?: boolean[];
   membershipRoles?: ("USER" | "GESTOR_MEDICO" | "GESTOR_PLUS")[];
   inviteBelongsToInstitution?: boolean;
+  inviteRow?: {
+    id?: number;
+    operationalRevision: number;
+    revokedAt: Date | null;
+    declinedAt: Date | null;
+    redeemedCount: number;
+    maxRedemptions: number;
+    expiresAt: Date;
+  };
   resourceChecks?: boolean[];
   aggregateChecks?: boolean[];
   onFirstAsyncRead?: () => void;
@@ -190,7 +240,7 @@ function inMemoryOperationalEventTransaction(options?: {
                     return lockableRows(
                       options?.inviteBelongsToInstitution === false
                         ? []
-                        : [{ id: 1 }],
+                        : [options?.inviteRow ?? { id: 1 }],
                     );
                   }
                   if (table === monthlyRosters) {
@@ -274,9 +324,7 @@ function inMemoryOperationalEventTransaction(options?: {
 
 describe("foundation de eventos operacionais", () => {
   it("fixa o modo SHADOW no catálogo e no fato persistido", async () => {
-    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe(
-      "SHADOW",
-    );
+    expect(getOperationalEventEmissionMode("ROSTER_PUBLISHED")).toBe("SHADOW");
 
     const memory = inMemoryOperationalEventTransaction();
     await expect(
@@ -286,6 +334,120 @@ describe("foundation de eventos operacionais", () => {
       eventType: "ROSTER_PUBLISHED",
       emissionMode: "SHADOW",
     });
+  });
+
+  it("valida estado e revisão do convite sob lock, inclusive revogação legada sem convidado", async () => {
+    const future = new Date(Date.now() + 86_400_000);
+    const cases = [
+      {
+        event: scheduleInviteEvent({
+          eventType: "SCHEDULE_INVITE_CREATED",
+          version: 1,
+        }),
+        inviteRow: {
+          id: 91,
+          operationalRevision: 1,
+          revokedAt: null,
+          declinedAt: null,
+          redeemedCount: 0,
+          maxRedemptions: 1,
+          expiresAt: future,
+        },
+      },
+      {
+        event: scheduleInviteEvent({
+          eventType: "SCHEDULE_INVITE_ACCEPTED",
+          version: 2,
+        }),
+        inviteRow: {
+          id: 91,
+          operationalRevision: 2,
+          revokedAt: null,
+          declinedAt: null,
+          redeemedCount: 1,
+          maxRedemptions: 1,
+          expiresAt: future,
+        },
+      },
+      {
+        event: scheduleInviteEvent({
+          eventType: "SCHEDULE_INVITE_REVOKED",
+          version: 3,
+        }),
+        // Não existe invitedUserId no snapshot canônico do agregado: a
+        // revogação silenciosa continua válida para convite legado.
+        inviteRow: {
+          id: 91,
+          operationalRevision: 3,
+          revokedAt: new Date("2026-09-02T10:02:00.000Z"),
+          declinedAt: null,
+          redeemedCount: 0,
+          maxRedemptions: 1,
+          expiresAt: future,
+        },
+      },
+    ] as const;
+
+    for (const current of cases) {
+      const memory = inMemoryOperationalEventTransaction({
+        inviteRow: current.inviteRow,
+      });
+      await expect(
+        createOperationalEventInTransaction(memory.tx, current.event),
+      ).resolves.toMatchObject({ eventId: 1, created: true });
+      expect(memory.getPersistedEvent()).toMatchObject({
+        aggregateType: "SCHEDULE_INVITE",
+        aggregateId: 91,
+        aggregateVersion: current.inviteRow.operationalRevision,
+        eventType: current.event.eventType,
+      });
+      expect(memory.counters.deliveries).toBe(0);
+    }
+  });
+
+  it("falha fechada para revisão ou estado de convite divergentes", async () => {
+    const future = new Date(Date.now() + 86_400_000);
+    const staleRevision = inMemoryOperationalEventTransaction({
+      inviteRow: {
+        id: 91,
+        operationalRevision: 2,
+        revokedAt: null,
+        declinedAt: null,
+        redeemedCount: 0,
+        maxRedemptions: 1,
+        expiresAt: future,
+      },
+    });
+    await expect(
+      createOperationalEventInTransaction(
+        staleRevision.tx,
+        scheduleInviteEvent({
+          eventType: "SCHEDULE_INVITE_CREATED",
+          version: 1,
+        }),
+      ),
+    ).rejects.toThrow(OperationalEventValidationError);
+
+    const pendingInsteadOfAccepted = inMemoryOperationalEventTransaction({
+      inviteRow: {
+        id: 91,
+        operationalRevision: 2,
+        revokedAt: null,
+        declinedAt: null,
+        redeemedCount: 0,
+        maxRedemptions: 1,
+        expiresAt: future,
+      },
+    });
+    await expect(
+      createOperationalEventInTransaction(
+        pendingInsteadOfAccepted.tx,
+        scheduleInviteEvent({
+          eventType: "SCHEDULE_INVITE_ACCEPTED",
+          version: 2,
+        }),
+      ),
+    ).rejects.toThrow(OperationalEventValidationError);
   });
 
   it("recusa modo de emissão escolhido pelo caller", () => {
