@@ -74,6 +74,7 @@ import {
   enqueueVacancyAvailableSignals,
   recentVacancyBroadcastExists,
 } from "./vacancy-broadcast-signal";
+import { recordScheduleReplicationShadowEventInTransaction } from "./schedule-replication-events";
 
 /**
  * Combine a "YYYY-MM-DD" date string with a "HH:MM:SS" time string into a Date.
@@ -373,7 +374,12 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
   );
   for (const hierarchy of sourceHierarchies.values()) {
     await assertInstitutionHierarchy(hierarchy, { db });
-    await assertActiveScheduleContextTopology({ ...hierarchy, db });
+    // Registros legados ainda podem não ter contexto classificado. A cópia
+    // preserva a topologia instituição/hospital/setor e o lote canônico
+    // registra explicitamente a ausência de contexto, sem bloquear a escala.
+    if (hierarchy.scheduleContextId !== null) {
+      await assertActiveScheduleContextTopology({ ...hierarchy, db });
+    }
   }
 
   // Candidatos deslocados; os que caem fora do destino (só no modo mês)
@@ -693,13 +699,15 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
         },
         { db: tx, lockForShare: true },
       );
-      await assertActiveScheduleContextTopology({
-        institutionId: current.institutionId,
-        hospitalId: current.hospitalId,
-        sectorId: current.sectorId,
-        scheduleContextId: current.scheduleContextId,
-        db: tx,
-      });
+      if (current.scheduleContextId !== null) {
+        await assertActiveScheduleContextTopology({
+          institutionId: current.institutionId,
+          hospitalId: current.hospitalId,
+          sectorId: current.sectorId,
+          scheduleContextId: current.scheduleContextId,
+          db: tx,
+        });
+      }
     }
 
     for (const planned of [...plannedAssignments].sort(
@@ -752,6 +760,8 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
     );
 
     let firstCreatedId = 0;
+    const createdShiftIds: number[] = [];
+    const createdAssignmentIds: number[] = [];
     for (const c of toCreate) {
       const mine = plannedAssignments.filter(
         (p) => p.sourceShiftId === c.source.id,
@@ -783,6 +793,7 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
         })
         .$returningId();
       if (!firstCreatedId) firstCreatedId = row.id;
+      createdShiftIds.push(row.id);
 
       if (mine.length > 0) {
         await assertShiftAssignmentCapacityForUpdate(tx, {
@@ -793,18 +804,24 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
           activeDelta: mine.length,
           expectedCurrentActiveCount: 0,
         });
-        await tx.insert(shiftAssignmentsV2).values(
-          mine.map(({ assignment }) => ({
-            shiftInstanceId: row.id,
-            institutionId: assignment.institutionId,
-            hospitalId: assignment.hospitalId,
-            sectorId: assignment.sectorId,
-            professionalId: assignment.professionalId,
-            assignmentType: assignment.assignmentType,
-            status: assignment.status,
-            isActive: true,
-            createdBy: ctx.user.id,
-          })),
+        const createdAssignments = await tx
+          .insert(shiftAssignmentsV2)
+          .values(
+            mine.map(({ assignment }) => ({
+              shiftInstanceId: row.id,
+              institutionId: assignment.institutionId,
+              hospitalId: assignment.hospitalId,
+              sectorId: assignment.sectorId,
+              professionalId: assignment.professionalId,
+              assignmentType: assignment.assignmentType,
+              status: assignment.status,
+              isActive: true,
+              createdBy: ctx.user.id,
+            })),
+          )
+          .$returningId();
+        createdAssignmentIds.push(
+          ...createdAssignments.map((assignment) => assignment.id),
         );
       }
     }
@@ -830,6 +847,18 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
       },
       { db: tx as any, strict: true },
     );
+    await recordScheduleReplicationShadowEventInTransaction(tx, {
+      institutionId: ctx.institutionId,
+      hospitalId: input.hospitalId,
+      actor: {
+        userId: ctx.user.id,
+        professionalId: actor.professionalId,
+        role: actor.roleInInstitution,
+      },
+      sourceKind: "RANGE",
+      createdShiftIds,
+      createdAssignmentIds,
+    });
   }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
   return summary;
@@ -1139,8 +1168,9 @@ async function replicateMonthCalendar(
     if ((await existingTarget(tx as unknown as typeof db)).length) {
       throw new TRPCError({ code: "CONFLICT", message: targetRaceMessage });
     }
+    const createdShiftIds: number[] = [];
     for (const candidate of candidates) {
-      await tx.insert(shiftInstances).values({
+      const [createdShift] = await tx.insert(shiftInstances).values({
         institutionId: candidate.institutionId, hospitalId: candidate.hospitalId,
         sectorId: candidate.sectorId, scheduleContextId: candidate.scheduleContextId,
         label: candidate.label, specialty: candidate.specialty,
@@ -1150,7 +1180,8 @@ async function replicateMonthCalendar(
         ...(candidate.paymentModel !== undefined ? { paymentModel: candidate.paymentModel } : {}),
         ...(candidate.productivityCapBrl !== undefined ? { productivityCapBrl: candidate.productivityCapBrl } : {}),
         createdBy: ctx.user.id,
-      });
+      }).$returningId();
+      createdShiftIds.push(createdShift.id);
     }
     await recordAudit({
       actorUserId: ctx.user.id, actorRole: actor.roleInInstitution, actorName: ctx.user.name ?? undefined,
@@ -1161,6 +1192,20 @@ async function replicateMonthCalendar(
       metadata: { calendarReplication: true, ...summary, sourceMonth: input.sourceMonth, sectorId: input.sectorId },
       institutionId: ctx.institutionId, hospitalId: input.hospitalId, sectorId: input.sectorId,
     }, { db: tx as any, strict: true });
+    if (createdShiftIds.length > 0) {
+      await recordScheduleReplicationShadowEventInTransaction(tx, {
+        institutionId: ctx.institutionId,
+        hospitalId: input.hospitalId,
+        actor: {
+          userId: ctx.user.id,
+          professionalId: actor.professionalId,
+          role: actor.roleInInstitution,
+        },
+        sourceKind: "MONTH_CALENDAR",
+        createdShiftIds,
+        createdAssignmentIds: [],
+      });
+    }
   }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
   return summary;
 }

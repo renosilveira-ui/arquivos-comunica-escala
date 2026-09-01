@@ -16,6 +16,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { enqueueComunicaRosterPublished } from "./integrations/comunica-plus";
+import { createOperationalEventInTransaction } from "./operational-events";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import { rowsFromExecute } from "./_core/db-results";
 import {
@@ -622,6 +623,39 @@ export async function publishMonth(
       hospitalId,
       yearMonth,
     );
+    await createOperationalEventInTransaction(tx, {
+      // A revisão resultante do CAS é a identidade canônica da publicação.
+      // O ledger só recebe IDs de conta; e-mail continua fora do fato.
+      idempotencyKey: `roster-published:${institutionId}:${hospitalId}:${existing.id}:v${publishedVersion}`,
+      eventType: "ROSTER_PUBLISHED",
+      deliveryPolicy: "NOTIFY",
+      aggregate: {
+        type: "MONTHLY_ROSTER",
+        id: existing.id,
+        version: publishedVersion,
+      },
+      transition: { from: "DRAFT", to: "PUBLISHED" },
+      context: {
+        institutionId,
+        hospitalId,
+        scopeKind: "HOSPITAL",
+      },
+      actor: {
+        kind: "USER",
+        userId: actor.userId,
+        professionalId: actor.professionalId,
+        // A elevação temporária de admin só autoriza a operação; o ledger
+        // registra o papel institucional efetivamente vinculado ao usuário.
+        role: actor.roleInInstitution,
+      },
+      recipients: recipients.map((recipient) => ({
+        kind: "USER" as const,
+        userId: recipient.userId,
+        channels: ["PUSH", "EMAIL"] as const,
+      })),
+      recipientResolution:
+        recipients.length > 0 ? "RESOLVED" : "NO_ELIGIBLE_RECIPIENTS",
+    });
     for (const recipient of recipients) {
       await enqueueComunicaRosterPublished({
         rosterId: existing.id,

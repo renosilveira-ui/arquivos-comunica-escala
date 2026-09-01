@@ -77,13 +77,18 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("OR mgr.id IS NOT NULL");
   });
 
-  it("replicação rejeita fonte sem contexto ativo e topologia composta", () => {
+  it("replicação preserva turno legado sem contexto, mas revalida topologia e contextos classificados", () => {
     const source = readFileSync("server/shifts-crud.ts", "utf8");
     const replicationStart = source.indexOf("async function replicateRange");
     const replicationEnd = source.indexOf("export const shiftsRouter");
     const replication = source.slice(replicationStart, replicationEnd);
 
     expect(replication).toContain('source.scheduleContextId ?? "legacy"');
+    expect(replication).toContain("if (hierarchy.scheduleContextId !== null)");
+    expect(replication).toContain("if (current.scheduleContextId !== null)");
+    expect(
+      replication.match(/assertInstitutionHierarchy/g)?.length,
+    ).toBeGreaterThanOrEqual(2);
     expect(
       replication.match(/assertActiveScheduleContextTopology/g)?.length,
     ).toBeGreaterThanOrEqual(2);

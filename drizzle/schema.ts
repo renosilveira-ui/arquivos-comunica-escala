@@ -1545,6 +1545,175 @@ export const monthlyRosters = mysqlTable(
       "idx_monthly_rosters_institution_id",
     ).on(table.institutionId, table.id),
     fkHospital: index("idx_monthly_rosters_hospital").on(table.hospitalId),
+    // Permite que fatos de replicação preservem a competência sem aceitar um
+    // `monthly_roster_id` solto de outro hospital.
+    uniqMonthlyRosterTopologyId: unique("uniq_monthly_rosters_topology_id").on(
+      table.institutionId,
+      table.hospitalId,
+      table.id,
+    ),
+  }),
+);
+
+/**
+ * Um comando de replicação é um agregado próprio: uma chamada pode abranger
+ * mais de uma competência e/ou setor, mas continua sendo uma única ação
+ * operacional para cada profissional destinatário. O valor aleatório que
+ * origina `commandKeyHash` nunca é persistido em claro.
+ */
+export const scheduleReplicationBatches = mysqlTable(
+  "schedule_replication_batches",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id").notNull(),
+    commandKeyHash: binaryVarchar("command_key_hash", {
+      length: 64,
+    }).notNull(),
+    sourceKind: mysqlEnum("source_kind", ["RANGE", "MONTH_CALENDAR"]).notNull(),
+    status: mysqlEnum("status", ["COMPLETED"]).notNull().default("COMPLETED"),
+    version: int("version").notNull().default(1),
+    createdByUserId: int("created_by_user_id").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqScheduleReplicationBatchCommand: unique(
+      "uniq_schedule_replication_batch_command",
+    ).on(table.institutionId, table.commandKeyHash),
+    uniqScheduleReplicationBatchTopologyId: unique(
+      "uniq_schedule_replication_batch_topology_id",
+    ).on(table.institutionId, table.hospitalId, table.id),
+    idxScheduleReplicationBatchHospital: index(
+      "idx_schedule_replication_batch_hospital",
+    ).on(table.institutionId, table.hospitalId, table.id),
+    fkScheduleReplicationBatchInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_schedule_replication_batch_institution",
+    }),
+    fkScheduleReplicationBatchHospital: foreignKey({
+      columns: [table.hospitalId],
+      foreignColumns: [hospitals.id],
+      name: "fk_schedule_replication_batch_hospital",
+    }),
+    fkScheduleReplicationBatchCreatedBy: foreignKey({
+      columns: [table.createdByUserId],
+      foreignColumns: [users.id],
+      name: "fk_schedule_replication_batch_created_by",
+    }),
+    fkScheduleReplicationBatchHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_schedule_replication_batch_hospital_topology",
+    }),
+  }),
+);
+
+/**
+ * Escopos imutáveis afetados por um lote de replicação. A relação preserva
+ * competência, setor e contexto por IDs/FKs compostas, sem transformar nomes
+ * de serviço em autoridade de roteamento.
+ */
+export const scheduleReplicationBatchScopes = mysqlTable(
+  "schedule_replication_batch_scopes",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    scheduleReplicationBatchId: int("schedule_replication_batch_id").notNull(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id").notNull(),
+    monthlyRosterId: int("monthly_roster_id").notNull(),
+    sectorId: int("sector_id").notNull(),
+    // Turnos legados podem não ter contexto classificado. O escopo continua
+    // ancorado em instituição/hospital/setor/competência; quando existir,
+    // `scheduleContextId` também é protegido pela FK composta abaixo.
+    scheduleContextId: int("schedule_context_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqScheduleReplicationBatchScope: unique(
+      "uniq_schedule_replication_batch_scope",
+    ).on(
+      table.scheduleReplicationBatchId,
+      table.monthlyRosterId,
+      table.sectorId,
+      table.scheduleContextId,
+    ),
+    idxScheduleReplicationBatchScopeContext: index(
+      "idx_schedule_replication_batch_scope_context",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.monthlyRosterId,
+      table.sectorId,
+      table.scheduleContextId,
+    ),
+    fkScheduleReplicationBatchScopeInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_schedule_replication_batch_scope_institution",
+    }),
+    fkScheduleReplicationBatchScopeHospital: foreignKey({
+      columns: [table.hospitalId],
+      foreignColumns: [hospitals.id],
+      name: "fk_schedule_replication_batch_scope_hospital",
+    }),
+    fkScheduleReplicationBatchScopeRoster: foreignKey({
+      columns: [table.monthlyRosterId],
+      foreignColumns: [monthlyRosters.id],
+      name: "fk_schedule_replication_batch_scope_roster",
+    }),
+    fkScheduleReplicationBatchScopeSector: foreignKey({
+      columns: [table.sectorId],
+      foreignColumns: [sectors.id],
+      name: "fk_schedule_replication_batch_scope_sector",
+    }),
+    fkScheduleReplicationBatchScopeScheduleContext: foreignKey({
+      columns: [table.scheduleContextId],
+      foreignColumns: [scheduleContexts.id],
+      name: "fk_schedule_replication_batch_scope_schedule_context",
+    }),
+    fkScheduleReplicationBatchScopeBatchTopology: foreignKey({
+      columns: [
+        table.scheduleReplicationBatchId,
+        table.institutionId,
+        table.hospitalId,
+      ],
+      foreignColumns: [
+        scheduleReplicationBatches.id,
+        scheduleReplicationBatches.institutionId,
+        scheduleReplicationBatches.hospitalId,
+      ],
+      name: "fk_schedule_replication_batch_scope_batch_topology",
+    }).onDelete("cascade"),
+    fkScheduleReplicationBatchScopeRosterTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.monthlyRosterId],
+      foreignColumns: [
+        monthlyRosters.institutionId,
+        monthlyRosters.hospitalId,
+        monthlyRosters.id,
+      ],
+      name: "fk_schedule_replication_batch_scope_roster_topology",
+    }),
+    fkScheduleReplicationBatchScopeSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_schedule_replication_batch_scope_sector_topology",
+    }),
+    fkScheduleReplicationBatchScopeScheduleContextTopology: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.scheduleContextId,
+      ],
+      foreignColumns: [
+        scheduleContexts.institutionId,
+        scheduleContexts.hospitalId,
+        scheduleContexts.sectorId,
+        scheduleContexts.id,
+      ],
+      name: "fk_schedule_replication_batch_scope_schedule_context_topology",
+    }),
   }),
 );
 
@@ -1976,6 +2145,8 @@ export const institutionsRelations = relations(institutions, ({ many }) => ({
   ssoUsedTokens: many(ssoUsedTokens),
   shiftReminders: many(shiftReminders),
   monthlyRosters: many(monthlyRosters),
+  scheduleReplicationBatches: many(scheduleReplicationBatches),
+  scheduleReplicationBatchScopes: many(scheduleReplicationBatchScopes),
   auditTrails: many(auditTrail),
   swapRequests: many(swapRequests),
   swapRequestDismissals: many(swapRequestDismissals),
@@ -2001,6 +2172,7 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   operationalEventRecipients: many(operationalEventRecipients),
   operationalEmailTrust: one(userOperationalEmailTrust),
   operationalEmailVerificationTokens: many(operationalEmailVerificationTokens),
+  createdScheduleReplicationBatches: many(scheduleReplicationBatches),
 }));
 
 export const hospitalsRelations = relations(hospitals, ({ one, many }) => ({
@@ -2017,6 +2189,8 @@ export const hospitalsRelations = relations(hospitals, ({ one, many }) => ({
   operationalEvents: many(operationalEvents),
   operationalEventRelatedContexts: many(operationalEventRelatedContexts),
   monthlyRosters: many(monthlyRosters),
+  scheduleReplicationBatches: many(scheduleReplicationBatches),
+  scheduleReplicationBatchScopes: many(scheduleReplicationBatchScopes),
   swapRequests: many(swapRequests),
 }));
 
@@ -2036,6 +2210,7 @@ export const sectorsRelations = relations(sectors, ({ one, many }) => ({
   scheduleInvites: many(scheduleInvites),
   operationalEvents: many(operationalEvents),
   operationalEventRelatedContexts: many(operationalEventRelatedContexts),
+  scheduleReplicationBatchScopes: many(scheduleReplicationBatchScopes),
   swapRequests: many(swapRequests),
 }));
 
@@ -2120,6 +2295,7 @@ export const scheduleContextsRelations = relations(
     shiftInstances: many(shiftInstances),
     operationalEvents: many(operationalEvents),
     operationalEventRelatedContexts: many(operationalEventRelatedContexts),
+    scheduleReplicationBatchScopes: many(scheduleReplicationBatchScopes),
   }),
 );
 
@@ -2374,16 +2550,69 @@ export const shiftAssignmentsRelations = relations(
   }),
 );
 
-export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
-  institution: one(institutions, {
-    fields: [monthlyRosters.institutionId],
-    references: [institutions.id],
+export const monthlyRostersRelations = relations(
+  monthlyRosters,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [monthlyRosters.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [monthlyRosters.hospitalId],
+      references: [hospitals.id],
+    }),
+    scheduleReplicationBatchScopes: many(scheduleReplicationBatchScopes),
   }),
-  hospital: one(hospitals, {
-    fields: [monthlyRosters.hospitalId],
-    references: [hospitals.id],
+);
+
+export const scheduleReplicationBatchesRelations = relations(
+  scheduleReplicationBatches,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [scheduleReplicationBatches.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [scheduleReplicationBatches.hospitalId],
+      references: [hospitals.id],
+    }),
+    createdBy: one(users, {
+      fields: [scheduleReplicationBatches.createdByUserId],
+      references: [users.id],
+    }),
+    scopes: many(scheduleReplicationBatchScopes),
   }),
-}));
+);
+
+export const scheduleReplicationBatchScopesRelations = relations(
+  scheduleReplicationBatchScopes,
+  ({ one }) => ({
+    batch: one(scheduleReplicationBatches, {
+      fields: [scheduleReplicationBatchScopes.scheduleReplicationBatchId],
+      references: [scheduleReplicationBatches.id],
+    }),
+    institution: one(institutions, {
+      fields: [scheduleReplicationBatchScopes.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [scheduleReplicationBatchScopes.hospitalId],
+      references: [hospitals.id],
+    }),
+    monthlyRoster: one(monthlyRosters, {
+      fields: [scheduleReplicationBatchScopes.monthlyRosterId],
+      references: [monthlyRosters.id],
+    }),
+    sector: one(sectors, {
+      fields: [scheduleReplicationBatchScopes.sectorId],
+      references: [sectors.id],
+    }),
+    scheduleContext: one(scheduleContexts, {
+      fields: [scheduleReplicationBatchScopes.scheduleContextId],
+      references: [scheduleContexts.id],
+    }),
+  }),
+);
 
 export const swapRequestsRelations = relations(
   swapRequests,
