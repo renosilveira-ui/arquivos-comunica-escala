@@ -22,8 +22,10 @@ describe("wiring da prova MySQL da readiness fence V1 na CI", () => {
     );
     expect(schemaStep).toBeGreaterThanOrEqual(0);
     expect(proofStep).toBeGreaterThan(schemaStep);
-    expect(CI_WORKFLOW.slice(proofStep)).toContain(
+    const proofBlock = CI_WORKFLOW.slice(proofStep);
+    expect(proofBlock).toContain(
       "run: pnpm exec tsx scripts/prove-readiness-fence-v1-migration.ts",
     );
+    expect(proofBlock).toContain("env:");
   });
 });
