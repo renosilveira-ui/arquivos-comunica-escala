@@ -33,6 +33,9 @@ describe("contrato de recuperação somente nas telas operacionais", () => {
     expect(refresh).toContain("utils.shiftAssignments.listMyVacancyRequests.invalidate()");
     expect(refresh).toContain("utils.shiftAssignments.listPending.invalidate()");
     expect(refresh).toContain("utils.filters.summaryCounts.invalidate()");
+    expect(refresh).toContain(
+      "utils.filters.actionableVacancyCounts.invalidate()",
+    );
     expect(vacancies).toContain("const refreshLease = captureLease()");
     expect(vacancies).toContain("const refreshPromise = refreshVacancyQueries(refreshLease)");
     expect(vacancies).toContain("assumeVacancyLockRef");
@@ -82,7 +85,7 @@ describe("contrato de recuperação somente nas telas operacionais", () => {
   });
 
   it("não afirma contagem ou métricas cacheadas durante erro ou resposta pendente", () => {
-    expect(vacancies).toContain("!countsHasError && canDisplayOperationalListCount(vacanciesContentState)");
+    expect(vacancies).toContain("!actionableCountsHasError && canDisplayOperationalListCount(vacanciesContentState)");
     expect(vacancies).toContain("counts={safeFilterCounts}");
     expect(vacancies).toContain("canDisplayOperationalListCount(vacanciesContentState)");
     expect(vacancies).toContain("A quantidade de plantões ainda não pôde ser confirmada.");

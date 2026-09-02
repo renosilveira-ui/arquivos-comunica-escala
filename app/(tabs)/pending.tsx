@@ -186,6 +186,7 @@ export default function PendingScreen() {
       Promise.all([
         utils.shiftAssignments.listPending.invalidate(),
         utils.filters.summaryCounts.invalidate(),
+        utils.filters.actionableVacancyCounts.invalidate(),
         utils.shiftInstances.listVacancies.invalidate(),
         utils.shifts.listAgenda.invalidate(),
         utils.shifts.getNextShift.invalidate(),

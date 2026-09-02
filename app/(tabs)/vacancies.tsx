@@ -103,13 +103,16 @@ export default function VacanciesScreen() {
     refreshVacancyQueries,
   } = useOperationalQueryRefresh();
 
-  // Buscar contadores de vagas/pendências (com cache de 60s)
+  // Os filtros só exibem uma contagem quando ela representa a mesma
+  // população acionável dos cards; summaryCounts segue reservado à gestão.
   const {
-    data: counts,
-    isError: countsHasError,
-  } = trpc.filters.summaryCounts.useQuery(
+    data: actionableCounts,
+    isError: actionableCountsHasError,
+  } = trpc.filters.actionableVacancyCounts.useQuery(
     {
       date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
+      shiftLabel: filters.shiftLabel ?? undefined,
+      modality: modalityFilter,
     },
     { 
       enabled: !!user?.id,
@@ -174,8 +177,8 @@ export default function VacanciesScreen() {
   // Contadores são afirmações sobre a lista inteira. Eles só aparecem com
   // estado confirmado (READY/EMPTY) e quando a própria query está íntegra.
   const safeFilterCounts =
-    !countsHasError && canDisplayOperationalListCount(vacanciesContentState)
-      ? counts
+    !actionableCountsHasError && canDisplayOperationalListCount(vacanciesContentState)
+      ? actionableCounts
       : undefined;
   const vacanciesSubtitle = canDisplayOperationalListCount(vacanciesContentState)
     ? `${vacancies.length} plantão${vacancies.length === 1 ? "" : "ões"} aguardando profissional`

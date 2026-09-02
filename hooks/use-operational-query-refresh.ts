@@ -117,6 +117,7 @@ export function useOperationalQueryRefresh() {
         utils.shiftInstances.listVacancies.invalidate(),
         utils.shiftAssignments.listPending.invalidate(),
         utils.filters.summaryCounts.invalidate(),
+        utils.filters.actionableVacancyCounts.invalidate(),
         utils.shiftAssignments.listMyVacancyRequests.invalidate(),
       ]);
       return true;

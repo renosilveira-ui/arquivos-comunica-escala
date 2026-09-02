@@ -360,6 +360,7 @@ async function renderRealNotificationListener(options: {
   const invalidateListActiveInvites = vi.fn(async () => undefined);
   const invalidateListInviteCandidates = vi.fn(async () => undefined);
   const invalidateSummaryCounts = vi.fn(async () => undefined);
+  const invalidateActionableVacancyCounts = vi.fn(async () => undefined);
   vi.doMock("@/lib/trpc", () => ({
     trpc: {
       useUtils: () => ({
@@ -390,6 +391,9 @@ async function renderRealNotificationListener(options: {
         },
         filters: {
           summaryCounts: { invalidate: invalidateSummaryCounts },
+          actionableVacancyCounts: {
+            invalidate: invalidateActionableVacancyCounts,
+          },
         },
       }),
       professionals: {
@@ -431,6 +435,7 @@ async function renderRealNotificationListener(options: {
     invalidateListActiveInvites,
     invalidateListInviteCandidates,
     invalidateSummaryCounts,
+    invalidateActionableVacancyCounts,
     setActiveInstitutionId,
     openComunicaFromNotification,
     notificationWebHandoff,
@@ -2201,6 +2206,7 @@ describe("SSO client tenant boundaries", () => {
     });
     await Promise.resolve();
     expect(harness.invalidateListVacancies).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateActionableVacancyCounts).toHaveBeenCalledTimes(1);
     expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
     expect(harness.routerPush).not.toHaveBeenCalled();
 
@@ -2236,6 +2242,7 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.invalidateListVacancies).toHaveBeenCalledTimes(1);
     expect(harness.invalidateListPending).toHaveBeenCalledTimes(1);
     expect(harness.invalidateSummaryCounts).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateActionableVacancyCounts).toHaveBeenCalledTimes(1);
     expect(harness.invalidateCountActionable).toHaveBeenCalledTimes(1);
     expect(harness.invalidateListActiveInvites).not.toHaveBeenCalled();
     expect(harness.invalidateQueries).not.toHaveBeenCalled();
@@ -2265,6 +2272,7 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.invalidateListVacancies).toHaveBeenCalledTimes(1);
     expect(harness.invalidateListPending).toHaveBeenCalledTimes(1);
     expect(harness.invalidateSummaryCounts).toHaveBeenCalledTimes(1);
+    expect(harness.invalidateActionableVacancyCounts).toHaveBeenCalledTimes(1);
 
     (cleanup as () => void)();
   });

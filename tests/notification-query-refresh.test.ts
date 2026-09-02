@@ -12,6 +12,7 @@ describe("push em primeiro plano — matriz de reconciliação", () => {
     expect(notificationQueryRefreshTargets("vacancy_available")).toEqual([
       "VACANCIES",
       "SUMMARY_COUNTS",
+      "ACTIONABLE_VACANCY_COUNTS",
     ]);
   });
 
@@ -21,6 +22,7 @@ describe("push em primeiro plano — matriz de reconciliação", () => {
       "VACANCIES",
       "PENDING_ASSIGNMENTS",
       "SUMMARY_COUNTS",
+      "ACTIONABLE_VACANCY_COUNTS",
       "SWAPS",
     ];
     expect(notificationQueryRefreshTargets("shift_assigned")).toEqual(expected);
@@ -62,6 +64,9 @@ describe("push em primeiro plano — matriz de reconciliação", () => {
       "utils.shiftAssignments.listPending.invalidate()",
     );
     expect(pending).toContain("utils.filters.summaryCounts.invalidate()");
+    expect(pending).toContain(
+      "utils.filters.actionableVacancyCounts.invalidate()",
+    );
     expect(pending).toContain(
       "utils.shiftInstances.listVacancies.invalidate()",
     );
