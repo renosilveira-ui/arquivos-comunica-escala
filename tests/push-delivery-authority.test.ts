@@ -6,6 +6,7 @@ import {
   dutyConfirmations,
   hospitals,
   institutions,
+  managerScope,
   monthlyRosters,
   notifications,
   professionalAccess,
@@ -29,7 +30,10 @@ import {
   transitionDutyConfirmation,
 } from "../server/confirmation-state";
 import { unregisterPushToken } from "../server/notifications-service";
-import { processShiftStartPushes } from "../server/cron/shift-confirmation-dispatcher";
+import {
+  notifyManagersConfirmationEscalation,
+  processShiftStartPushes,
+} from "../server/cron/shift-confirmation-dispatcher";
 
 function response(status: number, body: unknown): Response {
   return {
@@ -283,9 +287,10 @@ describe("autoridade atual no outbox de confirmação", () => {
     };
   }
 
-  function managerIntent(suffix: string) {
+  function managerIntent(suffix: string, managerUserId = userId) {
     return {
       ...intent(suffix),
+      userId: managerUserId,
       payload: {
         title: "Confirmação de plantão pendente",
         body: "Verifique a presença do profissional",
@@ -302,7 +307,7 @@ describe("autoridade atual no outbox de confirmação", () => {
         confirmationId,
         allowedStatuses: ["PENDING" as const],
         recipientKind: "MANAGER" as const,
-        expectedUserId: userId,
+        expectedUserId: managerUserId,
         shiftSnapshot: shiftSnapshot(),
       },
     };
@@ -1159,6 +1164,197 @@ describe("autoridade atual no outbox de confirmação", () => {
       .where(eq(notifications.id, tracked.notificationId));
     expect(sent.status).toBe("SENT");
     expect(sent.providerReceipt).toMatchObject({ phase: "PROVIDER_ACCEPTED" });
+  });
+
+  it("receipt aceito após revogação preserva o recheck para o gestor elegível", async () => {
+    await db
+      .update(professionalInstitutions)
+      .set({ roleInInstitution: "GESTOR_PLUS" })
+      .where(eq(professionalInstitutions.professionalId, professionalId));
+    const [replacementUser] = await db
+      .insert(users)
+      .values({
+        name: `Replacement manager ${stamp}`,
+        email: `replacement-manager-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "manager",
+        approvalStatus: "APPROVED",
+      })
+      .$returningId();
+    const replacementUserId = replacementUser.id;
+    const [replacementProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: replacementUserId,
+        name: `Replacement manager ${stamp}`,
+        role: "Gestor",
+        userRole: "GESTOR_PLUS",
+      })
+      .$returningId();
+    const replacementProfessionalId = replacementProfessional.id;
+
+    try {
+      await db.insert(professionalInstitutions).values({
+        institutionId,
+        professionalId: replacementProfessionalId,
+        userId: replacementUserId,
+        roleInInstitution: "GESTOR_PLUS",
+        active: true,
+      });
+      const ticketId = `manager-revoked-after-ticket-${stamp}`;
+      fetchMock.mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: ticketId } }),
+      );
+      const tracked = await enqueueTrackedPushNotification(
+        managerIntent("revoked-after-ticket"),
+        now,
+      );
+      await processPendingPushDeliveries(now);
+
+      await db
+        .update(professionalInstitutions)
+        .set({ active: false })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, professionalId),
+            eq(professionalInstitutions.institutionId, institutionId),
+          ),
+        );
+      fetchMock.mockResolvedValueOnce(
+        response(200, { data: { [ticketId]: { status: "ok" } } }),
+      );
+      await processPendingPushDeliveries(new Date(now.getTime() + 15 * 60_000));
+
+      const [sent] = await db
+        .select({ status: notifications.status, providerReceipt: notifications.providerReceipt })
+        .from(notifications)
+        .where(eq(notifications.id, tracked.notificationId));
+      expect(sent.status).toBe("SENT");
+      expect(sent.providerReceipt).toMatchObject({ phase: "PROVIDER_ACCEPTED" });
+      const [confirmation] = await db
+        .select({
+          managerNotified: dutyConfirmations.managerNotified,
+          recheckAt: dutyConfirmations.recheckAt,
+        })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, confirmationId));
+      expect(confirmation.managerNotified).toBe(false);
+      expect(confirmation.recheckAt).not.toBeNull();
+
+      const escalation = await notifyManagersConfirmationEscalation(
+        confirmationId,
+        "NO_RESPONSE",
+      );
+      expect(escalation).toEqual({ managerCount: 1, intentCount: 1 });
+      const [replacementIntent] = await db
+        .select({ userId: notifications.userId, status: notifications.status })
+        .from(notifications)
+        .where(eq(notifications.userId, replacementUserId));
+      expect(replacementIntent).toMatchObject({
+        userId: replacementUserId,
+        status: "PENDING",
+      });
+    } finally {
+      await db.delete(notifications).where(eq(notifications.userId, replacementUserId));
+      await db
+        .delete(professionalInstitutions)
+        .where(eq(professionalInstitutions.professionalId, replacementProfessionalId));
+      await db.delete(professionals).where(eq(professionals.id, replacementProfessionalId));
+      await db.delete(users).where(eq(users.id, replacementUserId));
+    }
+  });
+
+  it("receipt aceito após perda de manager_scope preserva o recheck", async () => {
+    const [scopedUser] = await db
+      .insert(users)
+      .values({
+        name: `Scoped manager ${stamp}`,
+        email: `scoped-manager-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "manager",
+        approvalStatus: "APPROVED",
+      })
+      .$returningId();
+    const scopedUserId = scopedUser.id;
+    const [scopedProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: scopedUserId,
+        name: `Scoped manager ${stamp}`,
+        role: "Gestor",
+        userRole: "GESTOR_MEDICO",
+      })
+      .$returningId();
+    const scopedProfessionalId = scopedProfessional.id;
+
+    try {
+      await db.insert(professionalInstitutions).values({
+        institutionId,
+        professionalId: scopedProfessionalId,
+        userId: scopedUserId,
+        roleInInstitution: "GESTOR_MEDICO",
+        active: true,
+      });
+      await db.insert(pushTokens).values({
+        institutionId,
+        userId: scopedUserId,
+        token: `ExponentPushToken[authority-scoped-${stamp}]`,
+        platform: "ios",
+      });
+      const [scope] = await db
+        .insert(managerScope)
+        .values({
+          institutionId,
+          managerProfessionalId: scopedProfessionalId,
+          hospitalId,
+          sectorId,
+          active: true,
+        })
+        .$returningId();
+      const ticketId = `manager-scope-revoked-after-ticket-${stamp}`;
+      fetchMock.mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: ticketId } }),
+      );
+      const tracked = await enqueueTrackedPushNotification(
+        managerIntent("scope-revoked-after-ticket", scopedUserId),
+        now,
+      );
+      await processPendingPushDeliveries(now);
+
+      await db
+        .update(managerScope)
+        .set({ active: false })
+        .where(eq(managerScope.id, scope.id));
+      fetchMock.mockResolvedValueOnce(
+        response(200, { data: { [ticketId]: { status: "ok" } } }),
+      );
+      await processPendingPushDeliveries(new Date(now.getTime() + 15 * 60_000));
+
+      const [sent] = await db
+        .select({ status: notifications.status, providerReceipt: notifications.providerReceipt })
+        .from(notifications)
+        .where(eq(notifications.id, tracked.notificationId));
+      expect(sent.status).toBe("SENT");
+      expect(sent.providerReceipt).toMatchObject({ phase: "PROVIDER_ACCEPTED" });
+      const [confirmation] = await db
+        .select({
+          managerNotified: dutyConfirmations.managerNotified,
+          recheckAt: dutyConfirmations.recheckAt,
+        })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, confirmationId));
+      expect(confirmation.managerNotified).toBe(false);
+      expect(confirmation.recheckAt).not.toBeNull();
+    } finally {
+      await db.delete(notifications).where(eq(notifications.userId, scopedUserId));
+      await db.delete(pushTokens).where(eq(pushTokens.userId, scopedUserId));
+      await db.delete(managerScope).where(eq(managerScope.managerProfessionalId, scopedProfessionalId));
+      await db
+        .delete(professionalInstitutions)
+        .where(eq(professionalInstitutions.professionalId, scopedProfessionalId));
+      await db.delete(professionals).where(eq(professionals.id, scopedProfessionalId));
+      await db.delete(users).where(eq(users.id, scopedUserId));
+    }
   });
 
   it("receipt PENDING antigo não consome o novo prazo após transição para DECLINED", async () => {

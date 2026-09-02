@@ -539,7 +539,7 @@ async function failRevokedAuthority(
 async function requireCurrentPushAuthority(
   db: Pick<Db, "select">,
   row: NotificationRow,
-  state: QueuedState | SubmittingState,
+  state: Pick<TrackingBase, "authority" | "payloadData">,
   lockForUpdate = false,
 ): Promise<void> {
   if (!state.authority) return;
@@ -929,6 +929,15 @@ async function processReceiptCheck(
         persisted.affectedRows === 1 &&
         claimed.authority?.purpose === "MANAGER_ESCALATION"
       ) {
+        try {
+          // O receipt prova somente que o provedor aceitou o ticket histórico.
+          // Ele não pode consumir o handoff se o gestor perdeu a autoridade
+          // entre a submissão e esta confirmação atrasada.
+          await requireCurrentPushAuthority(tx, row, claimed, true);
+        } catch (error) {
+          if (!isCanonicalDutyConfirmationRejection(error)) throw error;
+          return;
+        }
         await tx
           .update(dutyConfirmations)
           .set({ managerNotified: true, recheckAt: null })
