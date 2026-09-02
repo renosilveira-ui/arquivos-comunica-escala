@@ -154,6 +154,11 @@ const EXPO_NEUTRAL_NOTIFICATION_BODY =
   "Há uma atualização disponível. Abra o aplicativo para consultar.";
 const EXPO_RECEIPT_BATCH_SIZE = 1_000;
 const EXPO_HTTP_TIMEOUT_MS = 15_000;
+// Snapshot de badge é projeção eventual e nunca pode disputar 15 segundos do
+// mutex de conta com um push operacional. Se o Expo ou o mutex estiverem
+// ocupados, a próxima entrega/retomada reconcilia a fotografia novamente.
+const ACCOUNT_WIDE_BADGE_SNAPSHOT_HTTP_TIMEOUT_MS = 2_000;
+const ACCOUNT_WIDE_BADGE_SNAPSHOT_LOCK_TIMEOUT_SEC = 0;
 // Um owner do outbox precisa conservar o claim durante todo fetch Expo.
 // O lease renovado usa este horizonte (timeout + margem), nunca só o lease
 // curto injetado em testes.
@@ -364,7 +369,11 @@ async function submitExpoPushTicket(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(message),
-      signal: AbortSignal.timeout(EXPO_HTTP_TIMEOUT_MS),
+      signal: AbortSignal.timeout(
+        isAccountWideBadgeSnapshotPayload(payload)
+          ? ACCOUNT_WIDE_BADGE_SNAPSHOT_HTTP_TIMEOUT_MS
+          : EXPO_HTTP_TIMEOUT_MS,
+      ),
     });
 
     const body = await readJson(response);
@@ -484,7 +493,9 @@ async function submitOwnedExpoPushTicket(
         db,
         expected.userId,
         expected.token,
-        PUSH_SEND_LOCK_TIMEOUT_SEC,
+        isAccountWideBadgeSnapshotPayload(payload)
+          ? ACCOUNT_WIDE_BADGE_SNAPSHOT_LOCK_TIMEOUT_SEC
+          : PUSH_SEND_LOCK_TIMEOUT_SEC,
         async (connectionDb) => {
         const claimed = await connectionDb.transaction<PushTicketClaim>(async (tx) => {
           // Ordem global: autoridade operacional primeiro; depois
@@ -706,6 +717,16 @@ async function submitOwnedExpoPushTicket(
     );
   } catch (error) {
     if (error instanceof PushOwnershipLockTimeoutError) {
+      if (isAccountWideBadgeSnapshotPayload(payload)) {
+        return {
+          state: "TICKET_REJECTED",
+          pushTokenId: expected.id,
+          retryability: "RETRYABLE",
+          failureKind: "BADGE_SNAPSHOT_UNAVAILABLE",
+          message: BADGE_SNAPSHOT_UNAVAILABLE_MESSAGE,
+          tokenDisposition: "UNCHANGED",
+        };
+      }
       return {
         state: "TICKET_REJECTED",
         pushTokenId: expected.id,

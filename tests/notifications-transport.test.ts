@@ -354,6 +354,8 @@ describe("transporte tipado de push Expo", () => {
     expect(sent).not.toHaveProperty("sound");
     expect(sent).not.toHaveProperty("priority");
     expect(sent).not.toHaveProperty("channelId");
+    const accountLockAcquire = db.execute.mock.calls[0]?.[0];
+    expect(sqlBoundValues(accountLockAcquire)[1]).toBe(0);
   });
 
   it("não tenta forçar contador nativo em launcher Android", async () => {
@@ -811,7 +813,7 @@ describe("transporte tipado de push Expo", () => {
     ]);
   });
 
-  it("aplica deadline AbortSignal tanto no ticket quanto no receipt", async () => {
+  it("preserva deadline operacional e limita o snapshot eventual a dois segundos", async () => {
     const { db } = database([{ id: 41, token: "ExponentPushToken[timeout]" }]);
     dbModule.getDb.mockResolvedValue(db);
     const controller = new AbortController();
@@ -820,16 +822,20 @@ describe("transporte tipado de push Expo", () => {
       .mockReturnValue(controller.signal);
     fetchMock
       .mockResolvedValueOnce(response(200, { data: { status: "ok", id: "ticket-timeout" } }))
+      .mockResolvedValueOnce(response(200, { data: { status: "ok", id: "ticket-badge-timeout" } }))
       .mockResolvedValueOnce(response(200, { data: { "ticket-timeout": { status: "ok" } } }));
 
     try {
       await sendPushNotification(7, payload, 99);
+      await sendAccountWideNativeBadgeSnapshot(7, 99);
       await getExpoPushReceipts([receiptTarget("ticket-timeout", 41)]);
 
       expect(timeoutSpy).toHaveBeenNthCalledWith(1, 15_000);
-      expect(timeoutSpy).toHaveBeenNthCalledWith(2, 15_000);
+      expect(timeoutSpy).toHaveBeenNthCalledWith(2, 2_000);
+      expect(timeoutSpy).toHaveBeenNthCalledWith(3, 15_000);
       expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBe(controller.signal);
       expect((fetchMock.mock.calls[1][1] as RequestInit).signal).toBe(controller.signal);
+      expect((fetchMock.mock.calls[2][1] as RequestInit).signal).toBe(controller.signal);
     } finally {
       timeoutSpy.mockRestore();
     }

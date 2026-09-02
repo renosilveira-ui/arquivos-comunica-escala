@@ -24,10 +24,9 @@ type UseAccountWideNativeBadgeOptions = Readonly<{
 /**
  * Mantém o badge local preso à conta autenticada, nunca ao tenant ativo.
  *
- * Sem alterar o envelope Expo, este hook só consegue reconciliar quando o
- * app está visível. Background/killed continua dependente de decisão própria
- * sobre payload/provedor; o listener recebido abaixo usa o payload somente
- * como gatilho e fence de destinatário, nunca como origem de contagem.
+ * O servidor também projeta o número em background/killed no envelope iOS.
+ * Este hook continua necessário para reconciliar abertura, retomada e push em
+ * foreground; o payload recebido é apenas gatilho, nunca fonte da contagem.
  */
 export function useAccountWideNativeBadge({
   userId,
