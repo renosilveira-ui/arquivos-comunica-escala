@@ -28,6 +28,11 @@ type YamlApi = {
 
 type BrowserslistApi = (queries?: string | string[]) => string[];
 
+type QsApi = {
+  parse: (source: string, options?: Record<string, unknown>) => unknown;
+  stringify: (value: unknown) => string;
+};
+
 const projectRequire = createRequire(import.meta.url);
 const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -69,6 +74,35 @@ function resolvedPackageVersion(entryPath: string, expectedName: string) {
 }
 
 describe("dependency security overrides", () => {
+  it("resolves every qs consumer to the patched 6.16 line", () => {
+    const qsEntry = projectRequire.resolve("qs");
+    const qs = projectRequire("qs") as QsApi;
+
+    expect(resolvedPackageVersion(qsEntry, "qs")).toBe("6.16.0");
+    for (const consumer of [
+      "express",
+      "body-parser",
+      "superagent",
+    ] as const) {
+      const consumerRequire = requireFrom(consumer);
+      const consumerQsEntry = consumerRequire.resolve("qs");
+
+      expect(resolvedPackageVersion(consumerQsEntry, "qs")).toBe("6.16.0");
+    }
+
+    expect(() =>
+      qs.parse("a[]=1,2,3,4", {
+        comma: true,
+        arrayLimit: 3,
+        throwOnLimitExceeded: true,
+      }),
+    ).toThrow(RangeError);
+    const parsed = qs.parse("constructor[isBuffer]=not-a-function", {
+      plainObjects: true,
+    });
+    expect(() => qs.stringify(parsed)).not.toThrow();
+  });
+
   it("resolves eslint to the patched humanfs implementation", () => {
     const eslintManifest = projectRequire.resolve("eslint/package.json");
     const humanfsManifest = join(
