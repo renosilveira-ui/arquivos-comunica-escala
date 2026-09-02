@@ -105,7 +105,7 @@ SET @vacancy_indexes_preflight := IF(
   AND (@shift_active_index_exists = 0 OR @shift_active_contract_matches = 1)
   AND (@professional_active_index_exists = 0 OR @professional_active_contract_matches = 1),
   'SELECT 1',
-  'SELECT * FROM vacancy_query_indexes_contract_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''VACANCY_INDEX_CONTRACT_MISMATCH'', ''$'')'
 );
 PREPARE vacancy_index_stmt FROM @vacancy_indexes_preflight;
 EXECUTE vacancy_index_stmt;
@@ -171,7 +171,7 @@ SET @vacancy_index_count := (
 SET @postflight := IF(
   @vacancy_index_count = 5,
   'SELECT 1',
-  'SELECT * FROM vacancy_query_indexes_postflight_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''VACANCY_INDEX_POSTFLIGHT_MISMATCH'', ''$'')'
 );
 PREPARE vacancy_index_stmt FROM @postflight;
 EXECUTE vacancy_index_stmt;

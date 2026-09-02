@@ -9,6 +9,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "tests/sector-service-specialties-migration-mysql.test.ts",
+      "tests/vacancy-query-indexes-migration.test.ts",
       "tests/vacancy-query-indexes-migration-mysql.test.ts",
     ],
     setupFiles: [],
