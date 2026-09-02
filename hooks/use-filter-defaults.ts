@@ -24,8 +24,8 @@ export interface FilterDefaults {
 }
 
 interface UseFilterDefaultsOptions {
-  hospitals: Array<{ id: number; name: string }>;
-  sectors: Array<{ id: number; hospitalId: number; name: string }>;
+  hospitals: { id: number; name: string }[];
+  sectors: { id: number; hospitalId: number; name: string }[];
 }
 
 /**
@@ -47,10 +47,19 @@ interface UseFilterDefaultsOptions {
  * - lastShiftToggle
  */
 export function useFilterDefaults(options: UseFilterDefaultsOptions) {
-  const { hospitals, sectors } = options;
+  // As listas são apenas opções visuais. A autoridade para defaults é o
+  // manager_scope; depender da identidade dos arrays de query aqui pode
+  // disparar efeito e setState repetidos durante loading/erro.
+  void options;
   
   // Buscar manager_scope do gestor logado
-  const { data: managerScope, isLoading } = trpc.professionals.getManagerScope.useQuery();
+  const {
+    data: managerScope,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = trpc.professionals.getManagerScope.useQuery();
 
   const [defaults, setDefaults] = useState<FilterDefaults>({
     hospitalId: null,
@@ -62,13 +71,23 @@ export function useFilterDefaults(options: UseFilterDefaultsOptions) {
   useEffect(() => {
     if (isLoading || !managerScope) return;
 
+    const publishDefaults = (next: FilterDefaults) => {
+      setDefaults((current) =>
+        current.hospitalId === next.hospitalId &&
+        current.sectorId === next.sectorId &&
+        current.shiftLabel === next.shiftLabel
+          ? current
+          : next,
+      );
+    };
+
     // GESTOR_PLUS pode ver tudo, não auto-seleciona nada
     if (managerScope.canManageAll) {
       // Tentar carregar do localStorage (web-only; null no nativo)
       const lastHospitalId = readLastFilter("lastHospitalId");
       const lastSectorId = readLastFilter("lastSectorId");
       
-      setDefaults({
+      publishDefaults({
         hospitalId: lastHospitalId ? parseInt(lastHospitalId, 10) : null,
         sectorId: lastSectorId ? parseInt(lastSectorId, 10) : null,
         date: new Date(),
@@ -79,7 +98,7 @@ export function useFilterDefaults(options: UseFilterDefaultsOptions) {
 
     // USER não tem manager_scope
     if (managerScope.role === "USER") {
-      setDefaults({
+      publishDefaults({
         hospitalId: null,
         sectorId: null,
         date: new Date(),
@@ -131,13 +150,20 @@ export function useFilterDefaults(options: UseFilterDefaultsOptions) {
       }
     }
 
-    setDefaults({
+    publishDefaults({
       hospitalId: defaultHospitalId,
       sectorId: defaultSectorId,
       date: new Date(), // Padrão "Hoje"
       shiftLabel: null, // Padrão "Todos"
     });
-  }, [managerScope, isLoading, hospitals, sectors]);
+  }, [managerScope, isLoading]);
 
-  return { defaults, isLoading, managerScope };
+  return {
+    defaults,
+    isLoading,
+    isError,
+    error,
+    refetch,
+    managerScope,
+  };
 }

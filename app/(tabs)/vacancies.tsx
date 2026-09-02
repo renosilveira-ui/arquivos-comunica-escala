@@ -1,10 +1,16 @@
-import { View, Text, ActivityIndicator, ScrollView, TouchableOpacity } from "react-native";
+import {
+  ActivityIndicator,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
 import { toLocalISODateString } from "@/lib/datetime-utils";
 import { formatHospitalTime } from "@/lib/hospital-time";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Briefcase, Clock, MapPin, Building2, Calendar } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
@@ -19,6 +25,17 @@ import { Surface } from "@/components/ui/Surface";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { usePermissions } from "@/hooks/use-permissions";
+import { useOperationalQueryRefresh } from "@/hooks/use-operational-query-refresh";
+import { useNativeOperationalQueryRecovery } from "@/hooks/use-native-operational-query-recovery";
+import {
+  canDisplayOperationalListCount,
+  resolveOperationalListState,
+  resolveVacanciesGateState,
+} from "@/lib/operational-screen-state";
+import { presentQueryError } from "@/lib/query-error-presentation";
+
+const EMPTY_HOSPITALS: { id: number; name: string }[] = [];
+const EMPTY_SECTORS: { id: number; hospitalId: number; name: string }[] = [];
 
 export default function VacanciesScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -29,21 +46,43 @@ export default function VacanciesScreen() {
   } = usePermissions();
   
   // Buscar profissional associado ao usuário logado
-  const { data: professional, isLoading: professionalLoading } =
+  const {
+    data: professional,
+    isLoading: professionalLoading,
+    isError: professionalHasError,
+    error: professionalError,
+    refetch: refetchProfessional,
+  } =
     trpc.professionals.getByUserId.useQuery(
       { userId: user?.id ?? 0 },
       { enabled: !!user?.id },
     );
 
   // Buscar hospitais e setores para os filtros
-  const { data: hospitalsData } = trpc.hospitals.list.useQuery(undefined, { enabled: !!user?.id });
-  const { data: sectorsData } = trpc.sectors.list.useQuery(undefined, { enabled: !!user?.id });
+  const {
+    data: hospitalsData,
+    isError: hospitalsHasError,
+    error: hospitalsError,
+    refetch: refetchHospitals,
+  } = trpc.hospitals.list.useQuery(undefined, { enabled: !!user?.id });
+  const {
+    data: sectorsData,
+    isError: sectorsHasError,
+    error: sectorsError,
+    refetch: refetchSectors,
+  } = trpc.sectors.list.useQuery(undefined, { enabled: !!user?.id });
 
-  const hospitals = hospitalsData || [];
-  const sectors = sectorsData || [];
+  const hospitals = hospitalsData ?? EMPTY_HOSPITALS;
+  const sectors = sectorsData ?? EMPTY_SECTORS;
 
   // Defaults inteligentes baseado em manager_scope
-  const { defaults } = useFilterDefaults({ hospitals, sectors });
+  const {
+    defaults,
+    isLoading: managerScopeLoading,
+    isError: managerScopeHasError,
+    error: managerScopeError,
+    refetch: refetchManagerScope,
+  } = useFilterDefaults({ hospitals, sectors });
 
   // Estado dos filtros
   const [filters, setFilters] = useState<ShiftFilterValues>({
@@ -58,9 +97,17 @@ export default function VacanciesScreen() {
 
   // Determinar se usuário pode ver "Todos os hospitais"
   const allowAllHospitals = isGlobalAdmin || roleInInstitution === "GESTOR_PLUS";
+  const {
+    captureLease,
+    isLeaseCurrent,
+    refreshVacancyQueries,
+  } = useOperationalQueryRefresh();
 
   // Buscar contadores de vagas/pendências (com cache de 60s)
-  const { data: counts } = trpc.filters.summaryCounts.useQuery(
+  const {
+    data: counts,
+    isError: countsHasError,
+  } = trpc.filters.summaryCounts.useQuery(
     {
       date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
     },
@@ -72,7 +119,14 @@ export default function VacanciesScreen() {
 
   // Buscar vagas disponíveis do backend com filtros
   // `modality` é aceito por listVacancies a partir de PR #66.
-  const { data: vacanciesData, isLoading: vacanciesLoading, isError: vacanciesError, refetch: refetchVacancies } = trpc.shiftInstances.listVacancies.useQuery(
+  const {
+    data: vacanciesData,
+    isLoading: vacanciesLoading,
+    isPending: vacanciesPending,
+    isError: vacanciesError,
+    error: vacanciesQueryError,
+    refetch: refetchVacancies,
+  } = trpc.shiftInstances.listVacancies.useQuery(
     {
       hospitalId: filters.hospitalId ?? undefined,
       sectorId: filters.sectorId ?? undefined,
@@ -109,6 +163,47 @@ export default function VacanciesScreen() {
       productivityCapBrl: item.productivityCapBrl ?? null,
     };
   });
+  const vacanciesContentState = resolveOperationalListState({
+    isLoading: vacanciesLoading,
+    isPending: vacanciesPending,
+    isError: vacanciesError,
+    hasResolvedData: vacanciesData !== undefined,
+    itemCount: vacancies.length,
+    error: vacanciesQueryError,
+  });
+  // Contadores são afirmações sobre a lista inteira. Eles só aparecem com
+  // estado confirmado (READY/EMPTY) e quando a própria query está íntegra.
+  const safeFilterCounts =
+    !countsHasError && canDisplayOperationalListCount(vacanciesContentState)
+      ? counts
+      : undefined;
+  const vacanciesSubtitle = canDisplayOperationalListCount(vacanciesContentState)
+    ? `${vacancies.length} plantão${vacancies.length === 1 ? "" : "ões"} aguardando profissional`
+    : vacanciesContentState === "LOADING"
+      ? "Buscando plantões sem profissional…"
+      : vacanciesContentState === "ERROR"
+        ? "A quantidade de plantões ainda não pôde ser confirmada."
+        : "Aguardando a confirmação dos plantões em aberto…";
+  const vacanciesGateState = resolveVacanciesGateState({
+    authLoading,
+    permissionsLoading,
+    professionalLoading,
+    filtersLoading: !!user && managerScopeLoading,
+    hasUser: !!user,
+    hasProfessional: !!professional,
+    // Cache de perfil não autoriza manter ações se o servidor acabou de
+    // revogar o acesso. Para falhas transitórias não ligadas a autorização,
+    // o perfil previamente confirmado pode continuar visível.
+    professionalUnavailable:
+      professionalHasError &&
+      (!professional || presentQueryError(professionalError).kind === "ACCESS"),
+    filtersUnavailable:
+      managerScopeHasError ||
+      (hospitalsHasError &&
+        (!hospitalsData || presentQueryError(hospitalsError).kind === "ACCESS")) ||
+      (sectorsHasError &&
+        (!sectorsData || presentQueryError(sectorsError).kind === "ACCESS")),
+  });
 
   // Mapeia (modality, coverageType) → label PT-BR para o badge no card.
   // Retorna null para vagas legadas (modality null/undefined) — pulamos o badge.
@@ -128,21 +223,22 @@ export default function VacanciesScreen() {
 
   // Feedback igual em web e nativo (antes só o web recebia retorno).
   const feedback = useActionFeedback();
-  const assumeVacancyMutation = trpc.shiftAssignments.assumeVacancy.useMutation({
-    onSuccess: () => {
-      refetchVacancies();
-      feedback.success("Solicitação enviada — aguardando aprovação do gestor.");
-    },
-    onError: (error) => {
-      feedback.error(error.message);
-    },
-  });
+  const assumeVacancyMutation = trpc.shiftAssignments.assumeVacancy.useMutation();
+  const [assumeVacancyBusy, setAssumeVacancyBusy] = useState(false);
+  const assumeVacancyLockRef = useRef(false);
 
   const handleAssumeVacancy = async (vacancyId: number, vacancyDetails: string) => {
+    if (assumeVacancyLockRef.current) return;
     console.log("[Vacancies] handleAssumeVacancy called", { vacancyId, vacancyDetails });
     
     if (!professional?.id) {
       feedback.error("Seu cadastro de profissional não foi encontrado. Fale com o gestor.");
+      return;
+    }
+
+    const refreshLease = captureLease();
+    if (!refreshLease) {
+      feedback.error("Sua sessão ou instituição mudou. Atualize a tela antes de solicitar a vaga.");
       return;
     }
 
@@ -155,17 +251,56 @@ export default function VacanciesScreen() {
       return;
     }
 
+    if (assumeVacancyLockRef.current || !isLeaseCurrent(refreshLease)) {
+      return;
+    }
+
+    assumeVacancyLockRef.current = true;
+    setAssumeVacancyBusy(true);
     console.log("[Vacancies] Calling assumeVacancyMutation.mutate");
-    // Chamar mutation assumeVacancy
-    assumeVacancyMutation.mutate({
-      shiftInstanceId: vacancyId,
-      assignmentType: "ON_DUTY",
-    });
+    try {
+      await assumeVacancyMutation.mutateAsync({
+        shiftInstanceId: vacancyId,
+        assignmentType: "ON_DUTY",
+      });
+    } catch (error) {
+      if (isLeaseCurrent(refreshLease)) {
+        feedback.error(
+          error instanceof Error
+            ? error.message
+            : "Não foi possível solicitar o plantão.",
+        );
+      }
+      assumeVacancyLockRef.current = false;
+      setAssumeVacancyBusy(false);
+      return;
+    }
+
+    // Mantém o bloqueio até a reconciliação terminar, mas não atrasa o
+    // feedback de uma solicitação já aceita pelo servidor.
+    const refreshPromise = refreshVacancyQueries(refreshLease);
+    if (isLeaseCurrent(refreshLease)) {
+      feedback.success("Solicitação enviada — aguardando aprovação do gestor.");
+    }
+    try {
+      await refreshPromise;
+    } catch {
+      // A mutação já foi aceita. A próxima renderização expõe eventual falha
+      // de leitura sem transformar a confirmação do servidor em erro da ação.
+    } finally {
+      assumeVacancyLockRef.current = false;
+      setAssumeVacancyBusy(false);
+    }
   };
 
   const handleFiltersChange = useCallback((newFilters: ShiftFilterValues) => {
     setFilters(newFilters);
   }, []);
+
+  useNativeOperationalQueryRecovery({
+    captureLease,
+    refresh: refreshVacancyQueries,
+  });
 
   const formatDate = (date: Date) => {
     return new Date(date).toLocaleDateString("pt-BR", {
@@ -175,7 +310,7 @@ export default function VacanciesScreen() {
     });
   };
 
-  if (authLoading || permissionsLoading || professionalLoading) {
+  if (vacanciesGateState === "LOADING") {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
@@ -186,7 +321,7 @@ export default function VacanciesScreen() {
     );
   }
 
-  if (!user) {
+  if (vacanciesGateState === "AUTH_REQUIRED") {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
@@ -198,7 +333,19 @@ export default function VacanciesScreen() {
     );
   }
 
-  if (!professional) {
+  if (vacanciesGateState === "PROFESSIONAL_UNAVAILABLE") {
+    return (
+      <ScreenGradient variant="light">
+        <QueryErrorState
+          title="Não foi possível confirmar seu cadastro profissional"
+          error={professionalError}
+          onRetry={() => refetchProfessional()}
+        />
+      </ScreenGradient>
+    );
+  }
+
+  if (vacanciesGateState === "MISSING_PROFESSIONAL") {
     return (
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
@@ -210,17 +357,31 @@ export default function VacanciesScreen() {
     );
   }
 
+  if (vacanciesGateState === "FILTERS_UNAVAILABLE") {
+    return (
+      <ScreenGradient variant="light">
+        <QueryErrorState
+          title="Não foi possível carregar os filtros de vagas"
+          error={managerScopeError ?? hospitalsError ?? sectorsError}
+          onRetry={() => {
+            void Promise.all([
+              refetchManagerScope(),
+              refetchHospitals(),
+              refetchSectors(),
+            ]);
+          }}
+        />
+      </ScreenGradient>
+    );
+  }
+
   return (
     <ScreenGradient variant="light" scrollable>
         <ScreenContainer>
         <SectionHeader
           size="page"
           title="Plantões em aberto"
-          subtitle={
-            vacanciesLoading
-              ? "Buscando plantões sem profissional…"
-              : `${vacancies.length} plantão${vacancies.length === 1 ? "" : "ões"} aguardando profissional`
-          }
+          subtitle={vacanciesSubtitle}
           style={{ marginBottom: theme.space[5] }}
         />
 
@@ -231,7 +392,7 @@ export default function VacanciesScreen() {
             allowAllHospitals={allowAllHospitals}
             initialValues={defaults}
             onChange={handleFiltersChange}
-            counts={counts}
+            counts={safeFilterCounts}
           />
         </Surface>
 
@@ -282,10 +443,16 @@ export default function VacanciesScreen() {
         </View>
 
         {/* Carregando: skeleton com a forma dos cards */}
-        {vacanciesLoading ? <SkeletonList count={3} /> : null}
+        {vacanciesContentState === "LOADING" ? <SkeletonList count={3} /> : null}
 
         {/* Lista de vagas */}
-        {!vacanciesLoading && vacancies.length > 0 ? (
+        {vacanciesContentState === "UNRESOLVED" ? (
+          <QueryErrorState
+            title="Ainda estamos aguardando a resposta sobre os plantões"
+            description="A lista ainda não foi confirmada pelo sistema. Tente novamente para atualizar."
+            onRetry={() => refetchVacancies()}
+          />
+        ) : vacanciesContentState === "READY" ? (
           <View style={{ gap: theme.space[4], paddingBottom: theme.space[6] }}>
             {vacancies.map((vacancy) => {
               const modalityLabel = formatModalityBadge(vacancy.modality, vacancy.coverageType);
@@ -352,10 +519,10 @@ export default function VacanciesScreen() {
 
                   {/* Botão de ação */}
                   <AppButton
-                    title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}
+                    title={assumeVacancyBusy ? "Enviando…" : "Assumir plantão"}
                     variant="primary"
                     size="lg"
-                    disabled={!vacancy.canAssume || assumeVacancyMutation.isPending}
+                    disabled={!vacancy.canAssume || assumeVacancyBusy}
                     onPress={() =>
                       handleAssumeVacancy(
                         vacancy.id,
@@ -367,13 +534,14 @@ export default function VacanciesScreen() {
               );
             })}
           </View>
-        ) : vacanciesError && !vacanciesData ? (
+        ) : vacanciesContentState === "ERROR" ? (
           // Erro não pode afirmar "todos os plantões atribuídos".
           <QueryErrorState
             title="Não foi possível carregar os plantões em aberto"
+            error={vacanciesQueryError}
             onRetry={() => refetchVacancies()}
           />
-        ) : !vacanciesLoading ? (
+        ) : vacanciesContentState === "EMPTY" ? (
           <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: theme.space[20] }}>
             <Briefcase size={64} color={theme.colors.borderStrong} />
             <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary, marginTop: theme.space[4] }}>

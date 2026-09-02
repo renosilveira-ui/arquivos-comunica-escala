@@ -183,7 +183,10 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     const vacancies = readFileSync("app/(tabs)/vacancies.tsx", "utf8");
     const tabs = readFileSync("app/(tabs)/_layout.tsx", "utf8");
     expect(vacancies).toContain(
-      'title={assumeVacancyMutation.isPending ? "Enviando…" : "Assumir plantão"}',
+      'title={assumeVacancyBusy ? "Enviando…" : "Assumir plantão"}',
+    );
+    expect(vacancies).toContain(
+      "disabled={!vacancy.canAssume || assumeVacancyBusy}",
     );
     expect(tabs).toContain('name="vacancies"');
     expect(tabs).toContain('href: can("view:vacancies") ? undefined : null');
