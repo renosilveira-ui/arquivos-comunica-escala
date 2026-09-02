@@ -16,7 +16,7 @@ describe("build nativo de push", () => {
     expect(source).toContain('color: "#01304A"');
   });
 
-  it("preview incrementa build number para o TestFlight aceitar", () => {
+  it("preview incrementa build number para a distribuição interna de staging", () => {
     const eas = JSON.parse(readFileSync("eas.json", "utf8")) as {
       build: { preview: { autoIncrement?: boolean } };
       submit?: { preview?: { ios?: { ascAppId?: string } } };
