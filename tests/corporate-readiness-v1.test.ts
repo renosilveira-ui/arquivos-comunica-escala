@@ -317,8 +317,119 @@ describe("corporate readiness V1", () => {
     expect(first.serviceSpecialtyCount).toBe(1);
     expect(second.serviceSpecialtyCount).toBe(1);
     expect(withOneSpecialty.summary.SECURITY_BLOCKER).toBe(0);
-    expect(withOneSpecialty.acknowledgement).toEqual({ supported: false });
+    expect(withOneSpecialty.acknowledgement).toEqual({
+      supported: true,
+      required: false,
+      issueCodes: [],
+    });
     expect(withOneSpecialty.integrations.emailTrust).toBe("NOT_ACTIVATED");
+  });
+
+  it("inclui todos os setores ativos do hospital na ciência, sem colapsar o escopo setorial", () => {
+    const report = buildCorporateReadinessReport(
+      source({
+        sectors: [
+          { id: 100, name: "Sala A" },
+          { id: 101, name: "Sala B" },
+        ],
+        scheduleContexts: [
+          {
+            id: 1000,
+            sectorId: 100,
+            admissionPolicy: "QUALIFICATION_ALLOWLIST",
+            qualificationAllowlistMetadataEntryCount: 1,
+            active: true,
+          },
+          {
+            id: 1001,
+            sectorId: 101,
+            admissionPolicy: "QUALIFICATION_ALLOWLIST",
+            qualificationAllowlistMetadataEntryCount: 1,
+            active: true,
+          },
+        ],
+        qualificationAllowlistMetadata: [
+          {
+            scheduleContextId: 1000,
+            medicalSpecialtyId: 7,
+            operationalProfileCode: null,
+          },
+          {
+            scheduleContextId: 1001,
+            medicalSpecialtyId: 7,
+            operationalProfileCode: null,
+          },
+        ],
+        activeTemplates: [
+          { id: 2000, sectorId: 100 },
+          { id: 2001, sectorId: 101 },
+        ],
+        shifts: [
+          {
+            id: 3000,
+            sectorId: 100,
+            scheduleContextId: 1000,
+            status: "VAGO",
+            startAt: new Date("2026-09-03T10:00:00.000Z"),
+            endAt: new Date("2026-09-03T16:00:00.000Z"),
+          },
+          {
+            id: 3001,
+            sectorId: 101,
+            scheduleContextId: 1001,
+            status: "VAGO",
+            startAt: new Date("2026-09-04T10:00:00.000Z"),
+            endAt: new Date("2026-09-04T16:00:00.000Z"),
+          },
+        ],
+        activeProfessionalAccesses: [
+          { id: 4000, professionalId: 11, sectorId: 100 },
+          { id: 4001, professionalId: 11, sectorId: 101 },
+        ],
+        activeManagerScopes: [
+          { id: 5000, managerProfessionalId: 10, sectorId: 100 },
+          { id: 5001, managerProfessionalId: 10, sectorId: 101 },
+        ],
+        activeAssignments: [],
+        usersWithPushTokens: [],
+        serviceSpecialties: {
+          availability: "AVAILABLE",
+          medicalSpecialtyIdsBySector: new Map([
+            [100, [7]],
+            [101, [7]],
+          ]),
+        },
+      }),
+      "2026-09-01T12:00:00.000Z",
+    );
+
+    expect(report.acknowledgement).toEqual({
+      supported: true,
+      required: true,
+      issueCodes: ["VACANT_SHIFT_REQUIRES_ALLOCATION"],
+    });
+    expect(report.sectors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sectorId: 100,
+          issues: expect.arrayContaining([
+            expect.objectContaining({
+              code: "VACANT_SHIFT_REQUIRES_ALLOCATION",
+              scope: expect.objectContaining({ sectorId: 100 }),
+            }),
+          ]),
+        }),
+        expect.objectContaining({
+          sectorId: 101,
+          issues: expect.arrayContaining([
+            expect.objectContaining({
+              code: "VACANT_SHIFT_REQUIRES_ALLOCATION",
+              scope: expect.objectContaining({ sectorId: 101 }),
+            }),
+          ]),
+        }),
+      ]),
+    );
   });
 
   it("mantém configuração incompleta como aviso, mas bloqueia contexto estruturalmente ausente", () => {
@@ -399,7 +510,7 @@ describe("corporate readiness V1", () => {
     );
   });
 
-  it("gera snapshot estável sem nome do setor, e muda quando a configuração muda", () => {
+  it("gera snapshot estável sem nome do setor, mas vinculado ao hospital e à configuração", () => {
     const original = buildCorporateReadinessReport(
       source(),
       "2026-09-01T12:00:00.000Z",
@@ -438,6 +549,17 @@ describe("corporate readiness V1", () => {
       }),
       "2026-09-01T12:00:00.000Z",
     );
+    const otherHospital = buildCorporateReadinessReport(
+      source({
+        scope: {
+          institutionId: 1,
+          hospitalId: 11,
+          sectorId: 100,
+          yearMonth: "2026-09",
+        },
+      }),
+      "2026-09-01T12:00:00.000Z",
+    );
 
     expect(renamed.snapshotHash).toBe(original.snapshotHash);
     expect(changedConfiguration.snapshotHash).not.toBe(original.snapshotHash);
@@ -447,6 +569,7 @@ describe("corporate readiness V1", () => {
     expect(changedAllowlistEntryWithSameCount.snapshotHash).not.toBe(
       original.snapshotHash,
     );
+    expect(otherHospital.snapshotHash).not.toBe(original.snapshotHash);
     expect(renamed.sectors[0]?.sectorName).toBe("RPA");
   });
 

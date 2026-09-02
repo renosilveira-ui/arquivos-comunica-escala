@@ -205,6 +205,27 @@ const openMonthShiftsInput = z.object({
   dryRun: z.boolean().optional().default(false),
 });
 
+/**
+ * Recibo opcional durante a transição de clientes. Quando presente, a
+ * publicação usa a fence transacional e não aceita um hash ou conjunto de
+ * pendências desatualizado. A remoção da compatibilidade legada será uma
+ * mudança de versão própria, depois de todos os clientes adotarem a tela.
+ */
+const readinessAcknowledgementInput = z
+  .object({
+    snapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+    issueCodes: z.array(z.string().regex(/^[A-Z0-9_]{3,96}$/)).max(100),
+  })
+  .superRefine((input, ctx) => {
+    if (new Set(input.issueCodes).size !== input.issueCodes.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["issueCodes"],
+        message: "issueCodes não pode conter códigos repetidos",
+      });
+    }
+  });
+
 type OpenMonthShiftsInput = z.infer<typeof openMonthShiftsInput>;
 
 /** Instante UTC da meia-noite local (-03:00) de um dia "YYYY-MM-DD". */
@@ -3288,6 +3309,7 @@ export const shiftsRouter = router({
         institutionId: z.number().int(),
         hospitalId: z.number().int(),
         yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+        readinessAcknowledgement: readinessAcknowledgementInput.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -3307,6 +3329,7 @@ export const shiftsRouter = router({
         actor,
         ctx.user.sessionVersion,
         ctx.user.name ?? undefined,
+        input.readinessAcknowledgement,
       );
 
       return { ok: true };

@@ -22,6 +22,19 @@ import {
   assertManagerScopeAccessForUpdate,
   type TenantActor,
 } from "./_core/policy";
+import {
+  assessCorporateReadinessAcknowledgement,
+  operationalWarningSnapshot,
+  type CorporateReadinessAcknowledgement,
+} from "./corporate-readiness-acknowledgement";
+import {
+  getCorporateReadinessReport,
+  type CorporateReadinessReportV1,
+} from "./corporate-readiness-v1";
+import {
+  captureInstitutionReadinessFenceV1HighWatermark,
+  withReadinessFenceV1FinalDecisionTransaction,
+} from "./readiness-fence-v1";
 
 type MonthLockDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
@@ -32,6 +45,10 @@ type MonthReadDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
   "select"
 >;
+
+type MonthTransaction = Parameters<
+  Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]
+>[0];
 
 export type MonthLockTarget = {
   institutionId: number;
@@ -519,6 +536,301 @@ async function getRosterPublicationRecipients(
   return [...new Map(rows.map((row) => [row.userId, row] as const)).values()];
 }
 
+type PublicationRoster = Readonly<{
+  id: number;
+  status: "DRAFT" | "PUBLISHED" | "LOCKED";
+  version: number;
+}>;
+
+type ReadinessPublicationAudit = Readonly<{
+  reportVersion: CorporateReadinessReportV1["version"];
+  snapshotHash: string;
+  issueCodes: readonly string[];
+  operationalWarnings: ReturnType<typeof operationalWarningSnapshot>;
+}>;
+
+async function lockRosterForPublication(
+  tx: MonthTransaction,
+  institutionId: number,
+  hospitalId: number,
+  yearMonth: string,
+): Promise<PublicationRoster | undefined> {
+  const [existing] = await tx
+    .select({
+      id: monthlyRosters.id,
+      status: monthlyRosters.status,
+      version: monthlyRosters.version,
+    })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, institutionId),
+        eq(monthlyRosters.hospitalId, hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonth),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  return existing;
+}
+
+function assertDraftRosterForPublication(
+  existing: PublicationRoster,
+  yearMonth: string,
+): void {
+  if (existing.status === "DRAFT") return;
+  throw new Error(
+    existing.status === "LOCKED"
+      ? `A escala de ${yearMonth} já está bloqueada.`
+      : `A escala de ${yearMonth} já foi publicada.`,
+  );
+}
+
+/**
+ * A rota legada ainda materializa o rascunho antes de validar a publicação.
+ * No caminho com ciência, a criação só ocorre depois da fence: assim o
+ * próprio INSERT não invalida a fotografia antes da decisão final.
+ */
+async function materializeDraftRosterAfterReadinessCheck(
+  tx: MonthTransaction,
+  institutionId: number,
+  hospitalId: number,
+  yearMonth: string,
+): Promise<PublicationRoster> {
+  await tx.insert(monthlyRosters).values({
+    institutionId,
+    hospitalId,
+    yearMonth,
+    status: "DRAFT",
+  });
+  const created = await lockRosterForPublication(
+    tx,
+    institutionId,
+    hospitalId,
+    yearMonth,
+  );
+  if (!created) throw new Error(`Mês ${yearMonth} não encontrado.`);
+  assertDraftRosterForPublication(created, yearMonth);
+  return created;
+}
+
+function assertReadinessAcknowledgementForPublication(
+  report: CorporateReadinessReportV1,
+  acknowledgement: CorporateReadinessAcknowledgement,
+): ReadinessPublicationAudit {
+  const assessment = assessCorporateReadinessAcknowledgement(
+    report,
+    acknowledgement,
+  );
+  switch (assessment.state) {
+    case "SECURITY_BLOCKED":
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "A publicação foi bloqueada por uma inconsistência estrutural. Corrija a prontidão da escala antes de publicar.",
+      });
+    case "ACKNOWLEDGEMENT_REQUIRED":
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Revise e confirme as pendências operacionais da prontidão antes de publicar.",
+      });
+    case "SNAPSHOT_STALE":
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "O diagnóstico de prontidão mudou. Atualize a revisão e confirme novamente.",
+      });
+    case "ISSUE_CODES_MISMATCH":
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "A confirmação não corresponde às pendências atuais. Atualize a revisão e confirme novamente.",
+      });
+    case "NOT_REQUIRED":
+    case "ACKNOWLEDGED":
+      return {
+        reportVersion: report.version,
+        snapshotHash: report.snapshotHash,
+        issueCodes: assessment.operationalWarningCodes,
+        operationalWarnings: operationalWarningSnapshot(report),
+      };
+  }
+}
+
+function readinessFencePublicationError(error: unknown): TRPCError | null {
+  const code = error instanceof Error ? error.message : "";
+  if (!code.startsWith("READINESS_FENCE_V1_")) return null;
+  if (code === "READINESS_FENCE_V1_STALE") {
+    return new TRPCError({
+      code: "CONFLICT",
+      message:
+        "A configuração da escala mudou durante a publicação. Atualize a revisão e confirme novamente.",
+    });
+  }
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "A verificação transacional de prontidão não está disponível neste ambiente. A publicação com ciência foi mantida sem alterações.",
+  });
+}
+
+async function completeRosterPublication(
+  tx: MonthTransaction,
+  input: Readonly<{
+    roster: PublicationRoster;
+    institutionId: number;
+    hospitalId: number;
+    yearMonth: string;
+    actor: TenantActor;
+    actorName?: string;
+    currentRole: "GESTOR_MEDICO" | "GESTOR_PLUS";
+    readiness?: ReadinessPublicationAudit;
+  }>,
+): Promise<void> {
+  const [result] = await tx
+    .update(monthlyRosters)
+    .set({
+      status: "PUBLISHED",
+      publishedAt: new Date(),
+      publishedByUserId: input.actor.userId,
+      version: sql`${monthlyRosters.version} + 1`,
+    })
+    .where(
+      and(
+        eq(monthlyRosters.id, input.roster.id),
+        eq(monthlyRosters.status, "DRAFT"),
+        eq(monthlyRosters.version, input.roster.version),
+      ),
+    );
+  if (!result.affectedRows) {
+    throw new Error(
+      `A escala de ${input.yearMonth} acabou de ser publicada por outra pessoa.`,
+    );
+  }
+  await recordAudit(
+    {
+      actorUserId: input.actor.userId,
+      actorRole: input.currentRole,
+      actorName: input.actorName,
+      action: "ROSTER_PUBLISHED",
+      entityType: "MONTHLY_ROSTER",
+      entityId: input.roster.id,
+      description: `Escala publicada (${input.yearMonth})`,
+      institutionId: input.institutionId,
+      hospitalId: input.hospitalId,
+      metadata: {
+        yearMonth: input.yearMonth,
+        previousStatus: input.roster.status,
+        ...(input.readiness ? { readiness: input.readiness } : {}),
+      },
+    },
+    { db: tx, strict: true },
+  );
+  const publishedVersion = input.roster.version + 1;
+  const recipients = await getRosterPublicationRecipients(
+    tx,
+    input.institutionId,
+    input.hospitalId,
+    input.yearMonth,
+  );
+  for (const recipient of recipients) {
+    await enqueueComunicaRosterPublished({
+      rosterId: input.roster.id,
+      institutionId: input.institutionId,
+      hospitalId: input.hospitalId,
+      yearMonth: input.yearMonth,
+      publishedVersion,
+      targetUserId: recipient.userId,
+      targetEmail: recipient.email,
+      db: tx,
+    });
+  }
+}
+
+async function publishMonthWithReadinessAcknowledgement(
+  input: Readonly<{
+    institutionId: number;
+    hospitalId: number;
+    yearMonth: string;
+    monthDate: Date;
+    actor: TenantActor;
+    expectedActorSessionVersion: number;
+    actorName?: string;
+    acknowledgement: CorporateReadinessAcknowledgement;
+  }>,
+): Promise<void> {
+  try {
+    const highWatermark = await captureInstitutionReadinessFenceV1HighWatermark(
+      input.institutionId,
+    );
+    await withReadinessFenceV1FinalDecisionTransaction(
+      highWatermark,
+      async (tx) => {
+        // A leitura FOR UPDATE da chave única também segura o gap quando o
+        // mês ainda não foi materializado. Nenhuma escrita ocorre antes da
+        // fence, para não invalidar o próprio snapshot.
+        const roster = await lockRosterForPublication(
+          tx,
+          input.institutionId,
+          input.hospitalId,
+          input.yearMonth,
+        );
+        if (roster) assertDraftRosterForPublication(roster, input.yearMonth);
+        await assertInstitutionHierarchy(
+          {
+            institutionId: input.institutionId,
+            hospitalId: input.hospitalId,
+          },
+          { db: tx, lockForShare: true },
+        );
+        const currentRole = await assertManagerScopeAccessForUpdate(
+          tx,
+          input.actor,
+          input.expectedActorSessionVersion,
+          input.hospitalId,
+          undefined,
+          [input.monthDate],
+        );
+        return { roster, currentRole };
+      },
+      async (tx, prepared) => {
+        const report = await getCorporateReadinessReport(tx, {
+          institutionId: input.institutionId,
+          hospitalId: input.hospitalId,
+          yearMonth: input.yearMonth,
+        });
+        const readiness = assertReadinessAcknowledgementForPublication(
+          report,
+          input.acknowledgement,
+        );
+        const roster =
+          prepared.roster ??
+          (await materializeDraftRosterAfterReadinessCheck(
+            tx,
+            input.institutionId,
+            input.hospitalId,
+            input.yearMonth,
+          ));
+        await completeRosterPublication(tx, {
+          roster,
+          institutionId: input.institutionId,
+          hospitalId: input.hospitalId,
+          yearMonth: input.yearMonth,
+          actor: input.actor,
+          actorName: input.actorName,
+          currentRole: prepared.currentRole,
+          readiness,
+        });
+      },
+    );
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    const readinessError = readinessFencePublicationError(error);
+    if (readinessError) throw readinessError;
+    throw error;
+  }
+}
 
 /**
  * Publica um mês DRAFT → PUBLISHED.
@@ -531,6 +843,7 @@ export async function publishMonth(
   actor: TenantActor,
   expectedActorSessionVersion: number,
   actorName?: string,
+  readinessAcknowledgement?: CorporateReadinessAcknowledgement,
 ): Promise<void> {
   const monthDate = dateInsideYearMonth(yearMonth);
   const db = await getDb();
@@ -543,35 +856,33 @@ export async function publishMonth(
   }
   await assertInstitutionHierarchy({ institutionId, hospitalId }, { db });
 
+  if (readinessAcknowledgement) {
+    await publishMonthWithReadinessAcknowledgement({
+      institutionId,
+      hospitalId,
+      yearMonth,
+      monthDate,
+      actor,
+      expectedActorSessionVersion,
+      actorName,
+      acknowledgement: readinessAcknowledgement,
+    });
+    return;
+  }
+
   await db.transaction(async (tx) => {
     await tx
       .insert(monthlyRosters)
       .values({ institutionId, hospitalId, yearMonth, status: "DRAFT" })
       .onDuplicateKeyUpdate({ set: { id: sql`${monthlyRosters.id}` } });
-    const [existing] = await tx
-      .select({
-        id: monthlyRosters.id,
-        status: monthlyRosters.status,
-        version: monthlyRosters.version,
-      })
-      .from(monthlyRosters)
-      .where(
-        and(
-          eq(monthlyRosters.institutionId, institutionId),
-          eq(monthlyRosters.hospitalId, hospitalId),
-          eq(monthlyRosters.yearMonth, yearMonth),
-        ),
-      )
-      .limit(1)
-      .for("update");
+    const existing = await lockRosterForPublication(
+      tx,
+      institutionId,
+      hospitalId,
+      yearMonth,
+    );
     if (!existing) throw new Error(`Mês ${yearMonth} não encontrado.`);
-    if (existing.status !== "DRAFT") {
-      throw new Error(
-        existing.status === "LOCKED"
-          ? `A escala de ${yearMonth} já está bloqueada.`
-          : `A escala de ${yearMonth} já foi publicada.`,
-      );
-    }
+    assertDraftRosterForPublication(existing, yearMonth);
     const currentRole = await assertManagerScopeAccessForUpdate(
       tx,
       actor,
@@ -581,58 +892,15 @@ export async function publishMonth(
       [monthDate],
     );
 
-    const [result] = await tx
-      .update(monthlyRosters)
-      .set({
-        status: "PUBLISHED",
-        publishedAt: new Date(),
-        publishedByUserId: actor.userId,
-        version: sql`${monthlyRosters.version} + 1`,
-      })
-      .where(
-        and(
-          eq(monthlyRosters.id, existing.id),
-          eq(monthlyRosters.status, "DRAFT"),
-          eq(monthlyRosters.version, existing.version),
-        ),
-      );
-    if (!result.affectedRows) {
-      throw new Error(`A escala de ${yearMonth} acabou de ser publicada por outra pessoa.`);
-    }
-    await recordAudit(
-      {
-        actorUserId: actor.userId,
-        actorRole: currentRole,
-        actorName,
-        action: "ROSTER_PUBLISHED",
-        entityType: "MONTHLY_ROSTER",
-        entityId: existing.id,
-        description: `Escala publicada (${yearMonth})`,
-        institutionId,
-        hospitalId,
-        metadata: { yearMonth, previousStatus: existing.status },
-      },
-      { db: tx, strict: true },
-    );
-    const publishedVersion = existing.version + 1;
-    const recipients = await getRosterPublicationRecipients(
-      tx,
+    await completeRosterPublication(tx, {
+      roster: existing,
       institutionId,
       hospitalId,
       yearMonth,
-    );
-    for (const recipient of recipients) {
-      await enqueueComunicaRosterPublished({
-        rosterId: existing.id,
-        institutionId,
-        hospitalId,
-        yearMonth,
-        publishedVersion,
-        targetUserId: recipient.userId,
-        targetEmail: recipient.email,
-        db: tx,
-      });
-    }
+      actor,
+      actorName,
+      currentRole,
+    });
   });
 }
 

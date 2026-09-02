@@ -34,6 +34,7 @@ import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
 import { swapRouter } from "../server/swap-router";
 import { deriveShiftStatus } from "../server/shift-status";
+import { getCorporateReadinessReport } from "../server/corporate-readiness-v1";
 
 vi.mock("../server/integrations/comunica-plus", () => ({
   enqueueComunicaSwapApproved: vi.fn(async () => 1),
@@ -250,6 +251,117 @@ describe("integridade transacional", () => {
     expect(deriveShiftStatus([])).toBe("VAGO");
     expect(deriveShiftStatus(["PENDENTE"])).toBe("PENDENTE");
     expect(deriveShiftStatus(["PENDENTE", "OCUPADO"])).toBe("OCUPADO");
+  });
+
+  it("publica com ciência recalculada e audita a fotografia de todos os setores", async () => {
+    const yearMonth = "2034-11";
+    const report = await getCorporateReadinessReport(db!, {
+      institutionId,
+      hospitalId,
+      yearMonth,
+    });
+
+    await appRouter.createCaller(ctxFor(manager, "manager")).shifts.publish({
+      institutionId,
+      hospitalId,
+      yearMonth,
+      readinessAcknowledgement: {
+        snapshotHash: report.snapshotHash,
+        issueCodes: report.acknowledgement.issueCodes,
+      },
+    });
+
+    const [roster] = await db!
+      .select({ status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      )
+      .limit(1);
+    expect(roster?.status).toBe("PUBLISHED");
+
+    const [audit] = await db!
+      .select({
+        institutionId: auditTrail.institutionId,
+        hospitalId: auditTrail.hospitalId,
+        metadata: auditTrail.metadata,
+      })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.action, "ROSTER_PUBLISHED"),
+        ),
+      )
+      .orderBy(auditTrail.id)
+      .limit(1);
+    expect(audit).toMatchObject({ institutionId, hospitalId });
+    expect(audit?.metadata).toMatchObject({
+      yearMonth,
+      previousStatus: "DRAFT",
+      readiness: {
+        reportVersion: "v1",
+        snapshotHash: report.snapshotHash,
+        issueCodes: report.acknowledgement.issueCodes,
+      },
+    });
+    expect((audit?.metadata as any)?.readiness?.operationalWarnings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ sectorId })]),
+    );
+  });
+
+  it("recusa fotografia de prontidão vencida por mudança real sem criar roster ou auditoria", async () => {
+    const yearMonth = "2034-12";
+    const report = await getCorporateReadinessReport(db!, {
+      institutionId,
+      hospitalId,
+      yearMonth,
+    });
+    const changedShiftId = await createShift(
+      "2034-12-03",
+      "Mudança após revisão",
+      "07:00:00",
+      "13:00:00",
+    );
+    extraShiftIds.push(changedShiftId);
+
+    await expect(
+      appRouter.createCaller(ctxFor(manager, "manager")).shifts.publish({
+        institutionId,
+        hospitalId,
+        yearMonth,
+        readinessAcknowledgement: {
+          snapshotHash: report.snapshotHash,
+          issueCodes: report.acknowledgement.issueCodes,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const rosters = await db!
+      .select({ id: monthlyRosters.id })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      );
+    expect(rosters).toHaveLength(0);
+    const audits = await db!
+      .select({ id: auditTrail.id })
+      .from(auditTrail)
+      .where(
+        and(
+          eq(auditTrail.institutionId, institutionId),
+          eq(auditTrail.action, "ROSTER_PUBLISHED"),
+        ),
+      );
+    expect(audits).toHaveLength(1);
   });
 
   it("assignDirect devolve o assignmentId real e o turno vira OCUPADO", async () => {
@@ -530,5 +642,48 @@ describe("integridade transacional", () => {
 
     const callerAlice = swapRouter.createCaller(ctxFor(alice, "doctor"));
     await expect(callerAlice.approveByOwner({ swapRequestId })).rejects.toBeTruthy();
+  });
+
+  it("não permite que um recibo confirme blocker estrutural", async () => {
+    const yearMonth = "2035-01";
+    await db!.insert(scheduleContexts).values({
+      institutionId,
+      hospitalId,
+      sectorId,
+      admissionPolicy: "ALL_CFM_SPECIALTIES",
+      medicalSpecialtyId: null,
+      operationalProfileCode: null,
+      active: true,
+    });
+    const report = await getCorporateReadinessReport(db!, {
+      institutionId,
+      hospitalId,
+      yearMonth,
+    });
+    expect(report.summary.SECURITY_BLOCKER).toBeGreaterThan(0);
+
+    await expect(
+      appRouter.createCaller(ctxFor(manager, "manager")).shifts.publish({
+        institutionId,
+        hospitalId,
+        yearMonth,
+        readinessAcknowledgement: {
+          snapshotHash: report.snapshotHash,
+          issueCodes: report.acknowledgement.issueCodes,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const rosters = await db!
+      .select({ id: monthlyRosters.id })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      );
+    expect(rosters).toHaveLength(0);
   });
 });
