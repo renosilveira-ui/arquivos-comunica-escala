@@ -26,14 +26,16 @@ function response(status: number, body: unknown): Response {
 
 async function waitForBadgeAcknowledgementLockWaiter(
   db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  userId: number,
 ): Promise<void> {
   const deadline = Date.now() + 3_000;
+  const accountPredicate = `\`notifications\`.\`user_id\` = ${userId}`;
   while (Date.now() < deadline) {
     const [rows] = await db.execute("SHOW FULL PROCESSLIST");
     const waiting = (rows as { Info?: unknown }[]).some((row) => {
       if (typeof row.Info !== "string") return false;
       const query = row.Info.toLowerCase();
-      return query.includes("notifications") && query.includes("for update");
+      return query.includes(accountPredicate) && query.includes("for update");
     });
     if (waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -751,7 +753,7 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
         institutionAId,
       ).notifications.acknowledgeAccountBadge();
 
-      await waitForBadgeAcknowledgementLockWaiter(db);
+      await waitForBadgeAcknowledgementLockWaiter(db, accountUserId);
       releaseRevocation();
       await revocation;
 
