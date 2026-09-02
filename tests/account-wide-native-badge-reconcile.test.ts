@@ -438,6 +438,15 @@ describe("badge nativo account-wide — reconciliação local", () => {
 
   it("limita o selector a tipos de alerta visíveis e o hook não depende de tenant", () => {
     expect(isAccountWideBadgeNotificationType("vacancy_available")).toBe(true);
+    expect(isAccountWideBadgeNotificationType("vacancy_request_created")).toBe(
+      true,
+    );
+    expect(isAccountWideBadgeNotificationType("vacancy_request_approved")).toBe(
+      true,
+    );
+    expect(isAccountWideBadgeNotificationType("vacancy_request_rejected")).toBe(
+      true,
+    );
     expect(isAccountWideBadgeNotificationType("transport_test")).toBe(false);
 
     const hook = readFileSync("hooks/use-account-wide-native-badge.ts", "utf8");
