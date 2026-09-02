@@ -69,6 +69,18 @@ function resolvedPackageVersion(entryPath: string, expectedName: string) {
 }
 
 describe("dependency security overrides", () => {
+  it("resolves eslint to the patched humanfs implementation", () => {
+    const eslintManifest = projectRequire.resolve("eslint/package.json");
+    const humanfsManifest = join(
+      dirname(eslintManifest),
+      "../@humanfs/node/package.json",
+    );
+
+    expect(resolvedPackageVersion(humanfsManifest, "@humanfs/node")).toBe(
+      "0.16.8",
+    );
+  });
+
   it("resolves browserslist to the audited version for every affected consumer", () => {
     const browserslistEntry = projectRequire.resolve("browserslist");
     const browserslist = projectRequire("browserslist") as BrowserslistApi;
