@@ -33,6 +33,35 @@ type QsApi = {
   stringify: (value: unknown) => string;
 };
 
+type EntityReference = {
+  nodeName: string;
+};
+
+type XmldomApi = {
+  DOMImplementation: new () => {
+    createDocument: (
+      namespace: string | null,
+      qualifiedName: string,
+      doctype: null,
+    ) => {
+      createEntityReference: (name: string) => EntityReference;
+    };
+  };
+  XMLSerializer: new () => {
+    serializeToString: (
+      node: EntityReference,
+      isHtml?: boolean,
+      nodeFilter?: (node: EntityReference) => EntityReference | null,
+      options?: { requireWellFormed?: boolean },
+    ) => string;
+  };
+};
+
+type PlistApi = {
+  build: (value: Record<string, unknown>) => string;
+  parse: (source: string) => Record<string, unknown>;
+};
+
 const projectRequire = createRequire(import.meta.url);
 const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -74,6 +103,49 @@ function resolvedPackageVersion(entryPath: string, expectedName: string) {
 }
 
 describe("dependency security overrides", () => {
+  it("resolves every xmldom consumer to 0.8.15 and rejects invalid entity references", () => {
+    const xmldomEntry = projectRequire.resolve("@xmldom/xmldom");
+    const xmldom = projectRequire("@xmldom/xmldom") as XmldomApi;
+    const expoPlist = (
+      projectRequire("@expo/plist") as { default: PlistApi }
+    ).default;
+
+    expect(resolvedPackageVersion(xmldomEntry, "@xmldom/xmldom")).toBe(
+      "0.8.15",
+    );
+    for (const consumer of ["@expo/plist", "plist"] as const) {
+      const consumerRequire = requireFrom(consumer);
+      const consumerXmldomEntry = consumerRequire.resolve("@xmldom/xmldom");
+
+      expect(
+        resolvedPackageVersion(consumerXmldomEntry, "@xmldom/xmldom"),
+      ).toBe("0.8.15");
+    }
+    expect(expoPlist.parse(expoPlist.build({ Name: "Escala+" }))).toEqual({
+      Name: "Escala+",
+    });
+
+    const document = new xmldom.DOMImplementation().createDocument(
+      null,
+      "root",
+      null,
+    );
+    expect(() =>
+      document.createEntityReference("safe; <injected/> &x"),
+    ).toThrow();
+
+    const reference = document.createEntityReference("safe");
+    reference.nodeName = "safe; <injected/> &x";
+    expect(() =>
+      new xmldom.XMLSerializer().serializeToString(
+        reference,
+        false,
+        undefined,
+        { requireWellFormed: true },
+      ),
+    ).toThrow();
+  });
+
   it("resolves every qs consumer to the patched 6.16 line", () => {
     const qsEntry = projectRequire.resolve("qs");
     const qs = projectRequire("qs") as QsApi;
