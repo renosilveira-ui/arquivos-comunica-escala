@@ -70,12 +70,10 @@ function formatTimeRange(start: Date, end: Date): string {
 
 export default function MyApplicationsScreen({
   embedded = false,
-  enabled = true,
   onCountChange,
   onExploreAvailable,
 }: {
   embedded?: boolean;
-  enabled?: boolean;
   onCountChange?: (count: number) => void;
   onExploreAvailable?: () => void;
 } = {}) {
@@ -91,7 +89,7 @@ export default function MyApplicationsScreen({
     refetch: refetchApplications,
   } = trpc.swaps.list.useQuery(
     { role: "RECEIVER" },
-    { enabled: !!user?.id && enabled },
+    { enabled: !!user?.id },
   );
   const {
     data: vacancyRequestsData,
@@ -101,7 +99,7 @@ export default function MyApplicationsScreen({
     error: vacancyRequestsError,
     refetch: refetchVacancyRequests,
   } = trpc.shiftAssignments.listMyVacancyRequests.useQuery(undefined, {
-    enabled: !!user?.id && enabled,
+    enabled: !!user?.id,
   });
 
   const handleBack = () => {
@@ -111,7 +109,12 @@ export default function MyApplicationsScreen({
 
   const applications = (data ?? []) as any[];
   const vacancyRequests = vacancyRequestsData ?? [];
-  const others = applications;
+  const activeApplications = applications.filter(
+    (item) => item.status === "PENDING" || item.status === "ACCEPTED",
+  );
+  const others = applications.filter(
+    (item) => item.status !== "PENDING" && item.status !== "ACCEPTED",
+  );
   const contentState = resolveMyApplicationsContentState({
     isLoading: isLoading || vacancyRequestsLoading,
     isPending: applicationsPending || vacancyRequestsPending,
@@ -122,9 +125,7 @@ export default function MyApplicationsScreen({
     vacancyRequestCount: vacancyRequests.length,
   });
   const activeCount =
-    applications.filter(
-      (item) => item.status === "PENDING" || item.status === "ACCEPTED",
-    ).length +
+    activeApplications.length +
     vacancyRequests.filter((item) => item.status === "PENDENTE").length;
 
   useEffect(() => {
@@ -234,6 +235,21 @@ export default function MyApplicationsScreen({
           </View>
         ) : (
           <View className="gap-6">
+            {activeApplications.length > 0 && (
+              <View className="gap-3">
+                <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Candidaturas em andamento
+                </Text>
+                {activeApplications.map((application) => (
+                  <ApplicationCard
+                    key={application.id}
+                    application={application}
+                    highlighted
+                  />
+                ))}
+              </View>
+            )}
+
             {vacancyRequests.length > 0 && (
               <View className="gap-3">
                 <Text className="text-lg font-semibold" style={{ color: theme.colors.textPrimary }}>

@@ -55,11 +55,9 @@ function formatTimeRange(start: Date, end: Date): string {
 
 export default function MyOffersScreen({
   embedded = false,
-  enabled = true,
   onCountChange,
 }: {
   embedded?: boolean;
-  enabled?: boolean;
   onCountChange?: (count: number) => void;
 } = {}) {
   const { user, isLoading: authLoading } = useAuth();
@@ -68,7 +66,7 @@ export default function MyOffersScreen({
   // Filtro role=OFFERER (PR #64): só ofertas onde sou o ofertante.
   const { data, isLoading, isError, refetch } = trpc.swaps.list.useQuery(
     { role: "OFFERER" },
-    { enabled: !!user?.id && enabled },
+    { enabled: !!user?.id },
   );
 
   const utils = trpc.useUtils();

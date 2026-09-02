@@ -365,6 +365,7 @@ export default function VacanciesScreen() {
   const assumeVacancyMutation =
     trpc.shiftAssignments.assumeVacancy.useMutation();
   const [assumeVacancyBusy, setAssumeVacancyBusy] = useState(false);
+  const [assumeVacancyId, setAssumeVacancyId] = useState<number | null>(null);
   const assumeVacancyLockRef = useRef(false);
 
   const handleAssumeVacancy = async (
@@ -409,6 +410,7 @@ export default function VacanciesScreen() {
 
     assumeVacancyLockRef.current = true;
     setAssumeVacancyBusy(true);
+    setAssumeVacancyId(vacancyId);
     console.log("[Vacancies] Calling assumeVacancyMutation.mutate");
     try {
       await assumeVacancyMutation.mutateAsync({
@@ -425,6 +427,7 @@ export default function VacanciesScreen() {
       }
       assumeVacancyLockRef.current = false;
       setAssumeVacancyBusy(false);
+      setAssumeVacancyId(null);
       return;
     }
 
@@ -442,6 +445,7 @@ export default function VacanciesScreen() {
     } finally {
       assumeVacancyLockRef.current = false;
       setAssumeVacancyBusy(false);
+      setAssumeVacancyId(null);
     }
   };
 
@@ -938,7 +942,11 @@ export default function VacanciesScreen() {
                     }}
                   >
                     <AppButton
-                      title={assumeVacancyBusy ? "Enviando…" : "Solicitar plantão"}
+                      title={
+                        assumeVacancyBusy && assumeVacancyId === vacancy.id
+                          ? "Enviando…"
+                          : "Solicitar plantão"
+                      }
                       variant="brand"
                       size="lg"
                       disabled={!vacancy.canAssume || assumeVacancyBusy}

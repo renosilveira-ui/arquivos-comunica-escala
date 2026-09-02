@@ -82,6 +82,7 @@ export function AvailableSwapsList({
     { enabled: !!user?.id },
   );
   const swaps = (data ?? []) as AvailableSwap[];
+  const actionableSwapCount = swaps.filter(listedSwapIsActionable).length;
   const contentState = resolveOperationalListState({
     isLoading,
     isPending,
@@ -93,9 +94,9 @@ export function AvailableSwapsList({
 
   useEffect(() => {
     if (contentState === "READY" || contentState === "EMPTY") {
-      onCountChange?.(swaps.length);
+      onCountChange?.(actionableSwapCount);
     }
-  }, [contentState, onCountChange, swaps.length]);
+  }, [actionableSwapCount, contentState, onCountChange]);
 
   const invalidateSwapQueries = () =>
     Promise.all([
@@ -221,7 +222,7 @@ export function AvailableSwapsList({
             }}
           >
             <Text style={{ ...theme.text.caption, fontWeight: theme.weight.bold, color: theme.colors.onDark.text }}>
-              {swaps.length}
+              {actionableSwapCount}
             </Text>
           </View>
         </View>
