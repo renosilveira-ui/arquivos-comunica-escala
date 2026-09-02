@@ -20,6 +20,17 @@ import {
   type DutyShiftSnapshot,
 } from "./confirmation-integrity";
 import {
+  isCanonicalPushAuthorityRejection,
+  PersistedPushAuthorityBindingError,
+} from "./push-authority-rejection";
+import {
+  isVacancyRequestPushPayload,
+  parseVacancyRequestPushAuthority,
+  requireAuthorizedVacancyRequestRecipient,
+  vacancyRequestAuthorityMatchesPayload,
+  type VacancyRequestPushAuthority,
+} from "./vacancy-request-push-authority";
+import {
   ACCOUNT_WIDE_BADGE_VERSION,
   isAccountWideBadgeNotificationType,
 } from "../lib/account-wide-native-badge";
@@ -110,7 +121,7 @@ type TrackingBase = {
   attemptCount: number;
   /** Marker interno do outbox; nunca integra o envelope enviado ao Expo. */
   accountWideBadgeVersion?: typeof ACCOUNT_WIDE_BADGE_VERSION;
-  authority?: DutyConfirmationPushAuthority;
+  authority?: TrackedPushAuthority;
 };
 
 type QueuedState = TrackingBase & {
@@ -165,7 +176,7 @@ export type TrackedPushInput = {
   dedupKey: string;
   payload: PushNotificationPayload;
   deepLink?: string | null;
-  authority?: DutyConfirmationPushAuthority;
+  authority?: TrackedPushAuthority;
 };
 
 export type DutyConfirmationPushAuthority = {
@@ -177,6 +188,10 @@ export type DutyConfirmationPushAuthority = {
   expectedUserId: number;
   shiftSnapshot: DutyShiftSnapshot;
 };
+
+export type TrackedPushAuthority =
+  | DutyConfirmationPushAuthority
+  | VacancyRequestPushAuthority;
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type EnqueueDb = Pick<Db, "insert" | "select" | "update">;
@@ -269,7 +284,7 @@ function parseShiftSnapshot(value: unknown): DutyShiftSnapshot | null {
   return snapshot as DutyShiftSnapshot;
 }
 
-function authorityMatchesPurpose(
+function dutyConfirmationAuthorityMatchesPurpose(
   authority: DutyConfirmationPushAuthority,
   payloadData: PayloadData,
   requirePayloadConfirmationId: boolean,
@@ -286,7 +301,7 @@ function authorityMatchesPurpose(
   );
 }
 
-function parseAuthority(
+function parseDutyConfirmationAuthority(
   value: unknown,
   payloadData: PayloadData,
 ): DutyConfirmationPushAuthority | undefined | null {
@@ -321,7 +336,43 @@ function parseAuthority(
       : inferLegacyPurpose(payloadData, recipientKind);
   if (!purpose) return null;
   const normalized = { ...authority, purpose } as DutyConfirmationPushAuthority;
-  return authorityMatchesPurpose(normalized, payloadData, false) ? normalized : null;
+  return dutyConfirmationAuthorityMatchesPurpose(
+    normalized,
+    payloadData,
+    false,
+  )
+    ? normalized
+    : null;
+}
+
+function parseAuthority(
+  value: unknown,
+  payloadData: PayloadData,
+): TrackedPushAuthority | undefined | null {
+  if (value === undefined) return undefined;
+  const authority = asRecord(value);
+  if (!authority) return null;
+  if (authority.kind === "VACANCY_REQUEST") {
+    const parsed = parseVacancyRequestPushAuthority(authority);
+    return parsed && vacancyRequestAuthorityMatchesPayload(parsed, payloadData)
+      ? parsed
+      : null;
+  }
+  return parseDutyConfirmationAuthority(authority, payloadData);
+}
+
+function trackedAuthorityMatchesPayload(
+  authority: TrackedPushAuthority,
+  payloadData: PayloadData,
+  requirePayloadConfirmationId: boolean,
+): boolean {
+  return authority.kind === "DUTY_CONFIRMATION"
+    ? dutyConfirmationAuthorityMatchesPurpose(
+        authority,
+        payloadData,
+        requirePayloadConfirmationId,
+      )
+    : vacancyRequestAuthorityMatchesPayload(authority, payloadData);
 }
 
 function isCanonicalIsoDate(value: unknown): value is string {
@@ -395,7 +446,13 @@ function parsePendingState(value: unknown, expectedUserId: number): PendingTrack
   ) {
     return null;
   }
-  if (isDutyConfirmationPayload(payloadData) && !authority) return null;
+  if (
+    (isDutyConfirmationPayload(payloadData) ||
+      isVacancyRequestPushPayload(payloadData)) &&
+    !authority
+  ) {
+    return null;
+  }
   const normalized = {
     ...row,
     ...(accountWideBadgeVersion === undefined
@@ -594,11 +651,27 @@ async function requireCurrentPushAuthority(
   if (!state.authority) return;
   if (
     row.userId !== state.authority.expectedUserId ||
-    !authorityMatchesPurpose(state.authority, state.payloadData, false)
+    !trackedAuthorityMatchesPayload(state.authority, state.payloadData, false)
   ) {
-    throw new PersistedDutyConfirmationBindingError(
+    throw new PersistedPushAuthorityBindingError(
       "Purpose ou destinatário do outbox não corresponde à autoridade persistida",
     );
+  }
+  if (state.authority.kind === "VACANCY_REQUEST") {
+    if (
+      row.institutionId !== state.authority.institutionId ||
+      row.shiftInstanceId !== state.authority.shiftInstanceId
+    ) {
+      throw new PersistedPushAuthorityBindingError(
+        "Tenant ou plantão do outbox não corresponde à solicitação de vaga",
+      );
+    }
+    await requireAuthorizedVacancyRequestRecipient(
+      db,
+      state.authority,
+      lockForUpdate,
+    );
+    return;
   }
   const valid = await requireAuthorizedDutyConfirmationRecipient(db, {
     confirmationId: state.authority.confirmationId,
@@ -749,7 +822,7 @@ async function processSubmission(
     // antigo nunca herda a autoridade que existia quando foi enfileirado.
     await requireCurrentPushAuthority(db, row, claimed);
   } catch (error) {
-    if (isCanonicalDutyConfirmationRejection(error)) {
+    if (isCanonicalPushAuthorityRejection(error)) {
       await failRevokedAuthority(db, row, claimed, now);
       return;
     }
@@ -1199,23 +1272,39 @@ async function persistTrackedPushIntent(
     input.payload.data,
     input.userId,
   );
-  if (isDutyConfirmationPayload(payloadData) && !input.authority) {
-    throw new Error("Push de confirmacao rastreado exige autoridade canonica");
+  if (
+    (isDutyConfirmationPayload(payloadData) ||
+      isVacancyRequestPushPayload(payloadData)) &&
+    !input.authority
+  ) {
+    throw new Error("Push rastreado exige autoridade canonica");
   }
   if (input.authority) {
     const payloadInstitutionId = payloadData.institutionId;
     if (
       input.userId !== input.authority.expectedUserId ||
-      !authorityMatchesPurpose(input.authority, payloadData, true) ||
-      payloadInstitutionId !== input.institutionId ||
-      payloadInstitutionId !== input.authority.shiftSnapshot.institutionId
+      !trackedAuthorityMatchesPayload(input.authority, payloadData, true) ||
+      payloadInstitutionId !== input.institutionId
     ) {
       throw new Error(
         "Purpose, confirmationId, tenant ou destinatario invalido no push rastreado",
       );
     }
+    const authorityInstitutionId =
+      input.authority.kind === "DUTY_CONFIRMATION"
+        ? input.authority.shiftSnapshot.institutionId
+        : input.authority.institutionId;
+    if (payloadInstitutionId !== authorityInstitutionId) {
+      throw new Error("Tenant da autoridade não corresponde ao push rastreado");
+    }
     if (input.shiftInstanceId == null) {
-      throw new Error("Push de confirmacao rastreado exige shiftInstanceId");
+      throw new Error("Push com autoridade rastreada exige shiftInstanceId");
+    }
+    if (
+      input.authority.kind === "VACANCY_REQUEST" &&
+      input.shiftInstanceId !== input.authority.shiftInstanceId
+    ) {
+      throw new Error("Plantão da autoridade não corresponde ao push rastreado");
     }
   }
   const initial: QueuedState = {

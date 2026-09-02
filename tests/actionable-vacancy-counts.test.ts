@@ -5,6 +5,7 @@ import {
   institutions,
   managerScope,
   monthlyRosters,
+  notifications,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -428,6 +429,9 @@ describe("Vagas acionáveis — lista e contadores", () => {
 
     if (shiftIds.length) {
       await db
+        .delete(notifications)
+        .where(inArray(notifications.shiftInstanceId, shiftIds));
+      await db
         .delete(shiftAssignmentsV2)
         .where(inArray(shiftAssignmentsV2.shiftInstanceId, shiftIds));
       await db
@@ -713,6 +717,9 @@ describe("Vagas acionáveis — lista e contadores", () => {
       ).resolves.toEqual({ available: false });
     } finally {
       await db
+        .delete(notifications)
+        .where(eq(notifications.shiftInstanceId, routeShiftId));
+      await db
         .delete(shiftAuditLog)
         .where(eq(shiftAuditLog.shiftInstanceId, routeShiftId));
       await db
@@ -766,6 +773,9 @@ describe("Vagas acionáveis — lista e contadores", () => {
         afterRows.length,
       );
     } finally {
+      await db
+        .delete(notifications)
+        .where(eq(notifications.shiftInstanceId, mutationShiftId));
       await db
         .delete(shiftAuditLog)
         .where(eq(shiftAuditLog.shiftInstanceId, mutationShiftId));

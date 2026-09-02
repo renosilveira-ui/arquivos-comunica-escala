@@ -252,6 +252,56 @@ describe("status do turno derivado das alocações", () => {
     expect(await shiftStatus()).toBe("VAGO");
   });
 
+  it("A4: rejeição conclui sem outbox se o solicitante perdeu o vínculo", async () => {
+    const [x] = doctorProfessionalIds;
+    const pendingX = await insertAssignment(x, "PENDENTE");
+    await db
+      .update(shiftInstances)
+      .set({ status: "PENDENTE" })
+      .where(eq(shiftInstances.id, shiftInstanceId));
+    await db
+      .update(professionalInstitutions)
+      .set({ active: false })
+      .where(
+        and(
+          eq(professionalInstitutions.institutionId, institutionId),
+          eq(professionalInstitutions.professionalId, x),
+        ),
+      );
+
+    try {
+      await expect(
+        app().shiftInstances.rejectAssignment({ assignmentId: pendingX }),
+      ).resolves.toEqual({ ok: true });
+
+      const [assignment] = await db
+        .select({
+          status: shiftAssignmentsV2.status,
+          isActive: shiftAssignmentsV2.isActive,
+        })
+        .from(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.id, pendingX));
+      expect(assignment).toEqual({ status: "REJEITADO", isActive: false });
+      expect(await shiftStatus()).toBe("VAGO");
+      expect(
+        await db
+          .select({ id: notifications.id })
+          .from(notifications)
+          .where(eq(notifications.institutionId, institutionId)),
+      ).toHaveLength(0);
+    } finally {
+      await db
+        .update(professionalInstitutions)
+        .set({ active: true })
+        .where(
+          and(
+            eq(professionalInstitutions.institutionId, institutionId),
+            eq(professionalInstitutions.professionalId, x),
+          ),
+        );
+    }
+  });
+
   it("A4: rejeição faz rollback quando outra alocação ativa contamina a tupla", async () => {
     const [x, y] = doctorProfessionalIds;
     const pending = await insertAssignment(x, "PENDENTE");

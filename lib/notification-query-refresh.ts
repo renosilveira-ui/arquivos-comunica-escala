@@ -6,6 +6,7 @@ export type NotificationQueryRefreshTarget =
   | "VACANCIES"
   | "SCHEDULES"
   | "PENDING_ASSIGNMENTS"
+  | "MY_VACANCY_REQUESTS"
   | "SCHEDULE_INVITES"
   | "SUMMARY_COUNTS"
   | "ACTIONABLE_VACANCY_COUNTS";
@@ -28,6 +29,17 @@ const ASSIGNMENT_CHANGE = Object.freeze([
   "ACTIONABLE_VACANCY_COUNTS",
   "SWAPS",
 ] as const);
+const VACANCY_REQUEST_CREATED = Object.freeze([
+  "SCHEDULES",
+  "VACANCIES",
+  "PENDING_ASSIGNMENTS",
+  "SUMMARY_COUNTS",
+  "ACTIONABLE_VACANCY_COUNTS",
+] as const);
+const VACANCY_REQUEST_DECIDED = Object.freeze([
+  ...ASSIGNMENT_CHANGE,
+  "MY_VACANCY_REQUESTS",
+] as const);
 const SCHEDULE_INVITES = Object.freeze(["SCHEDULE_INVITES"] as const);
 
 /**
@@ -43,6 +55,11 @@ export function notificationQueryRefreshTargets(
   if (shouldInvalidateVacancyQueriesOnNotification(type)) return VACANCIES;
 
   switch (type) {
+    case "vacancy_request_created":
+      return VACANCY_REQUEST_CREATED;
+    case "vacancy_request_approved":
+    case "vacancy_request_rejected":
+      return VACANCY_REQUEST_DECIDED;
     case "shift_assigned":
     case "shift_unassigned":
       return ASSIGNMENT_CHANGE;

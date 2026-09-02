@@ -837,11 +837,14 @@ export const confirmationRouter = router({
         return { replacement: candidate, pushIntent: intent };
       });
 
-      await sendTrackedPushNotification(pushIntent).catch(() =>
+      await sendTrackedPushNotification(pushIntent).catch(() => {
+        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+          ? pushIntent.authority.confirmationId
+          : "unknown";
         console.error(
-          `[Confirmation] NOMINATION_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`,
-        ),
-      );
+          `[Confirmation] NOMINATION_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
+        );
+      });
 
       return {
         ok: true,
@@ -1104,11 +1107,14 @@ export const confirmationRouter = router({
         return intent;
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
-      await sendTrackedPushNotification(pushIntent).catch(() =>
+      await sendTrackedPushNotification(pushIntent).catch(() => {
+        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+          ? pushIntent.authority.confirmationId
+          : "unknown";
         console.error(
-          `[Confirmation] ACCEPTANCE_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`,
-        ),
-      );
+          `[Confirmation] ACCEPTANCE_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
+        );
+      });
 
       const dutySyncLocal = await getDutySyncLocalStatusForConfirmation(db, {
         confirmationId: conf.id,
@@ -1220,11 +1226,14 @@ export const confirmationRouter = router({
         return intent;
       });
 
-      await sendTrackedPushNotification(pushIntent).catch(() =>
+      await sendTrackedPushNotification(pushIntent).catch(() => {
+        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+          ? pushIntent.authority.confirmationId
+          : "unknown";
         console.error(
-          `[Confirmation] DECLINE_PUSH_IMMEDIATE_FAILED confirmation=${pushIntent.authority?.confirmationId}`,
-        ),
-      );
+          `[Confirmation] DECLINE_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
+        );
+      });
 
       return { ok: true };
     }),

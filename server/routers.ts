@@ -49,6 +49,10 @@ import {
   actionableVacancyFiltersSchema,
   listActionableVacancyRows,
 } from "./vacancy-actionability";
+import {
+  enqueueVacancyRequestDecisionPush,
+  enqueueVacancyRequestManagerPushes,
+} from "./vacancy-request-push-signal";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type AssignmentDecisionDb = Pick<Db, "select">;
@@ -448,6 +452,12 @@ const shiftAssignmentsRouter = router({
           },
           { db: tx },
         );
+        await enqueueVacancyRequestManagerPushes({
+          db: tx,
+          assignmentId: createdAssignmentId,
+          requesterProfessionalId: professionalId,
+          shift: lockedShift,
+        });
         return createdAssignmentId;
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
@@ -821,6 +831,20 @@ const shiftInstancesRouter = router({
           },
           { db: tx, strict: true },
         );
+        await enqueueVacancyRequestDecisionPush({
+          db: tx,
+          purpose: "REQUEST_APPROVED",
+          assignmentId: lockedAssignment.assignmentId,
+          requesterProfessionalId: lockedAssignment.professionalId,
+          shift: {
+            id: lockedAssignment.shiftInstanceId,
+            institutionId: lockedAssignment.institutionId,
+            hospitalId: lockedAssignment.hospitalId,
+            sectorId: lockedAssignment.sectorId,
+            startAt: lockedAssignment.startAt,
+            endAt: lockedAssignment.endAt,
+          },
+        });
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       return { ok: true };
@@ -934,6 +958,20 @@ const shiftInstancesRouter = router({
           },
           { db: tx, strict: true },
         );
+        await enqueueVacancyRequestDecisionPush({
+          db: tx,
+          purpose: "REQUEST_REJECTED",
+          assignmentId: lockedAssignment.assignmentId,
+          requesterProfessionalId: lockedAssignment.professionalId,
+          shift: {
+            id: lockedAssignment.shiftInstanceId,
+            institutionId: lockedAssignment.institutionId,
+            hospitalId: lockedAssignment.hospitalId,
+            sectorId: lockedAssignment.sectorId,
+            startAt: lockedAssignment.startAt,
+            endAt: lockedAssignment.endAt,
+          },
+        });
       });
 
       return { ok: true };
