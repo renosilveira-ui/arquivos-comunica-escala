@@ -90,34 +90,6 @@ export async function scheduleNotification(
 }
 
 /**
- * Lembrete de plantão (30 minutos antes)
- */
-export async function scheduleShiftReminder(
-  userId: number,
-  shiftDate: Date,
-) {
-  if (!Number.isSafeInteger(userId) || userId <= 0) {
-    throw new Error("Destinatário do lembrete local inválido");
-  }
-  const reminderDate = new Date(shiftDate);
-  reminderDate.setMinutes(reminderDate.getMinutes() - 30);
-  
-  // Não agendar se já passou
-  if (reminderDate < new Date()) return;
-  
-  await scheduleNotification(
-    {
-      recipientUserId: userId,
-      data: {
-        type: 'reminder',
-        shiftDate: shiftDate.toISOString(),
-      },
-    },
-    reminderDate,
-  );
-}
-
-/**
  * Cancelar todas as notificações agendadas
  */
 export async function cancelAllNotifications() {

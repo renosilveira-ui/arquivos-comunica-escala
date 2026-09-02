@@ -85,13 +85,18 @@ describe("build nativo de push", () => {
     );
   });
 
-  it("vincula e neutraliza a criação local sem API posicional de texto", () => {
+  it("não agenda lembrete para o gestor ao criar um plantão ainda sem alocação", () => {
     const createShift = readFileSync("app/create-shift.tsx", "utf8");
+
+    expect(createShift).not.toContain("scheduleShiftReminder");
+    expect(createShift).not.toContain("@/lib/notifications");
+  });
+
+  it("mantém a API local vinculada à conta e sem texto operacional", () => {
     const hook = readFileSync("hooks/use-notifications.ts", "utf8");
     const notifications = readFileSync("lib/notifications.ts", "utf8");
 
-    expect(createShift).toMatch(/scheduleShiftReminder\(\s*user\.id,/);
-    expect(notifications).toContain("recipientUserId: userId");
+    expect(notifications).toContain("recipientUserId: input.recipientUserId");
     expect(notifications).toContain(
       "export type AccountScopedLocalNotification",
     );

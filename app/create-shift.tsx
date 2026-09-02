@@ -33,7 +33,6 @@ import {
   MapPin,
   Stethoscope,
 } from "lucide-react-native";
-import { scheduleShiftReminder } from "@/lib/notifications";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { formatDateBR } from "@/lib/datetime";
 import {
@@ -300,30 +299,8 @@ export default function CreateShiftScreen() {
 
   // Mutation para criar escala
   const createShift = trpc.shifts.create.useMutation({
-    onSuccess: async () => {
+    onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      // Agendar lembrete 30 min antes em dispositivos nativos.
-      if (
-        Platform.OS !== "web" &&
-        user &&
-        selectedScheduleContext &&
-        selectedDate &&
-        selectedTemplate
-      ) {
-        const startDateTime = new Date(
-          `${selectedDate}T${selectedTemplate.startTime}`,
-        );
-
-        try {
-          await scheduleShiftReminder(
-            user.id,
-            startDateTime,
-          );
-        } catch (error) {
-          console.warn("Não foi possível agendar lembrete local:", error);
-        }
-      }
 
       utils.shifts.listByPeriod.invalidate();
       utils.shifts.listAgenda.invalidate();
