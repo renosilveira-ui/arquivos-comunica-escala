@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   scheduleNotification,
-  scheduleShiftReminder,
   sendLocalNotification,
 } from "../lib/notifications";
 
@@ -33,16 +32,15 @@ describe("fronteira de notificação local account-scoped", () => {
     notifications.scheduleNotificationAsync.mockClear();
   });
 
-  it("mantém o lembrete neutro mesmo sem handler JS disponível em background", async () => {
+  it("mantém a notificação neutra mesmo sem handler JS disponível em background", async () => {
     const shiftDate = new Date("2031-06-01T07:00:00.000Z");
 
-    // Chamador JS legado não consegue reintroduzir setor/horário: argumentos
-    // excedentes são ignorados e nunca alcançam título, corpo ou data.
-    await (scheduleShiftReminder as (...args: unknown[]) => Promise<void>)(
-      7,
+    await scheduleNotification(
+      {
+        recipientUserId: 7,
+        data: { type: "reminder", shiftDate: shiftDate.toISOString() },
+      },
       shiftDate,
-      "UTI",
-      "07:00",
     );
 
     const content = scheduledContent();
@@ -56,7 +54,7 @@ describe("fronteira de notificação local account-scoped", () => {
       },
       sound: true,
     });
-    // Em background o SO só enxerga a cópia de apresentação, não data.
+    // Em background o SO só enxerga a cópia de apresentação, não os dados.
     expect(`${content.title} ${content.body}`).not.toMatch(/UTI|07:00/);
   });
 

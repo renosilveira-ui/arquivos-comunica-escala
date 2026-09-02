@@ -8,7 +8,7 @@ import {
   HIDE_FOREGROUND_NOTIFICATION,
   PRESENT_FOREGROUND_NOTIFICATION,
 } from "../lib/notification-foreground-handler";
-import { scheduleShiftReminder } from "../lib/notifications";
+import { scheduleNotification } from "../lib/notifications";
 
 const notifications = vi.hoisted(() => ({
   setNotificationHandler: vi.fn(),
@@ -77,10 +77,16 @@ describe("cerca visual de notificações em primeiro plano", () => {
     ).resolves.toEqual(HIDE_FOREGROUND_NOTIFICATION);
   });
 
-  it("vincula o novo lembrete local ao usuário e não expõe detalhes no conteúdo", async () => {
+  it("vincula a notificação local ao usuário e não expõe detalhes no conteúdo", async () => {
     const shiftDate = new Date(Date.now() + 60 * 60 * 1_000);
 
-    await scheduleShiftReminder(7, shiftDate);
+    await scheduleNotification(
+      {
+        recipientUserId: 7,
+        data: { type: "reminder", shiftDate: shiftDate.toISOString() },
+      },
+      shiftDate,
+    );
 
     expect(notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
       expect.objectContaining({
