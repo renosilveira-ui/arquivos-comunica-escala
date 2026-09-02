@@ -384,11 +384,19 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
   });
 
   function intent(
-    purpose: "MANAGER_ACTION_REQUIRED" | "REQUEST_APPROVED",
+    purpose:
+      | "MANAGER_ACTION_REQUIRED"
+      | "REQUEST_APPROVED"
+      | "REQUEST_REJECTED",
     userId: number,
     suffix: string,
   ): TrackedPushInput {
     const manager = purpose === "MANAGER_ACTION_REQUIRED";
+    const payloadType = manager
+      ? "vacancy_request_created"
+      : purpose === "REQUEST_APPROVED"
+        ? "vacancy_request_approved"
+        : "vacancy_request_rejected";
     return {
       institutionId,
       userId,
@@ -409,9 +417,7 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
         title: "Vacancy authority",
         body: "Vacancy authority",
         data: {
-          type: manager
-            ? "vacancy_request_created"
-            : "vacancy_request_approved",
+          type: payloadType,
           institutionId,
           hospitalId: hospitalAId,
           sectorId: sectorAId,
@@ -595,6 +601,33 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       status: "FAILED",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejeição válida preserva autoridade com alocação inativa", async () => {
+    await db
+      .update(shiftAssignmentsV2)
+      .set({
+        status: "REJEITADO",
+        isActive: false,
+      })
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
+    const rejected = intent(
+      "REQUEST_REJECTED",
+      requesterUserId,
+      "rejected",
+    );
+    fetchMock.mockResolvedValueOnce(
+      response(200, { data: { status: "ok", id: `rejected-${stamp}` } }),
+    );
+
+    await expect(
+      sendTrackedPushNotification(rejected, now),
+    ).resolves.toMatchObject({
+      status: "PENDING",
+      phase: "TICKET_ACCEPTED",
+      ticketAccepted: true,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("dedup concorrente preserva uma única intenção", async () => {
