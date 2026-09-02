@@ -44,6 +44,7 @@ import {
 import { scheduleInvitesRouter } from "./schedule-invites";
 import { profileRouter } from "./profile-router";
 import { corporateReadinessRouter } from "./corporate-readiness-router";
+import { notificationsRouter } from "./notifications-router";
 import {
   actionableVacancyFiltersSchema,
   listActionableVacancyRows,
@@ -1048,6 +1049,7 @@ export const appRouter = router({
   scheduleContexts: scheduleContextsRouter,
   scheduleInvites: scheduleInvitesRouter,
   profile: profileRouter,
+  notifications: notificationsRouter,
   corporateReadiness: corporateReadinessRouter,
 });
 

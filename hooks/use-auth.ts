@@ -435,12 +435,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 },
               ]),
           ...(clearNotificationArtifacts
-            ? createAccountScopedNotificationCleanupSteps(Platform.OS).map(
-                (step) => ({
-                  ...step,
-                  run: onlyWhileCurrent(step.run),
-                }),
-              )
+            ? createAccountScopedNotificationCleanupSteps(
+                Platform.OS,
+                undefined,
+                () => appSessionEpoch.isCurrent(cleanupEpoch),
+              ).map((step) => ({
+                ...step,
+                run: onlyWhileCurrent(step.run),
+              }))
             : []),
           {
             name: "usuário persistido",

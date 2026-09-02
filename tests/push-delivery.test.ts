@@ -173,6 +173,52 @@ describe("outbox de push sem projeção de entrega", () => {
     expect(stored.providerReceipt).toMatchObject({ phase: "TICKET_ACCEPTED" });
   });
 
+  it("mantém o marker do badge apenas no outbox local, sem alterar o envelope Expo", async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        data: { status: "ok", id: "ticket-account-badge-marker" },
+      }),
+    );
+
+    const tracked = await sendTrackedPushNotification(
+      {
+        ...input("account-badge-marker"),
+        payload: {
+          title: "Vaga disponível",
+          body: "Há uma vaga para você.",
+          data: { type: "vacancy_available", route: "/(tabs)/vacancies" },
+        },
+      },
+      now,
+    );
+    const [stored] = await db
+      .select({ providerReceipt: notifications.providerReceipt })
+      .from(notifications)
+      .where(eq(notifications.id, tracked.notificationId));
+    const payloadData = (
+      stored.providerReceipt as { payloadData?: Record<string, unknown> }
+    ).payloadData;
+    expect(stored.providerReceipt).toMatchObject({
+      accountWideBadgeVersion: 1,
+    });
+    expect(payloadData).not.toHaveProperty("accountWideBadgeVersion");
+    expect(payloadData).not.toHaveProperty("notificationId");
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body)) as {
+      badge?: unknown;
+      data?: Record<string, unknown>;
+    };
+    expect(body).not.toHaveProperty("badge");
+    expect(body.data).toMatchObject({
+      type: "vacancy_available",
+      route: "/(tabs)/vacancies",
+      recipientUserId: userId,
+    });
+    expect(body.data).not.toHaveProperty("accountWideBadgeVersion");
+    expect(body.data).not.toHaveProperty("notificationId");
+  });
+
   it("rejeita colisão de dedupKey com destinatário ou payload diferente", async () => {
     fetchMock.mockResolvedValue(
       response(200, { data: { status: "ok", id: "ticket-collision" } }),
@@ -256,7 +302,10 @@ describe("outbox de push sem projeção de entrega", () => {
       .where(eq(notifications.id, tracked.notificationId));
     expect(stored.status).toBe("SENT");
     expect(stored.sentAt).not.toBeNull();
-    expect(stored.providerReceipt).toMatchObject({ phase: "PROVIDER_ACCEPTED" });
+    expect(stored.providerReceipt).toMatchObject({
+      phase: "PROVIDER_ACCEPTED",
+      accountWideBadgeVersion: 1,
+    });
   });
 
   it("ticket DeviceNotRegistered falha e invalida o token", async () => {
@@ -408,6 +457,49 @@ describe("outbox de push sem projeção de entrega", () => {
     });
   });
 
+  it("marker de badge desconhecido falha fechado antes da rede", async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        data: { status: "ok", id: "ticket-invalid-badge-marker" },
+      }),
+    );
+    const tracked = await sendTrackedPushNotification(
+      input("invalid-badge-marker"),
+      now,
+    );
+    const [storedBefore] = await db
+      .select({ providerReceipt: notifications.providerReceipt })
+      .from(notifications)
+      .where(eq(notifications.id, tracked.notificationId));
+    const corrupted = structuredClone(
+      storedBefore.providerReceipt,
+    ) as Record<string, unknown>;
+    corrupted.accountWideBadgeVersion = 2;
+    await db
+      .update(notifications)
+      .set({ providerReceipt: corrupted })
+      .where(eq(notifications.id, tracked.notificationId));
+    fetchMock.mockClear();
+
+    await processPendingPushDeliveries(
+      new Date(now.getTime() + 15 * 60_000),
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [storedAfter] = await db
+      .select({
+        status: notifications.status,
+        providerReceipt: notifications.providerReceipt,
+      })
+      .from(notifications)
+      .where(eq(notifications.id, tracked.notificationId));
+    expect(storedAfter.status).toBe("FAILED");
+    expect(storedAfter.providerReceipt).toMatchObject({
+      phase: "FAILED",
+      evidence: { reason: "MALFORMED_TRACKING_STATE" },
+    });
+  });
+
   it("falha transitória respeita backoff e tenta novamente", async () => {
     fetchMock
       .mockRejectedValueOnce(new Error("network down"))
@@ -426,7 +518,11 @@ describe("outbox de push sem projeção de entrega", () => {
       .select({ providerReceipt: notifications.providerReceipt })
       .from(notifications)
       .where(eq(notifications.id, tracked.notificationId));
-    expect(stored.providerReceipt).toMatchObject({ phase: "TICKET_ACCEPTED", attemptCount: 2 });
+    expect(stored.providerReceipt).toMatchObject({
+      phase: "TICKET_ACCEPTED",
+      attemptCount: 2,
+      accountWideBadgeVersion: 1,
+    });
   });
 
   it("SERVICE_ERROR permanece retryable sem limite e não persiste params Drizzle", async () => {

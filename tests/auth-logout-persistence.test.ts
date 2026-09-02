@@ -3739,6 +3739,14 @@ describe("persistência local do logout web", () => {
             useQuery: () => ({ refetch: vi.fn() }),
           },
         },
+        notifications: {
+          acknowledgeAccountBadge: {
+            useMutation: () => ({ mutateAsync: vi.fn() }),
+          },
+          getUnreadAccountBadgeCount: {
+            useQuery: () => ({ refetch: vi.fn() }),
+          },
+        },
       },
     }));
 

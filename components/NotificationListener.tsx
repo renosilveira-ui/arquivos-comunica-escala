@@ -9,6 +9,7 @@ import { useRouter } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { useAuth } from "@/hooks/use-auth";
 import { useNotifications } from "@/hooks/use-notifications";
+import { useAccountWideNativeBadge } from "@/hooks/use-account-wide-native-badge";
 import "@/lib/notification-foreground-handler";
 import {
   parseNotificationRecipientUserId,
@@ -488,6 +489,10 @@ export function NotificationListener() {
     sessionValidation.ticket.generation >= 0
       ? sessionValidation.ticket.generation
       : null;
+  useAccountWideNativeBadge({
+    userId: authorizedUserId,
+    isSessionAuthorizationCurrent,
+  });
   const { setActiveInstitutionId } = useTenantState();
   const utils = trpc.useUtils();
   const routingCoordinatorRef = useRef<NotificationRoutingCoordinator | null>(

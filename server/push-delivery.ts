@@ -18,6 +18,7 @@ import {
   type DutyConfirmationStatus,
   type DutyShiftSnapshot,
 } from "./confirmation-integrity";
+import { ACCOUNT_WIDE_BADGE_VERSION } from "../lib/account-wide-native-badge";
 
 const TRACKING_VERSION = 1 as const;
 const SUBMISSION_LEASE_MS = 2 * 60_000;
@@ -103,6 +104,8 @@ type TrackingBase = {
   revision: number;
   payloadData: PayloadData;
   attemptCount: number;
+  /** Marker interno do outbox; nunca integra o envelope enviado ao Expo. */
+  accountWideBadgeVersion?: typeof ACCOUNT_WIDE_BADGE_VERSION;
   authority?: DutyConfirmationPushAuthority;
 };
 
@@ -336,6 +339,19 @@ function isExpoReceiptTarget(value: unknown): value is ExpoReceiptTarget {
     /^[a-f0-9]{64}$/.test(target.tokenFingerprint);
 }
 
+function parseAccountWideBadgeVersion(
+  state: Record<string, unknown>,
+): typeof ACCOUNT_WIDE_BADGE_VERSION | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(state, "accountWideBadgeVersion")) {
+    // Outboxes anteriores continuam processáveis; o selector do badge exige o
+    // marker e, portanto, permanece fail-closed para essas rows legadas.
+    return undefined;
+  }
+  return state.accountWideBadgeVersion === ACCOUNT_WIDE_BADGE_VERSION
+    ? ACCOUNT_WIDE_BADGE_VERSION
+    : null;
+}
+
 function receiptTargetsMatchNotification(
   tickets: readonly ExpoReceiptTarget[],
   expectedUserId: number,
@@ -360,6 +376,9 @@ function parsePendingState(value: unknown, expectedUserId: number): PendingTrack
   const row = asRecord(value);
   const payloadData = asRecord(row?.payloadData);
   const authority = parseAuthority(row?.authority, payloadData ?? {});
+  const accountWideBadgeVersion = row
+    ? parseAccountWideBadgeVersion(row)
+    : null;
   if (
     row?.trackingVersion !== TRACKING_VERSION ||
     !Number.isInteger(row.revision) ||
@@ -367,6 +386,7 @@ function parsePendingState(value: unknown, expectedUserId: number): PendingTrack
     !Number.isInteger(row.attemptCount) ||
     (row.attemptCount as number) < 0 ||
     !payloadData ||
+    accountWideBadgeVersion === null ||
     authority === null
   ) {
     return null;
@@ -374,6 +394,9 @@ function parsePendingState(value: unknown, expectedUserId: number): PendingTrack
   if (isDutyConfirmationPayload(payloadData) && !authority) return null;
   const normalized = {
     ...row,
+    ...(accountWideBadgeVersion === undefined
+      ? {}
+      : { accountWideBadgeVersion }),
     ...(authority ? { authority } : {}),
   };
   if (row.phase === "QUEUED" && isCanonicalIsoDate(row.availableAt)) {
@@ -584,6 +607,9 @@ async function claimSubmission(
     revision: state.revision + 1,
     payloadData: state.payloadData,
     attemptCount: state.attemptCount + 1,
+    ...(state.accountWideBadgeVersion
+      ? { accountWideBadgeVersion: state.accountWideBadgeVersion }
+      : {}),
     ...(state.authority ? { authority: state.authority } : {}),
     phase: "SUBMITTING",
     leaseUntil: new Date(now.getTime() + submissionLeaseMs(options)).toISOString(),
@@ -662,6 +688,9 @@ async function requeueSubmissionAfterInfrastructureFailure(
     revision: claimed.revision + 1,
     payloadData: claimed.payloadData,
     attemptCount: claimed.attemptCount,
+    ...(claimed.accountWideBadgeVersion
+      ? { accountWideBadgeVersion: claimed.accountWideBadgeVersion }
+      : {}),
     ...(claimed.authority ? { authority: claimed.authority } : {}),
     phase: "QUEUED",
     availableAt: new Date(now.getTime() + retryDelayMs(claimed.attemptCount)).toISOString(),
@@ -821,6 +850,9 @@ async function processSubmission(
       revision: claimed.revision + 1,
       payloadData: claimed.payloadData,
       attemptCount: claimed.attemptCount,
+      ...(claimed.accountWideBadgeVersion
+        ? { accountWideBadgeVersion: claimed.accountWideBadgeVersion }
+        : {}),
       ...(claimed.authority ? { authority: claimed.authority } : {}),
       phase: "QUEUED",
       availableAt: new Date(now.getTime() + retryDelayMs(claimed.attemptCount)).toISOString(),
@@ -844,6 +876,9 @@ async function processSubmission(
     revision: claimed.revision + 1,
     payloadData: claimed.payloadData,
     attemptCount: claimed.attemptCount,
+    ...(claimed.accountWideBadgeVersion
+      ? { accountWideBadgeVersion: claimed.accountWideBadgeVersion }
+      : {}),
     phase: "FAILED",
     terminalAt: now.toISOString(),
     evidence: submission,
@@ -905,6 +940,9 @@ async function processReceiptCheck(
       revision: claimed.revision + 1,
       payloadData: claimed.payloadData,
       attemptCount: claimed.attemptCount,
+      ...(claimed.accountWideBadgeVersion
+        ? { accountWideBadgeVersion: claimed.accountWideBadgeVersion }
+        : {}),
       phase: "PROVIDER_ACCEPTED",
       terminalAt: now.toISOString(),
       evidence: receipts,
@@ -967,6 +1005,9 @@ async function processReceiptCheck(
       revision: claimed.revision + 1,
       payloadData: claimed.payloadData,
       attemptCount: claimed.attemptCount,
+      ...(claimed.accountWideBadgeVersion
+        ? { accountWideBadgeVersion: claimed.accountWideBadgeVersion }
+        : {}),
       ...(claimed.authority ? { authority: claimed.authority } : {}),
       phase: "QUEUED",
       availableAt: new Date(
@@ -1015,6 +1056,9 @@ async function processReceiptCheck(
     revision: claimed.revision + 1,
     payloadData: claimed.payloadData,
     attemptCount: claimed.attemptCount,
+    ...(claimed.accountWideBadgeVersion
+      ? { accountWideBadgeVersion: claimed.accountWideBadgeVersion }
+      : {}),
     phase: "FAILED",
     terminalAt: now.toISOString(),
     evidence: receipts,
@@ -1138,6 +1182,7 @@ async function persistTrackedPushIntent(
     revision: 1,
     payloadData,
     attemptCount: 0,
+    accountWideBadgeVersion: ACCOUNT_WIDE_BADGE_VERSION,
     ...(input.authority ? { authority: input.authority } : {}),
     phase: "QUEUED",
     availableAt: now.toISOString(),
