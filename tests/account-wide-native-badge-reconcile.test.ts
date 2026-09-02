@@ -1,13 +1,18 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
   isAccountWideBadgeNotificationType,
-  shouldReconcileAccountWideBadgeForReceivedNotification,
+  isAccountWideBadgeSnapshotNotificationData,
+  shouldRefreshAccountWideBadgeForReceivedNotification,
+  shouldRefreshAccountWideBadgeForReceivedSnapshot,
   shouldRefreshAccountWideBadgeOnAppStateChange,
 } from "../lib/account-wide-native-badge";
 import {
   createAccountWideNativeBadgeReconcileFence,
+  createAccountWideNativeBadgeReconciliationQueue,
   reconcileAccountWideNativeBadge,
+  refreshAccountWideNativeBadge,
 } from "../lib/account-wide-native-badge-reconcile";
 import { createAccountScopedNotificationCleanupSteps } from "../lib/session-cleanup";
 
@@ -65,6 +70,73 @@ describe("badge nativo account-wide — reconciliação local", () => {
       }),
     ).resolves.toEqual({ state: "PRESERVED" });
     expect(setLocalBadgeCount).not.toHaveBeenCalled();
+  });
+
+  it("reconcilia snapshot foreground por contagem sem marcar alertas como lidos", async () => {
+    const getUnreadCount = vi.fn(async () => ({ count: 0 }));
+    const setLocalBadgeCount = vi.fn(async () => true);
+
+    await expect(
+      refreshAccountWideNativeBadge({
+        getUnreadCount,
+        setLocalBadgeCount,
+        isCurrent: () => true,
+      }),
+    ).resolves.toEqual({ state: "APPLIED", source: "COUNT", count: 0 });
+    expect(getUnreadCount).toHaveBeenCalledTimes(1);
+    expect(setLocalBadgeCount).toHaveBeenCalledWith(0);
+  });
+
+  it("serializa acknowledgement antes de refresh foreground para não restaurar contagem antiga", async () => {
+    const queue = createAccountWideNativeBadgeReconciliationQueue();
+    let signalAcknowledgementStarted!: () => void;
+    const acknowledgementStarted = new Promise<void>((resolve) => {
+      signalAcknowledgementStarted = resolve;
+    });
+    let releaseAcknowledgement!: (value: { count: number }) => void;
+    const acknowledge = vi.fn(() => {
+      signalAcknowledgementStarted();
+      return new Promise<{ count: number }>((release) => {
+        releaseAcknowledgement = release;
+      });
+    });
+    const getUnreadCount = vi.fn(async () => ({ count: 0 }));
+    const setLocalBadgeCount = vi.fn(async () => true);
+
+    const acknowledgement = queue.enqueue(() =>
+      reconcileAccountWideNativeBadge({
+        acknowledge,
+        getUnreadCount,
+        setLocalBadgeCount,
+        isCurrent: () => true,
+      }),
+    );
+
+    await acknowledgementStarted;
+    const refresh = queue.enqueue(() =>
+      refreshAccountWideNativeBadge({
+        getUnreadCount,
+        setLocalBadgeCount,
+        isCurrent: () => true,
+      }),
+    );
+    await Promise.resolve();
+    expect(getUnreadCount).not.toHaveBeenCalled();
+
+    releaseAcknowledgement({ count: 0 });
+    await expect(acknowledgement).resolves.toEqual({
+      state: "APPLIED",
+      source: "ACKNOWLEDGEMENT",
+      count: 0,
+    });
+    await expect(refresh).resolves.toEqual({
+      state: "APPLIED",
+      source: "COUNT",
+      count: 0,
+    });
+    expect(getUnreadCount).toHaveBeenCalledTimes(1);
+    expect(setLocalBadgeCount).toHaveBeenNthCalledWith(1, 0);
+    expect(setLocalBadgeCount).toHaveBeenNthCalledWith(2, 0);
   });
 
   it("não escreve badge tardio depois de logout ou revogação", async () => {
@@ -305,25 +377,60 @@ describe("badge nativo account-wide — reconciliação local", () => {
     ).toBe(false);
   });
 
-  it("usa push foreground apenas como gatilho do destinatário autenticado", () => {
+  it("usa push foreground apenas como gatilho de refresh autenticado", () => {
     expect(
-      shouldReconcileAccountWideBadgeForReceivedNotification({
+      shouldRefreshAccountWideBadgeForReceivedNotification({
         recipientUserId: 31,
         currentUserId: 31,
         isSessionAuthorizationCurrent: true,
       }),
     ).toBe(true);
     expect(
-      shouldReconcileAccountWideBadgeForReceivedNotification({
+      shouldRefreshAccountWideBadgeForReceivedNotification({
         recipientUserId: 32,
         currentUserId: 31,
         isSessionAuthorizationCurrent: true,
       }),
     ).toBe(false);
     expect(
-      shouldReconcileAccountWideBadgeForReceivedNotification({
+      shouldRefreshAccountWideBadgeForReceivedNotification({
         recipientUserId: 31,
         currentUserId: 31,
+        isSessionAuthorizationCurrent: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("reconhece somente o marcador estático de snapshot sem identidade", () => {
+    expect(
+      isAccountWideBadgeSnapshotNotificationData(ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA),
+    ).toBe(true);
+    expect(
+      isAccountWideBadgeSnapshotNotificationData({
+        ...ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+        recipientUserId: 31,
+      }),
+    ).toBe(false);
+    expect(
+      isAccountWideBadgeSnapshotNotificationData({
+        ...ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+        unexpected: true,
+      }),
+    ).toBe(false);
+    expect(
+      isAccountWideBadgeSnapshotNotificationData({
+        accountWideBadgeSnapshotVersion: 2,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRefreshAccountWideBadgeForReceivedSnapshot({
+        data: ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+        isSessionAuthorizationCurrent: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefreshAccountWideBadgeForReceivedSnapshot({
+        data: ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
         isSessionAuthorizationCurrent: false,
       }),
     ).toBe(false);
@@ -337,11 +444,27 @@ describe("badge nativo account-wide — reconciliação local", () => {
     expect(hook).toContain("acknowledgeAccountBadge");
     expect(hook).toContain("getUnreadAccountBadgeCount");
     expect(hook).toContain(
-      "shouldReconcileAccountWideBadgeForReceivedNotification",
+      "shouldRefreshAccountWideBadgeForReceivedNotification",
     );
+    expect(hook).toContain("shouldRefreshAccountWideBadgeForReceivedSnapshot");
+    expect(hook).toContain("refreshAccountWideNativeBadge");
     expect(hook).not.toContain("useTenantState");
     expect(hook).not.toContain("accountWideBadgeCount");
     expect(hook).not.toContain("notificationId");
+
+    const receivedListenerStart = hook.indexOf(
+      "Notifications.addNotificationReceivedListener",
+    );
+    const receivedListenerEnd = hook.indexOf(
+      "return () =>",
+      receivedListenerStart,
+    );
+    const receivedListener = hook.slice(
+      receivedListenerStart,
+      receivedListenerEnd,
+    );
+    expect(receivedListener).toContain("refreshCurrentAccount()");
+    expect(receivedListener).not.toContain("reconcileCurrentAccount()");
   });
 
   it("mantém o marker interno fora do envelope enviado ao provedor", () => {

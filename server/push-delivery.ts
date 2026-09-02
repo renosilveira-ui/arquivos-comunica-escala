@@ -4,6 +4,7 @@ import { getDb } from "./db";
 import {
   getExpoPushReceipts,
   PUSH_SUBMISSION_LEASE_HORIZON_MS,
+  dispatchAccountWideNativeBadgeSnapshot,
   sendPushNotification,
   withAuthoritativePushRecipient,
   type ExpoReceiptTarget,
@@ -18,7 +19,10 @@ import {
   type DutyConfirmationStatus,
   type DutyShiftSnapshot,
 } from "./confirmation-integrity";
-import { ACCOUNT_WIDE_BADGE_VERSION } from "../lib/account-wide-native-badge";
+import {
+  ACCOUNT_WIDE_BADGE_VERSION,
+  isAccountWideBadgeNotificationType,
+} from "../lib/account-wide-native-badge";
 
 const TRACKING_VERSION = 1 as const;
 const SUBMISSION_LEASE_MS = 2 * 60_000;
@@ -467,6 +471,28 @@ function isManagerEscalation(
   return state.authority?.purpose === "MANAGER_ESCALATION";
 }
 
+function shouldSyncAccountWideNativeBadge(
+  state: Pick<TrackingBase, "accountWideBadgeVersion" | "payloadData">,
+): boolean {
+  return (
+    state.accountWideBadgeVersion === ACCOUNT_WIDE_BADGE_VERSION &&
+    isAccountWideBadgeNotificationType(state.payloadData.type)
+  );
+}
+
+/**
+ * A sincronização de ícone nunca altera o resultado da entrega principal.
+ * O envelope próprio contém apenas badge/collapseId e o contador é derivado
+ * sob o mutex da conta imediatamente antes de cada POST iOS.
+ */
+function syncAccountWideNativeBadgeSnapshot(
+  row: NotificationRow,
+  state: Pick<TrackingBase, "accountWideBadgeVersion" | "payloadData">,
+): void {
+  if (!shouldSyncAccountWideNativeBadge(state)) return;
+  dispatchAccountWideNativeBadgeSnapshot(row.userId, row.institutionId);
+}
+
 async function loadNotification(db: Pick<Db, "select">, id: number): Promise<NotificationRow | null> {
   const [row] = await db
     .select()
@@ -789,6 +815,9 @@ async function processSubmission(
           revisionPredicate(claimed),
         ),
       );
+    if (persisted.affectedRows === 1) {
+      syncAccountWideNativeBadgeSnapshot(row, next);
+    }
     if (persisted.affectedRows === 1 && claimed.authority?.purpose === "CONFIRMATION_REQUEST") {
       await db
         .update(dutyConfirmations)
@@ -883,7 +912,7 @@ async function processSubmission(
     terminalAt: now.toISOString(),
     evidence: submission,
   };
-  await db
+  const [persisted] = await db
     .update(notifications)
     .set({
       status: "FAILED",
@@ -897,6 +926,9 @@ async function processSubmission(
         revisionPredicate(claimed),
       ),
     );
+  if (persisted.affectedRows === 1) {
+    syncAccountWideNativeBadgeSnapshot(row, failed);
+  }
 }
 
 async function claimReceiptCheck(
@@ -1017,7 +1049,7 @@ async function processReceiptCheck(
         ? "Receipt gerencial rejeitado; nova submissão agendada"
         : "Receipt gerencial permaneceu desconhecido; nova submissão agendada",
     };
-    await db
+    const [persisted] = await db
       .update(notifications)
       .set({ providerReceipt: queued, errorMessage: queued.lastError })
       .where(
@@ -1027,6 +1059,12 @@ async function processReceiptCheck(
           revisionPredicate(claimed),
         ),
       );
+    // A row acabava de participar do snapshot enquanto TICKET_ACCEPTED ou
+    // RECEIPT_CHECKING. A reentrada gerencial em QUEUED a remove do selector,
+    // portanto o ícone remoto precisa receber a fotografia corrigida.
+    if (persisted.affectedRows === 1) {
+      syncAccountWideNativeBadgeSnapshot(row, queued);
+    }
     return;
   }
   if (!terminalEvidence && receiptAttempts < MAX_RECEIPT_ATTEMPTS) {
@@ -1063,7 +1101,7 @@ async function processReceiptCheck(
     terminalAt: now.toISOString(),
     evidence: receipts,
   };
-  await db
+  const [persisted] = await db
     .update(notifications)
     .set({
       status: "FAILED",
@@ -1079,6 +1117,9 @@ async function processReceiptCheck(
         revisionPredicate(claimed),
       ),
     );
+  if (persisted.affectedRows === 1) {
+    syncAccountWideNativeBadgeSnapshot(row, failed);
+  }
 }
 
 async function processTrackedRow(

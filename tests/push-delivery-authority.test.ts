@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { DrizzleQueryError } from "drizzle-orm/errors";
@@ -29,11 +29,19 @@ import {
   dutyConfirmationCasIdentity,
   transitionDutyConfirmation,
 } from "../server/confirmation-state";
-import { unregisterPushToken } from "../server/notifications-service";
+import {
+  drainAccountWideNativeBadgeSnapshotDispatches,
+  unregisterPushToken,
+} from "../server/notifications-service";
 import {
   notifyManagersConfirmationEscalation,
   processShiftStartPushes,
 } from "../server/cron/shift-confirmation-dispatcher";
+import {
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_TTL_SECONDS,
+} from "../lib/account-wide-native-badge";
 
 function response(status: number, body: unknown): Response {
   return {
@@ -157,6 +165,8 @@ describe("autoridade atual no outbox de confirmação", () => {
     vi.restoreAllMocks();
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     await db.delete(notifications).where(eq(notifications.userId, userId));
     await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
     await db.insert(pushTokens).values({
@@ -214,6 +224,10 @@ describe("autoridade atual no outbox de confirmação", () => {
         recheckAt: new Date("2032-03-04T10:30:00.000Z"),
       })
       .where(eq(dutyConfirmations.id, confirmationId));
+  });
+
+  afterEach(async () => {
+    await drainAccountWideNativeBadgeSnapshotDispatches();
   });
 
   afterAll(async () => {
@@ -324,14 +338,15 @@ describe("autoridade atual no outbox de confirmação", () => {
     await db.update(pushTokens).set({ institutionId: provenanceInstitution.id }).where(
       eq(pushTokens.userId, userId),
     );
-    fetchMock.mockResolvedValueOnce(response(200, {
+    fetchMock.mockResolvedValue(response(200, {
       data: { status: "ok", id: `ticket-cross-provenance-${stamp}` },
     }));
 
     try {
       const result = await sendTrackedPushNotification(intent("cross-provenance"), now);
+      await drainAccountWideNativeBadgeSnapshotDispatches();
 
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(result).toMatchObject({ phase: "TICKET_ACCEPTED", ticketAccepted: true });
       const request = fetchMock.mock.calls[0][1] as RequestInit;
       expect(JSON.parse(String(request.body))).toMatchObject({
@@ -817,13 +832,14 @@ describe("autoridade atual no outbox de confirmação", () => {
       ),
     );
     const queued = await enqueueTrackedPushNotification(intent("locked-roster"), now);
-    fetchMock.mockResolvedValueOnce(response(200, {
+    fetchMock.mockResolvedValue(response(200, {
       data: { status: "ok", id: `ticket-locked-${stamp}` },
     }));
 
     await processPendingPushDeliveries(now);
+    await drainAccountWideNativeBadgeSnapshotDispatches();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const [stored] = await db
       .select({ status: notifications.status, providerReceipt: notifications.providerReceipt })
       .from(notifications)
@@ -918,6 +934,7 @@ describe("autoridade atual no outbox de confirmação", () => {
     releaseFetch();
     await expect(worker).resolves.toBeGreaterThan(0);
     await expect(logout).resolves.toEqual({ success: true });
+    await drainAccountWideNativeBadgeSnapshotDispatches();
     await expect(
       db.select({ id: pushTokens.id }).from(pushTokens).where(eq(pushTokens.token, ownedToken.token)),
     ).resolves.toHaveLength(0);
@@ -1138,7 +1155,11 @@ describe("autoridade atual no outbox de confirmação", () => {
     fetchMock.mockResolvedValueOnce(
       response(200, { data: { status: "ok", id: `manager-ticket-${stamp}` } }),
     );
+    fetchMock.mockResolvedValueOnce(
+      response(200, { data: { status: "ok", id: `manager-badge-${stamp}` } }),
+    );
     await processPendingPushDeliveries(dueAt);
+    await drainAccountWideNativeBadgeSnapshotDispatches();
 
     const [afterTicket] = await db
       .select({ managerNotified: dutyConfirmations.managerNotified, recheckAt: dutyConfirmations.recheckAt })
@@ -1205,11 +1226,15 @@ describe("autoridade atual no outbox de confirmação", () => {
       fetchMock.mockResolvedValueOnce(
         response(200, { data: { status: "ok", id: ticketId } }),
       );
+      fetchMock.mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `manager-revoked-badge-${stamp}` } }),
+      );
       const tracked = await enqueueTrackedPushNotification(
         managerIntent("revoked-after-ticket"),
         now,
       );
       await processPendingPushDeliveries(now);
+      await drainAccountWideNativeBadgeSnapshotDispatches();
 
       await db
         .update(professionalInstitutions)
@@ -1315,11 +1340,15 @@ describe("autoridade atual no outbox de confirmação", () => {
       fetchMock.mockResolvedValueOnce(
         response(200, { data: { status: "ok", id: ticketId } }),
       );
+      fetchMock.mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `manager-scope-badge-${stamp}` } }),
+      );
       const tracked = await enqueueTrackedPushNotification(
         managerIntent("scope-revoked-after-ticket", scopedUserId),
         now,
       );
       await processPendingPushDeliveries(now);
+      await drainAccountWideNativeBadgeSnapshotDispatches();
 
       await db
         .update(managerScope)
@@ -1366,11 +1395,15 @@ describe("autoridade atual no outbox de confirmação", () => {
     fetchMock.mockResolvedValueOnce(
       response(200, { data: { status: "ok", id: ticketId } }),
     );
+    fetchMock.mockResolvedValueOnce(
+      response(200, { data: { status: "ok", id: `manager-stale-badge-${stamp}` } }),
+    );
     const tracked = await enqueueTrackedPushNotification(
       managerIntent("stale-pending-receipt"),
       now,
     );
     await processPendingPushDeliveries(now);
+    await drainAccountWideNativeBadgeSnapshotDispatches();
 
     const [current] = await db
       .select()
@@ -1418,14 +1451,15 @@ describe("autoridade atual no outbox de confirmação", () => {
 
   it("admin global com PI USER ativa é destinatário gerencial canônico", async () => {
     await db.update(users).set({ role: "admin" }).where(eq(users.id, userId));
-    fetchMock.mockResolvedValueOnce(
+    fetchMock.mockResolvedValue(
       response(200, { data: { status: "ok", id: `admin-ticket-${stamp}` } }),
     );
     const tracked = await enqueueTrackedPushNotification(managerIntent("global-admin"), now);
 
     await processPendingPushDeliveries(now);
+    await drainAccountWideNativeBadgeSnapshotDispatches();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const [stored] = await db
       .select({ status: notifications.status, providerReceipt: notifications.providerReceipt })
       .from(notifications)
@@ -1442,22 +1476,34 @@ describe("autoridade atual no outbox de confirmação", () => {
       .update(professionalInstitutions)
       .set({ roleInInstitution: "GESTOR_PLUS" })
       .where(eq(professionalInstitutions.professionalId, professionalId));
-    fetchMock.mockResolvedValueOnce(
-      response(200, { data: { status: "ok", id: `manager-rejected-${stamp}` } }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `manager-rejected-${stamp}` } }),
+      )
+      // Snapshot após o ticket principal: a row ainda é TICKET_ACCEPTED.
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `badge-manager-before-${stamp}` } }),
+      );
     const tracked = await enqueueTrackedPushNotification(managerIntent("terminal-receipt"), now);
     await processPendingPushDeliveries(now);
-    fetchMock.mockResolvedValueOnce(response(200, {
-      data: {
-        [`manager-rejected-${stamp}`]: {
-          status: "error",
-          message: "device rejected",
-          details: { error: "MessageTooBig" },
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+    fetchMock
+      .mockResolvedValueOnce(response(200, {
+        data: {
+          [`manager-rejected-${stamp}`]: {
+            status: "error",
+            message: "device rejected",
+            details: { error: "MessageTooBig" },
+          },
         },
-      },
-    }));
+      }))
+      // Snapshot corretivo após TICKET_ACCEPTED → QUEUED.
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `badge-manager-after-${stamp}` } }),
+      );
 
     await processPendingPushDeliveries(new Date(now.getTime() + 15 * 60_000));
+    await drainAccountWideNativeBadgeSnapshotDispatches();
 
     const [stored] = await db
       .select({ status: notifications.status, providerReceipt: notifications.providerReceipt })
@@ -1471,6 +1517,27 @@ describe("autoridade atual no outbox de confirmação", () => {
       .where(eq(dutyConfirmations.id, confirmationId));
     expect(confirmation.managerNotified).toBe(false);
     expect(confirmation.recheckAt).not.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const beforeRequeue = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    );
+    const afterRequeue = JSON.parse(
+      String((fetchMock.mock.calls[3]?.[1] as RequestInit).body),
+    );
+    expect(beforeRequeue).toEqual({
+      to: `ExponentPushToken[authority-${stamp}]`,
+      badge: 1,
+      collapseId: ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
+      data: ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+      ttl: ACCOUNT_WIDE_BADGE_SNAPSHOT_TTL_SECONDS,
+    });
+    expect(afterRequeue).toEqual({
+      to: `ExponentPushToken[authority-${stamp}]`,
+      badge: 0,
+      collapseId: ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
+      data: ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+      ttl: ACCOUNT_WIDE_BADGE_SNAPSHOT_TTL_SECONDS,
+    });
   });
 
   it("retry de auto-SSO revalida CONFIRMED imediatamente antes da rede", async () => {
@@ -1515,7 +1582,7 @@ describe("autoridade atual no outbox de confirmação", () => {
     await enqueueTrackedPushNotification(autoSsoIntent("sso-recovery"), now);
     fetchMock
       .mockRejectedValueOnce(new Error("network down"))
-      .mockResolvedValueOnce(response(200, { data: { status: "ok", id: "sso-retry-ticket" } }));
+      .mockResolvedValue(response(200, { data: { status: "ok", id: "sso-retry-ticket" } }));
 
     await processPendingPushDeliveries(now);
     const [beforeRetry] = await db.select({ ssoTriggeredAt: dutyConfirmations.ssoTriggeredAt })
@@ -1523,8 +1590,9 @@ describe("autoridade atual no outbox de confirmação", () => {
     expect(beforeRetry.ssoTriggeredAt).toBeNull();
 
     await processPendingPushDeliveries(new Date(now.getTime() + 60_000));
+    await drainAccountWideNativeBadgeSnapshotDispatches();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const [afterRetry] = await db.select({ ssoTriggeredAt: dutyConfirmations.ssoTriggeredAt })
       .from(dutyConfirmations).where(eq(dutyConfirmations.id, confirmationId));
     expect(afterRetry.ssoTriggeredAt).not.toBeNull();
@@ -1583,11 +1651,15 @@ describe("autoridade atual no outbox de confirmação", () => {
     const fetchReleased = new Promise<void>((resolve) => {
       releaseFetch = resolve;
     });
-    fetchMock.mockImplementationOnce(async () => {
-      signalFetchStarted();
-      await fetchReleased;
-      return response(200, { data: { status: "ok", id: `start-concurrent-${stamp}` } });
-    });
+    fetchMock
+      .mockImplementationOnce(async () => {
+        signalFetchStarted();
+        await fetchReleased;
+        return response(200, { data: { status: "ok", id: `start-concurrent-${stamp}` } });
+      })
+      .mockResolvedValue(
+        response(200, { data: { status: "ok", id: `start-concurrent-badge-${stamp}` } }),
+      );
 
     const first = processShiftStartPushes(startedAt);
     await fetchStarted;
@@ -1611,11 +1683,12 @@ describe("autoridade atual no outbox de confirmação", () => {
 
       releaseFetch();
       await first;
+      await drainAccountWideNativeBadgeSnapshotDispatches();
       const [after] = await db
         .select({ startPushSentAt: dutyConfirmations.startPushSentAt })
         .from(dutyConfirmations)
         .where(eq(dutyConfirmations.id, confirmationId));
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(after.startPushSentAt).not.toBeNull();
     } finally {
       releaseFetch();
@@ -1741,12 +1814,18 @@ describe("autoridade atual no outbox de confirmação", () => {
 
       releaseFirstFetch();
       const result = await firstWorker;
+      await drainAccountWideNativeBadgeSnapshotDispatches();
       expect(result.phase).toBe("TICKET_ACCEPTED");
 
-      const submittedTokens = fetchMock.mock.calls.map((call) => {
-        const body = JSON.parse(String((call[1] as RequestInit).body)) as { to: string };
-        return body.to;
-      });
+      const submittedTokens = fetchMock.mock.calls
+        .map((call) =>
+          JSON.parse(String((call[1] as RequestInit).body)) as {
+            to: string;
+            data?: { recipientUserId?: unknown };
+          },
+        )
+        .filter((body) => body.data?.recipientUserId !== undefined)
+        .map((body) => body.to);
       expect(submittedTokens).toHaveLength(2);
       expect(new Set(submittedTokens).size).toBe(2);
 

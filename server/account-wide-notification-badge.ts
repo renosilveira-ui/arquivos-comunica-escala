@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   institutions,
   notifications,
@@ -25,6 +25,8 @@ const payloadType = sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${notifications.provid
 const accountBadgeVersionType = sql<string>`JSON_TYPE(JSON_EXTRACT(${notifications.providerReceipt}, '$.accountWideBadgeVersion'))`;
 const payloadRecipientUserIdType = sql<string>`JSON_TYPE(JSON_EXTRACT(${notifications.providerReceipt}, '$.payloadData.recipientUserId'))`;
 const payloadTypeType = sql<string>`JSON_TYPE(JSON_EXTRACT(${notifications.providerReceipt}, '$.payloadData.type'))`;
+const trackingPhase = sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${notifications.providerReceipt}, '$.phase'))`;
+const trackingPhaseType = sql<string>`JSON_TYPE(JSON_EXTRACT(${notifications.providerReceipt}, '$.phase'))`;
 
 /**
  * Uma row de outbox só entra no badge se tiver sido criada pelo writer atual
@@ -61,10 +63,56 @@ function activeAccountMembershipPredicate(subject: AccountBadgeSubject) {
   );
 }
 
-function deliveredBadgeNotification() {
-  // Ticket/receipt pendente é apenas evidência de submissão; não há exceção
-  // para a row corrente nesta frente sem autorização específica de egress.
-  return eq(notifications.status, "SENT");
+/**
+ * A semântica única do badge é "alerta ainda não reconhecido pela conta".
+ * Um ticket somente entra após o Expo aceitá-lo; QUEUED e SUBMITTING nunca
+ * entram. O mesmo predicado é usado no ícone em background, na leitura e no
+ * acknowledgement local, portanto uma row não pode reaparecer após o receipt
+ * apenas porque o app foi aberto entre as duas etapas do transporte.
+ */
+function providerAcceptedBadgeNotification(): SQL {
+  return or(
+    eq(notifications.status, "SENT"),
+    and(
+      eq(notifications.status, "PENDING"),
+      eq(trackingPhaseType, "STRING"),
+      inArray(trackingPhase, ["TICKET_ACCEPTED", "RECEIPT_CHECKING"]),
+    ),
+  )!;
+}
+
+async function countAccountBadgeNotifications(
+  db: Pick<Db, "select">,
+  subject: AccountBadgeSubject,
+  deliveryPredicate: SQL,
+): Promise<number> {
+  const [result] = await db
+    .select({ count: sql<unknown>`COUNT(DISTINCT ${notifications.id})` })
+    .from(notifications)
+    .innerJoin(
+      professionalInstitutions,
+      and(
+        eq(professionalInstitutions.userId, notifications.userId),
+        eq(professionalInstitutions.institutionId, notifications.institutionId),
+      ),
+    )
+    .innerJoin(
+      professionals,
+      eq(professionals.id, professionalInstitutions.professionalId),
+    )
+    .innerJoin(users, eq(users.id, professionalInstitutions.userId))
+    .innerJoin(institutions, eq(institutions.id, notifications.institutionId))
+    .where(
+      and(
+        eq(notifications.userId, subject.userId),
+        eq(notifications.read, false),
+        accountBadgeNotificationPredicate(),
+        activeAccountMembershipPredicate(subject),
+        deliveryPredicate,
+      ),
+    );
+
+  return parseAccountWideNotificationBadgeCount(result?.count);
 }
 
 export function parseAccountWideNotificationBadgeCount(value: unknown): number {
@@ -90,40 +138,19 @@ export async function countUnreadAccountBadgeNotifications(
   db: Pick<Db, "select">,
   subject: AccountBadgeSubject,
 ): Promise<number> {
-  const [result] = await db
-    .select({ count: sql<unknown>`COUNT(DISTINCT ${notifications.id})` })
-    .from(notifications)
-    .innerJoin(
-      professionalInstitutions,
-      and(
-        eq(professionalInstitutions.userId, notifications.userId),
-        eq(professionalInstitutions.institutionId, notifications.institutionId),
-      ),
-    )
-    .innerJoin(
-      professionals,
-      eq(professionals.id, professionalInstitutions.professionalId),
-    )
-    .innerJoin(users, eq(users.id, professionalInstitutions.userId))
-    .innerJoin(institutions, eq(institutions.id, notifications.institutionId))
-    .where(
-      and(
-        eq(notifications.userId, subject.userId),
-        eq(notifications.read, false),
-        accountBadgeNotificationPredicate(),
-        activeAccountMembershipPredicate(subject),
-        deliveredBadgeNotification(),
-      ),
-    );
-
-  return parseAccountWideNotificationBadgeCount(result?.count);
+  return countAccountBadgeNotifications(
+    db,
+    subject,
+    providerAcceptedBadgeNotification(),
+  );
 }
 
 /**
  * Não há inbox individual nesta versão. Ao abrir ou retomar o app com a
  * sessão VERIFIED, o próprio usuário reconhece todos os alertas account-wide
- * que já foram efetivamente entregues (`SENT`) e continuam visíveis pelos
- * seus vínculos ativos.
+ * que já foram aceitos pelo provedor e continuam visíveis pelos seus vínculos
+ * ativos. O predicado é idêntico ao da contagem, inclusive durante a janela
+ * entre ticket aceito e receipt final.
  *
  * A seleção e o update ocorrem na mesma transação, com lock nas rows da
  * notificação e dos vínculos usados pelo selector. Assim, uma revogação que
@@ -158,7 +185,7 @@ export async function acknowledgeUnreadAccountBadgeNotifications(
           eq(notifications.read, false),
           accountBadgeNotificationPredicate(),
           activeAccountMembershipPredicate(subject),
-          deliveredBadgeNotification(),
+          providerAcceptedBadgeNotification(),
         ),
       )
       .for("update");

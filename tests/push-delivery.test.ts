@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import {
@@ -14,7 +14,10 @@ import {
   processPendingPushDeliveries,
   sendTrackedPushNotification,
 } from "../server/push-delivery";
-import { registerPushToken } from "../server/notifications-service";
+import {
+  drainAccountWideNativeBadgeSnapshotDispatches,
+  registerPushToken,
+} from "../server/notifications-service";
 
 function response(status: number, body: unknown): Response {
   return {
@@ -124,6 +127,10 @@ describe("outbox de push sem projeção de entrega", () => {
     });
   });
 
+  afterEach(async () => {
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+  });
+
   afterAll(async () => {
     vi.unstubAllGlobals();
     await db.delete(notifications).where(eq(notifications.userId, userId));
@@ -217,6 +224,67 @@ describe("outbox de push sem projeção de entrega", () => {
     });
     expect(body.data).not.toHaveProperty("accountWideBadgeVersion");
     expect(body.data).not.toHaveProperty("notificationId");
+  });
+
+  it("não mantém a resposta operacional presa ao snapshot iOS lento", async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        data: { status: "ok", id: "ticket-content-before-snapshot" },
+      }),
+    );
+    let signalSnapshotFetch!: () => void;
+    const snapshotFetchStarted = new Promise<void>((resolve) => {
+      signalSnapshotFetch = resolve;
+    });
+    let releaseSnapshotFetch!: () => void;
+    const snapshotFetchRelease = new Promise<void>((resolve) => {
+      releaseSnapshotFetch = resolve;
+    });
+    fetchMock.mockImplementationOnce(async () => {
+      signalSnapshotFetch();
+      await snapshotFetchRelease;
+      return response(200, {
+        data: { status: "ok", id: "ticket-slow-snapshot" },
+      });
+    });
+
+    const trackedPromise = sendTrackedPushNotification(
+      {
+        ...input("snapshot-latency"),
+        payload: {
+          title: "Vaga disponível",
+          body: "Há uma vaga para você.",
+          data: { type: "vacancy_available" },
+        },
+      },
+      now,
+    );
+
+    try {
+      await snapshotFetchStarted;
+      const resultBeforeSnapshot = await Promise.race([
+        trackedPromise.then((value) => ({ state: "RESOLVED" as const, value })),
+        new Promise<{ state: "BLOCKED" }>((resolve) => {
+          setTimeout(() => resolve({ state: "BLOCKED" }), 500);
+        }),
+      ]);
+      expect(resultBeforeSnapshot).toMatchObject({
+        state: "RESOLVED",
+        value: { phase: "TICKET_ACCEPTED", ticketAccepted: true },
+      });
+
+      releaseSnapshotFetch();
+      await vi.waitFor(() =>
+        expect(vi.mocked(console.log)).toHaveBeenCalledTimes(2),
+      );
+      const snapshotRequest = fetchMock.mock.calls[1]?.[1] as RequestInit;
+      expect(JSON.parse(String(snapshotRequest.body))).toMatchObject({
+        badge: 1,
+      });
+    } finally {
+      releaseSnapshotFetch();
+      await trackedPromise;
+    }
   });
 
   it("rejeita colisão de dedupKey com destinatário ou payload diferente", async () => {

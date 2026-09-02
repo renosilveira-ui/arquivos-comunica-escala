@@ -31,6 +31,16 @@ export type AccountWideNativeBadgeReconcileFence = Readonly<{
   invalidate: () => void;
 }>;
 
+export type AccountWideNativeBadgeReconciliationQueue = Readonly<{
+  /**
+   * Serializes server acknowledgement and count refreshes for one mounted
+   * session. A refresh that begins while an acknowledgement is in flight must
+   * observe the acknowledgement's committed state instead of restoring a
+   * pre-acknowledgement count on the icon.
+   */
+  enqueue: <T>(operation: () => Promise<T>) => Promise<T>;
+}>;
+
 /**
  * Foreground receive + resume can schedule reconciliations concurrently. A
  * newer result is authoritative for the local icon; an older network response
@@ -52,11 +62,34 @@ export function createAccountWideNativeBadgeReconcileFence(): AccountWideNativeB
   };
 }
 
+/**
+ * This queue is intentionally per mounted session. The process-wide write
+ * queue still protects the operating-system icon across logout/new login;
+ * this queue protects causal ordering of server operations within one session.
+ */
+export function createAccountWideNativeBadgeReconciliationQueue(): AccountWideNativeBadgeReconciliationQueue {
+  let tail: Promise<void> = Promise.resolve();
+
+  return {
+    enqueue<T>(operation: () => Promise<T>): Promise<T> {
+      const scheduled = tail.then(operation, operation);
+      tail = scheduled.then(
+        () => undefined,
+        () => undefined,
+      );
+      return scheduled;
+    },
+  };
+}
+
 async function applyCanonicalCount(
   response: AccountWideBadgeCountResponse,
   source: "ACKNOWLEDGEMENT" | "COUNT",
   allowZero: boolean,
-  dependencies: AccountWideNativeBadgeReconcileDependencies,
+  dependencies: Pick<
+    AccountWideNativeBadgeReconcileDependencies,
+    "setLocalBadgeCount" | "isCurrent"
+  >,
 ): Promise<AccountWideNativeBadgeReconcileResult> {
   const count = parseAccountWideBadgeCount(response.count);
   if (count === null) return { state: "UNAVAILABLE" };
@@ -112,5 +145,32 @@ export async function reconcileAccountWideNativeBadge(
         ? { state: "UNAVAILABLE" }
         : { state: "STALE" };
     }
+  }
+}
+
+/**
+ * Um snapshot remoto recebido com o app aberto não tem autoridade para
+ * escrever seu próprio número. Ele apenas dispara esta leitura autenticada,
+ * sem acknowledgement: assim um payload forjado ou atrasado nunca marca
+ * alertas como lidos.
+ */
+export async function refreshAccountWideNativeBadge(
+  dependencies: Pick<
+    AccountWideNativeBadgeReconcileDependencies,
+    "getUnreadCount" | "setLocalBadgeCount" | "isCurrent"
+  >,
+): Promise<AccountWideNativeBadgeReconcileResult> {
+  if (!dependencies.isCurrent()) return { state: "STALE" };
+  try {
+    return await applyCanonicalCount(
+      await dependencies.getUnreadCount(),
+      "COUNT",
+      true,
+      dependencies,
+    );
+  } catch {
+    return dependencies.isCurrent()
+      ? { state: "UNAVAILABLE" }
+      : { state: "STALE" };
   }
 }

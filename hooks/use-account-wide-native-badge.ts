@@ -4,11 +4,14 @@ import * as Notifications from "expo-notifications";
 import { trpc } from "@/lib/trpc";
 import {
   createAccountWideNativeBadgeReconcileFence,
+  createAccountWideNativeBadgeReconciliationQueue,
   reconcileAccountWideNativeBadge,
+  refreshAccountWideNativeBadge,
   type AccountWideNativeBadgeReconcileResult,
 } from "@/lib/account-wide-native-badge-reconcile";
 import {
-  shouldReconcileAccountWideBadgeForReceivedNotification,
+  shouldRefreshAccountWideBadgeForReceivedNotification,
+  shouldRefreshAccountWideBadgeForReceivedSnapshot,
   shouldRefreshAccountWideBadgeOnAppStateChange,
 } from "@/lib/account-wide-native-badge";
 import { parseNotificationRecipientUserId } from "@/lib/notification-foreground-subject";
@@ -60,6 +63,24 @@ export function useAccountWideNativeBadge({
     [acknowledgeAccountBadge, refetchUnreadAccountBadgeCount],
   );
 
+  const refresh = useCallback(
+    async (
+      isCurrent: () => boolean,
+    ): Promise<AccountWideNativeBadgeReconcileResult> =>
+      refreshAccountWideNativeBadge({
+        getUnreadCount: async () => {
+          const result = await refetchUnreadAccountBadgeCount();
+          if (result.error || !result.data) {
+            throw result.error ?? new Error("Contagem de badge indisponível");
+          }
+          return result.data;
+        },
+        setLocalBadgeCount: (count) => Notifications.setBadgeCountAsync(count),
+        isCurrent,
+      }),
+    [refetchUnreadAccountBadgeCount],
+  );
+
   useEffect(() => {
     if (
       Platform.OS === "web" ||
@@ -71,16 +92,25 @@ export function useAccountWideNativeBadge({
 
     let active = true;
     const reconciliationFence = createAccountWideNativeBadgeReconcileFence();
+    const reconciliationQueue =
+      createAccountWideNativeBadgeReconciliationQueue();
+    const isCurrentSessionRun = reconciliationFence.begin();
     const isCurrent = () =>
       active &&
       userIdRef.current === userId &&
-      sessionAuthorizationRef.current();
+      sessionAuthorizationRef.current() &&
+      isCurrentSessionRun();
     const reconcileCurrentAccount = () => {
-      const isCurrentRun = reconciliationFence.begin();
-      const isCurrentForRun = () => isCurrentRun() && isCurrent();
-      void reconcile(isCurrentForRun).then((result) => {
-        if (result.state === "UNAVAILABLE" && isCurrentForRun()) {
+      void reconciliationQueue.enqueue(() => reconcile(isCurrent)).then((result) => {
+        if (result.state === "UNAVAILABLE" && isCurrent()) {
           console.warn("[Notifications] ACCOUNT_BADGE_RECONCILE_UNAVAILABLE");
+        }
+      });
+    };
+    const refreshCurrentAccount = () => {
+      void reconciliationQueue.enqueue(() => refresh(isCurrent)).then((result) => {
+        if (result.state === "UNAVAILABLE" && isCurrent()) {
+          console.warn("[Notifications] ACCOUNT_BADGE_REFRESH_UNAVAILABLE");
         }
       });
     };
@@ -108,11 +138,24 @@ export function useAccountWideNativeBadge({
     );
     const receivedSubscription = Notifications.addNotificationReceivedListener(
       (notification) => {
+        const data = notification.request.content.data;
+        // O snapshot remoto nunca concede confiança ao próprio número. Com o
+        // app em primeiro plano ele só dispara uma leitura server-side, sem
+        // acknowledgement, para corrigir a fotografia eventualmente atrasada.
+        if (
+          shouldRefreshAccountWideBadgeForReceivedSnapshot({
+            data,
+            isSessionAuthorizationCurrent: isCurrent(),
+          })
+        ) {
+          refreshCurrentAccount();
+          return;
+        }
         const recipientUserId = parseNotificationRecipientUserId(
-          notification.request.content.data?.recipientUserId,
+          data?.recipientUserId,
         );
         if (
-          !shouldReconcileAccountWideBadgeForReceivedNotification({
+          !shouldRefreshAccountWideBadgeForReceivedNotification({
             recipientUserId,
             currentUserId: userId,
             isSessionAuthorizationCurrent: isCurrent(),
@@ -120,7 +163,10 @@ export function useAccountWideNativeBadge({
         ) {
           return;
         }
-        reconcileCurrentAccount();
+        // Entrega push não é uma ação local do médico e pode chegar fora de
+        // ordem. Mesmo o payload normal só pode atualizar a contagem
+        // canônica; acknowledgement fica limitado à abertura/retomada.
+        refreshCurrentAccount();
       },
     );
 
@@ -130,5 +176,5 @@ export function useAccountWideNativeBadge({
       appStateSubscription.remove();
       receivedSubscription.remove();
     };
-  }, [isSessionAuthorizationCurrent, reconcile, userId]);
+  }, [isSessionAuthorizationCurrent, reconcile, refresh, userId]);
 }

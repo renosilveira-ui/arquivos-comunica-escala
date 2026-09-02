@@ -16,6 +16,13 @@ import {
   withPushAccountAndTokenMutexes,
   withPushAccountMutex,
 } from "./push-registration-revocation";
+import {
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_TTL_SECONDS,
+  parseAccountWideBadgeCount,
+} from "../lib/account-wide-native-badge";
+import { countUnreadAccountBadgeNotifications } from "./account-wide-notification-badge";
 
 /**
  * Serviço de Notificações Push
@@ -50,7 +57,8 @@ export type PushTicketEvidence =
         | "MALFORMED_RESPONSE"
         | "TOKEN_LOCK_TIMEOUT"
         | "TOKEN_OWNERSHIP_CHANGED"
-        | "RECIPIENT_AUTHORITY_REVOKED";
+        | "RECIPIENT_AUTHORITY_REVOKED"
+        | "BADGE_SNAPSHOT_UNAVAILABLE";
       message: string;
       httpStatus?: number;
       providerCode?: string;
@@ -115,6 +123,12 @@ type TokenMutationDb = Pick<Db, "delete"> | Pick<TokenTransaction, "delete">;
 export type PushSubmissionGuard = (tx: TokenTransaction) => Promise<void>;
 type JsonRecord = Record<string, unknown>;
 
+type AccountWideBadgeSnapshotPayload = Readonly<{
+  kind: "ACCOUNT_WIDE_BADGE_SNAPSHOT";
+}>;
+
+type OutboundPushPayload = PushNotificationPayload | AccountWideBadgeSnapshotPayload;
+
 /**
  * O token Expo pertence a uma conta, não ao payload que um chamador montou.
  * Mantém esse vínculo explícito no envelope enviado ao dispositivo e nunca
@@ -153,6 +167,7 @@ const MAX_CONCURRENT_EXPO_SUBMISSIONS = 4;
 const PUSH_NETWORK_ERROR_MESSAGE = "Falha temporária ao contatar Expo Push";
 const PUSH_OWNERSHIP_ERROR_MESSAGE = "Falha temporária ao validar ownership do token";
 const PUSH_SERVICE_ERROR_MESSAGE = "Serviço de push temporariamente indisponível";
+const BADGE_SNAPSHOT_UNAVAILABLE_MESSAGE = "Não foi possível atualizar o badge da conta";
 const RECEIPT_NETWORK_ERROR_MESSAGE = "Falha temporária ao consultar Expo Receipts";
 const RECIPIENT_AUTHORITY_REVOKED_MESSAGE = "Autoridade do destinatário revogada";
 let activeExpoSubmissions = 0;
@@ -189,6 +204,12 @@ function asRecord(value: unknown): JsonRecord | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as JsonRecord)
     : null;
+}
+
+function isAccountWideBadgeSnapshotPayload(
+  payload: OutboundPushPayload,
+): payload is AccountWideBadgeSnapshotPayload {
+  return "kind" in payload && payload.kind === "ACCOUNT_WIDE_BADGE_SNAPSHOT";
 }
 
 function nestedProviderCode(value: unknown): string | undefined {
@@ -297,37 +318,52 @@ async function submitExpoPushTicket(
     token: string;
     expectedUserId: number;
     tokenFingerprint: string;
+    platform: string;
+    badgeCount?: number;
   },
-  payload: PushNotificationPayload,
+  payload: OutboundPushPayload,
 ): Promise<PushTicketEvidence> {
   try {
+    const message = isAccountWideBadgeSnapshotPayload(payload)
+      ? {
+          // O snapshot iOS não apresenta alerta, conteúdo ou identidade: ele
+          // atualiza exclusivamente o número do ícone no sistema operacional.
+          // O marker estático só permite que o app aberto faça uma leitura
+          // canônica local; não contém usuário, tenant nem dado operacional.
+          to: tokenData.token,
+          badge: tokenData.badgeCount,
+          collapseId: ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
+          data: ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+          ttl: ACCOUNT_WIDE_BADGE_SNAPSHOT_TTL_SECONDS,
+        }
+      : {
+          to: tokenData.token,
+          // Em background/killed, o sistema operacional pode apresentar esta
+          // mensagem antes de o JS conhecer o usuário atual. A visualização
+          // remota é propositalmente neutra; o app só obtém detalhes depois da
+          // autenticação e da cerca recipientUserId no listener.
+          title: EXPO_NEUTRAL_NOTIFICATION_TITLE,
+          body: EXPO_NEUTRAL_NOTIFICATION_BODY,
+          // O owner foi revalidado sob mutex imediatamente antes do fetch. O
+          // campo do produtor é deliberadamente sobrescrito para impedir que um
+          // payload stale ou forjado seja aceito pelo listener da outra conta.
+          data: withAuthoritativePushRecipient(
+            payload.data,
+            tokenData.expectedUserId,
+          ),
+          sound: "default",
+          priority: "high",
+          // Precisa coincidir com o plugin expo-notifications e o canal runtime
+          // (escalas-default). Sem channelId o Android cai no canal "default" e
+          // o LED/importância configurados no app não valem.
+          channelId: "escalas-default",
+        };
     const response = await fetch(EXPO_PUSH_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        to: tokenData.token,
-        // Em background/killed, o sistema operacional pode apresentar esta
-        // mensagem antes de o JS conhecer o usuário atual. A visualização
-        // remota é propositalmente neutra; o app só obtém detalhes depois da
-        // autenticação e da cerca recipientUserId no listener.
-        title: EXPO_NEUTRAL_NOTIFICATION_TITLE,
-        body: EXPO_NEUTRAL_NOTIFICATION_BODY,
-        // O owner foi revalidado sob mutex imediatamente antes do fetch. O
-        // campo do produtor é deliberadamente sobrescrito para impedir que um
-        // payload stale ou forjado seja aceito pelo listener da outra conta.
-        data: withAuthoritativePushRecipient(
-          payload.data,
-          tokenData.expectedUserId,
-        ),
-        sound: "default",
-        priority: "high",
-        // Precisa coincidir com o plugin expo-notifications e o canal runtime
-        // (escalas-default). Sem channelId o Android cai no canal "default" e
-        // o LED/importância configurados no app não valem.
-        channelId: "escalas-default",
-      }),
+      body: JSON.stringify(message),
       signal: AbortSignal.timeout(EXPO_HTTP_TIMEOUT_MS),
     });
 
@@ -422,10 +458,11 @@ async function submitOwnedExpoPushTicket(
   expected: {
     id: number;
     token: string;
+    platform: string;
     userId: number;
     institutionId: number;
   },
-  payload: PushNotificationPayload,
+  payload: OutboundPushPayload,
   submissionGuard?: PushSubmissionGuard,
   submissionClaimGuard?: () => Promise<boolean>,
 ): Promise<PushTicketEvidence | null> {
@@ -438,6 +475,8 @@ async function submitOwnedExpoPushTicket(
             token: string;
             expectedUserId: number;
             tokenFingerprint: string;
+            platform: string;
+            badgeCount?: number;
           };
         };
     return await withExpoSubmissionSlot(() =>
@@ -490,7 +529,7 @@ async function submitOwnedExpoPushTicket(
             )
             .limit(1);
           const [currentUser] = await tx
-            .select({ id: users.id })
+            .select({ id: users.id, sessionVersion: users.sessionVersion })
             .from(users)
             .where(
               and(
@@ -553,10 +592,53 @@ async function submitOwnedExpoPushTicket(
               tokenDisposition: "UNCHANGED" as const,
             };
           }
+
+          let badgeCount: number | undefined;
+          if (isAccountWideBadgeSnapshotPayload(payload)) {
+            if (expected.platform !== "ios") {
+              return {
+                state: "TICKET_REJECTED" as const,
+                pushTokenId: expected.id,
+                retryability: "TERMINAL" as const,
+                failureKind: "BADGE_SNAPSHOT_UNAVAILABLE" as const,
+                message: BADGE_SNAPSHOT_UNAVAILABLE_MESSAGE,
+                tokenDisposition: "UNCHANGED" as const,
+              };
+            }
+            try {
+              const resolved = parseAccountWideBadgeCount(
+                await countUnreadAccountBadgeNotifications(tx, {
+                  userId: expected.userId,
+                  sessionVersion: currentUser.sessionVersion,
+                }),
+              );
+              if (resolved === null) {
+                return {
+                  state: "TICKET_REJECTED" as const,
+                  pushTokenId: expected.id,
+                  retryability: "TERMINAL" as const,
+                  failureKind: "BADGE_SNAPSHOT_UNAVAILABLE" as const,
+                  message: BADGE_SNAPSHOT_UNAVAILABLE_MESSAGE,
+                  tokenDisposition: "UNCHANGED" as const,
+                };
+              }
+              badgeCount = resolved;
+            } catch {
+              return {
+                state: "TICKET_REJECTED" as const,
+                pushTokenId: expected.id,
+                retryability: "RETRYABLE" as const,
+                failureKind: "BADGE_SNAPSHOT_UNAVAILABLE" as const,
+                message: BADGE_SNAPSHOT_UNAVAILABLE_MESSAGE,
+                tokenDisposition: "UNCHANGED" as const,
+              };
+            }
+          }
           const query = tx
             .select({
               id: pushTokens.id,
               userId: pushTokens.userId,
+              platform: pushTokens.platform,
             })
             .from(pushTokens)
             .where(eq(pushTokens.token, expected.token));
@@ -575,12 +657,35 @@ async function submitOwnedExpoPushTicket(
               tokenDisposition: "UNCHANGED" as const,
             };
           }
+          if (
+            isAccountWideBadgeSnapshotPayload(payload) &&
+            !current.some(
+              (row) =>
+                row.id === expected.id &&
+                row.userId === expected.userId &&
+                row.platform === "ios",
+            )
+          ) {
+            // O registro pode trocar a plataforma do mesmo token enquanto o
+            // sender aguarda o mutex. Releia sob lock para nunca submeter o
+            // envelope iOS de badge a um destino que virou Android/web.
+            return {
+              state: "TICKET_REJECTED" as const,
+              pushTokenId: expected.id,
+              retryability: "TERMINAL" as const,
+              failureKind: "BADGE_SNAPSHOT_UNAVAILABLE" as const,
+              message: BADGE_SNAPSHOT_UNAVAILABLE_MESSAGE,
+              tokenDisposition: "UNCHANGED" as const,
+            };
+          }
           return {
             tokenData: {
               id: expected.id,
               token: expected.token,
               expectedUserId: expected.userId,
               tokenFingerprint: pushTokenFingerprint(expected.token),
+              platform: expected.platform,
+              ...(badgeCount === undefined ? {} : { badgeCount }),
             },
           };
         });
@@ -918,9 +1023,9 @@ export async function unregisterPushToken(
 /**
  * Envia notificação push para um usuário
  */
-export async function sendPushNotification(
+async function sendOutboundPushNotification(
   userId: number,
-  payload: PushNotificationPayload,
+  payload: OutboundPushPayload,
   institutionId: number,
   submissionGuard?: PushSubmissionGuard,
   submissionClaimGuard?: () => Promise<boolean>,
@@ -932,21 +1037,32 @@ export async function sendPushNotification(
     // O token pertence à conta/dispositivo. O tenant abaixo autoriza a
     // intenção e é revalidado sob lock antes de cada submissão.
     const tokens = await db
-      .select({ id: pushTokens.id, token: pushTokens.token })
+      .select({
+        id: pushTokens.id,
+        token: pushTokens.token,
+        platform: pushTokens.platform,
+      })
       .from(pushTokens)
       .where(eq(pushTokens.userId, userId));
 
-    if (tokens.length === 0) {
+    const deliverableTokens = isAccountWideBadgeSnapshotPayload(payload)
+      ? tokens.filter((token) => token.platform === "ios")
+      : tokens;
+    if (deliverableTokens.length === 0) {
       return {
         status: "NO_REGISTERED_TOKENS",
-        message: "Nenhum token registrado para submissão ao Expo",
+        message: isAccountWideBadgeSnapshotPayload(payload)
+          ? "Nenhum token iOS registrado para snapshot de badge"
+          : "Nenhum token registrado para submissão ao Expo",
         tickets: [],
         acceptedCount: 0,
         rejectedCount: 0,
       };
     }
 
-    const uniqueTokens = [...new Map(tokens.map((row) => [row.token, row])).values()];
+    const uniqueTokens = [
+      ...new Map(deliverableTokens.map((row) => [row.token, row])).values(),
+    ];
     const tickets: PushTicketEvidence[] = [];
     // Sequencial por usuário limita pressão no Expo. Cada token tem seu claim
     // de ownership/autoridade transacional, mas o fetch ocorre após o commit.
@@ -1008,5 +1124,86 @@ export async function sendPushNotification(
       acceptedCount: 0,
       rejectedCount: 0,
     };
+  }
+}
+
+/**
+ * Envia uma notificação visível ao usuário. O caminho de snapshot de badge
+ * não é público: assim nenhum caller pode injetar contagem ou payload externo
+ * no envelope que chega ao sistema operacional.
+ */
+export async function sendPushNotification(
+  userId: number,
+  payload: PushNotificationPayload,
+  institutionId: number,
+  submissionGuard?: PushSubmissionGuard,
+  submissionClaimGuard?: () => Promise<boolean>,
+): Promise<PushSendResult> {
+  return sendOutboundPushNotification(
+    userId,
+    payload,
+    institutionId,
+    submissionGuard,
+    submissionClaimGuard,
+  );
+}
+
+/**
+ * Atualiza somente o badge de aparelhos iOS da conta. A contagem é obtida
+ * internamente do selector server-side e o envelope contém exclusivamente
+ * token, número inteiro e collapseId estático.
+ */
+export async function sendAccountWideNativeBadgeSnapshot(
+  userId: number,
+  institutionId: number,
+): Promise<PushSendResult> {
+  return sendOutboundPushNotification(
+    userId,
+    {
+      kind: "ACCOUNT_WIDE_BADGE_SNAPSHOT",
+    },
+    institutionId,
+  );
+}
+
+const pendingAccountWideBadgeSnapshotDispatches = new Set<Promise<void>>();
+
+/**
+ * O badge remoto é uma projeção eventual e jamais pode atrasar a mutação ou
+ * a entrega operacional que originou a nova contagem. A mesma autorização
+ * institucional do envio permanece obrigatória; falhas ficam restritas à
+ * observabilidade e a abertura/retomada reconcilia novamente a fonte canônica.
+ */
+export function dispatchAccountWideNativeBadgeSnapshot(
+  userId: number,
+  institutionId: number,
+): void {
+  const dispatch = sendAccountWideNativeBadgeSnapshot(userId, institutionId)
+    .then((result) => {
+      if (
+        result.status !== "TICKETS_ACCEPTED" &&
+        result.status !== "PARTIAL_TICKET_ACCEPTANCE" &&
+        result.status !== "NO_REGISTERED_TOKENS"
+      ) {
+        console.error("[Notifications] ACCOUNT_BADGE_SNAPSHOT_UNAVAILABLE");
+      }
+    })
+    .catch(() => {
+      console.error("[Notifications] ACCOUNT_BADGE_SNAPSHOT_UNAVAILABLE");
+    })
+    .finally(() => {
+      pendingAccountWideBadgeSnapshotDispatches.delete(dispatch);
+    });
+  pendingAccountWideBadgeSnapshotDispatches.add(dispatch);
+}
+
+/**
+ * Barreira de graceful shutdown e de testes: a resposta HTTP nunca a aguarda,
+ * mas o processo pode drenar projeções já iniciadas antes de encerrar ou
+ * desmontar fixtures que compartilham o mesmo banco/token.
+ */
+export async function drainAccountWideNativeBadgeSnapshotDispatches(): Promise<void> {
+  while (pendingAccountWideBadgeSnapshotDispatches.size > 0) {
+    await Promise.all([...pendingAccountWideBadgeSnapshotDispatches]);
   }
 }

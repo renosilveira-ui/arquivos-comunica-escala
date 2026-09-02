@@ -1,18 +1,28 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   institutions,
   notifications,
   professionalInstitutions,
   professionals,
+  pushTokens,
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { appRouter } from "../server/routers";
+import { drainAccountWideNativeBadgeSnapshotDispatches } from "../server/notifications-service";
 import { ACCOUNT_WIDE_BADGE_VERSION } from "../lib/account-wide-native-badge";
 
 const stamp = `${Date.now()}${Math.floor(Math.random() * 10_000)}`;
 const currentSessionVersion = 1;
+
+function response(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: vi.fn(async () => body),
+  } as unknown as Response;
+}
 
 describe("badge account-wide — selector e acknowledgement canônicos", () => {
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -195,6 +205,9 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
 
   afterAll(async () => {
     if (!db) return;
+    await db.delete(pushTokens).where(
+      inArray(pushTokens.userId, [accountUserId, otherUserId]),
+    );
     if (notificationIds.length > 0) {
       await db
         .delete(notifications)
@@ -219,6 +232,10 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
     await db
       .delete(institutions)
       .where(inArray(institutions.id, [institutionAId, institutionBId]));
+  });
+
+  afterEach(async () => {
+    await drainAccountWideNativeBadgeSnapshotDispatches();
   });
 
   it("conta todos os vínculos ativos da conta, mas exclui outboxes internos e não entregáveis", async () => {
@@ -382,14 +399,14 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
         currentSessionVersion,
         institutionAId,
       ).notifications.getUnreadAccountBadgeCount(),
-    ).resolves.toEqual({ count: 2 });
+    ).resolves.toEqual({ count: 4 });
     await expect(
       callerFor(
         accountUserId,
         currentSessionVersion,
         institutionBId,
       ).notifications.getUnreadAccountBadgeCount(),
-    ).resolves.toEqual({ count: 2 });
+    ).resolves.toEqual({ count: 4 });
 
     await db
       .update(professionalInstitutions)
@@ -406,9 +423,9 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
         currentSessionVersion,
         institutionAId,
       ).notifications.getUnreadAccountBadgeCount(),
-    ).resolves.toEqual({ count: 1 });
+    ).resolves.toEqual({ count: 3 });
 
-    // A conta já havia visto duas notificações, mas o vínculo B foi revogado
+    // A conta já havia visto quatro alertas, mas o vínculo B foi revogado
     // antes do acknowledgement. O write reexecuta o selector no servidor e
     // não pode marcar a row B como lida por ela ter aparecido anteriormente.
     await expect(
@@ -417,7 +434,7 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
         currentSessionVersion,
         institutionAId,
       ).notifications.acknowledgeAccountBadge(),
-    ).resolves.toEqual({ acknowledged: 1, count: 0 });
+    ).resolves.toEqual({ acknowledged: 3, count: 0 });
     const afterRevocationAcknowledgement = await db
       .select({ id: notifications.id, read: notifications.read })
       .from(notifications)
@@ -545,9 +562,29 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
     expect(readById.get(unsupportedType)).toBe(false);
     expect(readById.get(queued)).toBe(false);
     expect(readById.get(submitting)).toBe(false);
-    expect(readById.get(ticketAccepted)).toBe(false);
-    expect(readById.get(receiptChecking)).toBe(false);
+    expect(readById.get(ticketAccepted)).toBe(true);
+    expect(readById.get(receiptChecking)).toBe(true);
     expect(readById.get(otherAccount)).toBe(false);
+
+    // O app pode reconhecer o alerta enquanto o Expo ainda aguarda receipt.
+    // Quando a mesma row transita para SENT, read=true permanece e ela não
+    // ressurge no badge após o retorno ao background.
+    await db
+      .update(notifications)
+      .set({
+        status: "SENT",
+        providerReceipt: trackedReceipt("vacancy_available", accountUserId, {
+          phase: "PROVIDER_ACCEPTED",
+        }),
+      })
+      .where(eq(notifications.id, ticketAccepted));
+    await expect(
+      callerFor(
+        accountUserId,
+        currentSessionVersion,
+        institutionAId,
+      ).notifications.getUnreadAccountBadgeCount(),
+    ).resolves.toEqual({ count: 0 });
     await expect(
       callerFor(
         otherUserId,
@@ -555,6 +592,97 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
         institutionAId,
       ).notifications.getUnreadAccountBadgeCount(),
     ).resolves.toEqual({ count: 1 });
+  });
+
+  it("reconhece sem esperar o Expo e sincroniza zero nos dois iPhones da conta", async () => {
+    await insertNotification({
+      institutionId: institutionAId,
+      userId: accountUserId,
+      dedupSuffix: "multi-device-ack",
+      providerReceipt: trackedReceipt("vacancy_available", accountUserId),
+    });
+    const firstToken = `ExponentPushToken[badge-a-${stamp}]`;
+    const secondToken = `ExponentPushToken[badge-b-${stamp}]`;
+    await db.insert(pushTokens).values([
+      {
+        institutionId: institutionAId,
+        userId: accountUserId,
+        token: firstToken,
+        platform: "ios",
+      },
+      {
+        institutionId: institutionBId,
+        userId: accountUserId,
+        token: secondToken,
+        platform: "ios",
+      },
+    ]);
+
+    let signalFirstFetch!: () => void;
+    const firstFetchStarted = new Promise<void>((resolve) => {
+      signalFirstFetch = resolve;
+    });
+    let releaseFirstFetch!: () => void;
+    const firstFetchRelease = new Promise<void>((resolve) => {
+      releaseFirstFetch = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        signalFirstFetch();
+        await firstFetchRelease;
+        return response(200, {
+          data: { status: "ok", id: "badge-zero-first" },
+        });
+      })
+      .mockResolvedValue(
+        response(200, {
+          data: { status: "ok", id: "badge-zero-second" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const acknowledgement = callerFor(
+      accountUserId,
+      currentSessionVersion,
+      institutionAId,
+    ).notifications.acknowledgeAccountBadge();
+
+    try {
+      await firstFetchStarted;
+      const responseBeforeExpo = await Promise.race([
+        acknowledgement.then((value) => ({ state: "RESOLVED" as const, value })),
+        new Promise<{ state: "BLOCKED" }>((resolve) => {
+          setTimeout(() => resolve({ state: "BLOCKED" }), 500);
+        }),
+      ]);
+      expect(responseBeforeExpo).toEqual({
+        state: "RESOLVED",
+        value: { acknowledged: 1, count: 0 },
+      });
+
+      releaseFirstFetch();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      const bodies = fetchMock.mock.calls.map((call) =>
+        JSON.parse(String((call[1] as RequestInit).body)) as {
+          to: string;
+          badge: number;
+          title?: unknown;
+          body?: unknown;
+        },
+      );
+      expect(new Set(bodies.map((body) => body.to))).toEqual(
+        new Set([firstToken, secondToken]),
+      );
+      expect(bodies.every((body) => body.badge === 0)).toBe(true);
+      expect(bodies.every((body) => !("title" in body) && !("body" in body))).toBe(true);
+    } finally {
+      releaseFirstFetch();
+      vi.unstubAllGlobals();
+      await db.delete(pushTokens).where(
+        inArray(pushTokens.token, [firstToken, secondToken]),
+      );
+    }
   });
 
   it("espera a revogação concorrente e preserva a notificação do vínculo removido", async () => {

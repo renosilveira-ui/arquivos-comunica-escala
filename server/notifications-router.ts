@@ -5,6 +5,7 @@ import {
   countUnreadAccountBadgeNotifications,
   acknowledgeUnreadAccountBadgeNotifications,
 } from "./account-wide-notification-badge";
+import { dispatchAccountWideNativeBadgeSnapshot } from "./notifications-service";
 
 /**
  * Leituras e acknowledgements de badge são deliberadamente account-scoped.
@@ -38,10 +39,17 @@ export const notificationsRouter = router({
       db,
       subject,
     );
+    const count = await countUnreadAccountBadgeNotifications(db, subject);
+    // Atualiza os demais aparelhos iOS da mesma conta sem manter a resposta
+    // da mutação presa à rede do Expo. O sender revalida este tenant e cada
+    // token sob mutex imediatamente antes de submeter o snapshot.
+    if (ctx.institutionId !== null) {
+      dispatchAccountWideNativeBadgeSnapshot(ctx.user.id, ctx.institutionId);
+    }
     return {
       // Não expõe rows nem IDs: devolve somente a verdade reconstruída da
       // conta atual, para o cliente reconciliar o ícone localmente.
-      count: await countUnreadAccountBadgeNotifications(db, subject),
+      count,
       acknowledged,
     };
   }),

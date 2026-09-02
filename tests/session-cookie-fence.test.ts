@@ -1200,6 +1200,133 @@ describe("fence linearizável da sessão web", () => {
     ).resolves.toMatchObject({ status: 401 });
   });
 
+  it("novo login revoga destinos iOS e Android antes de emitir a nova sessão", async () => {
+    await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
+    const staleTokens = [
+      `ExponentPushToken[login-revokes-ios-${STAMP}]`,
+      `ExponentPushToken[login-revokes-android-${STAMP}]`,
+    ];
+    await db.insert(pushTokens).values([
+      {
+        institutionId,
+        userId,
+        token: staleTokens[0],
+        platform: "ios",
+      },
+      {
+        institutionId,
+        userId,
+        token: staleTokens[1],
+        platform: "android",
+      },
+    ]);
+    const [before] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: EMAIL, password: PASSWORD });
+
+    expect(login.status).toBe(200);
+    const [after] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    expect(after.sessionVersion).toBe(before.sessionVersion + 1);
+    await expect(
+      db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.userId, userId)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      request(app)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${login.body.token}`),
+    ).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("falha na revogação durante login reverte sessão, tokens e emissão de JWT", async () => {
+    await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
+    const token = `ExponentPushToken[login-delete-rollback-${STAMP}]`;
+    await db.insert(pushTokens).values({
+      institutionId,
+      userId,
+      token,
+      platform: "ios",
+    });
+    const [before] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    const deleteFailure = vi
+      .spyOn(pushRevocationService, "revokeUserPushRegistrations")
+      .mockRejectedValueOnce(new Error("forced login push delete failure"));
+
+    let failed: SupertestResponse;
+    try {
+      failed = await request(app)
+        .post("/api/auth/login")
+        .send({ email: EMAIL, password: PASSWORD });
+    } finally {
+      deleteFailure.mockRestore();
+    }
+
+    expect(failed.status).toBe(503);
+    expect(failed.body).toEqual({
+      error: "Não foi possível iniciar sessão. Tente novamente.",
+    });
+    expect(failed.body).not.toHaveProperty("token");
+    const [after] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    expect(after.sessionVersion).toBe(before.sessionVersion);
+    await expect(
+      db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.token, token)),
+    ).resolves.toHaveLength(1);
+    await db.delete(pushTokens).where(eq(pushTokens.token, token));
+  });
+
+  it("serializa registro concorrente com login e não deixa token da sessão anterior", async () => {
+    await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
+    const [before] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    const racingToken = `ExponentPushToken[register-login-race-${STAMP}]`;
+
+    const [registration, login] = await Promise.all([
+      registerPushToken(
+        userId,
+        racingToken,
+        "ios",
+        institutionId,
+        before.sessionVersion,
+      ),
+      request(app)
+        .post("/api/auth/login")
+        .send({ email: EMAIL, password: PASSWORD }),
+    ]);
+
+    expect(login.status).toBe(200);
+    expect(typeof registration.success).toBe("boolean");
+    if (!registration.success) {
+      expect(registration.message).toBe("Sessão revogada");
+    }
+    await expect(
+      db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.userId, userId)),
+    ).resolves.toHaveLength(0);
+  });
+
   it("logout real aguarda fetch Expo em voo e revoga antes de qualquer novo envio", async () => {
     const [before] = await db
       .select({ sessionVersion: users.sessionVersion })
@@ -1290,6 +1417,91 @@ describe("fence linearizável da sessão web", () => {
     } finally {
       releaseFetch.resolve();
       if (logoutPromise) await Promise.allSettled([logoutPromise]);
+      vi.unstubAllGlobals();
+      await db.delete(pushTokens).where(eq(pushTokens.token, token));
+    }
+  });
+
+  it("novo login aguarda push em voo e não deixa egress após revogar a sessão anterior", async () => {
+    await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
+    const [before] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    const token = `ExponentPushToken[login-fetch-race-${STAMP}]`;
+    await expect(
+      registerPushToken(
+        userId,
+        token,
+        "ios",
+        institutionId,
+        before.sessionVersion,
+      ),
+    ).resolves.toEqual({
+      success: true,
+      message: "Token registrado com sucesso",
+    });
+
+    const fetchEntered = deferredVoid();
+    const releaseFetch = deferredVoid();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        fetchEntered.resolve();
+        await releaseFetch.promise;
+        return expoTicketResponse("ticket-login-race");
+      })
+      .mockResolvedValue(expoTicketResponse("ticket-unexpected-after-login"));
+    vi.stubGlobal("fetch", fetchMock);
+    let loginSettled = false;
+    let loginPromise: Promise<SupertestResponse> | undefined;
+    try {
+      const sendPromise = sendPushNotification(
+        userId,
+        { title: "Mutex login", body: "envio já autorizado" },
+        institutionId,
+      );
+      await fetchEntered.promise;
+      loginPromise = request(app)
+        .post("/api/auth/login")
+        .send({ email: EMAIL, password: PASSWORD })
+        .then((response) => {
+          loginSettled = true;
+          return response;
+        });
+
+      await waitForPushLockWaiter(db, userId);
+      expect(loginSettled).toBe(false);
+      await expect(
+        db
+          .select({ sessionVersion: users.sessionVersion })
+          .from(users)
+          .where(eq(users.id, userId)),
+      ).resolves.toEqual([{ sessionVersion: before.sessionVersion }]);
+
+      releaseFetch.resolve();
+      await expect(sendPromise).resolves.toMatchObject({
+        status: "TICKETS_ACCEPTED",
+      });
+      const login = await loginPromise;
+      expect(login.status).toBe(200);
+      await expect(
+        db
+          .select({ id: pushTokens.id })
+          .from(pushTokens)
+          .where(eq(pushTokens.userId, userId)),
+      ).resolves.toHaveLength(0);
+      await expect(
+        sendPushNotification(
+          userId,
+          { title: "Depois do login", body: "não enviar" },
+          institutionId,
+        ),
+      ).resolves.toMatchObject({ status: "NO_REGISTERED_TOKENS" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseFetch.resolve();
+      if (loginPromise) await Promise.allSettled([loginPromise]);
       vi.unstubAllGlobals();
       await db.delete(pushTokens).where(eq(pushTokens.token, token));
     }
