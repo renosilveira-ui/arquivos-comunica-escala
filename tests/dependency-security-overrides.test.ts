@@ -62,6 +62,12 @@ type PlistApi = {
   parse: (source: string) => Record<string, unknown>;
 };
 
+type FastUriApi = {
+  normalize: (source: string) => string;
+  parse: (source: string) => { error?: string; host?: string };
+  resolve: (base: string, reference: string) => string;
+};
+
 const projectRequire = createRequire(import.meta.url);
 const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -103,6 +109,37 @@ function resolvedPackageVersion(entryPath: string, expectedName: string) {
 }
 
 describe("dependency security overrides", () => {
+  it("resolves AJV to fast-uri 3.1.6 and rejects host-confusion inputs", () => {
+    const fastUriEntry = projectRequire.resolve("fast-uri");
+    const fastUri = projectRequire("fast-uri") as FastUriApi;
+    const ajvFastUriEntry = requireFrom("ajv").resolve("fast-uri");
+
+    expect(resolvedPackageVersion(fastUriEntry, "fast-uri")).toBe("3.1.6");
+    expect(resolvedPackageVersion(ajvFastUriEntry, "fast-uri")).toBe(
+      "3.1.6",
+    );
+
+    const malformedIpv6 = "http://[::not-valid]/private";
+    expect(fastUri.parse(malformedIpv6).error).toBe("URI host is malformed.");
+    expect(fastUri.normalize(malformedIpv6)).toBe(malformedIpv6);
+
+    const encodedLocalhost =
+      "http://%256c%256f%2563%2561%256c%2568%256f%2573%2574/";
+    expect(fastUri.parse(encodedLocalhost).error).toBeDefined();
+    expect(fastUri.normalize(encodedLocalhost)).toBe(encodedLocalhost);
+
+    const encodedScheme = "%2f%2fevil.example:/pwn";
+    expect(fastUri.parse(encodedScheme).error).toBe("URI scheme is malformed.");
+    expect(fastUri.normalize(encodedScheme)).toBe(encodedScheme);
+
+    const resolvedIdn = fastUri.resolve(
+      "https://base.example/a",
+      "//münich.example/path",
+    );
+    expect(resolvedIdn).toBe("https://xn--mnich-kva.example/path");
+    expect(fastUri.parse(resolvedIdn).host).toBe("xn--mnich-kva.example");
+  });
+
   it("resolves every xmldom consumer to 0.8.15 and rejects invalid entity references", () => {
     const xmldomEntry = projectRequire.resolve("@xmldom/xmldom");
     const xmldom = projectRequire("@xmldom/xmldom") as XmldomApi;
