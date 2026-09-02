@@ -236,7 +236,7 @@ export function PanoramicAgenda({
                   {
                     label: "Vago",
                     Icon: CircleDashed,
-                    color: theme.colors.textSecondary,
+                    color: theme.colors.textDisabled,
                   },
                   {
                     label: "Pendente",

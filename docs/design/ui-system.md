@@ -354,8 +354,11 @@ estados, sizes, padding, padrões de uso.
 
 ### 6.1 Button
 
-Variantes (5):
+Variantes (6):
 
+- **`brand`** — bg navy da marca, text white. Ação dominante nas superfícies
+  operacionais mobile alinhadas à personalidade Escala+; no máximo uma por
+  bloco decisório.
 - **`primary`** — bg primary, text white. Para ação principal de fluxo.
   Único por tela (regra de UX clássico — Phase 1 §1.1 heurística #8).
 - **`secondary`** — bg neutral.0, border neutral.200, text textPrimary.

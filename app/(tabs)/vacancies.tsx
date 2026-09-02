@@ -1,8 +1,7 @@
 import {
   ActivityIndicator,
-  ScrollView,
+  Pressable,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
@@ -20,10 +19,8 @@ import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   Briefcase,
-  Clock,
   MapPin,
   Building2,
-  Calendar,
 } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
@@ -319,7 +316,7 @@ export default function VacanciesScreen() {
   const vacanciesSubtitle = canDisplayOperationalListCount(
     vacanciesContentState,
   )
-    ? `${vacancies.length} plantão${vacancies.length === 1 ? "" : "ões"} aguardando profissional`
+    ? `${vacancies.length} ${vacancies.length === 1 ? "plantão" : "plantões"} aguardando profissional`
     : vacanciesContentState === "LOADING"
       ? "Buscando plantões sem profissional…"
       : vacanciesContentState === "ERROR"
@@ -368,6 +365,7 @@ export default function VacanciesScreen() {
   const assumeVacancyMutation =
     trpc.shiftAssignments.assumeVacancy.useMutation();
   const [assumeVacancyBusy, setAssumeVacancyBusy] = useState(false);
+  const [assumeVacancyId, setAssumeVacancyId] = useState<number | null>(null);
   const assumeVacancyLockRef = useRef(false);
 
   const handleAssumeVacancy = async (
@@ -412,6 +410,7 @@ export default function VacanciesScreen() {
 
     assumeVacancyLockRef.current = true;
     setAssumeVacancyBusy(true);
+    setAssumeVacancyId(vacancyId);
     console.log("[Vacancies] Calling assumeVacancyMutation.mutate");
     try {
       await assumeVacancyMutation.mutateAsync({
@@ -428,6 +427,7 @@ export default function VacanciesScreen() {
       }
       assumeVacancyLockRef.current = false;
       setAssumeVacancyBusy(false);
+      setAssumeVacancyId(null);
       return;
     }
 
@@ -445,6 +445,7 @@ export default function VacanciesScreen() {
     } finally {
       assumeVacancyLockRef.current = false;
       setAssumeVacancyBusy(false);
+      setAssumeVacancyId(null);
     }
   };
 
@@ -596,16 +597,17 @@ export default function VacanciesScreen() {
 
   if (vacanciesGateState === "LOADING") {
     return (
-      <ScreenGradient variant="light">
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text
-            className="mt-4 text-base"
-            style={{ color: theme.colors.textSecondary }}
-          >
-            Carregando...
-          </Text>
-        </View>
+      <ScreenGradient variant="light" scrollable>
+        <ScreenContainer>
+          <SectionHeader
+            size="page"
+            eyebrow="Plantões em aberto"
+            title="Vagas"
+            subtitle="Confirmando seu acesso e os filtros desta instituição…"
+            style={{ marginBottom: theme.space[5] }}
+          />
+          <SkeletonList count={3} />
+        </ScreenContainer>
       </ScreenGradient>
     );
   }
@@ -689,7 +691,8 @@ export default function VacanciesScreen() {
       <ScreenContainer>
         <SectionHeader
           size="page"
-          title="Plantões em aberto"
+          eyebrow="Plantões em aberto"
+          title="Vagas"
           subtitle={vacanciesSubtitle}
           style={{ marginBottom: theme.space[5] }}
         />
@@ -703,7 +706,7 @@ export default function VacanciesScreen() {
                 gap: theme.space[3],
               }}
             >
-              <ActivityIndicator size="small" color={theme.colors.primary} />
+              <ActivityIndicator size="small" color={theme.colors.brand} />
               <Text
                 style={{
                   ...theme.text.body,
@@ -748,14 +751,27 @@ export default function VacanciesScreen() {
           />
         </Surface>
 
-        {/* Filtro por modalidade (chips) — PR #66 */}
-        <View style={{ marginBottom: theme.space[5] }}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{
-              gap: theme.space[2],
-              paddingRight: theme.space[2],
+        {/* Filtro por modalidade: segmento compacto, sem rolagem horizontal. */}
+        <Surface padded="compact" level="card" style={{ marginBottom: theme.space[5] }}>
+          <Text
+            style={{
+              ...theme.text.eyebrow,
+              fontWeight: theme.weight.bold,
+              color: theme.colors.textMuted,
+              textTransform: "uppercase",
+              marginBottom: theme.space[2],
+            }}
+          >
+            Modalidade
+          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              padding: 2,
+              borderRadius: theme.radius.lg,
+              borderWidth: 1,
+              borderColor: theme.colors.borderStrong,
+              backgroundColor: theme.colors.surfaceAlt,
             }}
           >
             {[
@@ -765,43 +781,47 @@ export default function VacanciesScreen() {
             ].map((opt) => {
               const selected = modalityFilter === opt.value;
               return (
-                <TouchableOpacity
+                <Pressable
                   key={opt.label}
                   onPress={() => setModalityFilter(opt.value)}
                   accessibilityRole="button"
                   accessibilityState={{ selected }}
                   accessibilityLabel={`Filtrar por ${opt.label}`}
-                  style={{
+                  style={({ pressed }) => ({
+                    flex: 1,
                     minHeight: theme.space[10],
                     justifyContent: "center",
-                    paddingHorizontal: theme.space[4],
+                    alignItems: "center",
+                    paddingHorizontal: theme.space[1],
                     paddingVertical: theme.space[2],
-                    borderRadius: theme.radius.full,
+                    borderRadius: theme.radius.md,
                     backgroundColor: selected
-                      ? theme.colors.primary
-                      : theme.colors.surfaceAlt,
-                    borderWidth: 1,
+                      ? theme.colors.surface
+                      : "transparent",
+                    borderWidth: selected ? 1 : 0,
                     borderColor: selected
-                      ? theme.colors.primary
-                      : theme.colors.border,
-                  }}
+                      ? theme.colors.borderStrong
+                      : "transparent",
+                    opacity: pressed ? 0.8 : 1,
+                    ...(selected ? theme.shadow.sm : {}),
+                  })}
                 >
                   <Text
                     style={{
                       ...theme.text.body,
                       color: selected
-                        ? theme.colors.onDark.text
-                        : theme.colors.textPrimary,
-                      fontWeight: theme.weight.semibold,
+                        ? theme.colors.brand
+                        : theme.colors.textSecondary,
+                      fontWeight: selected ? theme.weight.bold : theme.weight.medium,
                     }}
                   >
                     {opt.label}
                   </Text>
-                </TouchableOpacity>
+                </Pressable>
               );
             })}
-          </ScrollView>
-        </View>
+          </View>
+        </Surface>
 
         {/* Carregando: skeleton com a forma dos cards */}
         {vacanciesContentState === "LOADING" ? (
@@ -823,11 +843,68 @@ export default function VacanciesScreen() {
                 vacancy.coverageType,
               );
               return (
-                <Surface key={vacancy.id} level="card">
-                  {/* Cabeçalho do card */}
-                  <View className="flex-row items-center justify-between mb-3">
-                    <View className="flex-row items-center gap-2 flex-shrink">
-                      <Briefcase size={20} color={theme.colors.primary} />
+                <Surface
+                  key={vacancy.id}
+                  level="card"
+                  padded={false}
+                  style={{
+                    borderColor: theme.colors.borderStrong,
+                    borderLeftWidth: 4,
+                    borderLeftColor: theme.colors.statusVagoActionable,
+                    ...theme.shadow.sm,
+                  }}
+                >
+                  <View style={{ padding: theme.space[4], gap: theme.space[3] }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                      {modalityLabel ? (
+                        <View
+                          style={{
+                            paddingHorizontal: theme.space[2],
+                            minHeight: theme.space[5],
+                            justifyContent: "center",
+                            borderRadius: theme.radius.md,
+                            backgroundColor: theme.colors.surfaceAlt,
+                            borderWidth: 1,
+                            borderColor: theme.colors.borderStrong,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              ...theme.text.caption,
+                              color: theme.colors.textSecondary,
+                              fontWeight: theme.weight.semibold,
+                            }}
+                          >
+                            {modalityLabel}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={{ marginLeft: "auto" }}>
+                        <ShiftStatusBadge status="VAGO" context="actionable" />
+                      </View>
+                    </View>
+
+                    <View style={{ gap: theme.space[1] }}>
+                      <Text
+                        style={{
+                          ...theme.text.eyebrow,
+                          fontWeight: theme.weight.bold,
+                          color: theme.colors.textMuted,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {formatDate(vacancy.date)}
+                      </Text>
+                      <Text
+                        style={{
+                          ...theme.text.titleLg,
+                          fontFamily: theme.fontFamily.mono,
+                          fontWeight: theme.weight.bold,
+                          color: theme.colors.textPrimary,
+                        }}
+                      >
+                        {vacancy.startTime}–{vacancy.endTime}
+                      </Text>
                       <Text
                         style={{
                           ...theme.text.titleSm,
@@ -838,88 +915,60 @@ export default function VacanciesScreen() {
                         {vacancy.shift}
                       </Text>
                     </View>
-                    {/* Vaga é ação possível aqui → tom danger (lib/shift-status). */}
-                    <ShiftStatusBadge status="VAGO" context="actionable" />
-                  </View>
 
-                  {/* Badge de modalidade (PR #66). Oculto em rows legadas sem modality. */}
-                  {modalityLabel && (
-                    <View className="mb-3 flex-row">
-                      <View
-                        style={{
-                          paddingHorizontal: theme.space[2],
-                          height: theme.space[5],
-                          justifyContent: "center",
-                          borderRadius: theme.radius.full,
-                          backgroundColor: theme.colors.primarySoft,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            ...theme.text.caption,
-                            color: theme.palette.primary[700],
-                            fontWeight: theme.weight.semibold,
-                          }}
-                        >
-                          {modalityLabel}
+                    <View style={{ gap: theme.space[2] }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                        <MapPin size={16} color={theme.colors.textSecondary} />
+                        <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, flex: 1 }}>
+                          {vacancy.sector}
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                        <Building2 size={16} color={theme.colors.textSecondary} />
+                        <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, flex: 1 }}>
+                          {vacancy.hospital}
                         </Text>
                       </View>
                     </View>
-                  )}
-
-                  {/* Informações do turno */}
-                  <View className="gap-2 mb-4">
-                    <View className="flex-row items-center gap-2">
-                      <Calendar size={16} color={theme.colors.textSecondary} />
-                      <Text
-                        className="text-sm"
-                        style={{ color: theme.colors.textSecondary }}
-                      >
-                        {formatDate(vacancy.date)}
-                      </Text>
-                    </View>
-                    <View className="flex-row items-center gap-2">
-                      <Clock size={16} color={theme.colors.textSecondary} />
-                      <Text
-                        className="text-sm"
-                        style={{ color: theme.colors.textSecondary }}
-                      >
-                        {vacancy.startTime} - {vacancy.endTime}
-                      </Text>
-                    </View>
-                    <View className="flex-row items-center gap-2">
-                      <MapPin size={16} color={theme.colors.textSecondary} />
-                      <Text
-                        className="text-sm"
-                        style={{ color: theme.colors.textSecondary }}
-                      >
-                        {vacancy.sector}
-                      </Text>
-                    </View>
-                    <View className="flex-row items-center gap-2">
-                      <Building2 size={16} color={theme.colors.textSecondary} />
-                      <Text
-                        className="text-sm"
-                        style={{ color: theme.colors.textSecondary }}
-                      >
-                        {vacancy.hospital}
-                      </Text>
-                    </View>
                   </View>
 
-                  {/* Botão de ação */}
-                  <AppButton
-                    title={assumeVacancyBusy ? "Enviando…" : "Assumir plantão"}
-                    variant="primary"
-                    size="lg"
-                    disabled={!vacancy.canAssume || assumeVacancyBusy}
-                    onPress={() =>
-                      handleAssumeVacancy(
-                        vacancy.id,
-                        `${vacancy.shift} - ${vacancy.sector} (${formatDate(vacancy.date)})`,
-                      )
-                    }
-                  />
+                  <View
+                    style={{
+                      padding: theme.space[3],
+                      gap: theme.space[2],
+                      borderTopWidth: 1,
+                      borderTopColor: theme.colors.border,
+                      backgroundColor: theme.colors.surfaceAlt,
+                    }}
+                  >
+                    <AppButton
+                      title={
+                        assumeVacancyBusy && assumeVacancyId === vacancy.id
+                          ? "Enviando…"
+                          : "Solicitar plantão"
+                      }
+                      variant="brand"
+                      size="lg"
+                      disabled={!vacancy.canAssume || assumeVacancyBusy}
+                      onPress={() =>
+                        handleAssumeVacancy(
+                          vacancy.id,
+                          `${vacancy.shift} - ${vacancy.sector} (${formatDate(vacancy.date)})`,
+                        )
+                      }
+                    />
+                    <Text
+                      style={{
+                        ...theme.text.caption,
+                        color: theme.colors.textSecondary,
+                        textAlign: "center",
+                      }}
+                    >
+                      {vacancy.canAssume
+                        ? "O gestor confirma a solicitação antes de incluir o plantão na sua agenda."
+                        : "Seu vínculo atual não permite solicitar esta vaga."}
+                    </Text>
+                  </View>
                 </Surface>
               );
             })}

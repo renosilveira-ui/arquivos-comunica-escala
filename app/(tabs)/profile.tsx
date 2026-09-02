@@ -37,7 +37,6 @@ import {
 } from "react-native";
 import {
   AlertTriangle,
-  ArrowRightLeft,
   Bell,
   Building2,
   CalendarDays,
@@ -50,7 +49,6 @@ import {
   MessageCircle,
   ShieldCheck,
   Trash2,
-  UserPlus,
   X,
 } from "lucide-react-native";
 import Constants from "expo-constants";
@@ -537,29 +535,15 @@ export default function ProfileScreen() {
             </View>
           ) : null}
 
-          {/* ── Sua atividade ── */}
+          {/* Trocas e candidaturas vivem na aba Trocas; Perfil mantém só auditoria. */}
           <View style={{ gap: theme.space[2] }}>
-            <SectionHeader title="Sua atividade" eyebrow="Cessões e trocas" />
+            <SectionHeader title="Sua atividade" eyebrow="Rastreabilidade" />
             <Surface padded={false}>
-              <ListRow
-                title="Minhas ofertas"
-                subtitle="Plantões que você ofereceu — quem assumir leva na hora"
-                Icon={ArrowRightLeft}
-                divided={false}
-                onPress={go("/my-offers")}
-                accessibilityLabel="Ver minhas ofertas de cessão e troca"
-              />
-              <ListRow
-                title="Suas candidaturas"
-                subtitle="Ofertas e vagas que você assumiu ou pediu"
-                Icon={UserPlus}
-                onPress={go("/my-applications")}
-                accessibilityLabel="Ver suas candidaturas a cessões e trocas"
-              />
               <ListRow
                 title="Movimentações de plantão"
                 subtitle="Quem alterou, quem foi alterado e quando — últimos 30 dias"
                 Icon={History}
+                divided={false}
                 onPress={go("/audit-log")}
                 accessibilityLabel="Ver auditoria de movimentações de plantão"
               />
@@ -665,14 +649,13 @@ export default function ProfileScreen() {
             </Surface>
           </View>
 
-          {/* ── Conta: sair e excluir (Apple 5.1.1(v)) ── */}
+          {/* Sair é reversível; excluir é destrutivo e permanece visível (Apple 5.1.1(v)). */}
           <View style={{ gap: theme.space[2] }}>
-            <SectionHeader title="Conta" eyebrow="Zona de risco" />
-            <Surface padded={false} style={{ borderColor: theme.palette.danger[100] }}>
+            <SectionHeader title="Conta" eyebrow="Sessão e privacidade" />
+            <Surface padded={false}>
               <ListRow
                 title={isLoggingOut ? "Saindo…" : "Sair da conta"}
                 Icon={LogOut}
-                tone="danger"
                 divided={false}
                 onPress={isLoggingOut ? undefined : requestLogout}
                 accessibilityLabel="Sair da conta"
@@ -680,19 +663,25 @@ export default function ProfileScreen() {
                   isLoggingOut ? (
                     <ActivityIndicator
                       size="small"
-                      color={theme.palette.danger[600]}
+                      color={theme.colors.textSecondary}
                     />
                   ) : undefined
                 }
               />
+            </Surface>
+            <Surface
+              padded={false}
+              tone="danger"
+              style={{ borderColor: theme.palette.danger[200] }}
+            >
               <ListRow
                 title="Excluir minha conta"
                 subtitle="Remove seus dados e encerra o acesso. Não pode ser desfeito."
                 Icon={Trash2}
                 tone="danger"
+                divided={false}
                 onPress={handleDeleteAccountPress}
                 accessibilityLabel="Excluir minha conta"
-                style={{ backgroundColor: theme.colors.dangerSoft }}
               />
             </Surface>
           </View>

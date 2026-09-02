@@ -5,7 +5,7 @@
 // Aceitar/recusar muda a escala de duas pessoas: sempre confirma antes,
 // em web e nativo; resultado vira toast (use-action-feedback).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { ArrowRightLeft, Check, X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
@@ -49,6 +49,9 @@ interface Props {
   /** Mostra um estado vazio em vez de sumir quando não há ofertas. */
   showEmpty?: boolean;
   title?: string;
+  showHeader?: boolean;
+  /** Publica somente contagens confirmadas, nunca cache stale em erro. */
+  onCountChange?: (count: number) => void;
 }
 
 const fmtDate = (value: Date | string) =>
@@ -56,7 +59,12 @@ const fmtDate = (value: Date | string) =>
 
 const fmtTime = (s: Date | string, e: Date | string) => formatHospitalTimeRange(s, e);
 
-export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponíveis" }: Props) {
+export function AvailableSwapsList({
+  showEmpty = false,
+  title = "Trocas disponíveis",
+  showHeader = true,
+  onCountChange,
+}: Props) {
   const { user } = useAuth();
   const utils = trpc.useUtils();
   const feedback = useActionFeedback();
@@ -74,6 +82,7 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
     { enabled: !!user?.id },
   );
   const swaps = (data ?? []) as AvailableSwap[];
+  const actionableSwapCount = swaps.filter(listedSwapIsActionable).length;
   const contentState = resolveOperationalListState({
     isLoading,
     isPending,
@@ -82,6 +91,12 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
     itemCount: swaps.length,
     error,
   });
+
+  useEffect(() => {
+    if (contentState === "READY" || contentState === "EMPTY") {
+      onCountChange?.(actionableSwapCount);
+    }
+  }, [actionableSwapCount, contentState, onCountChange]);
 
   const invalidateSwapQueries = () =>
     Promise.all([
@@ -189,27 +204,29 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
 
   return (
     <View style={{ gap: theme.space[3] }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-        <ArrowRightLeft size={22} color={theme.colors.primary} />
-        <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
-          {title}
-        </Text>
-        <View
-          style={{
-            backgroundColor: theme.colors.primary,
-            borderRadius: theme.radius.full,
-            minWidth: theme.space[6],
-            height: theme.space[6],
-            alignItems: "center",
-            justifyContent: "center",
-            paddingHorizontal: theme.space[2],
-          }}
-        >
-          <Text style={{ ...theme.text.caption, fontWeight: theme.weight.bold, color: theme.colors.onDark.text }}>
-            {swaps.length}
+      {showHeader ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+          <ArrowRightLeft size={22} color={theme.colors.brand} />
+          <Text style={{ ...theme.text.titleLg, fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
+            {title}
           </Text>
+          <View
+            style={{
+              backgroundColor: theme.colors.brand,
+              borderRadius: theme.radius.full,
+              minWidth: theme.space[6],
+              height: theme.space[6],
+              alignItems: "center",
+              justifyContent: "center",
+              paddingHorizontal: theme.space[2],
+            }}
+          >
+            <Text style={{ ...theme.text.caption, fontWeight: theme.weight.bold, color: theme.colors.onDark.text }}>
+              {actionableSwapCount}
+            </Text>
+          </View>
         </View>
-      </View>
+      ) : null}
 
       {swaps.map((sw) => {
         const isSwap = sw.type === "SWAP";
@@ -221,9 +238,12 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
               backgroundColor: theme.colors.surface,
               borderRadius: theme.radius.lg,
               borderWidth: 1,
-              borderColor: theme.colors.border,
+              borderColor: theme.colors.borderStrong,
+              borderLeftWidth: 4,
+              borderLeftColor: theme.colors.brand,
               padding: theme.space[4],
               gap: theme.space[2],
+              ...theme.shadow.sm,
             }}
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
@@ -233,14 +253,16 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
                   height: theme.space[5],
                   justifyContent: "center",
                   borderRadius: theme.radius.full,
-                  backgroundColor: isSwap ? theme.colors.primarySoft : theme.colors.warningSoft,
+                  backgroundColor: theme.colors.surfaceAlt,
+                  borderWidth: 1,
+                  borderColor: theme.colors.borderStrong,
                 }}
               >
                 <Text
                   style={{
                     ...theme.text.caption,
                     fontWeight: theme.weight.semibold,
-                    color: isSwap ? theme.palette.primary[700] : theme.palette.warning[700],
+                    color: theme.colors.textSecondary,
                   }}
                 >
                   {isSwap ? "Troca" : "Repasse"}
@@ -285,7 +307,7 @@ export function AvailableSwapsList({ showEmpty = false, title = "Trocas disponí
                 <ActionButton
                   label="Aceitar"
                   icon={<Check size={18} color={theme.colors.onDark.text} />}
-                  tone="success"
+                  tone="primary"
                   loading={mine && acting?.action === "accept"}
                   disabled={busy}
                   onPress={() => handle(sw, "accept")}
@@ -317,12 +339,12 @@ function ActionButton({
 }: {
   label: string;
   icon: React.ReactNode;
-  tone: "success" | "neutral";
+  tone: "primary" | "neutral";
   loading: boolean;
   disabled: boolean;
   onPress: () => void;
 }) {
-  const isSuccess = tone === "success";
+  const isPrimary = tone === "primary";
   return (
     <Pressable
       onPress={onPress}
@@ -338,14 +360,14 @@ function ActionButton({
         gap: theme.space[2],
         minHeight: theme.space[10] + theme.space[1],
         borderRadius: theme.radius.md,
-        backgroundColor: isSuccess ? theme.colors.success : theme.colors.surface,
-        borderWidth: isSuccess ? 0 : 1,
-        borderColor: theme.colors.border,
+        backgroundColor: isPrimary ? theme.colors.brand : theme.colors.surface,
+        borderWidth: 1,
+        borderColor: isPrimary ? theme.colors.brand : theme.colors.borderStrong,
         opacity: disabled ? 0.6 : pressed ? 0.85 : 1,
       })}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={isSuccess ? theme.colors.onDark.text : theme.colors.textPrimary} />
+        <ActivityIndicator size="small" color={isPrimary ? theme.colors.onDark.text : theme.colors.textPrimary} />
       ) : (
         <>
           {icon}
@@ -353,7 +375,7 @@ function ActionButton({
             style={{
               ...theme.text.body,
               fontWeight: theme.weight.semibold,
-              color: isSuccess ? theme.colors.onDark.text : theme.colors.textPrimary,
+              color: isPrimary ? theme.colors.onDark.text : theme.colors.textPrimary,
             }}
           >
             {label}

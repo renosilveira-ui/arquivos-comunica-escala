@@ -71,6 +71,8 @@ export function CalendarFrame({
 export interface LegendItem {
   label: string;
   color: string;
+  /** Contraste externo quando a própria cor coincide com a faixa navy. */
+  backdropColor?: string;
 }
 
 /** Faixa navy com a legenda — vive DENTRO da moldura, no topo. */
@@ -89,7 +91,25 @@ export function CalendarLegend({ items, trailing }: { items: LegendItem[]; trail
     >
       {items.map((item) => (
         <View key={item.label} style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] }}>
-          <View style={{ width: 9, height: 4, borderRadius: 2, backgroundColor: item.color }} />
+          <View
+            style={{
+              width: item.backdropColor ? 13 : 9,
+              height: item.backdropColor ? 8 : 4,
+              padding: item.backdropColor ? 2 : 0,
+              borderRadius: 4,
+              backgroundColor: item.backdropColor ?? item.color,
+            }}
+          >
+            {item.backdropColor ? (
+              <View
+                style={{
+                  flex: 1,
+                  borderRadius: 2,
+                  backgroundColor: item.color,
+                }}
+              />
+            ) : null}
+          </View>
           <Text style={{ ...theme.text.eyebrow, letterSpacing: 0.5, fontWeight: theme.weight.semibold, color: theme.colors.onDark.textSoft }}>
             {item.label}
           </Text>

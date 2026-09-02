@@ -3,12 +3,12 @@ import { Pressable, Text, ViewStyle, TextStyle } from "react-native";
 import { theme } from "@/lib/theme";
 
 /**
- * AppButton — versão native. Espelha a spec §6.1 (5 variants × 3 sizes).
+ * AppButton — versão native. Espelha a spec §6.1 (6 variants × 3 sizes).
  *
  * Mantém paridade visual com AppButton.web (cores, sizes, radius via tokens).
  */
 
-type Variant = "primary" | "secondary" | "danger" | "ghost" | "link";
+type Variant = "brand" | "primary" | "secondary" | "danger" | "ghost" | "link";
 type Size = "sm" | "md" | "lg";
 
 type Props = {
@@ -48,6 +48,11 @@ const SIZE_MAP: Record<
 
 function variantStyles(variant: Variant): { container: ViewStyle; text: TextStyle } {
   switch (variant) {
+    case "brand":
+      return {
+        container: { backgroundColor: theme.colors.brand },
+        text: { color: theme.colors.onDark.text },
+      };
     case "primary":
       return {
         container: { backgroundColor: theme.colors.primary },

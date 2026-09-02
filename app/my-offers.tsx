@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
@@ -52,7 +53,13 @@ function formatTimeRange(start: Date, end: Date): string {
   return formatHospitalTimeRange(start, end);
 }
 
-export default function MyOffersScreen() {
+export default function MyOffersScreen({
+  embedded = false,
+  onCountChange,
+}: {
+  embedded?: boolean;
+  onCountChange?: (count: number) => void;
+} = {}) {
   const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -122,7 +129,26 @@ export default function MyOffersScreen() {
     router.back();
   };
 
+  const offers = (data ?? []) as any[];
+  const openOffers = offers.filter(
+    (o) => o.status === "PENDING" || o.status === "ACCEPTED",
+  );
+  const history = offers.filter(
+    (o) => o.status !== "PENDING" && o.status !== "ACCEPTED",
+  );
+
+  useEffect(() => {
+    if (data !== undefined && !isError) onCountChange?.(openOffers.length);
+  }, [data, isError, onCountChange, openOffers.length]);
+
   if (authLoading) {
+    if (embedded) {
+      return (
+        <View style={{ alignItems: "center", paddingVertical: theme.space[20] }}>
+          <ActivityIndicator size="large" color={theme.colors.brand} />
+        </View>
+      );
+    }
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
@@ -133,6 +159,16 @@ export default function MyOffersScreen() {
   }
 
   if (!user) {
+    if (embedded) {
+      return (
+        <View style={{ alignItems: "center", paddingVertical: theme.space[20] }}>
+          <AlertCircle size={48} color={theme.colors.textMuted} />
+          <Text style={{ ...theme.text.bodyLg, color: theme.colors.textMuted, marginTop: theme.space[4] }}>
+            Faça login para ver suas ofertas
+          </Text>
+        </View>
+      );
+    }
     return (
       <ScreenGradient>
         <View className="flex-1 items-center justify-center">
@@ -145,28 +181,7 @@ export default function MyOffersScreen() {
     );
   }
 
-  const offers = (data ?? []) as any[];
-  const openOffers = offers.filter(
-    (o) => o.status === "PENDING" || o.status === "ACCEPTED",
-  );
-  const history = offers.filter(
-    (o) => o.status !== "PENDING" && o.status !== "ACCEPTED",
-  );
-
-  return (
-    <ScreenGradient>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 }}>
-        {/* Header */}
-        <View className="flex-row items-center gap-3 mb-6">
-          <TouchableOpacity onPress={handleBack} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Voltar">
-            <ChevronLeft size={28} color={theme.colors.textPrimary} />
-          </TouchableOpacity>
-          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>
-            Minhas ofertas
-          </Text>
-        </View>
-
-        {isLoading ? (
+  const content = isLoading ? (
           <View className="items-center py-20">
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>
@@ -230,7 +245,24 @@ export default function MyOffersScreen() {
               </View>
             )}
           </View>
-        )}
+        );
+
+  if (embedded) {
+    return <View style={{ gap: theme.space[4] }}>{content}</View>;
+  }
+
+  return (
+    <ScreenGradient>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 }}>
+        <View className="flex-row items-center gap-3 mb-6">
+          <TouchableOpacity onPress={handleBack} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Voltar">
+            <ChevronLeft size={28} color={theme.colors.textPrimary} />
+          </TouchableOpacity>
+          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>
+            Minhas ofertas
+          </Text>
+        </View>
+        {content}
       </ScrollView>
     </ScreenGradient>
   );
@@ -253,26 +285,34 @@ function OfferCard({
   const toEnd = offer.toShift?.endAt ? new Date(offer.toShift.endAt) : null;
   const expiresAt = offer.expiresAt ? new Date(offer.expiresAt) : null;
   const candidateName = offer.toProfessional?.name as string | undefined;
+  const needsDecision = offer.awaitingMyApproval === true;
 
   return (
     <View
       className="rounded-2xl border p-4 gap-3"
       style={{
-        backgroundColor: theme.colors.surface,
-        borderColor: theme.colors.border,
+        backgroundColor: needsDecision ? theme.colors.brandSoft : theme.colors.surface,
+        borderColor: needsDecision ? theme.colors.brand : theme.colors.borderStrong,
+        borderLeftWidth: 4,
+        borderLeftColor: needsDecision ? theme.colors.brand : theme.colors.borderStrong,
+        ...theme.shadow.sm,
       }}
     >
       {/* Cabeçalho: tipo + status */}
       <View className="flex-row items-center justify-between">
         <View
           className="rounded-full px-3 py-1"
-          style={{ backgroundColor: theme.colors.primarySoft }}
+          style={{
+            backgroundColor: theme.colors.surfaceAlt,
+            borderWidth: 1,
+            borderColor: theme.colors.borderStrong,
+          }}
         >
-          <Text className="text-xs font-semibold" style={{ color: theme.colors.primary }}>
+          <Text className="text-xs font-semibold" style={{ color: theme.colors.textSecondary }}>
             {TYPE_LABEL[type] ?? type}
           </Text>
         </View>
-        <Text className="text-xs" style={{ color: theme.colors.textMuted }}>
+        <Text className="text-xs" style={{ color: needsDecision ? theme.colors.brand : theme.colors.textMuted }}>
           {STATUS_LABEL[status] ?? status}
         </Text>
       </View>
@@ -352,7 +392,7 @@ function OfferCard({
           accessibilityRole="button"
           accessibilityLabel="Concluir candidatura antiga"
           className="rounded-xl py-2 items-center justify-center"
-          style={{ backgroundColor: theme.colors.primary }}
+          style={{ backgroundColor: theme.colors.brand }}
         >
           <Text className="text-sm font-medium" style={{ color: theme.colors.onDark.text }}>
             Concluir candidatura

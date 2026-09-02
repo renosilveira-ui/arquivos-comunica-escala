@@ -198,11 +198,13 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(pushVacanciesRoute).toBeGreaterThan(publishIntent);
   });
 
-  it("rota canônica de Assumir plantão existe no mobile", () => {
+  it("rota canônica de Solicitar plantão existe no mobile", () => {
     const vacancies = readFileSync("app/(tabs)/vacancies.tsx", "utf8");
     const tabs = readFileSync("app/(tabs)/_layout.tsx", "utf8");
+    expect(vacancies).toContain('"Solicitar plantão"');
+    expect(vacancies).toContain('"Enviando…"');
     expect(vacancies).toContain(
-      'title={assumeVacancyBusy ? "Enviando…" : "Assumir plantão"}',
+      "assumeVacancyBusy && assumeVacancyId === vacancy.id",
     );
     expect(vacancies).toContain(
       "disabled={!vacancy.canAssume || assumeVacancyBusy}",
