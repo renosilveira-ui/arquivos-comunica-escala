@@ -43,6 +43,9 @@ export const ACCOUNT_WIDE_BADGE_NOTIFICATION_TYPES = [
   "swap_offer",
   "swap_taken",
   "vacancy_available",
+  "vacancy_request_created",
+  "vacancy_request_approved",
+  "vacancy_request_rejected",
   "invite_accepted",
   "invite_declined",
 ] as const;
