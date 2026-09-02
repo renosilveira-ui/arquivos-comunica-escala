@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { rowsFromExecute } from "./_core/db-results";
-import { dayWindowBrt } from "./local-time";
+import { dayKeyBrt, dayWindowBrt } from "./local-time";
 import { assertMonthNotLockedForUpdate } from "./month-guards";
 import { eq, and, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -982,6 +982,52 @@ const shiftInstancesRouter = router({
           | "PRODUTIVIDADE_PURA",
         productivityCapBrl: (r.productivityCapBrl ?? null) as string | null,
       }));
+    }),
+
+  /**
+   * Resolves a notification route intent without turning an opaque push ID
+   * into authority. Unavailable, revoked, occupied, foreign, or out-of-scope
+   * targets intentionally collapse to the same metadata-free response.
+   */
+  resolveVacancyIntent: protectedProcedure
+    .input(
+      z.object({
+        shiftInstanceId: z.number().int().positive(),
+        // Binds the operation to the tenant captured by the screen. The
+        // revision is only an opaque cache-generation nonce; authorization
+        // remains exclusively the request's canonical tenant context.
+        expectedTenantId: z.number().int().positive(),
+        requestTenantRevision: z.number().int().nonnegative(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      if (input.expectedTenantId !== ctx.institutionId) {
+        return { available: false as const };
+      }
+      const actor = await getTenantActorFromContext(ctx);
+      if (!actor.professionalId) return { available: false as const };
+
+      const [target] = await listActionableVacancyRows({
+        db,
+        institutionId: ctx.institutionId,
+        actor: {
+          userId: actor.userId,
+          professionalId: actor.professionalId,
+          roleInInstitution: actor.roleInInstitution,
+        },
+        filters: { shiftInstanceId: input.shiftInstanceId },
+      });
+
+      if (!target) return { available: false as const };
+      return {
+        available: true as const,
+        shiftInstanceId: Number(target.shiftInstanceId),
+        hospitalId: Number(target.hospitalId),
+        sectorId: Number(target.sectorId),
+        date: dayKeyBrt(new Date(target.startAt)),
+      };
     }),
 });
 

@@ -626,6 +626,104 @@ describe("Vagas acionáveis — lista e contadores", () => {
     expect(counts.vacanciesByHospital[hospitalBId] ?? 0).toBe(0);
   });
 
+  it("resolve intenção de rota pela mesma população acionável e não vaza alvo indisponível", async () => {
+    const routeDate = "2037-04-17";
+    const routeShiftId = await createShift({
+      institutionId: institutionAId,
+      hospitalId: hospitalAId,
+      sectorId: sectorAId,
+      scheduleContextId: contextAId,
+      label: `VAC ${stamp} route-intent`,
+      startAt: `${routeDate} 10:00:00`,
+      endAt: `${routeDate} 16:00:00`,
+    });
+
+    try {
+      const doctor = callerFor(doctorUserId, "doctor");
+      const resolveIntentInput = (
+        shiftInstanceId: number,
+        expectedTenantId = institutionAId,
+      ) => ({
+        shiftInstanceId,
+        expectedTenantId,
+        requestTenantRevision: 1,
+      });
+      await expect(
+        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(routeShiftId)),
+      ).resolves.toEqual({
+        available: true,
+        shiftInstanceId: routeShiftId,
+        hospitalId: hospitalAId,
+        sectorId: sectorAId,
+        date: routeDate,
+      });
+
+      // USER e GESTOR_MEDICO não ganham o hospital irmão; GESTOR_PLUS e o
+      // convite nominal usam as mesmas grants acionáveis da lista/escrita.
+      await expect(
+        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(siblingShiftId)),
+      ).resolves.toEqual({ available: false });
+      await expect(
+        callerFor(managerUserId, "manager").shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(siblingShiftId),
+        ),
+      ).resolves.toEqual({ available: false });
+      await expect(
+        callerFor(plusUserId, "manager").shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(siblingShiftId),
+        ),
+      ).resolves.toMatchObject({
+        available: true,
+        shiftInstanceId: siblingShiftId,
+        hospitalId: hospitalSiblingId,
+        sectorId: sectorSiblingId,
+        date,
+      });
+      await expect(
+        callerFor(invitedUserId, "doctor").shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(siblingShiftId),
+        ),
+      ).resolves.toMatchObject({
+        available: true,
+        shiftInstanceId: siblingShiftId,
+        hospitalId: hospitalSiblingId,
+        sectorId: sectorSiblingId,
+        date,
+      });
+      await expect(
+        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(foreignShiftId)),
+      ).resolves.toEqual({ available: false });
+      await expect(
+        doctor.shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(routeShiftId, institutionBId),
+        ),
+      ).resolves.toEqual({ available: false });
+
+      await expect(
+        doctor.shiftAssignments.assumeVacancy({
+          shiftInstanceId: routeShiftId,
+          assignmentType: "ON_DUTY",
+        }),
+      ).resolves.toMatchObject({ ok: true, status: "PENDENTE" });
+
+      // Ocupação/revogação e alvo de outro tenant colapsam na mesma resposta
+      // negativa, sem nome, data, hospital, setor ou motivo enumerável.
+      await expect(
+        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(routeShiftId)),
+      ).resolves.toEqual({ available: false });
+    } finally {
+      await db
+        .delete(shiftAuditLog)
+        .where(eq(shiftAuditLog.shiftInstanceId, routeShiftId));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.shiftInstanceId, routeShiftId));
+      await db
+        .delete(shiftInstances)
+        .where(eq(shiftInstances.id, routeShiftId));
+    }
+  });
+
   it("só anuncia vaga que assume e remove a mesma linha da lista e do contador", async () => {
     const mutationDate = "2037-04-16";
     const mutationShiftId = await createShift({

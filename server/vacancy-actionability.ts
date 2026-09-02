@@ -30,7 +30,10 @@ export const actionableVacancyFiltersSchema = z.object({
 
 export type ActionableVacancyFilters = z.infer<
   typeof actionableVacancyFiltersSchema
->;
+> & {
+  /** Internal-only exact target narrowing for route resolution. */
+  shiftInstanceId?: number;
+};
 
 export type ActionableVacancyRow = {
   shiftInstanceId: number;
@@ -267,6 +270,7 @@ export async function listActionableVacancyRows(input: {
               AND active_shift.start_at < si.end_at
               AND active_shift.end_at > si.start_at
           )
+          ${input.filters?.shiftInstanceId ? sql`AND si.id = ${input.filters.shiftInstanceId}` : sql``}
           ${input.filters?.hospitalId ? sql`AND si.hospital_id = ${input.filters.hospitalId}` : sql``}
           ${input.filters?.sectorId ? sql`AND si.sector_id   = ${input.filters.sectorId}` : sql``}
           ${input.filters?.shiftLabel ? sql`AND si.label       = ${input.filters.shiftLabel}` : sql``}

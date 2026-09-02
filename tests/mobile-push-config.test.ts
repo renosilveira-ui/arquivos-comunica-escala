@@ -39,8 +39,14 @@ describe("build nativo de push", () => {
   it("centraliza o handler visual e o prende ao sujeito VERIFIED", () => {
     const hook = readFileSync("hooks/use-notifications.ts", "utf8");
     const lib = readFileSync("lib/notifications.ts", "utf8");
-    const handler = readFileSync("lib/notification-foreground-handler.ts", "utf8");
-    const listener = readFileSync("components/NotificationListener.tsx", "utf8");
+    const handler = readFileSync(
+      "lib/notification-foreground-handler.ts",
+      "utf8",
+    );
+    const listener = readFileSync(
+      "components/NotificationListener.tsx",
+      "utf8",
+    );
     const auth = readFileSync("hooks/use-auth.ts", "utf8");
 
     expect(hook).not.toContain("setNotificationHandler");
@@ -50,17 +56,19 @@ describe("build nativo de push", () => {
     expect(handler).toContain("HIDE_FOREGROUND_NOTIFICATION");
     expect(listener).toContain("publishVerifiedNotificationForegroundSubject");
     expect(listener).toContain("releaseVerifiedNotificationForegroundSubject");
-    expect(listener).toContain(
-      "authorizedUserId === null || !isSessionAuthorizationCurrent()",
-    );
+    expect(listener).toContain("authorizedUserId === null");
+    expect(listener).toContain("vacancyPushSessionGeneration === null");
+    expect(listener).toContain("!isSessionAuthorizationCurrent()");
 
     const closeStart = auth.indexOf("const closeAsyncSessionAdmission");
     const closeEnd = auth.indexOf("}, []);", closeStart);
     const closeBody = auth.slice(closeStart, closeEnd);
-    expect(closeBody.indexOf("clearVerifiedNotificationForegroundSubject")).toBeGreaterThan(
-      -1,
-    );
-    expect(closeBody.indexOf("clearVerifiedNotificationForegroundSubject")).toBeLessThan(
+    expect(
+      closeBody.indexOf("clearVerifiedNotificationForegroundSubject"),
+    ).toBeGreaterThan(-1);
+    expect(
+      closeBody.indexOf("clearVerifiedNotificationForegroundSubject"),
+    ).toBeLessThan(
       closeBody.indexOf("Auth.closeSessionTokenTransportAdmission"),
     );
 
@@ -69,9 +77,9 @@ describe("build nativo de push", () => {
       mutationStart,
       auth.indexOf("const executeInsideLock", mutationStart),
     );
-    expect(mutationBegin.indexOf("closeAsyncSessionAdmission()")).toBeGreaterThan(
-      -1,
-    );
+    expect(
+      mutationBegin.indexOf("closeAsyncSessionAdmission()"),
+    ).toBeGreaterThan(-1);
     expect(mutationBegin.indexOf("closeAsyncSessionAdmission()")).toBeLessThan(
       mutationBegin.indexOf('setSessionValidation({ status: "CHECKING"'),
     );
@@ -84,7 +92,9 @@ describe("build nativo de push", () => {
 
     expect(createShift).toMatch(/scheduleShiftReminder\(\s*user\.id,/);
     expect(notifications).toContain("recipientUserId: userId");
-    expect(notifications).toContain("export type AccountScopedLocalNotification");
+    expect(notifications).toContain(
+      "export type AccountScopedLocalNotification",
+    );
     expect(notifications).toContain("LOCAL_NEUTRAL_NOTIFICATION_TITLE");
     expect(notifications).toContain("LOCAL_NEUTRAL_NOTIFICATION_BODY");
     expect(notifications).toContain("input: AccountScopedLocalNotification");

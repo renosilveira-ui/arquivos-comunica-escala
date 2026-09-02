@@ -6,14 +6,28 @@ import {
   View,
 } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
-import { ShiftFilters, type ShiftFilterValues } from "@/components/shift-filters";
+import {
+  ShiftFilters,
+  type ShiftFilterValues,
+} from "@/components/shift-filters";
 import { trpc } from "@/lib/trpc";
-import { toLocalISODateString } from "@/lib/datetime-utils";
+import {
+  fromLocalISODateString,
+  toLocalISODateString,
+} from "@/lib/datetime-utils";
 import { formatHospitalTime } from "@/lib/hospital-time";
-import { useState, useCallback, useRef } from "react";
-import { Briefcase, Clock, MapPin, Building2, Calendar } from "lucide-react-native";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import {
+  Briefcase,
+  Clock,
+  MapPin,
+  Building2,
+  Calendar,
+} from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
+import { useTenantScopedShiftFilters } from "@/hooks/use-tenant-scoped-shift-filters";
 import { AppButton } from "@/components/ui/AppButton";
 import { confirmAction } from "@/lib/ui/confirm";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
@@ -27,24 +41,45 @@ import { SkeletonList } from "@/components/ui/Skeleton";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useOperationalQueryRefresh } from "@/hooks/use-operational-query-refresh";
 import { useNativeOperationalQueryRecovery } from "@/hooks/use-native-operational-query-recovery";
+import { getActiveTenantSnapshot, useTenantState } from "@/lib/tenant-state";
 import {
   canDisplayOperationalListCount,
   resolveOperationalListState,
   resolveVacanciesGateState,
 } from "@/lib/operational-screen-state";
 import { presentQueryError } from "@/lib/query-error-presentation";
+import {
+  VACANCY_PUSH_ROUTE_PARAM,
+  clearVacancyPushRouteParams,
+  isVacancyPushIntentConsumptionFenceCurrent,
+  isVacancyPushIntentPublicationCurrent,
+  matchVacancyPushIntentPublicationForRoute,
+  parseVacancyPushIntentId,
+  resolveVacancyPushIntentRouteState,
+  vacancyPushIntentNotificationFence,
+} from "@/lib/vacancy-push-route";
 
 const EMPTY_HOSPITALS: { id: number; name: string }[] = [];
 const EMPTY_SECTORS: { id: number; hospitalId: number; name: string }[] = [];
 
 export default function VacanciesScreen() {
-  const { user, isLoading: authLoading } = useAuth();
+  const router = useRouter();
+  const routeParams = useLocalSearchParams<{
+    vacancyIntentId?: string | string[];
+  }>();
+  const {
+    user,
+    isLoading: authLoading,
+    isSessionAuthorizationCurrent,
+    sessionValidation,
+  } = useAuth();
+  const { activeInstitutionId, tenantRevision } = useTenantState();
   const {
     isGlobalAdmin,
     roleInInstitution,
     isLoading: permissionsLoading,
   } = usePermissions();
-  
+
   // Buscar profissional associado ao usuário logado
   const {
     data: professional,
@@ -52,21 +87,22 @@ export default function VacanciesScreen() {
     isError: professionalHasError,
     error: professionalError,
     refetch: refetchProfessional,
-  } =
-    trpc.professionals.getByUserId.useQuery(
-      { userId: user?.id ?? 0 },
-      { enabled: !!user?.id },
-    );
+  } = trpc.professionals.getByUserId.useQuery(
+    { userId: user?.id ?? 0 },
+    { enabled: !!user?.id },
+  );
 
   // Buscar hospitais e setores para os filtros
   const {
     data: hospitalsData,
+    isLoading: hospitalsLoading,
     isError: hospitalsHasError,
     error: hospitalsError,
     refetch: refetchHospitals,
   } = trpc.hospitals.list.useQuery(undefined, { enabled: !!user?.id });
   const {
     data: sectorsData,
+    isLoading: sectorsLoading,
     isError: sectorsHasError,
     error: sectorsError,
     refetch: refetchSectors,
@@ -74,51 +110,154 @@ export default function VacanciesScreen() {
 
   const hospitals = hospitalsData ?? EMPTY_HOSPITALS;
   const sectors = sectorsData ?? EMPTY_SECTORS;
+  const filtersTopologyReady =
+    hospitalsData !== undefined &&
+    sectorsData !== undefined &&
+    !hospitalsHasError &&
+    !sectorsHasError &&
+    !hospitalsLoading &&
+    !sectorsLoading;
 
   // Defaults inteligentes baseado em manager_scope
   const {
     defaults,
+    defaultsReady,
     isLoading: managerScopeLoading,
     isError: managerScopeHasError,
     error: managerScopeError,
     refetch: refetchManagerScope,
-  } = useFilterDefaults({ hospitals, sectors });
+  } = useFilterDefaults({
+    institutionId: activeInstitutionId,
+    tenantRevision,
+    hospitals,
+    sectors,
+    topologyReady: filtersTopologyReady,
+  });
 
-  // Estado dos filtros
-  const [filters, setFilters] = useState<ShiftFilterValues>({
-    hospitalId: null,
-    sectorId: null,
-    date: new Date(),
-    shiftLabel: null,
+  const {
+    filters,
+    setFilters,
+    tenantKey: activeTenantKey,
+  } = useTenantScopedShiftFilters({
+    institutionId: activeInstitutionId,
+    tenantRevision,
+    defaults,
+    defaultsReady,
+  });
+  const [vacancyIntentNotice, setVacancyIntentNotice] = useState<string | null>(
+    null,
+  );
+  const handledVacancyIntentRef = useRef<string | null>(null);
+  const consumedVacancyIntentPublicationRef = useRef<{
+    userId: number;
+    sessionGeneration: number;
+    shiftInstanceId: number;
+    generation: number;
+  } | null>(null);
+
+  const vacancyIntentShiftInstanceId = parseVacancyPushIntentId(
+    routeParams[VACANCY_PUSH_ROUTE_PARAM],
+  );
+  const vacancyIntentUserId = user?.id ?? null;
+  const vacancyIntentSessionGeneration =
+    vacancyIntentUserId !== null &&
+    sessionValidation.status === "VERIFIED" &&
+    sessionValidation.userId === vacancyIntentUserId &&
+    sessionValidation.isCurrent() &&
+    Number.isSafeInteger(sessionValidation.ticket.generation) &&
+    sessionValidation.ticket.generation >= 0
+      ? sessionValidation.ticket.generation
+      : null;
+  const publishedVacancyIntent = vacancyPushIntentNotificationFence.current();
+  const matchingPublishedVacancyIntent =
+    matchVacancyPushIntentPublicationForRoute(
+      publishedVacancyIntent,
+      vacancyIntentUserId,
+      vacancyIntentSessionGeneration,
+      vacancyIntentShiftInstanceId,
+    );
+  const vacancyIntentGeneration =
+    matchingPublishedVacancyIntent?.generation ?? null;
+  const vacancyIntentPublicationSessionGeneration =
+    matchingPublishedVacancyIntent?.sessionGeneration ?? null;
+  const vacancyIntentConsumptionFenceRef = useRef({
+    userId: vacancyIntentUserId,
+    sessionGeneration: vacancyIntentSessionGeneration,
+    tenantId: activeInstitutionId,
+    tenantRevision,
+    intentShiftInstanceId: vacancyIntentShiftInstanceId,
+    intentGeneration: vacancyIntentGeneration,
+  });
+  vacancyIntentConsumptionFenceRef.current = {
+    userId: vacancyIntentUserId,
+    sessionGeneration: vacancyIntentSessionGeneration,
+    tenantId: activeInstitutionId,
+    tenantRevision,
+    intentShiftInstanceId: vacancyIntentShiftInstanceId,
+    intentGeneration: vacancyIntentGeneration,
+  };
+  const vacancyIntentResolutionTenant = {
+    institutionId: activeInstitutionId,
+    revision: tenantRevision,
+  };
+  const vacancyIntentCurrentTenant = getActiveTenantSnapshot();
+  const {
+    data: vacancyIntentData,
+    isFetching: vacancyIntentFetching,
+    isError: vacancyIntentHasError,
+    error: vacancyIntentError,
+    refetch: refetchVacancyIntent,
+  } = trpc.shiftInstances.resolveVacancyIntent.useQuery(
+    {
+      // Tenant + revision make A → B → A a distinct query key. The server
+      // verifies the tenant against the canonical request context.
+      shiftInstanceId: vacancyIntentShiftInstanceId ?? 1,
+      expectedTenantId: activeInstitutionId ?? 1,
+      requestTenantRevision: tenantRevision,
+    },
+    {
+      enabled:
+        !!user?.id &&
+        activeInstitutionId !== null &&
+        vacancyIntentShiftInstanceId !== null,
+      refetchOnMount: "always",
+      staleTime: 0,
+    },
+  );
+  const vacancyIntentRouteState = resolveVacancyPushIntentRouteState({
+    intentShiftInstanceId: vacancyIntentShiftInstanceId,
+    resolutionTenant: vacancyIntentResolutionTenant,
+    currentTenant: vacancyIntentCurrentTenant,
+    isFetching: vacancyIntentFetching,
+    isError: vacancyIntentHasError,
+    data: vacancyIntentData,
   });
 
   // Filtro adicional por modalidade (PR #66 — listVacancies aceita modality)
-  const [modalityFilter, setModalityFilter] = useState<"PLANTAO" | "SOBREAVISO" | undefined>(undefined);
+  const [modalityFilter, setModalityFilter] = useState<
+    "PLANTAO" | "SOBREAVISO" | undefined
+  >(undefined);
 
   // Determinar se usuário pode ver "Todos os hospitais"
-  const allowAllHospitals = isGlobalAdmin || roleInInstitution === "GESTOR_PLUS";
-  const {
-    captureLease,
-    isLeaseCurrent,
-    refreshVacancyQueries,
-  } = useOperationalQueryRefresh();
+  const allowAllHospitals =
+    isGlobalAdmin || roleInInstitution === "GESTOR_PLUS";
+  const { captureLease, isLeaseCurrent, refreshVacancyQueries } =
+    useOperationalQueryRefresh();
 
   // Os filtros só exibem uma contagem quando ela representa a mesma
   // população acionável dos cards; summaryCounts segue reservado à gestão.
-  const {
-    data: actionableCounts,
-    isError: actionableCountsHasError,
-  } = trpc.filters.actionableVacancyCounts.useQuery(
-    {
-      date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
-      shiftLabel: filters.shiftLabel ?? undefined,
-      modality: modalityFilter,
-    },
-    { 
-      enabled: !!user?.id,
-      staleTime: 60 * 1000, // Cache de 60 segundos
-    }
-  );
+  const { data: actionableCounts, isError: actionableCountsHasError } =
+    trpc.filters.actionableVacancyCounts.useQuery(
+      {
+        date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
+        shiftLabel: filters.shiftLabel ?? undefined,
+        modality: modalityFilter,
+      },
+      {
+        enabled: !!user?.id,
+        staleTime: 60 * 1000, // Cache de 60 segundos
+      },
+    );
 
   // Buscar vagas disponíveis do backend com filtros
   // `modality` é aceito por listVacancies a partir de PR #66.
@@ -137,7 +276,7 @@ export default function VacanciesScreen() {
       shiftLabel: filters.shiftLabel ?? undefined,
       modality: modalityFilter,
     },
-    { enabled: !!user?.id }
+    { enabled: !!user?.id },
   );
 
   const vacancies = (vacanciesData || []).map((v) => {
@@ -177,10 +316,13 @@ export default function VacanciesScreen() {
   // Contadores são afirmações sobre a lista inteira. Eles só aparecem com
   // estado confirmado (READY/EMPTY) e quando a própria query está íntegra.
   const safeFilterCounts =
-    !actionableCountsHasError && canDisplayOperationalListCount(vacanciesContentState)
+    !actionableCountsHasError &&
+    canDisplayOperationalListCount(vacanciesContentState)
       ? actionableCounts
       : undefined;
-  const vacanciesSubtitle = canDisplayOperationalListCount(vacanciesContentState)
+  const vacanciesSubtitle = canDisplayOperationalListCount(
+    vacanciesContentState,
+  )
     ? `${vacancies.length} plantão${vacancies.length === 1 ? "" : "ões"} aguardando profissional`
     : vacanciesContentState === "LOADING"
       ? "Buscando plantões sem profissional…"
@@ -203,7 +345,8 @@ export default function VacanciesScreen() {
     filtersUnavailable:
       managerScopeHasError ||
       (hospitalsHasError &&
-        (!hospitalsData || presentQueryError(hospitalsError).kind === "ACCESS")) ||
+        (!hospitalsData ||
+          presentQueryError(hospitalsError).kind === "ACCESS")) ||
       (sectorsHasError &&
         (!sectorsData || presentQueryError(sectorsError).kind === "ACCESS")),
   });
@@ -226,27 +369,40 @@ export default function VacanciesScreen() {
 
   // Feedback igual em web e nativo (antes só o web recebia retorno).
   const feedback = useActionFeedback();
-  const assumeVacancyMutation = trpc.shiftAssignments.assumeVacancy.useMutation();
+  const assumeVacancyMutation =
+    trpc.shiftAssignments.assumeVacancy.useMutation();
   const [assumeVacancyBusy, setAssumeVacancyBusy] = useState(false);
   const assumeVacancyLockRef = useRef(false);
 
-  const handleAssumeVacancy = async (vacancyId: number, vacancyDetails: string) => {
+  const handleAssumeVacancy = async (
+    vacancyId: number,
+    vacancyDetails: string,
+  ) => {
     if (assumeVacancyLockRef.current) return;
-    console.log("[Vacancies] handleAssumeVacancy called", { vacancyId, vacancyDetails });
-    
+    console.log("[Vacancies] handleAssumeVacancy called", {
+      vacancyId,
+      vacancyDetails,
+    });
+
     if (!professional?.id) {
-      feedback.error("Seu cadastro de profissional não foi encontrado. Fale com o gestor.");
+      feedback.error(
+        "Seu cadastro de profissional não foi encontrado. Fale com o gestor.",
+      );
       return;
     }
 
     const refreshLease = captureLease();
     if (!refreshLease) {
-      feedback.error("Sua sessão ou instituição mudou. Atualize a tela antes de solicitar a vaga.");
+      feedback.error(
+        "Sua sessão ou instituição mudou. Atualize a tela antes de solicitar a vaga.",
+      );
       return;
     }
 
     // Confirmar ação usando helper cross-platform
-    const confirmed = await confirmAction(`Assumir vaga: ${vacancyDetails}?\n\nAguardará aprovação do gestor.`);
+    const confirmed = await confirmAction(
+      `Assumir vaga: ${vacancyDetails}?\n\nAguardará aprovação do gestor.`,
+    );
     console.log("[Vacancies] confirmAction result:", confirmed);
 
     if (!confirmed) {
@@ -296,9 +452,138 @@ export default function VacanciesScreen() {
     }
   };
 
-  const handleFiltersChange = useCallback((newFilters: ShiftFilterValues) => {
-    setFilters(newFilters);
-  }, []);
+  const handleFiltersChange = useCallback(
+    (newFilters: ShiftFilterValues) => {
+      setFilters(newFilters);
+    },
+    [setFilters],
+  );
+
+  // A seleção efetiva já é neutra no render que troca A → B. Este efeito só
+  // encerra os artefatos visuais da intenção anterior após a nova revisão.
+  useEffect(() => {
+    handledVacancyIntentRef.current = null;
+    setVacancyIntentNotice(null);
+  }, [activeTenantKey]);
+
+  useEffect(() => {
+    if (vacancyIntentShiftInstanceId === null) {
+      const consumedPublication = consumedVacancyIntentPublicationRef.current;
+      if (consumedPublication !== null) {
+        vacancyPushIntentNotificationFence.clearIfCurrent(consumedPublication);
+        consumedVacancyIntentPublicationRef.current = null;
+      }
+      handledVacancyIntentRef.current = null;
+      return;
+    }
+    // Uma nova intenção substitui qualquer aviso de alvo indisponível anterior.
+    setVacancyIntentNotice(null);
+  }, [vacancyIntentShiftInstanceId]);
+
+  useEffect(() => {
+    const capturedConsumptionFence = {
+      userId: vacancyIntentUserId,
+      sessionGeneration: vacancyIntentSessionGeneration,
+      tenantId: activeInstitutionId,
+      tenantRevision,
+      intentShiftInstanceId: vacancyIntentShiftInstanceId,
+      intentGeneration: vacancyIntentGeneration,
+    };
+    const capturedNotificationPublication =
+      vacancyIntentShiftInstanceId === null ||
+      vacancyIntentGeneration === null ||
+      vacancyIntentUserId === null ||
+      vacancyIntentPublicationSessionGeneration === null
+        ? null
+        : {
+            userId: vacancyIntentUserId,
+            sessionGeneration: vacancyIntentPublicationSessionGeneration,
+            shiftInstanceId: vacancyIntentShiftInstanceId,
+            generation: vacancyIntentGeneration,
+          };
+    const isConsumptionFenceCurrent = () => {
+      if (!isSessionAuthorizationCurrent()) return false;
+      // O módulo do tenant publica B antes do rerender React. Leia-o de novo
+      // em toda mutação para que um efeito A já agendado não sobreviva à troca.
+      const liveTenant = getActiveTenantSnapshot();
+      return (
+        isVacancyPushIntentConsumptionFenceCurrent(capturedConsumptionFence, {
+          userId: vacancyIntentConsumptionFenceRef.current.userId,
+          sessionGeneration:
+            vacancyIntentConsumptionFenceRef.current.sessionGeneration,
+          tenantId: liveTenant.institutionId,
+          tenantRevision: liveTenant.revision,
+          intentShiftInstanceId:
+            vacancyIntentConsumptionFenceRef.current.intentShiftInstanceId,
+          intentGeneration:
+            vacancyIntentConsumptionFenceRef.current.intentGeneration,
+        }) &&
+        isVacancyPushIntentPublicationCurrent(
+          capturedNotificationPublication,
+          vacancyPushIntentNotificationFence.current(),
+          vacancyIntentConsumptionFenceRef.current.userId,
+          vacancyIntentConsumptionFenceRef.current.sessionGeneration,
+        )
+      );
+    };
+    if (
+      vacancyIntentShiftInstanceId === null ||
+      activeInstitutionId === null ||
+      (vacancyIntentRouteState.kind !== "READY" &&
+        vacancyIntentRouteState.kind !== "UNAVAILABLE")
+    ) {
+      return;
+    }
+    if (!isConsumptionFenceCurrent()) return;
+
+    const intentKey = `${activeInstitutionId}:${tenantRevision}:${vacancyIntentSessionGeneration ?? "unverified"}:${vacancyIntentShiftInstanceId}:${vacancyIntentGeneration ?? "external"}`;
+    if (handledVacancyIntentRef.current === intentKey) return;
+    if (!isConsumptionFenceCurrent()) return;
+    handledVacancyIntentRef.current = intentKey;
+
+    if (vacancyIntentRouteState.kind === "READY") {
+      const nextFilters: ShiftFilterValues = {
+        hospitalId: vacancyIntentRouteState.selection.hospitalId,
+        sectorId: vacancyIntentRouteState.selection.sectorId,
+        date: fromLocalISODateString(vacancyIntentRouteState.selection.date),
+        shiftLabel: null,
+      };
+      // A seleção controlada atualiza UI e queries na mesma renderização, sem
+      // remontar a aba e sem deixar filtros anteriores do tenant no meio.
+      if (!isConsumptionFenceCurrent()) return;
+      setFilters(nextFilters);
+      if (!isConsumptionFenceCurrent()) return;
+      setModalityFilter(undefined);
+      if (!isConsumptionFenceCurrent()) return;
+      setVacancyIntentNotice(null);
+    } else {
+      // A resposta negativa é deliberadamente genérica: não revela se o ID
+      // existiu, foi ocupado, revogado ou pertence a outra topologia.
+      if (!isConsumptionFenceCurrent()) return;
+      setVacancyIntentNotice("Esta vaga não está mais disponível.");
+    }
+
+    // Remove só a intenção já consumida. Uma nova notificação muda o param e
+    // executa este efeito mesmo com a aba de Vagas já montada.
+    if (!isConsumptionFenceCurrent()) return;
+    router.setParams(clearVacancyPushRouteParams());
+    if (capturedNotificationPublication !== null) {
+      consumedVacancyIntentPublicationRef.current =
+        capturedNotificationPublication;
+    }
+  }, [
+    activeInstitutionId,
+    isSessionAuthorizationCurrent,
+    router,
+    setFilters,
+    tenantRevision,
+    vacancyIntentGeneration,
+    vacancyIntentPublicationSessionGeneration,
+    vacancyIntentSessionGeneration,
+    vacancyIntentRouteState,
+    vacancyIntentShiftInstanceId,
+    vacancyIntentUserId,
+  ]);
 
   useNativeOperationalQueryRecovery({
     captureLease,
@@ -318,7 +603,12 @@ export default function VacanciesScreen() {
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text className="mt-4 text-base" style={{ color: theme.colors.textSecondary }}>Carregando...</Text>
+          <Text
+            className="mt-4 text-base"
+            style={{ color: theme.colors.textSecondary }}
+          >
+            Carregando...
+          </Text>
         </View>
       </ScreenGradient>
     );
@@ -329,8 +619,18 @@ export default function VacanciesScreen() {
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color={theme.colors.textMuted} />
-          <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Autenticação Necessária</Text>
-          <Text className="text-center mt-2" style={{ color: theme.colors.textSecondary }}>Faça login para visualizar vagas</Text>
+          <Text
+            className="text-xl font-semibold mt-4"
+            style={{ color: theme.colors.textPrimary }}
+          >
+            Autenticação Necessária
+          </Text>
+          <Text
+            className="text-center mt-2"
+            style={{ color: theme.colors.textSecondary }}
+          >
+            Faça login para visualizar vagas
+          </Text>
         </View>
       </ScreenGradient>
     );
@@ -353,8 +653,18 @@ export default function VacanciesScreen() {
       <ScreenGradient variant="light">
         <View className="flex-1 items-center justify-center">
           <Briefcase size={64} color={theme.colors.textMuted} />
-          <Text className="text-xl font-semibold mt-4" style={{ color: theme.colors.textPrimary }}>Profissional Não Encontrado</Text>
-          <Text className="text-center mt-2" style={{ color: theme.colors.textSecondary }}>Seu usuário não está associado a um profissional</Text>
+          <Text
+            className="text-xl font-semibold mt-4"
+            style={{ color: theme.colors.textPrimary }}
+          >
+            Profissional Não Encontrado
+          </Text>
+          <Text
+            className="text-center mt-2"
+            style={{ color: theme.colors.textSecondary }}
+          >
+            Seu usuário não está associado a um profissional
+          </Text>
         </View>
       </ScreenGradient>
     );
@@ -380,7 +690,7 @@ export default function VacanciesScreen() {
 
   return (
     <ScreenGradient variant="light" scrollable>
-        <ScreenContainer>
+      <ScreenContainer>
         <SectionHeader
           size="page"
           title="Plantões em aberto"
@@ -388,12 +698,55 @@ export default function VacanciesScreen() {
           style={{ marginBottom: theme.space[5] }}
         />
 
+        {vacancyIntentRouteState.kind === "LOADING" ? (
+          <Surface level="card" style={{ marginBottom: theme.space[4] }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: theme.space[3],
+              }}
+            >
+              <ActivityIndicator size="small" color={theme.colors.primary} />
+              <Text
+                style={{
+                  ...theme.text.body,
+                  color: theme.colors.textSecondary,
+                }}
+              >
+                Abrindo a vaga avisada…
+              </Text>
+            </View>
+          </Surface>
+        ) : null}
+
+        {vacancyIntentRouteState.kind === "ERROR" ? (
+          <Surface level="card" style={{ marginBottom: theme.space[4] }}>
+            <QueryErrorState
+              title="Não foi possível abrir a vaga avisada"
+              error={vacancyIntentError}
+              onRetry={() => refetchVacancyIntent()}
+            />
+          </Surface>
+        ) : null}
+
+        {vacancyIntentNotice ? (
+          <Surface level="card" style={{ marginBottom: theme.space[4] }}>
+            <Text
+              style={{ ...theme.text.body, color: theme.colors.textSecondary }}
+            >
+              {vacancyIntentNotice}
+            </Text>
+          </Surface>
+        ) : null}
+
         <Surface level="card" style={{ marginBottom: theme.space[4] }}>
           <ShiftFilters
             hospitals={hospitals}
             sectors={sectors}
             allowAllHospitals={allowAllHospitals}
-            initialValues={defaults}
+            persistenceInstitutionId={activeInstitutionId}
+            value={filters}
             onChange={handleFiltersChange}
             counts={safeFilterCounts}
           />
@@ -404,13 +757,16 @@ export default function VacanciesScreen() {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: theme.space[2], paddingRight: theme.space[2] }}
+            contentContainerStyle={{
+              gap: theme.space[2],
+              paddingRight: theme.space[2],
+            }}
           >
-            {([
+            {[
               { label: "Todos", value: undefined },
               { label: "Plantão", value: "PLANTAO" as const },
               { label: "Sobreaviso", value: "SOBREAVISO" as const },
-            ]).map((opt) => {
+            ].map((opt) => {
               const selected = modalityFilter === opt.value;
               return (
                 <TouchableOpacity
@@ -425,15 +781,21 @@ export default function VacanciesScreen() {
                     paddingHorizontal: theme.space[4],
                     paddingVertical: theme.space[2],
                     borderRadius: theme.radius.full,
-                    backgroundColor: selected ? theme.colors.primary : theme.colors.surfaceAlt,
+                    backgroundColor: selected
+                      ? theme.colors.primary
+                      : theme.colors.surfaceAlt,
                     borderWidth: 1,
-                    borderColor: selected ? theme.colors.primary : theme.colors.border,
+                    borderColor: selected
+                      ? theme.colors.primary
+                      : theme.colors.border,
                   }}
                 >
                   <Text
                     style={{
                       ...theme.text.body,
-                      color: selected ? theme.colors.onDark.text : theme.colors.textPrimary,
+                      color: selected
+                        ? theme.colors.onDark.text
+                        : theme.colors.textPrimary,
                       fontWeight: theme.weight.semibold,
                     }}
                   >
@@ -446,7 +808,9 @@ export default function VacanciesScreen() {
         </View>
 
         {/* Carregando: skeleton com a forma dos cards */}
-        {vacanciesContentState === "LOADING" ? <SkeletonList count={3} /> : null}
+        {vacanciesContentState === "LOADING" ? (
+          <SkeletonList count={3} />
+        ) : null}
 
         {/* Lista de vagas */}
         {vacanciesContentState === "UNRESOLVED" ? (
@@ -458,14 +822,23 @@ export default function VacanciesScreen() {
         ) : vacanciesContentState === "READY" ? (
           <View style={{ gap: theme.space[4], paddingBottom: theme.space[6] }}>
             {vacancies.map((vacancy) => {
-              const modalityLabel = formatModalityBadge(vacancy.modality, vacancy.coverageType);
+              const modalityLabel = formatModalityBadge(
+                vacancy.modality,
+                vacancy.coverageType,
+              );
               return (
                 <Surface key={vacancy.id} level="card">
                   {/* Cabeçalho do card */}
                   <View className="flex-row items-center justify-between mb-3">
                     <View className="flex-row items-center gap-2 flex-shrink">
                       <Briefcase size={20} color={theme.colors.primary} />
-                      <Text style={{ ...theme.text.titleSm, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
+                      <Text
+                        style={{
+                          ...theme.text.titleSm,
+                          fontWeight: theme.weight.semibold,
+                          color: theme.colors.textPrimary,
+                        }}
+                      >
                         {vacancy.shift}
                       </Text>
                     </View>
@@ -502,21 +875,39 @@ export default function VacanciesScreen() {
                   <View className="gap-2 mb-4">
                     <View className="flex-row items-center gap-2">
                       <Calendar size={16} color={theme.colors.textSecondary} />
-                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>{formatDate(vacancy.date)}</Text>
+                      <Text
+                        className="text-sm"
+                        style={{ color: theme.colors.textSecondary }}
+                      >
+                        {formatDate(vacancy.date)}
+                      </Text>
                     </View>
                     <View className="flex-row items-center gap-2">
                       <Clock size={16} color={theme.colors.textSecondary} />
-                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>
+                      <Text
+                        className="text-sm"
+                        style={{ color: theme.colors.textSecondary }}
+                      >
                         {vacancy.startTime} - {vacancy.endTime}
                       </Text>
                     </View>
                     <View className="flex-row items-center gap-2">
                       <MapPin size={16} color={theme.colors.textSecondary} />
-                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>{vacancy.sector}</Text>
+                      <Text
+                        className="text-sm"
+                        style={{ color: theme.colors.textSecondary }}
+                      >
+                        {vacancy.sector}
+                      </Text>
                     </View>
                     <View className="flex-row items-center gap-2">
                       <Building2 size={16} color={theme.colors.textSecondary} />
-                      <Text className="text-sm" style={{ color: theme.colors.textSecondary }}>{vacancy.hospital}</Text>
+                      <Text
+                        className="text-sm"
+                        style={{ color: theme.colors.textSecondary }}
+                      >
+                        {vacancy.hospital}
+                      </Text>
                     </View>
                   </View>
 
@@ -529,7 +920,7 @@ export default function VacanciesScreen() {
                     onPress={() =>
                       handleAssumeVacancy(
                         vacancy.id,
-                        `${vacancy.shift} - ${vacancy.sector} (${formatDate(vacancy.date)})`
+                        `${vacancy.shift} - ${vacancy.sector} (${formatDate(vacancy.date)})`,
                       )
                     }
                   />
@@ -545,17 +936,39 @@ export default function VacanciesScreen() {
             onRetry={() => refetchVacancies()}
           />
         ) : vacanciesContentState === "EMPTY" ? (
-          <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: theme.space[20] }}>
+          <View
+            style={{
+              alignItems: "center",
+              justifyContent: "center",
+              paddingVertical: theme.space[20],
+            }}
+          >
             <Briefcase size={64} color={theme.colors.borderStrong} />
-            <Text style={{ ...theme.text.title, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary, marginTop: theme.space[4] }}>
+            <Text
+              style={{
+                ...theme.text.title,
+                fontWeight: theme.weight.semibold,
+                color: theme.colors.textPrimary,
+                marginTop: theme.space[4],
+              }}
+            >
               Nenhum plantão em aberto
             </Text>
-            <Text style={{ ...theme.text.body, color: theme.colors.textMuted, marginTop: theme.space[2], textAlign: "center", paddingHorizontal: theme.space[6] }}>
-              Todos os plantões deste período já estão atribuídos. Tente outro hospital, setor ou data nos filtros acima.
+            <Text
+              style={{
+                ...theme.text.body,
+                color: theme.colors.textMuted,
+                marginTop: theme.space[2],
+                textAlign: "center",
+                paddingHorizontal: theme.space[6],
+              }}
+            >
+              Todos os plantões deste período já estão atribuídos. Tente outro
+              hospital, setor ou data nos filtros acima.
             </Text>
           </View>
         ) : null}
-        </ScreenContainer>
+      </ScreenContainer>
     </ScreenGradient>
   );
 }

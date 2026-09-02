@@ -151,7 +151,9 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     );
     expect(listener).toContain('case "vacancy_available"');
     expect(listener).toContain("navigateToVacancies");
-    expect(listener).toContain('router.push("/(tabs)/vacancies"');
+    expect(listener).toContain('pathname: "/(tabs)/vacancies"');
+    expect(listener).toContain("vacancyPushRouteParams(shiftInstanceId)");
+    expect(listener).toContain("vacancyPushIntentNotificationFence.publish");
     expect(listener).toContain("notificationQueryRefreshTargets");
     expect(refreshMatrix).toContain(
       "shouldInvalidateVacancyQueriesOnNotification",
@@ -168,6 +170,7 @@ describe("aviso de plantão vago — contratos de fonte", () => {
       listener.indexOf('case "swap_taken"'),
     );
     expect(vacancyCase).toContain("alignNotificationTenant");
+    expect(vacancyCase).toContain("parseNotificationShiftInstanceId");
     expect(vacancyCase).not.toContain("navigateToAgenda");
     expect(vacancyCase).toContain("return false");
     const received = listener.slice(
@@ -180,6 +183,19 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(received.slice(0, vacancyInvalidate)).not.toContain(
       "navigateToVacancies",
     );
+    const vacancyNavigationStart = listener.indexOf(
+      "navigateToVacancies: (shiftInstanceId)",
+    );
+    const vacancyNavigation = listener.slice(
+      vacancyNavigationStart,
+      listener.indexOf("navigateToMyOffers", vacancyNavigationStart),
+    );
+    const publishIntent = vacancyNavigation.indexOf(
+      "vacancyPushIntentNotificationFence.publish",
+    );
+    const pushVacanciesRoute = vacancyNavigation.indexOf("router.push({");
+    expect(publishIntent).toBeGreaterThan(-1);
+    expect(pushVacanciesRoute).toBeGreaterThan(publishIntent);
   });
 
   it("rota canônica de Assumir plantão existe no mobile", () => {
@@ -193,5 +209,10 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     );
     expect(tabs).toContain('name="vacancies"');
     expect(tabs).toContain('href: can("view:vacancies") ? undefined : null');
+    expect(vacancies).toContain("useLocalSearchParams");
+    expect(vacancies).toContain("resolveVacancyIntent.useQuery");
+    expect(vacancies).toContain(
+      "router.setParams(clearVacancyPushRouteParams())",
+    );
   });
 });

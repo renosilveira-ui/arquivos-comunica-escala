@@ -182,8 +182,10 @@ describe("roteamento de push para o plantão exato", () => {
           navigateToAgenda: () => {
             calls.push("agenda");
           },
-          navigateToVacancies: () => {
-            calls.push(`vacancies:tenant:${activeTenant.institutionId}`);
+          navigateToVacancies: (shiftInstanceId) => {
+            calls.push(
+              `vacancies:tenant:${activeTenant.institutionId}:shift:${shiftInstanceId}`,
+            );
           },
           openComunica: vi.fn(async () => ({ ok: true })),
         },
@@ -194,8 +196,37 @@ describe("roteamento de push para o plantão exato", () => {
       "allowed",
       "set:11",
       "invalidate",
-      "vacancies:tenant:11",
+      "vacancies:tenant:11:shift:404",
     ]);
+  });
+
+  it("aviso de vaga com ID inválido falha antes de trocar tenant ou navegar", async () => {
+    const setActiveInstitutionId = vi.fn(async () => undefined);
+    const navigateToVacancies = vi.fn();
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "vacancy_available",
+          institutionId: 11,
+          shiftInstanceId: "404x",
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => ({ institutionId: 22, revision: 1 }),
+          loadAllowedInstitutionIds: async () => [11, 22],
+          setActiveInstitutionId,
+          invalidateQueries: vi.fn(async () => undefined),
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: vi.fn(),
+          navigateToVacancies,
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(false);
+
+    expect(setActiveInstitutionId).not.toHaveBeenCalled();
+    expect(navigateToVacancies).not.toHaveBeenCalled();
   });
 
   it("aviso de vaga não cai na Agenda se a rota de vagas estiver ausente", async () => {

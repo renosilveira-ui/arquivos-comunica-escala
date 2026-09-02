@@ -1,8 +1,15 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { View, Text, TouchableOpacity, Platform, useWindowDimensions } from "react-native";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Platform,
+  useWindowDimensions,
+} from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
 import { theme } from "@/lib/theme";
+import { tenantFilterStorageKey } from "@/lib/tenant-filter-storage";
 
 export type ShiftFilterValues = {
   hospitalId: number | null; // null = "Todos" (só GESTOR_PLUS)
@@ -18,6 +25,10 @@ export type ShiftFiltersProps = {
   hospitals: Hospital[];
   sectors: Sector[];
   allowAllHospitals: boolean; // true para GESTOR_PLUS, false para GESTOR_MEDICO
+  /** Persistência web é uma preferência do tenant atual, não da conta inteira. */
+  persistenceInstitutionId?: number | null;
+  /** Quando presente, a tela controla a seleção e a troca de tenant é síncrona. */
+  value?: ShiftFilterValues;
   initialValues?: Partial<ShiftFilterValues>;
   onChange: (filters: ShiftFilterValues) => void;
   counts?: {
@@ -30,91 +41,164 @@ export function ShiftFilters({
   hospitals,
   sectors,
   allowAllHospitals,
+  persistenceInstitutionId = null,
+  value,
   initialValues,
   onChange,
   counts,
 }: ShiftFiltersProps) {
   const { width } = useWindowDimensions();
   const isCompact = width < 760;
-  const [hospitalId, setHospitalId] = useState<number | null>(initialValues?.hospitalId ?? null);
-  const [sectorId, setSectorId] = useState<number | null>(initialValues?.sectorId ?? null);
-  const [date, setDate] = useState<Date>(initialValues?.date ?? new Date());
-  const [shiftLabel, setShiftLabel] = useState<string | null>(initialValues?.shiftLabel ?? null);
+  const isControlled = value !== undefined;
+  const [uncontrolledValues, setUncontrolledValues] =
+    useState<ShiftFilterValues>(() => ({
+      hospitalId: initialValues?.hospitalId ?? null,
+      sectorId: initialValues?.sectorId ?? null,
+      date: initialValues?.date ?? new Date(),
+      shiftLabel: initialValues?.shiftLabel ?? null,
+    }));
+  const currentValues = value ?? uncontrolledValues;
+  const { hospitalId, sectorId, date, shiftLabel } = currentValues;
+  const initialDate = initialValues?.date;
 
-  // Aplicar initialValues quando mudam (defaults inteligentes)
+  // O modo legado continua aceitando defaults. No caminho controlado, a tela
+  // fornece o valor já identificado pelo tenant e não recebe uma reemissão.
   useEffect(() => {
-    if (initialValues?.hospitalId !== undefined) {
-      setHospitalId(initialValues.hospitalId);
-    }
-    if (initialValues?.sectorId !== undefined) {
-      setSectorId(initialValues.sectorId);
-    }
-    if (initialValues?.date) {
-      setDate(initialValues.date);
-    }
-    if (initialValues?.shiftLabel !== undefined) {
-      setShiftLabel(initialValues.shiftLabel);
-    }
-  }, [initialValues]);
+    if (isControlled) return;
+    setUncontrolledValues((current) => {
+      const next: ShiftFilterValues = {
+        hospitalId:
+          initialValues?.hospitalId === undefined
+            ? current.hospitalId
+            : initialValues.hospitalId,
+        sectorId:
+          initialValues?.sectorId === undefined
+            ? current.sectorId
+            : initialValues.sectorId,
+        date: initialDate ?? current.date,
+        shiftLabel:
+          initialValues?.shiftLabel === undefined
+            ? current.shiftLabel
+            : initialValues.shiftLabel,
+      };
+      return next.hospitalId === current.hospitalId &&
+        next.sectorId === current.sectorId &&
+        next.date === current.date &&
+        next.shiftLabel === current.shiftLabel
+        ? current
+        : next;
+    });
+  }, [
+    initialDate,
+    initialValues?.hospitalId,
+    initialValues?.sectorId,
+    initialValues?.shiftLabel,
+    isControlled,
+  ]);
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   // Setor dependente: só mostra setores do hospital selecionado
   const availableSectors = useMemo(
-    () => (hospitalId ? sectors.filter((s) => s.hospitalId === hospitalId) : []),
+    () =>
+      hospitalId ? sectors.filter((s) => s.hospitalId === hospitalId) : [],
     [hospitalId, sectors],
   );
 
-  // Auto-selecionar setor se só houver 1
+  // Auto-selecionar setor se só houver 1 no modo legado. No modo controlado,
+  // os defaults já foram calculados pelo tenant e só os handlers publicam.
   useEffect(() => {
-    if (availableSectors.length === 1 && sectorId === null) {
-      setSectorId(availableSectors[0].id);
+    if (isControlled || availableSectors.length !== 1 || sectorId !== null) {
+      return;
     }
-  }, [availableSectors, sectorId]);
+    setUncontrolledValues((current) =>
+      current.sectorId === null
+        ? { ...current, sectorId: availableSectors[0].id }
+        : current,
+    );
+  }, [availableSectors, isControlled, sectorId]);
 
-  // Notificar mudanças
+  // O modo não-controlado mantém o contrato antigo. O modo controlado chama
+  // onChange somente por handlers explícitos, sem reemitir estado stale.
   useEffect(() => {
-    onChange({ hospitalId, sectorId, date, shiftLabel });
-  }, [hospitalId, sectorId, date, shiftLabel, onChange]);
+    if (!isControlled) onChange(uncontrolledValues);
+  }, [isControlled, onChange, uncontrolledValues]);
+
+  const emitChange = (next: ShiftFilterValues) => {
+    if (isControlled) {
+      onChange(next);
+      return;
+    }
+    setUncontrolledValues(next);
+  };
 
   const handleHospitalChange = (id: number | null) => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setHospitalId(id);
-    setSectorId(null); // reset setor ao mudar hospital
-    
-    // Persistir em localStorage
+    if (Platform.OS !== "web")
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    emitChange({ ...currentValues, hospitalId: id, sectorId: null });
+
+    // Persistir em localStorage somente no namespace institucional atual.
     if (Platform.OS === "web") {
-      if (id !== null) {
-        localStorage.setItem("lastHospitalId", id.toString());
-      } else {
-        localStorage.removeItem("lastHospitalId");
+      const hospitalKey = tenantFilterStorageKey(
+        persistenceInstitutionId,
+        "hospital",
+      );
+      const sectorKey = tenantFilterStorageKey(
+        persistenceInstitutionId,
+        "sector",
+      );
+      try {
+        if (hospitalKey !== null) {
+          if (id !== null) {
+            globalThis.localStorage?.setItem(hospitalKey, id.toString());
+          } else {
+            globalThis.localStorage?.removeItem(hospitalKey);
+          }
+        }
+        if (sectorKey !== null) {
+          globalThis.localStorage?.removeItem(sectorKey);
+        }
+      } catch {
+        // Preferência visual não pode interromper a troca de filtro.
       }
-      localStorage.removeItem("lastSectorId"); // reset setor
     }
   };
 
   const handleSectorChange = (id: number | null) => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setSectorId(id);
-    
-    // Persistir em localStorage
+    if (Platform.OS !== "web")
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    emitChange({ ...currentValues, sectorId: id });
+
+    // Persistir em localStorage somente no namespace institucional atual.
     if (Platform.OS === "web") {
-      if (id !== null) {
-        localStorage.setItem("lastSectorId", id.toString());
-      } else {
-        localStorage.removeItem("lastSectorId");
+      const sectorKey = tenantFilterStorageKey(
+        persistenceInstitutionId,
+        "sector",
+      );
+      try {
+        if (sectorKey !== null) {
+          if (id !== null) {
+            globalThis.localStorage?.setItem(sectorKey, id.toString());
+          } else {
+            globalThis.localStorage?.removeItem(sectorKey);
+          }
+        }
+      } catch {
+        // Preferência visual não pode interromper a troca de filtro.
       }
     }
   };
 
   const handleDateChange = (selectedDate?: Date) => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (Platform.OS !== "web")
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setShowDatePicker(false);
-    if (selectedDate) setDate(selectedDate);
+    if (selectedDate) emitChange({ ...currentValues, date: selectedDate });
   };
 
   const handleShiftLabelChange = (label: string | null) => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setShiftLabel(label);
+    if (Platform.OS !== "web")
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    emitChange({ ...currentValues, shiftLabel: label });
   };
 
   const today = new Date();
@@ -180,9 +264,10 @@ export function ShiftFilters({
         <View style={groupStyle}>
           <Text style={filterLabelStyle}>Hospital</Text>
           <View style={optionWrapStyle}>
-            {allowAllHospitals && (
-              renderOption("Todos", hospitalId === null, () => handleHospitalChange(null))
-            )}
+            {allowAllHospitals &&
+              renderOption("Todos", hospitalId === null, () =>
+                handleHospitalChange(null),
+              )}
             {hospitals.map((h) => {
               const count = counts?.vacanciesByHospital[h.id] || 0;
               return (
@@ -201,12 +286,20 @@ export function ShiftFilters({
         <View style={groupStyle}>
           <Text style={filterLabelStyle}>Setor</Text>
           {hospitalId === null && !allowAllHospitals ? (
-            <Text style={{ ...theme.text.body, color: theme.colors.textMuted, fontStyle: "italic" }}>
+            <Text
+              style={{
+                ...theme.text.body,
+                color: theme.colors.textMuted,
+                fontStyle: "italic",
+              }}
+            >
               Selecione hospital
             </Text>
           ) : (
             <View style={optionWrapStyle}>
-              {renderOption("Todos", sectorId === null, () => handleSectorChange(null))}
+              {renderOption("Todos", sectorId === null, () =>
+                handleSectorChange(null),
+              )}
               {availableSectors.map((s) => {
                 const count = counts?.vacanciesBySector[s.id] || 0;
                 return (
@@ -234,15 +327,19 @@ export function ShiftFilters({
           <Text style={filterLabelStyle}>Data</Text>
           <View style={optionWrapStyle}>
             {renderOption("Hoje", isToday, () => {
-              setDate(today);
-              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              emitChange({ ...currentValues, date: today });
+              if (Platform.OS !== "web")
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             })}
             {renderOption("Amanhã", isTomorrow, () => {
-              setDate(tomorrow);
-              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              emitChange({ ...currentValues, date: tomorrow });
+              if (Platform.OS !== "web")
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             })}
             {renderOption(
-              !isToday && !isTomorrow ? date.toLocaleDateString("pt-BR") : "Escolher",
+              !isToday && !isTomorrow
+                ? date.toLocaleDateString("pt-BR")
+                : "Escolher",
               !isToday && !isTomorrow,
               () => setShowDatePicker(true),
             )}
@@ -260,10 +357,18 @@ export function ShiftFilters({
         <View style={groupStyle}>
           <Text style={filterLabelStyle}>Turno</Text>
           <View style={optionWrapStyle}>
-            {renderOption("Todos", shiftLabel === null, () => handleShiftLabelChange(null))}
-            {renderOption("Manhã", shiftLabel === "MANHA", () => handleShiftLabelChange("MANHA"))}
-            {renderOption("Tarde", shiftLabel === "TARDE", () => handleShiftLabelChange("TARDE"))}
-            {renderOption("Noite", shiftLabel === "NOITE", () => handleShiftLabelChange("NOITE"))}
+            {renderOption("Todos", shiftLabel === null, () =>
+              handleShiftLabelChange(null),
+            )}
+            {renderOption("Manhã", shiftLabel === "MANHA", () =>
+              handleShiftLabelChange("MANHA"),
+            )}
+            {renderOption("Tarde", shiftLabel === "TARDE", () =>
+              handleShiftLabelChange("TARDE"),
+            )}
+            {renderOption("Noite", shiftLabel === "NOITE", () =>
+              handleShiftLabelChange("NOITE"),
+            )}
           </View>
         </View>
       </View>

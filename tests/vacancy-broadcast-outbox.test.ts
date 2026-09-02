@@ -91,12 +91,12 @@ describe("outbox de aviso de plantão vago", () => {
         payload: expect.objectContaining({
           title: VACANCY_AVAILABLE_PUSH_TITLE,
           body: "Sala de Recuperação · 01/09 · 19h–07h",
-          data: expect.objectContaining({
+          data: {
             type: "vacancy_available",
             institutionId: 3,
             shiftInstanceId: 44,
             userId: 22,
-          }),
+          },
         }),
       }),
       now,
