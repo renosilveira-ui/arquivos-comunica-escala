@@ -22,9 +22,7 @@ export type ShiftFiltersProps = {
   onChange: (filters: ShiftFilterValues) => void;
   counts?: {
     vacanciesByHospital: Record<number, number>;
-    pendingByHospital: Record<number, number>;
     vacanciesBySector: Record<number, number>;
-    pendingBySector: Record<number, number>;
   };
 };
 

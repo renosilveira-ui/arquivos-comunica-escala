@@ -347,6 +347,7 @@ export default function TabLayout() {
         utils.scheduleInvites.listActive.invalidate(),
         utils.scheduleInvites.listCandidates.invalidate(),
         utils.filters.summaryCounts.invalidate(),
+        utils.filters.actionableVacancyCounts.invalidate(),
       ]);
     });
     return () => subscription.remove();

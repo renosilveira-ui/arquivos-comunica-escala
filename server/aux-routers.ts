@@ -29,6 +29,11 @@ import {
 } from "./_core/policy";
 import { listAuthorizedScheduleContexts } from "./schedule-contexts";
 import { listManageableTopology } from "./sector-scale";
+import {
+  actionableVacancyFiltersSchema,
+  countActionableVacancies,
+  listActionableVacancyRows,
+} from "./vacancy-actionability";
 
 // ─── professionals ────────────────────────────────────────────────────────────
 
@@ -608,5 +613,42 @@ export const filtersRouter = router({
         vacanciesBySector,
         pendingBySector,
       };
+    }),
+
+  /**
+   * Filter counts for the Vagas action screen. This intentionally does not
+   * replace summaryCounts: managerial pending summaries describe the roster,
+   * while these values must describe only shifts this actor can request.
+   */
+  actionableVacancyCounts: protectedProcedure
+    .input(
+      actionableVacancyFiltersSchema.extend({
+        date: z.string(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const actor = await getTenantActorFromContext(ctx);
+      if (!actor.professionalId) {
+        return {
+          total: 0,
+          vacanciesByHospital: {},
+          vacanciesBySector: {},
+        };
+      }
+
+      return countActionableVacancies(
+        await listActionableVacancyRows({
+          db,
+          institutionId: ctx.institutionId,
+          actor: {
+            userId: actor.userId,
+            professionalId: actor.professionalId,
+            roleInInstitution: actor.roleInInstitution,
+          },
+          filters: input,
+        }),
+      );
     }),
 });

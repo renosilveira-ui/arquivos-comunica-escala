@@ -160,6 +160,9 @@ describe("aviso de plantão vago — contratos de fonte", () => {
       "utils.shiftInstances.listVacancies.invalidate()",
     );
     expect(listener).toContain("utils.filters.summaryCounts.invalidate()");
+    expect(listener).toContain(
+      "utils.filters.actionableVacancyCounts.invalidate()",
+    );
     const vacancyCase = listener.slice(
       listener.indexOf('case "vacancy_available"'),
       listener.indexOf('case "swap_taken"'),

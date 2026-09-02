@@ -7,11 +7,16 @@ export type NotificationQueryRefreshTarget =
   | "SCHEDULES"
   | "PENDING_ASSIGNMENTS"
   | "SCHEDULE_INVITES"
-  | "SUMMARY_COUNTS";
+  | "SUMMARY_COUNTS"
+  | "ACTIONABLE_VACANCY_COUNTS";
 
 const NONE: readonly NotificationQueryRefreshTarget[] = Object.freeze([]);
 const SWAPS = Object.freeze(["SWAPS"] as const);
-const VACANCIES = Object.freeze(["VACANCIES", "SUMMARY_COUNTS"] as const);
+const VACANCIES = Object.freeze([
+  "VACANCIES",
+  "SUMMARY_COUNTS",
+  "ACTIONABLE_VACANCY_COUNTS",
+] as const);
 const SWAPS_AND_SCHEDULES = Object.freeze(["SWAPS", "SCHEDULES"] as const);
 const SCHEDULES = Object.freeze(["SCHEDULES"] as const);
 const REPLACEMENT_ACCEPTED = Object.freeze(["SCHEDULES", "SWAPS"] as const);
@@ -20,6 +25,7 @@ const ASSIGNMENT_CHANGE = Object.freeze([
   "VACANCIES",
   "PENDING_ASSIGNMENTS",
   "SUMMARY_COUNTS",
+  "ACTIONABLE_VACANCY_COUNTS",
   "SWAPS",
 ] as const);
 const SCHEDULE_INVITES = Object.freeze(["SCHEDULE_INVITES"] as const);

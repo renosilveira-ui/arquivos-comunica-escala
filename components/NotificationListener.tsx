@@ -692,6 +692,8 @@ export function NotificationListener() {
                 ]);
               case "SUMMARY_COUNTS":
                 return utils.filters.summaryCounts.invalidate();
+              case "ACTIONABLE_VACANCY_COUNTS":
+                return utils.filters.actionableVacancyCounts.invalidate();
             }
           },
         );
