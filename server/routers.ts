@@ -969,6 +969,8 @@ const shiftInstancesRouter = router({
         status: r.status as string,
         sectorName: r.sectorName as string,
         hospitalName: r.hospitalName as string,
+        hospitalId: Number(r.hospitalId),
+        sectorId: Number(r.sectorId),
         scheduleContextId: Number(r.scheduleContextId),
         canAssume: true as const,
         // Modalidade (PR #61). Tipos vêm como string do mysql2; expõe

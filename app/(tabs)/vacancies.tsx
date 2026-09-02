@@ -16,7 +16,7 @@ import {
   toLocalISODateString,
 } from "@/lib/datetime-utils";
 import { formatHospitalTime } from "@/lib/hospital-time";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   Briefcase,
@@ -58,6 +58,7 @@ import {
   resolveVacancyPushIntentRouteState,
   vacancyPushIntentNotificationFence,
 } from "@/lib/vacancy-push-route";
+import { deriveVacancyDashboard } from "@/lib/vacancy-dashboard";
 
 const EMPTY_HOSPITALS: { id: number; name: string }[] = [];
 const EMPTY_SECTORS: { id: number; hospitalId: number; name: string }[] = [];
@@ -241,28 +242,17 @@ export default function VacanciesScreen() {
   // Determinar se usuário pode ver "Todos os hospitais"
   const allowAllHospitals =
     isGlobalAdmin || roleInInstitution === "GESTOR_PLUS";
-  const { captureLease, isLeaseCurrent, refreshVacancyQueries } =
-    useOperationalQueryRefresh();
-
-  // Os filtros só exibem uma contagem quando ela representa a mesma
-  // população acionável dos cards; summaryCounts segue reservado à gestão.
-  const { data: actionableCounts, isError: actionableCountsHasError } =
-    trpc.filters.actionableVacancyCounts.useQuery(
-      {
-        date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
-        shiftLabel: filters.shiftLabel ?? undefined,
-        modality: modalityFilter,
-      },
-      {
-        enabled: !!user?.id,
-        staleTime: 60 * 1000, // Cache de 60 segundos
-      },
-    );
+  const {
+    captureLease,
+    isLeaseCurrent,
+    refreshVisibleVacancyQueries,
+    refreshVacancyMutationQueries,
+  } = useOperationalQueryRefresh();
 
   // Buscar vagas disponíveis do backend com filtros
   // `modality` é aceito por listVacancies a partir de PR #66.
   const {
-    data: vacanciesData,
+    data: vacancyPopulationData,
     isLoading: vacanciesLoading,
     isPending: vacanciesPending,
     isError: vacanciesError,
@@ -270,14 +260,22 @@ export default function VacanciesScreen() {
     refetch: refetchVacancies,
   } = trpc.shiftInstances.listVacancies.useQuery(
     {
-      hospitalId: filters.hospitalId ?? undefined,
-      sectorId: filters.sectorId ?? undefined,
       date: toLocalISODateString(filters.date), // YYYY-MM-DD (dia local)
       shiftLabel: filters.shiftLabel ?? undefined,
       modality: modalityFilter,
     },
     { enabled: !!user?.id },
   );
+
+  const vacancyDashboard = useMemo(
+    () =>
+      deriveVacancyDashboard(vacancyPopulationData ?? [], {
+        hospitalId: filters.hospitalId,
+        sectorId: filters.sectorId,
+      }),
+    [filters.hospitalId, filters.sectorId, vacancyPopulationData],
+  );
+  const vacanciesData = vacancyDashboard.visibleRows;
 
   const vacancies = (vacanciesData || []).map((v) => {
     // PR #66 expõe modality / coverageType / paymentModel / productivityCapBrl,
@@ -309,17 +307,15 @@ export default function VacanciesScreen() {
     isLoading: vacanciesLoading,
     isPending: vacanciesPending,
     isError: vacanciesError,
-    hasResolvedData: vacanciesData !== undefined,
+    hasResolvedData: vacancyPopulationData !== undefined,
     itemCount: vacancies.length,
     error: vacanciesQueryError,
   });
   // Contadores são afirmações sobre a lista inteira. Eles só aparecem com
   // estado confirmado (READY/EMPTY) e quando a própria query está íntegra.
-  const safeFilterCounts =
-    !actionableCountsHasError &&
-    canDisplayOperationalListCount(vacanciesContentState)
-      ? actionableCounts
-      : undefined;
+  const safeFilterCounts = canDisplayOperationalListCount(vacanciesContentState)
+    ? vacancyDashboard.counts
+    : undefined;
   const vacanciesSubtitle = canDisplayOperationalListCount(
     vacanciesContentState,
   )
@@ -437,7 +433,7 @@ export default function VacanciesScreen() {
 
     // Mantém o bloqueio até a reconciliação terminar, mas não atrasa o
     // feedback de uma solicitação já aceita pelo servidor.
-    const refreshPromise = refreshVacancyQueries(refreshLease);
+    const refreshPromise = refreshVacancyMutationQueries(refreshLease);
     if (isLeaseCurrent(refreshLease)) {
       feedback.success("Solicitação enviada — aguardando aprovação do gestor.");
     }
@@ -587,7 +583,7 @@ export default function VacanciesScreen() {
 
   useNativeOperationalQueryRecovery({
     captureLease,
-    refresh: refreshVacancyQueries,
+    refresh: refreshVisibleVacancyQueries,
   });
 
   const formatDate = (date: Date) => {

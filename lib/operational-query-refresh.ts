@@ -13,17 +13,16 @@ export function shouldRefreshOperationalQueriesOnNativeReconnect(input: {
   isOnline: boolean;
 }): boolean {
   return (
-    input.platform !== "web" &&
-    input.wasExplicitlyOffline &&
-    input.isOnline
+    input.platform !== "web" && input.wasExplicitlyOffline && input.isOnline
   );
 }
 
 /** Foco de aba é uma reconciliação local; web permanece fora deste fluxo. */
-export function shouldRefreshOperationalQueriesOnNativeFocus(
-  platform: string,
-): boolean {
-  return platform !== "web";
+export function shouldRefreshOperationalQueriesOnNativeFocus(input: {
+  platform: string;
+  hasFocusedBefore: boolean;
+}): boolean {
+  return input.platform !== "web" && input.hasFocusedBefore;
 }
 
 /**

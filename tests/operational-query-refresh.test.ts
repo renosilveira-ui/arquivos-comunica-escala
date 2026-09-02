@@ -31,10 +31,31 @@ describe("recuperação operacional nativa", () => {
     ).toBe(false);
   });
 
-  it("mantém a reconciliação por foco fora do web", () => {
-    expect(shouldRefreshOperationalQueriesOnNativeFocus("ios")).toBe(true);
-    expect(shouldRefreshOperationalQueriesOnNativeFocus("android")).toBe(true);
-    expect(shouldRefreshOperationalQueriesOnNativeFocus("web")).toBe(false);
+  it("reconcilia ao voltar à tela nativa, sem duplicar a montagem inicial", () => {
+    expect(
+      shouldRefreshOperationalQueriesOnNativeFocus({
+        platform: "ios",
+        hasFocusedBefore: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRefreshOperationalQueriesOnNativeFocus({
+        platform: "ios",
+        hasFocusedBefore: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefreshOperationalQueriesOnNativeFocus({
+        platform: "android",
+        hasFocusedBefore: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefreshOperationalQueriesOnNativeFocus({
+        platform: "web",
+        hasFocusedBefore: true,
+      }),
+    ).toBe(false);
   });
 
   it("considera Wi-Fi sem internet como offline operacional, sem punir estado desconhecido", () => {

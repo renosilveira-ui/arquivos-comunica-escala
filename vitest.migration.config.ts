@@ -7,7 +7,10 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["tests/sector-service-specialties-migration-mysql.test.ts"],
+    include: [
+      "tests/sector-service-specialties-migration-mysql.test.ts",
+      "tests/vacancy-query-indexes-migration-mysql.test.ts",
+    ],
     setupFiles: [],
     fileParallelism: false,
     env: { NODE_ENV: "test" },
