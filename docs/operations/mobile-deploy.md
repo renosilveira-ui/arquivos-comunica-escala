@@ -1,161 +1,121 @@
-# Operations: mobile builds (iOS + Android)
+# Operações: builds mobile de staging
 
-> Status: configurada infraestrutura básica (`app.config.ts`, `eas.json`).
-> Builds reais para TestFlight/Play Store ainda exigem ações da operação
-> (login no EAS, conta Apple, conta Google). Este doc é o roteiro.
+> Fonte de verdade: [`eas.json`](../../eas.json) e
+> [`app.config.ts`](../../app.config.ts). Este documento descreve somente a
+> distribuição interna atualmente configurada. Gerar um build ou fazer submit
+> continua exigindo autorização operacional explícita.
 
-## TL;DR — fluxos disponíveis
+## Contrato atual dos perfis
 
-| Caso | Comando | Distribuição | Custo |
-|------|---------|--------------|-------|
-| Dev local no iPhone/Android pessoal | `pnpm start` + Expo Go | QR code, instantâneo | Grátis |
-| Tester interno (até 100 iPhones) | `eas build --profile preview --platform ios` + `eas submit` | TestFlight | Apple Developer ($99/ano) |
-| Tester interno Android (APK direto) | `eas build --profile preview --platform android` | Link de download | Grátis |
-| Publicação App Store / Play Store | `eas build --profile production` + `eas submit` | Stores públicas | Apple ($99/ano) + Google ($25 uma vez) |
+| Uso | Perfil/comando | Artefato e distribuição | Situação |
+| --- | --- | --- | --- |
+| Desenvolvimento local | `pnpm dev` + Expo Go | QR code/Metro | Local apenas |
+| Beta staging iOS | `eas build --profile preview --platform ios` | `.ipa` ad hoc pela página interna do EAS; somente aparelhos registrados | Configurado |
+| Beta staging Android | `eas build --profile preview --platform android` | APK pela página interna do EAS | Configurado |
+| TestFlight | — | Requer perfil iOS com `distribution: "store"` | Não configurado |
+| Stores públicas | `production` | Não faz parte deste procedimento | Exige decisão e revisão próprias |
 
-## 1. Caminho mais simples — Expo Go (sem build, sem conta paga)
+O perfil `preview` usa `distribution: "internal"`, Android APK e
+`EXPO_PUBLIC_API_URL=https://escalas-staging.onrender.com`. No iOS ele é uma
+distribuição ad hoc: o UDID do aparelho precisa estar no provisioning profile.
+Ele **não** é elegível a TestFlight, Transporter nem `eas submit`.
 
-Para o piloto da Unimed (40 anestesistas testando no celular pessoal),
-**Expo Go é o caminho mais rápido.** Sem build, sem TestFlight, sem APK.
+`preview` e `production` compartilham hoje a mesma identidade nativa
+(`com.comunicamais.escalas` e scheme `escalas`). Portanto, não se deve tentar
+instalar variantes lado a lado nem trocar identificador/scheme para simular um
+ambiente. Uma alteração de identidade exige migração e decisão aprovadas.
 
-### Como funciona
+## Pré-condições para uma build beta controlada
 
-1. Cada usuário instala o app **Expo Go** (App Store / Play Store, grátis).
-2. Você roda `pnpm dev:metro` localmente OU usa um tunnel público.
-3. Compartilha o QR code que aparece no terminal.
-4. Usuário aponta a câmera, abre, app carrega.
+1. `main` está estável, com os checks obrigatórios verdes, e há autorização
+   explícita para a build.
+2. A conta EAS tem acesso ao projeto já vinculado. Não rodar `eas init`: o
+   `projectId` canônico já está em `app.config.ts`.
+3. Para iOS, Apple Developer ativo, dispositivo físico com UDID registrado e
+   credenciais/provisioning válidos para distribuição interna.
+4. Para Android, dispositivo físico apto a instalar APK interno.
+5. Para testar push, APNs e FCM V1 precisam estar válidos fora do repositório;
+   o teste usa uma conta de staging e não inclui dado clínico em mensagens.
+6. A operação confirmou quota/concurrency do plano EAS. Cada build `preview`
+   consome uma versão nativa remota porque `autoIncrement` está ativo.
 
-### Limitações do Expo Go
+## Procedimento de staging
 
-- Conexão depende do Metro estar rodando (na sua máquina ou em um
-  servidor).
-- Sem ícone/splash custom.
-- Sem deep links próprios.
-- Algumas libs nativas avançadas não funcionam (não é nosso caso hoje).
-
-### Para o piloto Unimed
-
-**Suficiente.** Testamos por algumas semanas via Expo Go, validamos UX,
-ajustamos. Quando estabilizar, migramos para builds nativos
-(TestFlight + Play Store).
-
-## 2. Builds internos via EAS — TestFlight + APK
-
-Quando o app estabilizar e queremos um instalador independente
-(continuar funcionando se o Metro local cair), partimos para build
-real.
-
-### Pré-requisitos
-
-- Conta Expo (grátis em <https://expo.dev/signup>).
-- `eas-cli` instalado: `npm install -g eas-cli`.
-- Login: `eas login`.
-- Para iOS: Apple Developer Program ($99/ano) já enrolado.
-- Para Android: APK pode ser gerado **sem** conta Google Play; só
-  precisa de conta Google (grátis) para upload no Play Store interno.
-
-### Primeiro build de preview
+Executar em worktree limpo, na revisão que foi aprovada:
 
 ```bash
-# 1. Linka este repositório a um projeto EAS (uma única vez):
-eas init
-
-# 2. Build iOS para TestFlight:
-eas build --profile preview --platform ios
-
-# 3. Build Android APK:
-eas build --profile preview --platform android
+pnpm install --frozen-lockfile
+pnpm -s typecheck
+pnpm lint
+pnpm dlx eas-cli@latest whoami
 ```
 
-EAS gera um link de download em ~10-20 min. APK Android: instalar direto
-no aparelho. iOS: subir para TestFlight via `eas submit -p ios --latest`
-ou pelo App Store Connect web.
-
-### Distribuição para os 40 testers
-
-- **iOS (TestFlight):** convidar cada email no App Store Connect →
-  TestFlight → Internal Testing. Eles instalam o **TestFlight** app
-  e veem o Escalas listado.
-- **Android (APK):** subir o APK em Drive/S3, mandar link. Tester
-  instala (Android pede confirmação de "fonte desconhecida").
-
-### Update sem re-build (OTA)
-
-Após o primeiro build, atualizações de JS/CSS podem ser feitas sem
-rebuild via `eas update`:
+### iOS ad hoc
 
 ```bash
-eas update --branch preview --message "Fix do form de criar escala"
+pnpm dlx eas-cli@latest build --profile preview --platform ios
 ```
 
-Apps já instalados pegam a atualização na próxima abertura.
+Registrar no relatório o SHA, perfil, URL de staging, ID/link do artefato e o
+aparelho registrado usado no teste. Instalar pela página de distribuição
+interna do EAS no aparelho que já consta no provisioning profile. Não subir o
+`.ipa` para Transporter, App Store Connect ou TestFlight.
 
-## 3. Publicação em stores (futuro)
-
-### iOS — App Store
-
-1. **Bundle ID definitivo** já decidido (não pode mais ser mudado depois).
-2. **App Store Connect** → criar app com esse bundle ID.
-3. **Asset bundle:** ícone 1024×1024, screenshots de 4 tamanhos
-   (iPhone normal, iPhone Pro Max, iPad), descrição, política de
-   privacidade.
-4. **Build:** `eas build --profile production --platform ios`.
-5. **Submit:** `eas submit -p ios --latest` (preenche `ascAppId` em
-   `eas.json` antes).
-6. Apple revisa em ~1-3 dias. Pode rejeitar pedindo ajustes.
-
-### Android — Play Store
-
-1. **Google Play Console** ($25 uma vez, conta nova).
-2. **Bundle ID definitivo.**
-3. **Asset bundle:** ícone 512×512, screenshots, descrições,
-   política de privacidade.
-4. **Build:** `eas build --profile production --platform android`.
-5. **Submit:** `eas submit -p android --latest` (configurar Service
-   Account JSON antes).
-6. Google revisa em ~1-3 dias.
-
-## Bundle ID — decisão em aberto
-
-O valor atual em `app.config.ts` (`app.escalas.staging`) é
-**provisório**. **Antes da primeira publicação em store**:
-
-1. Decidir qual entidade é "dona" do app:
-   - Cooperativa (Coopanest) → algo tipo `br.com.coopanest.escalas`.
-   - Hospital (Unimed Fortaleza) → `br.com.unimedfortaleza.escalas`.
-   - Empresa nova/produto SaaS → `app.escalas` ou similar.
-
-2. Trocar em `app.config.ts`:
-   - `iosBundleId`
-   - `androidPackage`
-   - `scheme` (deep link prefix — opcional manter `escalas`)
-
-3. Trocar em `eas.json`:
-   - `submit.production.ios.ascAppId` quando o app estiver criado no
-     App Store Connect.
-
-4. **Rebuild** (`eas build --profile production`).
-
-**Atenção:** uma vez publicado em store com bundle ID X, mudar para Y
-significa **abandonar o app antigo e publicar um novo**. Usuários teriam
-que reinstalar. Por isso, decidir antes de publicar.
-
-## Troubleshooting
-
-### "Bundle ID já está em uso por outro projeto Apple"
-
-Outro app Apple no mundo tem esse bundle ID. Trocar para algo único.
-
-### "Submit failed: Invalid binary"
-
-Geralmente falta de ícone/screenshot/info no App Store Connect. Conferir
-todos os assets e metadados antes do submit.
-
-### Expo Go: app trava na splash
-
-Verificar se `pnpm dev:metro` está rodando E se o celular está na mesma
-rede Wi-Fi do laptop. Para usar fora da mesma rede, usar tunnel:
+### Android APK
 
 ```bash
-npx expo start --tunnel
+pnpm dlx eas-cli@latest build --profile preview --platform android
 ```
+
+Registrar os mesmos dados. Instalar o APK pelo link do EAS somente no aparelho
+de teste autorizado; a permissão Android para instalar apps dessa origem pode
+ser necessária.
+
+## Smoke obrigatório no aparelho físico
+
+Após instalar, registrar resultado para a mesma conta de staging:
+
+1. login, encerramento e retomada do app;
+2. troca de instituição e retorno, sem filtros ou dados residuais;
+3. abas Trocas, Vagas e Pendências, incluindo carregamento, erro e retry;
+4. uma notificação de vaga autorizada, seu deep link e a atualização das
+   queries;
+5. push em foreground/background e recebimento; e
+6. badge de conta conforme o contrato integrado, sem expor instituição,
+   mensagem, ID ou dado clínico no artefato de evidência.
+
+Uma falha bloqueia distribuição mais ampla e abre uma correção pequena e
+revisável; não é resolvida com novo build improvisado.
+
+## Atualizações posteriores
+
+O projeto não possui configuração canônica de EAS Update (`updates`/
+`runtimeVersion`) em `app.config.ts`. Portanto, não usar `eas update --branch
+preview` como atalho. Para qualquer alteração a ser testada no binário,
+repetir uma build `preview` controlada após os gates.
+
+## TestFlight e publicação futura
+
+TestFlight requer um perfil separado com `distribution: "store"`, credenciais
+e fluxo de submissão aprovados. Não deduzir esse perfil a partir de
+`production`, nem usar o `ascAppId` já presente em `eas.json` como autorização
+para submit. Esse é um trabalho novo, com decisão explícita sobre ambiente,
+identidade, público e publicação.
+
+## Identidade nativa
+
+O identificador canônico atual é `com.comunicamais.escalas` para iOS e Android.
+Ele não é provisório. Alterá-lo criaria outro aplicativo e exigiria
+reinstalação/migração; qualquer mudança precisa de plano aprovado antes de
+editar `app.config.ts` ou registros de loja.
+
+## Troubleshooting seguro
+
+- **iOS não instala:** conferir se o UDID está registrado e se o provisioning
+  profile foi regenerado para ele; não trocar bundle ID.
+- **Push não chega:** registrar plataforma, estado foreground/background e
+  timestamp; conferir permissões do aparelho, APNs/FCM e token de staging sem
+  compartilhar tokens em tickets ou chat.
+- **Artefato aponta para ambiente errado:** parar e conferir o perfil e a URL
+  resolvida antes de instalar. Nunca substituir variáveis de produção para
+  "testar rapidamente".

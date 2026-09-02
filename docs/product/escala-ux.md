@@ -371,7 +371,7 @@ implementador começar.
 
 | ID | Pendência | Status |
 |----|-----------|--------|
-| D1 | Bundle ID definitivo (`com.unimedfortaleza.escalas` vs `app.escalas` vs outro) | Pendente — discutir |
+| D1 | Bundle ID definitivo | Resolvido — `com.comunicamais.escalas`; não alterar sem migração aprovada |
 | D2 | Domínio próprio para staging (ainda em `*.onrender.com`) | Pendente — discutir |
 | D3 | Conteúdo da tela Dashboard para gestor (lista de indicadores específicos) | Pendente — após go-live |
 | D4 | Email transacional (provedor: SMTP próprio? Resend? SendGrid?) | Pendente — antes do magic-link |
