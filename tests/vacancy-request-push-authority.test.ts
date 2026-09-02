@@ -22,6 +22,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { drainAccountWideNativeBadgeSnapshotDispatches } from "../server/notifications-service";
 import {
   enqueueTrackedPushNotification,
   sendTrackedPushNotification,
@@ -465,13 +466,9 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
   });
 
   it("revalida Gestor+ e admin ativos no tenant antes do Expo", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        response(200, { data: { status: "ok", id: `plus-${stamp}` } }),
-      )
-      .mockResolvedValueOnce(
-        response(200, { data: { status: "ok", id: `admin-${stamp}` } }),
-      );
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: `manager-${stamp}` } }),
+    );
 
     for (const [userId, suffix] of [
       [gestorPlusUserId, "gestor-plus"],
@@ -488,7 +485,8 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
         ticketAccepted: true,
       });
     }
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("bloqueia Gestor+ e admin revogados depois do enqueue", async () => {
@@ -571,9 +569,13 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       })
       .where(eq(shiftAssignmentsV2.id, assignmentId));
     const valid = intent("REQUEST_APPROVED", requesterUserId, "approved");
-    fetchMock.mockResolvedValueOnce(
-      response(200, { data: { status: "ok", id: `vacancy-ticket-${stamp}` } }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `vacancy-ticket-${stamp}` } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `vacancy-badge-${stamp}` } }),
+      );
     await expect(
       sendTrackedPushNotification(valid, now),
     ).resolves.toMatchObject({
@@ -581,7 +583,8 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       phase: "TICKET_ACCEPTED",
       ticketAccepted: true,
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     fetchMock.mockClear();
     const revoked = intent("REQUEST_APPROVED", requesterUserId, "revoked-pi");
@@ -616,9 +619,13 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       requesterUserId,
       "rejected",
     );
-    fetchMock.mockResolvedValueOnce(
-      response(200, { data: { status: "ok", id: `rejected-${stamp}` } }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `rejected-${stamp}` } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `rejected-badge-${stamp}` } }),
+      );
 
     await expect(
       sendTrackedPushNotification(rejected, now),
@@ -627,7 +634,8 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       phase: "TICKET_ACCEPTED",
       ticketAccepted: true,
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("dedup concorrente preserva uma única intenção", async () => {
@@ -645,6 +653,7 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
   });
 
   afterAll(async () => {
+    await drainAccountWideNativeBadgeSnapshotDispatches();
     const userIds = [
       requesterUserId,
       managerAUserId,
