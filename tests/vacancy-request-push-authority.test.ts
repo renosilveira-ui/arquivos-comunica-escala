@@ -40,6 +40,7 @@ function response(status: number, body: unknown): Response {
 describe("autoridade atual no outbox de solicitação de vaga", () => {
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   let institutionId: number;
+  let otherInstitutionId: number;
   let hospitalAId: number;
   let hospitalBId: number;
   let sectorAId: number;
@@ -52,6 +53,13 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
   let managerBUserId: number;
   let managerBProfessionalId: number;
   let managerAScopeId: number;
+  let hospitalManagerUserId: number;
+  let hospitalManagerProfessionalId: number;
+  let gestorPlusUserId: number;
+  let adminUserId: number;
+  const extraUserIds: number[] = [];
+  const extraProfessionalIds: number[] = [];
+  const ineligibleManagerUserIds: number[] = [];
   let shiftId: number;
   let assignmentId: number;
   const stamp = Date.now();
@@ -74,6 +82,17 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       })
       .$returningId();
     institutionId = institution.id;
+    const [otherInstitution] = await db
+      .insert(institutions)
+      .values({
+        name: `Vacancy authority other ${stamp}`,
+        cnpj: `${stamp + 1}`.slice(-14).padStart(14, "0"),
+        legalName: `Vacancy authority other ${stamp}`,
+        tradeName: `VAO${stamp}`.slice(0, 20),
+        isActive: true,
+      })
+      .$returningId();
+    otherInstitutionId = otherInstitution.id;
     const [hospitalA] = await db
       .insert(hospitals)
       .values({
@@ -126,16 +145,28 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
 
     async function createProfessional(
       suffix: string,
-      roleInInstitution: "USER" | "GESTOR_MEDICO",
+      roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS",
+      options: {
+        targetInstitutionId?: number;
+        globalRole?: "admin" | "manager" | "doctor";
+        approvalStatus?: "APPROVED" | "PENDING";
+        deletedAt?: Date | null;
+        active?: boolean;
+      } = {},
     ) {
+      const targetInstitutionId =
+        options.targetInstitutionId ?? institutionId;
       const [user] = await db
         .insert(users)
         .values({
           name: `${suffix} ${stamp}`,
           email: `${suffix}-${stamp}@test.local`,
           passwordHash: "test",
-          role: roleInInstitution === "USER" ? "doctor" : "manager",
-          approvalStatus: "APPROVED",
+          role:
+            options.globalRole ??
+            (roleInInstitution === "USER" ? "doctor" : "manager"),
+          approvalStatus: options.approvalStatus ?? "APPROVED",
+          deletedAt: options.deletedAt ?? null,
         })
         .$returningId();
       const [professional] = await db
@@ -148,11 +179,11 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
         })
         .$returningId();
       await db.insert(professionalInstitutions).values({
-        institutionId,
+        institutionId: targetInstitutionId,
         professionalId: professional.id,
         userId: user.id,
         roleInInstitution,
-        active: true,
+        active: options.active ?? true,
       });
       return { userId: user.id, professionalId: professional.id };
     }
@@ -166,6 +197,51 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     const managerB = await createProfessional("manager-b", "GESTOR_MEDICO");
     managerBUserId = managerB.userId;
     managerBProfessionalId = managerB.professionalId;
+
+    const hospitalManager = await createProfessional(
+      "manager-hospital",
+      "GESTOR_MEDICO",
+    );
+    hospitalManagerUserId = hospitalManager.userId;
+    hospitalManagerProfessionalId = hospitalManager.professionalId;
+    const gestorPlus = await createProfessional("gestor-plus", "GESTOR_PLUS");
+    gestorPlusUserId = gestorPlus.userId;
+    const admin = await createProfessional("admin", "USER", {
+      globalRole: "admin",
+    });
+    adminUserId = admin.userId;
+
+    for (const actor of [hospitalManager, gestorPlus, admin]) {
+      extraUserIds.push(actor.userId);
+      extraProfessionalIds.push(actor.professionalId);
+    }
+    for (const actor of [
+      await createProfessional("gestor-plus-other", "GESTOR_PLUS", {
+        targetInstitutionId: otherInstitutionId,
+      }),
+      await createProfessional("admin-other", "USER", {
+        targetInstitutionId: otherInstitutionId,
+        globalRole: "admin",
+      }),
+      await createProfessional("gestor-plus-inactive", "GESTOR_PLUS", {
+        active: false,
+      }),
+      await createProfessional("admin-inactive", "USER", {
+        globalRole: "admin",
+        active: false,
+      }),
+      await createProfessional("gestor-plus-pending", "GESTOR_PLUS", {
+        approvalStatus: "PENDING",
+      }),
+      await createProfessional("admin-deleted", "USER", {
+        globalRole: "admin",
+        deletedAt: new Date("2032-01-01T00:00:00.000Z"),
+      }),
+    ]) {
+      extraUserIds.push(actor.userId);
+      extraProfessionalIds.push(actor.professionalId);
+      ineligibleManagerUserIds.push(actor.userId);
+    }
 
     const [scopeA] = await db
       .insert(managerScope)
@@ -183,6 +259,13 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       managerProfessionalId: managerBProfessionalId,
       hospitalId: hospitalBId,
       sectorId: sectorBId,
+      active: true,
+    });
+    await db.insert(managerScope).values({
+      institutionId,
+      managerProfessionalId: hospitalManagerProfessionalId,
+      hospitalId: hospitalAId,
+      sectorId: null,
       active: true,
     });
     await db.insert(managerScope).values({
@@ -241,6 +324,24 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
         token: `ExponentPushToken[vacancy-manager-b-${stamp}]`,
         platform: "ios",
       },
+      {
+        institutionId,
+        userId: hospitalManagerUserId,
+        token: `ExponentPushToken[vacancy-manager-hospital-${stamp}]`,
+        platform: "ios",
+      },
+      {
+        institutionId,
+        userId: gestorPlusUserId,
+        token: `ExponentPushToken[vacancy-gestor-plus-${stamp}]`,
+        platform: "ios",
+      },
+      {
+        institutionId,
+        userId: adminUserId,
+        token: `ExponentPushToken[vacancy-admin-${stamp}]`,
+        platform: "ios",
+      },
     ]);
   });
 
@@ -257,6 +358,7 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
           requesterUserId,
           managerAUserId,
           managerBUserId,
+          ...extraUserIds,
         ]),
       );
     await db
@@ -320,14 +422,119 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     };
   }
 
-  it("não soma escopos de outro hospital ou setor ao conjunto de destinatários", async () => {
+  it("inclui apenas gestores canônicos do tenant e da topologia", async () => {
+    const recipients = await listResponsibleVacancyManagerUserIds(db, {
+      institutionId,
+      hospitalId: hospitalAId,
+      sectorId: sectorAId,
+    });
+    expect(recipients).toEqual(
+      [
+        managerAUserId,
+        hospitalManagerUserId,
+        gestorPlusUserId,
+        adminUserId,
+      ].sort((left, right) => left - right),
+    );
+    for (const userId of ineligibleManagerUserIds) {
+      expect(recipients).not.toContain(userId);
+    }
+  });
+
+  it("escopo hospitalar cobre setores irmãos sem somar escopo setorial", async () => {
     await expect(
       listResponsibleVacancyManagerUserIds(db, {
         institutionId,
         hospitalId: hospitalAId,
-        sectorId: sectorAId,
+        sectorId: sectorSiblingAId,
       }),
-    ).resolves.toEqual([managerAUserId]);
+    ).resolves.toEqual(
+      [
+        managerBUserId,
+        hospitalManagerUserId,
+        gestorPlusUserId,
+        adminUserId,
+      ].sort((left, right) => left - right),
+    );
+  });
+
+  it("revalida Gestor+ e admin ativos no tenant antes do Expo", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `plus-${stamp}` } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, { data: { status: "ok", id: `admin-${stamp}` } }),
+      );
+
+    for (const [userId, suffix] of [
+      [gestorPlusUserId, "gestor-plus"],
+      [adminUserId, "admin"],
+    ] as const) {
+      await expect(
+        sendTrackedPushNotification(
+          intent("MANAGER_ACTION_REQUIRED", userId, suffix),
+          now,
+        ),
+      ).resolves.toMatchObject({
+        status: "PENDING",
+        phase: "TICKET_ACCEPTED",
+        ticketAccepted: true,
+      });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("bloqueia Gestor+ e admin revogados depois do enqueue", async () => {
+    const plusPush = intent(
+      "MANAGER_ACTION_REQUIRED",
+      gestorPlusUserId,
+      "gestor-plus-revoked",
+    );
+    const adminPush = intent(
+      "MANAGER_ACTION_REQUIRED",
+      adminUserId,
+      "admin-revoked",
+    );
+    await enqueueTrackedPushNotification(plusPush, now);
+    await enqueueTrackedPushNotification(adminPush, now);
+    await db
+      .update(professionalInstitutions)
+      .set({ active: false })
+      .where(
+        and(
+          eq(professionalInstitutions.institutionId, institutionId),
+          eq(professionalInstitutions.userId, gestorPlusUserId),
+        ),
+      );
+    await db
+      .update(users)
+      .set({ approvalStatus: "PENDING" })
+      .where(eq(users.id, adminUserId));
+
+    try {
+      await expect(
+        sendTrackedPushNotification(plusPush, now),
+      ).resolves.toMatchObject({ status: "FAILED" });
+      await expect(
+        sendTrackedPushNotification(adminPush, now),
+      ).resolves.toMatchObject({ status: "FAILED" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      await db
+        .update(professionalInstitutions)
+        .set({ active: true })
+        .where(
+          and(
+            eq(professionalInstitutions.institutionId, institutionId),
+            eq(professionalInstitutions.userId, gestorPlusUserId),
+          ),
+        );
+      await db
+        .update(users)
+        .set({ approvalStatus: "APPROVED" })
+        .where(eq(users.id, adminUserId));
+    }
   });
 
   it("revogação do escopo após o enqueue impede o envio ao gestor", async () => {
@@ -405,11 +612,17 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
   });
 
   afterAll(async () => {
-    const userIds = [requesterUserId, managerAUserId, managerBUserId];
+    const userIds = [
+      requesterUserId,
+      managerAUserId,
+      managerBUserId,
+      ...extraUserIds,
+    ];
     const professionalIds = [
       requesterProfessionalId,
       managerAProfessionalId,
       managerBProfessionalId,
+      ...extraProfessionalIds,
     ];
     await db
       .delete(notifications)
@@ -436,5 +649,8 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       .delete(hospitals)
       .where(inArray(hospitals.id, [hospitalAId, hospitalBId]));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
+    await db
+      .delete(institutions)
+      .where(eq(institutions.id, otherInstitutionId));
   });
 });

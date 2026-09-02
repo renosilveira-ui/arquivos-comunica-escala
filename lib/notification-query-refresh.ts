@@ -30,8 +30,11 @@ const ASSIGNMENT_CHANGE = Object.freeze([
   "SWAPS",
 ] as const);
 const VACANCY_REQUEST_CREATED = Object.freeze([
+  "SCHEDULES",
+  "VACANCIES",
   "PENDING_ASSIGNMENTS",
   "SUMMARY_COUNTS",
+  "ACTIONABLE_VACANCY_COUNTS",
 ] as const);
 const VACANCY_REQUEST_DECIDED = Object.freeze([
   ...ASSIGNMENT_CHANGE,

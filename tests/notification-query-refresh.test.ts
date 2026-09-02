@@ -33,8 +33,11 @@ describe("push em primeiro plano — matriz de reconciliação", () => {
 
   it("reconcilia solicitação de vaga e sua decisão nas superfícies corretas", () => {
     expect(notificationQueryRefreshTargets("vacancy_request_created")).toEqual([
+      "SCHEDULES",
+      "VACANCIES",
       "PENDING_ASSIGNMENTS",
       "SUMMARY_COUNTS",
+      "ACTIONABLE_VACANCY_COUNTS",
     ]);
     for (const type of [
       "vacancy_request_approved",

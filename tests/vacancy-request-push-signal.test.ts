@@ -162,6 +162,34 @@ describe("outbox de solicitação de vaga", () => {
     expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
   });
 
+  it("permite rejeitar sem outbox quando o solicitante perdeu o vínculo", async () => {
+    const db = selectDb([[]]);
+    await expect(
+      enqueueVacancyRequestDecisionPush({
+        db: db as never,
+        purpose: "REQUEST_REJECTED",
+        assignmentId: 501,
+        requesterProfessionalId: 12,
+        shift: shiftInput(),
+      }),
+    ).resolves.toBe(0);
+    expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
+  });
+
+  it("mantém aprovação fail-closed quando o solicitante perdeu o vínculo", async () => {
+    const db = selectDb([[]]);
+    await expect(
+      enqueueVacancyRequestDecisionPush({
+        db: db as never,
+        purpose: "REQUEST_APPROVED",
+        assignmentId: 501,
+        requesterProfessionalId: 12,
+        shift: shiftInput(),
+      }),
+    ).rejects.toThrow(/Solicitante canônico/);
+    expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
+  });
+
   it("propaga falha do outbox para a transação de negócio", async () => {
     enqueueTrackedPushNotification.mockRejectedValue(
       new Error("forced outbox failure"),

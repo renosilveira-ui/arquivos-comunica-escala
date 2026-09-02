@@ -192,17 +192,20 @@ export async function enqueueVacancyRequestDecisionPush(input: {
   now?: Date;
 }): Promise<number> {
   const now = input.now ?? new Date();
-  const [requester, place] = await Promise.all([
-    resolveRequester(input.db, {
-      institutionId: input.shift.institutionId,
-      professionalId: input.requesterProfessionalId,
-    }),
-    loadPlace(input.db, input.shift),
-  ]);
+  const requester = await resolveRequester(input.db, {
+    institutionId: input.shift.institutionId,
+    professionalId: input.requesterProfessionalId,
+  });
   if (!requester) {
+    // Rejeitar é também a operação que limpa uma pendência inválida. Se o
+    // solicitante já perdeu vínculo/conta, não há destinatário autorizado,
+    // mas a decisão gerencial precisa ser concluída e auditada. Aprovar segue
+    // fail-closed porque cria uma alocação efetiva para esse profissional.
+    if (input.purpose === "REQUEST_REJECTED") return 0;
     throw new Error("Solicitante canônico indisponível para notificação");
   }
 
+  const place = await loadPlace(input.db, input.shift);
   const approved = input.purpose === "REQUEST_APPROVED";
   const policy = VACANCY_REQUEST_PUSH_POLICY[input.purpose];
   await enqueueTrackedPushNotification(
