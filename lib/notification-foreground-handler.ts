@@ -19,7 +19,9 @@ export const PRESENT_FOREGROUND_NOTIFICATION = Object.freeze({
 
 // Único handler process-wide. Em foreground, payload sem recipient ou sem
 // sujeito VERIFIED fica silencioso: o listener de rotas não é uma barreira de
-// apresentação visual e pode montar tarde durante a troca A → B.
+// apresentação visual e pode montar tarde durante a troca A → B. Isso inclui
+// o snapshot estático de badge, que o hook reconcilia por consulta canônica
+// sem confiar no número recebido do provedor.
 Notifications.setNotificationHandler({
   handleNotification: async (notification) =>
     shouldPresentForegroundNotification(notification.request.content.data)

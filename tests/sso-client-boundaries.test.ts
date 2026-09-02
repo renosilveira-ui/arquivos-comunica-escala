@@ -215,6 +215,15 @@ function notificationResponse(
   };
 }
 
+function mockAccountWideNativeBadge(): void {
+  // Estes harnesses verificam o roteamento do listener. A reconciliação de
+  // badge tem suíte própria; isolá-la aqui preserva a quantidade/ordem dos
+  // efeitos de roteamento que estes cenários exercitam.
+  vi.doMock("@/hooks/use-account-wide-native-badge", () => ({
+    useAccountWideNativeBadge: () => undefined,
+  }));
+}
+
 async function renderRealNotificationListener(options: {
   user?: { id: number } | null;
   sessionVerified?: boolean;
@@ -230,6 +239,7 @@ async function renderRealNotificationListener(options: {
   ) => Promise<{ ok: boolean; cancelled?: true }>;
 }) {
   vi.resetModules();
+  mockAccountWideNativeBadge();
   clientMocks.platform.OS = options.platform ?? "ios";
   const effects: (() => void | (() => void))[] = [];
   const routerPush = vi.fn();
@@ -1982,6 +1992,7 @@ describe("SSO client tenant boundaries", () => {
 
   it("cleanup real do Listener invalida a fila no unmount/logout e impede rota tardia", async () => {
     vi.resetModules();
+    mockAccountWideNativeBadge();
     const effects: (() => void | (() => void))[] = [];
     const refetchStarted = deferred();
     const releaseRefetch = deferred<{

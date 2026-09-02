@@ -1198,6 +1198,22 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     const res = await login(EMAILS.leaving, PASSWORD);
     const cookie = cookieOf(res)!;
 
+    // O login encerra a geração anterior e remove o token seed. O app só
+    // volta a receber push depois de registrar o destino da sessão corrente;
+    // mantenha esta prova para garantir que DELETE revoga esse destino vivo.
+    await expect(
+      db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.userId, userIds.leaving)),
+    ).resolves.toHaveLength(0);
+    await db.insert(pushTokens).values({
+      institutionId,
+      userId: userIds.leaving,
+      token: `ExponentPushToken[a3-current-${STAMP}]`,
+      platform: "ios",
+    });
+
     const del = await request(app)
       .delete("/api/auth/me")
       .set("Cookie", cookie)

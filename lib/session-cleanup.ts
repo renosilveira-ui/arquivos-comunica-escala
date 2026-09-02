@@ -2,6 +2,7 @@ import {
   getActiveWebSessionWorkflowSignal,
   waitForActiveWebSessionWorkflow,
 } from "./_core/web-session-workflow";
+import { enqueueNativeBadgeWrite } from "./native-badge-write-queue";
 
 export type SessionCleanupStep = {
   name: string;
@@ -83,6 +84,7 @@ async function loadNativeNotificationCleanupApi(): Promise<NativeNotificationCle
 export function createAccountScopedNotificationCleanupSteps(
   platform: string,
   loadApi: NativeNotificationCleanupLoader = loadNativeNotificationCleanupApi,
+  isCurrent: () => boolean = () => true,
 ): readonly SessionCleanupStep[] {
   if (platform === "web") return [];
 
@@ -98,7 +100,10 @@ export function createAccountScopedNotificationCleanupSteps(
       run: async () => {
         // `false` significa que a plataforma não oferece suporte a badge, não
         // que a limpeza falhou. Rejeições da Promise continuam sendo agregadas.
-        await (await getApi()).setBadgeCountAsync(0);
+        await enqueueNativeBadgeWrite({
+          isCurrent,
+          write: async () => (await getApi()).setBadgeCountAsync(0),
+        });
       },
     },
     {

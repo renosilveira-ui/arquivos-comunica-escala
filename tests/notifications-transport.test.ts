@@ -7,9 +7,15 @@ import { TRPCError } from "@trpc/server";
 import {
   getExpoPushReceipts,
   registerPushToken,
+  sendAccountWideNativeBadgeSnapshot,
   sendPushNotification,
   unregisterPushToken,
 } from "../server/notifications-service";
+import {
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+  ACCOUNT_WIDE_BADGE_SNAPSHOT_TTL_SECONDS,
+} from "../lib/account-wide-native-badge";
 import {
   PushOwnershipLockTimeoutError,
   withPushAccountAndTokenMutex,
@@ -33,6 +39,8 @@ type TokenFixture = {
   token: string;
   userId?: number;
   institutionId?: number;
+  platform?: string;
+  sessionVersion?: number;
 };
 
 function response(status: number, body: unknown): Response {
@@ -79,22 +87,28 @@ function sqlBoundValues(statement: unknown): unknown[] {
 
 function database(
   tokens: TokenFixture[] = [],
-  options: { ownershipRows?: TokenFixture[] } = {},
+  options: { ownershipRows?: TokenFixture[]; badgeCount?: unknown } = {},
 ) {
   const normalized = tokens.map((token) => ({
     userId: 7,
     institutionId: 99,
+    platform: "ios",
+    sessionVersion: 1,
     ...token,
   }));
   const normalizedOwnership = (options.ownershipRows ?? tokens).map((token) => ({
     userId: 7,
     institutionId: 99,
+    platform: "ios",
+    sessionVersion: 1,
     ...token,
   }));
   const selection = (fields?: Record<string, unknown>) => {
-    const rows = fields && "id" in fields && "userId" in fields && !("token" in fields)
-      ? normalizedOwnership
-      : normalized;
+    const rows: any[] = fields && "count" in fields
+      ? [{ count: options.badgeCount ?? 0 }]
+      : fields && "id" in fields && "userId" in fields && !("token" in fields)
+        ? normalizedOwnership
+        : normalized;
     const builder: any = {};
     builder.from = vi.fn(() => builder);
     builder.innerJoin = vi.fn(() => builder);
@@ -297,6 +311,92 @@ describe("transporte tipado de push Expo", () => {
     expect(sent.channelId).toBe("escalas-default");
     expect(sent.sound).toBe("default");
     expect(sent.priority).toBe("high");
+  });
+
+  it("envia snapshot de badge somente ao iOS, sem conteúdo ou identidade", async () => {
+    const iosToken = "ExponentPushToken[badge-ios]";
+    const { db } = database(
+      [
+        { id: 117, token: iosToken, platform: "ios" },
+        { id: 118, token: "ExponentPushToken[badge-android]", platform: "android" },
+      ],
+      { badgeCount: 4 },
+    );
+    dbModule.getDb.mockResolvedValue(db);
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: "ticket-badge-ios" } }),
+    );
+
+    await expect(
+      sendAccountWideNativeBadgeSnapshot(7, 99),
+    ).resolves.toMatchObject({
+      status: "TICKETS_ACCEPTED",
+      acceptedCount: 1,
+      rejectedCount: 0,
+      tickets: [{ state: "TICKET_ACCEPTED", pushTokenId: 117 }],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(sent).toEqual({
+      to: iosToken,
+      badge: 4,
+      collapseId: ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
+      data: ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+      ttl: ACCOUNT_WIDE_BADGE_SNAPSHOT_TTL_SECONDS,
+    });
+    expect(sent).not.toHaveProperty("title");
+    expect(sent).not.toHaveProperty("body");
+    expect(sent.data).not.toHaveProperty("recipientUserId");
+    expect(sent.data).not.toHaveProperty("institutionId");
+    expect(sent.data).not.toHaveProperty("hospitalId");
+    expect(sent.data).not.toHaveProperty("sectorId");
+    expect(sent).not.toHaveProperty("sound");
+    expect(sent).not.toHaveProperty("priority");
+    expect(sent).not.toHaveProperty("channelId");
+    const accountLockAcquire = db.execute.mock.calls[0]?.[0];
+    expect(sqlBoundValues(accountLockAcquire)[1]).toBe(0);
+  });
+
+  it("não tenta forçar contador nativo em launcher Android", async () => {
+    const { db } = database([
+      { id: 119, token: "ExponentPushToken[badge-only-android]", platform: "android" },
+    ]);
+    dbModule.getDb.mockResolvedValue(db);
+
+    await expect(
+      sendAccountWideNativeBadgeSnapshot(7, 99),
+    ).resolves.toMatchObject({
+      status: "NO_REGISTERED_TOKENS",
+      acceptedCount: 0,
+      rejectedCount: 0,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("não envia snapshot iOS se o registro do token muda de plataforma sob lock", async () => {
+    const token = "ExponentPushToken[badge-platform-race]";
+    const { db } = database(
+      [{ id: 120, token, platform: "ios" }],
+      {
+        badgeCount: 3,
+        ownershipRows: [{ id: 120, token, platform: "android" }],
+      },
+    );
+    dbModule.getDb.mockResolvedValue(db);
+
+    await expect(
+      sendAccountWideNativeBadgeSnapshot(7, 99),
+    ).resolves.toMatchObject({
+      status: "ALL_TICKETS_REJECTED",
+      tickets: [
+        {
+          state: "TICKET_REJECTED",
+          failureKind: "BADGE_SNAPSHOT_UNAVAILABLE",
+        },
+      ],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("sela o destinatário revalidado e sobrescreve recipientUserId forjado", async () => {
@@ -713,7 +813,7 @@ describe("transporte tipado de push Expo", () => {
     ]);
   });
 
-  it("aplica deadline AbortSignal tanto no ticket quanto no receipt", async () => {
+  it("preserva deadline operacional e limita o snapshot eventual a dois segundos", async () => {
     const { db } = database([{ id: 41, token: "ExponentPushToken[timeout]" }]);
     dbModule.getDb.mockResolvedValue(db);
     const controller = new AbortController();
@@ -722,16 +822,20 @@ describe("transporte tipado de push Expo", () => {
       .mockReturnValue(controller.signal);
     fetchMock
       .mockResolvedValueOnce(response(200, { data: { status: "ok", id: "ticket-timeout" } }))
+      .mockResolvedValueOnce(response(200, { data: { status: "ok", id: "ticket-badge-timeout" } }))
       .mockResolvedValueOnce(response(200, { data: { "ticket-timeout": { status: "ok" } } }));
 
     try {
       await sendPushNotification(7, payload, 99);
+      await sendAccountWideNativeBadgeSnapshot(7, 99);
       await getExpoPushReceipts([receiptTarget("ticket-timeout", 41)]);
 
       expect(timeoutSpy).toHaveBeenNthCalledWith(1, 15_000);
-      expect(timeoutSpy).toHaveBeenNthCalledWith(2, 15_000);
+      expect(timeoutSpy).toHaveBeenNthCalledWith(2, 2_000);
+      expect(timeoutSpy).toHaveBeenNthCalledWith(3, 15_000);
       expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBe(controller.signal);
       expect((fetchMock.mock.calls[1][1] as RequestInit).signal).toBe(controller.signal);
+      expect((fetchMock.mock.calls[2][1] as RequestInit).signal).toBe(controller.signal);
     } finally {
       timeoutSpy.mockRestore();
     }

@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "node:crypto";
 import { parse as parseCookieHeader } from "cookie";
-import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { getDb, getUserByEmail } from "../db";
 import {
   users,
@@ -55,6 +55,7 @@ import {
 import { ENV } from "../_core/env";
 import {
   PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+  PushOwnershipLockTimeoutError,
   revokeUserPushRegistrations,
   withPushAccountMutex,
 } from "../push-registration-revocation";
@@ -253,6 +254,19 @@ function affectedRows(result: unknown): number {
   );
 }
 
+function loginSessionRotationFailureReason(error: unknown): string {
+  if (error instanceof PushOwnershipLockTimeoutError) {
+    return "PUSH_ACCOUNT_MUTEX_TIMEOUT";
+  }
+  if (
+    error instanceof Error &&
+    error.message === "Concorrência inesperada ao iniciar sessão"
+  ) {
+    return "SESSION_VERSION_CAS_FAILED";
+  }
+  return "SESSION_TRANSACTION_FAILED";
+}
+
 function auditActorName(name: string | null | undefined): string | undefined {
   const normalized = String(name ?? "").trim();
   return normalized ? normalized.slice(0, 255) : undefined;
@@ -342,30 +356,103 @@ authRouter.post(
       return;
     }
 
-    // Invalida sessões anteriores e gira o fence do navegador no mesmo login.
-    const loginFenceValue = rotateBrowserSessionFence(req, res);
-    const loginFence = sessionFenceDigestForValue(loginFenceValue);
-    await db
-      .update(users)
-      .set({ sessionVersion: sql`${users.sessionVersion} + 1` })
-      .where(eq(users.id, user.id));
-    const [freshUser] = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        email: users.email,
-        role: users.role,
-        approvalStatus: users.approvalStatus,
-        mustChangePassword: users.mustChangePassword,
-        sessionVersion: users.sessionVersion,
-      })
-      .from(users)
-      .where(eq(users.id, user.id))
-      .limit(1);
-    if (!freshUser) {
-      res.status(500).json({ error: "Falha ao iniciar sessão" });
+    // Login gira sessionVersion. O mesmo commit precisa revogar os tokens Expo
+    // da geração anterior, caso contrário uma fotografia de badge poderia
+    // alcançar um aparelho cuja sessão já perdeu autoridade. O mutex é o
+    // mesmo de registro/submissão push: user → push_tokens, sem egress entre
+    // a revogação e a emissão do novo JWT.
+    let freshUser: {
+      id: number;
+      name: string | null;
+      email: string | null;
+      role: User["role"];
+      approvalStatus: User["approvalStatus"];
+      mustChangePassword: boolean;
+      sessionVersion: number;
+    } | null;
+    try {
+      freshUser = await withPushAccountMutex(
+        db,
+        user.id,
+        PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+        (connectionDb) =>
+          connectionDb.transaction(
+            async (tx) => {
+              const [lockedUser] = await tx
+                .select({
+                  id: users.id,
+                  name: users.name,
+                  email: users.email,
+                  role: users.role,
+                  approvalStatus: users.approvalStatus,
+                  mustChangePassword: users.mustChangePassword,
+                  passwordHash: users.passwordHash,
+                  sessionVersion: users.sessionVersion,
+                  deletedAt: users.deletedAt,
+                })
+                .from(users)
+                .where(eq(users.id, user.id))
+                .limit(1)
+                .for("update");
+              // A senha foi verificada antes do lock. Se ela mudou enquanto
+              // bcrypt trabalhava, esta tentativa antiga não pode criar uma
+              // sessão nova nem revogar o aparelho da sessão válida.
+              if (
+                !lockedUser ||
+                lockedUser.deletedAt ||
+                !lockedUser.passwordHash ||
+                lockedUser.passwordHash !== user.passwordHash
+              ) {
+                return null;
+              }
+
+              const nextSessionVersion = lockedUser.sessionVersion + 1;
+              const updateResult = await tx
+                .update(users)
+                .set({ sessionVersion: nextSessionVersion })
+                .where(
+                  and(
+                    eq(users.id, lockedUser.id),
+                    eq(users.sessionVersion, lockedUser.sessionVersion),
+                    eq(users.passwordHash, lockedUser.passwordHash),
+                    isNull(users.deletedAt),
+                  ),
+                );
+              if (affectedRows(updateResult) !== 1) {
+                throw new Error("Concorrência inesperada ao iniciar sessão");
+              }
+
+              await revokeUserPushRegistrations(tx, lockedUser.id);
+              return {
+                id: lockedUser.id,
+                name: lockedUser.name,
+                email: lockedUser.email,
+                role: lockedUser.role,
+                approvalStatus: lockedUser.approvalStatus,
+                mustChangePassword: lockedUser.mustChangePassword,
+                sessionVersion: nextSessionVersion,
+              };
+            },
+            { isolationLevel: "read committed" },
+          ),
+      );
+    } catch (error) {
+      // Não registra a mensagem original: drivers SQL podem incluir query ou
+      // valores. O código estável distingue mutex, CAS e falha transacional.
+      console.error("[login] SESSION_ROTATION_FAILED", {
+        reason: loginSessionRotationFailureReason(error),
+      });
+      res.status(503).json({ error: "Não foi possível iniciar sessão. Tente novamente." });
       return;
     }
+    if (!freshUser) {
+      res.status(401).json({ error: "Credenciais inválidas" });
+      return;
+    }
+
+    // O fence só é emitido após a rotação transacional ter sido confirmada.
+    const loginFenceValue = rotateBrowserSessionFence(req, res);
+    const loginFence = sessionFenceDigestForValue(loginFenceValue);
 
     const token = await sdk.createSessionToken(String(freshUser.id), {
       name: freshUser.name ?? "",

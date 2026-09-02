@@ -30,6 +30,7 @@ const expectedMutationPaths = [
   "editor.markVacant",
   "editor.unassignDirect",
   "hospitals.create",
+  "notifications.acknowledgeAccountBadge",
   "profile.deactivateWhatsAppContact",
   "profile.setWhatsAppContact",
   "scheduleContexts.ensureDefaultSectorScale",

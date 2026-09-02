@@ -130,6 +130,15 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  "notifications.acknowledgeAccountBadge": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário reconhece os alertas visíveis da sua conta",
+        audience: [],
+      },
+    ],
+  },
   "editor.assignDirect": {
     targets: [
       {

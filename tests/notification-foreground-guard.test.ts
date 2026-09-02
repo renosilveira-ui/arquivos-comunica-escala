@@ -8,6 +8,7 @@ import {
   HIDE_FOREGROUND_NOTIFICATION,
   PRESENT_FOREGROUND_NOTIFICATION,
 } from "../lib/notification-foreground-handler";
+import { ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA } from "../lib/account-wide-native-badge";
 import { scheduleNotification } from "../lib/notifications";
 
 const notifications = vi.hoisted(() => ({
@@ -51,6 +52,9 @@ describe("cerca visual de notificações em primeiro plano", () => {
     await expect(
       foregroundBehavior({ recipientUserId: "7" }),
     ).resolves.toEqual(PRESENT_FOREGROUND_NOTIFICATION);
+    await expect(
+      foregroundBehavior(ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA),
+    ).resolves.toEqual(HIDE_FOREGROUND_NOTIFICATION);
   });
 
   it("cleanup de A não apaga a publicação VERIFIED mais nova de B", async () => {

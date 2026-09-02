@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import {
@@ -14,7 +14,10 @@ import {
   processPendingPushDeliveries,
   sendTrackedPushNotification,
 } from "../server/push-delivery";
-import { registerPushToken } from "../server/notifications-service";
+import {
+  drainAccountWideNativeBadgeSnapshotDispatches,
+  registerPushToken,
+} from "../server/notifications-service";
 
 function response(status: number, body: unknown): Response {
   return {
@@ -124,6 +127,10 @@ describe("outbox de push sem projeção de entrega", () => {
     });
   });
 
+  afterEach(async () => {
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+  });
+
   afterAll(async () => {
     vi.unstubAllGlobals();
     await db.delete(notifications).where(eq(notifications.userId, userId));
@@ -171,6 +178,113 @@ describe("outbox de push sem projeção de entrega", () => {
       .where(eq(notifications.id, first.notificationId));
     expect(stored.status).toBe("PENDING");
     expect(stored.providerReceipt).toMatchObject({ phase: "TICKET_ACCEPTED" });
+  });
+
+  it("mantém o marker do badge apenas no outbox local, sem alterar o envelope Expo", async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        data: { status: "ok", id: "ticket-account-badge-marker" },
+      }),
+    );
+
+    const tracked = await sendTrackedPushNotification(
+      {
+        ...input("account-badge-marker"),
+        payload: {
+          title: "Vaga disponível",
+          body: "Há uma vaga para você.",
+          data: { type: "vacancy_available", route: "/(tabs)/vacancies" },
+        },
+      },
+      now,
+    );
+    const [stored] = await db
+      .select({ providerReceipt: notifications.providerReceipt })
+      .from(notifications)
+      .where(eq(notifications.id, tracked.notificationId));
+    const payloadData = (
+      stored.providerReceipt as { payloadData?: Record<string, unknown> }
+    ).payloadData;
+    expect(stored.providerReceipt).toMatchObject({
+      accountWideBadgeVersion: 1,
+    });
+    expect(payloadData).not.toHaveProperty("accountWideBadgeVersion");
+    expect(payloadData).not.toHaveProperty("notificationId");
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body)) as {
+      badge?: unknown;
+      data?: Record<string, unknown>;
+    };
+    expect(body).not.toHaveProperty("badge");
+    expect(body.data).toMatchObject({
+      type: "vacancy_available",
+      route: "/(tabs)/vacancies",
+      recipientUserId: userId,
+    });
+    expect(body.data).not.toHaveProperty("accountWideBadgeVersion");
+    expect(body.data).not.toHaveProperty("notificationId");
+  });
+
+  it("não mantém a resposta operacional presa ao snapshot iOS lento", async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        data: { status: "ok", id: "ticket-content-before-snapshot" },
+      }),
+    );
+    let signalSnapshotFetch!: () => void;
+    const snapshotFetchStarted = new Promise<void>((resolve) => {
+      signalSnapshotFetch = resolve;
+    });
+    let releaseSnapshotFetch!: () => void;
+    const snapshotFetchRelease = new Promise<void>((resolve) => {
+      releaseSnapshotFetch = resolve;
+    });
+    fetchMock.mockImplementationOnce(async () => {
+      signalSnapshotFetch();
+      await snapshotFetchRelease;
+      return response(200, {
+        data: { status: "ok", id: "ticket-slow-snapshot" },
+      });
+    });
+
+    const trackedPromise = sendTrackedPushNotification(
+      {
+        ...input("snapshot-latency"),
+        payload: {
+          title: "Vaga disponível",
+          body: "Há uma vaga para você.",
+          data: { type: "vacancy_available" },
+        },
+      },
+      now,
+    );
+
+    try {
+      await snapshotFetchStarted;
+      const resultBeforeSnapshot = await Promise.race([
+        trackedPromise.then((value) => ({ state: "RESOLVED" as const, value })),
+        new Promise<{ state: "BLOCKED" }>((resolve) => {
+          setTimeout(() => resolve({ state: "BLOCKED" }), 500);
+        }),
+      ]);
+      expect(resultBeforeSnapshot).toMatchObject({
+        state: "RESOLVED",
+        value: { phase: "TICKET_ACCEPTED", ticketAccepted: true },
+      });
+
+      releaseSnapshotFetch();
+      await vi.waitFor(() =>
+        expect(vi.mocked(console.log)).toHaveBeenCalledTimes(2),
+      );
+      const snapshotRequest = fetchMock.mock.calls[1]?.[1] as RequestInit;
+      expect(JSON.parse(String(snapshotRequest.body))).toMatchObject({
+        badge: 1,
+      });
+    } finally {
+      releaseSnapshotFetch();
+      await trackedPromise;
+    }
   });
 
   it("rejeita colisão de dedupKey com destinatário ou payload diferente", async () => {
@@ -256,7 +370,10 @@ describe("outbox de push sem projeção de entrega", () => {
       .where(eq(notifications.id, tracked.notificationId));
     expect(stored.status).toBe("SENT");
     expect(stored.sentAt).not.toBeNull();
-    expect(stored.providerReceipt).toMatchObject({ phase: "PROVIDER_ACCEPTED" });
+    expect(stored.providerReceipt).toMatchObject({
+      phase: "PROVIDER_ACCEPTED",
+      accountWideBadgeVersion: 1,
+    });
   });
 
   it("ticket DeviceNotRegistered falha e invalida o token", async () => {
@@ -408,6 +525,49 @@ describe("outbox de push sem projeção de entrega", () => {
     });
   });
 
+  it("marker de badge desconhecido falha fechado antes da rede", async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        data: { status: "ok", id: "ticket-invalid-badge-marker" },
+      }),
+    );
+    const tracked = await sendTrackedPushNotification(
+      input("invalid-badge-marker"),
+      now,
+    );
+    const [storedBefore] = await db
+      .select({ providerReceipt: notifications.providerReceipt })
+      .from(notifications)
+      .where(eq(notifications.id, tracked.notificationId));
+    const corrupted = structuredClone(
+      storedBefore.providerReceipt,
+    ) as Record<string, unknown>;
+    corrupted.accountWideBadgeVersion = 2;
+    await db
+      .update(notifications)
+      .set({ providerReceipt: corrupted })
+      .where(eq(notifications.id, tracked.notificationId));
+    fetchMock.mockClear();
+
+    await processPendingPushDeliveries(
+      new Date(now.getTime() + 15 * 60_000),
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [storedAfter] = await db
+      .select({
+        status: notifications.status,
+        providerReceipt: notifications.providerReceipt,
+      })
+      .from(notifications)
+      .where(eq(notifications.id, tracked.notificationId));
+    expect(storedAfter.status).toBe("FAILED");
+    expect(storedAfter.providerReceipt).toMatchObject({
+      phase: "FAILED",
+      evidence: { reason: "MALFORMED_TRACKING_STATE" },
+    });
+  });
+
   it("falha transitória respeita backoff e tenta novamente", async () => {
     fetchMock
       .mockRejectedValueOnce(new Error("network down"))
@@ -426,7 +586,11 @@ describe("outbox de push sem projeção de entrega", () => {
       .select({ providerReceipt: notifications.providerReceipt })
       .from(notifications)
       .where(eq(notifications.id, tracked.notificationId));
-    expect(stored.providerReceipt).toMatchObject({ phase: "TICKET_ACCEPTED", attemptCount: 2 });
+    expect(stored.providerReceipt).toMatchObject({
+      phase: "TICKET_ACCEPTED",
+      attemptCount: 2,
+      accountWideBadgeVersion: 1,
+    });
   });
 
   it("SERVICE_ERROR permanece retryable sem limite e não persiste params Drizzle", async () => {
