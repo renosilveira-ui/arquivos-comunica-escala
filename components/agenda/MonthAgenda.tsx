@@ -30,6 +30,10 @@ import { ArrowRightLeft } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { shiftTickColor } from "@/lib/shift-visual";
 import {
+  MAX_AGENDA_DAY_TICKS,
+  agendaOverflowIncludesOffer,
+} from "@/lib/agenda-overflow";
+import {
   CalendarFrame,
   CalendarLegend,
   DayNumeral,
@@ -111,7 +115,17 @@ const WEEKDAYS_PT = [
   "sábado",
 ] as const;
 
-const MAX_TICKS = 3;
+export const MONTH_AGENDA_LEGEND = [
+  { label: "Ocupado", color: theme.colors.statusOcupado },
+  { label: "Pendente", color: theme.colors.statusPendente },
+  { label: "Vago", color: theme.colors.statusVagoActionable },
+  { label: "Oferta", color: theme.colors.info },
+  {
+    label: "Meu",
+    color: theme.colors.brand,
+    backdropColor: theme.colors.onDark.text,
+  },
+] as const;
 
 function formatSelectedDay(dateKey: string): string {
   const d = new Date(`${dateKey}T12:00:00`);
@@ -160,18 +174,10 @@ export function MonthAgenda({
     [offers, selected],
   );
 
-  const legend = [
-    { label: "Ocupado", color: theme.colors.statusOcupado },
-    { label: "Pendente", color: theme.colors.statusPendente },
-    { label: "Vago", color: theme.colors.statusVagoActionable },
-    { label: "Oferta", color: theme.colors.info },
-    { label: "Meu", color: theme.colors.onDark.text },
-  ];
-
   const inner = (
     <>
       <CalendarFrame>
-        <CalendarLegend items={legend} />
+        <CalendarLegend items={[...MONTH_AGENDA_LEGEND]} />
 
         {/* Iniciais dos dias, sobre navy */}
         <View
@@ -213,12 +219,16 @@ export function MonthAgenda({
               const isWeekend = day.dow === 0 || day.dow === 6;
               const shifts = day.groups.flatMap((g) => g.shifts);
               const isMineDay = shifts.some((s) => s.isMine);
+              const hasOffer = offers.some((o) => o.date === day.date);
               const ticks = shifts.map((s) =>
                 shiftTickColor(s.status, s.isMine),
               );
-              if (offers.some((o) => o.date === day.date))
-                ticks.push(theme.colors.info);
-              const extra = ticks.length - MAX_TICKS;
+              if (hasOffer) ticks.push(theme.colors.info);
+              const extra = ticks.length - MAX_AGENDA_DAY_TICKS;
+              const overflowIncludesOffer = agendaOverflowIncludesOffer(
+                shifts.length,
+                hasOffer,
+              );
               const dayNum = parseInt(day.date.slice(8, 10), 10);
 
               return (
@@ -227,7 +237,7 @@ export function MonthAgenda({
                   onPress={() => setSelected(day.date)}
                   accessibilityRole="button"
                   accessibilityState={{ selected: isSelected }}
-                  accessibilityLabel={`${formatSelectedDay(day.date)}${isToday ? ", hoje" : ""}, ${shifts.length} plantão${shifts.length === 1 ? "" : "ões"}`}
+                  accessibilityLabel={`${formatSelectedDay(day.date)}${isToday ? ", hoje" : ""}, ${shifts.length} ${shifts.length === 1 ? "plantão" : "plantões"}${hasOffer ? ", oferta disponível" : ""}`}
                   style={({ pressed }) => ({
                     flex: 1,
                     minHeight: 52,
@@ -262,7 +272,7 @@ export function MonthAgenda({
                     }
                   />
                   <View style={{ alignItems: "center", gap: 2 }}>
-                    {ticks.slice(0, MAX_TICKS).map((color, t) => (
+                    {ticks.slice(0, MAX_AGENDA_DAY_TICKS).map((color, t) => (
                       <View
                         key={t}
                         style={{
@@ -282,7 +292,9 @@ export function MonthAgenda({
                           fontSize: 11,
                           lineHeight: 12,
                           fontWeight: theme.weight.bold,
-                          color: theme.colors.textSecondary,
+                          color: overflowIncludesOffer
+                            ? theme.colors.info
+                            : theme.colors.textSecondary,
                         }}
                       >
                         +{extra}

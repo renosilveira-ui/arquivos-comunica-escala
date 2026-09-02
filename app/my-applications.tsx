@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { theme } from "@/lib/theme";
@@ -67,7 +68,17 @@ function formatTimeRange(start: Date, end: Date): string {
   return formatHospitalTimeRange(start, end);
 }
 
-export default function MyApplicationsScreen() {
+export default function MyApplicationsScreen({
+  embedded = false,
+  enabled = true,
+  onCountChange,
+  onExploreAvailable,
+}: {
+  embedded?: boolean;
+  enabled?: boolean;
+  onCountChange?: (count: number) => void;
+  onExploreAvailable?: () => void;
+} = {}) {
   const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -80,7 +91,7 @@ export default function MyApplicationsScreen() {
     refetch: refetchApplications,
   } = trpc.swaps.list.useQuery(
     { role: "RECEIVER" },
-    { enabled: !!user?.id },
+    { enabled: !!user?.id && enabled },
   );
   const {
     data: vacancyRequestsData,
@@ -89,35 +100,14 @@ export default function MyApplicationsScreen() {
     isError: vacancyRequestsHasError,
     error: vacancyRequestsError,
     refetch: refetchVacancyRequests,
-  } = trpc.shiftAssignments.listMyVacancyRequests.useQuery(undefined, { enabled: !!user?.id });
+  } = trpc.shiftAssignments.listMyVacancyRequests.useQuery(undefined, {
+    enabled: !!user?.id && enabled,
+  });
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.back();
   };
-
-  if (authLoading) {
-    return (
-      <ScreenGradient>
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color={theme.colors.primary} />
-        </View>
-      </ScreenGradient>
-    );
-  }
-
-  if (!user) {
-    return (
-      <ScreenGradient>
-        <View className="flex-1 items-center justify-center">
-          <AlertCircle size={48} color={theme.colors.textMuted} />
-          <Text className="mt-4 text-lg" style={{ color: theme.colors.textMuted }}>
-            Faça login para ver suas candidaturas
-          </Text>
-        </View>
-      </ScreenGradient>
-    );
-  }
 
   const applications = (data ?? []) as any[];
   const vacancyRequests = vacancyRequestsData ?? [];
@@ -131,26 +121,59 @@ export default function MyApplicationsScreen() {
     applicationCount: applications.length,
     vacancyRequestCount: vacancyRequests.length,
   });
+  const activeCount =
+    applications.filter(
+      (item) => item.status === "PENDING" || item.status === "ACCEPTED",
+    ).length +
+    vacancyRequests.filter((item) => item.status === "PENDENTE").length;
 
-  return (
-    <ScreenGradient>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 }}>
-        {/* Header */}
-        <View className="flex-row items-center gap-3 mb-6">
-          <TouchableOpacity
-            onPress={handleBack}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="Voltar"
-          >
-            <ChevronLeft size={28} color={theme.colors.textPrimary} />
-          </TouchableOpacity>
-          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>
-            Suas candidaturas
+  useEffect(() => {
+    if (contentState === "READY" || contentState === "EMPTY") {
+      onCountChange?.(activeCount);
+    }
+  }, [activeCount, contentState, onCountChange]);
+
+  if (authLoading) {
+    if (embedded) {
+      return (
+        <View style={{ alignItems: "center", paddingVertical: theme.space[20] }}>
+          <ActivityIndicator size="large" color={theme.colors.brand} />
+        </View>
+      );
+    }
+    return (
+      <ScreenGradient>
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (!user) {
+    if (embedded) {
+      return (
+        <View style={{ alignItems: "center", paddingVertical: theme.space[20] }}>
+          <AlertCircle size={48} color={theme.colors.textMuted} />
+          <Text style={{ ...theme.text.bodyLg, color: theme.colors.textMuted, marginTop: theme.space[4] }}>
+            Faça login para ver suas candidaturas
           </Text>
         </View>
+      );
+    }
+    return (
+      <ScreenGradient>
+        <View className="flex-1 items-center justify-center">
+          <AlertCircle size={48} color={theme.colors.textMuted} />
+          <Text className="mt-4 text-lg" style={{ color: theme.colors.textMuted }}>
+            Faça login para ver suas candidaturas
+          </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
 
-        {contentState === "LOADING" ? (
+  const content = contentState === "LOADING" ? (
           <View className="items-center py-20">
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>
@@ -185,6 +208,29 @@ export default function MyApplicationsScreen() {
             <Text className="mt-2 text-sm text-center px-6" style={{ color: theme.colors.textMuted }}>
               Plantões que você pedir para assumir e cessões em que se candidatar aparecerão aqui.
             </Text>
+            {onExploreAvailable ? (
+              <TouchableOpacity
+                onPress={onExploreAvailable}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Ver ofertas disponíveis"
+                style={{
+                  minHeight: theme.space[10] + theme.space[1],
+                  marginTop: theme.space[4],
+                  paddingHorizontal: theme.space[4],
+                  borderRadius: theme.radius.md,
+                  borderWidth: 1,
+                  borderColor: theme.colors.brand,
+                  backgroundColor: theme.colors.surface,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Text style={{ ...theme.text.body, fontWeight: theme.weight.bold, color: theme.colors.brand }}>
+                  Ver ofertas disponíveis
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         ) : (
           <View className="gap-6">
@@ -210,7 +256,29 @@ export default function MyApplicationsScreen() {
               </View>
             )}
           </View>
-        )}
+        );
+
+  if (embedded) {
+    return <View style={{ gap: theme.space[4] }}>{content}</View>;
+  }
+
+  return (
+    <ScreenGradient>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 }}>
+        <View className="flex-row items-center gap-3 mb-6">
+          <TouchableOpacity
+            onPress={handleBack}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Voltar"
+          >
+            <ChevronLeft size={28} color={theme.colors.textPrimary} />
+          </TouchableOpacity>
+          <Text className="text-3xl font-bold" style={{ color: theme.colors.textPrimary }}>
+            Suas candidaturas
+          </Text>
+        </View>
+        {content}
       </ScrollView>
     </ScreenGradient>
   );
@@ -235,8 +303,11 @@ function VacancyRequestCard({ request }: { request: any }) {
     <TouchableOpacity
       className="rounded-2xl border p-4 gap-3"
       style={{
-        backgroundColor: highlighted ? theme.colors.primarySoft : theme.colors.surface,
-        borderColor: highlighted ? theme.colors.primary : theme.colors.border,
+        backgroundColor: highlighted ? theme.colors.warningSoft : theme.colors.surface,
+        borderColor: highlighted ? theme.colors.warning : theme.colors.borderStrong,
+        borderLeftWidth: 4,
+        borderLeftColor: highlighted ? theme.colors.warning : theme.colors.borderStrong,
+        ...theme.shadow.sm,
       }}
       activeOpacity={0.75}
       onPress={handleOpenDetails}
@@ -245,12 +316,12 @@ function VacancyRequestCard({ request }: { request: any }) {
     >
       <View className="flex-row items-center justify-between">
         <View className="flex-row items-center gap-2">
-          <CalendarClock size={18} color={highlighted ? theme.colors.primary : theme.colors.textMuted} />
+          <CalendarClock size={18} color={highlighted ? theme.colors.warning : theme.colors.textMuted} />
           <Text className="text-base font-semibold" style={{ color: theme.colors.textPrimary }}>
             {request.shiftLabel}
           </Text>
         </View>
-        <Text className="text-xs" style={{ color: highlighted ? theme.colors.primary : theme.colors.textMuted }}>
+        <Text className="text-xs" style={{ color: highlighted ? theme.palette.warning[700] : theme.colors.textMuted }}>
           {VACANCY_STATUS_LABEL[status] ?? status}
         </Text>
       </View>
@@ -293,17 +364,24 @@ function ApplicationCard({
     <View
       className="rounded-2xl border p-4 gap-3"
       style={{
-        backgroundColor: highlighted ? theme.colors.primarySoft : theme.colors.surface,
-        borderColor: highlighted ? theme.colors.primary : theme.colors.border,
+        backgroundColor: highlighted ? theme.colors.brandSoft : theme.colors.surface,
+        borderColor: highlighted ? theme.colors.brand : theme.colors.borderStrong,
+        borderLeftWidth: 4,
+        borderLeftColor: highlighted ? theme.colors.brand : theme.colors.borderStrong,
+        ...theme.shadow.sm,
       }}
     >
       {/* Cabeçalho: tipo + status */}
       <View className="flex-row items-center justify-between">
         <View
           className="rounded-full px-3 py-1"
-          style={{ backgroundColor: theme.colors.primarySoft }}
+          style={{
+            backgroundColor: theme.colors.surfaceAlt,
+            borderWidth: 1,
+            borderColor: theme.colors.borderStrong,
+          }}
         >
-          <Text className="text-xs font-semibold" style={{ color: theme.colors.primary }}>
+          <Text className="text-xs font-semibold" style={{ color: theme.colors.textSecondary }}>
             {TYPE_LABEL[type] ?? type}
           </Text>
         </View>

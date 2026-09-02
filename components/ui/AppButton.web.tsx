@@ -2,9 +2,10 @@ import React from "react";
 import { theme } from "@/lib/theme";
 
 /**
- * AppButton — versão web. Espelha a spec §6.1 (5 variants × 3 sizes).
+ * AppButton — versão web. Espelha a spec §6.1 (6 variants × 3 sizes).
  *
  * Variants:
+ *   - brand     → bg navy, text branco. Ação dominante operacional.
  *   - primary   → bg primary, text branco. Ação principal por tela.
  *   - secondary → bg surface, border, text textPrimary. Ações alternativas.
  *   - danger    → bg danger, text branco. Destrutivas.
@@ -17,7 +18,7 @@ import { theme } from "@/lib/theme";
  *   - lg → 48 / space.5 / text.bodyLg / weight.semibold
  */
 
-type Variant = "primary" | "secondary" | "danger" | "ghost" | "link";
+type Variant = "brand" | "primary" | "secondary" | "danger" | "ghost" | "link";
 type Size = "sm" | "md" | "lg";
 
 type Props = {
@@ -53,6 +54,12 @@ const SIZE_MAP: Record<Size, { height: number; paddingX: number; fontSize: numbe
 
 function variantStyle(variant: Variant): React.CSSProperties {
   switch (variant) {
+    case "brand":
+      return {
+        background: theme.colors.brand,
+        color: theme.colors.onDark.text,
+        border: "none",
+      };
     case "primary":
       return {
         background: theme.colors.primary,
