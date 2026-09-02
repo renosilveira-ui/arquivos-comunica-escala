@@ -55,6 +55,7 @@ import {
 import { ENV } from "../_core/env";
 import {
   PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+  PushOwnershipLockTimeoutError,
   revokeUserPushRegistrations,
   withPushAccountMutex,
 } from "../push-registration-revocation";
@@ -253,6 +254,19 @@ function affectedRows(result: unknown): number {
   );
 }
 
+function loginSessionRotationFailureReason(error: unknown): string {
+  if (error instanceof PushOwnershipLockTimeoutError) {
+    return "PUSH_ACCOUNT_MUTEX_TIMEOUT";
+  }
+  if (
+    error instanceof Error &&
+    error.message === "Concorrência inesperada ao iniciar sessão"
+  ) {
+    return "SESSION_VERSION_CAS_FAILED";
+  }
+  return "SESSION_TRANSACTION_FAILED";
+}
+
 function auditActorName(name: string | null | undefined): string | undefined {
   const normalized = String(name ?? "").trim();
   return normalized ? normalized.slice(0, 255) : undefined;
@@ -422,10 +436,12 @@ authRouter.post(
             { isolationLevel: "read committed" },
           ),
       );
-    } catch {
-      // O commit é fail-closed: se a revogação do destino push não for
-      // confirmada, não existe novo JWT que possa disparar egress posterior.
-      console.error("[login] SESSION_ROTATION_FAILED");
+    } catch (error) {
+      // Não registra a mensagem original: drivers SQL podem incluir query ou
+      // valores. O código estável distingue mutex, CAS e falha transacional.
+      console.error("[login] SESSION_ROTATION_FAILED", {
+        reason: loginSessionRotationFailureReason(error),
+      });
       res.status(503).json({ error: "Não foi possível iniciar sessão. Tente novamente." });
       return;
     }

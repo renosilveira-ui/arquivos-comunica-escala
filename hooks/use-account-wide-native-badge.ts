@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { AppState, Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 import { trpc } from "@/lib/trpc";
@@ -38,10 +38,13 @@ export function useAccountWideNativeBadge({
     trpc.notifications.getUnreadAccountBadgeCount.useQuery(undefined, {
       enabled: false,
     });
-  const userIdRef = useRef<number | null>(userId);
-  const sessionAuthorizationRef = useRef(isSessionAuthorizationCurrent);
-  userIdRef.current = userId;
-  sessionAuthorizationRef.current = isSessionAuthorizationCurrent;
+  const getUnreadCount = useCallback(async () => {
+    const result = await refetchUnreadAccountBadgeCount();
+    if (result.error || !result.data) {
+      throw result.error ?? new Error("Contagem de badge indisponível");
+    }
+    return result.data;
+  }, [refetchUnreadAccountBadgeCount]);
 
   const reconcile = useCallback(
     async (
@@ -49,17 +52,11 @@ export function useAccountWideNativeBadge({
     ): Promise<AccountWideNativeBadgeReconcileResult> =>
       reconcileAccountWideNativeBadge({
         acknowledge: () => acknowledgeAccountBadge(),
-        getUnreadCount: async () => {
-          const result = await refetchUnreadAccountBadgeCount();
-          if (result.error || !result.data) {
-            throw result.error ?? new Error("Contagem de badge indisponível");
-          }
-          return result.data;
-        },
+        getUnreadCount,
         setLocalBadgeCount: (count) => Notifications.setBadgeCountAsync(count),
         isCurrent,
       }),
-    [acknowledgeAccountBadge, refetchUnreadAccountBadgeCount],
+    [acknowledgeAccountBadge, getUnreadCount],
   );
 
   const refresh = useCallback(
@@ -67,17 +64,11 @@ export function useAccountWideNativeBadge({
       isCurrent: () => boolean,
     ): Promise<AccountWideNativeBadgeReconcileResult> =>
       refreshAccountWideNativeBadge({
-        getUnreadCount: async () => {
-          const result = await refetchUnreadAccountBadgeCount();
-          if (result.error || !result.data) {
-            throw result.error ?? new Error("Contagem de badge indisponível");
-          }
-          return result.data;
-        },
+        getUnreadCount,
         setLocalBadgeCount: (count) => Notifications.setBadgeCountAsync(count),
         isCurrent,
       }),
-    [refetchUnreadAccountBadgeCount],
+    [getUnreadCount],
   );
 
   useEffect(() => {
@@ -94,24 +85,45 @@ export function useAccountWideNativeBadge({
     const reconciliationQueue =
       createAccountWideNativeBadgeReconciliationQueue();
     const isCurrentSessionRun = reconciliationFence.begin();
-    const isCurrent = () =>
-      active &&
-      userIdRef.current === userId &&
-      sessionAuthorizationRef.current() &&
-      isCurrentSessionRun();
+    const isCurrent = () => {
+      try {
+        return (
+          active &&
+          isSessionAuthorizationCurrent() &&
+          isCurrentSessionRun()
+        );
+      } catch {
+        // Autoridade incerta nunca mantém capacidade sobre o badge do SO.
+        return false;
+      }
+    };
     const reconcileCurrentAccount = () => {
-      void reconciliationQueue.enqueue(() => reconcile(isCurrent)).then((result) => {
-        if (result.state === "UNAVAILABLE" && isCurrent()) {
-          console.warn("[Notifications] ACCOUNT_BADGE_RECONCILE_UNAVAILABLE");
-        }
-      });
+      void reconciliationQueue.enqueue(() => reconcile(isCurrent)).then(
+        (result) => {
+          if (result.state === "UNAVAILABLE" && isCurrent()) {
+            console.warn("[Notifications] ACCOUNT_BADGE_RECONCILE_UNAVAILABLE");
+          }
+        },
+        () => {
+          if (isCurrent()) {
+            console.warn("[Notifications] ACCOUNT_BADGE_RECONCILE_FAILED");
+          }
+        },
+      );
     };
     const refreshCurrentAccount = () => {
-      void reconciliationQueue.enqueue(() => refresh(isCurrent)).then((result) => {
-        if (result.state === "UNAVAILABLE" && isCurrent()) {
-          console.warn("[Notifications] ACCOUNT_BADGE_REFRESH_UNAVAILABLE");
-        }
-      });
+      void reconciliationQueue.enqueue(() => refresh(isCurrent)).then(
+        (result) => {
+          if (result.state === "UNAVAILABLE" && isCurrent()) {
+            console.warn("[Notifications] ACCOUNT_BADGE_REFRESH_UNAVAILABLE");
+          }
+        },
+        () => {
+          if (isCurrent()) {
+            console.warn("[Notifications] ACCOUNT_BADGE_REFRESH_FAILED");
+          }
+        },
+      );
     };
 
     // Abertura/retomada é o acknowledgement explícito que impede acúmulo

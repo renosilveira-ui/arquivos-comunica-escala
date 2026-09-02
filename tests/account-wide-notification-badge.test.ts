@@ -24,6 +24,23 @@ function response(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+async function waitForBadgeAcknowledgementLockWaiter(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const [rows] = await db.execute("SHOW FULL PROCESSLIST");
+    const waiting = (rows as { Info?: unknown }[]).some((row) => {
+      if (typeof row.Info !== "string") return false;
+      const query = row.Info.toLowerCase();
+      return query.includes("notifications") && query.includes("for update");
+    });
+    if (waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Waiter do acknowledgement de badge não observado");
+}
+
 describe("badge account-wide — selector e acknowledgement canônicos", () => {
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   let institutionAId: number;
@@ -594,11 +611,11 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
     ).resolves.toEqual({ count: 1 });
   });
 
-  it("reconhece sem esperar o Expo e sincroniza zero nos dois iPhones da conta", async () => {
+  it("reconhece sem esperar o Expo e sincroniza todos os tokens iOS autorizados", async () => {
     await insertNotification({
       institutionId: institutionAId,
       userId: accountUserId,
-      dedupSuffix: "multi-device-ack",
+      dedupSuffix: "authorized-ios-tokens-ack",
       providerReceipt: trackedReceipt("vacancy_available", accountUserId),
     });
     const firstToken = `ExponentPushToken[badge-a-${stamp}]`;
@@ -650,15 +667,9 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
 
     try {
       await firstFetchStarted;
-      const responseBeforeExpo = await Promise.race([
-        acknowledgement.then((value) => ({ state: "RESOLVED" as const, value })),
-        new Promise<{ state: "BLOCKED" }>((resolve) => {
-          setTimeout(() => resolve({ state: "BLOCKED" }), 500);
-        }),
-      ]);
-      expect(responseBeforeExpo).toEqual({
-        state: "RESOLVED",
-        value: { acknowledged: 1, count: 0 },
+      await expect(acknowledgement).resolves.toEqual({
+        acknowledged: 1,
+        count: 0,
       });
 
       releaseFirstFetch();
@@ -734,23 +745,13 @@ describe("badge account-wide — selector e acknowledgement canônicos", () => {
 
     try {
       await revocationLocked;
-      let acknowledgementSettled = false;
       const acknowledgement = callerFor(
         accountUserId,
         currentSessionVersion,
         institutionAId,
       ).notifications.acknowledgeAccountBadge();
-      void acknowledgement.then(
-        () => {
-          acknowledgementSettled = true;
-        },
-        () => {
-          acknowledgementSettled = true;
-        },
-      );
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
-      expect(acknowledgementSettled).toBe(false);
+      await waitForBadgeAcknowledgementLockWaiter(db);
       releaseRevocation();
       await revocation;
 

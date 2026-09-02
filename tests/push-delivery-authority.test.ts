@@ -64,6 +64,7 @@ describe("autoridade atual no outbox de confirmação", () => {
   const stamp = Date.now();
   const now = new Date("2032-03-04T10:00:00.000Z");
   const fetchMock = vi.fn();
+  let errorLog: ReturnType<typeof vi.spyOn>;
 
   beforeAll(async () => {
     const connection = await getDb();
@@ -166,7 +167,7 @@ describe("autoridade atual no outbox de confirmação", () => {
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
     vi.spyOn(console, "log").mockImplementation(() => undefined);
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
     await db.delete(notifications).where(eq(notifications.userId, userId));
     await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
     await db.insert(pushTokens).values({
@@ -228,6 +229,13 @@ describe("autoridade atual no outbox de confirmação", () => {
 
   afterEach(async () => {
     await drainAccountWideNativeBadgeSnapshotDispatches();
+    expect(
+      errorLog.mock.calls.some(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].startsWith("[PushDelivery] ROW_PROCESSING_FAILED"),
+      ),
+    ).toBe(false);
   });
 
   afterAll(async () => {

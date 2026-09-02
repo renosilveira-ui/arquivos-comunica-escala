@@ -451,6 +451,8 @@ describe("badge nativo account-wide — reconciliação local", () => {
     expect(hook).not.toContain("useTenantState");
     expect(hook).not.toContain("accountWideBadgeCount");
     expect(hook).not.toContain("notificationId");
+    expect(hook).toContain("ACCOUNT_BADGE_RECONCILE_FAILED");
+    expect(hook).toContain("ACCOUNT_BADGE_REFRESH_FAILED");
 
     const receivedListenerStart = hook.indexOf(
       "Notifications.addNotificationReceivedListener",
@@ -483,6 +485,6 @@ describe("badge nativo account-wide — reconciliação local", () => {
     );
     expect(envelope).toContain("data: claimed.payloadData");
     expect(envelope).not.toContain("accountWideBadgeVersion");
-    expect(envelope).not.toMatch(/\\bbadge\\s*:/);
+    expect(envelope).not.toMatch(/\bbadge\s*:/);
   });
 });

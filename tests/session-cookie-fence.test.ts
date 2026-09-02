@@ -1264,6 +1264,9 @@ describe("fence linearizável da sessão web", () => {
     const deleteFailure = vi
       .spyOn(pushRevocationService, "revokeUserPushRegistrations")
       .mockRejectedValueOnce(new Error("forced login push delete failure"));
+    const loginErrorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
 
     let failed: SupertestResponse;
     try {
@@ -1279,6 +1282,14 @@ describe("fence linearizável da sessão web", () => {
       error: "Não foi possível iniciar sessão. Tente novamente.",
     });
     expect(failed.body).not.toHaveProperty("token");
+    expect(loginErrorLog).toHaveBeenCalledWith(
+      "[login] SESSION_ROTATION_FAILED",
+      { reason: "SESSION_TRANSACTION_FAILED" },
+    );
+    expect(JSON.stringify(loginErrorLog.mock.calls)).not.toContain(
+      "forced login push delete failure",
+    );
+    loginErrorLog.mockRestore();
     const [after] = await db
       .select({ sessionVersion: users.sessionVersion })
       .from(users)
