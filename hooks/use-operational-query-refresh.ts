@@ -1,10 +1,7 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
-import {
-  getActiveTenantSnapshot,
-  useTenantState,
-} from "@/lib/tenant-state";
+import { getActiveTenantSnapshot, useTenantState } from "@/lib/tenant-state";
 import {
   isCurrentOperationalQueryContext,
   type OperationalTenantSnapshot,
@@ -31,17 +28,25 @@ export function useOperationalQueryRefresh() {
     tenantRevision,
     isSessionAuthorizationCurrent,
   });
-  latestContextRef.current = {
-    userId: user?.id,
+  useEffect(() => {
+    latestContextRef.current = {
+      userId: user?.id,
+      activeInstitutionId,
+      tenantRevision,
+      isSessionAuthorizationCurrent,
+    };
+  }, [
     activeInstitutionId,
-    tenantRevision,
     isSessionAuthorizationCurrent,
-  };
+    tenantRevision,
+    user?.id,
+  ]);
 
   const sessionIsAuthorized = useCallback((): boolean => {
     let sessionAuthorized = false;
     try {
-      sessionAuthorized = latestContextRef.current.isSessionAuthorizationCurrent();
+      sessionAuthorized =
+        latestContextRef.current.isSessionAuthorizationCurrent();
     } catch {
       return false;
     }
@@ -106,7 +111,7 @@ export function useOperationalQueryRefresh() {
     [isLeaseCurrent, utils],
   );
 
-  const refreshVacancyQueries = useCallback(
+  const refreshVisibleVacancyQueries = useCallback(
     async (lease: OperationalQueryRefreshLease): Promise<boolean> => {
       if (!isLeaseCurrent(lease)) return false;
       await Promise.all([
@@ -115,20 +120,31 @@ export function useOperationalQueryRefresh() {
         utils.hospitals.list.invalidate(),
         utils.sectors.list.invalidate(),
         utils.shiftInstances.listVacancies.invalidate(),
-        utils.shiftAssignments.listPending.invalidate(),
-        utils.filters.summaryCounts.invalidate(),
-        utils.filters.actionableVacancyCounts.invalidate(),
-        utils.shiftAssignments.listMyVacancyRequests.invalidate(),
       ]);
       return true;
     },
     [isLeaseCurrent, utils],
   );
 
+  const refreshVacancyMutationQueries = useCallback(
+    async (lease: OperationalQueryRefreshLease): Promise<boolean> => {
+      if (!isLeaseCurrent(lease)) return false;
+      const [visibleRefreshed] = await Promise.all([
+        refreshVisibleVacancyQueries(lease),
+        utils.shiftAssignments.listPending.invalidate(),
+        utils.filters.summaryCounts.invalidate(),
+        utils.shiftAssignments.listMyVacancyRequests.invalidate(),
+      ]);
+      return visibleRefreshed && isLeaseCurrent(lease);
+    },
+    [isLeaseCurrent, refreshVisibleVacancyQueries, utils],
+  );
+
   return {
     captureLease,
     isLeaseCurrent,
     refreshSwapQueries,
-    refreshVacancyQueries,
+    refreshVisibleVacancyQueries,
+    refreshVacancyMutationQueries,
   };
 }

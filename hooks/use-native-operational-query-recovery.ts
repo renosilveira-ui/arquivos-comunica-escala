@@ -1,6 +1,6 @@
 import NetInfo from "@react-native-community/netinfo";
 import { useFocusEffect } from "expo-router";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { Platform } from "react-native";
 import {
   isOperationalNetworkOnline,
@@ -21,16 +21,30 @@ export function useNativeOperationalQueryRecovery({
   captureLease: () => OperationalQueryRefreshLease | null;
   refresh: (lease: OperationalQueryRefreshLease) => Promise<boolean>;
 }) {
+  const hasFocusedRef = useRef(false);
+
   useFocusEffect(
     useCallback(() => {
-      if (!shouldRefreshOperationalQueriesOnNativeFocus(Platform.OS)) {
+      const shouldRefreshOnFocus = shouldRefreshOperationalQueriesOnNativeFocus(
+        {
+          platform: Platform.OS,
+          hasFocusedBefore: hasFocusedRef.current,
+        },
+      );
+      hasFocusedRef.current = true;
+      if (Platform.OS === "web") {
         return undefined;
       }
 
       const lease = captureLease();
       if (!lease) return undefined;
 
-      void refresh(lease);
+      // A montagem inicial já dispara as queries do React Query. Invalidá-las
+      // aqui duplicava todas as chamadas; a reconciliação por foco começa
+      // somente quando o usuário volta à tela.
+      if (shouldRefreshOnFocus) {
+        void refresh(lease);
+      }
 
       let networkStateKnown = false;
       let wasExplicitlyOffline = false;

@@ -178,6 +178,10 @@ export async function listActionableVacancyRows(input: {
     actor: input.actor,
   });
   if (assumableContextIds.size === 0) return [];
+  const assumableContextIdList = sql.join(
+    [...assumableContextIds].map((contextId) => sql`${contextId}`),
+    sql`, `,
+  );
 
   const rows = await input.db.execute<ActionableVacancyRow>(
     sql`SELECT
@@ -208,6 +212,10 @@ export async function listActionableVacancyRows(input: {
           AND sc.active = true
         WHERE si.status = 'VAGO'
           AND si.institution_id = ${input.institutionId}
+          -- A lista de IDs é resolvida exclusivamente pelo servidor a partir
+          -- do vínculo e da ACL do ator. Restringir aqui evita ler e montar
+          -- em memória vagas de contextos que jamais poderiam ser assumidos.
+          AND si.schedule_context_id IN (${assumableContextIdList})
           -- Mês trancado não oferece vagas (start_at em UTC → mês do hospital, -03:00)
           AND NOT EXISTS (
             SELECT 1 FROM monthly_rosters mr
@@ -280,9 +288,7 @@ export async function listActionableVacancyRows(input: {
         ORDER BY si.start_at ASC`,
   );
 
-  return rowsFromExecute<ActionableVacancyRow>(rows).filter((row) =>
-    assumableContextIds.has(Number(row.scheduleContextId)),
-  );
+  return rowsFromExecute<ActionableVacancyRow>(rows);
 }
 
 export function countActionableVacancies(

@@ -36,6 +36,8 @@ describe("contrato de recuperação somente nas telas operacionais", () => {
     expect(recovery).not.toContain("isNetInfoOnline");
     expect(recovery).toContain("captureLease()");
     expect(recovery).toContain("refresh(lease)");
+    expect(recovery).toContain("hasFocusedBefore: hasFocusedRef.current");
+    expect(recovery).toContain("if (shouldRefreshOnFocus)");
   });
 
   it("vincula invalidações a lease e inclui candidaturas e contadores após assumir", () => {
@@ -48,12 +50,11 @@ describe("contrato de recuperação somente nas telas operacionais", () => {
       "utils.shiftAssignments.listPending.invalidate()",
     );
     expect(refresh).toContain("utils.filters.summaryCounts.invalidate()");
-    expect(refresh).toContain(
-      "utils.filters.actionableVacancyCounts.invalidate()",
-    );
+    expect(refresh).toContain("refreshVisibleVacancyQueries");
+    expect(refresh).toContain("refreshVacancyMutationQueries");
     expect(vacancies).toContain("const refreshLease = captureLease()");
     expect(vacancies).toContain(
-      "const refreshPromise = refreshVacancyQueries(refreshLease)",
+      "const refreshPromise = refreshVacancyMutationQueries(refreshLease)",
     );
     expect(vacancies).toContain("assumeVacancyLockRef");
     expect(vacancies).toContain("mutateAsync");
@@ -127,7 +128,9 @@ describe("contrato de recuperação somente nas telas operacionais", () => {
   it("não exibe lista ou botões stale sem resposta resolvida ou após revogação", () => {
     expect(vacancies).toContain('vacanciesContentState === "UNRESOLVED"');
     expect(swaps).toContain('contentState === "UNRESOLVED"');
-    expect(vacancies).toContain("hasResolvedData: vacanciesData !== undefined");
+    expect(vacancies).toContain(
+      "hasResolvedData: vacancyPopulationData !== undefined",
+    );
     expect(swaps).toContain("hasResolvedData: data !== undefined");
     expect(vacancies).toContain(
       'presentQueryError(professionalError).kind === "ACCESS"',
@@ -141,8 +144,10 @@ describe("contrato de recuperação somente nas telas operacionais", () => {
   });
 
   it("não afirma contagem ou métricas cacheadas durante erro ou resposta pendente", () => {
-    expect(vacancies).toMatch(
-      /!actionableCountsHasError\s*&&\s*canDisplayOperationalListCount\(vacanciesContentState\)/,
+    expect(vacancies).not.toContain("actionableVacancyCounts.useQuery");
+    expect(vacancies).toContain("deriveVacancyDashboard");
+    expect(vacancies).toContain(
+      "hasResolvedData: vacancyPopulationData !== undefined",
     );
     expect(vacancies).toContain("counts={safeFilterCounts}");
     expect(vacancies).toContain(

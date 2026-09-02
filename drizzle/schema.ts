@@ -544,6 +544,13 @@ export const professionalAccess = mysqlTable(
     idxProfessionalAccessInstitutionId: index(
       "idx_prof_access_institution_id",
     ).on(table.institutionId, table.id),
+    idxProfessionalAccessActorActive: index("idx_prof_access_actor_active").on(
+      table.institutionId,
+      table.professionalId,
+      table.canAccess,
+      table.hospitalId,
+      table.sectorId,
+    ),
   }),
 );
 
@@ -575,6 +582,13 @@ export const managerScope = mysqlTable(
     idxManagerScopeInstitutionId: index("idx_manager_scope_institution_id").on(
       table.institutionId,
       table.id,
+    ),
+    idxManagerScopeActorActive: index("idx_manager_scope_actor_active").on(
+      table.institutionId,
+      table.managerProfessionalId,
+      table.active,
+      table.hospitalId,
+      table.sectorId,
     ),
   }),
 );
@@ -935,6 +949,14 @@ export const shiftInstances = mysqlTable(
     idxShiftInstanceScheduleContext: index(
       "idx_shift_instances_schedule_context",
     ).on(table.institutionId, table.scheduleContextId),
+    idxShiftInstanceVacancyLookup: index(
+      "idx_shift_instances_vacancy_lookup",
+    ).on(
+      table.institutionId,
+      table.status,
+      table.scheduleContextId,
+      table.startAt,
+    ),
     fkShiftInstanceScheduleContextTopology: foreignKey({
       columns: [
         table.institutionId,
@@ -992,6 +1014,12 @@ export const shiftAssignmentsV2 = mysqlTable(
     idxShiftAssignmentInstitutionId: index(
       "idx_shift_assignments_institution_id",
     ).on(table.institutionId, table.id),
+    idxShiftAssignmentShiftActive: index(
+      "idx_shift_assignments_shift_active",
+    ).on(table.shiftInstanceId, table.isActive),
+    idxShiftAssignmentProfessionalActive: index(
+      "idx_shift_assignments_prof_active",
+    ).on(table.professionalId, table.isActive, table.shiftInstanceId),
     // Chave-pai física da FK composta de eventos operacionais. A migration
     // manual conserva o mesmo nome para instalações legadas.
     uniqShiftAssignmentsTopologyId: unique(
