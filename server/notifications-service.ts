@@ -8,7 +8,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { eq, and, asc, inArray, isNull, sql } from "drizzle-orm";
-import { isCanonicalDutyConfirmationRejection } from "./confirmation-integrity";
+import { isCanonicalPushAuthorityRejection } from "./push-authority-rejection";
 import {
   PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
   PushOwnershipLockTimeoutError,
@@ -505,7 +505,7 @@ async function submitOwnedExpoPushTicket(
             try {
               await submissionGuard(tx);
             } catch (error) {
-              if (isCanonicalDutyConfirmationRejection(error)) {
+              if (isCanonicalPushAuthorityRejection(error)) {
                 return {
                   state: "TICKET_REJECTED" as const,
                   pushTokenId: expected.id,

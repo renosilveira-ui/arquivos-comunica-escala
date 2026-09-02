@@ -263,6 +263,103 @@ describe("roteamento de push para o plantão exato", () => {
     expect(calls).not.toContain("agenda");
   });
 
+  it("solicitação nova abre pendências somente depois de alinhar o tenant", async () => {
+    const calls: string[] = [];
+    let activeTenant = { institutionId: 22, revision: 3 };
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "vacancy_request_created",
+          institutionId: 11,
+          shiftInstanceId: 404,
+          assignmentId: 70,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => activeTenant,
+          loadAllowedInstitutionIds: async () => [11, 22],
+          setActiveInstitutionId: async (institutionId) => {
+            calls.push(`set:${institutionId}`);
+            activeTenant = { institutionId, revision: activeTenant.revision + 1 };
+          },
+          invalidateQueries: async () => {
+            calls.push("invalidate");
+          },
+          navigateToConfirmation: vi.fn(),
+          navigateToAgenda: vi.fn(),
+          navigateToPendingAssignments: () => {
+            calls.push(`pending:tenant:${activeTenant.institutionId}`);
+          },
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(calls).toEqual(["set:11", "invalidate", "pending:tenant:11"]);
+  });
+
+  it("decisão da solicitação abre o plantão exato", async () => {
+    for (const type of [
+      "vacancy_request_approved",
+      "vacancy_request_rejected",
+    ]) {
+      const navigateToShiftDetails = vi.fn();
+      await expect(
+        routeNotificationData(
+          {
+            type,
+            institutionId: 11,
+            shiftInstanceId: 404,
+            assignmentId: 70,
+          },
+          {
+            isSessionAuthorizationCurrent: () => true,
+            getActiveTenantSnapshot: () => ({ institutionId: 11, revision: 1 }),
+            loadAllowedInstitutionIds: async () => [11],
+            setActiveInstitutionId: vi.fn(async () => undefined),
+            invalidateQueries: vi.fn(async () => undefined),
+            navigateToConfirmation: vi.fn(),
+            navigateToAgenda: vi.fn(),
+            navigateToShiftDetails,
+            openComunica: vi.fn(async () => ({ ok: true })),
+          },
+        ),
+      ).resolves.toBe(true);
+      expect(navigateToShiftDetails).toHaveBeenCalledOnce();
+      expect(navigateToShiftDetails).toHaveBeenCalledWith(404);
+    }
+  });
+
+  it("solicitação de tenant estranho e sessão revogada não navegam", async () => {
+    const navigateToPendingAssignments = vi.fn();
+    const baseDependencies = {
+      getActiveTenantSnapshot: () => ({ institutionId: 22, revision: 1 }),
+      loadAllowedInstitutionIds: async () => [22],
+      setActiveInstitutionId: vi.fn(async () => undefined),
+      invalidateQueries: vi.fn(async () => undefined),
+      navigateToConfirmation: vi.fn(),
+      navigateToAgenda: vi.fn(),
+      navigateToPendingAssignments,
+      openComunica: vi.fn(async () => ({ ok: true })),
+    };
+
+    await expect(
+      routeNotificationData(
+        { type: "vacancy_request_created", institutionId: 11 },
+        { ...baseDependencies, isSessionAuthorizationCurrent: () => true },
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      routeNotificationData(
+        { type: "vacancy_request_created", institutionId: 22 },
+        { ...baseDependencies, isSessionAuthorizationCurrent: () => false },
+        () => false,
+      ),
+    ).resolves.toBe(false);
+    expect(navigateToPendingAssignments).not.toHaveBeenCalled();
+  });
+
   it("aviso de vaga de instituição sem membership não troca tenant nem navega", async () => {
     const calls: string[] = [];
     let activeTenant = { institutionId: 22, revision: 3 };

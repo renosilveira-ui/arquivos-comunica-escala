@@ -88,6 +88,7 @@ export type NotificationRoutingDependencies = Readonly<{
   navigateToAgenda: () => void;
   navigateToTrocas?: () => void;
   navigateToVacancies?: (shiftInstanceId: number) => void;
+  navigateToPendingAssignments?: () => void;
   navigateToMyOffers?: () => void;
   navigateToScheduleInvites?: () => void;
   navigateToShiftDetails?: (shiftInstanceId: number) => void;
@@ -373,6 +374,23 @@ export async function routeNotificationData(
       return true;
     }
 
+    case "vacancy_request_created": {
+      const alignedSnapshot = await alignNotificationTenant(
+        data,
+        dependencies,
+        isCurrent,
+      );
+      if (
+        !alignedSnapshot ||
+        !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent) ||
+        !dependencies.navigateToPendingAssignments
+      ) {
+        return false;
+      }
+      dependencies.navigateToPendingAssignments();
+      return true;
+    }
+
     case "swap_taken": {
       const alignedSnapshot = await alignNotificationTenant(
         data,
@@ -422,6 +440,8 @@ export async function routeNotificationData(
     case "replacement_declined":
     case "shift_assigned":
     case "shift_unassigned":
+    case "vacancy_request_approved":
+    case "vacancy_request_rejected":
     case "shift_reminder": {
       const shiftInstanceId = parseNotificationShiftInstanceId(
         data.shiftInstanceId,
@@ -591,6 +611,8 @@ export function NotificationListener() {
           params: vacancyPushRouteParams(shiftInstanceId),
         });
       },
+      navigateToPendingAssignments: () =>
+        router.push("/(tabs)/pending" as any),
       navigateToMyOffers: () => router.push("/my-offers" as any),
       navigateToScheduleInvites: () => router.push("/schedule-invites" as any),
       navigateToShiftDetails: (shiftInstanceId) =>
@@ -727,6 +749,8 @@ export function NotificationListener() {
                 ]);
               case "PENDING_ASSIGNMENTS":
                 return utils.shiftAssignments.listPending.invalidate();
+              case "MY_VACANCY_REQUESTS":
+                return utils.shiftAssignments.listMyVacancyRequests.invalidate();
               case "SCHEDULE_INVITES":
                 return Promise.all([
                   utils.scheduleInvites.listActive.invalidate(),

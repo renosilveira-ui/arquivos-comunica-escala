@@ -31,6 +31,27 @@ describe("push em primeiro plano — matriz de reconciliação", () => {
     );
   });
 
+  it("reconcilia solicitação de vaga e sua decisão nas superfícies corretas", () => {
+    expect(notificationQueryRefreshTargets("vacancy_request_created")).toEqual([
+      "PENDING_ASSIGNMENTS",
+      "SUMMARY_COUNTS",
+    ]);
+    for (const type of [
+      "vacancy_request_approved",
+      "vacancy_request_rejected",
+    ]) {
+      expect(notificationQueryRefreshTargets(type)).toEqual([
+        "SCHEDULES",
+        "VACANCIES",
+        "PENDING_ASSIGNMENTS",
+        "SUMMARY_COUNTS",
+        "ACTIONABLE_VACANCY_COUNTS",
+        "SWAPS",
+        "MY_VACANCY_REQUESTS",
+      ]);
+    }
+  });
+
   it("reconcilia confirmações, substituições e convites sem refetch global", () => {
     expect(notificationQueryRefreshTargets("duty_confirmation")).toEqual([
       "SCHEDULES",
