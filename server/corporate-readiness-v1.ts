@@ -103,8 +103,16 @@ export type CorporateReadinessReportV1 = Readonly<{
     /** A fundação existe, mas ainda não há writer/worker de e-mail ativado. */
     emailTrust: "NOT_ACTIVATED";
   }>;
-  /** A ciência auditada só será adicionada junto ao bloqueio transacional de publicação. */
-  acknowledgement: Readonly<{ supported: false }>;
+  /**
+   * Contrato para a ciência auditada exibida ao gestor. O servidor sempre
+   * recalcula o relatório dentro da transação de publicação; estes códigos
+   * apenas permitem que a interface apresente a fotografia canônica.
+   */
+  acknowledgement: Readonly<{
+    supported: true;
+    required: boolean;
+    issueCodes: readonly string[];
+  }>;
 }>;
 
 type ReadinessDb = Pick<
@@ -763,6 +771,13 @@ export function buildCorporateReadinessReport(
   }));
   const summary = emptySummary();
   for (const issue of allIssues) summary[issue.severity] += 1;
+  const acknowledgementIssueCodes = [
+    ...new Set(
+      allIssues
+        .filter((issue) => issue.severity === "OPERATIONAL_WARNING")
+        .map((issue) => issue.code),
+    ),
+  ].sort(compareCanonicalStrings);
 
   return {
     version: CORPORATE_READINESS_REPORT_VERSION,
@@ -779,7 +794,11 @@ export function buildCorporateReadinessReport(
       serviceSpecialties: source.serviceSpecialties.availability,
       emailTrust: "NOT_ACTIVATED",
     },
-    acknowledgement: { supported: false },
+    acknowledgement: {
+      supported: true,
+      required: acknowledgementIssueCodes.length > 0,
+      issueCodes: acknowledgementIssueCodes,
+    },
   };
 }
 

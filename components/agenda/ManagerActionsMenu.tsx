@@ -55,7 +55,7 @@ interface Props {
   variant?: "button" | "strip" | "empty-state";
 }
 
-type Step = "menu" | "replicate" | "specialties" | "busy";
+type Step = "menu" | "readiness" | "replicate" | "specialties" | "busy";
 
 const MONTHS_PT = [
   "janeiro", "fevereiro", "março", "abril", "maio", "junho",
@@ -85,6 +85,95 @@ const ROSTER_LABEL: Record<string, string> = {
   PUBLISHED: "Publicada",
   LOCKED: "Bloqueada",
 };
+
+const READINESS_ISSUE_LABELS: Readonly<Record<string, string>> = {
+  ASSIGNED_PROFESSIONAL_MEMBERSHIP_NOT_ACTIVE:
+    "Profissional alocado sem vínculo institucional ativo",
+  ASSIGNMENT_STATUS_REQUIRES_REVIEW: "Alocação com status que exige revisão",
+  CONFIRMATION_WINDOW_UNSUPPORTED:
+    "Horário fora da janela atual de confirmação",
+  EMAIL_TRUST_NOT_ACTIVATED:
+    "Canal de e-mail confiável ainda não habilitado",
+  EMPTY_QUALIFICATION_ALLOWLIST_METADATA:
+    "Contexto com metadado clínico de allowlist vazio",
+  INACTIVE_SHIFT_CONTEXT: "Turno ligado a contexto de escala inativo",
+  INVALID_ASSIGNMENT_TOPOLOGY: "Topologia de alocação inválida",
+  INVALID_MANAGER_SCOPE_TOPOLOGY: "Topologia de escopo gerencial inválida",
+  INVALID_PROFESSIONAL_ACCESS_TOPOLOGY:
+    "Topologia de acesso profissional inválida",
+  INVALID_SCHEDULE_CONTEXT_TOPOLOGY: "Topologia de contexto de escala inválida",
+  INVALID_SHIFT_CONTEXT_REFERENCE: "Turno ligado a contexto de outro setor",
+  INVALID_SHIFT_TEMPLATE_TOPOLOGY: "Topologia de modelo de turno inválida",
+  INVALID_SHIFT_TOPOLOGY: "Topologia de turno inválida",
+  MISSING_ACTIVE_SCHEDULE_CONTEXT: "Sem contexto de escala ativo",
+  MISSING_ACTIVE_SHIFT_TEMPLATE: "Sem modelo de turno ativo",
+  MULTIPLE_ACTIVE_SCHEDULE_CONTEXTS: "Mais de um contexto de escala ativo",
+  NO_ACTIVE_MANAGER_COVERAGE: "Sem gestor ativo no setor",
+  NO_ACTIVE_PROFESSIONAL_COVERAGE: "Sem cobertura profissional ativa",
+  NO_CALENDAR_FOR_MONTH: "Sem calendário para esta competência",
+  NO_SECTORS_CONFIGURED: "Sem setores configurados",
+  OCCUPIED_SHIFT_WITHOUT_ACTIVE_ASSIGNMENT:
+    "Plantão ocupado sem alocação ativa",
+  PENDING_ALLOCATION_REQUIRES_REVIEW: "Alocação pendente exige revisão",
+  PUSH_DELIVERY_COVERAGE_PARTIAL: "Cobertura de push parcial entre os alocados",
+  SERVICE_SPECIALTY_METADATA_MIGRATION_PENDING:
+    "Metadados de especialidade ainda não habilitados",
+  SERVICE_SPECIALTY_METADATA_PENDING:
+    "Especialidade assistencial ainda não definida",
+  SHIFT_CONTEXT_TOPOLOGY_AMBIGUOUS: "Turno em topologia de contexto ambígua",
+  SHIFT_STATUS_REQUIRES_REVIEW: "Status de plantão exige revisão",
+  SHIFTS_ON_EMPTY_QUALIFICATION_ALLOWLIST_METADATA:
+    "Turnos usam contexto com metadado clínico vazio",
+  STALE_MANAGER_SCOPE: "Escopo gerencial obsoleto",
+  STALE_PROFESSIONAL_ACCESS: "Acesso profissional obsoleto",
+  UNCLASSIFIED_SHIFT_CONTEXT: "Turno sem contexto de escala",
+  VACANT_SHIFT_REQUIRES_ALLOCATION: "Plantão vago exige alocação",
+};
+
+function readinessIssueLabel(code: string): string {
+  return (
+    READINESS_ISSUE_LABELS[code] ??
+    code.toLocaleLowerCase("pt-BR").replaceAll("_", " ")
+  );
+}
+
+function ReadinessIssueList({
+  issues,
+  color,
+  backgroundColor,
+}: {
+  issues: readonly {
+    code: string;
+    scope: { sectorId?: number };
+    sectorName: string | null;
+  }[];
+  color: string;
+  backgroundColor: string;
+}) {
+  return (
+    <View style={{ gap: theme.space[2] }}>
+      {issues.map((issue) => (
+        <View
+          key={`${issue.scope.sectorId ?? "hospital"}:${issue.code}`}
+          style={{
+            gap: theme.space[1],
+            padding: theme.space[3],
+            borderRadius: theme.radius.md,
+            backgroundColor,
+          }}
+        >
+          <Text style={{ ...theme.text.body, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
+            {readinessIssueLabel(issue.code)}
+          </Text>
+          <Text style={{ ...theme.text.caption, color }}>
+            {issue.sectorName ? `${issue.sectorName} · ` : "Hospital · "}
+            {issue.code}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
 
 export function ManagerActionsMenu({
   institutionId,
@@ -124,12 +213,20 @@ export function ManagerActionsMenu({
   }, [hospitals, hospitalId, selectedScheduleContext]);
 
   const monthKey = period.kind === "month" ? period.monthKey : period.weekStart.slice(0, 7);
+  const resolvedHospitalId = selectedScheduleContext?.hospitalId ?? hospitalId;
   const sourceMonth = requestedCalendarTargetMonth
     ? sourceMonthForCalendarTarget(requestedCalendarTargetMonth)
     : monthKey;
   const { data: roster } = trpc.shifts.rosterStatus.useQuery(
     { hospitalId: hospitalId ?? 0, yearMonth: monthKey },
     { enabled: wantsStatus && !!hospitalId, staleTime: 60_000 },
+  );
+  const corporateReadiness = trpc.corporateReadiness.get.useQuery(
+    { hospitalId: resolvedHospitalId ?? 0, yearMonth: monthKey },
+    {
+      enabled: open && step === "readiness" && resolvedHospitalId !== null,
+      staleTime: 0,
+    },
   );
   const { data: previousMonthShifts } = trpc.shifts.hasMonthShifts.useQuery(
     {
@@ -188,7 +285,6 @@ export function ManagerActionsMenu({
     );
   }, [specialtySearch]);
 
-  const resolvedHospitalId = selectedScheduleContext?.hospitalId ?? hospitalId;
   const replicateInput = useMemo(() => {
     if (!resolvedHospitalId) return null;
     return period.kind === "week"
@@ -224,6 +320,29 @@ export function ManagerActionsMenu({
     selectedScheduleContext === null
       ? "Selecione um setor no filtro da agenda para replicar com segurança"
       : "O setor selecionado não pertence ao hospital escolhido";
+  const readinessIssues = corporateReadiness.data
+    ? [
+        ...corporateReadiness.data.hospitalIssues.map((issue) => ({
+          ...issue,
+          sectorName: null as string | null,
+        })),
+        ...corporateReadiness.data.sectors.flatMap((sector) =>
+          sector.issues.map((issue) => ({
+            ...issue,
+            sectorName: sector.sectorName,
+          })),
+        ),
+      ]
+    : [];
+  const readinessBlockers = readinessIssues.filter(
+    (issue) => issue.severity === "SECURITY_BLOCKER",
+  );
+  const readinessWarnings = readinessIssues.filter(
+    (issue) => issue.severity === "OPERATIONAL_WARNING",
+  );
+  const readinessInfo = readinessIssues.filter(
+    (issue) => issue.severity === "INFO",
+  );
 
   useEffect(() => {
     if (period.kind === "month") {
@@ -418,23 +537,55 @@ export function ManagerActionsMenu({
     }
   }
 
-  async function doPublish() {
+  function openReadinessForPublish() {
     if (!resolvedHospitalId || !institutionId) return;
+    setStep("readiness");
+  }
+
+  async function publishWithReadinessAcknowledgement() {
+    if (!resolvedHospitalId || !institutionId || !corporateReadiness.data) return;
+    if (readinessBlockers.length > 0) {
+      feedback.error(
+        "A publicação permanece bloqueada até a correção das inconsistências estruturais.",
+      );
+      return;
+    }
+    const warningCount = readinessWarnings.length;
     const ok = await feedback.confirmDestructive(
-      "Publicar escala",
-      `Publicar a escala de ${monthLabel(monthKey)}? Os profissionais alocados passam a ver a escala como oficial e o Comunica+ é avisado.`,
-      "Publicar",
+      warningCount > 0 ? "Confirmar ciência e publicar" : "Publicar escala",
+      warningCount > 0
+        ? `Você confirma ciência de ${warningCount} pendência${warningCount === 1 ? "" : "s"} operacional${warningCount === 1 ? "" : "is"}? A confirmação será auditada e os profissionais alocados serão avisados.`
+        : `Publicar a escala de ${monthLabel(monthKey)}? Os profissionais alocados passam a ver a escala como oficial e o Comunica+ é avisado.`,
+      warningCount > 0 ? "Confirmar e publicar" : "Publicar",
     );
     if (!ok) return;
     setStep("busy");
     try {
-      await publish.mutateAsync({ institutionId, hospitalId: resolvedHospitalId, yearMonth: monthKey });
-      await utils.shifts.rosterStatus.invalidate();
+      await publish.mutateAsync({
+        institutionId,
+        hospitalId: resolvedHospitalId,
+        yearMonth: monthKey,
+        readinessAcknowledgement: {
+          snapshotHash: corporateReadiness.data.snapshotHash,
+          issueCodes: [...corporateReadiness.data.acknowledgement.issueCodes],
+        },
+      });
+      await Promise.all([
+        utils.shifts.rosterStatus.invalidate(),
+        utils.corporateReadiness.get.invalidate({
+          hospitalId: resolvedHospitalId,
+          yearMonth: monthKey,
+        }),
+      ]);
       feedback.success(`Escala de ${monthLabel(monthKey)} publicada.`);
       close();
     } catch (err) {
       feedback.error((err as Error).message);
-      setStep("menu");
+      await utils.corporateReadiness.get.invalidate({
+        hospitalId: resolvedHospitalId,
+        yearMonth: monthKey,
+      });
+      setStep("readiness");
     }
   }
 
@@ -596,6 +747,102 @@ export function ManagerActionsMenu({
               <View style={{ alignItems: "center", paddingVertical: theme.space[6], gap: theme.space[3] }}>
                 <ActivityIndicator size="large" color={theme.colors.primary} />
                 <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>Processando…</Text>
+              </View>
+            ) : step === "readiness" ? (
+              <View style={{ gap: theme.space[4] }}>
+                <View style={{ gap: theme.space[1] }}>
+                  <Text style={{ ...theme.text.bodyLg, color: theme.colors.textPrimary, fontWeight: theme.weight.semibold }}>
+                    Revisão de prontidão
+                  </Text>
+                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                    A publicação considera todos os setores deste hospital em {monthLabel(monthKey)}.
+                  </Text>
+                </View>
+
+                {corporateReadiness.isLoading ? (
+                  <View style={{ alignItems: "center", paddingVertical: theme.space[6], gap: theme.space[3] }}>
+                    <ActivityIndicator color={theme.colors.primary} />
+                    <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                      Verificando a prontidão da escala…
+                    </Text>
+                  </View>
+                ) : corporateReadiness.isError ? (
+                  <View style={{ gap: theme.space[3] }}>
+                    <Text style={{ ...theme.text.body, color: theme.colors.danger }}>
+                      Não foi possível verificar a prontidão da escala. A publicação não foi iniciada.
+                    </Text>
+                    <View style={{ flexDirection: "row", gap: theme.space[3] }}>
+                      <View style={{ flex: 1 }}>
+                        <AppButton title="Voltar" variant="secondary" onPress={() => setStep("menu")} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <AppButton title="Tentar novamente" onPress={() => { void corporateReadiness.refetch(); }} />
+                      </View>
+                    </View>
+                  </View>
+                ) : corporateReadiness.data ? (
+                  <>
+                    {readinessBlockers.length > 0 ? (
+                      <View style={{ gap: theme.space[2] }}>
+                        <Text style={{ ...theme.text.body, color: theme.colors.danger, fontWeight: theme.weight.semibold }}>
+                          Publicação bloqueada até a correção de {readinessBlockers.length} inconsistência{readinessBlockers.length === 1 ? "" : "s"} estrutural{readinessBlockers.length === 1 ? "" : "is"}.
+                        </Text>
+                        <ReadinessIssueList
+                          issues={readinessBlockers}
+                          color={theme.colors.danger}
+                          backgroundColor={theme.colors.dangerSoft}
+                        />
+                      </View>
+                    ) : null}
+
+                    {readinessWarnings.length > 0 ? (
+                      <View style={{ gap: theme.space[2] }}>
+                        <Text style={{ ...theme.text.body, color: theme.colors.warning, fontWeight: theme.weight.semibold }}>
+                          {readinessWarnings.length} pendência{readinessWarnings.length === 1 ? "" : "s"} operacional{readinessWarnings.length === 1 ? "" : "is"} requer{readinessWarnings.length === 1 ? "" : "em"} ciência explícita.
+                        </Text>
+                        <ReadinessIssueList
+                          issues={readinessWarnings}
+                          color={theme.colors.warning}
+                          backgroundColor={theme.colors.warningSoft}
+                        />
+                      </View>
+                    ) : null}
+
+                    {readinessInfo.length > 0 ? (
+                      <View style={{ gap: theme.space[2] }}>
+                        <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, fontWeight: theme.weight.semibold }}>
+                          Informações de configuração
+                        </Text>
+                        <ReadinessIssueList
+                          issues={readinessInfo}
+                          color={theme.colors.info}
+                          backgroundColor={theme.colors.infoSoft}
+                        />
+                      </View>
+                    ) : null}
+
+                    {readinessBlockers.length === 0 && readinessWarnings.length === 0 ? (
+                      <Text style={{ ...theme.text.body, color: theme.colors.success }}>
+                        Nenhuma pendência operacional bloqueia ou exige ciência para esta publicação.
+                      </Text>
+                    ) : null}
+
+                    <View style={{ flexDirection: "row", gap: theme.space[3] }}>
+                      <View style={{ flex: 1 }}>
+                        <AppButton title="Voltar" variant="secondary" onPress={() => setStep("menu")} />
+                      </View>
+                      {readinessBlockers.length === 0 ? (
+                        <View style={{ flex: 1 }}>
+                          <AppButton
+                            title={readinessWarnings.length > 0 ? "Confirmar ciência" : "Publicar"}
+                            onPress={publishWithReadinessAcknowledgement}
+                            disabled={busy}
+                          />
+                        </View>
+                      ) : null}
+                    </View>
+                  </>
+                ) : null}
               </View>
             ) : step === "specialties" ? (
               <View style={{ gap: theme.space[4] }}>
@@ -869,7 +1116,7 @@ export function ManagerActionsMenu({
                       ? "Avisa os alocados e o Comunica+"
                       : `Já ${ROSTER_LABEL[rosterStatus]?.toLowerCase()}`
                   }
-                  onPress={doPublish}
+                  onPress={openReadinessForPublish}
                   disabled={!resolvedHospitalId || rosterStatus !== "DRAFT"}
                 />
                 <MenuItem
