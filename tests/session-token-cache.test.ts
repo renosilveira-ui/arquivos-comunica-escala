@@ -1016,8 +1016,19 @@ describe("cache do token de sessão", () => {
     const restarted = await loadAuth(secureStorage, markerStorage);
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
+    await expect(restarted.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(markerStorage.values.get(MARKER_KEY)).toBe(BLOCKED_MARKER);
+    expect(secureStorage.values.get(TOKEN_KEY)).toBe("token-A");
+    expect(secureStorage.values.get(ADMISSION_KEY)).toMatch(
+      revokedCleanupPhasePattern("token-A", DEFAULT_USER_ID),
+    );
+
+    await expect(restarted.removeSessionToken()).resolves.toBeUndefined();
+    await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
     expect(markerStorage.values.has(MARKER_KEY)).toBe(false);
     expect(secureStorage.values.has(TOKEN_KEY)).toBe(false);
     expect(secureStorage.values.has(ADMISSION_KEY)).toBe(false);
@@ -1100,8 +1111,14 @@ describe("cache do token de sessão", () => {
       const restarted = await loadAuth(secureStorage, markerStorage);
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
-      await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
+      await expect(restarted.getNativeSessionGateState()).resolves.toEqual({
+        state: "REVOKED_CLEANUP_REQUIRED",
+      });
+      await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(true);
       expect(fetchMock).not.toHaveBeenCalled();
+
+      await expect(restarted.removeSessionToken()).resolves.toBeUndefined();
+      await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
       expect(markerStorage.values.has(MARKER_KEY)).toBe(false);
       expect(secureStorage.values.has(TOKEN_KEY)).toBe(false);
       expect(secureStorage.values.has(ADMISSION_KEY)).toBe(false);
@@ -1299,8 +1316,14 @@ describe("cache do token de sessão", () => {
       const restarted = await loadAuth(secureStorage, markerStorage);
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
-      await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
+      await expect(restarted.getNativeSessionGateState()).resolves.toEqual({
+        state: "REVOKED_CLEANUP_REQUIRED",
+      });
+      await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(true);
       expect(fetchMock).not.toHaveBeenCalled();
+
+      await expect(restarted.removeSessionToken()).resolves.toBeUndefined();
+      await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
       expect(markerStorage.values.has(MARKER_KEY)).toBe(false);
     },
   );
@@ -1397,9 +1420,10 @@ describe("cache do token de sessão", () => {
     );
     expect(markerStorage.values.get(MARKER_KEY)).toBe(BLOCKED_MARKER);
     await expect(auth.getSessionToken()).resolves.toBeNull();
-    await expect(auth.isSessionTokenQuarantined()).rejects.toThrow(
-      "Admission revogada não pôde ser removida nem tombstonada",
-    );
+    await expect(auth.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(auth.isSessionTokenQuarantined()).resolves.toBe(true);
 
     vi.resetModules();
     auth = await loadAuth(secureStorage, markerStorage);
@@ -1454,8 +1478,14 @@ describe("cache do token de sessão", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     await expect(auth.getSessionToken()).resolves.toBeNull();
-    await expect(auth.isSessionTokenQuarantined()).resolves.toBe(false);
+    await expect(auth.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(auth.isSessionTokenQuarantined()).resolves.toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(auth.removeSessionToken()).resolves.toBeUndefined();
+    await expect(auth.isSessionTokenQuarantined()).resolves.toBe(false);
     await expect(
       auth.stageSessionToken("token-B", NEXT_USER_ID),
     ).resolves.toBeDefined();
@@ -1478,8 +1508,14 @@ describe("cache do token de sessão", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     await expect(auth.getSessionToken()).resolves.toBeNull();
-    await expect(auth.isSessionTokenQuarantined()).resolves.toBe(false);
+    await expect(auth.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(auth.isSessionTokenQuarantined()).resolves.toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(auth.removeSessionToken()).resolves.toBeUndefined();
+    await expect(auth.isSessionTokenQuarantined()).resolves.toBe(false);
     expect(markerStorage.values.has(MARKER_KEY)).toBe(false);
     expect(secureStorage.values.has(TOKEN_KEY)).toBe(false);
     expect(secureStorage.values.has(ADMISSION_KEY)).toBe(false);
@@ -1586,6 +1622,47 @@ describe("cache do token de sessão", () => {
     expect(markerStorage.values.get(MARKER_KEY)).toBe(pendingMarker);
     expect(pendingAdmission).toMatch(/^pending:v3:101:/);
     expect(pendingMarker).toBe(pendingAdmission);
+    expect(secureStorage.removeItem).not.toHaveBeenCalled();
+    await expect(auth.getSessionToken()).resolves.toBeNull();
+  });
+
+  it("DELETE 2xx preserva resultado tipado quando a fase de cleanup não persiste", async () => {
+    const secureStorage = availableStorage();
+    const markerStorage = availableStorage();
+    const auth = await seedAdmittedSession(secureStorage, markerStorage);
+    const prepared = await prepareConfirmedDeleteCleanup(auth);
+    const pendingAdmission = secureStorage.values.get(ADMISSION_KEY);
+    const pendingMarker = markerStorage.values.get(MARKER_KEY);
+    const originalSet = secureStorage.setItem.getMockImplementation()!;
+    secureStorage.setItem.mockImplementation(
+      async (key: string, value: string) => {
+        if (
+          key === ADMISSION_KEY &&
+          value.startsWith(`${REVOKED_CLEANUP_PREFIX}:`)
+        ) {
+          throw new Error("cleanup pós-DELETE indisponível");
+        }
+        await originalSet(key, value);
+      },
+    );
+
+    const error = await confirmPreparedDeleteCleanup(auth, prepared).catch(
+      (caught) => caught,
+    );
+
+    expect(error).toMatchObject({
+      name: "ConfirmedNativeAccountDeletionLocalCleanupError",
+      code: "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+      result: { ok: true, status: 200 },
+      cause: { name: "AggregateError" },
+    });
+    expect(
+      auth.isConfirmedNativeAccountDeletionLocalCleanupError(error),
+    ).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(secureStorage.values.get(TOKEN_KEY)).toBe("token-A");
+    expect(secureStorage.values.get(ADMISSION_KEY)).toBe(pendingAdmission);
+    expect(markerStorage.values.get(MARKER_KEY)).toBe(pendingMarker);
     expect(secureStorage.removeItem).not.toHaveBeenCalled();
     await expect(auth.getSessionToken()).resolves.toBeNull();
   });
@@ -3071,8 +3148,14 @@ describe("cache do token de sessão", () => {
     vi.resetModules();
     const restarted = await loadAuth(secureStorage, markerStorage);
     fetchMock.mockClear();
-    await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
+    await expect(restarted.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(restarted.removeSessionToken()).resolves.toBeUndefined();
+    await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(false);
     expect(markerStorage.values.has(MARKER_KEY)).toBe(false);
     expect(secureStorage.values.has(TOKEN_KEY)).toBe(false);
     expect(secureStorage.values.has(ADMISSION_KEY)).toBe(false);
@@ -3135,25 +3218,49 @@ describe("cache do token de sessão", () => {
         await persistMarker(key, value);
       },
     );
-    await expect(auth.revokePreparedSessionToken(prepared)).rejects.toThrow(
-      "Marker bloqueado do cleanup revogado",
-    );
+    const revocationError = await auth
+      .revokePreparedSessionToken(prepared)
+      .catch((error) => error);
+    expect(revocationError).toMatchObject({
+      name: "ConfirmedSessionRevocationLocalCleanupError",
+      code: "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+      cause: expect.objectContaining({
+        message: expect.stringContaining(
+          "Marker bloqueado do cleanup revogado",
+        ),
+      }),
+    });
     expect(secureStorage.values.get(ADMISSION_KEY)).toMatch(
       revokedCleanupPhasePattern(revokedToken, DEFAULT_USER_ID),
     );
     expect(secureStorage.values.get(TOKEN_KEY)).toBe(revokedToken);
     expect(markerStorage.values.get(MARKER_KEY)).toMatch(/^pending:v3:101:/);
+    await expect(auth.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(auth.removeSessionToken()).rejects.toThrow(
+      "Marker bloqueado do cleanup revogado",
+    );
+    await expect(auth.getSessionToken()).resolves.toBeNull();
+    await expect(auth.getAdmittedSessionUserId()).resolves.toBeNull();
+    expect(auth.captureSessionTransportTicket()).toBeNull();
 
     markerStorage.setItem.mockImplementation(persistMarker);
     vi.resetModules();
     const recovered = await loadAuth(secureStorage, markerStorage);
-    await expect(recovered.isSessionTokenQuarantined()).resolves.toBe(false);
+    await expect(recovered.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(recovered.isSessionTokenQuarantined()).resolves.toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(
       fetchMock.mock.calls.some(([url]) =>
         String(url).endsWith("/api/auth/me"),
       ),
     ).toBe(false);
+
+    await expect(recovered.removeSessionToken()).resolves.toBeUndefined();
+    await expect(recovered.isSessionTokenQuarantined()).resolves.toBe(false);
     expect(secureStorage.values.has(TOKEN_KEY)).toBe(false);
     expect(secureStorage.values.has(ADMISSION_KEY)).toBe(false);
     expect(markerStorage.values.has(MARKER_KEY)).toBe(false);
@@ -3441,9 +3548,10 @@ describe("cache do token de sessão", () => {
     const restarted = await loadAuth(secureStorage, markerStorage);
     fetchMock.mockClear();
 
-    await expect(restarted.isSessionTokenQuarantined()).rejects.toThrow(
-      "Raw divergiu da admission REVOKED_CLEANUP_REQUIRED",
-    );
+    await expect(restarted.getNativeSessionGateState()).resolves.toEqual({
+      state: "REVOKED_CLEANUP_REQUIRED",
+    });
+    await expect(restarted.isSessionTokenQuarantined()).resolves.toBe(true);
     await expect(restarted.removeSessionToken()).rejects.toThrow(
       "Raw divergiu da admission REVOKED_CLEANUP_REQUIRED",
     );

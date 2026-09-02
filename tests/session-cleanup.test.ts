@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createAccountScopedNotificationCleanupSteps,
   runSessionCleanup,
   type SessionCleanupStep,
 } from "../lib/session-cleanup";
@@ -117,5 +118,96 @@ describe("limpeza local de sessão", () => {
       errors: [tenantError],
     });
     expect(calls).toEqual(["token", "tenant", "cache", "user"]);
+  });
+
+  it("tenta badge, entregues, agendadas e última resposta mesmo com falhas", async () => {
+    const badgeError = new Error("badge indisponível");
+    const deliveredError = new Error("central indisponível");
+    const responseError = new Error("resposta indisponível");
+    const calls: string[] = [];
+    const api = {
+      setBadgeCountAsync: vi.fn(async () => {
+        calls.push("badge");
+        throw badgeError;
+      }),
+      dismissAllNotificationsAsync: vi.fn(async () => {
+        calls.push("delivered");
+        throw deliveredError;
+      }),
+      cancelAllScheduledNotificationsAsync: vi.fn(async () => {
+        calls.push("scheduled");
+      }),
+      clearLastNotificationResponse: vi.fn(() => {
+        calls.push("response");
+        throw responseError;
+      }),
+    };
+    const loadApi = vi.fn(async () => api);
+
+    const cleanup = runSessionCleanup(
+      createAccountScopedNotificationCleanupSteps("ios", loadApi),
+      () => {
+        calls.push("finalize");
+      },
+      () => undefined,
+    );
+
+    await expect(cleanup).rejects.toMatchObject({
+      name: "AggregateError",
+      errors: [badgeError, deliveredError, responseError],
+    });
+    expect(loadApi).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([
+      "badge",
+      "delivered",
+      "scheduled",
+      "response",
+      "finalize",
+    ]);
+  });
+
+  it("trata badge sem suporte como capability ausente e conclui a limpeza", async () => {
+    const calls: string[] = [];
+    const api = {
+      setBadgeCountAsync: vi.fn(async () => {
+        calls.push("badge");
+        return false;
+      }),
+      dismissAllNotificationsAsync: vi.fn(async () => {
+        calls.push("delivered");
+      }),
+      cancelAllScheduledNotificationsAsync: vi.fn(async () => {
+        calls.push("scheduled");
+      }),
+      clearLastNotificationResponse: vi.fn(() => {
+        calls.push("response");
+      }),
+    };
+
+    await expect(
+      runSessionCleanup(
+        createAccountScopedNotificationCleanupSteps("ios", async () => api),
+        () => {
+          calls.push("finalize");
+        },
+      ),
+    ).resolves.toBeUndefined();
+    expect(api.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(calls).toEqual([
+      "badge",
+      "delivered",
+      "scheduled",
+      "response",
+      "finalize",
+    ]);
+  });
+
+  it("não toca notificações do navegador", () => {
+    const loadApi = vi.fn();
+
+    expect(createAccountScopedNotificationCleanupSteps("web", loadApi)).toEqual(
+      [],
+    );
+    expect(loadApi).not.toHaveBeenCalled();
   });
 });

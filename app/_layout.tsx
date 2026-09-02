@@ -43,6 +43,7 @@ import {
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NotificationListener } from "@/components/NotificationListener";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
+import { useLogoutAction } from "@/hooks/use-logout-action";
 import { ToastProvider } from "@/components/ui/Toast";
 import { BootScreen } from "@/components/BootScreen";
 import {
@@ -74,8 +75,6 @@ import {
   type TenantAuthorizationSubject,
 } from "@/lib/tenant-authorization";
 import { emitSessionUnauthorized, isUnauthorizedError } from "@/lib/session-events";
-import { uiAlert } from "@/lib/ui/alert";
-import { isSessionTerminationNotDurableError } from "@/lib/session-cleanup";
 import Constants from "expo-constants";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -87,7 +86,10 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
  * aprovar, o approvalStatus muda e o app libera.
  */
 function PendingApprovalScreen() {
-  const { logout, refetch } = useAuth();
+  const { refetch } = useAuth();
+  const { isLoggingOut, requestLogout } = useLogoutAction({
+    scope: "PendingApproval",
+  });
 
   return (
     <View
@@ -136,23 +138,10 @@ function PendingApprovalScreen() {
         </Text>
       </TouchableOpacity>
       <TouchableOpacity
-        onPress={() => {
-          void logout().catch((error) => {
-            console.warn("[Auth] logout failed", error);
-            if (isSessionTerminationNotDurableError(error)) {
-              uiAlert(
-                "Não foi possível sair com segurança",
-                "A sessão continua aberta neste aparelho. Tente novamente em instantes.",
-              );
-            } else {
-              uiAlert(
-                "Sessão encerrada com limpeza incompleta",
-                "Você saiu da conta, mas parte dos dados locais não pôde ser removida.",
-              );
-            }
-          });
-        }}
+        onPress={requestLogout}
+        disabled={isLoggingOut}
         activeOpacity={0.7}
+        accessibilityState={{ disabled: isLoggingOut, busy: isLoggingOut }}
       >
         <Text
           style={{
@@ -161,7 +150,7 @@ function PendingApprovalScreen() {
             textDecorationLine: "underline",
           }}
         >
-          Sair
+          {isLoggingOut ? "Saindo…" : "Sair"}
         </Text>
       </TouchableOpacity>
     </View>
@@ -169,8 +158,10 @@ function PendingApprovalScreen() {
 }
 
 function WaitingForScheduleScreen() {
-  const { logout } = useAuth();
   const router = useRouter();
+  const { isLoggingOut, requestLogout } = useLogoutAction({
+    scope: "WaitingForSchedule",
+  });
 
   return (
     <View
@@ -221,12 +212,10 @@ function WaitingForScheduleScreen() {
         </Text>
       </TouchableOpacity>
       <TouchableOpacity
-        onPress={() => {
-          void logout().catch((error) => {
-            console.warn("[Auth] logout failed", error);
-          });
-        }}
+        onPress={requestLogout}
+        disabled={isLoggingOut}
         activeOpacity={0.7}
+        accessibilityState={{ disabled: isLoggingOut, busy: isLoggingOut }}
       >
         <Text
           style={{
@@ -235,7 +224,7 @@ function WaitingForScheduleScreen() {
             textDecorationLine: "underline",
           }}
         >
-          Sair
+          {isLoggingOut ? "Saindo…" : "Sair"}
         </Text>
       </TouchableOpacity>
     </View>

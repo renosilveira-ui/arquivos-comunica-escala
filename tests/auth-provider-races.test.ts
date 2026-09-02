@@ -37,6 +37,14 @@ type PreparedRevocation =
       expectedUserId?: never;
     }>;
 
+type NativeSessionGateState =
+  | { state: "CLEAR" }
+  | { state: "ADMITTED"; expectedUserId: number }
+  | { state: "REVOKE_REQUIRED" }
+  | { state: "LEGACY_REVOKE_REQUIRED" }
+  | { state: "REVOKED_CLEANUP_REQUIRED" }
+  | { state: "BLOCKED" };
+
 type MeResult = {
   user: TestUser | null;
   sessionInvalid: boolean;
@@ -71,11 +79,15 @@ type AuthProviderHarnessOptions = {
   ) => Promise<MeResult>;
   logoutRequest?: () => Promise<void>;
   revokeTokenRequest?: (token: string) => Promise<void | RevocationProof>;
+  persistRevokedCleanup?: () => Promise<void>;
   persistSessionToken?: (token: string) => Promise<void>;
   commitSessionToken?: () => Promise<void>;
   admittedSessionUserId?: () => number | null | Promise<number | null>;
   admittedSessionToken?: () => string | null | Promise<string | null>;
   sessionTokenQuarantined?: () => boolean | Promise<boolean>;
+  nativeSessionGateState?: () =>
+    | NativeSessionGateState
+    | Promise<NativeSessionGateState>;
   quarantinedSessionToken?: () => string | null | Promise<string | null>;
   persistUser?: (user: TestUser) => Promise<void>;
   removeSessionToken?: () => Promise<void>;
@@ -204,6 +216,23 @@ async function renderRealAuthProvider(
     await options.persistUser?.(user);
   });
   const getPersistedUserId = vi.fn(async () => persistedUserId);
+  const getNativeSessionGateState = vi.fn(async () => {
+    const explicit = await options.nativeSessionGateState?.();
+    if (explicit) return explicit;
+    const quarantined =
+      locallyQuarantinedToken !== null ||
+      (await options.sessionTokenQuarantined?.()) === true;
+    if (quarantined) return { state: "REVOKE_REQUIRED" } as const;
+    const currentAdmittedUserId = options.admittedSessionUserId
+      ? await options.admittedSessionUserId()
+      : admittedSessionUserId;
+    return currentAdmittedUserId === null
+      ? ({ state: "CLEAR" } as const)
+      : ({
+          state: "ADMITTED",
+          expectedUserId: currentAdmittedUserId,
+        } as const);
+  });
   const clearActiveInstitutionId = vi.fn(async () => {
     await options.clearActiveInstitution?.();
   });
@@ -349,6 +378,20 @@ async function renderRealAuthProvider(
       }
       locallyQuarantinedUserId =
         revocationUserId ?? prepared.expectedUserId ?? null;
+      try {
+        await options.persistRevokedCleanup?.();
+      } catch (cause) {
+        throw Object.assign(
+          new Error(
+            "O servidor confirmou a revogação, mas o estado local não foi persistido",
+          ),
+          {
+            name: "ConfirmedSessionRevocationLocalCleanupError",
+            code: "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+            cause,
+          },
+        );
+      }
     },
   );
   let reversibleRevocation: {
@@ -396,6 +439,10 @@ async function renderRealAuthProvider(
     },
   );
   const setLastPushToken = vi.fn();
+  const setBadgeCountAsync = vi.fn(async () => true);
+  const dismissAllNotificationsAsync = vi.fn(async () => undefined);
+  const cancelAllScheduledNotificationsAsync = vi.fn(async () => undefined);
+  const clearLastNotificationResponse = vi.fn();
   const closeSessionTokenTransportAdmission = vi.fn();
   const admitSessionTokenTransport = vi.fn(async () => undefined);
   const admitWebSessionTransport = vi.fn();
@@ -464,11 +511,17 @@ async function renderRealAuthProvider(
           : admittedSessionUserId,
     ),
     getPersistedUserId,
+    getNativeSessionGateState,
     isSessionTokenQuarantined: vi.fn(
       async () =>
         locallyQuarantinedToken !== null ||
         (options.sessionTokenQuarantined?.() ?? false),
     ),
+    isConfirmedSessionRevocationLocalCleanupError: (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code ===
+        "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED",
     revokePreparedSessionToken,
     isSessionTransportUserCurrent: vi.fn(() => true),
     subscribeExternalWebSessionInvalidation: vi.fn(() => () => undefined),
@@ -500,6 +553,12 @@ async function renderRealAuthProvider(
     waitForPushRegistrationIdle,
   }));
   vi.doMock("@/lib/session-events", () => ({ onSessionUnauthorized: vi.fn() }));
+  vi.doMock("expo-notifications", () => ({
+    setBadgeCountAsync,
+    dismissAllNotificationsAsync,
+    cancelAllScheduledNotificationsAsync,
+    clearLastNotificationResponse,
+  }));
 
   const [{ AuthProvider }, { appSessionEpoch }] = await Promise.all([
     import("../hooks/use-auth"),
@@ -590,8 +649,13 @@ async function renderRealAuthProvider(
     revalidateSessionTokenApi,
     commitStagedSessionToken,
     prepareSessionTokenRevocation,
+    getNativeSessionGateState,
     revokePreparedSessionToken,
     setLastPushToken,
+    setBadgeCountAsync,
+    dismissAllNotificationsAsync,
+    cancelAllScheduledNotificationsAsync,
+    clearLastNotificationResponse,
     closeSessionTokenTransportAdmission,
     clearVerifiedNotificationForegroundSubject,
     admitSessionTokenTransport,
@@ -629,6 +693,34 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
       ok: false,
       error: "Credenciais inválidas",
     });
+  });
+
+  it("cold boot com cleanup remoto confirmado encerra A e limpa artefatos sem novo POST", async () => {
+    const harness = await renderRealAuthProvider({
+      initialUser: userA,
+      runMountEffects: true,
+      nativeSessionGateState: () => ({
+        state: "REVOKED_CLEANUP_REQUIRED",
+      }),
+    });
+
+    await vi.waitFor(() => expect(harness.setUser).toHaveBeenCalledWith(null));
+
+    expect(harness.getNativeSessionGateState).toHaveBeenCalledTimes(1);
+    expect(harness.revokeSessionTokenApi).not.toHaveBeenCalled();
+    expect(harness.logoutApi).not.toHaveBeenCalled();
+    expect(harness.meDetailedApi).not.toHaveBeenCalled();
+    expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
+    expect(harness.clearUserInfo).toHaveBeenCalledTimes(1);
+    expect(harness.clearPersistedQueryCache).toHaveBeenCalledTimes(1);
+    expect(harness.queryClient.clear).toHaveBeenCalledTimes(1);
+    expect(harness.clearActiveInstitutionId).toHaveBeenCalledTimes(1);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
   });
 
   it("intenção de login invalida /me A que já estava aguardando o workflow", async () => {
@@ -685,8 +777,11 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     const error = await harness.auth.logout().catch((caught) => caught);
 
     expect(error).toMatchObject({
-      name: "AggregateError",
-      errors: [secureStoreError],
+      name: "SessionTerminationLocalCleanupError",
+      reason: {
+        name: "AggregateError",
+        errors: [secureStoreError],
+      },
     });
     expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
     expect(harness.clearUserInfo).toHaveBeenCalledTimes(1);
@@ -695,6 +790,12 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     expect(harness.queryClient.clear).toHaveBeenCalledTimes(1);
     expect(harness.setLastPushToken).toHaveBeenCalledWith(null);
     expect(harness.setUser).toHaveBeenCalledWith(null);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
     expect(harness.openPushRegistrationAdmission).not.toHaveBeenCalled();
   });
 
@@ -710,8 +811,11 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     const error = await harness.auth.logout().catch((caught) => caught);
 
     expect(error).toMatchObject({
-      name: "AggregateError",
-      errors: [cacheError],
+      name: "SessionTerminationLocalCleanupError",
+      reason: {
+        name: "AggregateError",
+        errors: [cacheError],
+      },
     });
     expect(harness.queryClient.clear).toHaveBeenCalledTimes(1);
     expect(harness.clearActiveInstitutionId).toHaveBeenCalledTimes(1);
@@ -722,6 +826,74 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     expect(harness.queryClient.clear.mock.invocationCallOrder[0]).toBeLessThan(
       harness.clearActiveInstitutionId.mock.invocationCallOrder[0],
     );
+  });
+
+  it("2xx seguido de falha da prova local mantém a fase confirmada e conclui toda a higiene", async () => {
+    const proofError = new Error("admission revogada sem readback");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const harness = await renderRealAuthProvider({
+      persistRevokedCleanup: async () => {
+        throw proofError;
+      },
+    });
+
+    const error = await harness.auth.logout().catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      name: "SessionTerminationLocalCleanupError",
+      reason: {
+        code: "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+        cause: proofError,
+      },
+    });
+    expect(harness.revokeSessionTokenApi).toHaveBeenCalledTimes(1);
+    expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+    expect(harness.setUser).toHaveBeenCalledWith(null);
+  });
+
+  it("2xx com falha da prova e da remoção agrega ambas sem reabrir a sessão", async () => {
+    const proofError = new Error("admission revogada sem readback");
+    const secureStoreError = new Error("SecureStore indisponível");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const harness = await renderRealAuthProvider({
+      persistRevokedCleanup: async () => {
+        throw proofError;
+      },
+      removeSessionToken: async () => {
+        throw secureStoreError;
+      },
+    });
+
+    const error = await harness.auth.logout().catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      name: "SessionTerminationLocalCleanupError",
+      reason: {
+        name: "AggregateError",
+        errors: [
+          {
+            code: "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+            cause: proofError,
+          },
+          secureStoreError,
+        ],
+      },
+    });
+    expect(harness.revokeSessionTokenApi).toHaveBeenCalledTimes(1);
+    expect(harness.openPushRegistrationAdmission).not.toHaveBeenCalled();
+    expect(harness.setUser).toHaveBeenCalledWith(null);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
   });
 
   it("/me 401 nunca confirma revogação quando a barreira local impede o logout", async () => {
@@ -759,11 +931,36 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     expect(harness.queryClient.clear).not.toHaveBeenCalled();
     expect(harness.setLastPushToken).not.toHaveBeenCalled();
     expect(harness.setUser).not.toHaveBeenCalledWith(null);
+    expect(harness.setBadgeCountAsync).not.toHaveBeenCalled();
+    expect(harness.dismissAllNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.cancelAllScheduledNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.clearLastNotificationResponse).not.toHaveBeenCalled();
     expect(harness.setIsLoading).toHaveBeenCalledWith(false);
     expect(harness.setSessionValidation).toHaveBeenLastCalledWith(
       expect.objectContaining({ status: "UNAVAILABLE" }),
     );
     expect(consoleError).toHaveBeenCalled();
+  });
+
+  it("/me 401 só limpa notificações depois do logout tipado confirmado", async () => {
+    const harness = await renderRealAuthProvider({
+      meRequest: async () => ({
+        user: null,
+        sessionInvalid: true,
+        networkOrServerError: false,
+      }),
+    });
+
+    await expect(harness.auth.refetch()).resolves.toBeUndefined();
+
+    expect(harness.revokeSessionTokenApi).toHaveBeenCalledWith("token-A");
+    expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
   });
 
   it("logout HTTP 500 mantém transporte revoke-only e não reabre por /me", async () => {
@@ -792,6 +989,10 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     expect(harness.meDetailedApi).not.toHaveBeenCalled();
     expect(harness.removeSessionToken).not.toHaveBeenCalled();
     expect(harness.queryClient.clear).not.toHaveBeenCalled();
+    expect(harness.setBadgeCountAsync).not.toHaveBeenCalled();
+    expect(harness.dismissAllNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.cancelAllScheduledNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.clearLastNotificationResponse).not.toHaveBeenCalled();
     expect(harness.setUserInfo).not.toHaveBeenCalled();
     expect(harness.setUser).not.toHaveBeenCalledWith(null);
     expect(harness.setSessionValidation).toHaveBeenLastCalledWith(
@@ -929,6 +1130,65 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
         durableSession: true,
       }),
     );
+  });
+
+  it("rollback nativo pós-ACK limpa notificações antes de devolver o erro local", async () => {
+    const storageError = new Error("SecureStore indisponível no stage");
+    const harness = await renderRealAuthProvider({
+      initialUser: null,
+      loginRequest: async () => ({
+        ok: true,
+        user: userB,
+        token: "token-B",
+      }),
+      persistSessionToken: async () => {
+        throw storageError;
+      },
+    });
+
+    await expect(harness.auth.login(userB.email, "senha-B")).resolves.toEqual({
+      ok: false,
+      error: "Não foi possível concluir o login com segurança neste aparelho.",
+    });
+
+    expect(harness.revokeSessionTokenApi).toHaveBeenCalledWith("token-B");
+    expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("rollback nativo sem ACK preserva a quarentena e não toca notificações", async () => {
+    const harness = await renderRealAuthProvider({
+      initialUser: null,
+      loginRequest: async () => ({
+        ok: true,
+        user: userB,
+        token: "token-B",
+      }),
+      persistSessionToken: async () => {
+        throw new Error("SecureStore indisponível no stage");
+      },
+      revokeTokenRequest: async () => {
+        throw new Error("500 ao revogar B");
+      },
+    });
+
+    await expect(harness.auth.login(userB.email, "senha-B")).resolves.toEqual({
+      ok: false,
+      error:
+        "Login bloqueado: o servidor ainda não confirmou a revogação desta sessão.",
+    });
+
+    expect(harness.revokeSessionTokenApi).toHaveBeenCalledWith("token-B");
+    expect(harness.removeSessionToken).not.toHaveBeenCalled();
+    expect(harness.setBadgeCountAsync).not.toHaveBeenCalled();
+    expect(harness.dismissAllNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.cancelAllScheduledNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.clearLastNotificationResponse).not.toHaveBeenCalled();
   });
 
   it("/me pendente mantém receipt CHECKING e zero identidade publicada", async () => {
@@ -1629,6 +1889,10 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     ]);
     expect(harness.loginApi).not.toHaveBeenCalled();
     expect(harness.removeSessionToken).not.toHaveBeenCalled();
+    expect(harness.setBadgeCountAsync).not.toHaveBeenCalled();
+    expect(harness.dismissAllNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.cancelAllScheduledNotificationsAsync).not.toHaveBeenCalled();
+    expect(harness.clearLastNotificationResponse).not.toHaveBeenCalled();
 
     revokeAvailable = true;
     await expect(harness.auth.login(userB.email, "senha-B")).resolves.toEqual({
@@ -1640,6 +1904,12 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     expect(harness.setSessionToken).toHaveBeenCalledWith("token-B", userB.id);
     expect(harness.setUser).not.toHaveBeenCalledWith(userA);
     expect(harness.setUser).toHaveBeenCalledWith(userB);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
   });
 
   it("commit B ambíguo só conclui login após /me fresco do mesmo usuário", async () => {
@@ -1804,6 +2074,12 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
     expect(harness.meDetailedApi).not.toHaveBeenCalled();
     expect(harness.setUser).toHaveBeenCalledWith(null);
+    expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
+    expect(harness.dismissAllNotificationsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
   });
 
   it("ROTATED sem userId não usa expectedUserId local do PENDING nem remove o raw", async () => {

@@ -29,6 +29,99 @@ export function isSessionTerminationNotDurableError(
   return error instanceof SessionTerminationNotDurableError;
 }
 
+export class SessionTerminationLocalCleanupError extends Error {
+  readonly reason: unknown;
+
+  constructor(reason: unknown) {
+    super("A sessão foi revogada, mas a limpeza local ficou incompleta");
+    this.name = "SessionTerminationLocalCleanupError";
+    this.reason = reason;
+  }
+}
+
+export function isSessionTerminationLocalCleanupError(
+  error: unknown,
+): error is SessionTerminationLocalCleanupError {
+  return error instanceof SessionTerminationLocalCleanupError;
+}
+
+export class AccountDeletionLocalCleanupError extends Error {
+  readonly reason: unknown;
+
+  constructor(reason: unknown) {
+    super("A conta foi excluída, mas a limpeza local ficou incompleta");
+    this.name = "AccountDeletionLocalCleanupError";
+    this.reason = reason;
+  }
+}
+
+export function isAccountDeletionLocalCleanupError(
+  error: unknown,
+): error is AccountDeletionLocalCleanupError {
+  return error instanceof AccountDeletionLocalCleanupError;
+}
+
+export type NativeNotificationCleanupApi = Readonly<{
+  setBadgeCountAsync: (count: number) => Promise<boolean>;
+  dismissAllNotificationsAsync: () => Promise<void>;
+  cancelAllScheduledNotificationsAsync: () => Promise<void>;
+  clearLastNotificationResponse: () => void;
+}>;
+
+type NativeNotificationCleanupLoader =
+  () => Promise<NativeNotificationCleanupApi>;
+
+async function loadNativeNotificationCleanupApi(): Promise<NativeNotificationCleanupApi> {
+  return import("expo-notifications");
+}
+
+/**
+ * Limpa artefatos visíveis da conta que acabou de ser revogada. As APIs do
+ * sistema operacional são app-scoped; o isolamento por conta vem do caller,
+ * que só executa estas etapas para a lease ainda atual e depois do ACK remoto.
+ */
+export function createAccountScopedNotificationCleanupSteps(
+  platform: string,
+  loadApi: NativeNotificationCleanupLoader = loadNativeNotificationCleanupApi,
+): readonly SessionCleanupStep[] {
+  if (platform === "web") return [];
+
+  let apiPromise: Promise<NativeNotificationCleanupApi> | null = null;
+  const getApi = () => {
+    apiPromise ??= loadApi();
+    return apiPromise;
+  };
+
+  return [
+    {
+      name: "badge de notificações do aparelho",
+      run: async () => {
+        // `false` significa que a plataforma não oferece suporte a badge, não
+        // que a limpeza falhou. Rejeições da Promise continuam sendo agregadas.
+        await (await getApi()).setBadgeCountAsync(0);
+      },
+    },
+    {
+      name: "notificações entregues no aparelho",
+      run: async () => {
+        await (await getApi()).dismissAllNotificationsAsync();
+      },
+    },
+    {
+      name: "notificações agendadas no aparelho",
+      run: async () => {
+        await (await getApi()).cancelAllScheduledNotificationsAsync();
+      },
+    },
+    {
+      name: "última resposta de notificação",
+      run: async () => {
+        (await getApi()).clearLastNotificationResponse();
+      },
+    },
+  ];
+}
+
 export async function runSessionCleanup(
   steps: readonly SessionCleanupStep[],
   finalizeInMemoryState: () => void | Promise<void>,
