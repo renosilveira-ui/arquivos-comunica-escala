@@ -2030,6 +2030,12 @@ describe("SSO client tenant boundaries", () => {
         isAuthenticated: true,
         isSessionAuthorizationCurrent: () => true,
         pushRegistrationRevision: 0,
+        sessionValidation: {
+          status: "VERIFIED",
+          userId: 7,
+          ticket: { generation: 1 },
+          isCurrent: () => true,
+        },
       }),
     }));
     vi.doMock("@/hooks/use-notifications", () => ({

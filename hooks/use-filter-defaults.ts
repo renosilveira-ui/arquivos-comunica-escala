@@ -1,5 +1,11 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
+import {
+  parseStoredTenantFilterId,
+  sanitizeTenantFilterSelection,
+  tenantFilterScopeKey,
+  tenantFilterStorageKey,
+} from "@/lib/tenant-filter-storage";
 
 /**
  * localStorage NÃO existe no React Native — acessá-lo direto lança
@@ -7,7 +13,8 @@ import { trpc } from "@/lib/trpc";
  * aba Solicitações no iOS). No nativo a persistência do último filtro é
  * dispensável: devolve null e o default segue sem memória.
  */
-function readLastFilter(key: string): string | null {
+function readLastFilter(key: string | null): string | null {
+  if (key === null) return null;
   try {
     if (typeof globalThis.localStorage === "undefined") return null;
     return globalThis.localStorage.getItem(key);
@@ -24,13 +31,32 @@ export interface FilterDefaults {
 }
 
 interface UseFilterDefaultsOptions {
+  institutionId: number | null;
+  tenantRevision: number;
   hospitals: { id: number; name: string }[];
   sectors: { id: number; hospitalId: number; name: string }[];
+  /** Só calcula defaults depois que a topologia do tenant corrente chegou. */
+  topologyReady: boolean;
+}
+
+type TenantScopedDefaultsState = Readonly<{
+  tenantKey: string;
+  defaults: FilterDefaults;
+  ready: boolean;
+}>;
+
+function createNeutralFilterDefaults(now = new Date()): FilterDefaults {
+  return {
+    hospitalId: null,
+    sectorId: null,
+    date: new Date(now.getTime()),
+    shiftLabel: null,
+  };
 }
 
 /**
  * Hook para determinar defaults inteligentes dos filtros baseado em manager_scope
- * 
+ *
  * Regras:
  * 1. Se gestor tem acesso a 1 hospital apenas → auto-seleciona
  * 2. Se gestor tem acesso a vários hospitais → "Selecione um hospital" (ou lembrar último usado)
@@ -39,127 +65,163 @@ interface UseFilterDefaultsOptions {
  *    - Se tiver vários → deixa escolher
  * 4. Data → padrão "Hoje" sempre
  * 5. Turno → padrão "Todos"
- * 
+ *
  * Persistência em localStorage:
- * - lastHospitalId
- * - lastSectorId
+ * - chave por instituição para hospital
+ * - chave por instituição para setor
  * - lastDateMode (Hoje/Amanhã/Escolher)
  * - lastShiftToggle
  */
 export function useFilterDefaults(options: UseFilterDefaultsOptions) {
-  // As listas são apenas opções visuais. A autoridade para defaults é o
-  // manager_scope; depender da identidade dos arrays de query aqui pode
-  // disparar efeito e setState repetidos durante loading/erro.
-  void options;
-  
   // Buscar manager_scope do gestor logado
   const {
     data: managerScope,
     isLoading,
+    isFetching,
     isError,
     error,
     refetch,
   } = trpc.professionals.getManagerScope.useQuery();
 
-  const [defaults, setDefaults] = useState<FilterDefaults>({
-    hospitalId: null,
-    sectorId: null,
-    date: new Date(), // Padrão "Hoje"
-    shiftLabel: null, // Padrão "Todos"
-  });
+  const activeTenantKey = tenantFilterScopeKey(
+    options.institutionId,
+    options.tenantRevision,
+  );
+  // A identidade só importa enquanto a revisão nova ainda não foi persistida
+  // no estado abaixo. Nesse render transitório, a data continua sendo o dia
+  // local corrente; a seleção antiga nunca é exposta.
+  const neutralDefaults = createNeutralFilterDefaults();
+  const [defaultsState, setDefaultsState] = useState<TenantScopedDefaultsState>(
+    () => ({
+      tenantKey: activeTenantKey,
+      defaults: neutralDefaults,
+      ready: false,
+    }),
+  );
+  const defaults =
+    defaultsState.tenantKey === activeTenantKey
+      ? defaultsState.defaults
+      : neutralDefaults;
+  const defaultsReady =
+    defaultsState.tenantKey === activeTenantKey && defaultsState.ready;
 
   useEffect(() => {
-    if (isLoading || !managerScope) return;
-
-    const publishDefaults = (next: FilterDefaults) => {
-      setDefaults((current) =>
-        current.hospitalId === next.hospitalId &&
-        current.sectorId === next.sectorId &&
-        current.shiftLabel === next.shiftLabel
-          ? current
-          : next,
-      );
-    };
-
-    // GESTOR_PLUS pode ver tudo, não auto-seleciona nada
-    if (managerScope.canManageAll) {
-      // Tentar carregar do localStorage (web-only; null no nativo)
-      const lastHospitalId = readLastFilter("lastHospitalId");
-      const lastSectorId = readLastFilter("lastSectorId");
-      
-      publishDefaults({
-        hospitalId: lastHospitalId ? parseInt(lastHospitalId, 10) : null,
-        sectorId: lastSectorId ? parseInt(lastSectorId, 10) : null,
-        date: new Date(),
-        shiftLabel: null,
-      });
+    // Uma resposta anterior pode ficar brevemente no cache durante A → B.
+    // Só inicializamos depois da busca atual e da topologia do tenant.
+    if (isLoading || isFetching || !managerScope || !options.topologyReady) {
       return;
     }
 
-    // USER não tem manager_scope
-    if (managerScope.role === "USER") {
-      publishDefaults({
+    const rememberedSelection = sanitizeTenantFilterSelection({
+      hospitalId: parseStoredTenantFilterId(
+        readLastFilter(
+          tenantFilterStorageKey(options.institutionId, "hospital"),
+        ),
+      ),
+      sectorId: parseStoredTenantFilterId(
+        readLastFilter(tenantFilterStorageKey(options.institutionId, "sector")),
+      ),
+      hospitals: options.hospitals,
+      sectors: options.sectors,
+    });
+    let nextDefaults: FilterDefaults;
+
+    // GESTOR_PLUS pode ver tudo, não auto-seleciona nada
+    if (managerScope.canManageAll) {
+      nextDefaults = {
+        hospitalId: rememberedSelection.hospitalId,
+        sectorId: rememberedSelection.sectorId,
+        date: new Date(),
+        shiftLabel: null,
+      };
+    } else if (managerScope.role === "USER") {
+      // USER não tem manager_scope.
+      nextDefaults = {
         hospitalId: null,
         sectorId: null,
         date: new Date(),
         shiftLabel: null,
-      });
-      return;
-    }
-
-    // GESTOR_MEDICO: aplicar defaults inteligentes
-    const { hospitals: scopedHospitalIds, sectors: scopedSectors } = managerScope;
-
-    // Regra 1: Se gestor tem acesso a 1 hospital apenas → auto-seleciona
-    let defaultHospitalId: number | null = null;
-    
-    if (scopedHospitalIds.length === 1) {
-      defaultHospitalId = scopedHospitalIds[0];
-    } else if (scopedHospitalIds.length > 1) {
-      // Tentar carregar do localStorage e validar se ainda tem permissão
-        const lastHospitalId = readLastFilter("lastHospitalId");
-        if (lastHospitalId) {
-          const lastHospitalIdNum = parseInt(lastHospitalId, 10);
-          if ((scopedHospitalIds as number[]).includes(lastHospitalIdNum)) {
-            defaultHospitalId = lastHospitalIdNum;
-          }
-        }
-    }
-
-    // Regra 3: Setor dependente
-    let defaultSectorId: number | null = null;
-    
-    if (defaultHospitalId !== null) {
-      // Filtrar setores do hospital selecionado que o gestor pode acessar
-      const sectorsInHospital = scopedSectors.filter(
-        s => s.hospitalId === defaultHospitalId
+      };
+    } else {
+      // GESTOR_MEDICO: revalida o escopo também contra a topologia recém
+      // carregada. Um scope cacheado de A nunca escolhe um hospital de B.
+      const visibleHospitalIds = new Set(
+        options.hospitals.map((hospital) => hospital.id),
+      );
+      const scopedHospitalIds = managerScope.hospitals.filter((hospitalId) =>
+        visibleHospitalIds.has(hospitalId),
+      );
+      const scopedSectors = managerScope.sectors.filter((scope) =>
+        options.sectors.some(
+          (sector) =>
+            sector.id === scope.sectorId &&
+            sector.hospitalId === scope.hospitalId,
+        ),
       );
 
-      if (sectorsInHospital.length === 1) {
-        // Auto-seleciona se tiver 1 setor apenas
-        defaultSectorId = sectorsInHospital[0].sectorId;
-      } else if (sectorsInHospital.length > 1) {
-        // Tentar carregar do localStorage e validar se ainda tem permissão
-        const lastSectorId = readLastFilter("lastSectorId");
-        if (lastSectorId) {
-          const lastSectorIdNum = parseInt(lastSectorId, 10);
-          if (sectorsInHospital.some(s => s.sectorId === lastSectorIdNum)) {
-            defaultSectorId = lastSectorIdNum;
-          }
+      // Regra 1: Se gestor tem acesso a 1 hospital apenas → auto-seleciona.
+      let defaultHospitalId: number | null = null;
+      if (scopedHospitalIds.length === 1) {
+        defaultHospitalId = scopedHospitalIds[0];
+      } else if (
+        scopedHospitalIds.length > 1 &&
+        rememberedSelection.hospitalId !== null &&
+        scopedHospitalIds.includes(rememberedSelection.hospitalId)
+      ) {
+        defaultHospitalId = rememberedSelection.hospitalId;
+      }
+
+      // Regra 3: setor dependente.
+      let defaultSectorId: number | null = null;
+      if (defaultHospitalId !== null) {
+        const sectorsInHospital = scopedSectors.filter(
+          (sector) => sector.hospitalId === defaultHospitalId,
+        );
+        if (sectorsInHospital.length === 1) {
+          defaultSectorId = sectorsInHospital[0].sectorId;
+        } else if (
+          sectorsInHospital.length > 1 &&
+          rememberedSelection.sectorId !== null &&
+          sectorsInHospital.some(
+            (sector) => sector.sectorId === rememberedSelection.sectorId,
+          )
+        ) {
+          defaultSectorId = rememberedSelection.sectorId;
         }
       }
+
+      nextDefaults = {
+        hospitalId: defaultHospitalId,
+        sectorId: defaultSectorId,
+        date: new Date(),
+        shiftLabel: null,
+      };
     }
 
-    publishDefaults({
-      hospitalId: defaultHospitalId,
-      sectorId: defaultSectorId,
-      date: new Date(), // Padrão "Hoje"
-      shiftLabel: null, // Padrão "Todos"
-    });
-  }, [managerScope, isLoading]);
+    setDefaultsState((current) =>
+      current.tenantKey === activeTenantKey && current.ready
+        ? current
+        : {
+            tenantKey: activeTenantKey,
+            defaults: nextDefaults,
+            ready: true,
+          },
+    );
+  }, [
+    activeTenantKey,
+    isFetching,
+    isLoading,
+    managerScope,
+    options.hospitals,
+    options.institutionId,
+    options.sectors,
+    options.topologyReady,
+  ]);
 
   return {
     defaults,
+    defaultsReady,
+    defaultsTenantKey: activeTenantKey,
     isLoading,
     isError,
     error,

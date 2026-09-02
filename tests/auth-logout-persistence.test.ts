@@ -1037,10 +1037,7 @@ describe("persistência local do logout web", () => {
     expect(harness.beginWebSessionAdmission).not.toHaveBeenCalled();
     // BEGIN fecha também a superfície visual/local antes de o preflight
     // assíncrono decidir que a operação não pode prosseguir.
-    expect(harness.sequence.slice(0, 2)).toEqual([
-      "close-push",
-      "fence-query",
-    ]);
+    expect(harness.sequence.slice(0, 2)).toEqual(["close-push", "fence-query"]);
     expect(harness.meDetailedApi).toHaveBeenCalledTimes(1);
     expect(harness.setUser).toHaveBeenCalledWith(currentUser);
   });
@@ -1230,7 +1227,9 @@ describe("persistência local do logout web", () => {
   });
 
   it("DELETE 2xx com persistência local falha encerra A e reporta higiene parcial", async () => {
-    const persistenceError = new Error("SecureStore indisponível após o DELETE");
+    const persistenceError = new Error(
+      "SecureStore indisponível após o DELETE",
+    );
     const harness = await renderAuthHarness({
       platform: "ios",
       logoutRequest: async () => undefined,
@@ -1252,9 +1251,9 @@ describe("persistência local do logout web", () => {
         cause: persistenceError,
       },
     });
-    expect(harness.deleteAccountWithReversibleSessionCleanup).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(
+      harness.deleteAccountWithReversibleSessionCleanup,
+    ).toHaveBeenCalledTimes(1);
     expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
     expect(harness.clearUserInfo).toHaveBeenCalledTimes(1);
     expect(harness.clearPersistedQueryCache).toHaveBeenCalledTimes(1);
@@ -3717,7 +3716,14 @@ describe("persistência local do logout web", () => {
       useAuth: () => ({
         user: { id: 31 },
         isAuthenticated: true,
+        isSessionAuthorizationCurrent: () => true,
         pushRegistrationRevision: revision,
+        sessionValidation: {
+          status: "VERIFIED",
+          userId: 31,
+          ticket: { generation: revision },
+          isCurrent: () => true,
+        },
       }),
     }));
     vi.doMock("@/hooks/use-notifications", () => ({ useNotifications }));

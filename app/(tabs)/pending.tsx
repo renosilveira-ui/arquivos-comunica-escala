@@ -31,21 +31,26 @@ import {
 } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
+import { useTenantScopedShiftFilters } from "@/hooks/use-tenant-scoped-shift-filters";
 import { usePermissions } from "@/hooks/use-permissions";
 import { theme } from "@/lib/theme";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { AvailableSwapsList } from "@/components/swaps/AvailableSwapsList";
 import { resolvePendingContentState } from "@/lib/permission-screen-state";
+import { useTenantState } from "@/lib/tenant-state";
+
+const EMPTY_HOSPITALS: { id: number; name: string }[] = [];
+const EMPTY_SECTORS: { id: number; hospitalId: number; name: string }[] = [];
 
 // ---------------------------------------------------------------------------
 // Helpers for Available Swaps section
 // ---------------------------------------------------------------------------
 
-
 export default function PendingScreen() {
   const router = useRouter();
   const utils = trpc.useUtils();
   const { user, isLoading: authLoading } = useAuth();
+  const { activeInstitutionId, tenantRevision } = useTenantState();
   const {
     canApproveAssignments,
     isGlobalAdmin,
@@ -57,7 +62,6 @@ export default function PendingScreen() {
   // Chaves de dia sempre LOCAIS: toISOString() é UTC e, depois das 21h no
   // Brasil, já aponta para amanhã — "Hoje" sumia com os plantões do dia.
   const [myDate, setMyDate] = useState(() => toLocalISODateString(new Date()));
-
 
   // Buscar profissional associado ao usuário logado
   const { data: professional, isLoading: professionalLoading } =
@@ -74,21 +78,22 @@ export default function PendingScreen() {
     enabled: !!user?.id,
   });
 
-  const hospitals = hospitalsData || [];
-  const sectors = sectorsData || [];
+  const hospitals = hospitalsData ?? EMPTY_HOSPITALS;
+  const sectors = sectorsData ?? EMPTY_SECTORS;
 
   // Defaults inteligentes baseado em manager_scope
-  const { defaults } = useFilterDefaults({
+  const { defaults, defaultsReady } = useFilterDefaults({
+    institutionId: activeInstitutionId,
+    tenantRevision,
     hospitals,
     sectors,
+    topologyReady: hospitalsData !== undefined && sectorsData !== undefined,
   });
-
-  // Estado dos filtros
-  const [filters, setFilters] = useState<ShiftFilterValues>({
-    hospitalId: null,
-    sectorId: null,
-    date: new Date(),
-    shiftLabel: null,
+  const { filters, setFilters } = useTenantScopedShiftFilters({
+    institutionId: activeInstitutionId,
+    tenantRevision,
+    defaults,
+    defaultsReady,
   });
 
   // Filtro por modalidade (PR #68 — listPending aceita modality como input).
@@ -200,7 +205,10 @@ export default function PendingScreen() {
     [utils],
   );
 
-  const handleApprove = async (assignmentId: number, professionalName: string) => {
+  const handleApprove = async (
+    assignmentId: number,
+    professionalName: string,
+  ) => {
     const confirmed = await feedback.confirmDestructive(
       "Aprovar alocação",
       `Aprovar a alocação de ${professionalName}?`,
@@ -222,7 +230,10 @@ export default function PendingScreen() {
     );
   };
 
-  const handleReject = async (assignmentId: number, professionalName: string) => {
+  const handleReject = async (
+    assignmentId: number,
+    professionalName: string,
+  ) => {
     const confirmed = await feedback.confirmDestructive(
       "Rejeitar alocação",
       `Rejeitar a alocação de ${professionalName}? O plantão volta a ficar vago.`,
@@ -244,9 +255,12 @@ export default function PendingScreen() {
     );
   };
 
-  const handleFiltersChange = useCallback((newFilters: ShiftFilterValues) => {
-    setFilters(newFilters);
-  }, []);
+  const handleFiltersChange = useCallback(
+    (newFilters: ShiftFilterValues) => {
+      setFilters(newFilters);
+    },
+    [setFilters],
+  );
 
   const formatDate = (date: Date) => {
     return new Date(date).toLocaleDateString("pt-BR", {
@@ -614,7 +628,8 @@ export default function PendingScreen() {
             hospitals={hospitals}
             sectors={sectors}
             allowAllHospitals={allowAllHospitals}
-            initialValues={defaults}
+            persistenceInstitutionId={activeInstitutionId}
+            value={filters}
             onChange={handleFiltersChange}
             counts={counts}
           />
@@ -778,81 +793,81 @@ export default function PendingScreen() {
                     </View>
                   </View>
 
-                    <View className="flex-row gap-3">
-                      <TouchableOpacity
-                        onPress={() =>
-                          handleApprove(
-                            pending.assignmentId,
-                            pending.professionalName,
-                          )
-                        }
-                        disabled={
+                  <View className="flex-row gap-3">
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleApprove(
+                          pending.assignmentId,
+                          pending.professionalName,
+                        )
+                      }
+                      disabled={
+                        approveAssignment.isPending ||
+                        rejectAssignment.isPending
+                      }
+                      activeOpacity={0.8}
+                      style={{
+                        flex: 1,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: theme.space[2],
+                        borderRadius: theme.radius.md,
+                        backgroundColor: theme.colors.success,
+                        paddingVertical: theme.space[3],
+                        opacity:
                           approveAssignment.isPending ||
                           rejectAssignment.isPending
-                        }
-                        activeOpacity={0.8}
-                        style={{
-                          flex: 1,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: theme.space[2],
-                          borderRadius: theme.radius.md,
-                          backgroundColor: theme.colors.success,
-                          paddingVertical: theme.space[3],
-                          opacity:
-                            approveAssignment.isPending ||
-                            rejectAssignment.isPending
-                              ? 0.6
-                              : 1,
-                        }}
+                            ? 0.6
+                            : 1,
+                      }}
+                    >
+                      <Check size={20} color={theme.colors.surface} />
+                      <Text
+                        className="text-base font-semibold"
+                        style={{ color: theme.colors.surface }}
                       >
-                        <Check size={20} color={theme.colors.surface} />
-                        <Text
-                          className="text-base font-semibold"
-                          style={{ color: theme.colors.surface }}
-                        >
-                          Aprovar
-                        </Text>
-                      </TouchableOpacity>
+                        Aprovar
+                      </Text>
+                    </TouchableOpacity>
 
-                      <TouchableOpacity
-                        onPress={() =>
-                          handleReject(
-                            pending.assignmentId,
-                            pending.professionalName,
-                          )
-                        }
-                        disabled={
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleReject(
+                          pending.assignmentId,
+                          pending.professionalName,
+                        )
+                      }
+                      disabled={
+                        approveAssignment.isPending ||
+                        rejectAssignment.isPending
+                      }
+                      activeOpacity={0.8}
+                      style={{
+                        flex: 1,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: theme.space[2],
+                        borderRadius: theme.radius.md,
+                        backgroundColor: theme.colors.danger,
+                        paddingVertical: theme.space[3],
+                        opacity:
                           approveAssignment.isPending ||
                           rejectAssignment.isPending
-                        }
-                        activeOpacity={0.8}
-                        style={{
-                          flex: 1,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: theme.space[2],
-                          borderRadius: theme.radius.md,
-                          backgroundColor: theme.colors.danger,
-                          paddingVertical: theme.space[3],
-                          opacity:
-                            approveAssignment.isPending ||
-                            rejectAssignment.isPending
-                              ? 0.6
-                              : 1,
-                        }}
+                            ? 0.6
+                            : 1,
+                      }}
+                    >
+                      <X size={20} color={theme.colors.surface} />
+                      <Text
+                        className="text-base font-semibold"
+                        style={{ color: theme.colors.surface }}
                       >
-                        <X size={20} color={theme.colors.surface} />
-                        <Text
-                          className="text-base font-semibold"
-                          style={{ color: theme.colors.surface }}
-                        >
-                          Rejeitar
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
+                        Rejeitar
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               );
             })}

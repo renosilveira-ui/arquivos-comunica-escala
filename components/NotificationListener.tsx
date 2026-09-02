@@ -25,6 +25,10 @@ import {
   notificationQueryRefreshTargets,
   type NotificationQueryRefreshTarget,
 } from "@/lib/notification-query-refresh";
+import {
+  vacancyPushIntentNotificationFence,
+  vacancyPushRouteParams,
+} from "@/lib/vacancy-push-route";
 
 type NotificationData = Readonly<Record<string, unknown>>;
 
@@ -82,7 +86,7 @@ export type NotificationRoutingDependencies = Readonly<{
   navigateToConfirmation: (confirmationToken: string) => void;
   navigateToAgenda: () => void;
   navigateToTrocas?: () => void;
-  navigateToVacancies?: () => void;
+  navigateToVacancies?: (shiftInstanceId: number) => void;
   navigateToMyOffers?: () => void;
   navigateToScheduleInvites?: () => void;
   navigateToShiftDetails?: (shiftInstanceId: number) => void;
@@ -348,6 +352,10 @@ export async function routeNotificationData(
     }
 
     case "vacancy_available": {
+      const shiftInstanceId = parseNotificationShiftInstanceId(
+        data.shiftInstanceId,
+      );
+      if (shiftInstanceId === null) return false;
       const alignedSnapshot = await alignNotificationTenant(
         data,
         dependencies,
@@ -359,11 +367,9 @@ export async function routeNotificationData(
       ) {
         return false;
       }
-      if (dependencies.navigateToVacancies) {
-        dependencies.navigateToVacancies();
-        return true;
-      }
-      return false;
+      if (!dependencies.navigateToVacancies) return false;
+      dependencies.navigateToVacancies(shiftInstanceId);
+      return true;
     }
 
     case "swap_taken": {
@@ -469,9 +475,19 @@ export function NotificationListener() {
     isAuthenticated,
     isSessionAuthorizationCurrent,
     pushRegistrationRevision,
+    sessionValidation,
   } = useAuth();
   const authorizedUser = isAuthenticated ? user : null;
   const authorizedUserId = authorizedUser?.id ?? null;
+  const vacancyPushSessionGeneration =
+    authorizedUserId !== null &&
+    sessionValidation.status === "VERIFIED" &&
+    sessionValidation.userId === authorizedUserId &&
+    sessionValidation.isCurrent() &&
+    Number.isSafeInteger(sessionValidation.ticket.generation) &&
+    sessionValidation.ticket.generation >= 0
+      ? sessionValidation.ticket.generation
+      : null;
   const { setActiveInstitutionId } = useTenantState();
   const utils = trpc.useUtils();
   const routingCoordinatorRef = useRef<NotificationRoutingCoordinator | null>(
@@ -520,7 +536,11 @@ export function NotificationListener() {
     // invalidada por BEGIN antes de este efeito passivo executar. Sem as duas
     // condições, um efeito atrasado de A poderia republicar o sujeito após o
     // clear síncrono da transição.
-    if (authorizedUserId === null || !isSessionAuthorizationCurrent()) {
+    if (
+      authorizedUserId === null ||
+      vacancyPushSessionGeneration === null ||
+      !isSessionAuthorizationCurrent()
+    ) {
       responseConsumerRef.current = () => undefined;
       return () => routingScope.invalidate();
     }
@@ -548,7 +568,24 @@ export function NotificationListener() {
       },
       navigateToAgenda: () => router.push("/(tabs)/agenda" as any),
       navigateToTrocas: () => router.push("/(tabs)/trocas" as any),
-      navigateToVacancies: () => router.push("/(tabs)/vacancies" as any),
+      navigateToVacancies: (shiftInstanceId) => {
+        // Publica a intenção antes de agendar o rerender da rota. A aba de
+        // Vagas usa essa geração para impedir que um efeito antigo limpe este
+        // push novo no mesmo tenant.
+        if (
+          vacancyPushIntentNotificationFence.publish(
+            authorizedUserId,
+            vacancyPushSessionGeneration,
+            shiftInstanceId,
+          ) === null
+        ) {
+          return;
+        }
+        router.push({
+          pathname: "/(tabs)/vacancies" as any,
+          params: vacancyPushRouteParams(shiftInstanceId),
+        });
+      },
       navigateToMyOffers: () => router.push("/my-offers" as any),
       navigateToScheduleInvites: () => router.push("/schedule-invites" as any),
       navigateToShiftDetails: (shiftInstanceId) =>
@@ -709,6 +746,15 @@ export function NotificationListener() {
     }
 
     return () => {
+      // Não há clear cego no cleanup: um rerender do mesmo ticket pode ocorrer
+      // depois de uma notificação nova. Só uma transição que já invalidou este
+      // ticket remove a publicação pertencente a ele; ticket novo sobrevive.
+      if (!isSessionAuthorizationCurrent()) {
+        vacancyPushIntentNotificationFence.clearIfSessionCurrent(
+          authorizedUserId,
+          vacancyPushSessionGeneration,
+        );
+      }
       // O cleanup A não pode apagar B: release compara a identidade do lease,
       // não somente o userId, antes de limpar o estado process-wide.
       releaseVerifiedNotificationForegroundSubject(foregroundSubject);
@@ -733,6 +779,7 @@ export function NotificationListener() {
     utils,
     authorizedUserId,
     isSessionAuthorizationCurrent,
+    vacancyPushSessionGeneration,
   ]);
 
   return authorizedUserId !== null ? (
