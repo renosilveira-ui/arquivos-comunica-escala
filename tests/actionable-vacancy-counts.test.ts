@@ -786,10 +786,15 @@ describe("Vagas acionáveis — lista e contadores", () => {
     }
   });
 
-  it("fecha a topologia ambígua em vez de anunciar vaga que a escrita recusará", async () => {
-    const [duplicate] = await db
-      .insert(scheduleContexts)
-      .values({
+  it("impede topologia ambígua na origem: segunda escala ativa no setor é rejeitada", async () => {
+    // A topologia ambígua (duas escalas ativas no mesmo setor) que fazia a
+    // leitura anunciar vaga que a escrita recusaria agora é impossível na
+    // origem: o UNIQUE uniq_schedule_context_active_sector falha fechado. O
+    // guard de leitura resolveActiveSectorContextId permanece como defesa em
+    // profundidade e é coberto por tests/sector-scale-topology.test.ts.
+    let rejected = false;
+    try {
+      await db.insert(scheduleContexts).values({
         institutionId: institutionAId,
         hospitalId: hospitalAId,
         sectorId: sectorAId,
@@ -797,27 +802,14 @@ describe("Vagas acionáveis — lista e contadores", () => {
         medicalSpecialtyId: null,
         operationalProfileCode: null,
         active: true,
-      })
-      .$returningId();
-
-    try {
-      const caller = callerFor(doctorUserId, "doctor");
-      const [rows, counts] = await Promise.all([
-        caller.shiftInstances.listVacancies({ date }),
-        caller.filters.actionableVacancyCounts({ date }),
-      ]);
-
-      expect(rows).toEqual([]);
-      expect(counts).toEqual({
-        total: 0,
-        vacanciesByHospital: {},
-        vacanciesBySector: {},
       });
-    } finally {
-      await db
-        .delete(scheduleContexts)
-        .where(eq(scheduleContexts.id, duplicate.id));
+    } catch (error) {
+      const cause = (error as { cause?: { code?: string } }).cause;
+      rejected =
+        (error as { code?: string }).code === "ER_DUP_ENTRY" ||
+        cause?.code === "ER_DUP_ENTRY";
     }
+    expect(rejected).toBe(true);
   });
 
   it("fecha todas as vagas quando a alocação ativa do profissional tem topologia contaminada", async () => {
