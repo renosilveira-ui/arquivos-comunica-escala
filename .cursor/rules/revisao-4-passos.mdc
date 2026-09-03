@@ -1,0 +1,30 @@
+---
+description: Revisão obrigatória em 4 passos antes de qualquer commit/PR no Escala+
+alwaysApply: true
+---
+
+# Revisão em 4 passos antes de commitar
+
+Antes de **qualquer** `git commit`/PR, além dos gates (`pnpm typecheck`,
+`pnpm lint`, testes em banco local dedicado), execute nesta ordem e registre
+cada achado:
+
+1. **Revisão 1 — procurar erro na tarefa realizada. (obrigatório)**
+2. **Revisão 2 — procurar outro erro na tarefa realizada (encontrar o erro é opcional).**
+3. **Revisão 3 — procurar 1 melhoria na tarefa realizada (melhoria é obrigatória).**
+4. **Revisão 4 — procurar 1 melhoria na tarefa realizada (melhoria é obrigatória).**
+
+Regras:
+
+- A correção precisa atacar a **causa raiz** de forma **sistêmica** — todas as
+  instituições e setores. Se o relato parece isolado, confirme antes se é
+  **erro de classe**. Nunca remende um único caso.
+- Revisões 1 e 2 são obrigatórias de executar; encontrar erro é obrigatório na
+  1 (busque no maior risco: fail-closed, multi-tenant, leitura×escrita,
+  contrato de teste) e opcional na 2. Erro achado → corrigir ou justificar
+  fora de escopo antes do commit.
+- Revisões 3 e 4 exigem **1 melhoria concreta entregue** cada.
+- Só commite após o bloco de veredito `APROVADO` (ver skill `revisao-4-passos`).
+
+Detalhe completo do procedimento: skill `revisao-4-passos`. Gates de máquina e
+convenções do produto: skill `revisao-pre-commit`.

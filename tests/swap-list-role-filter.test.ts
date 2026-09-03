@@ -245,4 +245,76 @@ describe("swaps.list — role filter + awaitingMyApproval", () => {
     expect(acceptedB?.status).toBe("ACCEPTED");
     expect(acceptedB?.canCancel).toBe(true);
   });
+
+  it("oferta terminal com alocação de origem inativa não derruba a lista", async () => {
+    // Classe de defeito (todas as instituições/setores): uma oferta histórica
+    // cuja alocação de origem já foi desativada — fluxo normal depois de uma
+    // transferência concluída — fazia a leitura relançar CONFLICT ("A alocação
+    // canônica já não está ativa") e derrubar TODA a lista de ofertas do
+    // usuário. Estados terminais são história: não exigem origem ativa. O teste
+    // cobre a classe inteira de estados terminais, não só um deles.
+    const TERMINAL_STATUSES = [
+      "CANCELLED",
+      "EXPIRED",
+      "REJECTED_BY_PEER",
+      "REJECTED_BY_MANAGER",
+    ] as const;
+
+    const future = new Date();
+    future.setDate(future.getDate() + 120);
+    future.setHours(8, 0, 0, 0);
+    const futureEnd = new Date(future);
+    futureEnd.setHours(14, 0, 0, 0);
+
+    const [resShift] = await db!.insert(shiftInstances).values({
+      institutionId,
+      hospitalId,
+      sectorId,
+      scheduleContextId,
+      label: `${FIXTURE_PREFIX}shift-stale`,
+      startAt: future,
+      endAt: futureEnd,
+      status: "VAGO",
+    });
+    const staleShiftId = (resShift as any).insertId as number;
+
+    const [resAssign] = await db!.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: staleShiftId,
+      institutionId,
+      hospitalId,
+      sectorId,
+      professionalId: proAId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: false, // origem já não é titular (histórico)
+    });
+    const staleAssignmentId = (resAssign as any).insertId as number;
+
+    const terminalIds: number[] = [];
+    for (const status of TERMINAL_STATUSES) {
+      const [res] = await db!.insert(swapRequests).values({
+        type: "CESSAO",
+        status,
+        fromProfessionalId: proAId,
+        fromUserId: userAId,
+        fromShiftInstanceId: staleShiftId,
+        fromAssignmentId: staleAssignmentId,
+        institutionId,
+        hospitalId,
+        sectorId,
+        reason: `${FIXTURE_PREFIX}stale-${status}-from-A`,
+      });
+      terminalIds.push((res as any).insertId as number);
+    }
+
+    const caller = callerAs(userAId);
+    // Não deve lançar; deve retornar a lista inteira, inclusive a oferta viva
+    // e todas as ofertas terminais com origem inativa.
+    const rows = await caller.list({ role: "OFFERER" });
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain(pendingFromAId);
+    for (const terminalId of terminalIds) {
+      expect(ids).toContain(terminalId);
+    }
+  });
 });
