@@ -962,24 +962,6 @@ export const shiftInstances = mysqlTable(
       table.sectorId,
       table.id,
     ),
-    // Barreira física contra turno duplicado: a consolidação de contextos
-    // chegou a materializar duas instâncias idênticas (uma vaga, outra
-    // ocupada) no mesmo horário, aparecendo como "dois médicos no plantão".
-    // Uma escala (schedule_context) não pode ter duas instâncias com o mesmo
-    // rótulo e janela. NULL em schedule_context_id (legado não classificado)
-    // é distinto no índice e permanece permitido.
-    // Migração: drizzle/migrations/manual/2026-09-03-shift-instance-natural-slot.sql
-    uniqShiftInstanceNaturalSlot: unique(
-      "uniq_shift_instance_natural_slot",
-    ).on(
-      table.institutionId,
-      table.hospitalId,
-      table.sectorId,
-      table.scheduleContextId,
-      table.startAt,
-      table.endAt,
-      table.label,
-    ),
     idxShiftInstanceScheduleContext: index(
       "idx_shift_instances_schedule_context",
     ).on(table.institutionId, table.scheduleContextId),
