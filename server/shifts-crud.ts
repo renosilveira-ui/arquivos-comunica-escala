@@ -3332,6 +3332,14 @@ export const shiftsRouter = router({
       // a prontidão e recusamos publicar um mês com SECURITY_BLOCKER (contexto
       // de escala nulo, inativo ou ambíguo). Warnings operacionais seguem
       // exigindo ciência apenas na via do recibo.
+      //
+      // Trade-off consciente: esta checagem sem-recibo ocorre fora da transação
+      // de publishMonth (a via com recibo é atômica via fence). A janela
+      // TOCTOU só é relevante se um gestor autorizado introduzir um blocker
+      // estrutural concorrentemente durante a própria publicação — muito mais
+      // estreito que o bypass anterior (nenhuma checagem). Endurecer a via
+      // sem-recibo com uma checagem in-transaction é defense-in-depth para um
+      // incremento futuro, não remediação de brecha explorável.
       if (!input.readinessAcknowledgement) {
         const db = await getDb();
         if (!db) {
