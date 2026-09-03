@@ -46,6 +46,7 @@ import {
   requireCanonicalShiftOccupant,
   requireCurrentListAvailableActor,
   requireProfessionalCanReceiveShift,
+  StaleCanonicalAssignmentError,
   topologyDenied,
   type CanonicalAssignmentTuple,
   type CanonicalProfessional,
@@ -105,7 +106,12 @@ function isMysqlDuplicateKey(error: unknown): boolean {
 export function isExpectedSwapVisibilityDenial(error: unknown): boolean {
   return (
     error instanceof TRPCError &&
-    (error.code === "FORBIDDEN" || error.code === "NOT_FOUND")
+    (error.code === "FORBIDDEN" ||
+      error.code === "NOT_FOUND" ||
+      // Oferta histórica cuja alocação de origem já não está ativa: é sinal
+      // de visibilidade (leitura), nunca deve derrubar a lista inteira. A
+      // escrita não usa este classificador e segue com CONFLICT fail-closed.
+      error.cause instanceof StaleCanonicalAssignmentError)
   );
 }
 
@@ -315,12 +321,23 @@ async function requireAcceptedSwapTopology(
   return { source, recipient, toTuple };
 }
 
+// Estados "vivos" de uma oferta: só nesses a alocação de origem precisa
+// continuar ativa. APPROVED já migrou a titularidade; CANCELLED / EXPIRED /
+// REJECTED_BY_PEER / REJECTED_BY_MANAGER são históricos e naturalmente têm a
+// alocação de origem inativa — exigir atividade aqui derrubava a leitura de
+// toda a lista de ofertas do usuário (bug de classe, todas as instituições).
+const LIVE_SWAP_STATUSES: readonly SwapRow["status"][] = ["PENDING", "ACCEPTED"];
+
+function isLiveSwapStatus(status: SwapRow["status"]): boolean {
+  return LIVE_SWAP_STATUSES.includes(status);
+}
+
 async function requireSwapTopologyForRead(
   db: any,
   swap: SwapRow,
   lockForUpdate = false,
 ): Promise<void> {
-  const requireActive = swap.status !== "APPROVED";
+  const requireActive = isLiveSwapStatus(swap.status);
   const source = await requireCanonicalSourceTuple(db, swap, {
     requireActive,
     lockForUpdate,
@@ -497,6 +514,23 @@ async function filterReadableSwaps(
       readable.push({ swap, view });
     } catch (error) {
       if (!isExpectedSwapVisibilityDenial(error)) throw error;
+      // Omissões de rotina (FORBIDDEN/NOT_FOUND de terceiros) são esperadas e
+      // silenciosas. Já a omissão por alocação de origem inativa é a classe
+      // que mascarava "não vejo minha oferta": registra-se (sem PII) para
+      // diagnóstico, mantendo a leitura resiliente.
+      if (
+        error instanceof TRPCError &&
+        error.cause instanceof StaleCanonicalAssignmentError
+      ) {
+        console.warn(
+          "[swaps.read] oferta omitida por alocação de origem inativa",
+          JSON.stringify({
+            swapId: swap.id,
+            status: swap.status,
+            institutionId: swap.institutionId,
+          }),
+        );
+      }
     }
   }
   return readable;

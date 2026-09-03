@@ -28,6 +28,23 @@ import {
   assertProfessionalEligibleForScheduleContext,
 } from "./schedule-contexts";
 
+/**
+ * Marcador para "a alocação canônica da tupla existe, mas já não está ativa".
+ *
+ * Nos caminhos de ESCRITA (aceitar/aprovar/ofertar) isso é um CONFLICT
+ * legítimo e fail-closed. Nos caminhos de LEITURA (listar/detalhar) é apenas
+ * um sinal de que a oferta ficou histórica — a alocação de origem seguiu
+ * adiante — e não deve derrubar a leitura das demais ofertas do usuário.
+ * O leitor identifica este marcador via `error.cause` sem depender da
+ * mensagem, mantendo o código/tradução do CONFLICT intactos para a escrita.
+ */
+export class StaleCanonicalAssignmentError extends Error {
+  constructor() {
+    super("stale canonical assignment");
+    this.name = "StaleCanonicalAssignmentError";
+  }
+}
+
 export type SwapType = (typeof swapRequests.$inferSelect)["type"];
 export type SwapRow = typeof swapRequests.$inferSelect;
 export type ShiftRow = typeof shiftInstances.$inferSelect;
@@ -606,6 +623,7 @@ export async function requireCanonicalAssignmentTuple(
         throw new TRPCError({
           code: "CONFLICT",
           message: "A alocação canônica já não está ativa",
+          cause: new StaleCanonicalAssignmentError(),
         });
       }
     }

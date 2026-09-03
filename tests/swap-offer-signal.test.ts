@@ -28,6 +28,7 @@ import {
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../server/db";
 import { isExpectedSwapVisibilityDenial, swapRouter } from "../server/swap-router";
+import { StaleCanonicalAssignmentError } from "../server/swap-domain";
 import { yearMonthBrt } from "../server/local-time";
 import { SWAP_OFFER_PUSH_TITLE } from "../lib/swap-offer-badge-refresh";
 
@@ -807,6 +808,18 @@ describe("sinal de oferta de plantão", () => {
         }),
       ),
     ).toBe(false);
+    // Oferta histórica com alocação de origem inativa é sinal de visibilidade
+    // (leitura tolera e não derruba a lista); a escrita continua com CONFLICT
+    // fail-closed porque não consulta este classificador.
+    expect(
+      isExpectedSwapVisibilityDenial(
+        new TRPCError({
+          code: "CONFLICT",
+          message: "A alocação canônica já não está ativa",
+          cause: new StaleCanonicalAssignmentError(),
+        }),
+      ),
+    ).toBe(true);
     expect(isExpectedSwapVisibilityDenial(new Error("boom"))).toBe(false);
   });
 
