@@ -685,6 +685,14 @@ export const scheduleContexts = mysqlTable(
       .notNull()
       .default("PINNED_QUALIFICATION"),
     active: boolean("active").notNull().default(true),
+    /**
+     * Slot físico da escala ativa. NULL preserva múltiplos contextos
+     * históricos inativos; 1 torna impossível haver dois ativos no setor.
+     */
+    activeSectorSlot: tinyint("active_sector_slot").generatedAlwaysAs(
+      (): ReturnType<typeof sql> => sql`IF(\`active\` = 1, 1, NULL)`,
+      { mode: "stored" },
+    ),
   },
   (table) => ({
     uniqScheduleContextSpecialty: unique("uniq_schedule_context_specialty").on(
@@ -717,6 +725,14 @@ export const scheduleContexts = mysqlTable(
     uniqScheduleContextTopologyId: unique(
       "uniq_schedule_context_topology_id",
     ).on(table.institutionId, table.hospitalId, table.sectorId, table.id),
+    uniqScheduleContextActiveSector: unique(
+      "uniq_schedule_context_active_sector",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.activeSectorSlot,
+    ),
     fkScheduleContextHospitalTopology: foreignKey({
       columns: [table.institutionId, table.hospitalId],
       foreignColumns: [hospitals.institutionId, hospitals.id],

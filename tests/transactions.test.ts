@@ -644,17 +644,51 @@ describe("integridade transacional", () => {
     await expect(callerAlice.approveByOwner({ swapRequestId })).rejects.toBeTruthy();
   });
 
+  it("banco rejeita segunda escala ativa e preserva histórico inativo", async () => {
+    await expect(
+      db!.insert(scheduleContexts).values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        admissionPolicy: "ALL_CFM_SPECIALTIES",
+        medicalSpecialtyId: null,
+        operationalProfileCode: null,
+        active: true,
+      }),
+    ).rejects.toThrow();
+
+    const [historical] = await db!
+      .insert(scheduleContexts)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        admissionPolicy: "ALL_CFM_SPECIALTIES",
+        medicalSpecialtyId: null,
+        operationalProfileCode: null,
+        active: false,
+      })
+      .$returningId();
+    expect(historical.id).toBeGreaterThan(0);
+  });
+
   it("não permite que um recibo confirme blocker estrutural", async () => {
     const yearMonth = "2035-01";
-    await db!.insert(scheduleContexts).values({
-      institutionId,
-      hospitalId,
-      sectorId,
-      admissionPolicy: "ALL_CFM_SPECIALTIES",
-      medicalSpecialtyId: null,
-      operationalProfileCode: null,
-      active: true,
-    });
+    const [unclassifiedShift] = await db!
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        scheduleContextId: null,
+        label: "Sem escala operacional",
+        startAt: at("2035-01-05", "07:00:00"),
+        endAt: at("2035-01-05", "13:00:00"),
+        status: "VAGO",
+        createdBy: manager.userId,
+      })
+      .$returningId();
+    extraShiftIds.push(unclassifiedShift.id);
     const report = await getCorporateReadinessReport(db!, {
       institutionId,
       hospitalId,
