@@ -27,6 +27,11 @@ export function yearMonthBrt(date: Date): string {
   return dayKeyBrt(date).slice(0, 7);
 }
 
+/** Hora (0–23) do instante no relógio do hospital. */
+export function hourBrt(date: Date): number {
+  return asWallClock(date).getUTCHours();
+}
+
 /**
  * "YYYY-MM" já codificado em uma chave civil "YYYY-MM-DD".
  *
