@@ -36,8 +36,12 @@ type Phase =
   | "done"
   | "error";
 
+/** Tipos de oferta que este build sabe materializar (ver voice.interpret). */
+const SUPPORTED_OFFER_TYPES = ["SWAP", "CESSAO"] as const;
+
 interface ResolvedAction {
-  type: string;
+  /** Autoridade do servidor: "trocar" resolve SWAP, "passar" resolve CESSAO. */
+  type: (typeof SUPPORTED_OFFER_TYPES)[number];
   fromShiftInstanceId: number;
   fromAssignmentId: number;
   toProfessionalId: number;
@@ -45,6 +49,8 @@ interface ResolvedAction {
   shiftLabel: string;
   dateStr: string;
   timeRange: string;
+  /** Contrapartida da troca — o domínio exige em SWAP e proíbe em CESSAO. */
+  toShiftInstanceId?: number;
 }
 
 export function VoiceCommandButton({
@@ -130,7 +136,11 @@ export function VoiceCommandButton({
   async function runInterpret(text: string, targetProfessionalId?: number) {
     setPhase("interpreting");
     try {
-      const res = await interpret.mutateAsync({ text, targetProfessionalId });
+      const res = await interpret.mutateAsync({
+        text,
+        targetProfessionalId,
+        supportedOfferTypes: [...SUPPORTED_OFFER_TYPES],
+      });
       if (res.ok) {
         setAction(res.action);
         setMessage(res.confirmationText);
@@ -156,9 +166,10 @@ export function VoiceCommandButton({
     setPhase("executing");
     try {
       await offer.mutateAsync({
-        type: "CESSAO",
+        type: action.type,
         fromShiftInstanceId: action.fromShiftInstanceId,
         fromAssignmentId: action.fromAssignmentId,
+        toShiftInstanceId: action.toShiftInstanceId,
         toProfessionalId: action.toProfessionalId,
         reason: "Solicitado por comando de voz",
       });
@@ -286,7 +297,7 @@ export function VoiceCommandButton({
                   <Mic size={32} color={theme.colors.danger} />
                 </View>
                 <Text style={{ fontSize: 15, color: theme.colors.textSecondary, textAlign: "center" }}>
-                  {transcript || 'Fale agora — ex.: "trocar meu plantão de hoje à noite com o João" ou "passar o plantão de sexta para a Maria"'}
+                  {transcript || 'Fale agora — ex.: "trocar meu plantão de hoje à noite com o plantão do João de sexta" ou "passar o plantão de sexta para a Maria"'}
                 </Text>
                 <TouchableOpacity
                   onPress={stopListening}
