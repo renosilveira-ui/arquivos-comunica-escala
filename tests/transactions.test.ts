@@ -720,4 +720,93 @@ describe("integridade transacional", () => {
       );
     expect(rosters).toHaveLength(0);
   });
+
+  it("omitir o recibo não contorna o blocker estrutural na publicação", async () => {
+    // Bypass de prontidão: um cliente antigo/manipulado que não envia o
+    // readinessAcknowledgement publicava sem qualquer checagem. Agora o
+    // SECURITY_BLOCKER é enforçado no servidor mesmo sem recibo.
+    const yearMonth = "2035-02";
+    const [unclassifiedShift] = await db!
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        scheduleContextId: null,
+        label: "Sem escala operacional (bypass)",
+        startAt: at("2035-02-05", "07:00:00"),
+        endAt: at("2035-02-05", "13:00:00"),
+        status: "VAGO",
+        createdBy: manager.userId,
+      })
+      .$returningId();
+    extraShiftIds.push(unclassifiedShift.id);
+    const report = await getCorporateReadinessReport(db!, {
+      institutionId,
+      hospitalId,
+      yearMonth,
+    });
+    expect(report.summary.SECURITY_BLOCKER).toBeGreaterThan(0);
+
+    // Publicação SEM readinessAcknowledgement — o caminho antes vulnerável.
+    await expect(
+      appRouter.createCaller(ctxFor(manager, "manager")).shifts.publish({
+        institutionId,
+        hospitalId,
+        yearMonth,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const rosters = await db!
+      .select({ id: monthlyRosters.id, status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      );
+    // Nada publicado: a transação recuou (upsert de DRAFT incluído).
+    expect(rosters.every((r) => r.status !== "PUBLISHED")).toBe(true);
+  });
+
+  it("mês sem inconsistência estrutural publica sem recibo (não há over-block)", async () => {
+    // Guarda contra over-block: a barreira só recusa SECURITY_BLOCKER. Um mês
+    // com contexto de escala válido publica sem recibo (warnings operacionais
+    // não bloqueiam a via sem recibo — seguem exigindo ciência só com recibo).
+    const yearMonth = "2035-03";
+    const [cleanShift] = await db!
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        scheduleContextId,
+        label: "Mês estruturalmente limpo",
+        startAt: at("2035-03-05", "07:00:00"),
+        endAt: at("2035-03-05", "13:00:00"),
+        status: "VAGO",
+        createdBy: manager.userId,
+      })
+      .$returningId();
+    extraShiftIds.push(cleanShift.id);
+
+    const result = await appRouter
+      .createCaller(ctxFor(manager, "manager"))
+      .shifts.publish({ institutionId, hospitalId, yearMonth });
+    expect(result).toEqual({ ok: true });
+
+    const [roster] = await db!
+      .select({ status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonth),
+        ),
+      );
+    expect(roster?.status).toBe("PUBLISHED");
+  });
 });
