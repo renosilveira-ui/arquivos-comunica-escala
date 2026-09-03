@@ -5,6 +5,7 @@ const green = {
   futureUnclassifiedShifts: 0,
   invalidShiftTopology: 0,
   invalidScheduleContextTopology: 0,
+  duplicateActiveSectorContexts: 0,
   doubleQualifiedProfessionals: 0,
   unclassifiedLegacyProfessionals: 0,
   ambiguousBroadAccesses: 0,

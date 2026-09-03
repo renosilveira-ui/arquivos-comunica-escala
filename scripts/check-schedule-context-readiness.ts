@@ -13,6 +13,7 @@ export type ScheduleContextReadinessCounts = Readonly<{
   futureUnclassifiedShifts: number;
   invalidShiftTopology: number;
   invalidScheduleContextTopology: number;
+  duplicateActiveSectorContexts: number;
   doubleQualifiedProfessionals: number;
   unclassifiedLegacyProfessionals: number;
   ambiguousBroadAccesses: number;
@@ -101,6 +102,17 @@ export async function readScheduleContextReadiness(): Promise<ScheduleContextRea
             AND sector.institution_id = context.institution_id
             AND sector.hospital_id = context.hospital_id
           WHERE hospital.id IS NULL OR sector.id IS NULL`,
+      ),
+      duplicateActiveSectorContexts: await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+           FROM (
+             SELECT context.institution_id, context.hospital_id, context.sector_id
+               FROM schedule_contexts AS context
+              WHERE context.active = TRUE
+              GROUP BY context.institution_id, context.hospital_id, context.sector_id
+             HAVING COUNT(*) > 1
+           ) AS duplicate_active_sector_contexts`,
       ),
       doubleQualifiedProfessionals: await scalar(
         connection,

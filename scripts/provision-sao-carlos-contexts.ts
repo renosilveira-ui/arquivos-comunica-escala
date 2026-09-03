@@ -65,6 +65,40 @@ type ContextRow = RowDataPacket & {
 
 type CountRow = RowDataPacket & { count: number };
 
+type ContextQualificationIdentity = Readonly<{
+  medicalSpecialtyId: number | null;
+  operationalProfileCode: string | null;
+}>;
+
+export function buildContextQualificationPredicate(
+  input: ContextQualificationIdentity,
+): { sql: string; params: readonly (number | string)[] } {
+  if (
+    input.medicalSpecialtyId !== null &&
+    input.operationalProfileCode !== null
+  ) {
+    throw new Error(
+      "Contexto não pode combinar especialidade e perfil operacional",
+    );
+  }
+  if (input.medicalSpecialtyId !== null) {
+    return {
+      sql: "medical_specialty_id = ? AND operational_profile_code IS NULL",
+      params: [input.medicalSpecialtyId],
+    };
+  }
+  if (input.operationalProfileCode !== null) {
+    return {
+      sql: "medical_specialty_id IS NULL AND operational_profile_code = ?",
+      params: [input.operationalProfileCode],
+    };
+  }
+  return {
+    sql: "medical_specialty_id IS NULL AND operational_profile_code IS NULL",
+    params: [],
+  };
+}
+
 function requirePositiveInteger(name: string): number {
   const value = Number(process.env[name]);
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -211,6 +245,10 @@ async function ensureContext(
     input.qualification?.kind === "OPERATIONAL_PROFILE"
       ? input.qualification.code
       : null;
+  const qualificationPredicate = buildContextQualificationPredicate({
+    medicalSpecialtyId: specialtyId,
+    operationalProfileCode,
+  });
   const [rows] = await connection.execute<ContextRow[]>(
     `SELECT id, active
        FROM schedule_contexts
@@ -218,8 +256,7 @@ async function ensureContext(
         AND hospital_id = ?
         AND sector_id = ?
         AND admission_policy = ?
-        AND medical_specialty_id <=> ?
-        AND operational_profile_code <=> ?
+        AND ${qualificationPredicate.sql}
       ORDER BY id
       FOR UPDATE`,
     [
@@ -227,8 +264,7 @@ async function ensureContext(
       input.hospitalId,
       input.sectorId,
       input.admissionPolicy,
-      specialtyId,
-      operationalProfileCode,
+      ...qualificationPredicate.params,
     ],
   );
   if (rows.length > 1) throw new Error("Contexto de escala duplicado");
@@ -272,6 +308,10 @@ async function findContextId(
     operationalProfileCode: string | null;
   },
 ): Promise<number | null> {
+  const qualificationPredicate = buildContextQualificationPredicate({
+    medicalSpecialtyId: input.specialtyId,
+    operationalProfileCode: input.operationalProfileCode,
+  });
   const [rows] = await connection.execute<(RowDataPacket & { id: number })[]>(
     `SELECT id
        FROM schedule_contexts
@@ -279,8 +319,7 @@ async function findContextId(
         AND hospital_id = ?
         AND sector_id = ?
         AND admission_policy = ?
-        AND medical_specialty_id <=> ?
-        AND operational_profile_code <=> ?
+        AND ${qualificationPredicate.sql}
       ORDER BY id
       FOR SHARE`,
     [
@@ -288,8 +327,7 @@ async function findContextId(
       input.hospitalId,
       input.sectorId,
       input.admissionPolicy,
-      input.specialtyId,
-      input.operationalProfileCode,
+      ...qualificationPredicate.params,
     ],
   );
   if (rows.length > 1) {

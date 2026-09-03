@@ -5,7 +5,10 @@ import {
   SAO_CARLOS_RECOVERY_QUALIFICATIONS,
   flattenSaoCarlosPinnedContexts,
 } from "../lib/sao-carlos-schedule-blueprint";
-import { assertExactSaoCarlosSectorTopology } from "../scripts/provision-sao-carlos-contexts";
+import {
+  assertExactSaoCarlosSectorTopology,
+  buildContextQualificationPredicate,
+} from "../scripts/provision-sao-carlos-contexts";
 
 describe("blueprint multissetorial do Hospital São Carlos", () => {
   it("contém os cinco setores na ordem do piloto", () => {
@@ -125,5 +128,41 @@ describe("blueprint multissetorial do Hospital São Carlos", () => {
     expect(resolver).not.toContain("LIMIT 1");
     expect(integrity).toContain("contexts.length !== 1");
     expect(integrity).toContain("allowlist.length === 0");
+  });
+
+  it("consulta qualificações nulas com IS NULL para não perder a escala unificada", () => {
+    expect(
+      buildContextQualificationPredicate({
+        medicalSpecialtyId: null,
+        operationalProfileCode: null,
+      }),
+    ).toEqual({
+      sql: "medical_specialty_id IS NULL AND operational_profile_code IS NULL",
+      params: [],
+    });
+    expect(
+      buildContextQualificationPredicate({
+        medicalSpecialtyId: 16,
+        operationalProfileCode: null,
+      }),
+    ).toEqual({
+      sql: "medical_specialty_id = ? AND operational_profile_code IS NULL",
+      params: [16],
+    });
+    expect(
+      buildContextQualificationPredicate({
+        medicalSpecialtyId: null,
+        operationalProfileCode: "RESIDENTE_ANESTESIOLOGIA",
+      }),
+    ).toEqual({
+      sql: "medical_specialty_id IS NULL AND operational_profile_code = ?",
+      params: ["RESIDENTE_ANESTESIOLOGIA"],
+    });
+    expect(() =>
+      buildContextQualificationPredicate({
+        medicalSpecialtyId: 16,
+        operationalProfileCode: "RESIDENTE_ANESTESIOLOGIA",
+      }),
+    ).toThrow(/não pode combinar/);
   });
 });
