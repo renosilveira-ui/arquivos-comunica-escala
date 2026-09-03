@@ -212,7 +212,10 @@ export default function ProfileScreen() {
   // ── Estatísticas do mês atual ──────────────────────────────────────────
   const now = new Date();
   const monthStart = toDateKey(new Date(now.getFullYear(), now.getMonth(), 1));
-  const monthEnd = toDateKey(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+  // listByPeriod usa dias civis [start, end] inclusivos (-03:00 no servidor).
+  // Fim = último dia do mês (dia 0 do mês seguinte), não o 1º do mês seguinte,
+  // senão o mês seguinte vazaria nas estatísticas.
+  const monthEnd = toDateKey(new Date(now.getFullYear(), now.getMonth() + 1, 0));
   const monthName = MONTH_LABELS[now.getMonth()];
 
   const { data: professional } = trpc.professionals.getByUserId.useQuery(

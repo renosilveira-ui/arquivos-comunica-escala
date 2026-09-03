@@ -97,6 +97,29 @@ function buildShiftTimestamps(
   return [startAt, endAt];
 }
 
+const DATE_ONLY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Resolve um limite da janela de `listByPeriod` no relógio do hospital (-03:00).
+ *
+ * Chave date-only ("YYYY-MM-DD") é uma DATA CIVIL, não um instante: com
+ * `edge:"start"` vira o início daquele dia; com `edge:"end"` vira o início do
+ * dia SEGUINTE (limite superior exclusivo, de modo que o dia civil de `endDate`
+ * entre inteiro). Instante ISO completo (com hora) já carrega o fuso e é usado
+ * como está. Ponto único da regra: evita reintroduzir `new Date("YYYY-MM-DD")`,
+ * que no servidor UTC começa às 21h do dia anterior em Fortaleza (vazando o mês
+ * anterior e cortando as últimas horas do último dia).
+ */
+export function resolveListPeriodBound(
+  value: string,
+  edge: "start" | "end",
+): Date {
+  const key = value.trim();
+  if (!DATE_ONLY_KEY.test(key)) return new Date(key);
+  const window = dayWindowBrt(key);
+  return edge === "start" ? window.start : window.end;
+}
+
 // Modalidade estruturada (docs/product/escala-ux.md §5).
 // Schema reutilizado por shifts.create e shifts.update. Todos os
 // campos são opcionais nos endpoints (defaults vivem no DB), mas se
@@ -2486,7 +2509,9 @@ export const shiftsRouter = router({
 
   // ------------------------------------------------------------------
   // shifts.listByPeriod — any authenticated user
-  // Returns all shiftInstances whose startAt falls within [startDate, endDate].
+  // Retorna shiftInstances cujo startAt cai nos dias civis [startDate, endDate]
+  // (inclusivos) no relógio do hospital (-03:00). Chaves date-only são civis;
+  // instantes ISO completos são usados como estão.
   // ------------------------------------------------------------------
   listByPeriod: protectedProcedure
     .input(
@@ -2514,8 +2539,11 @@ export const shiftsRouter = router({
         });
       }
 
-      const start = new Date(input.startDate);
-      const end = new Date(input.endDate);
+      // Janela em dias civis do hospital (-03:00). Ver resolveListPeriodBound:
+      // chaves date-only entram como dias civis inclusivos; o limite superior é
+      // exclusivo (início do dia seguinte a endDate), daí o `lt` abaixo.
+      const start = resolveListPeriodBound(input.startDate, "start");
+      const end = resolveListPeriodBound(input.endDate, "end");
 
       const instanceRows = await db
         .select({
@@ -2552,7 +2580,7 @@ export const shiftsRouter = router({
           and(
             eq(shiftInstances.institutionId, ctx.institutionId),
             gte(shiftInstances.startAt, start),
-            lte(shiftInstances.startAt, end),
+            lt(shiftInstances.startAt, end),
             ...(input.scheduleContextId !== undefined
               ? [eq(shiftInstances.scheduleContextId, input.scheduleContextId)]
               : []),
