@@ -40,6 +40,7 @@ export default defineConfig({
       "tests/schedule-context-readiness.test.ts",
       "tests/sector-scale-topology.test.ts",
       "tests/single-active-schedule-context-migration.test.ts",
+      "tests/shift-instance-natural-slot-migration.test.ts",
       "tests/corporate-structural-normalizer.test.ts",
       "tests/admin-schedule-context-selection.test.ts",
       "tests/schedule-context-readers-source.test.ts",
