@@ -206,7 +206,9 @@ describe("shifts: create / get / update / listByPeriod", () => {
     await db
       .delete(auditTrail)
       .where(eq(auditTrail.institutionId, institutionId));
-    await db.delete(shiftTemplates).where(eq(shiftTemplates.id, templateId));
+    await db
+      .delete(shiftTemplates)
+      .where(eq(shiftTemplates.institutionId, institutionId));
     await db
       .delete(professionalAccess)
       .where(
@@ -523,6 +525,67 @@ describe("shifts: create / get / update / listByPeriod", () => {
       endDate: new Date(`${addDaysToKey(day, 1)}T00:00:00-03:00`).toISOString(),
     });
     expect(list.map((s: any) => s.id)).toContain(row.id);
+  });
+
+  it("listByPeriod com chaves date-only usa dias civis -03:00: inclui a última noite do mês e não vaza o mês anterior", async () => {
+    // Template tardio: 23:00 no relógio do hospital cruza para o dia UTC
+    // seguinte, expondo a virada. new Date("YYYY-MM-DD") (UTC) vazava o fim do
+    // mês anterior e cortava as últimas horas do último dia.
+    const [lateTemplate] = await db
+      .insert(shiftTemplates)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        name: `Madrugada ${stamp}`,
+        startTime: "23:00:00",
+        endTime: "07:00:00",
+      })
+      .$returningId();
+
+    // Mês fixo e futuro (independe do mês do runner e da guarda de edição).
+    const prevMonthLastDay = "2027-02-28"; // 23:00 -03 = 2027-03-01T02:00Z
+    const monthFirstDay = "2027-03-01"; // 23:00 -03 = 2027-03-02T02:00Z
+    const monthLastDay = "2027-03-31"; // 23:00 -03 = 2027-04-01T02:00Z
+
+    const prevLeak = await asManager().create({
+      date: prevMonthLastDay,
+      shiftTemplateId: lateTemplate.id,
+    });
+    const first = await asManager().create({
+      date: monthFirstDay,
+      shiftTemplateId: lateTemplate.id,
+    });
+    const last = await asManager().create({
+      date: monthLastDay,
+      shiftTemplateId: lateTemplate.id,
+    });
+
+    const rows = await asManager().listByPeriod({
+      startDate: monthFirstDay,
+      endDate: monthLastDay,
+    });
+    const ids = rows.map((s: any) => s.id);
+
+    // A última noite (23:00 do dia 31, que é 01/04 02:00Z) precisa aparecer.
+    expect(ids).toContain(last!.id);
+    // O primeiro dia aparece normalmente.
+    expect(ids).toContain(first!.id);
+    // A noite de 28/02 (01/03 02:00Z) NÃO pode vazar para março.
+    expect(ids).not.toContain(prevLeak!.id);
+
+    // Instantes ISO completos usam limite superior meio-aberto (lt): um fim no
+    // exato startAt de `last` o EXCLUI; um instante logo depois o inclui.
+    const exclusive = await asManager().listByPeriod({
+      startDate: monthFirstDay,
+      endDate: last!.startAt.toISOString(),
+    });
+    expect(exclusive.map((s: any) => s.id)).not.toContain(last!.id);
+    const inclusive = await asManager().listByPeriod({
+      startDate: monthFirstDay,
+      endDate: new Date(last!.startAt.getTime() + 1).toISOString(),
+    });
+    expect(inclusive.map((s: any) => s.id)).toContain(last!.id);
   });
 
   it("USER comum não cria nem edita turno", async () => {
