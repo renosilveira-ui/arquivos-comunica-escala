@@ -43,6 +43,7 @@ describe("schema de contextos de escala", () => {
     expect(scheduleContexts.operationalProfileCode.notNull).toBe(false);
     expect(scheduleContexts.active.notNull).toBe(true);
     expect(scheduleContexts.active.hasDefault).toBe(true);
+    expect(scheduleContexts.activeSectorSlot.generated).toBeDefined();
   });
 
   it("materializa CHECK, unicidade lógica e FKs no schema Drizzle", () => {
@@ -78,6 +79,12 @@ describe("schema de contextos de escala", () => {
         "hospital_id",
         "sector_id",
         "id",
+      ],
+      uniq_schedule_context_active_sector: [
+        "institution_id",
+        "hospital_id",
+        "sector_id",
+        "active_sector_slot",
       ],
     });
     expect(

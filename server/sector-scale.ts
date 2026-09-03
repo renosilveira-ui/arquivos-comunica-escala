@@ -213,7 +213,7 @@ async function findActiveSectorContextId(
   db: ScaleConn,
   input: { institutionId: number; hospitalId: number; sectorId: number },
 ): Promise<number | null> {
-  const [row] = await db
+  const rows = await db
     .select({ id: scheduleContexts.id })
     .from(scheduleContexts)
     .where(
@@ -225,8 +225,21 @@ async function findActiveSectorContextId(
       ),
     )
     .orderBy(scheduleContexts.id)
-    .limit(1);
-  return row?.id ?? null;
+    .limit(2);
+  return resolveActiveSectorContextId(rows);
+}
+
+export function resolveActiveSectorContextId(
+  rows: readonly Readonly<{ id: number }>[],
+): number | null {
+  if (rows.length > 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "Setor com mais de uma escala operacional ativa; regularize a topologia antes de continuar.",
+    });
+  }
+  return rows[0]?.id ?? null;
 }
 
 export async function ensureDefaultSectorScale(
@@ -470,4 +483,3 @@ export async function listManageableTopology(
       })),
   };
 }
-
