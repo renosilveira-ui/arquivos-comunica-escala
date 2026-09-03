@@ -3,7 +3,8 @@
 // Fluxo: toque → escuta (reconhecimento de fala do aparelho, PT-BR) →
 // texto vai ao voice.interpret → tela de confirmação → executar chama
 // swaps.offer DIRECIONADA (o colega recebe push e aceita/recusa).
-// Ambiguidade de nome vira lista de candidatos com escolha por toque.
+// Ambiguidade de nome ou de plantão vira lista com escolha por toque.
+// Cada escolha é mesclada e reenviada (own / colega / contrapartida).
 //
 // O áudio nunca sai do aparelho: só o TEXTO transcrito vai ao servidor.
 
@@ -25,6 +26,15 @@ import * as Haptics from "expo-haptics";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { VoiceTabTrigger } from "@/components/ui/VoiceTabTrigger";
+import {
+  emptyVoiceInterpretChoices,
+  mergeVoiceInterpretChoices,
+  voiceCandidateKindFromCode,
+  voiceChoiceFromCandidate,
+  voiceInterpretInput,
+  type VoiceCandidateKind,
+  type VoiceInterpretChoices,
+} from "@/lib/voice-interpret-choices";
 
 type Phase =
   | "idle"
@@ -53,6 +63,14 @@ interface ResolvedAction {
   toShiftInstanceId?: number;
 }
 
+type ShiftCandidateView = {
+  shiftInstanceId: number;
+  label: string;
+  sectorName: string;
+  dateStr: string;
+  timeRange: string;
+};
+
 export function VoiceCommandButton({
   variant = "fab",
 }: { variant?: "fab" | "inline" | "tab" } = {}) {
@@ -62,7 +80,11 @@ export function VoiceCommandButton({
   const [message, setMessage] = useState("");
   const [action, setAction] = useState<ResolvedAction | null>(null);
   const [candidates, setCandidates] = useState<{ id: number; name: string }[]>([]);
+  const [shiftCandidates, setShiftCandidates] = useState<ShiftCandidateView[]>([]);
+  const [candidateKind, setCandidateKind] = useState<VoiceCandidateKind | null>(null);
   const finalTextRef = useRef("");
+  /** Escolhas já feitas nesta sessão — sobrevivem a cada pergunta. */
+  const choicesRef = useRef<VoiceInterpretChoices>({});
 
   const interpret = trpc.voice.interpret.useMutation();
   const offer = trpc.swaps.offer.useMutation();
@@ -105,6 +127,9 @@ export function VoiceCommandButton({
     finalTextRef.current = "";
     setAction(null);
     setCandidates([]);
+    setShiftCandidates([]);
+    setCandidateKind(null);
+    choicesRef.current = emptyVoiceInterpretChoices();
     setMessage("");
     try {
       const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
@@ -133,32 +158,48 @@ export function VoiceCommandButton({
     }
   }
 
-  async function runInterpret(text: string, targetProfessionalId?: number) {
+  async function runInterpret(text: string, extra: VoiceInterpretChoices = {}) {
+    const choices = mergeVoiceInterpretChoices(choicesRef.current, extra);
+    choicesRef.current = choices;
     setPhase("interpreting");
+    setCandidates([]);
+    setShiftCandidates([]);
+    setCandidateKind(null);
     try {
-      const res = await interpret.mutateAsync({
-        text,
-        targetProfessionalId,
-        supportedOfferTypes: [...SUPPORTED_OFFER_TYPES],
-      });
+      const res = await interpret.mutateAsync(
+        voiceInterpretInput(text, choices, SUPPORTED_OFFER_TYPES),
+      );
       if (res.ok) {
         setAction(res.action);
         setMessage(res.confirmationText);
         setPhase("confirm");
-      } else {
-        if (res.candidates?.length) {
-          setCandidates(res.candidates);
-          setMessage(res.error);
-          setPhase("candidates");
-        } else {
-          setMessage(res.error);
-          setPhase("error");
-        }
+        return;
       }
+      const kind = voiceCandidateKindFromCode(res.code);
+      if (kind === "professional" && res.candidates?.length) {
+        setCandidateKind(kind);
+        setCandidates(res.candidates);
+        setMessage(res.error);
+        setPhase("candidates");
+        return;
+      }
+      if ((kind === "own" || kind === "target") && res.shiftCandidates?.length) {
+        setCandidateKind(kind);
+        setShiftCandidates(res.shiftCandidates);
+        setMessage(res.error);
+        setPhase("candidates");
+        return;
+      }
+      setMessage(res.error);
+      setPhase("error");
     } catch (err) {
       setMessage((err as Error).message || "Erro ao interpretar o comando.");
       setPhase("error");
     }
+  }
+
+  function pickCandidate(kind: VoiceCandidateKind, id: number) {
+    runInterpret(finalTextRef.current || transcript, voiceChoiceFromCandidate(kind, id));
   }
 
   async function execute() {
@@ -195,6 +236,12 @@ export function VoiceCommandButton({
 
   function close() {
     stopListening();
+    // Fechar/cancelar não pode deixar IDs da sessão anterior para o próximo comando.
+    choicesRef.current = emptyVoiceInterpretChoices();
+    setCandidates([]);
+    setShiftCandidates([]);
+    setCandidateKind(null);
+    setAction(null);
     setVisible(false);
     setPhase("idle");
   }
@@ -368,24 +415,48 @@ export function VoiceCommandButton({
             {phase === "candidates" && (
               <View style={{ gap: 10 }}>
                 <Text style={{ fontSize: 15, color: theme.colors.textPrimary }}>{message}</Text>
-                {candidates.map((c) => (
-                  <TouchableOpacity
-                    key={c.id}
-                    onPress={() => runInterpret(finalTextRef.current || transcript, c.id)}
-                    activeOpacity={0.8}
-                    style={{
-                      padding: 14,
-                      borderRadius: theme.radius.md,
-                      borderWidth: 1,
-                      borderColor: theme.colors.border,
-                      backgroundColor: theme.colors.surfaceAlt,
-                    }}
-                  >
-                    <Text style={{ fontSize: 15, fontWeight: "600", color: theme.colors.textPrimary }}>
-                      {c.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                {candidateKind === "professional" &&
+                  candidates.map((c) => (
+                    <TouchableOpacity
+                      key={c.id}
+                      onPress={() => pickCandidate("professional", c.id)}
+                      activeOpacity={0.8}
+                      style={{
+                        padding: 14,
+                        borderRadius: theme.radius.md,
+                        borderWidth: 1,
+                        borderColor: theme.colors.border,
+                        backgroundColor: theme.colors.surfaceAlt,
+                      }}
+                    >
+                      <Text style={{ fontSize: 15, fontWeight: "600", color: theme.colors.textPrimary }}>
+                        {c.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                {(candidateKind === "own" || candidateKind === "target") &&
+                  shiftCandidates.map((shift) => (
+                    <TouchableOpacity
+                      key={shift.shiftInstanceId}
+                      onPress={() => pickCandidate(candidateKind, shift.shiftInstanceId)}
+                      activeOpacity={0.8}
+                      style={{
+                        padding: 14,
+                        borderRadius: theme.radius.md,
+                        borderWidth: 1,
+                        borderColor: theme.colors.border,
+                        backgroundColor: theme.colors.surfaceAlt,
+                        gap: 4,
+                      }}
+                    >
+                      <Text style={{ fontSize: 15, fontWeight: "600", color: theme.colors.textPrimary }}>
+                        {shift.dateStr} · {shift.timeRange}
+                      </Text>
+                      <Text style={{ fontSize: 13, color: theme.colors.textSecondary }}>
+                        {shift.sectorName} · {shift.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
               </View>
             )}
 

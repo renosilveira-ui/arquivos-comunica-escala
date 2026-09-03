@@ -126,6 +126,8 @@ export default defineConfig({
       "tests/corporate-readiness-v1.test.ts",
       "tests/corporate-readiness-router.test.ts",
       "tests/swap-intent-parser.test.ts",
+      "tests/voice-interpret-choices.test.ts",
+      "tests/voice-command-disambiguation-source.test.ts",
     ],
   },
 });

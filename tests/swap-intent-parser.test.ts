@@ -88,6 +88,21 @@ describe("parseSwapIntent — SWAP nunca escorrega para CESSAO", () => {
     expect(error.code).toBe("AMBIGUOUS_INTENT");
   });
 
+  // Mesma classe do bug original: pessoa pede contrapartida com verbo de
+  // cessão e o sistema não pode materializar como cessão silenciosa.
+  it.each([
+    "passo meu plantão de hoje pro João e ele passa o dele de sexta",
+    "passo meu plantão de hoje pro João e me passa o dele",
+    "cedo meu plantão de hoje pro João em contrapartida do dele",
+    "passo meu plantão de hoje pro João e recebo o de sexta",
+    "passo meu plantão de hoje pro João pelo de sexta",
+    "cedo meu plantão pro João e fico com o dele de sábado",
+    "passo o meu de hoje pro João e pego o de amanhã",
+  ])('verbo de cessão com expectativa de contrapartida não vira CESSAO: "%s"', (phrase) => {
+    const error = failure(phrase);
+    expect(error.code).toBe("AMBIGUOUS_INTENT");
+  });
+
   it("SWAP sem contrapartida dita deixa targetShift.date nulo", () => {
     const parsed = draft("trocar meu plantão de hoje à noite com o João");
     if (parsed.kind !== "SWAP") throw new Error("esperava SWAP");
@@ -111,6 +126,7 @@ describe("parseSwapIntent — CESSAO", () => {
   });
 
   it.each([
+    "passo meu plantão de hoje pro João",
     "passar o plantão de amanhã para a Maria",
     "cedo meu plantão de hoje à noite para o João",
     "ceder meu plantão de sexta com o Pedro",

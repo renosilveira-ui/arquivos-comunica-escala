@@ -88,6 +88,31 @@ const CESSAO_VERB =
   /\b(?:passar|passo|passa|ceder|cede|repassar|repasso|repassa|transferir|transfiro|transfere|dar|dou|oferecer|ofereco|oferece|entregar|entrego)\b/;
 
 /**
+ * Linguagem que denuncia expectativa de contrapartida mesmo com verbo de
+ * cessão. Não infere SWAP: pergunta (AMBIGUOUS_INTENT). Sem esta guarda, a
+ * pessoa pede troca em português natural e o sistema materializa cessão.
+ *
+ * "em troca" não precisa entrar — já casa em SWAP_VERB.
+ * "pro João" / "para o João" sozinhos NÃO entram: cessão legítima.
+ */
+const COUNTERPART_HINTS: readonly RegExp[] = [
+  // Possessivo apontando o plantão do outro: "o dele", "o teu".
+  /\b(?:[oa] dele|[oa] dela|d[oa] dele|d[oa] dela|o teu|a tua|o seu plantao)\b/,
+  // Troca nomeada sem o verbo "trocar".
+  /\b(?:em contrapartida|em retorno|no lugar d[oa])\b/,
+  // "pelo de sexta" / "pelo plantão" — contrapartida, não "pro João".
+  /\bpelo (?:de|d[oa]|plantao|dele|dela|teu|tua)\b/,
+  // Recebimento: "recebo o de sexta", "pego o de amanhã", "fico com o dele".
+  /\b(?:receb\w+|pego|pegar|pegue|fico com|fico no|ficar com|ficar no)\b/,
+  // Pedido de devolução: "me passa o teu".
+  /\bme (?:passa|passe|passar|da|de|dar|cede|ceda|ceder)\b/,
+];
+
+function hasCounterpartHint(text: string): boolean {
+  return COUNTERPART_HINTS.some((hint) => hint.test(text));
+}
+
+/**
  * "cedo" é ambíguo: verbo ceder ("cedo meu plantão") ou advérbio de manhã
  * ("hoje cedo"). Só conta como turno quando qualifica um dia/horário.
  */
@@ -403,11 +428,12 @@ export function parseSwapIntent(raw: string): SwapIntentDraft | SwapIntentError 
       'Não entendi o comando. Exemplo: "trocar meu plantão de hoje à noite com o plantão do João de sexta" ou "passar meu plantão de hoje à noite para o João".',
     );
   }
-  if (swap && cessao) {
-    // Fail-closed: "trocar" jamais escorrega para cessão silenciosamente.
+  // Fail-closed nas duas direções: "trocar" nunca escorrega para cessão, e
+  // verbo de cessão com expectativa de contrapartida também não passa.
+  if ((swap && cessao) || (cessao && hasCounterpartHint(text))) {
     return swapIntentError(
       "AMBIGUOUS_INTENT",
-      'Não ficou claro se você quer trocar (recebendo um plantão em troca) ou passar o plantão. Diga "trocar meu plantão ... com o plantão do ..." ou "passar meu plantão ... para ...".',
+      'Não ficou claro se você quer trocar (recebendo um plantão em troca) ou passar o plantão sem contrapartida. Diga "trocar meu plantão ... com o plantão do ..." ou "passar meu plantão ... para ...".',
     );
   }
   const kind = swap ? "SWAP" : "CESSAO";

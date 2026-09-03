@@ -239,6 +239,10 @@ describe("resolveSwapIntent — localização escopada ao ator e ao tenant", () 
     // Alocação ainda PENDENTE: o domínio exige OCUPADO, então também não conta.
     await makeShift({ owner: actor, ...inA, sectorId: recoveryA, date: "2026-09-16", start: "19:00:00", end: "07:00:00", label: "Noite", status: "PENDENTE" });
 
+    // 20/09: plantão só no Centro Cirúrgico. Pedir "SR" nesse dia cai no
+    // fallback de setores conhecidos — e há dois SR-like no tenant.
+    await makeShift({ owner: actor, ...inA, sectorId: surgeryA, date: "2026-09-20", start: "19:00:00", end: "07:00:00", label: "Noite" });
+
     // Multi-instituição: 17/09 só no tenant B; 18/09 nos dois.
     await makeShift({ owner: actor, institutionId: tenantB, hospitalId: hospitalB, sectorId: recoveryB, date: "2026-09-17", start: "19:00:00", end: "07:00:00", label: "Noite" });
     await makeShift({ owner: actor, ...inA, sectorId: recoveryA, date: "2026-09-18", start: "19:00:00", end: "07:00:00", label: "Noite" });
@@ -345,6 +349,28 @@ describe("resolveSwapIntent — localização escopada ao ator e ao tenant", () 
       const error = await expectError("passo meu plantão de amanhã à noite no Centro Cirúrgico pro Danilo Souza", [tenantA]);
       expect(error.code).toBe("OWN_SHIFT_NOT_FOUND");
       expect(error.sectorCandidates?.[0].name).toBe("Centro Cirúrgico");
+    });
+
+    it("dois setores SR-like conhecidos, sem plantão neles → AMBIGUOUS_SECTOR", async () => {
+      const error = await expectError(
+        "passo meu plantão de 20/09 à noite na SR pro Danilo Souza",
+        [tenantA],
+      );
+      expect(error.code).toBe("AMBIGUOUS_SECTOR");
+      expect(error.sectorCandidates?.map((s) => s.name).sort()).toEqual([
+        "Sala Rosa",
+        "Sala de Recuperação",
+      ]);
+    });
+
+    it("setor existe mas o colega não tem plantão ali é TARGET, não OWN", async () => {
+      const error = await expectError(
+        "troco meu plantão de amanhã à noite na SR com o plantão do Danilo Souza depois de amanhã à noite no Centro Cirúrgico",
+        [tenantA],
+      );
+      expect(error.code).toBe("TARGET_SHIFT_NOT_FOUND");
+      expect(error.message).toContain("Danilo");
+      expect(error.message).not.toContain("Você não tem");
     });
 
     it("nome completo do setor resolve igual à sigla", async () => {

@@ -51,6 +51,7 @@ import {
   type ShiftSlot,
   type SwapIntentDraft,
   type SwapIntentError,
+  type SwapIntentErrorCode,
 } from "./swap-intent-types";
 
 /** Identidade canônica do canal. Nunca montada a partir do texto. */
@@ -245,13 +246,14 @@ async function filterBySector(
   rows: ShiftRow[],
   sectorText: string,
   institutionIds: number[],
-  whenSaid: string,
+  /** Redação e código dependem de quem é o dono do plantão procurado. */
+  subject: { who: string; notFound: SwapIntentErrorCode; whenSaid: string },
 ): Promise<SectorFilterResult> {
   const { tier, matches } = bestMatches(rows, (row) =>
     sectorMatchTier(sectorText, row.sectorName),
   );
   if (tier === null) {
-    // O setor existe no tenant mas não tem plantão seu, ou nem existe?
+    // O setor existe no tenant mas não tem plantão ali, ou nem existe?
     // São perguntas diferentes para a pessoa.
     const known = await db
       .select({ sectorId: sectors.id, name: sectors.name })
@@ -269,15 +271,35 @@ async function filterBySector(
         ),
       };
     }
+    const knownSectors = new Map(
+      knownMatch.matches.map((sector) => [sector.sectorId, sector.name]),
+    );
+    // Empate no melhor tier: perguntar qual setor, nunca apontar o primeiro.
+    if (knownSectors.size > 1) {
+      return {
+        ok: false,
+        error: swapIntentError(
+          "AMBIGUOUS_SECTOR",
+          `"${sectorText}" corresponde a mais de um setor. Qual deles?`,
+          {
+            sectorCandidates: [...knownSectors]
+              .slice(0, CANDIDATE_LIMIT)
+              .map(([sectorId, name]) => ({ sectorId, name })),
+          },
+        ),
+      };
+    }
+    const [[, onlyName]] = knownSectors;
     return {
       ok: false,
       error: swapIntentError(
-        "OWN_SHIFT_NOT_FOUND",
-        `Você não tem plantão ${whenSaid} em ${knownMatch.matches[0].name}.`,
+        subject.notFound,
+        `${subject.who} não tem plantão ${subject.whenSaid} em ${onlyName}.`,
         {
-          sectorCandidates: knownMatch.matches
-            .slice(0, CANDIDATE_LIMIT)
-            .map((sector) => ({ sectorId: sector.sectorId, name: sector.name })),
+          sectorCandidates: [...knownSectors].map(([sectorId, name]) => ({
+            sectorId,
+            name,
+          })),
         },
       ),
     };
@@ -322,9 +344,11 @@ async function pickSingleShift(
   },
 ): Promise<ShiftPick> {
   const { rows, slot, whenSaid, now, owner } = input;
-  const who = owner === "OWN" ? "Você" : input.targetName ?? "O colega";
-  const notFound = owner === "OWN" ? "OWN_SHIFT_NOT_FOUND" : "TARGET_SHIFT_NOT_FOUND";
-  const ambiguous = owner === "OWN" ? "AMBIGUOUS_OWN_SHIFT" : "AMBIGUOUS_TARGET_SHIFT";
+  const who = owner === "OWN" ? "Você" : (input.targetName ?? "O colega");
+  const notFound: SwapIntentErrorCode =
+    owner === "OWN" ? "OWN_SHIFT_NOT_FOUND" : "TARGET_SHIFT_NOT_FOUND";
+  const ambiguous: SwapIntentErrorCode =
+    owner === "OWN" ? "AMBIGUOUS_OWN_SHIFT" : "AMBIGUOUS_TARGET_SHIFT";
 
   if (rows.length === 0) {
     return {
@@ -363,13 +387,11 @@ async function pickSingleShift(
   }
 
   if (slot.sectorText) {
-    const filtered = await filterBySector(
-      db,
-      current,
-      slot.sectorText,
-      input.institutionIds,
+    const filtered = await filterBySector(db, current, slot.sectorText, input.institutionIds, {
+      who,
+      notFound,
       whenSaid,
-    );
+    });
     if (!filtered.ok) return { ok: false, error: filtered.error };
     current = filtered.rows;
   }
@@ -449,14 +471,14 @@ async function loadShiftRows(
 
 type TargetProfessional = { professionalId: number; userId: number; name: string };
 
-async function resolveTargetProfessional(
-  db: Db,
-  actor: SwapIntentActor,
-  institutionId: number,
-  name: string,
-  chosenProfessionalId?: number,
-): Promise<{ ok: true; target: TargetProfessional } | { ok: false; error: SwapIntentError }> {
-  const colleagues = await db
+/**
+ * Colegas localizáveis nesta instituição: vínculo ativo, conta aprovada e
+ * viva, e nunca o próprio ator. Isto NÃO é elegibilidade operacional —
+ * acesso setorial, allowlist #317 e `professional_access` continuam
+ * exclusivamente no domínio (`createSwapOffer`).
+ */
+function colleagueQuery(db: Db, institutionId: number) {
+  return db
     .select({
       professionalId: professionals.id,
       userId: professionals.userId,
@@ -480,13 +502,27 @@ async function resolveTargetProfessional(
         isNull(users.deletedAt),
       ),
     )
-    .where(ne(professionals.userId, actor.userId))
-    .limit(PROFESSIONAL_SCAN_LIMIT);
+    .$dynamic();
+}
 
+async function resolveTargetProfessional(
+  db: Db,
+  actor: SwapIntentActor,
+  institutionId: number,
+  name: string,
+  chosenProfessionalId?: number,
+): Promise<{ ok: true; target: TargetProfessional } | { ok: false; error: SwapIntentError }> {
+  // Escolha explícita não varre nada: consulta direta e escopada, para que
+  // um id vindo do canal nunca escape do tenant nem dependa do teto.
   if (chosenProfessionalId !== undefined) {
-    const chosen = colleagues.find(
-      (colleague) => colleague.professionalId === chosenProfessionalId,
-    );
+    const [chosen] = await colleagueQuery(db, institutionId)
+      .where(
+        and(
+          eq(professionals.id, chosenProfessionalId),
+          ne(professionals.userId, actor.userId),
+        ),
+      )
+      .limit(1);
     if (!chosen) {
       return {
         ok: false,
@@ -497,6 +533,23 @@ async function resolveTargetProfessional(
       };
     }
     return { ok: true, target: chosen };
+  }
+
+  const colleagues = await colleagueQuery(db, institutionId)
+    .where(ne(professionals.userId, actor.userId))
+    // +1 para DETECTAR o estouro em vez de truncar calado: acima do teto, o
+    // casamento em memória viraria um "não encontrei" errado sobre um colega
+    // que existe. Melhor recusar e mandar escolher na lista.
+    .limit(PROFESSIONAL_SCAN_LIMIT + 1);
+
+  if (colleagues.length > PROFESSIONAL_SCAN_LIMIT) {
+    return {
+      ok: false,
+      error: swapIntentError(
+        "CONFLICT",
+        "Esta escala tem profissionais demais para identificar o colega pelo nome. Escolha o colega na lista.",
+      ),
+    };
   }
 
   const { tier, matches } = bestMatches(colleagues, (colleague) =>

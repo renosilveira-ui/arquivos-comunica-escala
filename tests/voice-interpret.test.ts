@@ -226,6 +226,21 @@ describe("voice.interpret — adapter do núcleo compartilhado", () => {
         colleagueNightFriday,
       );
     });
+
+    it("6: SWAP_TARGET_SHIFT_REQUIRED + escolha da contrapartida continua SWAP", async () => {
+      const ask = await interpret("trocar meu plantão de hoje à noite com a Germana");
+      expect(ask.ok).toBe(false);
+      if (ask.ok) return;
+      expect(ask.code).toBe("SWAP_TARGET_SHIFT_REQUIRED");
+      const result = await interpret("trocar meu plantão de hoje à noite com a Germana", {
+        targetShiftInstanceId: colleagueNightFriday,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.action.type).toBe("SWAP");
+      expect(result.action.toShiftInstanceId).toBe(colleagueNightFriday);
+      expect(result.action.toProfessionalId).toBe(colleague.professionalId);
+    });
   });
 
   describe("gate de capacidade do cliente (fail-closed)", () => {
