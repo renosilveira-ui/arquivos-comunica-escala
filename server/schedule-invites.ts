@@ -476,6 +476,177 @@ export async function declineScheduleInviteInTransaction(
   };
 }
 
+type CandidateDb = Pick<
+  NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  "select"
+>;
+
+type InvitableCandidate = {
+  userId: number;
+  name: string | null;
+  email: string | null;
+  specialtyLabel: string | null;
+};
+
+/**
+ * Fonte ÚNICA de elegibilidade para convites nominais — usada tanto pela busca
+ * (`listCandidates`) quanto pela criação (`create`), para que não divirjam. Um
+ * `userId` que a busca esconde NÃO pode ser convidado direto por id.
+ *
+ * Elegíveis: membros da casa (vínculo ativo nesta instituição) e sala de espera
+ * (APPROVED sem vínculo ativo em lugar nenhum). Excluídos, fail-closed:
+ *  - já com ACL operacional no hospital+setor pedido (já na escala);
+ *  - com ACL apenas em outro hospital da MESMA instituição (hospital irmão) e
+ *    sem ACL no hospital pedido — não pertence implicitamente a este plantel;
+ *  - travado com vínculo ativo em OUTRA instituição.
+ * Especialidade não é ACL e não filtra aqui.
+ */
+async function selectInvitableCandidates(
+  db: CandidateDb,
+  institutionId: number,
+  hospitalId: number,
+  sectorId: number,
+): Promise<InvitableCandidate[]> {
+  const candidateColumns = {
+    userId: users.id,
+    name: users.name,
+    email: users.email,
+    specialtyLabel: professionals.specialty,
+  };
+
+  const houseMembers = await db
+    .select(candidateColumns)
+    .from(users)
+    .innerJoin(professionals, eq(professionals.userId, users.id))
+    .innerJoin(
+      professionalInstitutions,
+      and(
+        eq(professionalInstitutions.userId, users.id),
+        eq(professionalInstitutions.institutionId, institutionId),
+        eq(professionalInstitutions.active, true),
+      ),
+    )
+    .where(and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)));
+
+  const waitingRoom = await db
+    .select(candidateColumns)
+    .from(users)
+    .innerJoin(professionals, eq(professionals.userId, users.id))
+    .where(
+      and(
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+        notExists(
+          db
+            .select({ id: professionalInstitutions.id })
+            .from(professionalInstitutions)
+            .where(
+              and(
+                eq(professionalInstitutions.userId, users.id),
+                eq(professionalInstitutions.active, true),
+              ),
+            ),
+        ),
+      ),
+    );
+
+  const byId = new Map<number, InvitableCandidate>();
+  for (const row of [...houseMembers, ...waitingRoom]) {
+    byId.set(row.userId, row);
+  }
+  const candidates = [...byId.values()];
+  if (candidates.length === 0) return [];
+  const candidateIds = candidates.map((row) => row.userId);
+
+  const hospitalAccess = await db
+    .select({
+      professionalUserId: professionals.userId,
+      hospitalId: professionalAccess.hospitalId,
+    })
+    .from(professionalAccess)
+    .innerJoin(
+      professionals,
+      eq(professionals.id, professionalAccess.professionalId),
+    )
+    .where(
+      and(
+        eq(professionalAccess.institutionId, institutionId),
+        eq(professionalAccess.canAccess, true),
+        inArray(professionals.userId, candidateIds),
+      ),
+    );
+  const linkedToRequestedHospital = new Set(
+    hospitalAccess
+      .filter((row) => row.hospitalId === hospitalId)
+      .map((row) => row.professionalUserId),
+  );
+  const linkedOnlyElsewhere = new Set(
+    hospitalAccess
+      .filter((row) => row.hospitalId !== hospitalId)
+      .map((row) => row.professionalUserId),
+  );
+
+  const access = await db
+    .select({
+      professionalUserId: professionals.userId,
+      canAccess: professionalAccess.canAccess,
+    })
+    .from(professionalAccess)
+    .innerJoin(
+      professionals,
+      eq(professionals.id, professionalAccess.professionalId),
+    )
+    .where(
+      and(
+        eq(professionalAccess.institutionId, institutionId),
+        eq(professionalAccess.hospitalId, hospitalId),
+        eq(professionalAccess.sectorId, sectorId),
+        inArray(professionals.userId, candidateIds),
+      ),
+    );
+  const alreadyInScale = new Set(
+    access.filter((row) => row.canAccess).map((row) => row.professionalUserId),
+  );
+
+  const memberships = await db
+    .select({
+      userId: professionalInstitutions.userId,
+      institutionId: professionalInstitutions.institutionId,
+    })
+    .from(professionalInstitutions)
+    .where(
+      and(
+        eq(professionalInstitutions.active, true),
+        inArray(professionalInstitutions.userId, candidateIds),
+      ),
+    );
+  const inThisHouse = new Set(
+    memberships
+      .filter((row) => row.institutionId === institutionId)
+      .map((row) => row.userId),
+  );
+  const lockedToOtherHouse = new Set(
+    memberships
+      .filter(
+        (row) =>
+          row.institutionId !== institutionId && !inThisHouse.has(row.userId),
+      )
+      .map((row) => row.userId),
+  );
+
+  return candidates.filter((row) => {
+    if (alreadyInScale.has(row.userId)) return false;
+    if (
+      linkedOnlyElsewhere.has(row.userId) &&
+      !linkedToRequestedHospital.has(row.userId)
+    ) {
+      return false;
+    }
+    if (lockedToOtherHouse.has(row.userId)) return false;
+    return true;
+  });
+}
+
 export const scheduleInvitesRouter = router({
   listManageableScales: protectedProcedure.query(async ({ ctx }) => {
     const actor = await getTenantActorFromContext(ctx);
@@ -590,153 +761,12 @@ export const scheduleInvitesRouter = router({
         });
       }
 
-      const candidateColumns = {
-        userId: users.id,
-        name: users.name,
-        email: users.email,
-        specialtyLabel: professionals.specialty,
-      };
-
-      // Casa: já vinculados a ESTE hospital. Sala de espera: conta
-      // aprovada sem vínculo ativo em lugar nenhum (conta primeiro,
-      // escala depois). Não entra plantel ativo de outro hospital.
-      const houseMembers = await db
-        .select(candidateColumns)
-        .from(users)
-        .innerJoin(professionals, eq(professionals.userId, users.id))
-        .innerJoin(
-          professionalInstitutions,
-          and(
-            eq(professionalInstitutions.userId, users.id),
-            eq(professionalInstitutions.institutionId, actor.institutionId),
-            eq(professionalInstitutions.active, true),
-          ),
-        )
-        .where(
-          and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)),
-        );
-
-      const waitingRoom = await db
-        .select(candidateColumns)
-        .from(users)
-        .innerJoin(professionals, eq(professionals.userId, users.id))
-        .where(
-          and(
-            eq(users.approvalStatus, "APPROVED"),
-            isNull(users.deletedAt),
-            notExists(
-              db
-                .select({ id: professionalInstitutions.id })
-                .from(professionalInstitutions)
-                .where(
-                  and(
-                    eq(professionalInstitutions.userId, users.id),
-                    eq(professionalInstitutions.active, true),
-                  ),
-                ),
-            ),
-          ),
-        );
-
-      const byId = new Map<number, (typeof houseMembers)[number]>();
-      for (const row of [...houseMembers, ...waitingRoom]) {
-        byId.set(row.userId, row);
-      }
-
-      const candidates = [...byId.values()];
-      if (candidates.length === 0) return [];
-
-      // Um vínculo institucional sem ACL é uma conta ainda sem lotação e pode
-      // ser convidada. Já quem possui ACL operacional apenas em outro hospital
-      // da mesma instituição não pertence implicitamente a este plantel.
-      // A exceção é o profissional com lotação nos dois hospitais: ele pode
-      // ser convidado para um setor ainda não liberado no hospital solicitado.
-      const hospitalAccess = await db
-        .select({
-          professionalUserId: professionals.userId,
-          hospitalId: professionalAccess.hospitalId,
-        })
-        .from(professionalAccess)
-        .innerJoin(
-          professionals,
-          eq(professionals.id, professionalAccess.professionalId),
-        )
-        .where(
-          and(
-            eq(professionalAccess.institutionId, actor.institutionId),
-            eq(professionalAccess.canAccess, true),
-            inArray(
-              professionals.userId,
-              candidates.map((row) => row.userId),
-            ),
-          ),
-        );
-      const linkedToRequestedHospital = new Set(
-        hospitalAccess
-          .filter((row) => row.hospitalId === input.hospitalId)
-          .map((row) => row.professionalUserId),
-      );
-      const linkedOnlyElsewhere = new Set(
-        hospitalAccess
-          .filter((row) => row.hospitalId !== input.hospitalId)
-          .map((row) => row.professionalUserId),
-      );
-
-      const access = await db
-        .select({
-          professionalUserId: professionals.userId,
-          canAccess: professionalAccess.canAccess,
-        })
-        .from(professionalAccess)
-        .innerJoin(
-          professionals,
-          eq(professionals.id, professionalAccess.professionalId),
-        )
-        .where(
-          and(
-            eq(professionalAccess.institutionId, actor.institutionId),
-            eq(professionalAccess.hospitalId, input.hospitalId),
-            eq(professionalAccess.sectorId, input.sectorId),
-            inArray(
-              professionals.userId,
-              candidates.map((row) => row.userId),
-            ),
-          ),
-        );
-      const alreadyInScale = new Set(
-        access
-          .filter((row) => row.canAccess)
-          .map((row) => row.professionalUserId),
-      );
-
-      const memberships = await db
-        .select({
-          userId: professionalInstitutions.userId,
-          institutionId: professionalInstitutions.institutionId,
-        })
-        .from(professionalInstitutions)
-        .where(
-          and(
-            eq(professionalInstitutions.active, true),
-            inArray(
-              professionalInstitutions.userId,
-              candidates.map((row) => row.userId),
-            ),
-          ),
-        );
-      const inThisHouse = new Set(
-        memberships
-          .filter((row) => row.institutionId === actor.institutionId)
-          .map((row) => row.userId),
-      );
-      const lockedToOtherHouse = new Set(
-        memberships
-          .filter(
-            (row) =>
-              row.institutionId !== actor.institutionId &&
-              !inThisHouse.has(row.userId),
-          )
-          .map((row) => row.userId),
+      // Fonte única de elegibilidade (mesma regra do create).
+      const candidates = await selectInvitableCandidates(
+        db,
+        actor.institutionId,
+        input.hospitalId,
+        input.sectorId,
       );
 
       const nameNeedle = foldCandidateSearch(input.name ?? "");
@@ -744,14 +774,6 @@ export const scheduleInvitesRouter = router({
 
       return candidates
         .filter((row) => {
-          if (alreadyInScale.has(row.userId)) return false;
-          if (
-            linkedOnlyElsewhere.has(row.userId) &&
-            !linkedToRequestedHospital.has(row.userId)
-          ) {
-            return false;
-          }
-          if (lockedToOtherHouse.has(row.userId)) return false;
           if (
             nameNeedle &&
             !foldCandidateSearch(row.name ?? "").includes(nameNeedle)
@@ -807,46 +829,33 @@ export const scheduleInvitesRouter = router({
       }
       const context = contexts[0]!;
 
+      // Mesma fonte de elegibilidade da busca (`listCandidates`): quem a busca
+      // esconde — plantel de hospital irmão da MESMA instituição sem ACL no
+      // hospital pedido, ou travado em outra instituição — NÃO pode ser
+      // convidado direto por id. Fail-closed, resposta neutra por médico.
+      const eligibleById = new Map(
+        (
+          await selectInvitableCandidates(
+            db,
+            actor.institutionId,
+            input.hospitalId,
+            input.sectorId,
+          )
+        ).map((row) => [row.userId, row] as const),
+      );
+
       const uniqueUserIds = [...new Set(input.userIds)];
       const sent: { userId: number; name: string | null }[] = [];
       const failed: { userId: number; error: string }[] = [];
+      // Ids pedidos que a busca esconde (hospital irmão, outra instituição,
+      // já na escala, conta inválida): recusados por elegibilidade, não por
+      // e-mail. Rastreados à parte para observar tentativa de convite-por-id.
+      const ineligibleUserIds: number[] = [];
 
       for (const userId of uniqueUserIds) {
-        const [invitee] = await db
-          .select({
-            userId: users.id,
-            name: users.name,
-            email: users.email,
-            deletedAt: users.deletedAt,
-            approvalStatus: users.approvalStatus,
-          })
-          .from(users)
-          .innerJoin(professionals, eq(professionals.userId, users.id))
-          .where(eq(users.id, userId))
-          .limit(1);
-        if (
-          !invitee ||
-          invitee.deletedAt ||
-          invitee.approvalStatus !== "APPROVED" ||
-          !invitee.email
-        ) {
-          failed.push({ userId, error: "Médico não encontrado" });
-          continue;
-        }
-        const houses = await db
-          .select({
-            institutionId: professionalInstitutions.institutionId,
-            active: professionalInstitutions.active,
-          })
-          .from(professionalInstitutions)
-          .where(eq(professionalInstitutions.userId, userId));
-        const inThisHouse = houses.some(
-          (row) => row.active && row.institutionId === actor.institutionId,
-        );
-        const inOtherHouse = houses.some(
-          (row) => row.active && row.institutionId !== actor.institutionId,
-        );
-        if (inOtherHouse && !inThisHouse) {
+        const invitee = eligibleById.get(userId);
+        if (!invitee || !invitee.email) {
+          ineligibleUserIds.push(userId);
           failed.push({ userId, error: "Médico não encontrado" });
           continue;
         }
@@ -945,6 +954,20 @@ export const scheduleInvitesRouter = router({
         );
 
         sent.push({ userId: invitee.userId, name: invitee.name });
+      }
+
+      if (ineligibleUserIds.length > 0) {
+        // PII-free: apenas ids internos e o contexto do tenant. JSON.stringify
+        // evita log-injection com valores vindos do input do usuário.
+        console.warn(
+          "[schedule-invites] convite recusou id(s) fora da elegibilidade da busca " +
+            JSON.stringify({
+              institutionId: actor.institutionId,
+              hospitalId: input.hospitalId,
+              sectorId: input.sectorId,
+              ineligibleUserIds,
+            }),
+        );
       }
 
       if (sent.length === 0) {

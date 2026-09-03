@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   hospitals,
@@ -13,6 +13,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { mailer } from "../server/mailer";
 import { appRouter } from "../server/routers";
 import { ensureTestAnesthesiaSpecialty } from "./helpers/open-test-scale";
 
@@ -304,5 +305,92 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     expect(ids).toContain(waitingUserId);
     expect(ids).not.toContain(houseUserId);
     expect(ids).not.toContain(otherHouseUserId);
+  });
+
+  // Regressão de segurança: a criação de convite compartilha a MESMA fonte de
+  // elegibilidade da busca. Um médico que o listCandidates esconde não pode ser
+  // convidado passando o userId direto (bypass por id).
+  describe("create — mesma elegibilidade da busca (fail-closed por id)", () => {
+    let mailSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      mailSpy = vi
+        .spyOn(mailer, "sendMail")
+        .mockResolvedValue({ delivered: true, transport: "resend" });
+    });
+
+    afterEach(() => {
+      mailSpy.mockRestore();
+    });
+
+    it("recusa convidar médico de hospital irmão informado direto por id", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          caller().scheduleInvites.create({
+            hospitalId,
+            sectorId,
+            userIds: [otherHospitalUserId],
+          }),
+        ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+        // Rejeitado antes de qualquer envio: nenhuma tentativa de e-mail.
+        expect(mailSpy).not.toHaveBeenCalled();
+        // Observabilidade: a recusa por id inelegível deixa sinal (sem PII).
+        const warned = warnSpy.mock.calls
+          .map((call) => String(call[0]))
+          .join("\n");
+        expect(warned).toContain("fora da elegibilidade da busca");
+        expect(warned).toContain(String(otherHospitalUserId));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("recusa convidar médico travado em outra instituição por id", async () => {
+      await expect(
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [otherHouseUserId],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(mailSpy).not.toHaveBeenCalled();
+    });
+
+    it("aplica a MESMA regra da busca ao lote: só o elegível vira convite", async () => {
+      const result = await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [
+          waitingUserId,
+          houseUserId,
+          otherHospitalUserId,
+          otherHouseUserId,
+          alreadyInScaleUserId,
+        ],
+      });
+
+      const sentIds = result.sent.map((row) => row.userId);
+      const failedIds = result.failed.map((row) => row.userId);
+
+      // Não pode over-bloquear: sala de espera E membro da casa continuam
+      // convidáveis pelo create.
+      expect(sentIds).toContain(waitingUserId);
+      expect(sentIds).toContain(houseUserId);
+      expect(sentIds).not.toContain(otherHospitalUserId);
+      expect(sentIds).not.toContain(otherHouseUserId);
+      expect(sentIds).not.toContain(alreadyInScaleUserId);
+      expect(failedIds).toEqual(
+        expect.arrayContaining([
+          otherHospitalUserId,
+          otherHouseUserId,
+          alreadyInScaleUserId,
+        ]),
+      );
+      for (const failure of result.failed) {
+        // Resposta neutra: não revela o motivo real nem confirma o vínculo.
+        expect(failure.error).toBe("Médico não encontrado");
+      }
+    });
   });
 });
