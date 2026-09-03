@@ -267,7 +267,13 @@ describe("login após cadastro pelo Admin", () => {
     expect(login.status).toBe(200);
   });
 
-  it("signup em casca com vínculo ativo grava senha e não prende em pendente", async () => {
+  it("signup público NÃO reivindica casca com vínculo (fail-closed anti-tomada de conta)", async () => {
+    // Segurança: uma conta pré-provisionada pelo gestor (casca com vínculo
+    // ativo) não pode ser ativada por quem apenas conhece o e-mail. O antigo
+    // comportamento gravava a senha e concedia o vínculo/ACL existentes —
+    // tomada de conta. Agora o cadastro público recusa fechado, sem mutar,
+    // e a ativação segue exclusivamente pela via controlada (senha temporária
+    // do gestor / convite).
     const email = `acl-casca-ativa-${STAMP}@test.local`;
     const [shell] = await db
       .insert(users)
@@ -297,32 +303,45 @@ describe("login após cadastro pelo Admin", () => {
     });
 
     const signup = await request(app).post("/api/auth/signup").send({
-      name: "ACL Casca Ativa",
+      name: "Invasor",
       email,
       password: USER_PASSWORD,
       institutionId,
       operationalProfileCode: "MEDICO_GENERALISTA",
     });
+    // Resposta neutra (anti-enumeração): idêntica a um cadastro pendente,
+    // sem revelar que a conta já existe.
     expect(signup.status).toBe(201);
-    expect(signup.body.pending).toBe(false);
 
+    // A conta NÃO foi reivindicada: senha continua ausente e o login recusa.
     const [row] = await db
       .select({
-        approvalStatus: users.approvalStatus,
-        active: professionalInstitutions.active,
+        passwordHash: users.passwordHash,
+        name: users.name,
       })
       .from(users)
-      .innerJoin(
-        professionalInstitutions,
-        eq(professionalInstitutions.userId, users.id),
-      )
       .where(eq(users.email, email));
-    expect(row.approvalStatus).toBe("APPROVED");
-    expect(row.active).toBe(true);
+    expect(row.passwordHash).toBeNull();
+    expect(row.name).toBe("ACL Casca Ativa");
+
+    // Efeito colateral zero: a transação recusada não alterou o vínculo
+    // pré-existente nem duplicou identidade para o e-mail.
+    const membershipRows = await db
+      .select({ active: professionalInstitutions.active })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, shell.id));
+    expect(membershipRows).toHaveLength(1);
+    expect(membershipRows[0]?.active).toBe(true);
+    const userRows = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email));
+    expect(userRows).toHaveLength(1);
+    expect(userRows[0]?.id).toBe(shell.id);
 
     const login = await request(app)
       .post("/api/auth/login")
       .send({ email, password: USER_PASSWORD });
-    expect(login.status).toBe(200);
+    expect(login.status).toBe(401);
   });
 });

@@ -3300,6 +3300,39 @@ authRouter.post(
           ) {
             throw new SignupDuplicateEmailError(hasInstitution);
           }
+          // Segurança: uma casca pré-provisionada (criada pelo gestor via
+          // /register) já carrega identidade profissional e/ou vínculo
+          // institucional. O cadastro público NÃO pode reivindicá-la —
+          // faria qualquer pessoa que conheça o e-mail definir senha e herdar
+          // o vínculo/ACL existentes (tomada de conta). A ativação de conta
+          // provisionada é exclusiva da via controlada (senha temporária do
+          // gestor / convite). Fail-closed sob o lock da própria linha; a
+          // resposta permanece neutra (anti-enumeração), sem revelar que a
+          // conta existe e sem qualquer mutação.
+          const [provisionedProfessional] = await tx
+            .select({ id: professionals.id })
+            .from(professionals)
+            .where(eq(professionals.userId, locked.id))
+            .limit(1);
+          const [provisionedMembership] = await tx
+            .select({ id: professionalInstitutions.id })
+            .from(professionalInstitutions)
+            .where(eq(professionalInstitutions.userId, locked.id))
+            .limit(1);
+          if (provisionedProfessional || provisionedMembership) {
+            // Observabilidade de segurança: registra a tentativa bloqueada de
+            // reivindicar conta pré-provisionada (sinal de enumeração/tomada
+            // de conta), sem PII — nada de e-mail, nome ou senha.
+            console.warn(
+              "[signup] tentativa de reivindicar conta pré-provisionada bloqueada",
+              JSON.stringify({
+                institutionId: hasInstitution ? instId : null,
+                hadProfessional: Boolean(provisionedProfessional),
+                hadMembership: Boolean(provisionedMembership),
+              }),
+            );
+            throw new SignupDuplicateEmailError(hasInstitution);
+          }
           await tx
             .update(users)
             .set({
