@@ -38,6 +38,8 @@ import {
   lockMonth,
   publishMonth,
 } from "./month-guards";
+import { getCorporateReadinessReport } from "./corporate-readiness-v1";
+import { assessCorporateReadinessAcknowledgement } from "./corporate-readiness-acknowledgement";
 import {
   ASSIGNMENT_WRITE_TRANSACTION_CONFIG,
   assertAssignmentWritesAllowedForUpdate,
@@ -3322,6 +3324,58 @@ export const shiftsRouter = router({
         });
       }
       await assertManagerScopeAccess(actor, input.hospitalId);
+
+      // Segurança: a prontidão estrutural NÃO é contornável omitindo o recibo.
+      // O app sempre envia readinessAcknowledgement (que segue pela via atômica
+      // com fence em publishMonth). Um cliente antigo/manipulado — ou uma
+      // chamada direta de API — que o omita ainda é barrado aqui: recalculamos
+      // a prontidão e recusamos publicar um mês com SECURITY_BLOCKER (contexto
+      // de escala nulo, inativo ou ambíguo). Warnings operacionais seguem
+      // exigindo ciência apenas na via do recibo.
+      //
+      // Trade-off consciente: esta checagem sem-recibo ocorre fora da transação
+      // de publishMonth (a via com recibo é atômica via fence). A janela
+      // TOCTOU só é relevante se um gestor autorizado introduzir um blocker
+      // estrutural concorrentemente durante a própria publicação — muito mais
+      // estreito que o bypass anterior (nenhuma checagem). Endurecer a via
+      // sem-recibo com uma checagem in-transaction é defense-in-depth para um
+      // incremento futuro, não remediação de brecha explorável.
+      if (!input.readinessAcknowledgement) {
+        const db = await getDb();
+        if (!db) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "DB unavailable",
+          });
+        }
+        const readinessReport = await getCorporateReadinessReport(db, {
+          institutionId: input.institutionId,
+          hospitalId: input.hospitalId,
+          yearMonth: input.yearMonth,
+        });
+        if (
+          assessCorporateReadinessAcknowledgement(readinessReport, undefined)
+            .state === "SECURITY_BLOCKED"
+        ) {
+          // Observabilidade de segurança: publicação sem recibo barrada por
+          // inconsistência estrutural (sinal de cliente antigo/manipulado
+          // contornando a prontidão). Sem PII — apenas topologia e mês.
+          console.warn(
+            "[shifts.publish] publicação sem recibo bloqueada por inconsistência estrutural",
+            JSON.stringify({
+              institutionId: input.institutionId,
+              hospitalId: input.hospitalId,
+              yearMonth: input.yearMonth,
+            }),
+          );
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "A publicação foi bloqueada por uma inconsistência estrutural. Corrija a prontidão da escala antes de publicar.",
+          });
+        }
+      }
+
       await publishMonth(
         input.institutionId,
         input.hospitalId,
