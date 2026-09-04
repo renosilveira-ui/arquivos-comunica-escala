@@ -236,6 +236,7 @@ describe("WhatsApp inbound identity", () => {
     expect(row?.mediaMime).toBe("audio/ogg");
     expect(row?.operationalText).toBeNull();
     expect(row?.payloadExpiresAt).toBeTruthy();
+    expect(row?.senderAddressHash).toBeNull();
   });
 
   it("mídia não suportada identificada termina UNSUPPORTED", async () => {

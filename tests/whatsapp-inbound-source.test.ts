@@ -113,6 +113,14 @@ describe("WhatsApp inbound — source contracts", () => {
     expect(inboundBlock).not.toMatch(/rawPayload|authToken/i);
   });
 
+  it("inbound não calcula nem persiste hash do telefone", () => {
+    expect(store).not.toContain("senderAddressHash");
+    expect(store).not.toMatch(/update\(e164\)|update\(envelope\.fromE164\)/);
+    expect(store).toContain("messageSidHash");
+    expect(store).toContain("createHash");
+    expect(schema).toContain("não calcula nem grava");
+  });
+
   it("não há pending intents sem contrato nesta PR", () => {
     expect(schema).not.toContain("whatsappPendingIntents");
     expect(schema).not.toContain("whatsapp_pending_intents");
@@ -149,5 +157,7 @@ describe("WhatsApp inbound — source contracts", () => {
     expect(payload).not.toMatch(/logger\.(info|warn|error)/);
     expect(payload).toContain("clearExpiredWhatsAppInboundPayloads");
     expect(contract).toContain("independentemente");
+    expect(contract).toContain("WHATSAPP_SENDER_HASH_COLUMN_SCHEMA_CLEANUP");
+    expect(contract).toContain("hash do telefone");
   });
 });

@@ -158,8 +158,11 @@ Persistir o **mínimo** para o próximo estágio — não o dump Twilio:
 Também: `payload_expires_at` (TTL 24h, `WHATSAPP_INBOUND_PAYLOAD_TTL_MS`)
 e `payload_cleared_at`.
 
-Não persistir: telefone completo, signature, Authorization, Auth Token,
-payload Twilio cru, dump de todos os params.
+Não persistir: telefone completo, hash do telefone (`sender_address_hash`),
+signature, Authorization, Auth Token, payload Twilio cru, dump de todos
+os params. SHA determinístico do E.164 sem chave é dicionário offline —
+o runtime não calcula nem grava esse campo. A coluna física nullable da
+#402 permanece até o follow-up `WHATSAPP_SENDER_HASH_COLUMN_SCHEMA_CLEANUP`.
 
 Não logar: Body, `operational_text`, URL de mídia, telefone, token.
 
@@ -201,6 +204,11 @@ limpa o payload.
 exige `https:`. Nenhuma mídia é baixada neste incremento. Antes de
 download server-side, validar host/origem Twilio ou usar o mecanismo
 oficial autenticado da Twilio (evitar SSRF).
+
+**WHATSAPP_SENDER_HASH_COLUMN_SCHEMA_CLEANUP (antes de produção):** a
+coluna `sender_address_hash` ficou nullable e sem escrita após a
+minimização. Remover fisicamente (migration aditiva/rerodável) só se
+ainda não houver valor operacional e a higiene de schema for necessária.
 
 **P3 — TTL em estados incompletos:** `clearExpiredWhatsAppInboundPayloads`
 limpa payload expirado **independentemente** do `processing_status`,

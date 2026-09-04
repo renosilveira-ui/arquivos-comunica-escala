@@ -38,10 +38,6 @@ type InboundRow = {
   mediaUrl: string | null;
 };
 
-function senderAddressHash(e164: string): string {
-  return createHash("sha256").update(e164).digest("hex").slice(0, 16);
-}
-
 function messageSidHash(sid: string): string {
   return createHash("sha256").update(sid).digest("hex").slice(0, 16);
 }
@@ -407,7 +403,6 @@ export async function processWhatsAppInbound(
           envelope.content.kind === "TEXT" ? envelope.content.forwarded : false,
         processingStatus: WhatsAppInboundStatuses.RECEIVED,
         errorCode: null,
-        senderAddressHash: senderAddressHash(envelope.fromE164),
         receivedAt: envelope.receivedAt,
         processedAt: null,
         ...operationalPayloadFromEnvelope(envelope.content),

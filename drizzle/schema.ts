@@ -172,6 +172,8 @@ export type InsertUserContactChannel = typeof userContactChannels.$inferInsert;
  * Inbound técnico WhatsApp (Incremento A). Fila assíncrona:
  * idempotência + payload operacional temporário (texto/mídia) com retenção curta.
  * Sem dump Twilio, signature, Auth Token ou telefone.
+ * `sender_address_hash` permanece no schema (migration #402 já aplicada);
+ * o runtime não calcula nem grava esse valor.
  * READY_FOR_* = material suficiente persistido para o próximo estágio.
  * Migração: drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql
  */
