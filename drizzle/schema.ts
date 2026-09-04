@@ -168,6 +168,56 @@ export const userContactChannels = mysqlTable(
 export type UserContactChannel = typeof userContactChannels.$inferSelect;
 export type InsertUserContactChannel = typeof userContactChannels.$inferInsert;
 
+/**
+ * Inbound técnico WhatsApp (Incremento A). Idempotência + auditoria mínima.
+ * Sem Body, telefone, signature ou payload Twilio cru.
+ * Migração: drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql
+ */
+export const whatsappInboundMessages = mysqlTable(
+  "whatsapp_inbound_messages",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    provider: mysqlEnum("provider", ["TWILIO"]).notNull(),
+    providerMessageId: varchar("provider_message_id", { length: 64 }).notNull(),
+    userId: int("user_id").references(() => users.id, { onDelete: "set null" }),
+    contentKind: mysqlEnum("content_kind", [
+      "TEXT",
+      "AUDIO",
+      "UNSUPPORTED_MEDIA",
+    ]).notNull(),
+    forwarded: boolean("forwarded").notNull().default(false),
+    processingStatus: mysqlEnum("processing_status", [
+      "RECEIVED",
+      "IDENTIFIED",
+      "IDENTITY_NOT_FOUND",
+      "IDENTITY_CONFLICT",
+      "UNSUPPORTED",
+      "READY_FOR_NL",
+      "READY_FOR_TRANSCRIPTION",
+      "FAILED",
+    ]).notNull(),
+    errorCode: varchar("error_code", { length: 64 }),
+    senderAddressHash: char("sender_address_hash", { length: 16 }),
+    receivedAt: timestamp("received_at").notNull(),
+    processedAt: timestamp("processed_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    uniqWhatsappInboundProviderMessage: unique(
+      "uniq_whatsapp_inbound_provider_message",
+    ).on(table.provider, table.providerMessageId),
+    idxWhatsappInboundUser: index("idx_whatsapp_inbound_user").on(table.userId),
+    idxWhatsappInboundReceived: index("idx_whatsapp_inbound_received").on(
+      table.receivedAt,
+    ),
+  }),
+);
+
+export type WhatsappInboundMessage = typeof whatsappInboundMessages.$inferSelect;
+export type InsertWhatsappInboundMessage =
+  typeof whatsappInboundMessages.$inferInsert;
+
 // ========================================
 // NOVO MODELO MULTI-INSTITUCIONAL
 // ========================================

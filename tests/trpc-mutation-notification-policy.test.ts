@@ -81,6 +81,7 @@ const expectedExpressMutationEndpoints = [
   "POST /api/integrations/hospital-alert/shifts/end",
   "POST /api/integrations/hospital-alert/shifts/start",
   "POST /api/integrations/hospital-alert/sync-user",
+  "POST /api/integrations/twilio/whatsapp",
   "POST /api/sso/generate",
   "POST /api/sso/launch-code",
   "PUT /api/admin/users/:id",

@@ -114,6 +114,7 @@
     "react-native-worklets": "0.5.1",
     "superjson": "^2.2.6",
     "tailwind-merge": "^2.6.0",
+    "twilio": "^6.1.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
