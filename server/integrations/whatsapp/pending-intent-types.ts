@@ -87,6 +87,17 @@ export type WhatsAppPendingMutationResult =
       code: "DB_UNAVAILABLE" | "NOT_FOUND" | "PERSISTENCE_FAILED";
     };
 
+export type WhatsAppPendingReadResult =
+  | { ok: true; row: WhatsAppPendingIntentRecord | null }
+  | { ok: false; code: "DB_UNAVAILABLE" | "PERSISTENCE_FAILED" };
+
+/** Distingue outage de ausência — callers B2+ não devem tratar `row === null`. */
+export function isWhatsAppPendingReadFailure(
+  result: WhatsAppPendingReadResult,
+): result is { ok: false; code: "DB_UNAVAILABLE" | "PERSISTENCE_FAILED" } {
+  return result.ok === false;
+}
+
 export type WhatsAppPendingCleanupResult = {
   expired: number;
   payloadsCleared: number;

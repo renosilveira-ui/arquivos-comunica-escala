@@ -23,8 +23,11 @@ import {
   type WhatsAppPendingCleanupResult,
   type WhatsAppPendingIntentRecord,
   type WhatsAppPendingMutationResult,
+  type WhatsAppPendingReadResult,
   type WhatsAppPendingStoreResult,
 } from "./pending-intent-types";
+
+type PendingReadOp = "by_id" | "by_source" | "open";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -282,41 +285,66 @@ async function expireIfDue(
   return (await loadByIdForUser(db, row.id, row.userId)) ?? row;
 }
 
+async function readWithDb(
+  op: PendingReadOp,
+  run: (db: Db) => Promise<WhatsAppPendingIntentRecord | null>,
+): Promise<WhatsAppPendingReadResult> {
+  try {
+    const db = await getDb();
+    if (!db) {
+      logSafe({
+        event: "whatsapp_pending_unavailable",
+        op,
+        code: "DB_UNAVAILABLE",
+      });
+      return { ok: false, code: "DB_UNAVAILABLE" };
+    }
+    return { ok: true, row: await run(db) };
+  } catch {
+    logSafe({
+      event: "whatsapp_pending_failed",
+      op,
+      code: "PERSISTENCE_FAILED",
+    });
+    return { ok: false, code: "PERSISTENCE_FAILED" };
+  }
+}
+
 export async function getWhatsAppPendingIntentByIdForUser(
   id: number,
   userId: number,
   now: Date = new Date(),
-): Promise<WhatsAppPendingIntentRecord | null> {
-  const db = await getDb();
-  if (!db) return null;
-  const row = await loadByIdForUser(db, id, userId);
-  if (!row) return null;
-  return expireIfDue(db, row, now);
+): Promise<WhatsAppPendingReadResult> {
+  return readWithDb("by_id", async (db) => {
+    const row = await loadByIdForUser(db, id, userId);
+    if (!row) return null;
+    return expireIfDue(db, row, now);
+  });
 }
 
 export async function getWhatsAppPendingIntentBySourceForUser(
   sourceInboundMessageId: number,
   userId: number,
   now: Date = new Date(),
-): Promise<WhatsAppPendingIntentRecord | null> {
-  const db = await getDb();
-  if (!db) return null;
-  const row = await loadBySourceForUser(db, sourceInboundMessageId, userId);
-  if (!row) return null;
-  return expireIfDue(db, row, now);
+): Promise<WhatsAppPendingReadResult> {
+  return readWithDb("by_source", async (db) => {
+    const row = await loadBySourceForUser(db, sourceInboundMessageId, userId);
+    if (!row) return null;
+    return expireIfDue(db, row, now);
+  });
 }
 
 export async function getOpenWhatsAppPendingIntentForUser(
   userId: number,
   now: Date = new Date(),
-): Promise<WhatsAppPendingIntentRecord | null> {
-  const db = await getDb();
-  if (!db) return null;
-  const row = await loadOpenForUser(db, userId);
-  if (!row) return null;
-  const latest = await expireIfDue(db, row, now);
-  if (latest.status !== WhatsAppPendingStatuses.OPEN) return null;
-  return latest;
+): Promise<WhatsAppPendingReadResult> {
+  return readWithDb("open", async (db) => {
+    const row = await loadOpenForUser(db, userId);
+    if (!row) return null;
+    const latest = await expireIfDue(db, row, now);
+    if (latest.status !== WhatsAppPendingStatuses.OPEN) return null;
+    return latest;
+  });
 }
 
 export async function createWhatsAppPendingIntent(

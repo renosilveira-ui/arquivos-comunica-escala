@@ -16,10 +16,44 @@ import {
   getWhatsAppPendingIntentByIdForUser,
   getWhatsAppPendingIntentBySourceForUser,
 } from "../server/integrations/whatsapp/pending-intent-store";
-import { WHATSAPP_PENDING_INTENT_TTL_MS } from "../server/integrations/whatsapp/pending-intent-types";
-import type { WhatsAppPendingIntentRecord } from "../server/integrations/whatsapp/pending-intent-types";
+import {
+  WHATSAPP_PENDING_INTENT_TTL_MS,
+  isWhatsAppPendingReadFailure,
+  type WhatsAppPendingIntentRecord,
+  type WhatsAppPendingReadResult,
+} from "../server/integrations/whatsapp/pending-intent-types";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+function expectHealthyAbsent(result: WhatsAppPendingReadResult) {
+  expect(isWhatsAppPendingReadFailure(result)).toBe(false);
+  expect(result).toEqual({ ok: true, row: null });
+}
+
+async function expectHealthyOpenReads(
+  userId: number,
+  sourceId: number,
+  pendingId: number,
+) {
+  const byId = await getWhatsAppPendingIntentByIdForUser(pendingId, userId);
+  const bySource = await getWhatsAppPendingIntentBySourceForUser(
+    sourceId,
+    userId,
+  );
+  const open = await getOpenWhatsAppPendingIntentForUser(userId);
+  for (const result of [byId, bySource, open]) {
+    expect(isWhatsAppPendingReadFailure(result)).toBe(false);
+    expect(result).toMatchObject({
+      ok: true,
+      row: {
+        id: pendingId,
+        userId,
+        sourceInboundMessageId: sourceId,
+        status: "OPEN",
+      },
+    });
+  }
+}
 
 function expectFoundationBirth(
   row: WhatsAppPendingIntentRecord,
@@ -142,6 +176,25 @@ describe("WhatsApp pending intent store", () => {
     expect(serialized).not.toContain("MessageSid");
   });
 
+  it("DB saudável sem pending: os três reads devolvem ok + row null", async () => {
+    expectHealthyAbsent(
+      await getWhatsAppPendingIntentByIdForUser(2_147_000_001, userA),
+    );
+    expectHealthyAbsent(
+      await getWhatsAppPendingIntentBySourceForUser(2_147_000_002, userA),
+    );
+    expectHealthyAbsent(await getOpenWhatsAppPendingIntentForUser(userA));
+  });
+
+  it("DB saudável com OPEN: os três reads devolvem o mesmo row", async () => {
+    const sourceId = await insertInbound(userA, "reads");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    if (!created.ok) throw new Error(created.code);
+    await expectHealthyOpenReads(userA, sourceId, created.row.id);
+  });
+
   it("caller não substitui userId, intentKind, parsedPayload nem institutionId", async () => {
     const sourceId = await insertInbound(userA, "spoof");
     const result = await createWhatsAppPendingIntent({
@@ -214,10 +267,12 @@ describe("WhatsApp pending intent store", () => {
     expect(a.row.userId).toBe(userA);
     expect(b.row.userId).toBe(userB);
     expect(await getOpenWhatsAppPendingIntentForUser(userA)).toMatchObject({
-      id: a.row.id,
+      ok: true,
+      row: { id: a.row.id },
     });
     expect(await getOpenWhatsAppPendingIntentForUser(userB)).toMatchObject({
-      id: b.row.id,
+      ok: true,
+      row: { id: b.row.id },
     });
   });
 
@@ -227,13 +282,13 @@ describe("WhatsApp pending intent store", () => {
       sourceInboundMessageId: sourceB,
     });
     if (!created.ok) throw new Error(created.code);
-    expect(
+    expectHealthyAbsent(
       await getWhatsAppPendingIntentByIdForUser(created.row.id, userA),
-    ).toBeNull();
-    expect(
+    );
+    expectHealthyAbsent(
       await getWhatsAppPendingIntentBySourceForUser(sourceB, userA),
-    ).toBeNull();
-    expect(await getOpenWhatsAppPendingIntentForUser(userA)).toBeNull();
+    );
+    expectHealthyAbsent(await getOpenWhatsAppPendingIntentForUser(userA));
     expect(
       await cancelWhatsAppPendingIntent(created.row.id, userA),
     ).toEqual({ ok: false, code: "NOT_FOUND" });
@@ -242,7 +297,7 @@ describe("WhatsApp pending intent store", () => {
     ).toEqual({ ok: false, code: "NOT_FOUND" });
     expect(
       await getOpenWhatsAppPendingIntentForUser(userB),
-    ).toMatchObject({ id: created.row.id, status: "OPEN" });
+    ).toMatchObject({ ok: true, row: { id: created.row.id, status: "OPEN" } });
   });
 
   it("cancela OPEN, é idempotente e terminal não volta a OPEN", async () => {
@@ -297,7 +352,32 @@ describe("WhatsApp pending intent store", () => {
     if (!expired.ok) throw new Error(expired.code);
     expect(expired.row.status).toBe("EXPIRED");
     expect(expired.row.parsedPayload).toBeNull();
-    expect(await getOpenWhatsAppPendingIntentForUser(userA, dueAt)).toBeNull();
+    expectHealthyAbsent(
+      await getOpenWhatsAppPendingIntentForUser(userA, dueAt),
+    );
+  });
+
+  it("getOpen expira lazy e getById/getBySource devolvem EXPIRED", async () => {
+    const sourceId = await insertInbound(userA, "lazy");
+    const createdAt = new Date("2026-09-04T07:00:00.000Z");
+    const created = await createWhatsAppPendingIntent(
+      { sourceInboundMessageId: sourceId },
+      createdAt,
+    );
+    if (!created.ok) throw new Error(created.code);
+    const dueAt = new Date(createdAt.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS);
+    expectHealthyAbsent(
+      await getOpenWhatsAppPendingIntentForUser(userA, dueAt),
+    );
+    expect(
+      await getWhatsAppPendingIntentByIdForUser(created.row.id, userA, dueAt),
+    ).toMatchObject({
+      ok: true,
+      row: { id: created.row.id, status: "EXPIRED" },
+    });
+    expect(
+      await getWhatsAppPendingIntentBySourceForUser(sourceId, userA, dueAt),
+    ).toMatchObject({ ok: true, row: { status: "EXPIRED" } });
   });
 
   it("OPEN expirado não bloqueia novo source do mesmo user", async () => {
@@ -320,7 +400,7 @@ describe("WhatsApp pending intent store", () => {
     expect(fresh.row.status).toBe("OPEN");
     expect(
       await getWhatsAppPendingIntentByIdForUser(stale.row.id, userA, later),
-    ).toMatchObject({ status: "EXPIRED" });
+    ).toMatchObject({ ok: true, row: { status: "EXPIRED" } });
   });
 
   it("sweep limpa OPEN expirado sem cron", async () => {

@@ -180,6 +180,18 @@ B1 **não** implementa `confirmAndExecute` / `markConsumed`.
   `ON DELETE SET NULL`.
 - Store: `server/integrations/whatsapp/pending-intent-store.ts`. Não
   importa parser, resolver, `createSwapOffer` nem Twilio SDK.
+- Leituras públicas (`getWhatsAppPendingIntentByIdForUser`,
+  `getWhatsAppPendingIntentBySourceForUser`,
+  `getOpenWhatsAppPendingIntentForUser`) devolvem
+  `WhatsAppPendingReadResult` discriminado. Memória conversacional é
+  fail-closed: outage **não** é ausência.
+  - DB saudável + inexistente → `{ ok: true, row: null }`
+  - DB saudável + existente → `{ ok: true, row }`
+  - DB indisponível → `{ ok: false, code: "DB_UNAVAILABLE" }` (nunca `row: null`)
+  - query falha → `{ ok: false, code: "PERSISTENCE_FAILED" }`
+  Helpers privados podem devolver `row | null` porque já receberam `db`
+  válido. Create já diferencia `DB_UNAVAILABLE`; cancel/expire já
+  devolvem código.
 
 ### Payload operacional temporário
 

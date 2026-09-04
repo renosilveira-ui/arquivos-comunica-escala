@@ -98,8 +98,37 @@ describe("WhatsApp pending intent — source contracts", () => {
     expect(contract).toContain("uniq_whatsapp_pending_open_user");
     expect(contract).toContain("status + stage");
     expect(contract).toContain("sourceInboundMessageId");
+    expect(contract).toContain("WhatsAppPendingReadResult");
+    expect(contract).toContain('ok: false, code: "DB_UNAVAILABLE"');
     expect(store).toContain("clearExpiredWhatsAppPendingIntents");
     expect(store).not.toMatch(/confirmAndExecute|markConsumed/);
+  });
+
+  it("reads públicos não colapsam DB indisponível em null", () => {
+    expect(types).toContain("WhatsAppPendingReadResult");
+    expect(types).toContain("isWhatsAppPendingReadFailure");
+    expect(store).toContain("readWithDb");
+    expect(store).not.toMatch(/if\s*\(\s*!db\s*\)\s*return\s*null/);
+    expect(store).not.toMatch(
+      /if\s*\(\s*!db\s*\)[\s\S]{0,160}?return\s*null\s*;/,
+    );
+    const names = [
+      "getWhatsAppPendingIntentByIdForUser",
+      "getWhatsAppPendingIntentBySourceForUser",
+      "getOpenWhatsAppPendingIntentForUser",
+    ];
+    for (const name of names) {
+      const start = store.indexOf(`export async function ${name}`);
+      expect(start).toBeGreaterThan(-1);
+      const next = store.indexOf("export async function", start + 1);
+      const body = store.slice(start, next);
+      expect(body).toContain("Promise<WhatsAppPendingReadResult>");
+      expect(body).toContain("readWithDb");
+      expect(body).not.toMatch(/if\s*\(\s*!db\s*\)\s*return\s*null/);
+      expect(body).not.toMatch(
+        /if\s*\(\s*!db\s*\)[\s\S]{0,160}?return\s*null\s*;/,
+      );
+    }
   });
 
   it("logs técnicos usam JSON.stringify sem texto/telefone", () => {
