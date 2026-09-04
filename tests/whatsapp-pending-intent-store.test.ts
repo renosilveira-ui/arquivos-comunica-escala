@@ -414,13 +414,164 @@ describe("WhatsApp pending intent store", () => {
     const swept = await clearExpiredWhatsAppPendingIntents(
       new Date(createdAt.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS),
     );
+    expect(swept).toMatchObject({ ok: true });
+    if (!swept.ok) throw new Error(swept.code);
     expect(swept.expired).toBeGreaterThanOrEqual(1);
+    expect(swept.payloadsCleared).toBeGreaterThanOrEqual(swept.expired);
     const [row] = await db
       .select()
       .from(whatsappPendingIntents)
       .where(eq(whatsappPendingIntents.id, created.row.id));
     expect(row?.status).toBe("EXPIRED");
     expect(row?.payloadClearedAt).toBeTruthy();
+  });
+
+  it("cleanup saudável sem trabalho devolve ok e zeros", async () => {
+    await db.delete(whatsappPendingIntents);
+    const swept = await clearExpiredWhatsAppPendingIntents(new Date());
+    expect(swept).toEqual({ ok: true, expired: 0, payloadsCleared: 0 });
+  });
+
+  it("payloadsCleared = expired + leftovers sem contar duas vezes a mesma row", async () => {
+    await db.delete(whatsappPendingIntents);
+    const dueSource = await insertInbound(userA, "cnt-due");
+    const leftoverSource = await insertInbound(userA, "cnt-left");
+    const createdAt = new Date("2026-09-04T06:00:00.000Z");
+    const created = await createWhatsAppPendingIntent(
+      { sourceInboundMessageId: dueSource },
+      createdAt,
+    );
+    if (!created.ok) throw new Error(created.code);
+    await db.insert(whatsappPendingIntents).values({
+      userId: userA,
+      sourceInboundMessageId: leftoverSource,
+      institutionId: null,
+      status: "CANCELLED",
+      stage: "PARSE",
+      intentKind: null,
+      parsedPayload: { slot: "stale" },
+      resolvedPayload: null,
+      clarificationPayload: null,
+      expiresAt: createdAt,
+      consumedAt: null,
+      payloadClearedAt: null,
+    });
+    const dueAt = new Date(createdAt.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS);
+    const swept = await clearExpiredWhatsAppPendingIntents(dueAt);
+    expect(swept).toEqual({ ok: true, expired: 1, payloadsCleared: 2 });
+    const rows = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(inArray(whatsappPendingIntents.userId, [userA]));
+    expect(rows.every((row) => row.payloadClearedAt != null)).toBe(true);
+    expect(rows.find((row) => row.id === created.row.id)?.status).toBe(
+      "EXPIRED",
+    );
+  });
+
+  it("retry de cleanup é idempotente e completa leftover", async () => {
+    await db.delete(whatsappPendingIntents);
+    const sourceId = await insertInbound(userA, "retry-clean");
+    const createdAt = new Date("2026-09-04T05:00:00.000Z");
+    const created = await createWhatsAppPendingIntent(
+      { sourceInboundMessageId: sourceId },
+      createdAt,
+    );
+    if (!created.ok) throw new Error(created.code);
+    const dueAt = new Date(createdAt.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS);
+    const first = await clearExpiredWhatsAppPendingIntents(dueAt);
+    const second = await clearExpiredWhatsAppPendingIntents(dueAt);
+    expect(first).toMatchObject({ ok: true, expired: 1, payloadsCleared: 1 });
+    expect(second).toEqual({ ok: true, expired: 0, payloadsCleared: 0 });
+  });
+
+  it("cleanup não expira OPEN com TTL futuro", async () => {
+    await db.delete(whatsappPendingIntents);
+    const sourceId = await insertInbound(userA, "future-open");
+    const now = new Date("2026-09-04T16:00:00.000Z");
+    const created = await createWhatsAppPendingIntent(
+      { sourceInboundMessageId: sourceId },
+      now,
+    );
+    if (!created.ok) throw new Error(created.code);
+    const swept = await clearExpiredWhatsAppPendingIntents(now);
+    expect(swept).toEqual({ ok: true, expired: 0, payloadsCleared: 0 });
+    expect(
+      await getOpenWhatsAppPendingIntentForUser(userA, now),
+    ).toMatchObject({ ok: true, row: { id: created.row.id, status: "OPEN" } });
+  });
+
+  it("cancel e expire concorrentes não ressuscitam OPEN", async () => {
+    const sourceId = await insertInbound(userA, "race-ce");
+    const createdAt = new Date("2026-09-04T04:00:00.000Z");
+    const created = await createWhatsAppPendingIntent(
+      { sourceInboundMessageId: sourceId },
+      createdAt,
+    );
+    if (!created.ok) throw new Error(created.code);
+    const dueAt = new Date(createdAt.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS);
+    const [cancelled, expired] = await Promise.all([
+      cancelWhatsAppPendingIntent(created.row.id, userA, dueAt),
+      expireWhatsAppPendingIntent(created.row.id, userA, dueAt),
+    ]);
+    expect(cancelled.ok).toBe(true);
+    expect(expired.ok).toBe(true);
+    if (!cancelled.ok || !expired.ok) throw new Error("race ce failed");
+    const statuses = [cancelled.row.status, expired.row.status];
+    expect(statuses.every((status) => status !== "OPEN")).toBe(true);
+    const outcomes = [cancelled.outcome, expired.outcome];
+    expect(outcomes).toContain("updated");
+    expect(
+      outcomes.every(
+        (outcome) => outcome === "updated" || outcome === "already_terminal",
+      ),
+    ).toBe(true);
+    const [row] = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.id, created.row.id));
+    expect(row?.status === "CANCELLED" || row?.status === "EXPIRED").toBe(true);
+    expect(row?.payloadClearedAt).toBeTruthy();
+    expect(row?.parsedPayload).toBeNull();
+  });
+
+  it("cleanup após cancel mantém terminal e payload limpo", async () => {
+    const sourceId = await insertInbound(userA, "clean-term");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    if (!created.ok) throw new Error(created.code);
+    const cancelled = await cancelWhatsAppPendingIntent(created.row.id, userA);
+    expect(cancelled).toMatchObject({ ok: true, outcome: "updated" });
+    const swept = await clearExpiredWhatsAppPendingIntents(new Date());
+    expect(swept.ok).toBe(true);
+    const [row] = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.id, created.row.id));
+    expect(row?.status).toBe("CANCELLED");
+    expect(row?.payloadClearedAt).toBeTruthy();
+    expect(row?.parsedPayload).toBeNull();
+    expect(row?.consumedAt).toBeNull();
+  });
+
+  it("nascimento OPEN B1 e terminais têm invariantes de payload", async () => {
+    const sourceId = await insertInbound(userA, "invariants");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    if (!created.ok) throw new Error(created.code);
+    expectFoundationBirth(created.row, userA, sourceId);
+    expect(created.row.stage).toBe("PARSE");
+    expect(created.row.consumedAt).toBeNull();
+    expect(created.row.expiresAt).toBeInstanceOf(Date);
+    const cancelled = await cancelWhatsAppPendingIntent(created.row.id, userA);
+    if (!cancelled.ok) throw new Error(cancelled.code);
+    expect(cancelled.row.status).toBe("CANCELLED");
+    expect(cancelled.row.parsedPayload).toBeNull();
+    expect(cancelled.row.resolvedPayload).toBeNull();
+    expect(cancelled.row.clarificationPayload).toBeNull();
+    expect(cancelled.row.payloadClearedAt).toBeTruthy();
   });
 
   it("corrida de dois creates no mesmo source gera uma row", async () => {

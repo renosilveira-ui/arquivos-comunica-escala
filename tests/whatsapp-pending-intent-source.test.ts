@@ -100,7 +100,9 @@ describe("WhatsApp pending intent — source contracts", () => {
     expect(contract).toContain("sourceInboundMessageId");
     expect(contract).toContain("WhatsAppPendingReadResult");
     expect(contract).toContain('ok: false, code: "DB_UNAVAILABLE"');
+    expect(contract).toContain("payloadsCleared = expired + leftovers");
     expect(store).toContain("clearExpiredWhatsAppPendingIntents");
+    expect(store).toContain("whatsapp_pending_cleanup_failed");
     expect(store).not.toMatch(/confirmAndExecute|markConsumed/);
   });
 
@@ -129,6 +131,27 @@ describe("WhatsApp pending intent — source contracts", () => {
         /if\s*\(\s*!db\s*\)[\s\S]{0,160}?return\s*null\s*;/,
       );
     }
+  });
+
+  it("primitives públicas não colapsam outage em null nem zero de cleanup", () => {
+    expect(types).toContain("WhatsAppPendingCleanupResult");
+    expect(types).toContain("isWhatsAppPendingCleanupFailure");
+    expect(store).toContain("acquireDb");
+    expect(store).not.toMatch(/if\s*\(\s*!db\s*\)\s*return\s*null/);
+    expect(store).not.toMatch(
+      /if\s*\(\s*!db\s*\)[\s\S]{0,160}?return\s*\{\s*expired\s*:\s*0/,
+    );
+    expect(store).not.toMatch(
+      /if\s*\(\s*!db\s*\)[\s\S]{0,80}?return\s*\{\s*expired:\s*0,\s*payloadsCleared:\s*0/,
+    );
+    const cleanupStart = store.indexOf(
+      "export async function clearExpiredWhatsAppPendingIntents",
+    );
+    const cleanup = store.slice(cleanupStart);
+    expect(cleanup).toContain('ok: true');
+    expect(cleanup).toContain('persistenceFailed("cleanup")');
+    expect(cleanup).not.toMatch(/return\s*\{\s*expired:\s*0/);
+    expect(store).toContain("whatsapp_pending_cleanup_failed");
   });
 
   it("logs técnicos usam JSON.stringify sem texto/telefone", () => {

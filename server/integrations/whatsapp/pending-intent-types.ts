@@ -98,7 +98,13 @@ export function isWhatsAppPendingReadFailure(
   return result.ok === false;
 }
 
-export type WhatsAppPendingCleanupResult = {
-  expired: number;
-  payloadsCleared: number;
-};
+export type WhatsAppPendingCleanupResult =
+  | { ok: true; expired: number; payloadsCleared: number }
+  | { ok: false; code: "DB_UNAVAILABLE" | "PERSISTENCE_FAILED" };
+
+/** Distingue outage de zero real — callers não devem tratar expired===0. */
+export function isWhatsAppPendingCleanupFailure(
+  result: WhatsAppPendingCleanupResult,
+): result is { ok: false; code: "DB_UNAVAILABLE" | "PERSISTENCE_FAILED" } {
+  return result.ok === false;
+}

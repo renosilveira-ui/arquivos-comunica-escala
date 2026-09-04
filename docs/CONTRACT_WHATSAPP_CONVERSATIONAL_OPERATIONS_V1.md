@@ -187,11 +187,23 @@ B1 **não** implementa `confirmAndExecute` / `markConsumed`.
   fail-closed: outage **não** é ausência.
   - DB saudável + inexistente → `{ ok: true, row: null }`
   - DB saudável + existente → `{ ok: true, row }`
-  - DB indisponível → `{ ok: false, code: "DB_UNAVAILABLE" }` (nunca `row: null`)
-  - query falha → `{ ok: false, code: "PERSISTENCE_FAILED" }`
+  - DB indisponível (`getDb()` null) → `{ ok: false, code: "DB_UNAVAILABLE" }`
+    (nunca `row: null`)
+  - `getDb()` rejeitado / query falha / reload incoerente →
+    `{ ok: false, code: "PERSISTENCE_FAILED" }`
   Helpers privados podem devolver `row | null` porque já receberam `db`
-  válido. Create já diferencia `DB_UNAVAILABLE`; cancel/expire já
-  devolvem código.
+  válido.
+- Create, cancel, expire e `clearExpiredWhatsAppPendingIntents` usam o
+  mesmo par de códigos de infra. `getDb()` null → `DB_UNAVAILABLE`;
+  rejeição de `getDb`/SELECT/INSERT/UPDATE/reload → `PERSISTENCE_FAILED`.
+  Infra **não** vira `SOURCE_INBOUND_NOT_FOUND`, `NOT_FOUND`,
+  `already_open`, `replay`, `not_due`, `already_terminal` nem zero de
+  cleanup (`expired: 0` só com `ok: true` após updates concluídos).
+- Cleanup: `{ ok: true, expired, payloadsCleared }` somente se os dois
+  UPDATEs terminam. Falha no segundo após sucesso no primeiro →
+  `PERSISTENCE_FAILED` (sem rollback; a operação é idempotente).
+  `payloadsCleared = expired + leftovers` — o primeiro UPDATE já limpa
+  payload das rows que expira, então elas não entram no segundo.
 
 ### Payload operacional temporário
 
