@@ -85,7 +85,7 @@ describe("swaps.listEligibleRecipients", () => {
       .insert(users)
       .values({
         name,
-        email: `${name.replace(/\s+/g, ".").toLowerCase()}@example.test`,
+        email: `recip.${stamp}.${label.replace(/\s+/g, ".")}@example.test`,
         passwordHash: "not-used",
         role,
         approvalStatus: "APPROVED",
@@ -130,7 +130,7 @@ describe("swaps.listEligibleRecipients", () => {
         id: identity.userId,
         role: identity.role,
         name: identity.name,
-        email: `${identity.name.replace(/\s+/g, ".").toLowerCase()}@example.test`,
+        email: `recip.${stamp}.${identity.name}@example.test`,
         sessionVersion: 1,
       },
       institutionId: tenantId,
@@ -192,8 +192,10 @@ describe("swaps.listEligibleRecipients", () => {
     });
   }
 
-  function listedIds(rows: { professionalId: number }[]): Set<number> {
-    return new Set(rows.map((row) => row.professionalId));
+  function listedIds(
+    result: { recipients: { professionalId: number }[] },
+  ): Set<number> {
+    return new Set(result.recipients.map((row) => row.professionalId));
   }
 
   async function provisionAllowlistSector(
@@ -782,8 +784,9 @@ describe("swaps.listEligibleRecipients", () => {
   it("19–20. resposta só com campos aprovados; sem PII", async () => {
     const shift = await createOccupiedShift(offerer, 19);
     const rows = await listRecipients(offerer, shift.shiftId);
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
+    expect(rows.recipients.length).toBeGreaterThan(0);
+    expect(rows.unresolvedHomonymGroups).toEqual([]);
+    for (const row of rows.recipients) {
       expect(Object.keys(row).sort()).toEqual(["displayName", "professionalId"]);
       expect(row).not.toHaveProperty("userId");
       expect(row).not.toHaveProperty("email");
@@ -816,7 +819,7 @@ describe("swaps.listEligibleRecipients", () => {
       name: `Bruno Recip ${stamp}`,
     });
     const shift = await createOccupiedShift(offerer, 22);
-    const names = (await listRecipients(offerer, shift.shiftId))
+    const names = (await listRecipients(offerer, shift.shiftId)).recipients
       .filter((row) =>
         [carlos.professionalId, ana.professionalId, bruno.professionalId].includes(
           row.professionalId,
@@ -850,7 +853,10 @@ describe("swaps.listEligibleRecipients", () => {
         sectorId: lonely.sectorId,
         scheduleContextId: lonely.scheduleContextId,
       });
-      await expect(listRecipients(offerer, shift.shiftId)).resolves.toEqual([]);
+      await expect(listRecipients(offerer, shift.shiftId)).resolves.toEqual({
+        recipients: [],
+        unresolvedHomonymGroups: [],
+      });
     } finally {
       await cleanupAllowlistSector(lonely);
     }
@@ -937,5 +943,65 @@ describe("swaps.listEligibleRecipients", () => {
         .set({ canAccess: true })
         .where(eq(professionalAccess.professionalId, peer.professionalId));
     }
+  });
+
+  it("homônimos com qualificação canônica distinta são selecionáveis; iguais não", async () => {
+    const sameName = `Ana Homônima ${stamp}`;
+    const clinicaTwin = await createIdentity("homonym-clinica", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: clinicaId,
+      specialty: "rótulo legado irrelevante",
+      name: sameName,
+    });
+    const anesthesiaTwin = await createIdentity("homonym-anest", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "rótulo legado irrelevante",
+      name: sameName,
+    });
+    const collideA = await createIdentity("homonym-collide-a", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: clinicaId,
+      specialty: "Clínica Médica",
+      name: `Bruno Homônimo ${stamp}`,
+    });
+    const collideB = await createIdentity("homonym-collide-b", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: clinicaId,
+      specialty: "Clínica Médica",
+      name: `Bruno Homônimo ${stamp}`,
+    });
+    const shift = await createOccupiedShift(offerer, 40);
+    const listed = await listRecipients(offerer, shift.shiftId);
+    const ids = listedIds(listed);
+
+    expect(ids.has(clinicaTwin.professionalId)).toBe(true);
+    expect(ids.has(anesthesiaTwin.professionalId)).toBe(true);
+    const anaRows = listed.recipients.filter(
+      (item) => item.professionalId === clinicaTwin.professionalId
+        || item.professionalId === anesthesiaTwin.professionalId,
+    );
+    expect(anaRows.map((item) => item.qualification).sort()).toEqual([
+      "Anestesiologia",
+      "Clínica Médica",
+    ]);
+
+    expect(ids.has(collideA.professionalId)).toBe(false);
+    expect(ids.has(collideB.professionalId)).toBe(false);
+    expect(listed.unresolvedHomonymGroups).toEqual(
+      expect.arrayContaining([
+        {
+          code: "UNRESOLVED_HOMONYM",
+          displayName: `Bruno Homônimo ${stamp}`,
+          qualification: "Clínica Médica",
+          count: 2,
+          reason:
+            "Há mais de um profissional com este nome e a mesma qualificação. Não é possível direcionar a oferta com segurança.",
+        },
+      ]),
+    );
+    expect(JSON.stringify(listed.unresolvedHomonymGroups)).not.toContain(
+      "professionalId",
+    );
   });
 });

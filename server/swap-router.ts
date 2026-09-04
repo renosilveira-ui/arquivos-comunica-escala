@@ -1808,6 +1808,9 @@ export const swapRouter = router({
   // Projeção UX de destinatários para cessão/repasse DIRECIONADO (A → B).
   // SWAP fica de fora: o destinatário canônico é o ocupante do plantão
   // de contrapartida. A lista não é autoridade — createSwapOffer revalida.
+  // Retorno é objeto { recipients, unresolvedHomonymGroups }, nunca array
+  // nu: recipients são selecionáveis e visualmente distintos; homônimos
+  // sem discriminador seguro não entram em recipients.
   listEligibleRecipients: protectedProcedure
     .input(
       z.strictObject({

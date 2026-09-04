@@ -20,8 +20,23 @@
  *
  * candidate list = structural eligibility
  * createSwapOffer = final eligibility
+ *
+ * Desambiguação humana (P1):
+ * Inventário: não há CRM, conselho, UF, CPF nem outro identificador
+ * profissional público no cadastro. Qualificação canônica =
+ * medical_specialties.name OU rótulo de operational_profile_code.
+ * `professionals.specialty` é rótulo legado, não autoridade.
+ * Homônimos com a mesma qualificação canônica não são selecionáveis —
+ * entram em unresolvedHomonymGroups. professionalId nunca é label.
+ *
+ * qualification no destinatário só é enviada quando o grupo de nome
+ * exige desambiguação e aquele indivíduo é distinguível.
  */
 import { sql, type SQLWrapper } from "drizzle-orm";
+import {
+  getOperationalProfileByCode,
+  isOperationalProfileCode,
+} from "../lib/medical-specialties";
 import { rowsFromExecute } from "./_core/db-results";
 import {
   plantonistaAccessCoversShiftSql,
@@ -34,10 +49,28 @@ type EligibilityDb = {
 
 export const ELIGIBLE_OFFER_RECIPIENT_HARD_LIMIT = 200;
 
+export const UNRESOLVED_HOMONYM_CODE = "UNRESOLVED_HOMONYM" as const;
+
+export const UNRESOLVED_HOMONYM_REASON =
+  "Há mais de um profissional com este nome e a mesma qualificação. Não é possível direcionar a oferta com segurança.";
+
 export type EligibleOfferRecipient = {
   professionalId: number;
   displayName: string;
-  qualification?: string | null;
+  qualification?: string;
+};
+
+export type UnresolvedOfferHomonymGroup = {
+  code: typeof UNRESOLVED_HOMONYM_CODE;
+  displayName: string;
+  qualification: string | null;
+  count: number;
+  reason: string;
+};
+
+export type EligibleOfferRecipientList = {
+  recipients: EligibleOfferRecipient[];
+  unresolvedHomonymGroups: UnresolvedOfferHomonymGroup[];
 };
 
 export class EligibleOfferRecipientLimitExceededError extends Error {
@@ -54,8 +87,24 @@ export class EligibleOfferRecipientLimitExceededError extends Error {
 type RecipientRow = {
   professionalId: number | string;
   displayName: string | null;
-  specialty: string | null;
+  medicalSpecialtyName: string | null;
+  operationalProfileCode: string | null;
 };
+
+type ProjectedRecipient = {
+  professionalId: number;
+  displayName: string;
+  qualification: string | null;
+};
+
+export function normalizeRecipientIdentityText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
 
 function compareRecipientName(left: string, right: string): number {
   return left.localeCompare(right, "pt-BR", {
@@ -64,12 +113,23 @@ function compareRecipientName(left: string, right: string): number {
   });
 }
 
-function projectRecipients(rows: RecipientRow[]): EligibleOfferRecipient[] {
-  const projected: {
-    professionalId: number;
-    displayName: string;
-    specialty: string | null;
-  }[] = [];
+function canonicalQualificationLabel(row: {
+  medicalSpecialtyName: string | null;
+  operationalProfileCode: string | null;
+}): string | null {
+  const specialtyName = String(row.medicalSpecialtyName ?? "").trim();
+  if (specialtyName) return specialtyName;
+  const profileCode = row.operationalProfileCode;
+  if (profileCode && isOperationalProfileCode(profileCode)) {
+    return getOperationalProfileByCode(profileCode)?.name ?? null;
+  }
+  return null;
+}
+
+export function projectEligibleOfferRecipients(
+  rows: RecipientRow[],
+): EligibleOfferRecipientList {
+  const projected: ProjectedRecipient[] = [];
   for (const row of rows) {
     const professionalId = Number(row.professionalId);
     if (!Number.isSafeInteger(professionalId) || professionalId <= 0) continue;
@@ -78,35 +138,91 @@ function projectRecipients(rows: RecipientRow[]): EligibleOfferRecipient[] {
     projected.push({
       professionalId,
       displayName,
-      specialty: row.specialty,
+      qualification: canonicalQualificationLabel(row),
     });
   }
 
   projected.sort(
     (left, right) =>
       compareRecipientName(left.displayName, right.displayName) ||
+      compareRecipientName(
+        left.qualification ?? "",
+        right.qualification ?? "",
+      ) ||
       left.professionalId - right.professionalId,
   );
 
-  const nameCounts = new Map<string, number>();
+  const byName = new Map<string, ProjectedRecipient[]>();
   for (const row of projected) {
-    const key = row.displayName.trim().toLocaleLowerCase("pt-BR");
-    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+    const key = normalizeRecipientIdentityText(row.displayName);
+    const group = byName.get(key);
+    if (group) group.push(row);
+    else byName.set(key, [row]);
   }
-  const needsQualification = [...nameCounts.values()].some((count) => count > 1);
 
-  return projected.map((row) =>
-    needsQualification
-      ? {
-          professionalId: row.professionalId,
-          displayName: row.displayName,
-          qualification: row.specialty,
+  const recipients: EligibleOfferRecipient[] = [];
+  const unresolvedHomonymGroups: UnresolvedOfferHomonymGroup[] = [];
+
+  for (const nameGroup of byName.values()) {
+    if (nameGroup.length === 1) {
+      const only = nameGroup[0]!;
+      recipients.push({
+        professionalId: only.professionalId,
+        displayName: only.displayName,
+      });
+      continue;
+    }
+
+    const byQualification = new Map<string, ProjectedRecipient[]>();
+    for (const row of nameGroup) {
+      const key = normalizeRecipientIdentityText(row.qualification ?? "");
+      const group = byQualification.get(key);
+      if (group) group.push(row);
+      else byQualification.set(key, [row]);
+    }
+
+    for (const qualificationGroup of byQualification.values()) {
+      const representative = qualificationGroup[0]!;
+      if (qualificationGroup.length === 1) {
+        const selectable: EligibleOfferRecipient = {
+          professionalId: representative.professionalId,
+          displayName: representative.displayName,
+        };
+        if (representative.qualification) {
+          selectable.qualification = representative.qualification;
         }
-      : {
-          professionalId: row.professionalId,
-          displayName: row.displayName,
-        },
+        recipients.push(selectable);
+        continue;
+      }
+      unresolvedHomonymGroups.push({
+        code: UNRESOLVED_HOMONYM_CODE,
+        displayName: representative.displayName,
+        qualification: representative.qualification,
+        count: qualificationGroup.length,
+        reason: UNRESOLVED_HOMONYM_REASON,
+      });
+    }
+  }
+
+  recipients.sort(
+    (left, right) =>
+      compareRecipientName(left.displayName, right.displayName) ||
+      compareRecipientName(
+        left.qualification ?? "",
+        right.qualification ?? "",
+      ) ||
+      left.professionalId - right.professionalId,
   );
+  unresolvedHomonymGroups.sort(
+    (left, right) =>
+      compareRecipientName(left.displayName, right.displayName) ||
+      compareRecipientName(
+        left.qualification ?? "",
+        right.qualification ?? "",
+      ),
+  );
+
+  return { recipients, unresolvedHomonymGroups };
 }
 
 export async function listClinicallyEligibleOfferRecipients(
@@ -117,13 +233,14 @@ export async function listClinicallyEligibleOfferRecipients(
     excludeProfessionalId: number;
     excludeUserId: number;
   },
-): Promise<EligibleOfferRecipient[]> {
+): Promise<EligibleOfferRecipientList> {
   const limitPlusOne = ELIGIBLE_OFFER_RECIPIENT_HARD_LIMIT + 1;
   const result = await db.execute(sql`
     SELECT
       ap.id AS professionalId,
       ap.name AS displayName,
-      ap.specialty AS specialty
+      ms.name AS medicalSpecialtyName,
+      ap.operational_profile_code AS operationalProfileCode
     FROM shift_instances si
     JOIN institutions inst
       ON inst.id = si.institution_id
@@ -144,6 +261,8 @@ export async function listClinicallyEligibleOfferRecipients(
       ON au.id = ap.user_id
      AND au.approval_status = 'APPROVED'
      AND au.deleted_at IS NULL
+    LEFT JOIN medical_specialties ms
+      ON ms.id = ap.medical_specialty_id
     WHERE si.id = ${input.shiftId}
       AND si.institution_id = ${input.institutionId}
       AND ap.id != ${input.excludeProfessionalId}
@@ -160,5 +279,5 @@ export async function listClinicallyEligibleOfferRecipients(
       ELIGIBLE_OFFER_RECIPIENT_HARD_LIMIT,
     );
   }
-  return projectRecipients(rows);
+  return projectEligibleOfferRecipients(rows);
 }
