@@ -116,7 +116,9 @@ describe("aviso de plantão vago — contratos de fonte", () => {
       "utf8",
     );
     const swap = readFileSync("server/swap-offer-eligibility.ts", "utf8");
-    const sql = eligibility.slice(eligibility.indexOf("SELECT DISTINCT au.id"));
+    const sql = eligibility.slice(
+      eligibility.indexOf("export async function eligibleProfessionalUserIdsForShift"),
+    );
     expect(eligibility).toContain(
       "export async function eligibleProfessionalUserIdsForShift",
     );
@@ -126,8 +128,7 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(swap).toContain("actorClinicallyCoversOfferedShiftSql");
     expect(swap).not.toContain("plantonistaXorQualificationSql");
     expect(swap).not.toContain("plantonistaQualificationMatchesSql");
-    expect(eligibility).not.toContain("medical_specialty_id");
-    expect(eligibility).not.toContain("operational_profile_code");
+    expect(sql).not.toContain("schedule_context_allowed_qualifications");
   });
 
   it("UI do gestor só mostra Avisar equipe em plantão vago", () => {

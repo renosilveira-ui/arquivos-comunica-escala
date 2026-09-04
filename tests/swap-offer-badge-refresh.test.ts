@@ -68,11 +68,19 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(eligibility).toContain(
       "export async function eligibleRecipientUserIdsForSwapOffer",
     );
+    const accessFn = plantonista.slice(
+      plantonista.indexOf("export function plantonistaAccessCoversShiftSql"),
+      plantonista.indexOf("export function plantonistaQualificationMatchesContextSql"),
+    );
     expect(eligibility).toContain("actorClinicallyCoversOfferedShiftSql");
     expect(eligibility).not.toContain("plantonistaXorQualificationSql");
     expect(eligibility).not.toContain("plantonistaQualificationMatchesSql");
-    expect(plantonista).not.toContain("medical_specialty_id");
-    expect(plantonista).not.toContain("operational_profile_code");
+    expect(accessFn).not.toContain("medical_specialty_id");
+    expect(accessFn).not.toContain("operational_profile_code");
+    expect(plantonista).toContain(
+      "export function plantonistaQualificationMatchesContextSql",
+    );
+    expect(plantonista).toContain("schedule_context_allowed_qualifications");
     expect(plantonista).toContain(
       'actor_source_access.sector_id = ${col(si, "sector_id")}',
     );

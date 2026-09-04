@@ -341,12 +341,19 @@ describe("sinal de oferta de plantão", () => {
     expect(listAvailable).not.toContain(
       "medical_specialty_id = aq.medical_specialty_id",
     );
+    const qualified = offerDomain.slice(
+      offerDomain.indexOf("export async function assertProfessionalQualifiedForShift"),
+      offerDomain.indexOf("export async function requireCanonicalAssignmentTuple"),
+    );
+    expect(qualified).toContain("assertProfessionalEligibleForScheduleContext");
+    expect(qualified).not.toContain("assertProfessionalQualificationMatchesScheduleContext");
     const receive = offerDomain.slice(
       offerDomain.indexOf("export async function requireProfessionalCanReceiveShift"),
       offerDomain.indexOf("export async function requireCanonicalShiftOccupant"),
     );
     expect(receive).toContain("findProfessionalAccessId");
     expect(receive).toContain("assertProfessionalQualifiedForShift");
+    expect(receive).toContain("assertProfessionalQualificationMatchesScheduleContext");
     expect(receive).not.toContain("findManagerScopeId");
     expect(receive).not.toContain("GESTOR_PLUS");
     const signal = readFileSync("server/swap-offer-signal.ts", "utf8");

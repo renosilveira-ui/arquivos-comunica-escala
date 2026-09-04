@@ -26,6 +26,7 @@ import { yearMonthBrt } from "./local-time";
 import {
   assertActiveScheduleContextTopology,
   assertProfessionalEligibleForScheduleContext,
+  assertProfessionalQualificationMatchesScheduleContext,
 } from "./schedule-contexts";
 
 /**
@@ -669,13 +670,21 @@ export async function requireProfessionalCanReceiveShift(
   }
   // Papel gerencial não substitui professional_access para assumir plantão.
   // Visibilidade administrativa fica em queryListAvailableRows; aceite
-  // revalida só a autoridade clínica (fail-closed).
+  // revalida só a autoridade clínica (fail-closed): acesso + qualificação
+  // do schedule_context. Origem/ocupante (ofertar o próprio plantão) não
+  // passa por aqui.
   await assertProfessionalQualifiedForShift(
     db,
     input.shift,
     professional,
     input.lockForUpdate === true,
   );
+  await assertProfessionalQualificationMatchesScheduleContext({
+    institutionId: input.institutionId,
+    professionalId: professional.professionalId,
+    scheduleContextId: input.shift.scheduleContextId,
+    db,
+  });
   return professional;
 }
 

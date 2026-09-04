@@ -209,6 +209,87 @@ describe("elegibilidade canônica de oferta de plantão", () => {
     return rows.map((row) => row.userId);
   }
 
+  async function provisionAllowlistSector(
+    label: string,
+    specialtyIds: number[],
+  ): Promise<{ sectorId: number; scheduleContextId: number }> {
+    const [sector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Allow ${label} ${stamp}`,
+        category: "servico",
+        color: "#aaaaaa",
+      })
+      .$returningId();
+    const contextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId: sector.id,
+    });
+    await db
+      .update(scheduleContexts)
+      .set({
+        admissionPolicy: "QUALIFICATION_ALLOWLIST",
+        medicalSpecialtyId: null,
+        operationalProfileCode: null,
+      })
+      .where(eq(scheduleContexts.id, contextId));
+    if (specialtyIds.length > 0) {
+      await db.insert(scheduleContextAllowedQualifications).values(
+        specialtyIds.map((medicalSpecialtyId) => ({
+          scheduleContextId: contextId,
+          medicalSpecialtyId,
+        })),
+      );
+    }
+    return { sectorId: sector.id, scheduleContextId: contextId };
+  }
+
+  async function grantExactAccess(
+    professionalId: number,
+    targetSectorId: number,
+  ) {
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId,
+      hospitalId,
+      sectorId: targetSectorId,
+      canAccess: true,
+    });
+  }
+
+  async function cleanupAllowlistSector(target: {
+    sectorId: number;
+    scheduleContextId: number;
+  }) {
+    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+    await db
+      .delete(swapRequestDismissals)
+      .where(eq(swapRequestDismissals.institutionId, institutionId));
+    await db.delete(swapRequests).where(eq(swapRequests.institutionId, institutionId));
+    await db
+      .delete(scheduleContextAllowedQualifications)
+      .where(
+        eq(
+          scheduleContextAllowedQualifications.scheduleContextId,
+          target.scheduleContextId,
+        ),
+      );
+    await db
+      .delete(professionalAccess)
+      .where(eq(professionalAccess.sectorId, target.sectorId));
+    await db
+      .delete(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.sectorId, target.sectorId));
+    await db.delete(shiftInstances).where(eq(shiftInstances.sectorId, target.sectorId));
+    await db
+      .delete(scheduleContexts)
+      .where(eq(scheduleContexts.id, target.scheduleContextId));
+    await db.delete(sectors).where(eq(sectors.id, target.sectorId));
+  }
+
   beforeAll(async () => {
     const connection = await getDb();
     if (!connection) throw new Error("Database not available");
@@ -348,8 +429,24 @@ describe("elegibilidade canônica de oferta de plantão", () => {
       .where(eq(professionalInstitutions.institutionId, institutionId));
     await db.delete(professionals).where(inArray(professionals.id, professionalIds));
     await db.delete(users).where(inArray(users.id, userIds));
-    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
-    await db.delete(sectors).where(eq(sectors.id, sectorId));
+    const leftoverContexts = await db
+      .select({ id: scheduleContexts.id })
+      .from(scheduleContexts)
+      .where(eq(scheduleContexts.institutionId, institutionId));
+    if (leftoverContexts.length > 0) {
+      await db
+        .delete(scheduleContextAllowedQualifications)
+        .where(
+          inArray(
+            scheduleContextAllowedQualifications.scheduleContextId,
+            leftoverContexts.map((row) => row.id),
+          ),
+        );
+    }
+    await db
+      .delete(scheduleContexts)
+      .where(eq(scheduleContexts.institutionId, institutionId));
+    await db.delete(sectors).where(eq(sectors.institutionId, institutionId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     await db.delete(medicalSpecialties).where(eq(medicalSpecialties.id, clinicaId));
@@ -363,6 +460,7 @@ describe("elegibilidade canônica de oferta de plantão", () => {
     );
     expect(receiveSlice).toContain("findProfessionalAccessId");
     expect(receiveSlice).toContain("assertProfessionalQualifiedForShift");
+    expect(receiveSlice).toContain("assertProfessionalQualificationMatchesScheduleContext");
     expect(receiveSlice).not.toContain("findManagerScopeId");
     expect(receiveSlice).not.toContain("GESTOR_PLUS");
 
@@ -374,6 +472,26 @@ describe("elegibilidade canônica de oferta de plantão", () => {
     const eligibility = readFileSync("server/swap-offer-eligibility.ts", "utf8");
     const helper = readFileSync("server/plantonista-shift-eligibility.ts", "utf8");
     expect(helper).toContain("export function actorClinicallyCoversOfferedShiftSql");
+    expect(helper).toContain("export function plantonistaQualificationMatchesContextSql");
+    const clinicalSql = helper.slice(
+      helper.indexOf("export function actorClinicallyCoversOfferedShiftSql"),
+      helper.indexOf("export type VacantShiftEligibilityTarget"),
+    );
+    expect(clinicalSql).toContain("plantonistaAccessCoversShiftSql");
+    expect(clinicalSql).toContain("plantonistaQualificationMatchesContextSql");
+    const accessSql = helper.slice(
+      helper.indexOf("export function plantonistaAccessCoversShiftSql"),
+      helper.indexOf("export function plantonistaQualificationMatchesContextSql"),
+    );
+    expect(accessSql).not.toContain("medical_specialty_id");
+    expect(accessSql).not.toContain("schedule_context_allowed_qualifications");
+    const contexts = readFileSync("server/schedule-contexts.ts", "utf8");
+    const allocation = contexts.slice(
+      contexts.indexOf("export async function assertProfessionalEligibleForScheduleContext"),
+      contexts.indexOf("export async function assertActiveScheduleContextTopology"),
+    );
+    expect(allocation).not.toContain("qualificationMatches");
+    expect(allocation).not.toContain("assertProfessionalQualificationMatchesScheduleContext");
     expect(listSlice).toContain("actorClinicallyCoversOfferedShiftSql");
     expect(listSlice).toContain("listedOfferIsClinicallyActionable");
     expect(eligibility).toContain("actorClinicallyCoversOfferedShiftSql");
@@ -886,5 +1004,188 @@ describe("elegibilidade canônica de oferta de plantão", () => {
     }
     expect(await signaledUserIds()).not.toContain(gestorAdmin.userId);
     expect(await signaledUserIds()).not.toContain(plusAdmin.userId);
+  });
+
+  it("21. professional_access exato + qualificação incompatível não responde", async () => {
+    const allow = await provisionAllowlistSector("mismatch", [clinicaId]);
+    const mismatched = await createIdentity("mismatch-qual", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "Anestesiologia",
+      withAccess: false,
+    });
+    await grantExactAccess(offerer.professionalId, allow.sectorId);
+    await grantExactAccess(mismatched.professionalId, allow.sectorId);
+    try {
+      const shift = await createOccupiedShift(offerer, 21, {
+        hospitalId,
+        sectorId: allow.sectorId,
+        scheduleContextId: allow.scheduleContextId,
+      });
+      const created = await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+      });
+      const offerId = Number(created.id);
+      const row = await rowFor(mismatched, offerId);
+      expect(row).toBeDefined();
+      expect(row).toMatchObject({ canRespond: false });
+      expect(await signaledUserIds()).not.toContain(mismatched.userId);
+      await expect(callerFor(mismatched).countActionable()).resolves.toEqual({
+        swapOffers: 0,
+      });
+      await expect(
+        callerFor(mismatched).accept({ swapRequestId: offerId }),
+      ).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: "Profissional sem qualificação compatível com a escala do plantão.",
+      });
+    } finally {
+      await cleanupAllowlistSector(allow);
+    }
+  });
+
+  it("22. professional_access exato + qualificação na allowlist responde e recebe push", async () => {
+    const allow = await provisionAllowlistSector("match", [clinicaId]);
+    const compatible = await createIdentity("match-qual", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: clinicaId,
+      specialty: "Clínica Médica",
+      withAccess: false,
+    });
+    await grantExactAccess(offerer.professionalId, allow.sectorId);
+    await grantExactAccess(compatible.professionalId, allow.sectorId);
+    try {
+      const shift = await createOccupiedShift(offerer, 22, {
+        hospitalId,
+        sectorId: allow.sectorId,
+        scheduleContextId: allow.scheduleContextId,
+      });
+      const created = await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+      });
+      const offerId = Number(created.id);
+      expect(await rowFor(compatible, offerId)).toMatchObject({
+        canRespond: true,
+      });
+      expect(await signaledUserIds()).toContain(compatible.userId);
+      await expect(callerFor(compatible).countActionable()).resolves.toEqual({
+        swapOffers: 1,
+      });
+      await expect(
+        callerFor(compatible).accept({ swapRequestId: offerId }),
+      ).resolves.toEqual({ ok: true });
+    } finally {
+      await cleanupAllowlistSector(allow);
+    }
+  });
+
+  it("23. SWAP: elegível no source e inelegível no target não responde", async () => {
+    const fromScale = await provisionAllowlistSector("swap-from", [clinicaId]);
+    const toScale = await provisionAllowlistSector("swap-to", [
+      clinicaId,
+      anesthesiaId,
+    ]);
+    const swapPeer = await createIdentity("swap-ineligible-from", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "Anestesiologia",
+      withAccess: false,
+    });
+    await grantExactAccess(offerer.professionalId, fromScale.sectorId);
+    await grantExactAccess(offerer.professionalId, toScale.sectorId);
+    await grantExactAccess(swapPeer.professionalId, fromScale.sectorId);
+    await grantExactAccess(swapPeer.professionalId, toScale.sectorId);
+    try {
+      const from = await createOccupiedShift(offerer, 23, {
+        hospitalId,
+        sectorId: fromScale.sectorId,
+        scheduleContextId: fromScale.scheduleContextId,
+      });
+      const to = await createOccupiedShift(swapPeer, 24, {
+        hospitalId,
+        sectorId: toScale.sectorId,
+        scheduleContextId: toScale.scheduleContextId,
+      });
+      const created = await callerFor(offerer).offer({
+        type: "SWAP",
+        fromShiftInstanceId: from.shiftId,
+        fromAssignmentId: from.assignmentId,
+        toShiftInstanceId: to.shiftId,
+      });
+      const offerId = Number(created.id);
+      const row = await rowFor(swapPeer, offerId);
+      expect(row).toBeDefined();
+      expect(row).toMatchObject({ canRespond: false });
+      expect(await signaledUserIds()).not.toContain(swapPeer.userId);
+      await expect(callerFor(swapPeer).countActionable()).resolves.toEqual({
+        swapOffers: 0,
+      });
+      await expect(
+        callerFor(swapPeer).accept({ swapRequestId: offerId }),
+      ).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: "Profissional sem qualificação compatível com a escala do plantão.",
+      });
+    } finally {
+      await cleanupAllowlistSector(fromScale);
+      await cleanupAllowlistSector(toScale);
+    }
+  });
+
+  it("24. SWAP: elegível nos dois contexts responde e recebe push", async () => {
+    const fromScale = await provisionAllowlistSector("swap-from-ok", [
+      clinicaId,
+      anesthesiaId,
+    ]);
+    const toScale = await provisionAllowlistSector("swap-to-ok", [
+      clinicaId,
+      anesthesiaId,
+    ]);
+    const swapPeer = await createIdentity("swap-eligible-both", {
+      roleInInstitution: "USER",
+      medicalSpecialtyId: anesthesiaId,
+      specialty: "Anestesiologia",
+      withAccess: false,
+    });
+    await grantExactAccess(offerer.professionalId, fromScale.sectorId);
+    await grantExactAccess(offerer.professionalId, toScale.sectorId);
+    await grantExactAccess(swapPeer.professionalId, fromScale.sectorId);
+    await grantExactAccess(swapPeer.professionalId, toScale.sectorId);
+    try {
+      const from = await createOccupiedShift(offerer, 25, {
+        hospitalId,
+        sectorId: fromScale.sectorId,
+        scheduleContextId: fromScale.scheduleContextId,
+      });
+      const to = await createOccupiedShift(swapPeer, 26, {
+        hospitalId,
+        sectorId: toScale.sectorId,
+        scheduleContextId: toScale.scheduleContextId,
+      });
+      const created = await callerFor(offerer).offer({
+        type: "SWAP",
+        fromShiftInstanceId: from.shiftId,
+        fromAssignmentId: from.assignmentId,
+        toShiftInstanceId: to.shiftId,
+      });
+      const offerId = Number(created.id);
+      expect(await rowFor(swapPeer, offerId)).toMatchObject({
+        canRespond: true,
+      });
+      expect(await signaledUserIds()).toContain(swapPeer.userId);
+      await expect(callerFor(swapPeer).countActionable()).resolves.toEqual({
+        swapOffers: 1,
+      });
+      await expect(
+        callerFor(swapPeer).accept({ swapRequestId: offerId }),
+      ).resolves.toEqual({ ok: true });
+    } finally {
+      await cleanupAllowlistSector(fromScale);
+      await cleanupAllowlistSector(toScale);
+    }
   });
 });

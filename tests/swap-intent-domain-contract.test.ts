@@ -16,6 +16,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContextAllowedQualifications,
   scheduleContexts,
   sectors,
   shiftAssignmentsV2,
@@ -32,6 +33,7 @@ import {
   type ResolvedSwapIntent,
 } from "../server/natural-language/swap-intent-types";
 import { yearMonthBrt } from "../server/local-time";
+import { ensureTestAnesthesiaSpecialty } from "./helpers/open-test-scale";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type Person = { userId: number; professionalId: number; name: string };
@@ -53,6 +55,7 @@ describe("intenção resolvida → createSwapOffer", () => {
   let allowlistContext: number;
   let legacyContext: number;
   let otherContext: number;
+  let anesthesiaId: number;
 
   let actor: Person;
   /** Acesso setorial exato na SR: elegível sob allowlist. */
@@ -138,7 +141,14 @@ describe("intenção resolvida → createSwapOffer", () => {
     userIds.push(user.id);
     const [professional] = await db
       .insert(professionals)
-      .values({ userId: user.id, name, role: "Médico", specialty: "Anestesiologia", userRole: "USER" })
+      .values({
+        userId: user.id,
+        name,
+        role: "Médico",
+        specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaId,
+        userRole: "USER",
+      })
       .$returningId();
     professionalIds.push(professional.id);
     await db.insert(professionalInstitutions).values({
@@ -275,6 +285,12 @@ describe("intenção resolvida → createSwapOffer", () => {
     otherSector = foreign.sectorId;
     otherContext = foreign.scheduleContextId;
 
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    await db.insert(scheduleContextAllowedQualifications).values({
+      scheduleContextId: allowlistContext,
+      medicalSpecialtyId: anesthesiaId,
+    });
+
     // Dupla qualificação: acesso setorial exato nos dois setores.
     actor = await makePerson("actor", `NLD Ator ${stamp}`, {
       institutionId: tenant,
@@ -311,6 +327,15 @@ describe("intenção resolvida → createSwapOffer", () => {
     }
     // createSwapOffer grava auditoria: sem limpar, a instituição não sai.
     await db.delete(auditTrail).where(inArray(auditTrail.institutionId, [tenant, otherTenant]));
+    await db
+      .delete(scheduleContextAllowedQualifications)
+      .where(
+        inArray(scheduleContextAllowedQualifications.scheduleContextId, [
+          allowlistContext,
+          legacyContext,
+          otherContext,
+        ]),
+      );
     await db.delete(scheduleContexts).where(inArray(scheduleContexts.id, [allowlistContext, legacyContext, otherContext]));
     await db.delete(sectors).where(inArray(sectors.id, [allowlistSector, legacySector, otherSector]));
     await db.delete(monthlyRosters).where(inArray(monthlyRosters.institutionId, [tenant, otherTenant]));

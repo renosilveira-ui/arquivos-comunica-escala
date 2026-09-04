@@ -335,6 +335,9 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     expect(swapQualification).toContain(
       "assertProfessionalEligibleForScheduleContext",
     );
+    expect(swapQualification).not.toContain(
+      "assertProfessionalQualificationMatchesScheduleContext",
+    );
     expect(
       block(
         swapDomain,
@@ -349,6 +352,13 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
         "export async function requireCanonicalShiftOccupant",
       ),
     ).toContain("assertProfessionalQualifiedForShift");
+    expect(
+      block(
+        swapDomain,
+        "export async function requireProfessionalCanReceiveShift",
+        "export async function requireCanonicalShiftOccupant",
+      ),
+    ).toContain("assertProfessionalQualificationMatchesScheduleContext");
 
     const replicate = block(
       shifts,

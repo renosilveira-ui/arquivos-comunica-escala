@@ -17,7 +17,8 @@ export function listedSwapIsActionable(row: {
  * Semântica de direcionamento: oferta aberta responde o ator listado;
  * direcionada só o destinatário nominal.
  * Isto NÃO concede autoridade clínica. `canRespond` no servidor é
- * `listedOfferIsClinicallyActionable` (direcionamento ∧ professional_access).
+ * `listedOfferIsClinicallyActionable` (direcionamento ∧ acesso ∧
+ * qualificação do schedule_context).
  */
 export function listedOfferCanRespond(
   toProfessionalId: number | string | null | undefined,
@@ -34,8 +35,9 @@ export function listedOfferCanRespond(
 }
 
 /**
- * Autoridade operacional de resposta: direcionamento ∧ elegibilidade clínica.
- * `canView` administrativo (manager_scope / GESTOR_PLUS) não entra aqui.
+ * Autoridade operacional de resposta: direcionamento ∧ acesso ∧
+ * qualificação do schedule_context. `canView` administrativo
+ * (manager_scope / GESTOR_PLUS) não entra aqui.
  */
 export function listedOfferIsClinicallyActionable(
   toProfessionalId: number | string | null | undefined,
