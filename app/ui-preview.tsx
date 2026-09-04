@@ -79,8 +79,9 @@ function Gallery() {
         <SectionHeader size="page" eyebrow="Sistema de UI" title="Galeria de componentes" subtitle="Só em desenvolvimento. Dados de exemplo." />
 
         <View style={{ gap: theme.space[3] }}>
-          <SectionHeader title="Próximo plantão" subtitle="Compacto (Agenda): futuro com confirmação, em andamento, futuro, sem plantão — e a variante full" />
+          <SectionHeader title="Próximo plantão" subtitle="Compacto (Agenda): futuro com confirmação, em andamento, futuro, loading, erro, sem plantão — e a variante full" />
           <NextShiftCard
+            queryState="SUCCESS"
             now={NOW}
             needsConfirmation
             shift={{ id: 1, label: "Noite", startAt: at("2026-09-09", "19:00"), endAt: at("2026-09-10", "07:00"), status: "OCUPADO", sectorName: "Centro Cirúrgico", hospitalName: "Hospital São Carlos" }}
@@ -88,18 +89,28 @@ function Gallery() {
             onSwap={() => feedback.info("Abrir pedido de troca.")}
           />
           <NextShiftCard
+            queryState="SUCCESS"
             now={at("2026-09-09", "21:00")}
             shift={{ id: 2, label: "Noite", startAt: at("2026-09-09", "19:00"), endAt: at("2026-09-10", "07:00"), status: "OCUPADO", sectorName: "Centro Cirúrgico" }}
             onOpenComunica={() => feedback.info("Abrindo Comunica+…")}
           />
           <NextShiftCard
+            queryState="SUCCESS"
             now={NOW}
             shift={{ id: 3, label: "Manhã", startAt: at("2026-09-11", "07:00"), endAt: at("2026-09-11", "13:00"), status: "PENDENTE", sectorName: "UTI" }}
             onPress={() => feedback.info("Detalhe do plantão.")}
           />
-          <NextShiftCard now={NOW} shift={null} />
+          <NextShiftCard queryState="LOADING" now={NOW} shift={null} />
+          <NextShiftCard
+            queryState="ERROR"
+            now={NOW}
+            shift={null}
+            onRetry={() => feedback.info("Retry do próximo plantão.")}
+          />
+          <NextShiftCard queryState="EMPTY" now={NOW} shift={null} />
           <NextShiftCard
             variant="full"
+            queryState="SUCCESS"
             now={NOW}
             needsConfirmation
             shift={{ id: 1, label: "Noite", startAt: at("2026-09-09", "19:00"), endAt: at("2026-09-10", "07:00"), status: "OCUPADO", sectorName: "Centro Cirúrgico", hospitalName: "Hospital São Carlos" }}

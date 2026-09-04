@@ -33,6 +33,7 @@ import { CreateHospitalButton } from "@/components/agenda/CreateHospitalButton";
 import { CreateSectorScaleButton } from "@/components/agenda/CreateSectorScaleButton";
 import { MobileDayList } from "@/components/agenda/MobileDayList";
 import { NextShiftCard } from "@/components/agenda/NextShiftCard";
+import { resolveNextShiftState } from "@/lib/next-shift-state";
 import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
 import { DayNumeral, numeral } from "@/components/agenda/CalendarSheet";
 import { SkeletonList } from "@/components/ui/Skeleton";
@@ -250,9 +251,22 @@ export default function AgendaScreen() {
   );
 
   // Card "Próximo plantão": em andamento ou o próximo futuro.
-  const { data: nextShift } = trpc.shifts.getNextShift.useQuery(undefined, {
+  // Erro da query NÃO vira "nenhum plantão" — ver resolveNextShiftState.
+  const {
+    data: nextShift,
+    isLoading: nextShiftLoading,
+    isError: nextShiftIsError,
+    error: nextShiftError,
+    refetch: refetchNextShift,
+  } = trpc.shifts.getNextShift.useQuery(undefined, {
     enabled: !!user?.id,
     refetchInterval: 60_000,
+  });
+  const nextShiftState = resolveNextShiftState({
+    isLoading: nextShiftLoading,
+    isError: nextShiftIsError,
+    data: nextShift,
+    error: nextShiftError,
   });
   const { data: pendingConfirmation } = trpc.confirmations.getPending.useQuery(
     undefined,
@@ -747,13 +761,15 @@ export default function AgendaScreen() {
         {isMonthSheet && !isDesktop ? null : (
         <View style={{ marginBottom: theme.space[3] }}>
           <NextShiftCard
-            shift={nextShift ?? null}
+            queryState={nextShiftState}
+            shift={nextShiftState === "SUCCESS" ? nextShift : null}
             needsConfirmation={
+              nextShiftState === "SUCCESS" &&
               !!nextShift &&
               pendingConfirmation?.shiftInstanceId === nextShift.id
             }
             onConfirm={
-              pendingConfirmation
+              nextShiftState === "SUCCESS" && pendingConfirmation
                 ? () =>
                     router.push({
                       pathname: "/confirm-duty" as any,
@@ -762,7 +778,7 @@ export default function AgendaScreen() {
                 : undefined
             }
             onSwap={
-              nextShift && !nextShift.inProgress
+              nextShiftState === "SUCCESS" && nextShift && !nextShift.inProgress
                 ? () =>
                     router.push({
                       pathname: "/request-swap" as any,
@@ -771,7 +787,9 @@ export default function AgendaScreen() {
                 : undefined
             }
             onOpenComunica={
-              nextShift?.inProgress && activeInstitutionId !== null
+              nextShiftState === "SUCCESS" &&
+              nextShift?.inProgress &&
+              activeInstitutionId !== null
                 ? () => {
                     if (Platform.OS !== "web")
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -780,12 +798,19 @@ export default function AgendaScreen() {
                 : undefined
             }
             onPress={
-              nextShift
+              nextShiftState === "SUCCESS" && nextShift
                 ? () =>
                     router.push({
                       pathname: "/shift-details",
                       params: { id: String(nextShift.id) },
                     })
+                : undefined
+            }
+            onRetry={
+              nextShiftState === "ERROR"
+                ? () => {
+                    void refetchNextShift();
+                  }
                 : undefined
             }
           />
