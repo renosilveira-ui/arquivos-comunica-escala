@@ -1,6 +1,6 @@
 -- 2026-09-04 — inbound técnico WhatsApp (fila assíncrona + payload operacional).
--- Aditiva e rerodável. NÃO aplicar no staging até nova revisão + autorização.
--- O deploy NÃO aplica migration.
+-- Aditiva e rerodável (CREATE TABLE IF NOT EXISTS). Aplicar no staging
+-- ANTES do merge. O deploy NÃO aplica migration.
 --
 -- Invariantes:
 --   * UNIQUE (provider, provider_message_id) é a chave de replay (Twilio MessageSid);

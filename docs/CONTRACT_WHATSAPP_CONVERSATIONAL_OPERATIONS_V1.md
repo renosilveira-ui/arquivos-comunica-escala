@@ -190,9 +190,25 @@ módulos no caminho inbound.
 Incremento D: `READY_FOR_TRANSCRIPTION` → usa `media_url` → transcreve →
 limpa o payload.
 
+## Follow-ups (não bloqueiam o Incremento A)
+
+**P2 — origem da mídia (antes do Incremento D):** `media_url` hoje só
+exige `https:`. Nenhuma mídia é baixada neste incremento. Antes de
+download server-side, validar host/origem Twilio ou usar o mecanismo
+oficial autenticado da Twilio (evitar SSRF).
+
+**P3 — TTL em estados incompletos:** `clearExpiredWhatsAppInboundPayloads`
+limpa payload expirado **independentemente** do `processing_status`,
+inclusive `RECEIVED` / `RETRYABLE`. Política vigente: o retry da Twilio
+refresca o material a partir do envelope. Se a Twilio já parou de
+retentar, a row incompleta fica sem payload — aceitável no Incremento A.
+Follow-up operacional: restringir o sweep a `READY_FOR_*` se for preciso
+preservar material de `RETRYABLE` além do TTL.
+
 ## Operação
 
 - Migration manual: `drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql`
-- **Não aplicar em staging** até nova revisão + autorização operacional
+- Aditiva e rerodável (`CREATE TABLE IF NOT EXISTS`). Aplicar no staging
+  **antes do merge**. O deploy **não** aplica migration.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
