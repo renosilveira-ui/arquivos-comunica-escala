@@ -90,7 +90,7 @@ describe("WhatsApp inbound privacy", () => {
     const serialized = JSON.stringify(row);
     expect(serialized).not.toContain(e164);
     expect(serialized).not.toMatch(/signature/i);
-    expect(row?.senderAddressHash).toMatch(/^[a-f0-9]{16}$/);
+    expect(row?.senderAddressHash).toBeNull();
     expect(Object.keys(row ?? {})).not.toContain("body");
     expect(Object.keys(row ?? {})).not.toContain("fromE164");
   });
