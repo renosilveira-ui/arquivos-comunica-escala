@@ -8,6 +8,7 @@ import { join } from "path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { hospitalAlertRouter } from "../routes/hospital-alert";
+import { twilioWhatsAppRouter } from "../routes/twilio-whatsapp";
 import { authRouter } from "../routes/auth";
 import { adminRouter } from "../routes/admin";
 import { privacyRouter } from "../routes/privacy";
@@ -144,6 +145,7 @@ async function startServer() {
 
   registerOAuthRoutes(app);
   app.use("/api/integrations/hospital-alert", hospitalAlertRouter);
+  app.use("/api/integrations/twilio/whatsapp", twilioWhatsAppRouter);
   // Rate limit só em mutações (login, register, reset…): GET /api/auth/me
   // roda a cada abertura do app — 20/15min por IP bloqueava clínicas
   // inteiras atrás de NAT (auditoria 22/08 parte 2).

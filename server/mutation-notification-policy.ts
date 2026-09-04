@@ -649,6 +649,15 @@ export const EXPRESS_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  "POST /api/integrations/twilio/whatsapp": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o webhook inbound apenas autentica, identifica e persiste estado técnico — sem operação de escala nem notificação ao usuário",
+        audience: [],
+      },
+    ],
+  },
   "POST /api/sso/generate": {
     targets: [
       {
