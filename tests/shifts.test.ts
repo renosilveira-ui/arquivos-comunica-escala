@@ -588,6 +588,65 @@ describe("shifts: create / get / update / listByPeriod", () => {
     expect(inclusive.map((s: any) => s.id)).toContain(last!.id);
   });
 
+  it("listByPeriod rejeita formato inválido, janela invertida e teto acima de 93 dias", async () => {
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "lixo",
+        endDate: "2026-09-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "2026-02-29",
+        endDate: "2026-03-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "2026-09-01T10:00:00",
+        endDate: "2026-09-02T10:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "2026-09-10",
+        endDate: "2026-09-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "2026-09-01T10:00:00.000Z",
+        endDate: "2026-09-01T10:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "2026-01-01",
+        endDate: addDaysToKey("2026-01-01", 93),
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "1900-01-01",
+        endDate: "2200-01-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const exact = await asDoctor().listByPeriod({
+      startDate: "2026-01-01",
+      endDate: addDaysToKey("2026-01-01", 92),
+    });
+    expect(Array.isArray(exact)).toBe(true);
+
+    await expect(
+      asDoctor().listByPeriod({
+        startDate: "2026-09-01",
+        endDate: "2026-09-01",
+        scheduleContextId: 9_999_999,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
   it("USER comum não cria nem edita turno", async () => {
     await expect(
       asDoctor().create({ date: day, shiftTemplateId: templateId }),
