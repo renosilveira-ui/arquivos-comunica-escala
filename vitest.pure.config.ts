@@ -106,6 +106,7 @@ export default defineConfig({
       "tests/user-contact-channels-migration.test.ts",
       "tests/whatsapp-contact-source.test.ts",
       "tests/whatsapp-inbound-provider.test.ts",
+      "tests/whatsapp-inbound-form-params.test.ts",
       "tests/whatsapp-inbound-source.test.ts",
       "tests/whatsapp-inbound-migration.test.ts",
       "tests/whatsapp-inbound-webhook-gate.test.ts",

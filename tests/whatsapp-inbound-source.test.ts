@@ -13,6 +13,13 @@ const provider = readFileSync(
   new URL("../server/integrations/whatsapp/twilio-provider.ts", import.meta.url),
   "utf8",
 );
+const formParams = readFileSync(
+  new URL(
+    "../server/integrations/whatsapp/inbound-form-params.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 const router = readFileSync(
   new URL("../server/routes/twilio-whatsapp.ts", import.meta.url),
   "utf8",
@@ -42,7 +49,7 @@ const payload = readFileSync(
 
 describe("WhatsApp inbound — source contracts", () => {
   it("não baixa mídia nem chama HTTP a partir do inbound", () => {
-    for (const src of [store, identity, provider, router, payload]) {
+    for (const src of [store, identity, provider, router, payload, formParams]) {
       expect(src).not.toMatch(/\bfetch\s*\(/);
       expect(src).not.toMatch(/\baxios\b/);
       expect(src).not.toMatch(/http\.get|https\.get/);
@@ -71,9 +78,14 @@ describe("WhatsApp inbound — source contracts", () => {
     expect(identity).toContain("limit(2)");
   });
 
-  it("formParams serializa números para a assinatura Twilio", () => {
-    expect(router).toContain("typeof value === \"number\"");
-    expect(router).toContain("params[key] = String(value)");
+  it("formParams serializa números e recusa chaves injetáveis", () => {
+    expect(router).toContain("formParamsFromBody");
+    expect(formParams).toContain("typeof value === \"number\"");
+    expect(formParams).toContain("params[key] = String(value)");
+    expect(formParams).toContain("isTwilioInboundFormKey");
+    expect(formParams).toContain("constructor");
+    expect(formParams).toContain("prototype");
+    expect(formParams).toMatch(/A-Za-z0-9/);
   });
 
   it("boot monta POST /api/integrations/twilio/whatsapp", () => {

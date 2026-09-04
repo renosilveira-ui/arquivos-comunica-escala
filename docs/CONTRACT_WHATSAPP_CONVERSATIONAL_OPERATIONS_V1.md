@@ -72,6 +72,11 @@ Headers `Host` / `X-Forwarded-*` da requisição **não** entram na URL de
 assinatura (são controláveis pelo cliente). Express já tem `trust proxy = 1`
 para rate-limit; isso **não** substitui a URL pública configurada.
 
+Parâmetros do formulário inbound só entram na validação se a chave for
+alfanumérica estilo Twilio (`MessageSid`, `MediaUrl0`) e não for
+`constructor` / `prototype`. Chaves como `__proto__` são descartadas
+antes de `validateRequest` — a assinatura usa só o conjunto filtrado.
+
 Se `APP_PUBLIC_URL` não resolver para uma origem confiável: **503**
 `TWILIO_SIGNATURE_CANONICAL_URL_UNRESOLVED`. A validação **nunca** é
 desligada.

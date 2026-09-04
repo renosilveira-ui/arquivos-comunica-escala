@@ -3,26 +3,12 @@ import {
   readTwilioAuthToken,
   resolveTwilioWhatsAppCanonicalUrl,
 } from "../integrations/whatsapp/canonical-url";
+import { formParamsFromBody } from "../integrations/whatsapp/inbound-form-params";
 import { processWhatsAppInbound } from "../integrations/whatsapp/inbound-store";
 import { twilioWhatsAppProvider } from "../integrations/whatsapp/twilio-provider";
-import type { WhatsAppInboundParams } from "../integrations/whatsapp/provider";
 import { logger } from "../_core/logger";
 
 export const twilioWhatsAppRouter = Router();
-
-function formParams(body: unknown): WhatsAppInboundParams {
-  if (!body || typeof body !== "object") return {};
-  const params: WhatsAppInboundParams = {};
-  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
-    if (typeof value === "string") {
-      params[key] = value;
-    } else if (typeof value === "number" || typeof value === "boolean") {
-      // qs/urlencoded pode coercer NumMedia etc.; a assinatura Twilio usa string.
-      params[key] = String(value);
-    }
-  }
-  return params;
-}
 
 function readSignature(req: Request): string | undefined {
   const raw = req.headers["x-twilio-signature"];
@@ -54,7 +40,7 @@ twilioWhatsAppRouter.post("/", async (req: Request, res: Response) => {
     return;
   }
 
-  const params = formParams(req.body);
+  const params = formParamsFromBody(req.body);
   const signed = twilioWhatsAppProvider.validateInboundRequest({
     signature,
     authToken,

@@ -89,4 +89,19 @@ describe("WhatsApp webhook HTTP — fail-closed de porta", () => {
       .send(params);
     expect(res.status).toBe(400);
   });
+
+  it("chaves injetáveis no form não invalidam assinatura do conjunto Twilio", async () => {
+    vi.stubEnv("TWILIO_AUTH_TOKEN", AUTH);
+    vi.stubEnv("APP_PUBLIC_URL", "https://escalas-staging.onrender.com");
+    vi.stubEnv("NODE_ENV", "test");
+    const params = { From: "whatsapp:+5585999999999", Body: "oi" };
+    const signature = twilio.getExpectedTwilioSignature(AUTH, PUBLIC, params);
+    const app = await loadRouter();
+    const res = await request(app)
+      .post(WHATSAPP_INBOUND_PATH)
+      .set("X-Twilio-Signature", signature)
+      .type("form")
+      .send(`${new URLSearchParams(params).toString()}&constructor=bad`);
+    expect(res.status).toBe(400);
+  });
 });
