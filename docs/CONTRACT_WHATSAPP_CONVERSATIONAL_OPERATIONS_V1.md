@@ -34,8 +34,9 @@ Não parsear, não resolver, não chamar `createSwapOffer`.
 |---|---|
 | Twilio | transporte (assinatura, MessageSid, From, mídia) |
 | `user_contact_channels` | correlação canal → usuário canônico |
+| `resolveCanonicalOperationalActorForUser` (B2-B) | userId autenticado → professionalId + institutionIds |
 | NL Core (`server/natural-language/`) | interpretação futura (texto → slots) |
-| Resolver | entidades futuras (slots → IDs) |
+| Resolver | entidades futuras (slots → IDs); revalida membership |
 | `createSwapOffer` | autoridade de negócio (#326) — **não chamada aqui** |
 | App destinatário | aceite/recusa V1 |
 
@@ -258,9 +259,39 @@ transição guardada `OPEN/PARSE` → `OPEN/CLARIFICATION|CONFIRMATION`.
 Não consome `READY_FOR_NL`. Não chama parser/resolver em runtime. Não
 limpa inbound. Não executa swap. Não envia WhatsApp.
 
+Incremento B2-B (ator operacional canônico, esta camada): primitive
+interna `resolveCanonicalOperationalActorForUser({ userId })` em
+`server/_core/canonical-operational-actor.ts`. Channel-agnostic: o
+mesmo `userId` produz a mesma identidade/topologia no app, web,
+WhatsApp, voz ou API futura. **Não** é `WhatsAppActor`. **Não** é
+tRPC/REST. `userId` não vem da mensagem — B2-C o obterá do
+inbound/pending já vinculado pelo gate de identidade.
+
+Contrato mínimo, alinhado a `SwapIntentActor` (#400):
+
+- sucesso: `{ userId, professionalId, institutionIds }` (ids positivos,
+  únicos, ordenados crescente);
+- zero membership operacional → `ACTOR_INSTITUTION_MEMBERSHIP_NOT_FOUND`
+  (não devolve `institutionIds: []`);
+- 0 professional → `ACTOR_PROFESSIONAL_NOT_FOUND`;
+- >1 professional (schema sem UNIQUE em `professionals.user_id`) →
+  `ACTOR_PROFESSIONAL_AMBIGUOUS` (nunca `LIMIT 1`);
+- outage → `DB_UNAVAILABLE` / `PERSISTENCE_FAILED`, nunca NOT_FOUND.
+
+Membership = `professional_institutions.active` + casamento
+professionalId/userId + user APPROVED/`deletedAt` null + institution
+`isActive`. `professional_access` e `manager_scope` **não** criam
+tenant. Papel **não** cria identidade. Múltiplos tenants são sucesso:
+B2-B **não** escolhe instituição.
+
+Snapshot ≠ autorização. Read-only. Sem persistir actor no pending.
+
 Incremento B2-C (não implementado aqui): `READY_FOR_NL` →
 `createWhatsAppPendingIntent` (só source) → lê `operational_text` →
-parser/resolver de `server/natural-language/` →
+obtém `userId` do inbound identificado →
+`resolveCanonicalOperationalActorForUser` →
+parser/resolver de `server/natural-language/` (actor = saída B2-B,
+sem `if source === "WHATSAPP"`) →
 `advanceWhatsAppPendingFromParse` → confirmação futura →
 `createSwapOffer` (revalida tudo; `resolved_payload` não é autorização)
 → `clearWhatsAppInboundOperationalPayload`. O inbound **não** importa
@@ -306,7 +337,7 @@ Escolha humana (`AMBIGUOUS_TARGET_PROFESSIONAL`, `AMBIGUOUS_SECTOR`)
 persiste opção já projetada, não o candidate cru do resolver:
 
 - `professionalId` / `sectorId` = chave técnica da escolha;
-- `label` = identificação humana segura, produzida por B2-B/B2-C
+- `label` = identificação humana segura, produzida por B2-C
   (qualificação canônica: `medical_specialties.name` ou rótulo de
   `operational_profile_code`; hospital/setor público quando couber).
   **Não** email, telefone, CPF, `userId`, nem o id interno como
@@ -364,6 +395,7 @@ preservar material de `RETRYABLE` além do TTL.
 - Migration B1 (já aplicada e verificada no staging):
   `drizzle/migrations/manual/2026-09-04-whatsapp-pending-intents.sql`
 - B2-A **não** altera schema nem reaplica migration.
+- B2-B **não** altera schema nem persiste actor.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
 - Sem parser/resolver em runtime, sem `createSwapOffer`, sem cron novo

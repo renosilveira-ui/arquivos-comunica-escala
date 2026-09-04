@@ -120,6 +120,8 @@ export default defineConfig({
       "tests/whatsapp-pending-intent-payloads.test.ts",
       "tests/whatsapp-pending-intent-b2a-source.test.ts",
       "tests/whatsapp-swap-intent-error-classification.test.ts",
+      "tests/canonical-operational-actor-source.test.ts",
+      "tests/canonical-operational-actor-fail-closed.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
       "tests/vacancy-push-route.test.ts",
