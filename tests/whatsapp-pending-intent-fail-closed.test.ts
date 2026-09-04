@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../server/db";
 import { logger } from "../server/_core/logger";
 import {
+  advanceWhatsAppPendingFromParse,
   cancelWhatsAppPendingIntent,
   clearExpiredWhatsAppPendingIntents,
   createWhatsAppPendingIntent,
@@ -107,6 +108,17 @@ function scriptedSelect(steps: (unknown[] | "throw")[]) {
     return thenable(Promise.resolve(step));
   };
 }
+
+const validAdvanceInput = {
+  pendingId: 7,
+  userId: 4,
+  expectedSourceInboundMessageId: 10,
+  outcome: {
+    type: "clarification" as const,
+    parsed: null,
+    clarification: { version: 1 as const, code: "AMBIGUOUS_INTENT" as const },
+  },
+};
 
 describe("WhatsApp pending intent — fail-closed de persistência", () => {
   afterEach(async () => {
@@ -286,5 +298,90 @@ describe("WhatsApp pending intent — fail-closed de persistência", () => {
     expect(joined).toContain("DB_UNAVAILABLE");
     expect(joined).not.toMatch(/"expired":0/);
     expect(joined).not.toMatch(/mysql:|DATABASE_URL|operational_text|\+55/);
+  });
+
+  it("advance: DB null → DB_UNAVAILABLE", async () => {
+    vi.mocked(getDb).mockResolvedValue(null);
+    expectInfra(
+      await advanceWhatsAppPendingFromParse(validAdvanceInput),
+      "DB_UNAVAILABLE",
+    );
+  });
+
+  it("advance: UPDATE failure → PERSISTENCE_FAILED", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.reject(new Error("update failed"))),
+    } as never);
+    expectInfra(
+      await advanceWhatsAppPendingFromParse(validAdvanceInput),
+      "PERSISTENCE_FAILED",
+    );
+  });
+
+  it("advance: reload failure após UPDATE → PERSISTENCE_FAILED", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.resolve({ affectedRows: 1 })),
+      select: scriptedSelect(["throw"]),
+    } as never);
+    expectInfra(
+      await advanceWhatsAppPendingFromParse(validAdvanceInput),
+      "PERSISTENCE_FAILED",
+    );
+  });
+
+  it("advance: reload nulo após UPDATE → PERSISTENCE_FAILED", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.resolve({ affectedRows: 1 })),
+      select: scriptedSelect([[]]),
+    } as never);
+    expectInfra(
+      await advanceWhatsAppPendingFromParse(validAdvanceInput),
+      "PERSISTENCE_FAILED",
+    );
+  });
+
+  it("advance: payload desconhecido → INVALID_PAYLOAD sem tocar DB", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => {
+        throw new Error("should not update");
+      },
+    } as never);
+    const result = await advanceWhatsAppPendingFromParse({
+      pendingId: 7,
+      userId: 4,
+      expectedSourceInboundMessageId: 10,
+      outcome: {
+        type: "resolved",
+        parsed: {
+          version: 1,
+          kind: "SWAP",
+          ownShift: {
+            date: { kind: "OFFSET", days: 0, said: "hoje" },
+            period: null,
+            sectorText: null,
+          },
+          targetProfessional: { name: "Joao" },
+          targetShift: { date: null, period: null, sectorText: null },
+        },
+        resolved: {
+          version: 1,
+          kind: "CESSAO",
+          institutionId: 1,
+          fromShiftInstanceId: 10,
+          fromAssignmentId: 11,
+          toProfessionalId: 20,
+          toShiftInstanceId: null,
+          targetProfessionalName: "Joao",
+          ownShift: {
+            label: "A",
+            sectorName: "SR",
+            dayKey: "2026-09-04",
+            timeRange: "19:00–07:00",
+          },
+          targetShift: null,
+        },
+      },
+    });
+    expect(result).toEqual({ ok: false, code: "INVALID_PAYLOAD" });
   });
 });

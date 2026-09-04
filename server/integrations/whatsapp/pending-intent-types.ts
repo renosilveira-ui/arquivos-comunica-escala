@@ -108,3 +108,25 @@ export function isWhatsAppPendingCleanupFailure(
 ): result is { ok: false; code: "DB_UNAVAILABLE" | "PERSISTENCE_FAILED" } {
   return result.ok === false;
 }
+
+export type WhatsAppPendingAdvanceResult =
+  | { ok: true; outcome: "advanced"; row: WhatsAppPendingIntentRecord }
+  | { ok: true; outcome: "already_advanced"; row: WhatsAppPendingIntentRecord }
+  | {
+      ok: false;
+      code:
+        | "STATE_CHANGED"
+        | "EXPIRED"
+        | "TERMINAL"
+        | "NOT_FOUND"
+        | "INVALID_PAYLOAD"
+        | "DB_UNAVAILABLE"
+        | "PERSISTENCE_FAILED";
+      row?: WhatsAppPendingIntentRecord;
+    };
+
+export function isWhatsAppPendingAdvanceFailure(
+  result: WhatsAppPendingAdvanceResult,
+): result is Extract<WhatsAppPendingAdvanceResult, { ok: false }> {
+  return result.ok === false;
+}
