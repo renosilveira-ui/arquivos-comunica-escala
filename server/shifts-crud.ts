@@ -97,7 +97,52 @@ function buildShiftTimestamps(
   return [startAt, endAt];
 }
 
-const DATE_ONLY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_ONLY_KEY = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ISO_INSTANT_KEY =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** Teto de `listByPeriod`: `endExclusive - start <= 93 * 24h`. */
+export const MAX_LIST_PERIOD_DAYS = 93;
+export const MAX_LIST_PERIOD_MS = MAX_LIST_PERIOD_DAYS * 24 * 60 * 60 * 1000;
+
+const LIST_PERIOD_BOUND_MESSAGE =
+  "Informe uma data civil YYYY-MM-DD ou um instante ISO com fuso (Z ou ±HH:mm).";
+const LIST_PERIOD_ORDER_MESSAGE =
+  "O período informado é inválido: a data inicial deve ser anterior à data final.";
+const LIST_PERIOD_LIMIT_MESSAGE = `O período máximo permitido para esta consulta é de ${MAX_LIST_PERIOD_DAYS} dias.`;
+
+/** Data civil real (rejeita 2026-02-29 e overflow de calendário). */
+export function isValidCivilDateKey(key: string): boolean {
+  const match = DATE_ONLY_KEY.exec(key);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  return (
+    utc.getUTCFullYear() === year &&
+    utc.getUTCMonth() === month - 1 &&
+    utc.getUTCDate() === day
+  );
+}
+
+/** Instante ISO com timezone explícito (Z ou ±HH:mm); calendário da data deve ser válido. */
+export function isValidIsoInstant(value: string): boolean {
+  if (!ISO_INSTANT_KEY.test(value)) return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return isValidCivilDateKey(value.slice(0, 10));
+}
+
+export function isListPeriodBoundInput(value: string): boolean {
+  const key = value.trim();
+  return isValidCivilDateKey(key) || isValidIsoInstant(key);
+}
+
+const listPeriodBoundInput = z
+  .string()
+  .transform((value) => value.trim())
+  .refine(isListPeriodBoundInput, { message: LIST_PERIOD_BOUND_MESSAGE });
 
 /**
  * Resolve um limite da janela de `listByPeriod` no relógio do hospital (-03:00).
@@ -105,19 +150,48 @@ const DATE_ONLY_KEY = /^\d{4}-\d{2}-\d{2}$/;
  * Chave date-only ("YYYY-MM-DD") é uma DATA CIVIL, não um instante: com
  * `edge:"start"` vira o início daquele dia; com `edge:"end"` vira o início do
  * dia SEGUINTE (limite superior exclusivo, de modo que o dia civil de `endDate`
- * entre inteiro). Instante ISO completo (com hora) já carrega o fuso e é usado
- * como está. Ponto único da regra: evita reintroduzir `new Date("YYYY-MM-DD")`,
- * que no servidor UTC começa às 21h do dia anterior em Fortaleza (vazando o mês
- * anterior e cortando as últimas horas do último dia).
+ * entre inteiro). Instante ISO completo (com hora e fuso) é usado como está.
+ * Input inválido lança BAD_REQUEST — nunca devolve Invalid Date para o SQL.
  */
 export function resolveListPeriodBound(
   value: string,
   edge: "start" | "end",
 ): Date {
   const key = value.trim();
-  if (!DATE_ONLY_KEY.test(key)) return new Date(key);
-  const window = dayWindowBrt(key);
-  return edge === "start" ? window.start : window.end;
+  if (isValidCivilDateKey(key)) {
+    const window = dayWindowBrt(key);
+    return edge === "start" ? window.start : window.end;
+  }
+  if (isValidIsoInstant(key)) {
+    return new Date(key);
+  }
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: LIST_PERIOD_BOUND_MESSAGE,
+  });
+}
+
+/**
+ * Valida ordem e teto sobre bounds já resolvidos.
+ * “93 dias” = `endExclusive.getTime() - start.getTime() <= 93 * 24h`.
+ */
+export function assertListPeriodWindow(start: Date, endExclusive: Date): void {
+  if (
+    Number.isNaN(start.getTime()) ||
+    Number.isNaN(endExclusive.getTime()) ||
+    !(start.getTime() < endExclusive.getTime())
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: LIST_PERIOD_ORDER_MESSAGE,
+    });
+  }
+  if (endExclusive.getTime() - start.getTime() > MAX_LIST_PERIOD_MS) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: LIST_PERIOD_LIMIT_MESSAGE,
+    });
+  }
 }
 
 // Modalidade estruturada (docs/product/escala-ux.md §5).
@@ -2511,17 +2585,19 @@ export const shiftsRouter = router({
   // shifts.listByPeriod — any authenticated user
   // Retorna shiftInstances cujo startAt cai nos dias civis [startDate, endDate]
   // (inclusivos) no relógio do hospital (-03:00). Chaves date-only são civis;
-  // instantes ISO completos são usados como estão.
+  // instantes ISO completos (com fuso) são usados como estão. Teto: 93 * 24h
+  // sobre bounds resolvidos (endExclusive - start).
   // ------------------------------------------------------------------
   listByPeriod: protectedProcedure
     .input(
       z.object({
-        startDate: z.string(),
-        endDate: z.string(),
+        startDate: listPeriodBoundInput,
+        endDate: listPeriodBoundInput,
         scheduleContextId: z.number().int().positive().optional(),
       }),
     )
     .query(async ({ input, ctx }) => {
+      // Ordem: auth (protected) → Zod → authority → bounds → teto → query.
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const actor = await getTenantActorFromContext(ctx);
@@ -2544,6 +2620,7 @@ export const shiftsRouter = router({
       // exclusivo (início do dia seguinte a endDate), daí o `lt` abaixo.
       const start = resolveListPeriodBound(input.startDate, "start");
       const end = resolveListPeriodBound(input.endDate, "end");
+      assertListPeriodWindow(start, end);
 
       const instanceRows = await db
         .select({

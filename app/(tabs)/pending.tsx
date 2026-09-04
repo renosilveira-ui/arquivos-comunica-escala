@@ -134,14 +134,17 @@ export default function PendingScreen() {
     { enabled: !!user?.id && canApproveAssignments && !permissionsLoading },
   );
 
+  // Janela date-only D−1 … D+7 (9 dias civis): cobre os 7 chips D…D+6
+  // com 1 dia de padding em cada borda. Não é requisito de produto o
+  // prefetch antigo de −30/+90 (121 dias).
   const myShiftsStart = useMemo(() => {
     const d = new Date();
-    d.setDate(d.getDate() - 30);
+    d.setDate(d.getDate() - 1);
     return toLocalISODateString(d);
   }, []);
   const myShiftsEnd = useMemo(() => {
     const d = new Date();
-    d.setDate(d.getDate() + 90);
+    d.setDate(d.getDate() + 7);
     return toLocalISODateString(d);
   }, []);
   const {
