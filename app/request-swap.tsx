@@ -20,8 +20,10 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { toLocalISODateString } from "@/lib/datetime-utils";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import {
-  isSelectableDirectedRecipient,
+  applyExplicitFromShiftChange,
+  applyExplicitOperationTypeChange,
   parseEligibleOfferRecipientList,
+  reduceDirectedOfferAudience,
   resolveDirectedOfferWrite,
   type DirectedOfferAudience,
 } from "@/lib/directed-offer-recipient-picker";
@@ -168,26 +170,23 @@ export default function RequestSwapScreen() {
     setSelectedFromAssignmentId(assignment?.id ?? null);
   }, [myShifts, params.fromShiftId, professional?.id, selectedFrom]);
 
-  useEffect(() => {
-    if (audience.kind !== "directed") return;
-    if (!recipientsQueryEnabled) {
-      setAudience({ kind: "open" });
-      return;
-    }
-    if (!recipientList) return;
-    if (!isSelectableDirectedRecipient(audience.professionalId, recipientList)) {
-      setAudience({ kind: "open" });
-    }
-  }, [audience, recipientList, recipientsQueryEnabled]);
-
   const handleSelectFrom = (shift: ShiftInstance) => {
+    setAudience(
+      applyExplicitFromShiftChange(audience, selectedFrom?.id, shift.id),
+    );
     setSelectedFrom(shift);
     if (professional) {
       const assignment = shift.assignments.find((a) => a.professionalId === professional.id && a.isActive);
       setSelectedFromAssignmentId(assignment?.id ?? null);
     }
     setSelectedTo(null);
-    setAudience({ kind: "open" });
+  };
+
+  const handleSelectOfferType = (next: OfferType) => {
+    setAudience(applyExplicitOperationTypeChange(audience, type, next));
+    if (next === type) return;
+    setType(next);
+    setSelectedTo(null);
   };
 
   const handleSubmit = async () => {
@@ -307,11 +306,7 @@ export default function RequestSwapScreen() {
             {(["SWAP", "TRANSFER"] as OfferType[]).map((t) => (
               <TouchableOpacity
                 key={t}
-                onPress={() => {
-                  setType(t);
-                  setSelectedTo(null);
-                  setAudience({ kind: "open" });
-                }}
+                onPress={() => handleSelectOfferType(t)}
                 style={{
                   flex: 1,
                   paddingVertical: 16,
@@ -407,9 +402,18 @@ export default function RequestSwapScreen() {
             hasResolvedData={recipientsQuery.isSuccess}
             error={recipientsQuery.error}
             audience={audience}
-            onSelectOpen={() => setAudience({ kind: "open" })}
+            onSelectOpen={() =>
+              setAudience(
+                reduceDirectedOfferAudience(audience, { type: "SELECT_OPEN" }),
+              )
+            }
             onSelectRecipient={(professionalId) =>
-              setAudience({ kind: "directed", professionalId })
+              setAudience(
+                reduceDirectedOfferAudience(audience, {
+                  type: "SELECT_RECIPIENT",
+                  professionalId,
+                }),
+              )
             }
             onRetry={() => {
               void recipientsQuery.refetch();

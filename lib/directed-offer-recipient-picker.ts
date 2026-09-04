@@ -34,6 +34,78 @@ export type DirectedOfferAudience =
   | { kind: "open" }
   | { kind: "directed"; professionalId: number };
 
+/**
+ * Eventos que podem alterar a intenção de audiência.
+ * Refresh/erro/loading da lista NUNCA amplia directed → open.
+ * Só ação explícita do usuário (tipo, plantão de origem, toque em
+ * “Oferta aberta”) pode ir para open.
+ */
+export type DirectedOfferAudienceEvent =
+  | { type: "RECIPIENT_LIST_REFRESH"; list: EligibleOfferRecipientListView | null }
+  | { type: "QUERY_LOADING" }
+  | { type: "QUERY_ERROR" }
+  | { type: "QUERY_DISABLED" }
+  | { type: "SELECT_RECIPIENT"; professionalId: number }
+  | { type: "SELECT_OPEN" }
+  | { type: "EXPLICIT_FROM_SHIFT_CHANGE" }
+  | { type: "EXPLICIT_OPERATION_TYPE_CHANGE" };
+
+export function reduceDirectedOfferAudience(
+  current: DirectedOfferAudience,
+  event: DirectedOfferAudienceEvent,
+): DirectedOfferAudience {
+  switch (event.type) {
+    case "RECIPIENT_LIST_REFRESH":
+    case "QUERY_LOADING":
+    case "QUERY_ERROR":
+    case "QUERY_DISABLED":
+      return current;
+    case "SELECT_RECIPIENT":
+      return { kind: "directed", professionalId: event.professionalId };
+    case "SELECT_OPEN":
+    case "EXPLICIT_FROM_SHIFT_CHANGE":
+    case "EXPLICIT_OPERATION_TYPE_CHANGE":
+      return { kind: "open" };
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
+  }
+}
+
+/** Re-tocar o mesmo plantão de origem não é composição nova. */
+export function applyExplicitFromShiftChange(
+  current: DirectedOfferAudience,
+  previousFromShiftId: number | null | undefined,
+  nextFromShiftId: number,
+): DirectedOfferAudience {
+  if (previousFromShiftId === nextFromShiftId) return current;
+  return reduceDirectedOfferAudience(current, {
+    type: "EXPLICIT_FROM_SHIFT_CHANGE",
+  });
+}
+
+/** Re-tocar TROCA/REPASSE já selecionado não é composição nova. */
+export function applyExplicitOperationTypeChange(
+  current: DirectedOfferAudience,
+  previousType: "SWAP" | "TRANSFER" | "CESSAO",
+  nextType: "SWAP" | "TRANSFER" | "CESSAO",
+): DirectedOfferAudience {
+  if (previousType === nextType) return current;
+  return reduceDirectedOfferAudience(current, {
+    type: "EXPLICIT_OPERATION_TYPE_CHANGE",
+  });
+}
+
+export function isDirectedAudienceStale(
+  audience: DirectedOfferAudience,
+  list: EligibleOfferRecipientListView | null | undefined,
+): boolean {
+  if (audience.kind !== "directed") return false;
+  if (!list) return false;
+  return !isSelectableDirectedRecipient(audience.professionalId, list);
+}
+
 export const directedOfferRecipientCopy = {
   sectionTitle: "Destinatário",
   openLabel: "Oferta aberta",

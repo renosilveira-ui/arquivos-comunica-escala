@@ -10,6 +10,7 @@ import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
   directedOfferRecipientCopy,
   directedOfferRecipientLabel,
+  isDirectedAudienceStale,
   unresolvedHomonymGroupLabel,
   type DirectedOfferAudience,
   type EligibleOfferRecipientListView,
@@ -44,6 +45,7 @@ export function DirectedOfferRecipientPicker({
 }: Props) {
   const recipients = list?.recipients ?? [];
   const unresolved = list?.unresolvedHomonymGroups ?? [];
+  const directedStale = isDirectedAudienceStale(audience, list);
   const state = resolveOperationalListState({
     isLoading,
     isPending,
@@ -93,6 +95,14 @@ export function DirectedOfferRecipientPicker({
 
       {state === "READY" || state === "EMPTY" ? (
         <>
+          {directedStale ? (
+            <Text
+              style={{ ...theme.text.body, color: theme.colors.danger }}
+            >
+              {directedOfferRecipientCopy.staleDirected}
+            </Text>
+          ) : null}
+
           <AudienceOption
             selected={audience.kind === "open"}
             title={directedOfferRecipientCopy.openLabel}
