@@ -8,6 +8,8 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { DirectedOfferRecipientPicker } from "@/components/swaps/DirectedOfferRecipientPicker";
 import { useAuth } from "@/hooks/use-auth";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { ChevronLeft, Send, ArrowRightLeft } from "lucide-react-native";
@@ -17,6 +19,12 @@ import { uiAlert } from "@/lib/ui/alert";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { toLocalISODateString } from "@/lib/datetime-utils";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import {
+  isSelectableDirectedRecipient,
+  parseEligibleOfferRecipientList,
+  resolveDirectedOfferWrite,
+  type DirectedOfferAudience,
+} from "@/lib/directed-offer-recipient-picker";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,6 +57,7 @@ type OfferPayload = {
   fromShiftInstanceId: number;
   fromAssignmentId: number;
   toShiftInstanceId?: number;
+  toProfessionalId?: number;
   reason?: string;
 };
 
@@ -66,6 +75,9 @@ export default function RequestSwapScreen() {
   const [selectedFrom, setSelectedFrom] = useState<ShiftInstance | null>(null);
   const [selectedFromAssignmentId, setSelectedFromAssignmentId] = useState<number | null>(null);
   const [selectedTo, setSelectedTo] = useState<ShiftInstance | null>(null);
+  const [audience, setAudience] = useState<DirectedOfferAudience>({
+    kind: "open",
+  });
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -89,6 +101,7 @@ export default function RequestSwapScreen() {
     data: professional,
     isLoading: professionalLoading,
     error: professionalError,
+    refetch: refetchProfessional,
   } = trpc.professionals.getByUserId.useQuery(
     { userId: user?.id ?? 0 },
     { enabled: !!user?.id },
@@ -97,7 +110,15 @@ export default function RequestSwapScreen() {
     data: shiftsData,
     isLoading: shiftsLoading,
     error: shiftsError,
+    refetch: refetchShifts,
   } = trpc.shifts.listByPeriod.useQuery(period, { enabled: !!user?.id });
+  const fromShiftId = selectedFrom?.id ?? 0;
+  const recipientsQueryEnabled = type === "TRANSFER" && fromShiftId > 0;
+  const recipientsQuery = trpc.swaps.listEligibleRecipients.useQuery(
+    { fromShiftInstanceId: fromShiftId },
+    { enabled: recipientsQueryEnabled },
+  );
+  const recipientList = parseEligibleOfferRecipientList(recipientsQuery.data);
   const feedback = useActionFeedback();
   const offerMutation = trpc.swaps.offer.useMutation({
     onSuccess: async () => {
@@ -147,14 +168,26 @@ export default function RequestSwapScreen() {
     setSelectedFromAssignmentId(assignment?.id ?? null);
   }, [myShifts, params.fromShiftId, professional?.id, selectedFrom]);
 
+  useEffect(() => {
+    if (audience.kind !== "directed") return;
+    if (!recipientsQueryEnabled) {
+      setAudience({ kind: "open" });
+      return;
+    }
+    if (!recipientList) return;
+    if (!isSelectableDirectedRecipient(audience.professionalId, recipientList)) {
+      setAudience({ kind: "open" });
+    }
+  }, [audience, recipientList, recipientsQueryEnabled]);
+
   const handleSelectFrom = (shift: ShiftInstance) => {
     setSelectedFrom(shift);
     if (professional) {
       const assignment = shift.assignments.find((a) => a.professionalId === professional.id && a.isActive);
       setSelectedFromAssignmentId(assignment?.id ?? null);
     }
-    // Reset "to" selection when "from" changes
     setSelectedTo(null);
+    setAudience({ kind: "open" });
   };
 
   const handleSubmit = async () => {
@@ -171,6 +204,12 @@ export default function RequestSwapScreen() {
       return;
     }
 
+    const directed = resolveDirectedOfferWrite(type, audience, recipientList);
+    if (!directed.ok) {
+      uiAlert("Atenção", directed.message);
+      return;
+    }
+
     setError(null);
 
     const body: OfferPayload = {
@@ -181,6 +220,9 @@ export default function RequestSwapScreen() {
     };
     if (type === "SWAP" && selectedTo) {
       body.toShiftInstanceId = selectedTo.id;
+    }
+    if (type !== "SWAP" && directed.toProfessionalId) {
+      body.toProfessionalId = directed.toProfessionalId;
     }
 
     offerMutation.mutate(body);
@@ -228,9 +270,13 @@ export default function RequestSwapScreen() {
   if (queryError) {
     return (
       <ScreenGradient scrollable={false}>
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-          <Text style={{ color: theme.colors.danger, fontSize: 16 }}>{queryError}</Text>
-        </View>
+        <QueryErrorState
+          error={professionalError ?? shiftsError}
+          onRetry={() => {
+            void refetchProfessional();
+            void refetchShifts();
+          }}
+        />
       </ScreenGradient>
     );
   }
@@ -261,7 +307,11 @@ export default function RequestSwapScreen() {
             {(["SWAP", "TRANSFER"] as OfferType[]).map((t) => (
               <TouchableOpacity
                 key={t}
-                onPress={() => { setType(t); setSelectedTo(null); }}
+                onPress={() => {
+                  setType(t);
+                  setSelectedTo(null);
+                  setAudience({ kind: "open" });
+                }}
                 style={{
                   flex: 1,
                   paddingVertical: 16,
@@ -347,6 +397,25 @@ export default function RequestSwapScreen() {
             )}
           </View>
         )}
+
+        {type === "TRANSFER" && selectedFrom ? (
+          <DirectedOfferRecipientPicker
+            list={recipientList}
+            isLoading={recipientsQuery.isLoading}
+            isPending={recipientsQuery.isPending}
+            isError={recipientsQuery.isError}
+            hasResolvedData={recipientsQuery.isSuccess}
+            error={recipientsQuery.error}
+            audience={audience}
+            onSelectOpen={() => setAudience({ kind: "open" })}
+            onSelectRecipient={(professionalId) =>
+              setAudience({ kind: "directed", professionalId })
+            }
+            onRetry={() => {
+              void recipientsQuery.refetch();
+            }}
+          />
+        ) : null}
 
         {/* S4 — Motivo */}
         <View>

@@ -93,6 +93,7 @@ export default defineConfig({
       "tests/duty-sync-v2-contract.test.ts",
       "tests/swap-offer-actions.test.ts",
       "tests/swap-list-eligible-recipients-source.test.ts",
+      "tests/directed-offer-recipient-picker.test.ts",
       "tests/swap-offer-badge-refresh.test.ts",
       "tests/actionable-badge.test.ts",
       "tests/notification-query-refresh.test.ts",
