@@ -385,12 +385,17 @@ describe("WhatsApp pending intent store", () => {
       }),
     ]);
     expect(results.every((item) => item.ok)).toBe(true);
-    const outcomes = results
-      .filter((item): item is Extract<typeof item, { ok: true }> => item.ok)
-      .map((item) => item.outcome);
+    const okResults = results.filter(
+      (item): item is Extract<typeof item, { ok: true }> => item.ok,
+    );
+    const outcomes = okResults.map((item) => item.outcome);
     expect(outcomes.some((item) => item === "created")).toBe(true);
     expect(
       outcomes.every((item) => item === "created" || item === "replay"),
+    ).toBe(true);
+    expect(new Set(okResults.map((item) => item.row.id)).size).toBe(1);
+    expect(
+      okResults.every((item) => item.row.sourceInboundMessageId === sourceId),
     ).toBe(true);
     const rows = await db
       .select()

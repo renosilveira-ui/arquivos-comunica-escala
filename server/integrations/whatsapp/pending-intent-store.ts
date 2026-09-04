@@ -114,6 +114,15 @@ function isPastExpiry(row: WhatsAppPendingIntentRecord, now: Date): boolean {
   return row.expiresAt.getTime() <= now.getTime();
 }
 
+function outcomeForExistingOpen(
+  row: WhatsAppPendingIntentRecord,
+  sourceInboundMessageId: number,
+): "replay" | "already_open" {
+  return row.sourceInboundMessageId === sourceInboundMessageId
+    ? "replay"
+    : "already_open";
+}
+
 async function loadByIdForUser(
   db: Db,
   id: number,
@@ -348,11 +357,18 @@ export async function createWhatsAppPendingIntent(
   if (open) {
     const latest = await expireIfDue(db, open, now);
     if (latest.status === WhatsAppPendingStatuses.OPEN) {
+      const outcome = outcomeForExistingOpen(
+        latest,
+        sourceInboundMessageId,
+      );
       logSafe({
-        event: "whatsapp_pending_already_open",
+        event:
+          outcome === "replay"
+            ? "whatsapp_pending_replay"
+            : "whatsapp_pending_already_open",
         ...technicalLogFields(latest),
       });
-      return { ok: true, outcome: "already_open", row: latest };
+      return { ok: true, outcome, row: latest };
     }
   }
 
@@ -406,11 +422,18 @@ export async function createWhatsAppPendingIntent(
       if (racedOpen) {
         const latest = await expireIfDue(db, racedOpen, now);
         if (latest.status === WhatsAppPendingStatuses.OPEN) {
+          const outcome = outcomeForExistingOpen(
+            latest,
+            sourceInboundMessageId,
+          );
           logSafe({
-            event: "whatsapp_pending_already_open",
+            event:
+              outcome === "replay"
+                ? "whatsapp_pending_replay"
+                : "whatsapp_pending_already_open",
             ...technicalLogFields(latest),
           });
-          return { ok: true, outcome: "already_open", row: latest };
+          return { ok: true, outcome, row: latest };
         }
       }
     }
