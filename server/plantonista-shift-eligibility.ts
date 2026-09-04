@@ -45,6 +45,101 @@ export function plantonistaAccessCoversShiftSql(
       )`;
 }
 
+/**
+ * Espelha `qualificationMatches` em SQL. Papel gerencial não entra.
+ * ALLOWLIST vazia não admite ninguém. Hospital-wide não aparece aqui —
+ * isso continua em `plantonistaAccessCoversShiftSql`.
+ */
+export function plantonistaQualificationMatchesContextSql(
+  ap = "ap",
+  sc = "sc",
+): SQL {
+  return sql`(
+    (
+      (${col(ap, "medical_specialty_id")} IS NULL) <> (${col(ap, "operational_profile_code")} IS NULL)
+    )
+    AND (
+      (
+        ${col(sc, "admission_policy")} = 'ALL_CFM_SPECIALTIES'
+        AND ${col(ap, "medical_specialty_id")} IS NOT NULL
+      )
+      OR (
+        ${col(sc, "admission_policy")} = 'ALL_CFM_EXCEPT_GENERALIST'
+        AND ${col(ap, "medical_specialty_id")} IS NOT NULL
+        AND (
+          ${col(ap, "operational_profile_code")} IS NULL
+          OR ${col(ap, "operational_profile_code")} NOT IN ('MEDICO_GENERALISTA', 'RESIDENTE_ANESTESIOLOGIA')
+        )
+      )
+      OR (
+        ${col(sc, "admission_policy")} = 'QUALIFICATION_ALLOWLIST'
+        AND EXISTS (
+          SELECT 1
+          FROM schedule_context_allowed_qualifications actor_context_allowlist
+          WHERE actor_context_allowlist.schedule_context_id = ${col(sc, "id")}
+            AND (
+              (
+                actor_context_allowlist.medical_specialty_id IS NOT NULL
+                AND actor_context_allowlist.medical_specialty_id = ${col(ap, "medical_specialty_id")}
+              )
+              OR (
+                actor_context_allowlist.operational_profile_code IS NOT NULL
+                AND actor_context_allowlist.operational_profile_code = ${col(ap, "operational_profile_code")}
+              )
+            )
+        )
+      )
+      OR (
+        ${col(sc, "admission_policy")} = 'PINNED_QUALIFICATION'
+        AND (
+          (${col(sc, "medical_specialty_id")} IS NULL) <> (${col(sc, "operational_profile_code")} IS NULL)
+        )
+        AND (
+          (
+            ${col(sc, "medical_specialty_id")} IS NOT NULL
+            AND ${col(ap, "medical_specialty_id")} = ${col(sc, "medical_specialty_id")}
+          )
+          OR (
+            ${col(sc, "operational_profile_code")} IS NOT NULL
+            AND ${col(ap, "operational_profile_code")} = ${col(sc, "operational_profile_code")}
+          )
+        )
+      )
+    )
+  )`;
+}
+
+/**
+ * Autoridade clínica para responder a uma oferta (aberta ou dirigida).
+ * Papel gerencial não entra: USER, GESTOR_MEDICO e GESTOR_PLUS passam
+ * pelo mesmo professional_access. Hospital-wide (sector_id NULL) só no
+ * contexto legado (admission_policy <> QUALIFICATION_ALLOWLIST).
+ *
+ * SWAP exige o mesmo acesso e a mesma qualificação no turno de contrapartida.
+ * Visibilidade administrativa (manager_scope / GESTOR_PLUS) fica fora.
+ */
+export function actorClinicallyCoversOfferedShiftSql(
+  ap = "ap",
+  fsi = "fsi",
+  fsc = "fsc",
+  sr = "sr",
+  tsi = "tsi",
+  tsc = "tsc",
+): SQL {
+  return sql`(
+    ${plantonistaAccessCoversShiftSql(ap, fsi, fsc)}
+    AND ${plantonistaQualificationMatchesContextSql(ap, fsc)}
+    AND (
+      ${col(sr, "type")} IN ('TRANSFER', 'CESSAO')
+      OR (
+        ${col(sr, "type")} = 'SWAP'
+        AND ${plantonistaAccessCoversShiftSql(ap, tsi, tsc)}
+        AND ${plantonistaQualificationMatchesContextSql(ap, tsc)}
+      )
+    )
+  )`;
+}
+
 export type VacantShiftEligibilityTarget = {
   id: number;
   institutionId: number;

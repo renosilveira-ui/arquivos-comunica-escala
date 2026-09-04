@@ -153,8 +153,10 @@ export function qualificationMatches(
   professional: ProfessionalQualification,
   context: ScheduleContextQualification,
 ): boolean {
-  // Legado de classificação clínica. Esta função não é uma regra de ACL,
-  // elegibilidade, convite, candidatura ou alocação.
+  // Predicado de classificação clínica. Não é ACL, convite, candidatura
+  // nem alocação direta. Receber/responder oferta de plantão reusa este
+  // matcher via `assertProfessionalQualificationMatchesScheduleContext`
+  // e o SQL `plantonistaQualificationMatchesContextSql`.
   const professionalHasExactlyOne =
     (professional.medicalSpecialtyId === null) !==
     (professional.operationalProfileCode === null);
@@ -1375,6 +1377,52 @@ export async function assertActiveScheduleContextTopology(input: {
     });
   }
   return context;
+}
+
+export async function assertProfessionalQualificationMatchesScheduleContext(input: {
+  institutionId: number;
+  professionalId: number;
+  scheduleContextId: number;
+  db: ContextDb;
+}): Promise<void> {
+  const [context] = await selectActiveScheduleContexts(
+    input.db,
+    input.institutionId,
+    { id: input.scheduleContextId },
+  );
+  if (!context) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala inexistente, inativa ou fora do tenant ativo.",
+    });
+  }
+  const [professional] = await input.db
+    .select({
+      medicalSpecialtyId: professionals.medicalSpecialtyId,
+      operationalProfileCode: professionals.operationalProfileCode,
+    })
+    .from(professionals)
+    .where(eq(professionals.id, input.professionalId))
+    .limit(1);
+  if (
+    !professional ||
+    !qualificationMatches(
+      {
+        medicalSpecialtyId: professional.medicalSpecialtyId,
+        operationalProfileCode: professional.operationalProfileCode as
+          | "MEDICO_GENERALISTA"
+          | "RESIDENTE_ANESTESIOLOGIA"
+          | null,
+      },
+      context,
+    )
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "Profissional sem qualificação compatível com a escala do plantão.",
+    });
+  }
 }
 
 export async function assertTenantHospitalSector(

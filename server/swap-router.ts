@@ -24,12 +24,15 @@ import {
   type AssignmentWriteCandidate,
 } from "./shift-validations-v2";
 import { dateFromExecute, rowsFromExecute } from "./_core/db-results";
-import { listedOfferCanRespond } from "../lib/swap-offer-actions";
+import { listedOfferIsClinicallyActionable } from "../lib/swap-offer-actions";
 import {
   listAssumableScheduleContextIds,
   listAuthorizedScheduleContexts,
 } from "./schedule-contexts";
-import { plantonistaAccessCoversShiftSql } from "./plantonista-shift-eligibility";
+import {
+  actorClinicallyCoversOfferedShiftSql,
+  plantonistaAccessCoversShiftSql,
+} from "./plantonista-shift-eligibility";
 import { enqueueSwapTakenSignals } from "./swap-offer-signal";
 import type { TrpcContext } from "./_core/context";
 import {
@@ -81,7 +84,17 @@ type AvailableSwapRow = {
   toSectorName: string | null;
   toProfessionalId: number | string | null;
   toUserId: number | string | null;
+  clinicallyEligible: number | string | boolean | null;
 };
+
+function sqlFlagIsTrue(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === "bigint") return value === 1n;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+    return value.length > 0 && value[0] === 1;
+  }
+  return Number(value) === 1;
+}
 
 function isOpenSwapOffer(
   swap: Pick<SwapRow, "toProfessionalId" | "toUserId">,
@@ -1207,6 +1220,9 @@ async function queryListAvailableRows(
   ctx: TrpcContext,
   input: ListAvailableInput,
 ): Promise<ListAvailableRow[]> {
+  // canView = linha retornada (supervisão gerencial incluída).
+  // canRespond = listedOfferIsClinicallyActionable (clínico ∧ direcionamento).
+  // Push/badge operacional = o mesmo predicado clínico, não o canView.
   const db = await getDb();
   if (!db)
     throw new TRPCError({
@@ -1276,7 +1292,8 @@ async function queryListAvailableRows(
           th.name             AS toHospitalName,
           ts.name             AS toSectorName,
           sr.to_professional_id AS toProfessionalId,
-          sr.to_user_id       AS toUserId
+          sr.to_user_id       AS toUserId,
+          ${actorClinicallyCoversOfferedShiftSql("ap", "fsi", "fsc", "sr", "tsi", "tsc")} AS clinicallyEligible
         FROM swap_requests sr
         JOIN institutions inst
           ON inst.id = sr.institution_id
@@ -1724,11 +1741,14 @@ async function queryListAvailableRows(
     toProfessionalId:
       r.toProfessionalId == null ? null : Number(r.toProfessionalId),
     toUserId: r.toUserId == null ? null : Number(r.toUserId),
-    canRespond: listedOfferCanRespond(
+    // Linha retornada = canView (supervisão administrativa incluída).
+    // canRespond exige autoridade clínica; manager_scope não substitui.
+    canRespond: listedOfferIsClinicallyActionable(
       r.toProfessionalId,
       r.toUserId,
       actor.professionalId,
       userId,
+      sqlFlagIsTrue(r.clinicallyEligible),
     ),
   }));
 }

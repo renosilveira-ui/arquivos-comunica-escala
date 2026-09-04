@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { listedSwapIsActionable, listedOfferCanRespond } from "../lib/swap-offer-actions";
+import {
+  listedSwapIsActionable,
+  listedOfferCanRespond,
+  listedOfferIsClinicallyActionable,
+} from "../lib/swap-offer-actions";
 
 describe("listedSwapIsActionable", () => {
   it("servidor novo manda boolean explícito", () => {
@@ -12,6 +16,16 @@ describe("listedSwapIsActionable", () => {
     expect(listedOfferCanRespond(2, 22, 2, 22)).toBe(true);
     expect(listedOfferCanRespond(2, 22, 3, 33)).toBe(false);
     expect(listedOfferCanRespond(null, null, null, 22)).toBe(false);
+  });
+
+  it("canRespond operacional exige direcionamento e autoridade clínica", () => {
+    expect(listedOfferIsClinicallyActionable(null, null, 2, 22, true)).toBe(true);
+    expect(listedOfferIsClinicallyActionable(null, null, 2, 22, false)).toBe(
+      false,
+    );
+    expect(listedOfferIsClinicallyActionable(2, 22, 2, 22, true)).toBe(true);
+    expect(listedOfferIsClinicallyActionable(2, 22, 2, 22, false)).toBe(false);
+    expect(listedOfferIsClinicallyActionable(2, 22, 3, 33, true)).toBe(false);
   });
 
   it("cliente velho sem canRespond: direcionada a outro fica só leitura", () => {

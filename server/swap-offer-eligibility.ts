@@ -1,7 +1,7 @@
 import { sql, type SQLWrapper } from "drizzle-orm";
 import type { swapRequests } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
-import { plantonistaAccessCoversShiftSql } from "./plantonista-shift-eligibility";
+import { actorClinicallyCoversOfferedShiftSql } from "./plantonista-shift-eligibility";
 
 type SwapRow = typeof swapRequests.$inferSelect;
 
@@ -10,17 +10,14 @@ type EligibilityDb = {
 };
 
 /**
- * Destinatários de sinal de oferta = plantonistas que listAvailable
- * marcaria `canRespond: true` **sem** o atalho GESTOR_PLUS / manager_scope.
+ * Destinatários de sinal de oferta = atores com autoridade clínica
+ * para responder (`canRespond: true`).
  *
- * Gestores continuam vendo e podendo aceitar na lista (SQL de
- * queryListAvailableRows). Push não os inclui só pelo papel gerencial.
- * GESTOR_MEDICO que também passa pelo professional_access
- * entra aqui como médico.
+ * `canView` administrativo (GESTOR_PLUS / manager_scope) NÃO entra.
+ * GESTOR_MEDICO / GESTOR_PLUS só recebem se passarem por
+ * `actorClinicallyCoversOfferedShiftSql` como qualquer plantonista.
  *
- * Os predicados de acesso setorial, conflito e SWAP espelham o ramo
- * plantonista de queryListAvailableRows, para ninguém receber push sem
- * aparecer com canRespond em Trocas.
+ * A mesma expressão clínica alimenta o SELECT de queryListAvailableRows.
  * Não reintroduzir atalho gerencial no destinatário (aliases api/ap).
  */
 export async function eligibleRecipientUserIdsForSwapOffer(
@@ -30,6 +27,9 @@ export async function eligibleRecipientUserIdsForSwapOffer(
     "id" | "fromUserId" | "toUserId" | "toProfessionalId" | "institutionId"
   >,
 ): Promise<number[]> {
+  // Destinatário = actorClinicallyCoversOfferedShiftSql.
+  // O OR GESTOR_PLUS/manager_scope abaixo é só validade da ORIGEM
+  // (quem oferta o próprio plantão), não atalho de destinatário.
   const result = await db.execute(sql`
     SELECT DISTINCT au.id AS userId
     FROM swap_requests sr
@@ -169,7 +169,7 @@ export async function eligibleRecipientUserIdsForSwapOffer(
             AND source_scope.active = 1
         )
       )
-      AND ${plantonistaAccessCoversShiftSql("ap", "fsi", "fsc")}
+      AND ${actorClinicallyCoversOfferedShiftSql("ap", "fsi", "fsc", "sr", "tsi", "tsc")}
       AND NOT EXISTS (
         SELECT 1
         FROM shift_assignments_v2 actor_conflict
@@ -216,25 +216,6 @@ export async function eligibleRecipientUserIdsForSwapOffer(
               AND target_duplicate.professional_id = ap.id
               AND target_duplicate.is_active = 1
               AND target_duplicate.id != tsa.id
-          )
-          AND EXISTS (
-            SELECT 1
-            FROM professional_access actor_target_access
-            WHERE actor_target_access.institution_id = tsi.institution_id
-              AND actor_target_access.professional_id = ap.id
-              AND actor_target_access.hospital_id = tsi.hospital_id
-              AND actor_target_access.can_access = 1
-              AND (
-                (
-                  tsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-                  AND actor_target_access.sector_id = tsi.sector_id
-                )
-                OR
-                (
-                  tsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
-                  AND (actor_target_access.sector_id IS NULL OR actor_target_access.sector_id = tsi.sector_id)
-                )
-              )
           )
           AND EXISTS (
             SELECT 1
