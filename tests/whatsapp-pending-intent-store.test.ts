@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
-  institutions,
   users,
   whatsappInboundMessages,
   whatsappPendingIntents,
@@ -18,14 +17,30 @@ import {
   getWhatsAppPendingIntentBySourceForUser,
 } from "../server/integrations/whatsapp/pending-intent-store";
 import { WHATSAPP_PENDING_INTENT_TTL_MS } from "../server/integrations/whatsapp/pending-intent-types";
+import type { WhatsAppPendingIntentRecord } from "../server/integrations/whatsapp/pending-intent-types";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+function expectFoundationBirth(
+  row: WhatsAppPendingIntentRecord,
+  userId: number,
+  sourceId: number,
+) {
+  expect(row.userId).toBe(userId);
+  expect(row.sourceInboundMessageId).toBe(sourceId);
+  expect(row.status).toBe("OPEN");
+  expect(row.stage).toBe("PARSE");
+  expect(row.intentKind).toBeNull();
+  expect(row.parsedPayload).toBeNull();
+  expect(row.resolvedPayload).toBeNull();
+  expect(row.clarificationPayload).toBeNull();
+  expect(row.institutionId).toBeNull();
+}
 
 describe("WhatsApp pending intent store", () => {
   let db: Db;
   let userA: number;
   let userB: number;
-  let foreignInstitutionId: number;
   const stamp = Date.now();
   const inboundIds: number[] = [];
   const userIds: number[] = [];
@@ -48,7 +63,7 @@ describe("WhatsApp pending intent store", () => {
   }
 
   async function insertInbound(
-    ownerId: number,
+    ownerId: number | null,
     suffix: string,
     status = "READY_FOR_NL",
   ): Promise<number> {
@@ -74,9 +89,6 @@ describe("WhatsApp pending intent store", () => {
     const maybe = await getDb();
     if (!maybe) throw new Error("DB unavailable");
     db = maybe;
-    const institutionRows = await db.select().from(institutions).limit(2);
-    if (!institutionRows[0]) throw new Error("seed institution missing");
-    foreignInstitutionId = institutionRows[1]?.id ?? institutionRows[0].id + 10_000;
     userA = await insertUser("a");
     userB = await insertUser("b");
   });
@@ -104,25 +116,16 @@ describe("WhatsApp pending intent store", () => {
     }
   });
 
-  it("cria OPEN com institution/resolved null, TTL 15min e source FK", async () => {
+  it("create recebe só sourceInboundMessageId e deriva userId do inbound", async () => {
     const sourceId = await insertInbound(userA, "create");
     const now = new Date("2026-09-04T15:00:00.000Z");
     const result = await createWhatsAppPendingIntent(
-      {
-        userId: userA,
-        sourceInboundMessageId: sourceId,
-        parsedPayload: { sectorName: "UTI" },
-      },
+      { sourceInboundMessageId: sourceId },
       now,
     );
     expect(result).toMatchObject({ ok: true, outcome: "created" });
     if (!result.ok) throw new Error(result.code);
-    expect(result.row.status).toBe("OPEN");
-    expect(result.row.stage).toBe("PARSE");
-    expect(result.row.institutionId).toBeNull();
-    expect(result.row.resolvedPayload).toBeNull();
-    expect(result.row.clarificationPayload).toBeNull();
-    expect(result.row.parsedPayload).toEqual({ sectorName: "UTI" });
+    expectFoundationBirth(result.row, userA, sourceId);
     expect(result.row.expiresAt.getTime() - now.getTime()).toBe(
       WHATSAPP_PENDING_INTENT_TTL_MS,
     );
@@ -132,28 +135,40 @@ describe("WhatsApp pending intent store", () => {
       .from(whatsappPendingIntents)
       .where(eq(whatsappPendingIntents.id, result.row.id));
     expect(raw?.openSlot).toBe(1);
+    expect(raw?.userId).toBe(userA);
     const serialized = JSON.stringify(raw);
     expect(serialized).not.toContain("+55");
     expect(serialized).not.toMatch(/X-Twilio-Signature|TWILIO_AUTH_TOKEN/i);
     expect(serialized).not.toContain("MessageSid");
   });
 
+  it("caller não substitui userId, intentKind, parsedPayload nem institutionId", async () => {
+    const sourceId = await insertInbound(userA, "spoof");
+    const result = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+      userId: userB,
+      institutionId: 99_999,
+      intentKind: "SWAP",
+      parsedPayload: { shiftId: 1, phone: "+5585999100001" },
+    } as never);
+    expect(result).toMatchObject({ ok: true, outcome: "created" });
+    if (!result.ok) throw new Error(result.code);
+    expectFoundationBirth(result.row, userA, sourceId);
+    expect(result.row.userId).not.toBe(userB);
+  });
+
   it("mesmo source duas vezes não duplica; replay preserva a row", async () => {
     const sourceId = await insertInbound(userA, "srcuniq");
     const first = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: sourceId,
     });
     const second = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: sourceId,
     });
     expect(first).toMatchObject({ ok: true, outcome: "created" });
     expect(second).toMatchObject({ ok: true, outcome: "replay" });
     if (!first.ok || !second.ok) throw new Error("create failed");
-    expect(first.row.parsedPayload).toBeNull();
-    expect(first.row.resolvedPayload).toBeNull();
-    expect(first.row.clarificationPayload).toBeNull();
+    expectFoundationBirth(first.row, userA, sourceId);
     expect(second.row.id).toBe(first.row.id);
     const rows = await db
       .select()
@@ -166,11 +181,9 @@ describe("WhatsApp pending intent store", () => {
     const firstSource = await insertInbound(userA, "open1");
     const secondSource = await insertInbound(userA, "open2");
     await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: firstSource,
     });
     const blocked = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: secondSource,
     });
     expect(blocked).toMatchObject({ ok: true, outcome: "already_open" });
@@ -189,17 +202,17 @@ describe("WhatsApp pending intent store", () => {
     const sourceA = await insertInbound(userA, "indepa");
     const sourceB = await insertInbound(userB, "indepb");
     const a = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: sourceA,
     });
     const b = await createWhatsAppPendingIntent({
-      userId: userB,
       sourceInboundMessageId: sourceB,
     });
     expect(a).toMatchObject({ ok: true, outcome: "created" });
     expect(b).toMatchObject({ ok: true, outcome: "created" });
     if (!a.ok || !b.ok) throw new Error("independent create failed");
     expect(a.row.id).not.toBe(b.row.id);
+    expect(a.row.userId).toBe(userA);
+    expect(b.row.userId).toBe(userB);
     expect(await getOpenWhatsAppPendingIntentForUser(userA)).toMatchObject({
       id: a.row.id,
     });
@@ -208,44 +221,9 @@ describe("WhatsApp pending intent store", () => {
     });
   });
 
-  it("institutionId livre de outro tenant é ignorado", async () => {
-    const sourceId = await insertInbound(userA, "inst");
-    const result = await createWhatsAppPendingIntent({
-      userId: userA,
-      sourceInboundMessageId: sourceId,
-      institutionId: foreignInstitutionId,
-      parsedPayload: { sectorName: "UTI", institutionName: "Outra" },
-    } as Parameters<typeof createWhatsAppPendingIntent>[0] & {
-      institutionId: number;
-    });
-    expect(result).toMatchObject({ ok: true, outcome: "created" });
-    if (!result.ok) throw new Error(result.code);
-    expect(result.row.institutionId).toBeNull();
-    expect(result.row.parsedPayload).toEqual({
-      sectorName: "UTI",
-      institutionName: "Outra",
-    });
-  });
-
-  it("parsed com chave Id é recusado e não grava row", async () => {
-    const sourceId = await insertInbound(userA, "badid");
-    const result = await createWhatsAppPendingIntent({
-      userId: userA,
-      sourceInboundMessageId: sourceId,
-      parsedPayload: { shiftId: 99 },
-    });
-    expect(result).toEqual({ ok: false, code: "PARSED_PAYLOAD_INVALID" });
-    const rows = await db
-      .select()
-      .from(whatsappPendingIntents)
-      .where(eq(whatsappPendingIntents.sourceInboundMessageId, sourceId));
-    expect(rows).toHaveLength(0);
-  });
-
   it("user A nunca carrega, cancela ou expira pending de B", async () => {
     const sourceB = await insertInbound(userB, "iso");
     const created = await createWhatsAppPendingIntent({
-      userId: userB,
       sourceInboundMessageId: sourceB,
     });
     if (!created.ok) throw new Error(created.code);
@@ -270,9 +248,7 @@ describe("WhatsApp pending intent store", () => {
   it("cancela OPEN, é idempotente e terminal não volta a OPEN", async () => {
     const sourceId = await insertInbound(userA, "cancel");
     const created = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: sourceId,
-      parsedPayload: { targetName: "Ana" },
     });
     if (!created.ok) throw new Error(created.code);
     const first = await cancelWhatsAppPendingIntent(created.row.id, userA);
@@ -286,7 +262,6 @@ describe("WhatsApp pending intent store", () => {
     expect(first.row.payloadClearedAt).toBeTruthy();
 
     const replay = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: sourceId,
     });
     expect(replay).toMatchObject({ ok: true, outcome: "already_terminal" });
@@ -299,11 +274,7 @@ describe("WhatsApp pending intent store", () => {
     const sourceId = await insertInbound(userA, "ttl");
     const now = new Date("2026-09-04T18:00:00.000Z");
     const created = await createWhatsAppPendingIntent(
-      {
-        userId: userA,
-        sourceInboundMessageId: sourceId,
-        parsedPayload: { targetName: "Bia" },
-      },
+      { sourceInboundMessageId: sourceId },
       now,
     );
     if (!created.ok) throw new Error(created.code);
@@ -334,12 +305,12 @@ describe("WhatsApp pending intent store", () => {
     const newSource = await insertInbound(userA, "fresh");
     const createdAt = new Date("2026-09-04T08:00:00.000Z");
     const stale = await createWhatsAppPendingIntent(
-      { userId: userA, sourceInboundMessageId: oldSource },
+      { sourceInboundMessageId: oldSource },
       createdAt,
     );
     const later = new Date(createdAt.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS);
     const fresh = await createWhatsAppPendingIntent(
-      { userId: userA, sourceInboundMessageId: newSource },
+      { sourceInboundMessageId: newSource },
       later,
     );
     expect(stale).toMatchObject({ ok: true, outcome: "created" });
@@ -356,7 +327,7 @@ describe("WhatsApp pending intent store", () => {
     const sourceId = await insertInbound(userA, "sweep");
     const createdAt = new Date("2026-09-04T10:00:00.000Z");
     const created = await createWhatsAppPendingIntent(
-      { userId: userA, sourceInboundMessageId: sourceId },
+      { sourceInboundMessageId: sourceId },
       createdAt,
     );
     if (!created.ok) throw new Error(created.code);
@@ -375,14 +346,8 @@ describe("WhatsApp pending intent store", () => {
   it("corrida de dois creates no mesmo source gera uma row", async () => {
     const sourceId = await insertInbound(userA, "race");
     const results = await Promise.all([
-      createWhatsAppPendingIntent({
-        userId: userA,
-        sourceInboundMessageId: sourceId,
-      }),
-      createWhatsAppPendingIntent({
-        userId: userA,
-        sourceInboundMessageId: sourceId,
-      }),
+      createWhatsAppPendingIntent({ sourceInboundMessageId: sourceId }),
+      createWhatsAppPendingIntent({ sourceInboundMessageId: sourceId }),
     ]);
     expect(results.every((item) => item.ok)).toBe(true);
     const okResults = results.filter(
@@ -397,6 +362,7 @@ describe("WhatsApp pending intent store", () => {
     expect(
       okResults.every((item) => item.row.sourceInboundMessageId === sourceId),
     ).toBe(true);
+    expect(okResults.every((item) => item.row.userId === userA)).toBe(true);
     const rows = await db
       .select()
       .from(whatsappPendingIntents)
@@ -408,14 +374,8 @@ describe("WhatsApp pending intent store", () => {
     const firstSource = await insertInbound(userA, "raceu1");
     const secondSource = await insertInbound(userA, "raceu2");
     const results = await Promise.all([
-      createWhatsAppPendingIntent({
-        userId: userA,
-        sourceInboundMessageId: firstSource,
-      }),
-      createWhatsAppPendingIntent({
-        userId: userA,
-        sourceInboundMessageId: secondSource,
-      }),
+      createWhatsAppPendingIntent({ sourceInboundMessageId: firstSource }),
+      createWhatsAppPendingIntent({ sourceInboundMessageId: secondSource }),
     ]);
     expect(results.every((item) => item.ok)).toBe(true);
     const openRows = await db
@@ -425,35 +385,31 @@ describe("WhatsApp pending intent store", () => {
     expect(openRows.filter((row) => row.status === "OPEN")).toHaveLength(1);
   });
 
-  it("exige inbound READY_FOR_NL do mesmo user e FK source", async () => {
+  it("exige inbound READY_FOR_NL com userId canônico", async () => {
     const missing = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: 2_147_000_000,
     });
     expect(missing).toEqual({ ok: false, code: "SOURCE_INBOUND_NOT_FOUND" });
 
     const receivedId = await insertInbound(userA, "recv", "RECEIVED");
     const notReady = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: receivedId,
     });
     expect(notReady).toEqual({ ok: false, code: "SOURCE_INBOUND_NOT_READY" });
 
-    const ownedByB = await insertInbound(userB, "ownb");
-    const mismatch = await createWhatsAppPendingIntent({
-      userId: userA,
-      sourceInboundMessageId: ownedByB,
+    const anonymousId = await insertInbound(null, "noid");
+    const noIdentity = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: anonymousId,
     });
-    expect(mismatch).toEqual({
+    expect(noIdentity).toEqual({
       ok: false,
-      code: "SOURCE_OWNERSHIP_MISMATCH",
+      code: "SOURCE_INBOUND_IDENTITY_MISSING",
     });
   });
 
   it("DELETE inbound é RESTRICT enquanto o pending existir", async () => {
     const sourceId = await insertInbound(userA, "restrict");
     const created = await createWhatsAppPendingIntent({
-      userId: userA,
       sourceInboundMessageId: sourceId,
     });
     if (!created.ok) throw new Error(created.code);
@@ -478,16 +434,11 @@ describe("WhatsApp pending intent store", () => {
         lines.push(args.map((item) => String(item)).join(" "));
         return logger;
       });
-    await createWhatsAppPendingIntent({
-      userId: userA,
-      sourceInboundMessageId: sourceId,
-      parsedPayload: { targetName: "Carla" },
-    });
+    await createWhatsAppPendingIntent({ sourceInboundMessageId: sourceId });
     spy.mockRestore();
     const joined = lines.join("\n");
     expect(joined).toContain("whatsapp_pending_created");
     expect(joined).not.toContain("+55");
-    expect(joined).not.toContain("Carla");
     expect(joined).not.toContain("slots semânticos futuros");
     expect(joined).not.toMatch(/X-Twilio-Signature|TWILIO_AUTH_TOKEN|Body/i);
   });

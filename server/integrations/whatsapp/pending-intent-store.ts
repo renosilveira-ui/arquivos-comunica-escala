@@ -3,7 +3,8 @@
  *
  * Não é autoridade de acesso, elegibilidade, instituição ou swap.
  * Não importa parser, resolver, autoridade de swap nem SDK de transporte.
- * institution_id nunca nasce de texto, webhook ou helper livre.
+ * Create recebe só sourceInboundMessageId; userId nasce do inbound
+ * READY_FOR_NL. institution/intent/payloads nascem null.
  */
 
 import { and, eq, inArray, isNull, lte } from "drizzle-orm";
@@ -17,16 +18,13 @@ import {
   WhatsAppPendingStatuses,
   WhatsAppPendingStages,
   isWhatsAppPendingTerminalStatus,
+  pendingExpiresAtFrom,
   type CreateWhatsAppPendingIntentInput,
   type WhatsAppPendingCleanupResult,
   type WhatsAppPendingIntentRecord,
   type WhatsAppPendingMutationResult,
   type WhatsAppPendingStoreResult,
 } from "./pending-intent-types";
-import {
-  assertSemanticParsedPayload,
-  pendingExpiresAtFrom,
-} from "./pending-payload";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -110,6 +108,27 @@ function clearedConversationPayload(now: Date) {
   };
 }
 
+function emptyFoundationInsert(
+  userId: number,
+  sourceInboundMessageId: number,
+  now: Date,
+) {
+  return {
+    userId,
+    sourceInboundMessageId,
+    institutionId: null,
+    status: WhatsAppPendingStatuses.OPEN,
+    stage: WhatsAppPendingStages.PARSE,
+    intentKind: null,
+    parsedPayload: null,
+    resolvedPayload: null,
+    clarificationPayload: null,
+    expiresAt: pendingExpiresAtFrom(now),
+    consumedAt: null,
+    payloadClearedAt: null,
+  };
+}
+
 function isPastExpiry(row: WhatsAppPendingIntentRecord, now: Date): boolean {
   return row.expiresAt.getTime() <= now.getTime();
 }
@@ -136,6 +155,20 @@ async function loadByIdForUser(
         eq(whatsappPendingIntents.id, id),
         eq(whatsappPendingIntents.userId, userId),
       ),
+    )
+    .limit(1);
+  return row ? toRecord(row) : null;
+}
+
+async function loadBySource(
+  db: Db,
+  sourceInboundMessageId: number,
+): Promise<WhatsAppPendingIntentRecord | null> {
+  const [row] = await db
+    .select()
+    .from(whatsappPendingIntents)
+    .where(
+      eq(whatsappPendingIntents.sourceInboundMessageId, sourceInboundMessageId),
     )
     .limit(1);
   return row ? toRecord(row) : null;
@@ -290,22 +323,12 @@ export async function createWhatsAppPendingIntent(
   input: CreateWhatsAppPendingIntentInput,
   now: Date = new Date(),
 ): Promise<WhatsAppPendingStoreResult> {
-  const userId = input.userId;
   const sourceInboundMessageId = input.sourceInboundMessageId;
-  const intentKind = input.intentKind ?? null;
-  const parsedPayload = input.parsedPayload ?? null;
-
-  try {
-    assertSemanticParsedPayload(parsedPayload);
-  } catch {
-    return { ok: false, code: "PARSED_PAYLOAD_INVALID" };
-  }
 
   const db = await getDb();
   if (!db) {
     logSafe({
       event: "whatsapp_pending_unavailable",
-      userId,
       sourceInboundId: sourceInboundMessageId,
       code: "DB_UNAVAILABLE",
     });
@@ -328,15 +351,12 @@ export async function createWhatsAppPendingIntent(
   if (source.processingStatus !== READY_FOR_NL) {
     return { ok: false, code: "SOURCE_INBOUND_NOT_READY" };
   }
-  if (source.userId !== userId) {
-    return { ok: false, code: "SOURCE_OWNERSHIP_MISMATCH" };
+  if (source.userId == null) {
+    return { ok: false, code: "SOURCE_INBOUND_IDENTITY_MISSING" };
   }
+  const userId = source.userId;
 
-  const existingSource = await loadBySourceForUser(
-    db,
-    sourceInboundMessageId,
-    userId,
-  );
+  const existingSource = await loadBySource(db, sourceInboundMessageId);
   if (existingSource) {
     const latest = await expireIfDue(db, existingSource, now);
     if (isWhatsAppPendingTerminalStatus(latest.status)) {
@@ -375,20 +395,7 @@ export async function createWhatsAppPendingIntent(
   try {
     const [inserted] = await db
       .insert(whatsappPendingIntents)
-      .values({
-        userId,
-        sourceInboundMessageId,
-        institutionId: null,
-        status: WhatsAppPendingStatuses.OPEN,
-        stage: WhatsAppPendingStages.PARSE,
-        intentKind,
-        parsedPayload,
-        resolvedPayload: null,
-        clarificationPayload: null,
-        expiresAt: pendingExpiresAtFrom(now),
-        consumedAt: null,
-        payloadClearedAt: null,
-      })
+      .values(emptyFoundationInsert(userId, sourceInboundMessageId, now))
       .$returningId();
 
     const row = await loadByIdForUser(db, inserted.id, userId);
@@ -402,11 +409,7 @@ export async function createWhatsAppPendingIntent(
     return { ok: true, outcome: "created", row };
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      const racedSource = await loadBySourceForUser(
-        db,
-        sourceInboundMessageId,
-        userId,
-      );
+      const racedSource = await loadBySource(db, sourceInboundMessageId);
       if (racedSource) {
         const latest = await expireIfDue(db, racedSource, now);
         if (isWhatsAppPendingTerminalStatus(latest.status)) {

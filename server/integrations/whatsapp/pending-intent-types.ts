@@ -1,5 +1,9 @@
 export const WHATSAPP_PENDING_INTENT_TTL_MS = 15 * 60 * 1000;
 
+export function pendingExpiresAtFrom(now: Date = new Date()): Date {
+  return new Date(now.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS);
+}
+
 export const WhatsAppPendingStatuses = {
   OPEN: "OPEN",
   CANCELLED: "CANCELLED",
@@ -40,10 +44,7 @@ export function isWhatsAppPendingTerminalStatus(
 }
 
 export type CreateWhatsAppPendingIntentInput = {
-  userId: number;
   sourceInboundMessageId: number;
-  intentKind?: WhatsAppPendingIntentKind | null;
-  parsedPayload?: Record<string, unknown> | null;
 };
 
 export type WhatsAppPendingIntentRecord = {
@@ -73,8 +74,7 @@ export type WhatsAppPendingStoreResult =
         | "DB_UNAVAILABLE"
         | "SOURCE_INBOUND_NOT_FOUND"
         | "SOURCE_INBOUND_NOT_READY"
-        | "SOURCE_OWNERSHIP_MISMATCH"
-        | "PARSED_PAYLOAD_INVALID"
+        | "SOURCE_INBOUND_IDENTITY_MISSING"
         | "PERSISTENCE_FAILED";
     };
 

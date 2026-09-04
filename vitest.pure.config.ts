@@ -111,7 +111,6 @@ export default defineConfig({
       "tests/whatsapp-inbound-source.test.ts",
       "tests/whatsapp-inbound-migration.test.ts",
       "tests/whatsapp-inbound-webhook-gate.test.ts",
-      "tests/whatsapp-pending-payload.test.ts",
       "tests/whatsapp-pending-intent-source.test.ts",
       "tests/whatsapp-pending-intent-migration.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",

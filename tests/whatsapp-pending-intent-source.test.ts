@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  WHATSAPP_PENDING_INTENT_TTL_MS,
+  pendingExpiresAtFrom,
+} from "../server/integrations/whatsapp/pending-intent-types";
 
 const store = readFileSync(
   new URL(
@@ -13,10 +17,6 @@ const types = readFileSync(
     "../server/integrations/whatsapp/pending-intent-types.ts",
     import.meta.url,
   ),
-  "utf8",
-);
-const payload = readFileSync(
-  new URL("../server/integrations/whatsapp/pending-payload.ts", import.meta.url),
   "utf8",
 );
 const inboundStore = readFileSync(
@@ -41,15 +41,22 @@ function pendingSchemaBlock(): string {
   return schema.slice(start, end);
 }
 
+function createInputTypeBlock(): string {
+  const start = types.indexOf("export type CreateWhatsAppPendingIntentInput");
+  const end = types.indexOf("export type WhatsAppPendingIntentRecord");
+  return types.slice(start, end);
+}
+
 describe("WhatsApp pending intent — source contracts", () => {
   it("B1 não importa parser NL, createSwapOffer nem Twilio SDK", () => {
-    for (const src of [store, types, payload]) {
+    for (const src of [store, types]) {
       expect(src).not.toMatch(/from ["'][^"']*natural-language/);
       expect(src).not.toMatch(/parseSwapIntent|resolveSwapIntent/);
       expect(src).not.toMatch(/from ["'][^"']*createSwapOffer|import\s+.*createSwapOffer/);
       expect(src).not.toMatch(/from ["']twilio["']|require\(["']twilio["']\)/);
       expect(src).not.toMatch(/twilio-provider|MessagingResponse/);
     }
+    expect(store).not.toMatch(/pending-payload|assertSemanticParsedPayload/);
   });
 
   it("inbound continua parando em READY_FOR_NL sem criar pending", () => {
@@ -71,11 +78,18 @@ describe("WhatsApp pending intent — source contracts", () => {
     expect(block).not.toMatch(/providerMessageId/);
   });
 
-  it("create nunca lê institutionId livre do caller", () => {
+  it("create B1 aceita só sourceInboundMessageId", () => {
+    const createType = createInputTypeBlock();
+    expect(createType).toContain("sourceInboundMessageId: number");
+    expect(createType).not.toMatch(/userId|intentKind|parsedPayload|institutionId/);
+    expect(store).not.toMatch(/input\.userId|input\.intentKind|input\.parsedPayload|input\.institutionId/);
+    expect(store).toContain("emptyFoundationInsert");
+    expect(store).toContain("intentKind: null");
+    expect(store).toContain("parsedPayload: null");
     expect(store).toContain("institutionId: null");
-    expect(store).not.toMatch(/input\.institutionId/);
-    expect(store).not.toMatch(/institutionId:\s*input/);
-    expect(types).not.toMatch(/institutionId\?:/);
+    expect(store).toContain("SOURCE_INBOUND_IDENTITY_MISSING");
+    expect(store).not.toMatch(/SOURCE_OWNERSHIP_MISMATCH|PARSED_PAYLOAD_INVALID/);
+    expect(types).not.toMatch(/SOURCE_OWNERSHIP_MISMATCH|PARSED_PAYLOAD_INVALID/);
   });
 
   it("contrato documenta status+stage e um OPEN por usuário", () => {
@@ -83,6 +97,7 @@ describe("WhatsApp pending intent — source contracts", () => {
     expect(contract).toContain("WHATSAPP_PENDING_INTENT_TTL_MS");
     expect(contract).toContain("uniq_whatsapp_pending_open_user");
     expect(contract).toContain("status + stage");
+    expect(contract).toContain("sourceInboundMessageId");
     expect(store).toContain("clearExpiredWhatsAppPendingIntents");
     expect(store).not.toMatch(/confirmAndExecute|markConsumed/);
   });
@@ -96,5 +111,13 @@ describe("WhatsApp pending intent — source contracts", () => {
       store.indexOf("function clearedConversationPayload"),
     );
     expect(logFields).not.toMatch(/operationalText|fromE164|parsedPayload/);
+  });
+
+  it("TTL conversacional é 15 minutos, distinto do inbound de 24h", () => {
+    expect(WHATSAPP_PENDING_INTENT_TTL_MS).toBe(15 * 60 * 1000);
+    const now = new Date("2026-09-04T12:00:00.000Z");
+    expect(pendingExpiresAtFrom(now).toISOString()).toBe(
+      "2026-09-04T12:15:00.000Z",
+    );
   });
 });

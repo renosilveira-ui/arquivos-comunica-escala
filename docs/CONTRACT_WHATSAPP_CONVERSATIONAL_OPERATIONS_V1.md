@@ -164,11 +164,13 @@ B1 **não** implementa `confirmAndExecute` / `markConsumed`.
   máximo um pending.
 - No máximo um `OPEN` por usuário no WhatsApp, via coluna gerada
   `open_slot` + `UNIQUE` `uniq_whatsapp_pending_open_user (user_id, open_slot)`.
-- `institution_id` nasce `NULL`. Nunca vem de texto, webhook ou helper
-  livre. Só o resolver canônico futuro pode preenchê-lo.
-- `parsed_payload` só slots semânticos (sem chave `Id` / `_id`, sem
-  telefone, Body, signature, token ou mídia). `resolved_payload` e
-  `clarification_payload` ficam null neste incremento.
+- Create B1 recebe **somente** `sourceInboundMessageId`. `userId` nasce
+  do inbound `READY_FOR_NL` (`source.userId`). Caller não escolhe
+  identidade. Inbound sem `userId` falha fechado
+  (`SOURCE_INBOUND_IDENTITY_MISSING`).
+- `institution_id`, `intent_kind`, `parsed_payload`, `resolved_payload`
+  e `clarification_payload` nascem `NULL`. B1 não aceita conteúdo
+  parseado; B2 introduz primitive guardada para o parser.
 - Sem token público. Continuação futura = mesmo user verificado + OPEN
   desse user. Id interno não vai ao usuário.
 - TTL conversacional: 15 minutos (`WHATSAPP_PENDING_INTENT_TTL_MS`),
@@ -227,12 +229,12 @@ Incremento B1 (esta camada): persiste a conversa pendente. Não chama
 parser, resolver nem `createSwapOffer`. Cleanup pronto:
 `clearExpiredWhatsAppPendingIntents` (sem cron novo).
 
-Incremento B2+: `READY_FOR_NL` → lê `operational_text` via
-`readWhatsAppInboundOperationalMaterial` → parser/resolver de
-`server/natural-language/` → `createWhatsAppPendingIntent` →
+Incremento B2+: `READY_FOR_NL` → `createWhatsAppPendingIntent` (só
+source) → lê `operational_text` → parser/resolver de
+`server/natural-language/` → primitive B2 para persistir slots →
 confirmação → `createSwapOffer` →
 `clearWhatsAppInboundOperationalPayload`. O inbound **não** importa
-esses módulos.
+esses módulos. O create B1 **não** recebe `userId` nem payload parseado.
 
 Incremento D: `READY_FOR_TRANSCRIPTION` → usa `media_url` → transcreve →
 limpa o payload.
