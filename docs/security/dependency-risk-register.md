@@ -1,10 +1,12 @@
 # Registro de risco de dependências
 
-Este documento descreve as exceções temporárias aceitas pelo gate
-**pnpm security:audit**. A fonte executável e canônica é
+Este documento descreve as exceções temporárias aceitas pelos gates
+**pnpm security:lockfile** (OSV, gate síncrono de PR) e
+**pnpm security:audit** (npm audit, main/schedule). A fonte executável e
+canônica é
 [security/dependency-exceptions.json](../../security/dependency-exceptions.json).
 
-O gate consulta o registro npm e falha de forma segura quando:
+O gate de PR consulta a OSV sobre o lockfile inteiro e falha de forma segura quando:
 
 - surge um advisory moderado, alto ou crítico não aprovado;
 - a versão, severidade ou pacote diverge do registro;
@@ -51,7 +53,7 @@ Uma exceção só pode ser renovada após repetir:
 
 1. instalação com lockfile congelado;
 2. os testes de regressão indicados no registro;
-3. **pnpm security:audit**;
+3. **pnpm security:lockfile** e, no main/schedule, **pnpm security:audit**;
 4. lint, typecheck, testes e builds locais;
 5. revisão da versão corrigida upstream e da cadeia Expo/Metro.
 

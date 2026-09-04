@@ -1,6 +1,8 @@
 name: Dependency Audit
 
 on:
+  push:
+    branches: [main]
   schedule:
     # Daily coverage keeps new advisories and expired exceptions from waiting
     # for the next repository change. 09:23 UTC = 06:23 America/Sao_Paulo.

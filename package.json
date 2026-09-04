@@ -20,6 +20,7 @@
     "format": "prettier --write .",
     "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "security:audit": "node scripts/security/audit-dependencies.mjs",
+    "security:lockfile": "node scripts/security/lockfile-osv-audit.mjs",
     "test": "vitest run",
     "test:sector-service-specialties-migration": "vitest run --config vitest.migration.config.ts",
     "test:readiness-fence-v1-mysql": "vitest run --config vitest.readiness-fence-v1-mysql.config.ts",

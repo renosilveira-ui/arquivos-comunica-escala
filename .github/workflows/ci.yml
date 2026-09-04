@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: ci
+  ci-core:
+    name: ci-core
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -67,9 +67,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Audit dependencies
-        run: pnpm security:audit
 
       - name: Wait for MySQL
         run: |
@@ -146,6 +143,43 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  dependency-security:
+    name: dependency-security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Audit lockfile against OSV
+        run: pnpm security:lockfile
+
+  ci:
+    name: ci
+    if: ${{ always() && !cancelled() }}
+    needs: [ci-core, dependency-security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require core CI and dependency security
+        run: |
+          echo "ci-core=${{ needs.ci-core.result }}"
+          echo "dependency-security=${{ needs.dependency-security.result }}"
+          test "${{ needs.ci-core.result }}" = "success"
+          test "${{ needs.dependency-security.result }}" = "success"
 
   dependency-review:
     name: dependency-review
