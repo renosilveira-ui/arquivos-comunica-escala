@@ -5,9 +5,11 @@
  * Não importa parser, resolver, autoridade de swap nem SDK de transporte.
  * Create recebe só sourceInboundMessageId; userId nasce do inbound
  * READY_FOR_NL. institution/intent/payloads nascem null.
+ * B2-A: advanceWhatsAppPendingFromParse recebe payload já serializado;
+ * não chama parser, resolver, createSwapOffer nem inbound consume.
  */
 
-import { and, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte } from "drizzle-orm";
 import {
   whatsappInboundMessages,
   whatsappPendingIntents,
@@ -15,11 +17,19 @@ import {
 import { getDb } from "../../db";
 import { logger } from "../../_core/logger";
 import {
+  clarificationInvariantsHold,
+  confirmationInvariantsHold,
+  parseAdvanceWhatsAppPendingFromParseInput,
+  payloadsCanonicalEqual,
+  type AdvanceWhatsAppPendingFromParseInput,
+} from "./pending-intent-payloads";
+import {
   WhatsAppPendingStatuses,
   WhatsAppPendingStages,
   isWhatsAppPendingTerminalStatus,
   pendingExpiresAtFrom,
   type CreateWhatsAppPendingIntentInput,
+  type WhatsAppPendingAdvanceResult,
   type WhatsAppPendingCleanupResult,
   type WhatsAppPendingIntentRecord,
   type WhatsAppPendingMutationResult,
@@ -34,7 +44,8 @@ type PendingOp =
   | "create"
   | "expire"
   | "cancel"
-  | "cleanup";
+  | "cleanup"
+  | "advance";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -663,5 +674,246 @@ export async function clearExpiredWhatsAppPendingIntents(
     return { ok: true, expired, payloadsCleared };
   } catch {
     return persistenceFailed("cleanup");
+  }
+}
+
+type IntendedAdvanceFields = {
+  stage: "CLARIFICATION" | "CONFIRMATION";
+  intentKind: "SWAP" | "CESSAO" | null;
+  parsedPayload: unknown;
+  resolvedPayload: unknown;
+  clarificationPayload: unknown;
+  institutionId: number | null;
+};
+
+function intendedAdvanceFields(
+  outcome: AdvanceWhatsAppPendingFromParseInput["outcome"],
+): IntendedAdvanceFields {
+  if (outcome.type === "resolved") {
+    return {
+      stage: WhatsAppPendingStages.CONFIRMATION,
+      intentKind: outcome.resolved.kind,
+      parsedPayload: outcome.parsed,
+      resolvedPayload: outcome.resolved,
+      clarificationPayload: null,
+      institutionId: outcome.resolved.institutionId,
+    };
+  }
+  if (outcome.parsed === null) {
+    return {
+      stage: WhatsAppPendingStages.CLARIFICATION,
+      intentKind: null,
+      parsedPayload: null,
+      resolvedPayload: null,
+      clarificationPayload: outcome.clarification,
+      institutionId: null,
+    };
+  }
+  return {
+    stage: WhatsAppPendingStages.CLARIFICATION,
+    intentKind: outcome.parsed.kind,
+    parsedPayload: outcome.parsed,
+    resolvedPayload: null,
+    clarificationPayload: outcome.clarification,
+    institutionId: null,
+  };
+}
+
+function rowMatchesIntended(
+  row: WhatsAppPendingIntentRecord,
+  intended: IntendedAdvanceFields,
+): boolean {
+  return (
+    row.status === WhatsAppPendingStatuses.OPEN &&
+    row.stage === intended.stage &&
+    row.intentKind === intended.intentKind &&
+    row.institutionId === intended.institutionId &&
+    payloadsCanonicalEqual(row.parsedPayload, intended.parsedPayload) &&
+    payloadsCanonicalEqual(row.resolvedPayload, intended.resolvedPayload) &&
+    payloadsCanonicalEqual(
+      row.clarificationPayload,
+      intended.clarificationPayload,
+    )
+  );
+}
+
+function advanceInvariantsHold(
+  intended: IntendedAdvanceFields,
+  row: WhatsAppPendingIntentRecord,
+): boolean {
+  if (intended.stage === WhatsAppPendingStages.CONFIRMATION) {
+    return confirmationInvariantsHold(row);
+  }
+  return clarificationInvariantsHold(row);
+}
+
+/**
+ * Transição guardada OPEN/PARSE → OPEN/CLARIFICATION|CONFIRMATION.
+ * Recebe payload já validado/serializado. Não recebe texto. Não chama
+ * parser, resolver, createSwapOffer nem limpa inbound.
+ */
+export async function advanceWhatsAppPendingFromParse(
+  input: AdvanceWhatsAppPendingFromParseInput,
+  now: Date = new Date(),
+): Promise<WhatsAppPendingAdvanceResult> {
+  const parsedInput = parseAdvanceWhatsAppPendingFromParseInput(input);
+  if (!parsedInput.ok) {
+    return { ok: false, code: "INVALID_PAYLOAD" };
+  }
+  const {
+    pendingId,
+    userId,
+    expectedSourceInboundMessageId,
+    outcome,
+  } = parsedInput.value;
+  const intended = intendedAdvanceFields(outcome);
+
+  const acquired = await acquireDb("advance");
+  if (!acquired.ok) return acquired;
+  const db = acquired.db;
+
+  try {
+    const updated = await db
+      .update(whatsappPendingIntents)
+      .set({
+        stage: intended.stage,
+        intentKind: intended.intentKind,
+        parsedPayload: intended.parsedPayload,
+        resolvedPayload: intended.resolvedPayload,
+        clarificationPayload: intended.clarificationPayload,
+        institutionId: intended.institutionId,
+      })
+      .where(
+        and(
+          eq(whatsappPendingIntents.id, pendingId),
+          eq(whatsappPendingIntents.userId, userId),
+          eq(
+            whatsappPendingIntents.sourceInboundMessageId,
+            expectedSourceInboundMessageId,
+          ),
+          eq(whatsappPendingIntents.status, WhatsAppPendingStatuses.OPEN),
+          eq(whatsappPendingIntents.stage, WhatsAppPendingStages.PARSE),
+          gt(whatsappPendingIntents.expiresAt, now),
+        ),
+      );
+
+    if (affectedRows(updated) > 0) {
+      const latest = await loadByIdForUser(db, pendingId, userId);
+      if (!latest || !advanceInvariantsHold(intended, latest)) {
+        return persistenceFailed("advance", { pendingId, userId });
+      }
+      logSafe({
+        event: "whatsapp_pending_advanced",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        oldStage: WhatsAppPendingStages.PARSE,
+        newStage: latest.stage,
+        outcome: "advanced",
+      });
+      return { ok: true, outcome: "advanced", row: latest };
+    }
+
+    const current = await loadByIdForUser(db, pendingId, userId);
+    if (!current) {
+      logSafe({
+        event: "whatsapp_pending_advance_miss",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        oldStage: WhatsAppPendingStages.PARSE,
+        newStage: null,
+        outcome: "NOT_FOUND",
+      });
+      return { ok: false, code: "NOT_FOUND" };
+    }
+
+    if (
+      current.sourceInboundMessageId !== expectedSourceInboundMessageId
+    ) {
+      logSafe({
+        event: "whatsapp_pending_advance_miss",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        oldStage: current.stage,
+        newStage: current.stage,
+        outcome: "STATE_CHANGED",
+      });
+      return { ok: false, code: "STATE_CHANGED", row: current };
+    }
+
+    if (current.status === WhatsAppPendingStatuses.EXPIRED) {
+      logSafe({
+        event: "whatsapp_pending_advance_miss",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        oldStage: current.stage,
+        newStage: current.stage,
+        outcome: "EXPIRED",
+      });
+      return { ok: false, code: "EXPIRED", row: current };
+    }
+
+    if (isWhatsAppPendingTerminalStatus(current.status)) {
+      logSafe({
+        event: "whatsapp_pending_advance_miss",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        oldStage: current.stage,
+        newStage: current.stage,
+        outcome: "TERMINAL",
+      });
+      return { ok: false, code: "TERMINAL", row: current };
+    }
+
+    if (
+      current.status === WhatsAppPendingStatuses.OPEN &&
+      isPastExpiry(current, now)
+    ) {
+      await expireOpenRow(db, pendingId, userId, now);
+      const latest = await loadByIdForUser(db, pendingId, userId);
+      if (!latest) {
+        return persistenceFailed("advance", { pendingId, userId });
+      }
+      logSafe({
+        event: "whatsapp_pending_advance_miss",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        oldStage: WhatsAppPendingStages.PARSE,
+        newStage: latest.stage,
+        outcome: "EXPIRED",
+      });
+      return { ok: false, code: "EXPIRED", row: latest };
+    }
+
+    if (rowMatchesIntended(current, intended)) {
+      logSafe({
+        event: "whatsapp_pending_advanced",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        oldStage: intended.stage,
+        newStage: current.stage,
+        outcome: "already_advanced",
+      });
+      return { ok: true, outcome: "already_advanced", row: current };
+    }
+
+    logSafe({
+      event: "whatsapp_pending_advance_miss",
+      pendingId,
+      userId,
+      sourceInboundId: expectedSourceInboundMessageId,
+      oldStage: current.stage,
+      newStage: current.stage,
+      outcome: "STATE_CHANGED",
+    });
+    return { ok: false, code: "STATE_CHANGED", row: current };
+  } catch {
+    return persistenceFailed("advance", { pendingId, userId });
   }
 }

@@ -170,7 +170,8 @@ B1 **não** implementa `confirmAndExecute` / `markConsumed`.
   (`SOURCE_INBOUND_IDENTITY_MISSING`).
 - `institution_id`, `intent_kind`, `parsed_payload`, `resolved_payload`
   e `clarification_payload` nascem `NULL`. B1 não aceita conteúdo
-  parseado; B2 introduz primitive guardada para o parser.
+  parseado. B2-A introduz `advanceWhatsAppPendingFromParse` (payload
+  já serializado; sem texto, parser ou resolver em runtime).
 - Sem token público. Continuação futura = mesmo user verificado + OPEN
   desse user. Id interno não vai ao usuário.
 - TTL conversacional: 15 minutos (`WHATSAPP_PENDING_INTENT_TTL_MS`),
@@ -249,19 +250,69 @@ conta Twilio: follow-up **antes de produção**.
 
 ## Consumidor futuro
 
-Incremento B1 (esta camada): persiste a conversa pendente. Não chama
-parser, resolver nem `createSwapOffer`. Cleanup pronto:
-`clearExpiredWhatsAppPendingIntents` (sem cron novo).
+Incremento B1: persiste a conversa pendente. Não chama parser, resolver
+nem `createSwapOffer`. Cleanup: `clearExpiredWhatsAppPendingIntents`.
 
-Incremento B2+: `READY_FOR_NL` → `createWhatsAppPendingIntent` (só
-source) → lê `operational_text` → parser/resolver de
-`server/natural-language/` → primitive B2 para persistir slots →
-confirmação → `createSwapOffer` →
-`clearWhatsAppInboundOperationalPayload`. O inbound **não** importa
-esses módulos. O create B1 **não** recebe `userId` nem payload parseado.
+Incremento B2-A (contratos de estado, esta camada): formatos JSON V1 +
+transição guardada `OPEN/PARSE` → `OPEN/CLARIFICATION|CONFIRMATION`.
+Não consome `READY_FOR_NL`. Não chama parser/resolver em runtime. Não
+limpa inbound. Não executa swap. Não envia WhatsApp.
+
+Incremento B2-C (não implementado aqui): `READY_FOR_NL` →
+`createWhatsAppPendingIntent` (só source) → lê `operational_text` →
+parser/resolver de `server/natural-language/` →
+`advanceWhatsAppPendingFromParse` → confirmação futura →
+`createSwapOffer` (revalida tudo; `resolved_payload` não é autorização)
+→ `clearWhatsAppInboundOperationalPayload`. O inbound **não** importa
+esses módulos.
 
 Incremento D: `READY_FOR_TRANSCRIPTION` → usa `media_url` → transcreve →
 limpa o payload.
+
+## Payloads persistidos V1 (B2-A)
+
+Versão no JSON (`version: 1`). Versão desconhecida é fail-closed, sem
+fallback. Não há migration por versão.
+
+### `parsed_payload` — `WhatsAppParsedSwapIntentV1`
+
+Espelha os slots de `SwapIntentDraft` (kind, ownShift, targetProfessional,
+targetShift em SWAP). **Não** é o tipo runtime: o mapper
+`serializeParsedSwapIntentV1(draft)` copia campos explícitos. Proibido
+qualquer chave terminada em `Id`/`_id` e identificadores internos
+(user/professional/institution/hospital/sector/shift/assignment),
+telefone, email, Body Twilio, mídia, signature e tokens.
+
+### `resolved_payload` — `WhatsAppResolvedSwapIntentV1`
+
+Snapshot mínimo para reconstruir o summary e, no futuro, montar o input
+canônico: `kind`, `institutionId`, `fromShiftInstanceId`,
+`fromAssignmentId`, `toProfessionalId`, `toShiftInstanceId` (null em
+CESSAO), nome do colega e labels de plantão (`dayKey`, `timeRange`,
+`sectorName`, `label`).
+
+**`resolved_payload` não é autorização.** `createSwapOffer()` revalida
+ownership, elegibilidade, mês publicado e estado stale. B2-A não chama
+`createSwapOffer`.
+
+### `clarification_payload` — união discriminada por `code`
+
+Famílias: `AMBIGUOUS_INTENT` (sem candidates; `intent_kind` permanece
+null); `AMBIGUOUS_SECTOR`; `AMBIGUOUS_OWN_SHIFT`;
+`AMBIGUOUS_TARGET_SHIFT`; `SWAP_TARGET_SHIFT_REQUIRED`;
+`AMBIGUOUS_TARGET_PROFESSIONAL`. Candidates trazem só id técnico + label
+(+ discriminator de plantão). Sem email, telefone, CPF ou row completa.
+
+### Transição B2-A
+
+Somente `OPEN + PARSE` → `OPEN + CLARIFICATION` ou
+`OPEN + CONFIRMATION`, via `advanceWhatsAppPendingFromParse`. Input:
+`pendingId`, `userId`, `sourceInboundMessageId` esperado, outcome
+discriminado (`clarification` | `resolved`). UPDATE com WHERE no estado
+esperado (`status=OPEN`, `stage=PARSE`, source, user, `expires_at > now`).
+Idempotência: mesmo payload → `already_advanced`. Payload diferente →
+`STATE_CHANGED` (não last-writer-wins). TTL vencido → `EXPIRED` (helper
+B1). Terminais → `TERMINAL`. `institution_id` só no resolved completo.
 
 ## Follow-ups (não bloqueiam o Incremento A)
 
@@ -287,11 +338,9 @@ preservar material de `RETRYABLE` além do TTL.
 
 - Migration inbound (já aplicada no staging):
   `drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql`
-- Migration B1 (NÃO aplicar no staging nesta PR):
+- Migration B1 (já aplicada e verificada no staging):
   `drizzle/migrations/manual/2026-09-04-whatsapp-pending-intents.sql`
-- Aditiva e rerodável (`CREATE TABLE IF NOT EXISTS`). Após revisão,
-  aplicar B1 no staging **antes do merge**. O deploy **não** aplica
-  migration.
+- B2-A **não** altera schema nem reaplica migration.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
-- Sem NL, sem `createSwapOffer`, sem cron novo
+- Sem parser/resolver em runtime, sem `createSwapOffer`, sem cron novo

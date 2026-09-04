@@ -57,6 +57,9 @@ describe("WhatsApp pending intent — source contracts", () => {
       expect(src).not.toMatch(/twilio-provider|MessagingResponse/);
     }
     expect(store).not.toMatch(/pending-payload|assertSemanticParsedPayload/);
+    expect(store).not.toMatch(
+      /readWhatsAppInboundOperationalMaterial|clearWhatsAppInboundOperationalPayload/,
+    );
   });
 
   it("inbound continua parando em READY_FOR_NL sem criar pending", () => {
