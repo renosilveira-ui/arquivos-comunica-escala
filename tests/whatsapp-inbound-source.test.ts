@@ -41,6 +41,15 @@ const payload = readFileSync(
 );
 
 describe("WhatsApp inbound — source contracts", () => {
+  it("não baixa mídia nem chama HTTP a partir do inbound", () => {
+    for (const src of [store, identity, provider, router, payload]) {
+      expect(src).not.toMatch(/\bfetch\s*\(/);
+      expect(src).not.toMatch(/\baxios\b/);
+      expect(src).not.toMatch(/http\.get|https\.get/);
+      expect(src).not.toMatch(/createSwapOffer/);
+    }
+  });
+
   it("não materializa troca/cessão nem chama o NL", () => {
     for (const src of [store, identity, provider, router]) {
       expect(src).not.toMatch(/createSwapOffer/);
@@ -126,5 +135,7 @@ describe("WhatsApp inbound — source contracts", () => {
     expect(payload).toContain("READY_FOR_NL");
     expect(payload).toContain("READY_FOR_TRANSCRIPTION");
     expect(payload).not.toMatch(/logger\.(info|warn|error)/);
+    expect(payload).toContain("clearExpiredWhatsAppInboundPayloads");
+    expect(contract).toContain("independentemente");
   });
 });

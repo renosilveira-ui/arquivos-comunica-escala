@@ -111,6 +111,33 @@ describe("WhatsApp Twilio provider — assinatura e envelope", () => {
     });
   });
 
+  it("áudio sem MediaUrl0 vira UNSUPPORTED_MEDIA", () => {
+    const parsed = provider.parseInboundEnvelope({
+      MessageSid: "SMnoaudio",
+      From: "whatsapp:+5585999999999",
+      NumMedia: "1",
+      MediaContentType0: "audio/ogg",
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.envelope.content.kind).toBe("UNSUPPORTED_MEDIA");
+  });
+
+  it("Body vazio continua TEXT sem inventar conteúdo", () => {
+    const parsed = provider.parseInboundEnvelope({
+      MessageSid: "SMempty",
+      From: "whatsapp:+5585999999999",
+      Body: "",
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.envelope.content).toEqual({
+      kind: "TEXT",
+      text: "",
+      forwarded: false,
+    });
+  });
+
   it("AUDIO classifica mídia audio/* sem transcrever", () => {
     const parsed = provider.parseInboundEnvelope({
       MessageSid: "SMaudio1",

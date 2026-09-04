@@ -214,6 +214,19 @@ describe("WhatsApp inbound — payload operacional e retomada", () => {
     );
   });
 
+  it("URL HTTP não vira READY_FOR_TRANSCRIPTION nem persiste mídia", async () => {
+    const sid = `SMpay${stamp}httpurl`;
+    sids.push(sid);
+    const result = await processWhatsAppInbound(
+      audioEnvelope(sid, e164, "http://api.twilio.com/media/insecure"),
+    );
+    expect(result.outcome).toBe("retryable");
+    expect(result.status).not.toBe("READY_FOR_TRANSCRIPTION");
+    const material = await readWhatsAppInboundOperationalMaterial(result.id!);
+    expect(material?.mediaUrl).toBeNull();
+    expect(material?.processingStatus).toBe("RETRYABLE");
+  });
+
   it("AUDIO READY_FOR_TRANSCRIPTION possui referência de mídia", async () => {
     const sid = `SMpay${stamp}audio`;
     sids.push(sid);
