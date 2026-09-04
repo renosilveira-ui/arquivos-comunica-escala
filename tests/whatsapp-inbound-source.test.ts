@@ -121,9 +121,11 @@ describe("WhatsApp inbound — source contracts", () => {
     expect(schema).toContain("não calcula nem grava");
   });
 
-  it("não há pending intents sem contrato nesta PR", () => {
-    expect(schema).not.toContain("whatsappPendingIntents");
-    expect(schema).not.toContain("whatsapp_pending_intents");
+  it("inbound não cria pending; consumer B1 é store separado", () => {
+    expect(store).not.toMatch(/whatsappPendingIntents|createWhatsAppPendingIntent/);
+    expect(store).not.toMatch(/pending-intent-store/);
+    expect(schema).toContain("whatsappPendingIntents");
+    expect(schema).toContain("whatsapp_pending_intents");
   });
 
   it("identidade não converte DB indisponível em IDENTITY_NOT_FOUND", () => {

@@ -140,10 +140,44 @@ row e segue as mesmas regras. Nunca duas rows / duas operações.
 Tabela `whatsapp_inbound_messages` com
 `UNIQUE (provider, provider_message_id)`.
 
-**Não** nasce `whatsapp_pending_intents` nesta PR: `parsed_payload` /
-`resolved_payload` ainda não têm contrato JSON travado. Criar a tabela
-agora seria JSON sem schema. Incremento B cria pending junto com o
-contrato de slots do NL.
+Incremento B1 cria `whatsapp_pending_intents` como memória de conversa.
+Pending **não** é autoridade de acesso, elegibilidade, instituição ou
+swap. O inbound **não** cria pending: continua parando em `READY_FOR_NL`.
+O consumer futuro (B2+) é quem fará `READY_FOR_NL` → pending.
+
+### Decisão de schema: status + stage (alternativa A)
+
+`CONFIRMED` **não** é status. Confirmação permanece a mesma conversa
+`OPEN` em `stage=CONFIRMATION`, para que “SIM” não se aplique a um
+segundo fluxo. `CONSUMED` existe no enum para evitar `ALTER ENUM` futuro;
+B1 **não** implementa `confirmAndExecute` / `markConsumed`.
+
+| status (ciclo de vida) | stage (progresso) |
+|---|---|
+| `OPEN` `CANCELLED` `EXPIRED` `CONSUMED` | `PARSE` `CLARIFICATION` `CONFIRMATION` `EXECUTION` |
+
+### Invariantes B1
+
+- Ownership = `user_id`. Outro usuário não carrega, cancela, expira nem
+  continua o pending, mesmo conhecendo o id.
+- `UNIQUE (source_inbound_message_id)` — uma mensagem inbound → no
+  máximo um pending.
+- No máximo um `OPEN` por usuário no WhatsApp, via coluna gerada
+  `open_slot` + `UNIQUE` `uniq_whatsapp_pending_open_user (user_id, open_slot)`.
+- `institution_id` nasce `NULL`. Nunca vem de texto, webhook ou helper
+  livre. Só o resolver canônico futuro pode preenchê-lo.
+- `parsed_payload` só slots semânticos (sem chave `Id` / `_id`, sem
+  telefone, Body, signature, token ou mídia). `resolved_payload` e
+  `clarification_payload` ficam null neste incremento.
+- Sem token público. Continuação futura = mesmo user verificado + OPEN
+  desse user. Id interno não vai ao usuário.
+- TTL conversacional: 15 minutos (`WHATSAPP_PENDING_INTENT_TTL_MS`),
+  separado dos 24h do payload inbound.
+- FK `source_inbound_message_id` → `whatsapp_inbound_messages.id`
+  `ON DELETE RESTRICT`. User `ON DELETE CASCADE`. Institution
+  `ON DELETE SET NULL`.
+- Store: `server/integrations/whatsapp/pending-intent-store.ts`. Não
+  importa parser, resolver, `createSwapOffer` nem Twilio SDK.
 
 ### Payload operacional temporário
 
@@ -189,11 +223,16 @@ conta Twilio: follow-up **antes de produção**.
 
 ## Consumidor futuro
 
-Incremento B: `READY_FOR_NL` → lê `operational_text` via
+Incremento B1 (esta camada): persiste a conversa pendente. Não chama
+parser, resolver nem `createSwapOffer`. Cleanup pronto:
+`clearExpiredWhatsAppPendingIntents` (sem cron novo).
+
+Incremento B2+: `READY_FOR_NL` → lê `operational_text` via
 `readWhatsAppInboundOperationalMaterial` → parser/resolver de
-`server/natural-language/` → confirmação → `createSwapOffer` →
-`clearWhatsAppInboundOperationalPayload`. Esta PR não importa esses
-módulos no caminho inbound.
+`server/natural-language/` → `createWhatsAppPendingIntent` →
+confirmação → `createSwapOffer` →
+`clearWhatsAppInboundOperationalPayload`. O inbound **não** importa
+esses módulos.
 
 Incremento D: `READY_FOR_TRANSCRIPTION` → usa `media_url` → transcreve →
 limpa o payload.
@@ -220,8 +259,13 @@ preservar material de `RETRYABLE` além do TTL.
 
 ## Operação
 
-- Migration manual: `drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql`
-- Aditiva e rerodável (`CREATE TABLE IF NOT EXISTS`). Aplicar no staging
-  **antes do merge**. O deploy **não** aplica migration.
+- Migration inbound (já aplicada no staging):
+  `drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql`
+- Migration B1 (NÃO aplicar no staging nesta PR):
+  `drizzle/migrations/manual/2026-09-04-whatsapp-pending-intents.sql`
+- Aditiva e rerodável (`CREATE TABLE IF NOT EXISTS`). Após revisão,
+  aplicar B1 no staging **antes do merge**. O deploy **não** aplica
+  migration.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
+- Sem NL, sem `createSwapOffer`, sem cron novo
