@@ -200,6 +200,9 @@ describe("dependency audit policy fails closed", () => {
     const result = runWithRegister(cloneRegister(), false, report);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("stale exceptions must be removed");
+    expect(result.stderr).toContain("dependency-audit: SECURITY:");
+    expect(result.stderr).not.toContain("dependency-audit: INFRA:");
+    expect(result.stderr).not.toContain("dependency-audit: PASS");
   });
 
   it("rejeita advisory inesperado", () => {
@@ -214,6 +217,9 @@ describe("dependency audit policy fails closed", () => {
     const result = runWithRegister(cloneRegister(), false, report);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("unapproved advisories");
+    expect(result.stderr).toContain("dependency-audit: SECURITY:");
+    expect(result.stderr).not.toContain("dependency-audit: INFRA:");
+    expect(result.stderr).not.toContain("dependency-audit: PASS");
   });
 
   it("rejeita formato de advisories ambíguo", () => {
@@ -224,6 +230,9 @@ describe("dependency audit policy fails closed", () => {
     expect(result.stderr).toContain(
       "pnpm audit response does not contain advisories",
     );
+    expect(result.stderr).toContain("dependency-audit: INFRA:");
+    expect(result.stderr).toContain("malformed audit result");
+    expect(result.stderr).not.toContain("dependency-audit: PASS");
   });
 
   it("rejeita divergência entre advisories e metadata", () => {
