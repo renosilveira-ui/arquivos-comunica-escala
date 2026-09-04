@@ -33,6 +33,10 @@ import {
   actorClinicallyCoversOfferedShiftSql,
   plantonistaAccessCoversShiftSql,
 } from "./plantonista-shift-eligibility";
+import {
+  EligibleOfferRecipientLimitExceededError,
+  listClinicallyEligibleOfferRecipients,
+} from "./swap-eligible-recipients";
 import { enqueueSwapTakenSignals } from "./swap-offer-signal";
 import type { TrpcContext } from "./_core/context";
 import {
@@ -1799,6 +1803,57 @@ export const swapRouter = router({
           institutionId: ctx.institutionId,
         },
       );
+    }),
+
+  // Projeção UX de destinatários para cessão/repasse DIRECIONADO (A → B).
+  // SWAP fica de fora: o destinatário canônico é o ocupante do plantão
+  // de contrapartida. A lista não é autoridade — createSwapOffer revalida.
+  listEligibleRecipients: protectedProcedure
+    .input(
+      z.strictObject({
+        fromShiftInstanceId: z.number().int().positive(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const db = await getDb();
+      if (!db) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
+      }
+
+      const actor = await getTenantActorFromContext(ctx);
+      if (!actor.professionalId) {
+        throw topologyDenied("Ator sem identidade profissional canônica");
+      }
+
+      const source = await requireCanonicalAssignmentTuple(db, {
+        institutionId: ctx.institutionId,
+        shiftInstanceId: input.fromShiftInstanceId,
+        professionalId: actor.professionalId,
+        userId: ctx.user!.id,
+        requireActive: true,
+        expectedSessionVersion: ctx.user!.sessionVersion,
+      });
+      assertSwapShiftsNotStarted(source.shift, null);
+
+      try {
+        return await listClinicallyEligibleOfferRecipients(db, {
+          shiftId: source.shift.id,
+          institutionId: source.shift.institutionId,
+          excludeProfessionalId: source.professional.professionalId,
+          excludeUserId: source.professional.userId,
+        });
+      } catch (error) {
+        if (error instanceof EligibleOfferRecipientLimitExceededError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: error.message,
+          });
+        }
+        throw error;
+      }
     }),
 
   // ── accept ────────────────────────────────────────────────────────────────
