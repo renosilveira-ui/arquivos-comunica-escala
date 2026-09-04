@@ -251,6 +251,86 @@ export const institutions = mysqlTable("institutions", {
 });
 
 /**
+ * Conversa/intenção WhatsApp pendente (Incremento B1).
+ * Memória de conversa — não é autoridade de acesso, elegibilidade ou swap.
+ * institution_id nasce null; nunca vem de texto/webhook.
+ * Uma mensagem inbound → no máximo um pending (UNIQUE source).
+ * No máximo um OPEN por usuário (coluna gerada + UNIQUE).
+ * Migração: drizzle/migrations/manual/2026-09-04-whatsapp-pending-intents.sql
+ */
+export const whatsappPendingIntents = mysqlTable(
+  "whatsapp_pending_intents",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    userId: int("user_id").notNull(),
+    sourceInboundMessageId: int("source_inbound_message_id").notNull(),
+    institutionId: int("institution_id"),
+    status: mysqlEnum("status", [
+      "OPEN",
+      "CANCELLED",
+      "EXPIRED",
+      "CONSUMED",
+    ]).notNull(),
+    stage: mysqlEnum("stage", [
+      "PARSE",
+      "CLARIFICATION",
+      "CONFIRMATION",
+      "EXECUTION",
+    ]).notNull(),
+    intentKind: mysqlEnum("intent_kind", ["SWAP", "CESSAO"]),
+    parsedPayload: json("parsed_payload"),
+    resolvedPayload: json("resolved_payload"),
+    clarificationPayload: json("clarification_payload"),
+    expiresAt: timestamp("expires_at").notNull(),
+    consumedAt: timestamp("consumed_at"),
+    payloadClearedAt: timestamp("payload_cleared_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+    /**
+     * 1 só enquanto status=OPEN; NULL nos terminais.
+     * UNIQUE (user_id, open_slot) garante um único fluxo WhatsApp OPEN
+     * por usuário sem copiar user_id (FK + generated column no MySQL 8).
+     */
+    openSlot: tinyint("open_slot").generatedAlwaysAs(
+      (): ReturnType<typeof sql> => sql`IF(\`status\` = 'OPEN', 1, NULL)`,
+      { mode: "stored" },
+    ),
+  },
+  (table) => ({
+    uniqWhatsappPendingSource: unique("uniq_whatsapp_pending_source").on(
+      table.sourceInboundMessageId,
+    ),
+    uniqWhatsappPendingOpenUser: unique("uniq_whatsapp_pending_open_user").on(
+      table.userId,
+      table.openSlot,
+    ),
+    idxWhatsappPendingUser: index("idx_whatsapp_pending_user").on(table.userId),
+    idxWhatsappPendingExpires: index("idx_whatsapp_pending_expires").on(
+      table.expiresAt,
+    ),
+    fkWhatsappPendingUser: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_whatsapp_pending_user",
+    }).onDelete("cascade"),
+    fkWhatsappPendingSource: foreignKey({
+      columns: [table.sourceInboundMessageId],
+      foreignColumns: [whatsappInboundMessages.id],
+      name: "fk_whatsapp_pending_source",
+    }).onDelete("restrict"),
+    fkWhatsappPendingInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_whatsapp_pending_institution",
+    }).onDelete("set null"),
+  }),
+);
+
+export type WhatsappPendingIntent = typeof whatsappPendingIntents.$inferSelect;
+export type InsertWhatsappPendingIntent =
+  typeof whatsappPendingIntents.$inferInsert;
+
+/**
  * Journal imutável de invalidações de prontidão por instituição.
  *
  * Não há foreign key intencionalmente: uma FK com cascade apagaria a prova

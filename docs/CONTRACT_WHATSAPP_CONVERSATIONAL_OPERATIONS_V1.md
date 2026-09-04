@@ -140,10 +140,70 @@ row e segue as mesmas regras. Nunca duas rows / duas operações.
 Tabela `whatsapp_inbound_messages` com
 `UNIQUE (provider, provider_message_id)`.
 
-**Não** nasce `whatsapp_pending_intents` nesta PR: `parsed_payload` /
-`resolved_payload` ainda não têm contrato JSON travado. Criar a tabela
-agora seria JSON sem schema. Incremento B cria pending junto com o
-contrato de slots do NL.
+Incremento B1 cria `whatsapp_pending_intents` como memória de conversa.
+Pending **não** é autoridade de acesso, elegibilidade, instituição ou
+swap. O inbound **não** cria pending: continua parando em `READY_FOR_NL`.
+O consumer futuro (B2+) é quem fará `READY_FOR_NL` → pending.
+
+### Decisão de schema: status + stage (alternativa A)
+
+`CONFIRMED` **não** é status. Confirmação permanece a mesma conversa
+`OPEN` em `stage=CONFIRMATION`, para que “SIM” não se aplique a um
+segundo fluxo. `CONSUMED` existe no enum para evitar `ALTER ENUM` futuro;
+B1 **não** implementa `confirmAndExecute` / `markConsumed`.
+
+| status (ciclo de vida) | stage (progresso) |
+|---|---|
+| `OPEN` `CANCELLED` `EXPIRED` `CONSUMED` | `PARSE` `CLARIFICATION` `CONFIRMATION` `EXECUTION` |
+
+### Invariantes B1
+
+- Ownership = `user_id`. Outro usuário não carrega, cancela, expira nem
+  continua o pending, mesmo conhecendo o id.
+- `UNIQUE (source_inbound_message_id)` — uma mensagem inbound → no
+  máximo um pending.
+- No máximo um `OPEN` por usuário no WhatsApp, via coluna gerada
+  `open_slot` + `UNIQUE` `uniq_whatsapp_pending_open_user (user_id, open_slot)`.
+- Create B1 recebe **somente** `sourceInboundMessageId`. `userId` nasce
+  do inbound `READY_FOR_NL` (`source.userId`). Caller não escolhe
+  identidade. Inbound sem `userId` falha fechado
+  (`SOURCE_INBOUND_IDENTITY_MISSING`).
+- `institution_id`, `intent_kind`, `parsed_payload`, `resolved_payload`
+  e `clarification_payload` nascem `NULL`. B1 não aceita conteúdo
+  parseado; B2 introduz primitive guardada para o parser.
+- Sem token público. Continuação futura = mesmo user verificado + OPEN
+  desse user. Id interno não vai ao usuário.
+- TTL conversacional: 15 minutos (`WHATSAPP_PENDING_INTENT_TTL_MS`),
+  separado dos 24h do payload inbound.
+- FK `source_inbound_message_id` → `whatsapp_inbound_messages.id`
+  `ON DELETE RESTRICT`. User `ON DELETE CASCADE`. Institution
+  `ON DELETE SET NULL`.
+- Store: `server/integrations/whatsapp/pending-intent-store.ts`. Não
+  importa parser, resolver, `createSwapOffer` nem Twilio SDK.
+- Leituras públicas (`getWhatsAppPendingIntentByIdForUser`,
+  `getWhatsAppPendingIntentBySourceForUser`,
+  `getOpenWhatsAppPendingIntentForUser`) devolvem
+  `WhatsAppPendingReadResult` discriminado. Memória conversacional é
+  fail-closed: outage **não** é ausência.
+  - DB saudável + inexistente → `{ ok: true, row: null }`
+  - DB saudável + existente → `{ ok: true, row }`
+  - DB indisponível (`getDb()` null) → `{ ok: false, code: "DB_UNAVAILABLE" }`
+    (nunca `row: null`)
+  - `getDb()` rejeitado / query falha / reload incoerente →
+    `{ ok: false, code: "PERSISTENCE_FAILED" }`
+  Helpers privados podem devolver `row | null` porque já receberam `db`
+  válido.
+- Create, cancel, expire e `clearExpiredWhatsAppPendingIntents` usam o
+  mesmo par de códigos de infra. `getDb()` null → `DB_UNAVAILABLE`;
+  rejeição de `getDb`/SELECT/INSERT/UPDATE/reload → `PERSISTENCE_FAILED`.
+  Infra **não** vira `SOURCE_INBOUND_NOT_FOUND`, `NOT_FOUND`,
+  `already_open`, `replay`, `not_due`, `already_terminal` nem zero de
+  cleanup (`expired: 0` só com `ok: true` após updates concluídos).
+- Cleanup: `{ ok: true, expired, payloadsCleared }` somente se os dois
+  UPDATEs terminam. Falha no segundo após sucesso no primeiro →
+  `PERSISTENCE_FAILED` (sem rollback; a operação é idempotente).
+  `payloadsCleared = expired + leftovers` — o primeiro UPDATE já limpa
+  payload das rows que expira, então elas não entram no segundo.
 
 ### Payload operacional temporário
 
@@ -189,11 +249,16 @@ conta Twilio: follow-up **antes de produção**.
 
 ## Consumidor futuro
 
-Incremento B: `READY_FOR_NL` → lê `operational_text` via
-`readWhatsAppInboundOperationalMaterial` → parser/resolver de
-`server/natural-language/` → confirmação → `createSwapOffer` →
-`clearWhatsAppInboundOperationalPayload`. Esta PR não importa esses
-módulos no caminho inbound.
+Incremento B1 (esta camada): persiste a conversa pendente. Não chama
+parser, resolver nem `createSwapOffer`. Cleanup pronto:
+`clearExpiredWhatsAppPendingIntents` (sem cron novo).
+
+Incremento B2+: `READY_FOR_NL` → `createWhatsAppPendingIntent` (só
+source) → lê `operational_text` → parser/resolver de
+`server/natural-language/` → primitive B2 para persistir slots →
+confirmação → `createSwapOffer` →
+`clearWhatsAppInboundOperationalPayload`. O inbound **não** importa
+esses módulos. O create B1 **não** recebe `userId` nem payload parseado.
 
 Incremento D: `READY_FOR_TRANSCRIPTION` → usa `media_url` → transcreve →
 limpa o payload.
@@ -220,8 +285,13 @@ preservar material de `RETRYABLE` além do TTL.
 
 ## Operação
 
-- Migration manual: `drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql`
-- Aditiva e rerodável (`CREATE TABLE IF NOT EXISTS`). Aplicar no staging
-  **antes do merge**. O deploy **não** aplica migration.
+- Migration inbound (já aplicada no staging):
+  `drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql`
+- Migration B1 (NÃO aplicar no staging nesta PR):
+  `drizzle/migrations/manual/2026-09-04-whatsapp-pending-intents.sql`
+- Aditiva e rerodável (`CREATE TABLE IF NOT EXISTS`). Após revisão,
+  aplicar B1 no staging **antes do merge**. O deploy **não** aplica
+  migration.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
+- Sem NL, sem `createSwapOffer`, sem cron novo
