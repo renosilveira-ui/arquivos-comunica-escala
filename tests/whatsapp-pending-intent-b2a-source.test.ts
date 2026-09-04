@@ -29,6 +29,14 @@ const types = readFileSync(
   ),
   "utf8",
 );
+const resolver = readFileSync(
+  new URL("../server/natural-language/swap-intent-resolver.ts", import.meta.url),
+  "utf8",
+);
+const schema = readFileSync(
+  new URL("../drizzle/schema.ts", import.meta.url),
+  "utf8",
+);
 
 describe("WhatsApp B2-A source guards", () => {
   it("produção não chama parser/resolver NL nem createSwapOffer", () => {
@@ -56,5 +64,22 @@ describe("WhatsApp B2-A source guards", () => {
     expect(store).toContain("eq(whatsappPendingIntents.status, WhatsAppPendingStatuses.OPEN)");
     expect(payloads).toContain("é snapshot semântico");
     expect(payloads).toContain("createSwapOffer()");
+  });
+
+  it("clarification humana exige label projetado, não name cru do resolver", () => {
+    expect(payloads).toContain("projectWhatsAppTargetProfessionalClarificationV1");
+    expect(payloads).toContain("unresolvedGroups");
+    expect(payloads).not.toMatch(
+      /professionalChoiceSchema[\s\S]{0,120}name: z\.string/,
+    );
+    expect(payloads).not.toMatch(/ProfessionalCandidate/);
+    expect(payloads).not.toMatch(/SectorCandidate/);
+    expect(resolver).toMatch(
+      /professionalId: colleague\.professionalId,\s*name: colleague\.name/,
+    );
+    expect(resolver).toMatch(/name: professionals\.name/);
+    expect(resolver).not.toMatch(/medicalSpecialtyId: professionals/);
+    expect(schema).toContain("uniqSectorTopologyId");
+    expect(schema).toContain("name: varchar(\"name\", { length: 255 }).notNull()");
   });
 });

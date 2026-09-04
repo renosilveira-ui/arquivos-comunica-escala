@@ -8,6 +8,13 @@
  * `resolved_payload` é snapshot semântico. NÃO é autorização. Mesmo no
  * futuro B5, `createSwapOffer()` revalida ownership, elegibilidade, mês
  * publicado e estado stale. Este módulo não chama `createSwapOffer`.
+ *
+ * Clarification de escolha humana persiste opção já projetada
+ * (`professionalId`/`sectorId` + `label`), nunca o candidate cru do
+ * resolver (`{ professionalId, name }`). `label` é identificação humana
+ * segura produzida por B2-B/B2-C. Duas opções com o mesmo label
+ * normalizado não são selecionáveis: ou labels distintos, ou
+ * `unresolvedGroups`. Este módulo não consulta o banco para enriquecer.
  */
 import { z } from "zod";
 import type {
@@ -169,15 +176,82 @@ export type WhatsAppResolvedSwapIntentV1 = z.infer<
   typeof whatsappResolvedSwapIntentV1Schema
 >;
 
-const sectorCandidateSchema = z.strictObject({
+export const WHATSAPP_UNRESOLVED_HOMONYM_CODE = "UNRESOLVED_HOMONYM" as const;
+
+const humanChoiceLabelSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value.trim().length > 0);
+
+const sectorChoiceSchema = z.strictObject({
   sectorId: z.number().int().positive(),
-  name: z.string().min(1),
+  label: humanChoiceLabelSchema,
 });
 
-const professionalCandidateSchema = z.strictObject({
+const professionalChoiceSchema = z.strictObject({
   professionalId: z.number().int().positive(),
-  name: z.string().min(1),
+  label: humanChoiceLabelSchema,
 });
+
+const unresolvedHomonymGroupSchema = z.strictObject({
+  code: z.literal(WHATSAPP_UNRESOLVED_HOMONYM_CODE),
+  label: humanChoiceLabelSchema,
+  count: z.number().int().min(2),
+});
+
+/**
+ * Mesma identidade visual da #409 (`normalizeRecipientIdentityText`):
+ * case, acento e espaço não distinguem duas opções humanas.
+ */
+export function normalizeWhatsAppChoiceLabel(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function labelContainsInternalId(label: string, id: number): boolean {
+  const digits = String(id);
+  return new RegExp(`(?<!\\d)${digits}(?!\\d)`).test(label);
+}
+
+type HumanChoiceRef = { id: number; label: string };
+type UnresolvedHomonymGroupV1 = {
+  code: typeof WHATSAPP_UNRESOLVED_HOMONYM_CODE;
+  label: string;
+  count: number;
+};
+
+function assertHumanChoiceSet(input: {
+  choices: readonly HumanChoiceRef[];
+  unresolvedGroups: readonly UnresolvedHomonymGroupV1[];
+}): void {
+  if (input.choices.length === 0 && input.unresolvedGroups.length === 0) {
+    throw new Error("CLARIFICATION_EMPTY_CHOICE_SET");
+  }
+  const seen = new Set<string>();
+  for (const choice of input.choices) {
+    const trimmed = choice.label.trim();
+    if (!trimmed) throw new Error("CHOICE_LABEL_EMPTY");
+    if (labelContainsInternalId(trimmed, choice.id)) {
+      throw new Error("CHOICE_LABEL_CONTAINS_INTERNAL_ID");
+    }
+    const key = normalizeWhatsAppChoiceLabel(trimmed);
+    if (!key) throw new Error("CHOICE_LABEL_EMPTY");
+    if (seen.has(key)) throw new Error("INDISTINGUISHABLE_CHOICES");
+    seen.add(key);
+  }
+  for (const group of input.unresolvedGroups) {
+    const trimmed = group.label.trim();
+    if (!trimmed) throw new Error("UNRESOLVED_LABEL_EMPTY");
+    const key = normalizeWhatsAppChoiceLabel(trimmed);
+    if (!key) throw new Error("UNRESOLVED_LABEL_EMPTY");
+    if (seen.has(key)) throw new Error("INDISTINGUISHABLE_CHOICES");
+    seen.add(key);
+  }
+}
 
 const shiftCandidateSchema = z.strictObject({
   shiftInstanceId: z.number().int().positive(),
@@ -196,7 +270,8 @@ const clarificationAmbiguousIntentSchema = z.strictObject({
 const clarificationSectorSchema = z.strictObject({
   version: z.literal(WHATSAPP_PENDING_PAYLOAD_VERSION),
   code: z.literal("AMBIGUOUS_SECTOR"),
-  candidates: z.array(sectorCandidateSchema).min(1),
+  candidates: z.array(sectorChoiceSchema),
+  unresolvedGroups: z.array(unresolvedHomonymGroupSchema),
 });
 
 const clarificationOwnShiftSchema = z.strictObject({
@@ -220,7 +295,8 @@ const clarificationTargetShiftRequiredSchema = z.strictObject({
 const clarificationTargetProfessionalSchema = z.strictObject({
   version: z.literal(WHATSAPP_PENDING_PAYLOAD_VERSION),
   code: z.literal("AMBIGUOUS_TARGET_PROFESSIONAL"),
-  candidates: z.array(professionalCandidateSchema).min(1),
+  candidates: z.array(professionalChoiceSchema),
+  unresolvedGroups: z.array(unresolvedHomonymGroupSchema),
 });
 
 export const whatsappClarificationV1Schema = z.discriminatedUnion("code", [
@@ -274,7 +350,76 @@ export function parseStoredClarification(
 ): WhatsAppPayloadParseResult<WhatsAppClarificationV1> {
   return parseWith(whatsappClarificationV1Schema, input, (value) => {
     assertClarificationHasNoPii(value);
+    assertClarificationHumanChoices(value);
   });
+}
+
+function assertClarificationHumanChoices(value: WhatsAppClarificationV1): void {
+  if (value.code === "AMBIGUOUS_TARGET_PROFESSIONAL") {
+    assertHumanChoiceSet({
+      choices: value.candidates.map((choice) => ({
+        id: choice.professionalId,
+        label: choice.label,
+      })),
+      unresolvedGroups: value.unresolvedGroups,
+    });
+    return;
+  }
+  if (value.code === "AMBIGUOUS_SECTOR") {
+    assertHumanChoiceSet({
+      choices: value.candidates.map((choice) => ({
+        id: choice.sectorId,
+        label: choice.label,
+      })),
+      unresolvedGroups: value.unresolvedGroups,
+    });
+  }
+}
+
+export function projectWhatsAppTargetProfessionalClarificationV1(input: {
+  candidates: readonly { professionalId: number; label: string }[];
+  unresolvedGroups: readonly { label: string; count: number }[];
+}): WhatsAppPayloadParseResult<
+  Extract<WhatsAppClarificationV1, { code: "AMBIGUOUS_TARGET_PROFESSIONAL" }>
+> {
+  const parsed = parseStoredClarification({
+    version: WHATSAPP_PENDING_PAYLOAD_VERSION,
+    code: "AMBIGUOUS_TARGET_PROFESSIONAL",
+    candidates: input.candidates,
+    unresolvedGroups: input.unresolvedGroups.map((group) => ({
+      code: WHATSAPP_UNRESOLVED_HOMONYM_CODE,
+      label: group.label,
+      count: group.count,
+    })),
+  });
+  if (!parsed.ok) return parsed;
+  if (parsed.value.code !== "AMBIGUOUS_TARGET_PROFESSIONAL") {
+    return { ok: false, code: "INVALID_PAYLOAD" };
+  }
+  return { ok: true, value: parsed.value };
+}
+
+export function projectWhatsAppSectorClarificationV1(input: {
+  candidates: readonly { sectorId: number; label: string }[];
+  unresolvedGroups: readonly { label: string; count: number }[];
+}): WhatsAppPayloadParseResult<
+  Extract<WhatsAppClarificationV1, { code: "AMBIGUOUS_SECTOR" }>
+> {
+  const parsed = parseStoredClarification({
+    version: WHATSAPP_PENDING_PAYLOAD_VERSION,
+    code: "AMBIGUOUS_SECTOR",
+    candidates: input.candidates,
+    unresolvedGroups: input.unresolvedGroups.map((group) => ({
+      code: WHATSAPP_UNRESOLVED_HOMONYM_CODE,
+      label: group.label,
+      count: group.count,
+    })),
+  });
+  if (!parsed.ok) return parsed;
+  if (parsed.value.code !== "AMBIGUOUS_SECTOR") {
+    return { ok: false, code: "INVALID_PAYLOAD" };
+  }
+  return { ok: true, value: parsed.value };
 }
 
 function assertClarificationHasNoPii(value: WhatsAppClarificationV1): void {
@@ -286,7 +431,8 @@ function assertClarificationHasNoPii(value: WhatsAppClarificationV1): void {
         lower === "email" ||
         lower === "phone" ||
         lower === "telefone" ||
-        lower === "cpf"
+        lower === "cpf" ||
+        lower === "name"
       ) {
         throw new Error("CLARIFICATION_PII");
       }

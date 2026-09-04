@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { SwapIntentDraft } from "../server/natural-language/swap-intent-types";
+import { normalizeRecipientIdentityText } from "../server/swap-eligible-recipients";
 import {
   assertWhatsAppParsedPayloadHasNoInternalIds,
+  normalizeWhatsAppChoiceLabel,
   parseStoredClarification,
   parseStoredParsedIntent,
   parseStoredResolvedIntent,
+  projectWhatsAppSectorClarificationV1,
+  projectWhatsAppTargetProfessionalClarificationV1,
   serializeParsedSwapIntentV1,
   serializeResolvedSwapIntentV1,
 } from "../server/integrations/whatsapp/pending-intent-payloads";
@@ -223,7 +227,8 @@ describe("WhatsApp clarification payload V1", () => {
       {
         version: 1,
         code: "AMBIGUOUS_SECTOR",
-        candidates: [{ sectorId: 3, name: "SR" }],
+        candidates: [{ sectorId: 3, label: "SR — Unimed SC" }],
+        unresolvedGroups: [],
       },
       {
         version: 1,
@@ -243,7 +248,8 @@ describe("WhatsApp clarification payload V1", () => {
       {
         version: 1,
         code: "AMBIGUOUS_TARGET_PROFESSIONAL",
-        candidates: [{ professionalId: 5, name: "Joao" }],
+        candidates: [{ professionalId: 5, label: "Joao Silva — Anestesiologia" }],
+        unresolvedGroups: [],
       },
     ];
     for (const payload of families) {
@@ -260,10 +266,11 @@ describe("WhatsApp clarification payload V1", () => {
         candidates: [
           {
             professionalId: 5,
-            name: "Joao",
+            label: "Joao",
             email: "joao@example.test",
           },
         ],
+        unresolvedGroups: [],
       }).ok,
     ).toBe(false);
     expect(
@@ -273,10 +280,11 @@ describe("WhatsApp clarification payload V1", () => {
         candidates: [
           {
             professionalId: 5,
-            name: "Joao",
+            label: "Joao",
             phone: "+5511999999999",
           },
         ],
+        unresolvedGroups: [],
       }).ok,
     ).toBe(false);
     expect(
@@ -286,10 +294,189 @@ describe("WhatsApp clarification payload V1", () => {
         candidates: [
           {
             professionalId: 5,
-            name: "Joao",
+            label: "Joao",
             cpf: "00000000000",
           },
         ],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+});
+
+describe("WhatsApp clarification — escolha humana distinguível", () => {
+  it("candidato profissional exige label não vazio", () => {
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [{ professionalId: 5, label: "" }],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [{ professionalId: 5, label: "   " }],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("professionalId não pode aparecer no label", () => {
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [{ professionalId: 101, label: "Danilo Souza 101" }],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [{ professionalId: 101, label: "Danilo Souza (#101)" }],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("duas choices com labels normalizados iguais são rejeitadas", () => {
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [
+          { professionalId: 101, label: "Danilo Souza" },
+          { professionalId: 208, label: "Danilo Souza" },
+        ],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("case, acento e espaço colidem na identidade visual", () => {
+    expect(normalizeWhatsAppChoiceLabel("  Danílo   SOUZA ")).toBe(
+      normalizeRecipientIdentityText("  Danílo   SOUZA "),
+    );
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [
+          { professionalId: 101, label: "Danílo Souza" },
+          { professionalId: 208, label: "danilo  souza" },
+        ],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("raw { professionalId, name } do resolver não é storage V1", () => {
+    expect(
+      parseStoredClarification({
+        version: 1,
+        code: "AMBIGUOUS_TARGET_PROFESSIONAL",
+        candidates: [{ professionalId: 101, name: "Danilo Souza" }],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseStoredClarification({
+        version: 1,
+        code: "AMBIGUOUS_TARGET_PROFESSIONAL",
+        candidates: [
+          { professionalId: 101, label: "Danilo Souza", name: "Danilo Souza" },
+        ],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("homônimos irresolvidos entram em unresolvedGroups, não como choices iguais", () => {
+    const projected = projectWhatsAppTargetProfessionalClarificationV1({
+      candidates: [],
+      unresolvedGroups: [{ label: "Danilo Souza", count: 2 }],
+    });
+    expect(projected).toEqual({
+      ok: true,
+      value: {
+        version: 1,
+        code: "AMBIGUOUS_TARGET_PROFESSIONAL",
+        candidates: [],
+        unresolvedGroups: [
+          { code: "UNRESOLVED_HOMONYM", label: "Danilo Souza", count: 2 },
+        ],
+      },
+    });
+  });
+
+  it("labels distintos são selecionáveis", () => {
+    const projected = projectWhatsAppTargetProfessionalClarificationV1({
+      candidates: [
+        { professionalId: 101, label: "Danilo Souza — Anestesiologia" },
+        { professionalId: 208, label: "Danilo Souza — Clínica Médica" },
+      ],
+      unresolvedGroups: [],
+    });
+    expect(projected.ok).toBe(true);
+  });
+
+  it("setor: raw { sectorId, name } não é storage V1", () => {
+    expect(
+      parseStoredClarification({
+        version: 1,
+        code: "AMBIGUOUS_SECTOR",
+        candidates: [{ sectorId: 3, name: "SR" }],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("setor: labels indistinguíveis são rejeitados; distintos passam", () => {
+    expect(
+      projectWhatsAppSectorClarificationV1({
+        candidates: [
+          { sectorId: 3, label: "SR" },
+          { sectorId: 9, label: "sr" },
+        ],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+    expect(
+      projectWhatsAppSectorClarificationV1({
+        candidates: [
+          { sectorId: 3, label: "SR — Unimed SC" },
+          { sectorId: 9, label: "SR — Santa Casa" },
+        ],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("setorId no label é rejeitado", () => {
+    expect(
+      projectWhatsAppSectorClarificationV1({
+        candidates: [{ sectorId: 12, label: "SR 12" }],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("conjunto vazio (sem choice e sem unresolved) é rejeitado", () => {
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [],
+        unresolvedGroups: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("unresolvedGroups é campo obrigatório do V1", () => {
+    expect(
+      parseStoredClarification({
+        version: 1,
+        code: "AMBIGUOUS_TARGET_PROFESSIONAL",
+        candidates: [{ professionalId: 5, label: "Joao — Anestesiologia" }],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("choice selecionável e unresolved com o mesmo label colidem", () => {
+    expect(
+      projectWhatsAppTargetProfessionalClarificationV1({
+        candidates: [{ professionalId: 101, label: "Danilo Souza" }],
+        unresolvedGroups: [{ label: "Danilo Souza", count: 2 }],
       }).ok,
     ).toBe(false);
   });

@@ -300,8 +300,31 @@ ownership, elegibilidade, mês publicado e estado stale. B2-A não chama
 Famílias: `AMBIGUOUS_INTENT` (sem candidates; `intent_kind` permanece
 null); `AMBIGUOUS_SECTOR`; `AMBIGUOUS_OWN_SHIFT`;
 `AMBIGUOUS_TARGET_SHIFT`; `SWAP_TARGET_SHIFT_REQUIRED`;
-`AMBIGUOUS_TARGET_PROFESSIONAL`. Candidates trazem só id técnico + label
-(+ discriminator de plantão). Sem email, telefone, CPF ou row completa.
+`AMBIGUOUS_TARGET_PROFESSIONAL`.
+
+Escolha humana (`AMBIGUOUS_TARGET_PROFESSIONAL`, `AMBIGUOUS_SECTOR`)
+persiste opção já projetada, não o candidate cru do resolver:
+
+- `professionalId` / `sectorId` = chave técnica da escolha;
+- `label` = identificação humana segura, produzida por B2-B/B2-C
+  (qualificação canônica: `medical_specialties.name` ou rótulo de
+  `operational_profile_code`; hospital/setor público quando couber).
+  **Não** email, telefone, CPF, `userId`, nem o id interno como
+  discriminador visual;
+- duas opções com o mesmo `label` normalizado (case, acento, espaço)
+  **não** podem ser persistidas como selecionáveis;
+- se B2-C não conseguir labels distintos com dados profissionais
+  permitidos: `candidates: []` e `unresolvedGroups` com
+  `{ code: "UNRESOLVED_HOMONYM", label, count >= 2 }`, ou reformulação.
+  Não inventar duas choices idênticas.
+
+O raw `{ professionalId, name }` / `{ sectorId, name }` do núcleo NL
+**não** é o schema V1. B2-A não consulta o banco para enriquecer.
+Não basta mapear `name → label`.
+
+Plantões (`AMBIGUOUS_OWN_SHIFT` etc.) já trazem `label` + `dayKey` +
+`timeRange` + `sectorName` + `institutionName`. Sem email, telefone,
+CPF ou row completa.
 
 ### Transição B2-A
 
