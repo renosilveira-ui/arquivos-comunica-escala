@@ -9,6 +9,17 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  AUDIT_KIND,
+  AUDIT_MAX_ATTEMPTS,
+  AUDIT_RETRY_BACKOFF_MS,
+  AUDIT_TIMEOUT_MS,
+  formatInfraLog,
+  isRetryableAuditKind,
+  parseAuditStdout,
+  runAuditAttempts,
+  sanitizeAuditDiagnostic,
+} from "./audit-execution.mjs";
 
 const ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -35,6 +46,18 @@ const SEVERITY = Object.freeze({
 
 function fail(message) {
   process.stderr.write("dependency-audit: FAIL: " + message + "\n");
+  process.exit(1);
+}
+
+function failSecurity(message) {
+  process.stderr.write("dependency-audit: SECURITY: " + message + "\n");
+  process.exit(1);
+}
+
+function failInfra(result) {
+  process.stderr.write(
+    formatInfraLog(result, { maxAttempts: AUDIT_MAX_ATTEMPTS }) + "\n",
+  );
   process.exit(1);
 }
 
@@ -115,18 +138,13 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function parseAudit(stdout) {
-  const firstBrace = stdout.indexOf("{");
-  const lastBrace = stdout.lastIndexOf("}");
-  if (firstBrace < 0 || lastBrace < firstBrace) {
-    fail("pnpm audit did not return JSON");
-  }
-  try {
-    return JSON.parse(stdout.slice(firstBrace, lastBrace + 1));
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    fail("pnpm audit returned invalid JSON: " + detail);
-  }
+function failMalformed(detail) {
+  failInfra({
+    kind: AUDIT_KIND.MALFORMED_RESULT,
+    attempt: 1,
+    timeoutMs: AUDIT_TIMEOUT_MS,
+    detail,
+  });
 }
 
 const register = readJson(REGISTER_PATH, "exception register");
@@ -302,74 +320,73 @@ for (const [index, exception] of register.exceptions.entries()) {
   exceptions.set(key, exception);
 }
 
-function loadAuditReport() {
-  if (REPORT_OVERRIDE) {
-    try {
-      return parseAudit(readFileSync(REPORT_OVERRIDE, "utf8"));
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      fail("cannot read dependency audit report override: " + detail);
-    }
-  }
-
-  let lastFailure = "unknown registry failure";
-
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const audit = spawnSync(PNPM_COMMAND, ["audit", "--json"], {
-      cwd: ROOT,
-      encoding: "utf8",
-      timeout: 30_000,
-      killSignal: "SIGKILL",
-      maxBuffer: 32 * 1024 * 1024,
-    });
-
-    if (audit.error) {
-      lastFailure = "cannot execute pnpm audit: " + audit.error.message;
-      continue;
-    }
-    if (audit.signal) {
-      lastFailure = "pnpm audit was terminated by " + audit.signal;
-      continue;
-    }
-    if (audit.status !== 0 && audit.status !== 1) {
-      lastFailure =
-        "pnpm audit exited with status " +
-        audit.status +
-        ": " +
-        (audit.stderr.trim() || "no diagnostic");
-      continue;
-    }
-
-    const report = parseAudit(audit.stdout);
-    if (!report.error) {
-      return report;
-    }
-
-    lastFailure = (
-      "registry audit failed: " +
-      (report.error.code ?? "unknown") +
-      " " +
-      (report.error.message ?? "")
-    ).trim();
-  }
-
-  fail(lastFailure + " after 2 attempts");
+function spawnPnpmAudit() {
+  return spawnSync(PNPM_COMMAND, ["audit", "--json"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    timeout: AUDIT_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+    maxBuffer: 32 * 1024 * 1024,
+  });
 }
 
-const report = loadAuditReport();
+async function loadAuditReport() {
+  if (REPORT_OVERRIDE) {
+    let raw;
+    try {
+      raw = readFileSync(REPORT_OVERRIDE, "utf8");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      fail(
+        "cannot read dependency audit report override: " +
+          sanitizeAuditDiagnostic(detail),
+      );
+    }
+    const parsed = parseAuditStdout(raw);
+    if (!parsed.ok) {
+      failMalformed(parsed.reason);
+    }
+    return parsed.report;
+  }
+
+  const executed = await runAuditAttempts({
+    runAttempt: spawnPnpmAudit,
+    maxAttempts: AUDIT_MAX_ATTEMPTS,
+    backoffMs: AUDIT_RETRY_BACKOFF_MS,
+    timeoutMs: AUDIT_TIMEOUT_MS,
+    onAttempt(result) {
+      if (
+        result.kind !== AUDIT_KIND.SUCCESS &&
+        isRetryableAuditKind(result.kind) &&
+        result.attempt < AUDIT_MAX_ATTEMPTS
+      ) {
+        process.stderr.write(
+          formatInfraLog(result, { maxAttempts: AUDIT_MAX_ATTEMPTS }) + "\n",
+        );
+      }
+    },
+  });
+
+  if (executed.kind === AUDIT_KIND.SUCCESS) {
+    return executed.report;
+  }
+  failInfra(executed);
+}
+
+const report = await loadAuditReport();
 if (
   !report.advisories ||
   typeof report.advisories !== "object" ||
   Array.isArray(report.advisories)
 ) {
-  fail("pnpm audit response does not contain advisories");
+  failMalformed("pnpm audit response does not contain advisories");
 }
 if (
   !report.metadata?.vulnerabilities ||
   typeof report.metadata.vulnerabilities !== "object" ||
   Array.isArray(report.metadata.vulnerabilities)
 ) {
-  fail("pnpm audit response does not contain vulnerability metadata");
+  failMalformed("pnpm audit response does not contain vulnerability metadata");
 }
 
 const advisoryList = Object.values(report.advisories);
@@ -448,14 +465,16 @@ for (const advisory of advisoryList) {
 }
 
 if (unapproved.length > 0) {
-  fail("unapproved advisories:\n- " + unapproved.join("\n- "));
+  failSecurity(
+    "policy violation — unapproved advisories:\n- " + unapproved.join("\n- "),
+  );
 }
 
 const stale = [...exceptions.keys()].filter(
   (key) => !observedExceptions.has(key),
 );
 if (stale.length > 0) {
-  fail(
+  failSecurity(
     "stale exceptions must be removed or re-evaluated:\n- " +
       stale.join("\n- "),
   );
