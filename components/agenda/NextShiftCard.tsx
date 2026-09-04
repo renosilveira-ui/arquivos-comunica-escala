@@ -2,7 +2,9 @@
 // "quando é o meu próximo plantão?" — respondida no topo da Agenda.
 //
 // Componente puro (dados por props, `now` injetável) para ser testável e
-// renderizável na rota de preview sem servidor. Dois estados:
+// renderizável na rota de preview sem servidor. A query é um fato separado
+// (`queryState`): LOADING / ERROR / EMPTY / SUCCESS. Erro nunca vira
+// "nenhum plantão". Com plantão:
 //   - em andamento: "Termina às 19:00" + ações (Comunica+)
 //   - futuro: "Começa em 3 h" / "amanhã às 07:00" + ações (Confirmar/Trocar)
 //
@@ -15,12 +17,19 @@
 //   - "full": card grande com título, local e botões empilhados.
 
 import { Pressable, Text, View } from "react-native";
-import { ArrowRightLeft, CheckCircle2, ChevronRight, Clock, ExternalLink, MapPin, PlayCircle } from "lucide-react-native";
+import { AlertCircle, ArrowRightLeft, CheckCircle2, ChevronRight, Clock, ExternalLink, MapPin, PlayCircle } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { formatHospitalTime } from "@/lib/hospital-time";
 import { Surface, tonedText } from "@/components/ui/Surface";
 import { AppButton } from "@/components/ui/AppButton";
 import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
+import { Skeleton } from "@/components/ui/Skeleton";
+import {
+  NEXT_SHIFT_EMPTY_SUBTITLE,
+  NEXT_SHIFT_LOADING_A11Y,
+  nextShiftSurface,
+  type NextShiftQueryState,
+} from "@/lib/next-shift-state";
 
 export interface NextShiftCardShift {
   id: number;
@@ -33,6 +42,7 @@ export interface NextShiftCardShift {
 }
 
 export interface NextShiftCardProps {
+  queryState: NextShiftQueryState;
   shift: NextShiftCardShift | null | undefined;
   /** Relógio injetável (testes/preview). */
   now?: Date;
@@ -42,6 +52,8 @@ export interface NextShiftCardProps {
   onSwap?: () => void;
   onOpenComunica?: () => void;
   onPress?: () => void;
+  /** Retry da query — só faz sentido em ERROR. */
+  onRetry?: () => void;
   /** "compact" (padrão): faixa de uma linha. "full": card grande. */
   variant?: "compact" | "full";
 }
@@ -78,6 +90,7 @@ export function describeStart(start: Date, now: Date): string {
 }
 
 export function NextShiftCard({
+  queryState,
   shift,
   now = new Date(),
   needsConfirmation = false,
@@ -85,32 +98,67 @@ export function NextShiftCard({
   onSwap,
   onOpenComunica,
   onPress,
+  onRetry,
   variant = "compact",
 }: NextShiftCardProps) {
   if (variant === "compact") {
     return (
       <CompactNextShift
+        queryState={queryState}
         shift={shift}
         now={now}
         needsConfirmation={needsConfirmation}
         onConfirm={onConfirm}
         onOpenComunica={onOpenComunica}
         onPress={onPress}
+        onRetry={onRetry}
       />
     );
   }
 
-  if (!shift) {
+  if (queryState === "LOADING") {
     return (
-      <Surface level="card" tone="muted" accessibilityLabel="Sem próximo plantão">
+      <Surface level="card" tone="muted" accessibilityLabel={NEXT_SHIFT_LOADING_A11Y}>
+        <View accessibilityRole="progressbar" style={{ gap: theme.space[2] }}>
+          <Skeleton width="40%" height={theme.space[3]} />
+          <Skeleton width="70%" height={theme.space[5]} />
+          <Skeleton width="55%" height={theme.space[3]} />
+        </View>
+      </Surface>
+    );
+  }
+
+  if (queryState === "ERROR") {
+    const errorSurface = nextShiftSurface("ERROR");
+    return (
+      <Surface level="card" tone="muted" accessibilityLabel={errorSurface.title ?? undefined}>
+        <View style={{ gap: theme.space[3] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
+            <AlertCircle size={20} color={theme.colors.danger} />
+            <Text style={{ flex: 1, ...theme.text.titleSm, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
+              {errorSurface.title}
+            </Text>
+          </View>
+          {onRetry && errorSurface.showRetry && errorSurface.retryLabel ? (
+            <AppButton title={errorSurface.retryLabel} onPress={onRetry} size="md" />
+          ) : null}
+        </View>
+      </Surface>
+    );
+  }
+
+  if (queryState !== "SUCCESS" || !shift) {
+    const emptySurface = nextShiftSurface("EMPTY");
+    return (
+      <Surface level="card" tone="muted" accessibilityLabel={emptySurface.title ?? undefined}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
           <Clock size={20} color={theme.colors.textMuted} />
           <View style={{ flex: 1 }}>
             <Text style={{ ...theme.text.titleSm, fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
-              Nenhum plantão agendado
+              {emptySurface.title}
             </Text>
             <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-              Quando você for alocado, ele aparece aqui.
+              {NEXT_SHIFT_EMPTY_SUBTITLE}
             </Text>
           </View>
         </View>
@@ -195,7 +243,10 @@ export function NextShiftCard({
   );
 }
 
-type CompactProps = Pick<NextShiftCardProps, "shift" | "needsConfirmation" | "onConfirm" | "onOpenComunica" | "onPress"> & {
+type CompactProps = Pick<
+  NextShiftCardProps,
+  "queryState" | "shift" | "needsConfirmation" | "onConfirm" | "onOpenComunica" | "onPress" | "onRetry"
+> & {
   now: Date;
 };
 
@@ -214,19 +265,86 @@ type CompactProps = Pick<NextShiftCardProps, "shift" | "needsConfirmation" | "on
  * A faixa do próximo plantão é essa coisa — navy sólido. Em andamento, a
  * faixa é verde tinted (nada disputa o primeiro lugar com ela).
  */
-function CompactNextShift({ shift, now, needsConfirmation, onConfirm, onOpenComunica, onPress }: CompactProps) {
-  if (!shift) {
+function CompactNextShift({
+  queryState,
+  shift,
+  now,
+  needsConfirmation,
+  onConfirm,
+  onOpenComunica,
+  onPress,
+  onRetry,
+}: CompactProps) {
+  if (queryState === "LOADING") {
+    return (
+      <Surface
+        level="card"
+        tone="muted"
+        style={{ paddingVertical: theme.space[3], paddingHorizontal: theme.space[3] }}
+        accessibilityLabel={NEXT_SHIFT_LOADING_A11Y}
+      >
+        <View accessibilityRole="progressbar" style={{ gap: theme.space[2] }}>
+          <Skeleton width="36%" height={theme.space[3]} />
+          <Skeleton width="72%" height={theme.space[5]} />
+        </View>
+      </Surface>
+    );
+  }
+
+  if (queryState === "ERROR") {
+    const errorSurface = nextShiftSurface("ERROR");
+    return (
+      <Surface
+        level="card"
+        tone="muted"
+        style={{ paddingVertical: theme.space[3], paddingHorizontal: theme.space[3] }}
+        accessibilityLabel={errorSurface.title ?? undefined}
+      >
+        <View style={{ gap: theme.space[3] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
+            <AlertCircle size={18} color={theme.colors.danger} />
+            <Text style={{ flex: 1, ...theme.text.body, color: theme.colors.textPrimary }}>
+              {errorSurface.title}
+            </Text>
+          </View>
+          {onRetry && errorSurface.showRetry && errorSurface.retryLabel ? (
+            <Pressable
+              onPress={onRetry}
+              accessibilityRole="button"
+              accessibilityLabel={errorSurface.retryLabel}
+              style={({ pressed }) => ({
+                minHeight: 44,
+                paddingHorizontal: theme.space[4],
+                borderRadius: theme.radius.md,
+                backgroundColor: theme.colors.primary,
+                alignItems: "center",
+                justifyContent: "center",
+                opacity: pressed ? 0.85 : 1,
+              })}
+            >
+              <Text style={{ ...theme.text.body, fontWeight: theme.weight.semibold, color: theme.colors.surface }}>
+                {errorSurface.retryLabel}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </Surface>
+    );
+  }
+
+  if (queryState !== "SUCCESS" || !shift) {
+    const emptySurface = nextShiftSurface("EMPTY");
     return (
       <Surface
         level="card"
         tone="muted"
         style={{ paddingVertical: theme.space[2], paddingHorizontal: theme.space[3] }}
-        accessibilityLabel="Sem próximo plantão"
+        accessibilityLabel={emptySurface.title ?? undefined}
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[3] }}>
           <Clock size={18} color={theme.colors.textMuted} />
           <Text style={{ flex: 1, ...theme.text.body, color: theme.colors.textSecondary }} numberOfLines={1}>
-            Nenhum plantão agendado
+            {emptySurface.title}
           </Text>
         </View>
       </Surface>
