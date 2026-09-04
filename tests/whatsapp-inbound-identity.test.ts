@@ -127,6 +127,18 @@ describe("WhatsApp inbound identity", () => {
       status: "IDENTITY_NOT_FOUND",
       userId: null,
     });
+    const [textRow] = await db
+      .select()
+      .from(whatsappInboundMessages)
+      .where(eq(whatsappInboundMessages.providerMessageId, `SMunk-text-${stamp}`));
+    const [audioRow] = await db
+      .select()
+      .from(whatsappInboundMessages)
+      .where(eq(whatsappInboundMessages.providerMessageId, `SMunk-audio-${stamp}`));
+    expect(textRow?.operationalText).toBeNull();
+    expect(textRow?.payloadClearedAt).toBeTruthy();
+    expect(audioRow?.mediaUrl).toBeNull();
+    expect(audioRow?.payloadClearedAt).toBeTruthy();
   });
 
   it("cadastrado e não verificado falha fechado", async () => {
@@ -216,6 +228,14 @@ describe("WhatsApp inbound identity", () => {
       status: "READY_FOR_TRANSCRIPTION",
       userId,
     });
+    const [row] = await db
+      .select()
+      .from(whatsappInboundMessages)
+      .where(eq(whatsappInboundMessages.providerMessageId, `SMaudio${stamp}`));
+    expect(row?.mediaUrl).toBe("https://api.twilio.com/media/secret");
+    expect(row?.mediaMime).toBe("audio/ogg");
+    expect(row?.operationalText).toBeNull();
+    expect(row?.payloadExpiresAt).toBeTruthy();
   });
 
   it("mídia não suportada identificada termina UNSUPPORTED", async () => {

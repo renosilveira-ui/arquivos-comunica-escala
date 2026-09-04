@@ -93,7 +93,8 @@ describe("WhatsApp webhook HTTP — accept/replay", () => {
       .where(eq(whatsappInboundMessages.providerMessageId, sid));
     expect(row?.processingStatus).toBe("READY_FOR_NL");
     expect(row?.userId).toBe(userId);
-    expect(JSON.stringify(row)).not.toContain(params.Body);
+    expect(row?.operationalText).toBe(params.Body);
+    expect(JSON.stringify(row)).not.toMatch(/signature/i);
   });
 
   it("replay do mesmo MessageSid → 200 sem segunda linha", async () => {

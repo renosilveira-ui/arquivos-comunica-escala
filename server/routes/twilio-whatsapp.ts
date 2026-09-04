@@ -77,7 +77,11 @@ twilioWhatsAppRouter.post("/", async (req: Request, res: Response) => {
   }
 
   try {
-    await processWhatsAppInbound(parsed.envelope);
+    const result = await processWhatsAppInbound(parsed.envelope);
+    if (result.outcome === "retryable") {
+      empty(res, 503);
+      return;
+    }
     empty(res, 200);
   } catch {
     logger.warn(JSON.stringify({ event: "whatsapp_inbound_handler_error" }));

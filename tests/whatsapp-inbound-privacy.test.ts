@@ -59,7 +59,7 @@ describe("WhatsApp inbound privacy", () => {
     await db.delete(users).where(eq(users.id, userId));
   });
 
-  it("log e DB não guardam telefone, Body nem signature", async () => {
+  it("logs não contêm Body/telefone/URL; DB guarda só material operacional", async () => {
     const lines: string[] = [];
     const spy = vi.spyOn(logger, "info").mockImplementation((...args: unknown[]) => {
       lines.push(args.map((a) => String(a)).join(" "));
@@ -85,9 +85,10 @@ describe("WhatsApp inbound privacy", () => {
       .from(whatsappInboundMessages)
       .where(eq(whatsappInboundMessages.providerMessageId, sid));
     expect(row).toBeTruthy();
+    expect(row?.operationalText).toBe(secretBody);
+    expect(row?.processingStatus).toBe("READY_FOR_NL");
     const serialized = JSON.stringify(row);
     expect(serialized).not.toContain(e164);
-    expect(serialized).not.toContain(secretBody);
     expect(serialized).not.toMatch(/signature/i);
     expect(row?.senderAddressHash).toMatch(/^[a-f0-9]{16}$/);
     expect(Object.keys(row ?? {})).not.toContain("body");

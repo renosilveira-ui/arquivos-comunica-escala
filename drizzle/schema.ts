@@ -169,8 +169,10 @@ export type UserContactChannel = typeof userContactChannels.$inferSelect;
 export type InsertUserContactChannel = typeof userContactChannels.$inferInsert;
 
 /**
- * Inbound técnico WhatsApp (Incremento A). Idempotência + auditoria mínima.
- * Sem Body, telefone, signature ou payload Twilio cru.
+ * Inbound técnico WhatsApp (Incremento A). Fila assíncrona:
+ * idempotência + payload operacional temporário (texto/mídia) com retenção curta.
+ * Sem dump Twilio, signature, Auth Token ou telefone.
+ * READY_FOR_* = material suficiente persistido para o próximo estágio.
  * Migração: drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql
  */
 export const whatsappInboundMessages = mysqlTable(
@@ -189,15 +191,20 @@ export const whatsappInboundMessages = mysqlTable(
     processingStatus: mysqlEnum("processing_status", [
       "RECEIVED",
       "IDENTIFIED",
+      "RETRYABLE",
       "IDENTITY_NOT_FOUND",
       "IDENTITY_CONFLICT",
       "UNSUPPORTED",
       "READY_FOR_NL",
       "READY_FOR_TRANSCRIPTION",
-      "FAILED",
     ]).notNull(),
     errorCode: varchar("error_code", { length: 64 }),
     senderAddressHash: char("sender_address_hash", { length: 16 }),
+    operationalText: text("operational_text"),
+    mediaUrl: varchar("media_url", { length: 768 }),
+    mediaMime: varchar("media_mime", { length: 64 }),
+    payloadExpiresAt: timestamp("payload_expires_at"),
+    payloadClearedAt: timestamp("payload_cleared_at"),
     receivedAt: timestamp("received_at").notNull(),
     processedAt: timestamp("processed_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -211,6 +218,9 @@ export const whatsappInboundMessages = mysqlTable(
     idxWhatsappInboundReceived: index("idx_whatsapp_inbound_received").on(
       table.receivedAt,
     ),
+    idxWhatsappInboundPayloadExpires: index(
+      "idx_whatsapp_inbound_payload_expires",
+    ).on(table.payloadExpiresAt),
   }),
 );
 

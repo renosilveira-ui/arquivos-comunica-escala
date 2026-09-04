@@ -16,8 +16,8 @@ provider + testes locais com o validador oficial `twilio.validateRequest`.
 
 | Kind | Nesta PR | Depois |
 |---|---|---|
-| `TEXT` | classifica e persiste metadata | Incremento B: NL |
-| `AUDIO` | classifica; **não** baixa, transcreve, armazena mídia | Incremento D |
+| `TEXT` | classifica e persiste `operational_text` temporário | Incremento B: NL |
+| `AUDIO` | classifica e persiste `media_url` temporário; **não** baixa/transcreve | Incremento D |
 | `FORWARDED_TEXT` | texto com `forwarded=true` no envelope; continua `TEXT` | ator = remetente do canal, não o terceiro citado |
 | `UNSUPPORTED_MEDIA` | classifica; sem OCR/interpretação | copy futura: texto ou áudio |
 
@@ -91,19 +91,44 @@ mobile, logs ou Render nesta PR.
 | Secret ou URL canônica ausente | 503 |
 | `X-Twilio-Signature` ausente/inválida | 403 |
 | MessageSid ausente / envelope malformado | 400 |
-| Replay do mesmo MessageSid | 200 (ACK idempotente) |
-| Mensagem aceita | 200 (ACK vazio, sem TwiML) |
+| Falha retryable / incompleta (Twilio deve retentar) | 503 |
+| Row terminal do mesmo MessageSid | 200 (replay / no-op) |
+| Aceite terminal (identidade ou READY_FOR_*) | 200 (ACK vazio, sem TwiML) |
 
-Corpo de erro sem detalhes internos.
+Corpo de erro sem detalhes internos. 5xx só para falha retentável;
+estado terminal corretamente processado nunca devolve 5xx.
+
+## Modelo: fila assíncrona (não processamento síncrono)
+
+O webhook autentica, classifica e **persiste material suficiente** para o
+próximo estágio. Não chama NL Core nem baixa/transcreve áudio.
+
+`READY_FOR_*` significa: **há material persistido suficiente para o próximo estágio**.
+Sem esse material a linha **não** pode ficar `READY_FOR_*`.
 
 ## Estados de inbound
 
-`RECEIVED` · `IDENTIFIED` · `IDENTITY_NOT_FOUND` · `IDENTITY_CONFLICT` ·
-`UNSUPPORTED` · `READY_FOR_NL` · `READY_FOR_TRANSCRIPTION` · `FAILED`
+Incompletos / retomáveis (mesmo MessageSid **retoma**; HTTP **503**):
 
-Sucesso deste incremento: texto de usuário verificado → `READY_FOR_NL`
-(sem interpretar o texto). Áudio identificado → `READY_FOR_TRANSCRIPTION`
-(sem transcrever).
+- `RECEIVED`
+- `IDENTIFIED` (reservado; não é terminal)
+- `RETRYABLE` — DB indisponível, falha transitória de identidade, erro
+  interno de infra antes de estado terminal
+
+Terminais (mesmo MessageSid → **200 replay / no-op**):
+
+- `IDENTITY_NOT_FOUND`
+- `IDENTITY_CONFLICT`
+- `UNSUPPORTED`
+- `READY_FOR_NL` — TEXT com `operational_text` persistido
+- `READY_FOR_TRANSCRIPTION` — AUDIO com `media_url` persistido
+
+Banco indisponível **nunca** vira `IDENTITY_NOT_FOUND`.
+Não existe ACK terminal `FAILED`: falha transitória após INSERT fica
+`RETRYABLE` para a Twilio retentar o mesmo MessageSid.
+
+Corrida `UNIQUE (provider, provider_message_id)`: o perdedor carrega a
+row e segue as mesmas regras. Nunca duas rows / duas operações.
 
 ## Persistência
 
@@ -115,8 +140,38 @@ Tabela `whatsapp_inbound_messages` com
 agora seria JSON sem schema. Incremento B cria pending junto com o
 contrato de slots do NL.
 
-Não persistir: telefone completo, Body, signature, Authorization, payload
-Twilio cru, URL de mídia, áudio.
+### Payload operacional temporário
+
+Persistir o **mínimo** para o próximo estágio — não o dump Twilio:
+
+| Kind | Material | Colunas |
+|---|---|---|
+| TEXT | conteúdo para o NL | `operational_text` |
+| AUDIO | referência para recuperar mídia | `media_url`, `media_mime` |
+| terminal sem próximo estágio | nenhum | limpar imediatamente |
+
+Também: `payload_expires_at` (TTL 24h, `WHATSAPP_INBOUND_PAYLOAD_TTL_MS`)
+e `payload_cleared_at`.
+
+Não persistir: telefone completo, signature, Authorization, Auth Token,
+payload Twilio cru, dump de todos os params.
+
+Não logar: Body, `operational_text`, URL de mídia, telefone, token.
+
+### Retenção e limpeza
+
+- TTL curto: 24 horas a partir da persistência/refresh do payload.
+- Após consumo previsto: Incremento B chama
+  `clearWhatsAppInboundOperationalPayload(id)` depois de ler o texto;
+  Incremento D faz o mesmo depois de obter a mídia. A limpeza só atua
+  em `READY_FOR_NL` / `READY_FOR_TRANSCRIPTION` — não apaga payload de
+  row `RETRYABLE` (a retomada ainda precisa do material).
+- Consumidor deve checar `isWhatsAppInboundPayloadUsable` (expirado ou
+  limpo ≠ material disponível).
+- `media_url` só é persistida se for `https:`.
+- Expiração: `clearExpiredWhatsAppInboundPayloads(now)` (job futuro).
+- `IDENTITY_NOT_FOUND` / `IDENTITY_CONFLICT` / `UNSUPPORTED` limpam o
+  payload na hora (não há próximo estágio).
 
 ## Rate limit
 
@@ -126,13 +181,18 @@ conta Twilio: follow-up **antes de produção**.
 
 ## Consumidor futuro
 
-Incremento B: `READY_FOR_NL` → parser/resolver de
-`server/natural-language/` → confirmação → `createSwapOffer`. Esta PR não
-importa esses módulos no caminho inbound.
+Incremento B: `READY_FOR_NL` → lê `operational_text` via
+`readWhatsAppInboundOperationalMaterial` → parser/resolver de
+`server/natural-language/` → confirmação → `createSwapOffer` →
+`clearWhatsAppInboundOperationalPayload`. Esta PR não importa esses
+módulos no caminho inbound.
+
+Incremento D: `READY_FOR_TRANSCRIPTION` → usa `media_url` → transcreve →
+limpa o payload.
 
 ## Operação
 
 - Migration manual: `drizzle/migrations/manual/2026-09-04-whatsapp-inbound-messages.sql`
-- Aplicar em staging **somente após revisão + autorização operacional**
+- **Não aplicar em staging** até nova revisão + autorização operacional
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound

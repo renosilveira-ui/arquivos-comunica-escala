@@ -25,6 +25,20 @@ const schema = readFileSync(
   new URL("../drizzle/schema.ts", import.meta.url),
   "utf8",
 );
+const contract = readFileSync(
+  new URL(
+    "../docs/CONTRACT_WHATSAPP_CONVERSATIONAL_OPERATIONS_V1.md",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const payload = readFileSync(
+  new URL(
+    "../server/integrations/whatsapp/operational-payload.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 describe("WhatsApp inbound — source contracts", () => {
   it("não materializa troca/cessão nem chama o NL", () => {
@@ -58,7 +72,7 @@ describe("WhatsApp inbound — source contracts", () => {
     expect(boot).toContain("twilioWhatsAppRouter");
   });
 
-  it("schema não persiste Body, signature nem telefone", () => {
+  it("schema persiste payload operacional temporário sem dump Twilio", () => {
     const start = schema.indexOf("export const whatsappInboundMessages");
     const end = schema.indexOf("export type WhatsappInboundMessage");
     const inboundBlock = schema.slice(start, end);
@@ -66,15 +80,51 @@ describe("WhatsApp inbound — source contracts", () => {
     expect(inboundBlock).toContain('mysqlEnum("provider"');
     expect(inboundBlock).toContain('mysqlEnum("content_kind"');
     expect(inboundBlock).toContain('mysqlEnum("processing_status"');
+    expect(inboundBlock).toContain("RETRYABLE");
     expect(inboundBlock).toContain("senderAddressHash");
+    expect(inboundBlock).toContain("operationalText");
+    expect(inboundBlock).toContain("mediaUrl");
+    expect(inboundBlock).toContain("payloadExpiresAt");
+    expect(inboundBlock).toContain("payloadClearedAt");
     expect(inboundBlock).not.toMatch(/\bbody\b/i);
     expect(inboundBlock).not.toMatch(/signature/i);
     expect(inboundBlock).not.toMatch(/normalizedAddress|fromE164|phone/i);
-    expect(inboundBlock).not.toMatch(/rawPayload|mediaUrl/i);
+    expect(inboundBlock).not.toMatch(/rawPayload|authToken/i);
   });
 
   it("não há pending intents sem contrato nesta PR", () => {
     expect(schema).not.toContain("whatsappPendingIntents");
     expect(schema).not.toContain("whatsapp_pending_intents");
+  });
+
+  it("identidade não converte DB indisponível em IDENTITY_NOT_FOUND", () => {
+    expect(identity).toContain('code: "DB_UNAVAILABLE"');
+    expect(identity).toContain('code: "IDENTITY_QUERY_FAILED"');
+    expect(identity).not.toMatch(
+      /if\s*\(\s*!db\s*\)\s*return\s*\{\s*ok:\s*false,\s*code:\s*"IDENTITY_NOT_FOUND"/,
+    );
+  });
+
+  it("fila incompleta retoma; terminal faz replay; HTTP retryable é 503", () => {
+    expect(store).toContain("RETRYABLE");
+    expect(store).toContain("isWhatsAppInboundIncompleteStatus");
+    expect(store).toContain("isWhatsAppInboundTerminalStatus");
+    expect(store).not.toMatch(/WhatsAppInboundStatuses\.FAILED/);
+    expect(router).toContain('result.outcome === "retryable"');
+    expect(router).toContain("empty(res, 503)");
+  });
+
+  it("contrato define READY_FOR_* como material persistido e retenção curta", () => {
+    expect(contract).toContain(
+      "há material persistido suficiente para o próximo estágio",
+    );
+    expect(contract).toContain("clearWhatsAppInboundOperationalPayload");
+    expect(contract).toContain("WHATSAPP_INBOUND_PAYLOAD_TTL_MS");
+    expect(payload).toContain("clearWhatsAppInboundOperationalPayload");
+    expect(payload).toContain("clearExpiredWhatsAppInboundPayloads");
+    expect(payload).toContain("isWhatsAppInboundPayloadUsable");
+    expect(payload).toContain("READY_FOR_NL");
+    expect(payload).toContain("READY_FOR_TRANSCRIPTION");
+    expect(payload).not.toMatch(/logger\.(info|warn|error)/);
   });
 });

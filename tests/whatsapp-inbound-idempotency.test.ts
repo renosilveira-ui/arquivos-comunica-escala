@@ -90,6 +90,9 @@ describe("WhatsApp inbound idempotency", () => {
       .where(eq(whatsappInboundMessages.providerMessageId, sid));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.processingStatus).toBe("READY_FOR_NL");
+    expect(rows[0]?.operationalText).toBe("olá");
+    expect(rows[0]?.payloadExpiresAt).toBeTruthy();
+    expect(rows[0]?.payloadClearedAt).toBeNull();
   });
 
   it("replay é no-op", async () => {
@@ -129,33 +132,57 @@ describe("WhatsApp inbound idempotency", () => {
       processWhatsAppInbound(envelope(sid, e164, "a")),
       processWhatsAppInbound(envelope(sid, e164, "b")),
     ]);
-    const outcomes = results.map((r) => r.outcome).sort();
-    expect(outcomes).toContain("accepted");
-    expect(outcomes).toContain("replay");
+    expect(
+      results.every((r) => r.outcome === "accepted" || r.outcome === "replay"),
+    ).toBe(true);
     const rows = await db
       .select()
       .from(whatsappInboundMessages)
       .where(eq(whatsappInboundMessages.providerMessageId, sid));
     expect(rows).toHaveLength(1);
+    expect(rows[0]?.processingStatus).toBe("READY_FOR_NL");
   });
 
-  it("erro após registro deixa FAILED coerente", async () => {
+  it("falha transitória após INSERT fica RETRYABLE e o retry retoma", async () => {
     const sid = `SM${stamp}fail`;
     sids.push(sid);
     const spy = vi
       .spyOn(identity, "resolveVerifiedWhatsAppUser")
       .mockRejectedValueOnce(new Error("forced"));
-    const result = await processWhatsAppInbound(envelope(sid, e164));
+    const result = await processWhatsAppInbound(envelope(sid, e164, "retomar"));
     spy.mockRestore();
     expect(result).toMatchObject({
-      outcome: "accepted",
-      status: "FAILED",
+      outcome: "retryable",
+      status: "RETRYABLE",
+      code: "INTERNAL_TRANSIENT",
     });
-    const [row] = await db
+    const [stuck] = await db
       .select()
       .from(whatsappInboundMessages)
       .where(eq(whatsappInboundMessages.providerMessageId, sid));
-    expect(row?.processingStatus).toBe("FAILED");
-    expect(row?.errorCode).toBe("FAILED");
+    expect(stuck?.processingStatus).toBe("RETRYABLE");
+    expect(stuck?.operationalText).toBe("retomar");
+
+    const resumed = await processWhatsAppInbound(envelope(sid, e164, "retomar"));
+    expect(resumed).toMatchObject({
+      outcome: "accepted",
+      status: "READY_FOR_NL",
+      userId,
+    });
+    const [done] = await db
+      .select()
+      .from(whatsappInboundMessages)
+      .where(eq(whatsappInboundMessages.providerMessageId, sid));
+    expect(done?.processingStatus).toBe("READY_FOR_NL");
+    expect(done?.operationalText).toBe("retomar");
+  });
+
+  it("row terminal continua replay/no-op", async () => {
+    const sid = `SM${stamp}term`;
+    sids.push(sid);
+    await processWhatsAppInbound(envelope(sid, e164, "primeiro"));
+    const again = await processWhatsAppInbound(envelope(sid, e164, "segundo"));
+    expect(again.outcome).toBe("replay");
+    expect(again.status).toBe("READY_FOR_NL");
   });
 });
