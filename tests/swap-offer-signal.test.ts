@@ -336,6 +336,8 @@ describe("sinal de oferta de plantão", () => {
     expect(listAvailable).toContain("manager_scope");
     expect(listAvailable).toContain("GESTOR_PLUS");
     expect(listAvailable).toContain("plantonistaAccessCoversShiftSql");
+    expect(listAvailable).toContain("actorClinicallyCoversOfferedShiftSql");
+    expect(listAvailable).toContain("listedOfferIsClinicallyActionable");
     expect(listAvailable).not.toContain(
       "medical_specialty_id = aq.medical_specialty_id",
     );
@@ -343,9 +345,10 @@ describe("sinal de oferta de plantão", () => {
       offerDomain.indexOf("export async function requireProfessionalCanReceiveShift"),
       offerDomain.indexOf("export async function requireCanonicalShiftOccupant"),
     );
-    expect(receive).toContain("findManagerScopeId");
-    expect(receive).toContain("GESTOR_PLUS");
+    expect(receive).toContain("findProfessionalAccessId");
     expect(receive).toContain("assertProfessionalQualifiedForShift");
+    expect(receive).not.toContain("findManagerScopeId");
+    expect(receive).not.toContain("GESTOR_PLUS");
     const signal = readFileSync("server/swap-offer-signal.ts", "utf8");
     expect(signal).toContain("SIGNAL_TRACKING_FAILED");
     expect(signal).toContain("throw error");
@@ -377,7 +380,7 @@ describe("sinal de oferta de plantão", () => {
     expect(row).toMatchObject({ canRespond: true });
   });
 
-  it("mostra a cessão ao GESTOR_MEDICO da escala sem professional_access", async () => {
+  it("mostra a cessão ao GESTOR_MEDICO da escala sem professional_access só para supervisão", async () => {
     const shift = await createOccupiedShift(offerer, 2, "Clínica Médica");
     const created = await callerFor(offerer).offer({
       type: "CESSAO",
@@ -387,10 +390,11 @@ describe("sinal de oferta de plantão", () => {
 
     const available = await callerFor(gestor).listAvailable({});
     const row = available.find((item) => Number(item.id) === Number(created.id));
-    expect(row).toMatchObject({ canRespond: true });
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({ canRespond: false });
   });
 
-  it("GESTOR_MEDICO sem professional_access aceita e o dono efetua a cessão", async () => {
+  it("GESTOR_MEDICO sem professional_access não aceita a cessão visível", async () => {
     const shift = await createOccupiedShift(offerer, 5, "Clínica Médica");
     const created = await callerFor(offerer).offer({
       type: "CESSAO",
@@ -400,47 +404,24 @@ describe("sinal de oferta de plantão", () => {
 
     await expect(
       callerFor(gestor).accept({ swapRequestId: Number(created.id) }),
-    ).resolves.toEqual({ ok: true });
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
 
-    const [accepted] = await db
+    const [open] = await db
       .select({
         status: swapRequests.status,
         toProfessionalId: swapRequests.toProfessionalId,
-        toUserId: swapRequests.toUserId,
       })
       .from(swapRequests)
       .where(eq(swapRequests.id, Number(created.id)))
       .limit(1);
-    expect(accepted?.status).toBe("APPROVED");
-    expect(accepted?.toProfessionalId).toBe(gestor.professionalId);
-    expect(accepted?.toUserId).toBe(gestor.userId);
-
-    const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
-    expect(
-      ownerRows.find((row) => Number(row.id) === Number(created.id))
-        ?.awaitingMyApproval,
-    ).toBe(false);
-
-    const assignments = await db
-      .select({
-        professionalId: shiftAssignmentsV2.professionalId,
-        isActive: shiftAssignmentsV2.isActive,
-      })
-      .from(shiftAssignmentsV2)
-      .where(eq(shiftAssignmentsV2.shiftInstanceId, shift.shiftId));
-    expect(
-      assignments.some(
-        (row) => row.professionalId === gestor.professionalId && row.isActive,
-      ),
-    ).toBe(true);
-    expect(
-      assignments.some(
-        (row) => row.professionalId === offerer.professionalId && row.isActive,
-      ),
-    ).toBe(false);
+    expect(open?.status).toBe("PENDING");
+    expect(open?.toProfessionalId).toBeNull();
   });
 
-  it("GESTOR_MEDICO sem professional_access recusa a cessão visível sem fechar para os pares", async () => {
+  it("GESTOR_MEDICO sem professional_access não recusa a cessão visível", async () => {
     const shift = await createOccupiedShift(offerer, 6, "Clínica Médica");
     const created = await callerFor(offerer).offer({
       type: "CESSAO",
@@ -450,7 +431,10 @@ describe("sinal de oferta de plantão", () => {
 
     await expect(
       callerFor(gestor).reject({ swapRequestId: Number(created.id) }),
-    ).resolves.toEqual({ ok: true });
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
 
     const [open] = await db
       .select({ status: swapRequests.status })
@@ -460,14 +444,14 @@ describe("sinal de oferta de plantão", () => {
     expect(open?.status).toBe("PENDING");
     expect(
       (await callerFor(gestor).listAvailable({})).map((row) => Number(row.id)),
-    ).not.toContain(Number(created.id));
+    ).toContain(Number(created.id));
     const peerRow = (await callerFor(peer).listAvailable({})).find(
       (item) => Number(item.id) === Number(created.id),
     );
     expect(peerRow).toMatchObject({ canRespond: true });
   });
 
-  it("GESTOR_PLUS sem professional_access nem manager_scope aceita a cessão visível", async () => {
+  it("GESTOR_PLUS sem professional_access nem manager_scope vê e não aceita", async () => {
     const shift = await createOccupiedShift(offerer, 7, "Clínica Médica");
     const created = await callerFor(offerer).offer({
       type: "CESSAO",
@@ -477,23 +461,14 @@ describe("sinal de oferta de plantão", () => {
 
     const available = await callerFor(plus).listAvailable({});
     const row = available.find((item) => Number(item.id) === Number(created.id));
-    expect(row).toMatchObject({ canRespond: true });
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({ canRespond: false });
     await expect(
       callerFor(plus).accept({ swapRequestId: Number(created.id) }),
-    ).resolves.toEqual({ ok: true });
-
-    const assignments = await db
-      .select({
-        professionalId: shiftAssignmentsV2.professionalId,
-        isActive: shiftAssignmentsV2.isActive,
-      })
-      .from(shiftAssignmentsV2)
-      .where(eq(shiftAssignmentsV2.shiftInstanceId, shift.shiftId));
-    expect(
-      assignments.some(
-        (item) => item.professionalId === plus.professionalId && item.isActive,
-      ),
-    ).toBe(true);
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
   });
 
   it("plantonista sem professional_access não aceita a cessão", async () => {
@@ -538,7 +513,7 @@ describe("sinal de oferta de plantão", () => {
       callerFor(unscope).accept({ swapRequestId: Number(created.id) }),
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
-      message: "Gestor sem jurisdição para o hospital/setor do plantão",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
     });
   });
 
@@ -595,7 +570,7 @@ describe("sinal de oferta de plantão", () => {
       swapOffers: 1,
     });
     await expect(callerFor(gestor).countActionable()).resolves.toEqual({
-      swapOffers: 1,
+      swapOffers: 0,
     });
   });
 
@@ -668,10 +643,19 @@ describe("sinal de oferta de plantão", () => {
     const gestorRow = (await callerFor(gestor).listAvailable({})).find(
       (item) => Number(item.id) === Number(created.id),
     );
-    expect(gestorRow).toMatchObject({ canRespond: true });
+    expect(gestorRow).toMatchObject({ canRespond: false });
     await expect(
       callerFor(gestor).accept({ swapRequestId: Number(created.id) }),
-    ).resolves.toEqual({ ok: true });
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
+    const [stillOpen] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, Number(created.id)))
+      .limit(1);
+    expect(stillOpen?.status).toBe("PENDING");
   });
 
   it("recusar oferta direcionada fecha para o destinatário", async () => {
@@ -758,7 +742,7 @@ describe("sinal de oferta de plantão", () => {
     });
 
     await expect(callerFor(gestor).countActionable()).resolves.toEqual({
-      swapOffers: 1,
+      swapOffers: 0,
     });
     await expect(callerFor(peer).countActionable()).resolves.toEqual({
       swapOffers: 2,
@@ -768,14 +752,18 @@ describe("sinal de oferta de plantão", () => {
     const gestorOpen = gestorRows.find(
       (item) => Number(item.id) === Number(openOffer.id),
     );
-    expect(gestorOpen).toMatchObject({ canRespond: true });
+    expect(gestorOpen).toBeDefined();
+    expect(gestorOpen).toMatchObject({ canRespond: false });
     expect(
       gestorRows.filter((row) => row.canRespond).length,
-    ).toBe(1);
+    ).toBe(0);
 
     await expect(
       callerFor(gestor).accept({ swapRequestId: Number(openOffer.id) }),
-    ).resolves.toEqual({ ok: true });
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
     await expect(callerFor(gestor).countActionable()).resolves.toEqual({
       swapOffers: 0,
     });
@@ -1026,21 +1014,26 @@ describe("sinal de oferta de plantão", () => {
     });
   });
 
-  it("oferta direcionada a gestor inelegível não gera sinal (fail-closed)", async () => {
+  it("oferta direcionada a gestor inelegível não cria (fail-closed)", async () => {
     const shift = await createOccupiedShift(offerer, 35, "Clínica Médica");
-    const created = await callerFor(offerer).offer({
-      type: "CESSAO",
-      fromShiftInstanceId: shift.shiftId,
-      fromAssignmentId: shift.assignmentId,
-      toProfessionalId: gestor.professionalId,
+    await expect(
+      callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+        toProfessionalId: gestor.professionalId,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
     });
-    expect(Number(created.id)).toBeGreaterThan(0);
-    const rows = await listOfferSignals();
-    expect(rows).toHaveLength(0);
-    const gestorRow = (await callerFor(gestor).listAvailable({})).find(
-      (item) => Number(item.id) === Number(created.id),
-    );
-    expect(gestorRow).toMatchObject({ canRespond: true });
+    expect(await listOfferSignals()).toHaveLength(0);
+    const [created] = await db
+      .select({ id: swapRequests.id })
+      .from(swapRequests)
+      .where(eq(swapRequests.fromAssignmentId, shift.assignmentId))
+      .limit(1);
+    expect(created).toBeUndefined();
   });
 
   it("quem recebe o sinal vê a oferta com canRespond; gestor puro vê mas não recebe", async () => {
@@ -1059,7 +1052,7 @@ describe("sinal de oferta de plantão", () => {
     const gestorRow = (await callerFor(gestor).listAvailable({})).find(
       (item) => Number(item.id) === Number(created.id),
     );
-    expect(gestorRow).toMatchObject({ canRespond: true });
+    expect(gestorRow).toMatchObject({ canRespond: false });
     expect(signaled.has(gestor.userId)).toBe(false);
     expect(signaled.has(plus.userId)).toBe(false);
     expect(signaled.has(offerer.userId)).toBe(false);

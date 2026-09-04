@@ -45,6 +45,35 @@ export function plantonistaAccessCoversShiftSql(
       )`;
 }
 
+/**
+ * Autoridade clínica para responder a uma oferta (aberta ou dirigida).
+ * Papel gerencial não entra: USER, GESTOR_MEDICO e GESTOR_PLUS passam
+ * pelo mesmo professional_access. Hospital-wide (sector_id NULL) só no
+ * contexto legado (admission_policy <> QUALIFICATION_ALLOWLIST).
+ *
+ * SWAP exige o mesmo acesso no turno de contrapartida.
+ * Visibilidade administrativa (manager_scope / GESTOR_PLUS) fica fora.
+ */
+export function actorClinicallyCoversOfferedShiftSql(
+  ap = "ap",
+  fsi = "fsi",
+  fsc = "fsc",
+  sr = "sr",
+  tsi = "tsi",
+  tsc = "tsc",
+): SQL {
+  return sql`(
+    ${plantonistaAccessCoversShiftSql(ap, fsi, fsc)}
+    AND (
+      ${col(sr, "type")} IN ('TRANSFER', 'CESSAO')
+      OR (
+        ${col(sr, "type")} = 'SWAP'
+        AND ${plantonistaAccessCoversShiftSql(ap, tsi, tsc)}
+      )
+    )
+  )`;
+}
+
 export type VacantShiftEligibilityTarget = {
   id: number;
   institutionId: number;

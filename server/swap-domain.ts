@@ -499,9 +499,9 @@ export async function requireCanonicalAssignmentTuple(
 ): Promise<CanonicalAssignmentTuple> {
   const shift = await requireCanonicalShift(db, input);
   const professional = await requireCanonicalProfessional(db, input);
-  // Mesma porta de receive: ACL, manager_scope ou GESTOR_PLUS.
-  // Sem isso o gestor alocado na escala (Maurilio) não oferta o
-  // próprio plantão — a tupla já exige que ele seja o ocupante.
+  // Porta de ORIGEM (ocupante que oferta o próprio plantão):
+  // ACL, manager_scope ou GESTOR_PLUS. Não confundir com receive —
+  // assumir plantão exige só professional_access clínico.
   const accessInput = {
     institutionId: shift.institutionId,
     professionalId: professional.professionalId,
@@ -659,34 +659,17 @@ export async function requireProfessionalCanReceiveShift(
     lockForUpdate: input.lockForUpdate,
   };
   const accessId = await findProfessionalAccessId(db, accessInput);
-  const canManageAsGestorPlus =
-    professional.roleInInstitution === "GESTOR_PLUS";
-  const scopeId = canManageAsGestorPlus
-    ? null
-    : await findManagerScopeId(db, accessInput);
-  if (accessId === null && scopeId === null && !canManageAsGestorPlus) {
+  if (accessId === null) {
     throw topologyDenied(
-      professional.roleInInstitution === "GESTOR_MEDICO"
-        ? "Gestor sem jurisdição para o hospital/setor do plantão"
-        : "Profissional sem acesso ativo ao hospital/setor do plantão",
+      "Profissional sem acesso ativo ao hospital/setor do plantão",
     );
   }
   if (input.shift.scheduleContextId === null) {
     throw topologyDenied("Plantão sem escala operacional classificada");
   }
-  // listAvailable já mostra a oferta a GESTOR_PLUS e a GESTOR_MEDICO com
-  // manager_scope, sem professional_access. Aceitar/recusar usa a mesma
-  // regra; especialidade não filtra gestão.
-  if (scopeId !== null || canManageAsGestorPlus) {
-    await assertActiveScheduleContextTopology({
-      institutionId: input.shift.institutionId,
-      hospitalId: input.shift.hospitalId,
-      sectorId: input.shift.sectorId,
-      scheduleContextId: input.shift.scheduleContextId,
-      db,
-    });
-    return professional;
-  }
+  // Papel gerencial não substitui professional_access para assumir plantão.
+  // Visibilidade administrativa fica em queryListAvailableRows; aceite
+  // revalida só a autoridade clínica (fail-closed).
   await assertProfessionalQualifiedForShift(
     db,
     input.shift,

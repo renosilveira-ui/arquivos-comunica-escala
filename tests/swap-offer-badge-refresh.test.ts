@@ -68,7 +68,7 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(eligibility).toContain(
       "export async function eligibleRecipientUserIdsForSwapOffer",
     );
-    expect(eligibility).toContain("plantonistaAccessCoversShiftSql");
+    expect(eligibility).toContain("actorClinicallyCoversOfferedShiftSql");
     expect(eligibility).not.toContain("plantonistaXorQualificationSql");
     expect(eligibility).not.toContain("plantonistaQualificationMatchesSql");
     expect(plantonista).not.toContain("medical_specialty_id");
@@ -88,6 +88,8 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(listSlice).toContain(
       "actor_source_access.sector_id = fsi.sector_id",
     );
+    expect(listSlice).toContain("actorClinicallyCoversOfferedShiftSql");
+    expect(listSlice).toContain("listedOfferIsClinicallyActionable");
     expect(listSlice).toContain("GESTOR_PLUS");
     expect(listSlice).toContain("manager_scope");
   });

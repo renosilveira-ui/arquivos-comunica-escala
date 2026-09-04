@@ -14,9 +14,10 @@ export function listedSwapIsActionable(row: {
 }
 
 /**
- * Semântica de `canRespond` em listAvailable: oferta aberta responde quem
- * a lista mostrou; direcionada só o destinatário nominal.
- * O SQL de visibilidade (plantonista vs gestor) já filtrou a linha.
+ * Semântica de direcionamento: oferta aberta responde o ator listado;
+ * direcionada só o destinatário nominal.
+ * Isto NÃO concede autoridade clínica. `canRespond` no servidor é
+ * `listedOfferIsClinicallyActionable` (direcionamento ∧ professional_access).
  */
 export function listedOfferCanRespond(
   toProfessionalId: number | string | null | undefined,
@@ -29,5 +30,27 @@ export function listedOfferCanRespond(
   return (
     Number(toProfessionalId) === actorProfessionalId &&
     Number(toUserId) === actorUserId
+  );
+}
+
+/**
+ * Autoridade operacional de resposta: direcionamento ∧ elegibilidade clínica.
+ * `canView` administrativo (manager_scope / GESTOR_PLUS) não entra aqui.
+ */
+export function listedOfferIsClinicallyActionable(
+  toProfessionalId: number | string | null | undefined,
+  toUserId: number | string | null | undefined,
+  actorProfessionalId: number | null,
+  actorUserId: number,
+  clinicallyEligible: boolean,
+): boolean {
+  return (
+    clinicallyEligible === true &&
+    listedOfferCanRespond(
+      toProfessionalId,
+      toUserId,
+      actorProfessionalId,
+      actorUserId,
+    )
   );
 }

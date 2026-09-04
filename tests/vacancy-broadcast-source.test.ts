@@ -123,7 +123,7 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(sql).not.toContain("GESTOR_PLUS");
     expect(sql).not.toContain("manager_scope");
     expect(sql).not.toContain("role_in_institution");
-    expect(swap).toContain("plantonistaAccessCoversShiftSql");
+    expect(swap).toContain("actorClinicallyCoversOfferedShiftSql");
     expect(swap).not.toContain("plantonistaXorQualificationSql");
     expect(swap).not.toContain("plantonistaQualificationMatchesSql");
     expect(eligibility).not.toContain("medical_specialty_id");

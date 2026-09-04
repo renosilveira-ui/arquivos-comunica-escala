@@ -411,7 +411,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
     expect(row?.status).toBe("APPROVED");
   });
 
-  it("coordenador GESTOR com manager_scope e sem ACL assume sem 500", async () => {
+  it("coordenador GESTOR com manager_scope e sem ACL não assume o plantão", async () => {
     const shift = await createOccupiedShift(offerer, 2, "Clínica Médica");
     const created = await callerFor(offerer).offer({
       type: "CESSAO",
@@ -421,13 +421,22 @@ describe("take em um passo: quem assume leva o plantão", () => {
 
     await expect(
       callerFor(gestor).accept({ swapRequestId: Number(created.id) }),
-    ).resolves.toEqual({ ok: true });
-    await expectTransferred(Number(created.id), shift.shiftId, gestor);
-    const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
-    expect(
-      ownerRows.find((item) => Number(item.id) === Number(created.id))
-        ?.awaitingMyApproval,
-    ).toBe(false);
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
+    await expect(
+      callerFor(plus).accept({ swapRequestId: Number(created.id) }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso ativo ao hospital/setor do plantão",
+    });
+    const [open] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, Number(created.id)))
+      .limit(1);
+    expect(open?.status).toBe("PENDING");
   });
 
   it("segundo profissional recebe CONFLICT em português", async () => {
@@ -470,7 +479,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
       fromShiftInstanceId: shift.shiftId,
       fromAssignmentId: shift.assignmentId,
     });
-    await callerFor(plus).accept({ swapRequestId: Number(created.id) });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
 
     const rows = await db
       .select({
@@ -597,7 +606,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
   }
 
   it("list e getById são leitura pura para ACCEPTED residual", async () => {
-    const leftover = await insertLeftoverAccepted(gestor, 6);
+    const leftover = await insertLeftoverAccepted(peer, 6);
     const before = await readResidualState(leftover.swapId, leftover.shiftId);
 
     const ownerRows = await callerFor(offerer).list({ role: "OFFERER" });
@@ -611,7 +620,7 @@ describe("take em um passo: quem assume leva o plantão", () => {
       callerFor(offerer).getById({ id: leftover.swapId }),
     ).resolves.toMatchObject({ status: "ACCEPTED" });
 
-    const receiverRows = await callerFor(gestor).list({ role: "RECEIVER" });
+    const receiverRows = await callerFor(peer).list({ role: "RECEIVER" });
     expect(
       receiverRows.find((item) => Number(item.id) === leftover.swapId),
     ).toMatchObject({
@@ -714,12 +723,12 @@ describe("take em um passo: quem assume leva o plantão", () => {
   });
 
   it("somente o ofertante conclui ACCEPTED residual pela mutation explícita", async () => {
-    const leftover = await insertLeftoverAccepted(gestor, 7);
+    const leftover = await insertLeftoverAccepted(peer, 7);
 
     await expect(
       callerFor(offerer).approveByOwner({ swapRequestId: leftover.swapId }),
     ).resolves.toEqual({ ok: true });
-    await expectTransferred(leftover.swapId, leftover.shiftId, gestor);
+    await expectTransferred(leftover.swapId, leftover.shiftId, peer);
   });
 
   it("candidato, terceiro e gestor não participante não concluem nem cancelam ACCEPTED residual", async () => {
