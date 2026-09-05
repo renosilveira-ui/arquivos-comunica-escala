@@ -78,6 +78,12 @@ app abre na hora mesmo com a instância dormindo, mas dados novos
 (plantão criado há pouco, confirmação pendente) só chegam quando ela
 acorda. Para o piloto no São Carlos, recomendação: Starter.
 
+O dispatcher de confirmação de plantão (11h/17h/22h e rechecagem +30 min)
+também some com o spin-down. Isso é `EXTERNAL_INFRA_ACTION_REQUIRED` —
+preparação de código (CLI one-shot) e opções de infra em
+`docs/operations/confirmation-coverage.md`. Não confundir com o cold start
+do app: Starter fecha os dois; um Cron cobrado fecha só o dispatcher.
+
 ## Como medir
 
 - Cold start real: deixar o serviço 20 min sem tráfego e medir
