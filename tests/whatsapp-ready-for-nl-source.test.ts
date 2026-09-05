@@ -109,6 +109,8 @@ describe("WhatsApp B2-C READY_FOR_NL — source guards", () => {
   it("usa B1, B2-A, B2-B e o núcleo NL sem regra de canal", () => {
     expect(consumer).toContain("createWhatsAppPendingIntent");
     expect(consumer).toContain("advanceWhatsAppPendingFromParse");
+    expect(consumer).toContain("cancelWhatsAppPendingOpenParse");
+    expect(consumer).toContain("releaseParseSlotForReformulation");
     expect(consumer).toContain("classifySwapIntentErrorForConversation");
     expect(consumer).toContain("resolveCanonicalOperationalActorForUser");
     expect(consumer).toContain("parseSwapIntent");
@@ -205,5 +207,19 @@ describe("WhatsApp B2-C READY_FOR_NL — source guards", () => {
     expect(contract).toContain("cleanup somente pós-durabilidade");
     expect(contract).toContain("clearWhatsAppInboundOperationalPayloadForReadyNl");
     expect(contract).toContain("compare-and-clear");
+  });
+
+  it("NEEDS_REFORMULATION terminaliza OPEN/PARSE; CLARIFICATION permanece OPEN; sem B2-D", () => {
+    expect(consumer).toContain("cancelWhatsAppPendingOpenParse");
+    expect(consumer).toContain('classification.class === "NEEDS_REFORMULATION"');
+    expect(consumer).toContain("releaseParseSlotForReformulation");
+    expect(consumer).not.toMatch(/startWhatsAppNlDriver|ready-for-nl-driver/);
+    expect(contract).toContain("cancelWhatsAppPendingOpenParse");
+    expect(contract).toContain("Slot OPEN libera");
+    expect(contract).toContain("`NEEDS_CLARIFICATION` permanece");
+    expect(contract).toContain("arquitetura futura");
+    expect(contract).toContain("cancel de PARSE nesta frente");
+    expect(schema).toContain("whatsappPendingIntents");
+    expect(consumer).not.toMatch(/alter table|CREATE TABLE|drizzle\/migrations/i);
   });
 });

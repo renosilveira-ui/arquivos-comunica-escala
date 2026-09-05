@@ -17,7 +17,8 @@
  * continua ACK rápido após persistir o inbound. Outra frente define
  * QUEM/QUANDO invoca esta primitive.
  *
- * Atomicidade crítica já está em advanceWhatsAppPendingFromParse.
+ * Atomicidade crítica já está em advanceWhatsAppPendingFromParse e
+ * cancelWhatsAppPendingOpenParse (OPEN/PARSE → CANCELLED).
  * Cleanup destrutivo do inbound ocorre SOMENTE depois da transição
  * durável comprovada (ou replay que a comprova). Nunca o inverso.
  */
@@ -56,6 +57,7 @@ import {
 } from "./pending-intent-payloads";
 import {
   advanceWhatsAppPendingFromParse,
+  cancelWhatsAppPendingOpenParse,
   createWhatsAppPendingIntent,
   getWhatsAppPendingIntentBySourceForUser,
 } from "./pending-intent-store";
@@ -399,6 +401,32 @@ async function interpretNl(input: {
   });
 }
 
+async function releaseParseSlotForReformulation(input: {
+  pending: WhatsAppPendingIntentRecord;
+  sourceUserId: number;
+  sourceInboundMessageId: number;
+  nlCode?: SwapIntentError["code"];
+}): Promise<ProcessWhatsAppReadyForNlInboundResult> {
+  const cancelled = await cancelWhatsAppPendingOpenParse({
+    pendingId: input.pending.id,
+    userId: input.sourceUserId,
+    expectedSourceInboundMessageId: input.sourceInboundMessageId,
+  });
+  if (!cancelled.ok) {
+    if (
+      cancelled.code === "DB_UNAVAILABLE" ||
+      cancelled.code === "PERSISTENCE_FAILED"
+    ) {
+      return retry(cancelled.code);
+    }
+    if (cancelled.code === "STATE_CHANGED") {
+      return blocked("STATE_CHANGED");
+    }
+    return retry("PERSISTENCE_FAILED");
+  }
+  return blocked("NEEDS_REFORMULATION", input.nlCode);
+}
+
 async function persistFromNlError(input: {
   pending: WhatsAppPendingIntentRecord;
   sourceUserId: number;
@@ -415,7 +443,12 @@ async function persistFromNlError(input: {
     return retry("INTERNAL_FAILURE");
   }
   if (classification.class === "NEEDS_REFORMULATION") {
-    return blocked("NEEDS_REFORMULATION", input.error.code);
+    return releaseParseSlotForReformulation({
+      pending: input.pending,
+      sourceUserId: input.sourceUserId,
+      sourceInboundMessageId: input.sourceInboundMessageId,
+      nlCode: input.error.code,
+    });
   }
   if (classification.class === "TERMINAL_DOMAIN_CONFLICT") {
     return blocked("TERMINAL_DOMAIN_CONFLICT", input.error.code);
@@ -573,7 +606,12 @@ async function handleExistingPending(input: {
     return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
   }
   if (!input.text) {
-    return blocked("NEEDS_REFORMULATION", "UNSUPPORTED_INTENT");
+    return releaseParseSlotForReformulation({
+      pending: input.pending,
+      sourceUserId,
+      sourceInboundMessageId: input.source.id,
+      nlCode: "UNSUPPORTED_INTENT",
+    });
   }
 
   return interpretNl({

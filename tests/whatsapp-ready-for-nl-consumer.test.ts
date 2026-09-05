@@ -231,6 +231,11 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
     return row;
   }
 
+  async function expectHealthyOpenAbsent(userId: number) {
+    const open = await pendingStore.getOpenWhatsAppPendingIntentForUser(userId);
+    expect(open).toEqual({ ok: true, row: null });
+  }
+
   async function specialtyId(code: string, name: string, sortOrder: number) {
     await db
       .insert(medicalSpecialties)
@@ -808,5 +813,169 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
     expect(blob).not.toContain(secret);
     expect(blob).toContain("whatsapp_ready_for_nl_processed");
     spy.mockRestore();
+  });
+
+  it("A→B: NEEDS_REFORMULATION libera o slot OPEN e a mensagem B cria novo pending", async () => {
+    const garbage = "asdfgh qwerty zxcvbn";
+    const sourceA = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "refA",
+      text: garbage,
+    });
+    const resultA = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: sourceA,
+    });
+    expect(resultA).toMatchObject({
+      ok: false,
+      kind: "BLOCKED",
+      code: "NEEDS_REFORMULATION",
+    });
+    const pendingA = await loadPendingBySource(sourceA);
+    expect(pendingA?.status).toBe("CANCELLED");
+    expect(pendingA?.stage).toBe("PARSE");
+    expect(pendingA?.payloadClearedAt).toBeTruthy();
+    expectHealthyOpenAbsent(actor.userId);
+
+    const inboundA = await loadInbound(sourceA);
+    expect(inboundA?.operationalText).toBe(garbage);
+    expect(inboundA?.payloadClearedAt).toBeNull();
+
+    const textB = `passar meu plantão de amanhã à noite na SR para o Colg Silva`;
+    const sourceB = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "refB",
+      text: textB,
+    });
+    const createB = await pendingStore.createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceB,
+    });
+    expect(createB).toMatchObject({ ok: true, outcome: "created" });
+    if (!createB.ok) throw new Error(createB.code);
+    expect(createB.row.status).toBe("OPEN");
+    expect(createB.row.stage).toBe("PARSE");
+    expect(createB.row.sourceInboundMessageId).toBe(sourceB);
+    expect(createB.row.id).not.toBe(pendingA?.id);
+
+    const resultB = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: sourceB,
+    });
+    expect(resultB).toMatchObject({
+      ok: true,
+      kind: "ADVANCED",
+      stage: "CONFIRMATION",
+    });
+    const pendingB = await loadPendingBySource(sourceB);
+    expect(pendingB?.status).toBe("OPEN");
+    expect(pendingB?.stage).toBe("CONFIRMATION");
+    const pendingAAfter = await loadPendingBySource(sourceA);
+    expect(pendingAAfter?.status).toBe("CANCELLED");
+  });
+
+  it("replay de source A após reformulation não recria OPEN nem reparsa", async () => {
+    const garbage = "asdfgh qwerty zxcvbn";
+    const sourceA = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "refReplay",
+      text: garbage,
+    });
+    const first = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: sourceA,
+    });
+    expect(first).toMatchObject({
+      ok: false,
+      kind: "BLOCKED",
+      code: "NEEDS_REFORMULATION",
+    });
+    const parseSpy = vi.spyOn(parserMod, "parseSwapIntent");
+    const second = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: sourceA,
+    });
+    expect(second).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "PENDING_TERMINAL",
+    });
+    expect(parseSpy).not.toHaveBeenCalled();
+    parseSpy.mockRestore();
+    const pendings = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.sourceInboundMessageId, sourceA));
+    expect(pendings).toHaveLength(1);
+    expect(pendings[0]?.status).toBe("CANCELLED");
+    expectHealthyOpenAbsent(actor.userId);
+  });
+
+  it("dois consumers no mesmo garbage convergem sem OPEN residual", async () => {
+    const sourceId = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "refConc",
+      text: "asdfgh qwerty zxcvbn",
+    });
+    const [a, b] = await Promise.all([
+      processWhatsAppReadyForNlInbound({ sourceInboundMessageId: sourceId }),
+      processWhatsAppReadyForNlInbound({ sourceInboundMessageId: sourceId }),
+    ]);
+    for (const result of [a, b]) {
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.kind).toBe("BLOCKED");
+        expect(["NEEDS_REFORMULATION", "PENDING_TERMINAL"]).toContain(
+          result.code,
+        );
+      }
+    }
+    const pendings = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.sourceInboundMessageId, sourceId));
+    expect(pendings).toHaveLength(1);
+    expect(["CANCELLED", "EXPIRED"]).toContain(pendings[0]?.status);
+    expectHealthyOpenAbsent(actor.userId);
+  });
+
+  it("CLARIFICATION e CONFIRMATION sobrevivem a cancel PARSE", async () => {
+    const clarId = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "refClar",
+      text: `passar meu plantão de amanhã para o Colg Silva`,
+    });
+    const clar = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: clarId,
+    });
+    expect(clar).toMatchObject({ ok: true, stage: "CLARIFICATION" });
+    const pendingClar = await loadPendingBySource(clarId);
+    expect(pendingClar?.status).toBe("OPEN");
+    const cancelClar = await pendingStore.cancelWhatsAppPendingOpenParse({
+      pendingId: pendingClar!.id,
+      userId: actor.userId,
+      expectedSourceInboundMessageId: clarId,
+    });
+    expect(cancelClar).toMatchObject({ ok: false, code: "STATE_CHANGED" });
+    expect((await loadPendingBySource(clarId))?.stage).toBe("CLARIFICATION");
+    expect((await loadPendingBySource(clarId))?.status).toBe("OPEN");
+
+    await db
+      .delete(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.userId, actor.userId));
+
+    const confId = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "refConfKeep",
+      text: `passar meu plantão de amanhã à noite na SR para o Colg Silva`,
+    });
+    const conf = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: confId,
+    });
+    expect(conf).toMatchObject({ ok: true, stage: "CONFIRMATION" });
+    const pendingConf = await loadPendingBySource(confId);
+    const cancelConf = await pendingStore.cancelWhatsAppPendingOpenParse({
+      pendingId: pendingConf!.id,
+      userId: actor.userId,
+      expectedSourceInboundMessageId: confId,
+    });
+    expect(cancelConf).toMatchObject({ ok: false, code: "STATE_CHANGED" });
+    expect((await loadPendingBySource(confId))?.stage).toBe("CONFIRMATION");
+    expect((await loadPendingBySource(confId))?.status).toBe("OPEN");
   });
 });

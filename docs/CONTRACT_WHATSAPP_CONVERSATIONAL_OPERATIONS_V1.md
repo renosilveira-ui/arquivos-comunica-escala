@@ -331,10 +331,24 @@ Regras:
   contexto. B2-C não elege tenant;
 - AUDIO / `READY_FOR_TRANSCRIPTION` / terminais de identidade não entram;
 - erro de infra (DB, actor infra, parser/resolver interno, advance,
-  clear) é retryable e **não** apaga o material operacional;
-- reformulation / conflito de domínio NL **não** são persistidos como
-  clarification (B2-A não tem família para isso): `BLOCKED`, inbound
-  preservado, pending permanece `PARSE` se chegou a ser criado.
+  clear, cancel de PARSE insuficiente) é retryable e **não** apaga o
+  material operacional;
+- `NEEDS_REFORMULATION` **não** é persistido como clarification (B2-A
+  não tem família para isso): `BLOCKED`, inbound preservado (parkável),
+  pending `OPEN/PARSE` é terminalizado (`CANCELLED`) via
+  `cancelWhatsAppPendingOpenParse` (compare-and-set: `id` + `userId` +
+  source + `OPEN` + `PARSE`). Slot OPEN libera. Replay do mesmo source
+  vê `already_terminal` e **não** recria OPEN. `already_terminal` exige o
+  mesmo tuple `pendingId` + `userId` + source; source divergente no
+  reload devolve `STATE_CHANGED`, nunca sucesso. A próxima mensagem é um
+  novo source e inicia novo pending. Se o pending já avançou para
+  `CLARIFICATION`/`CONFIRMATION`, o cancel devolve `STATE_CHANGED` e
+  **não** destrói o estágio durável;
+- `NEEDS_CLARIFICATION` permanece `OPEN/CLARIFICATION`. Continuidade da
+  próxima mensagem (resposta à clarification) é arquitetura futura —
+  esta frente não rebinda source nem implementa outbound;
+- conflito de domínio NL (`TERMINAL_DOMAIN_CONFLICT`) continua `BLOCKED`
+  sem clarification e **sem** cancel de PARSE nesta frente.
 
 O inbound **não** importa o consumer. O route Twilio **não** espera NL.
 

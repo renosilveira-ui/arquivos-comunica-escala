@@ -87,6 +87,28 @@ describe("WhatsApp pending intent — source contracts", () => {
     expect(createType).not.toMatch(/userId|intentKind|parsedPayload|institutionId/);
     expect(store).not.toMatch(/input\.userId|input\.intentKind|input\.parsedPayload|input\.institutionId/);
     expect(store).toContain("emptyFoundationInsert");
+    expect(store).toContain("cancelWhatsAppPendingOpenParse");
+    expect(store).toContain("eq(whatsappPendingIntents.stage, WhatsAppPendingStages.PARSE)");
+    expect(types).toContain("CancelWhatsAppPendingOpenParseInput");
+    expect(types).toContain("WhatsAppPendingParseCancelResult");
+    const cancelParseStart = store.indexOf(
+      "export async function cancelWhatsAppPendingOpenParse",
+    );
+    expect(cancelParseStart).toBeGreaterThan(-1);
+    const cancelParseNext = store.indexOf(
+      "export async function",
+      cancelParseStart + 1,
+    );
+    const cancelParseBody = store.slice(cancelParseStart, cancelParseNext);
+    const sourceCheck = cancelParseBody.indexOf(
+      "current.sourceInboundMessageId !== expectedSourceInboundMessageId",
+    );
+    const terminalReplay = cancelParseBody.indexOf(
+      "isWhatsAppPendingTerminalStatus(current.status)",
+    );
+    expect(sourceCheck).toBeGreaterThan(-1);
+    expect(terminalReplay).toBeGreaterThan(-1);
+    expect(sourceCheck).toBeLessThan(terminalReplay);
     expect(store).toContain("intentKind: null");
     expect(store).toContain("parsedPayload: null");
     expect(store).toContain("institutionId: null");

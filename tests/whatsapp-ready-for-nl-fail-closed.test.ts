@@ -73,6 +73,7 @@ function spies() {
   const parse = vi.spyOn(parserMod, "parseSwapIntent");
   const resolve = vi.spyOn(resolverMod, "resolveSwapIntent");
   const advance = vi.spyOn(pendingStore, "advanceWhatsAppPendingFromParse");
+  const cancelParse = vi.spyOn(pendingStore, "cancelWhatsAppPendingOpenParse");
   const clear = vi.spyOn(
     cleanupMod,
     "clearWhatsAppInboundOperationalPayloadForReadyNl",
@@ -81,7 +82,18 @@ function spies() {
     payloadMod,
     "clearWhatsAppInboundOperationalPayload",
   );
-  return { load, create, bySource, actor, parse, resolve, advance, clear, legacyClear };
+  return {
+    load,
+    create,
+    bySource,
+    actor,
+    parse,
+    resolve,
+    advance,
+    cancelParse,
+    clear,
+    legacyClear,
+  };
 }
 
 describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
@@ -745,7 +757,8 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
   });
 
   it("NL reformulation/not found/domain conflict usam o classificador B2-A e não persistem", async () => {
-    const { load, create, actor, parse, resolve, advance, clear } = spies();
+    const { load, create, actor, parse, resolve, advance, cancelParse, clear } =
+      spies();
     load.mockResolvedValue({ ok: true, source: readySource() });
     create.mockResolvedValue({
       ok: true,
@@ -762,6 +775,11 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
       code: "OWN_SHIFT_NOT_FOUND",
       message: "Não encontrei seu plantão.",
     });
+    cancelParse.mockResolvedValue({
+      ok: true,
+      outcome: "cancelled",
+      row: parseRow({ status: "CANCELLED", payloadClearedAt: new Date() }),
+    });
     expect(
       await processWhatsAppReadyForNlInbound({
         sourceInboundMessageId: SOURCE_ID,
@@ -772,12 +790,18 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
       code: "NEEDS_REFORMULATION",
       nlCode: "OWN_SHIFT_NOT_FOUND",
     });
+    expect(cancelParse).toHaveBeenCalledWith({
+      pendingId: 7,
+      userId: USER_ID,
+      expectedSourceInboundMessageId: SOURCE_ID,
+    });
 
     resolve.mockResolvedValue({
       ok: false,
       code: "NOT_ELIGIBLE",
       message: "Sem vínculo.",
     });
+    cancelParse.mockClear();
     expect(
       await processWhatsAppReadyForNlInbound({
         sourceInboundMessageId: SOURCE_ID,
@@ -790,10 +814,11 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     expect(advance).not.toHaveBeenCalled();
     expect(clear).not.toHaveBeenCalled();
+    expect(cancelParse).not.toHaveBeenCalled();
   });
 
   it("texto em branco não chama parser", async () => {
-    const { load, create, actor, parse, clear } = spies();
+    const { load, create, actor, parse, cancelParse, clear } = spies();
     load.mockResolvedValue({
       ok: true,
       source: readySource({ operationalText: "   " }),
@@ -802,6 +827,11 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
       ok: true,
       outcome: "created",
       row: parseRow(),
+    });
+    cancelParse.mockResolvedValue({
+      ok: true,
+      outcome: "cancelled",
+      row: parseRow({ status: "CANCELLED", payloadClearedAt: new Date() }),
     });
     const result = await processWhatsAppReadyForNlInbound({
       sourceInboundMessageId: SOURCE_ID,
@@ -814,6 +844,159 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     expect(actor).not.toHaveBeenCalled();
     expect(parse).not.toHaveBeenCalled();
+    expect(clear).not.toHaveBeenCalled();
+    expect(cancelParse).toHaveBeenCalledWith({
+      pendingId: 7,
+      userId: USER_ID,
+      expectedSourceInboundMessageId: SOURCE_ID,
+    });
+  });
+
+  it("cancel PARSE indisponível não finge slot liberado nem limpa inbound", async () => {
+    const { load, create, actor, parse, resolve, cancelParse, clear } = spies();
+    load.mockResolvedValue({ ok: true, source: readySource() });
+    create.mockResolvedValue({
+      ok: true,
+      outcome: "created",
+      row: parseRow(),
+    });
+    actor.mockResolvedValue({
+      ok: true,
+      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+    });
+    parse.mockReturnValue(draft);
+    resolve.mockResolvedValue({
+      ok: false,
+      code: "OWN_SHIFT_NOT_FOUND",
+      message: "Não encontrei seu plantão.",
+    });
+    cancelParse.mockResolvedValue({ ok: false, code: "DB_UNAVAILABLE" });
+    expect(
+      await processWhatsAppReadyForNlInbound({
+        sourceInboundMessageId: SOURCE_ID,
+      }),
+    ).toEqual({
+      ok: false,
+      kind: "RETRYABLE_INFRA",
+      code: "DB_UNAVAILABLE",
+    });
+    expect(clear).not.toHaveBeenCalled();
+
+    cancelParse.mockResolvedValue({
+      ok: false,
+      code: "STATE_CHANGED",
+      row: parseRow({ stage: "CONFIRMATION" }),
+    });
+    expect(
+      await processWhatsAppReadyForNlInbound({
+        sourceInboundMessageId: SOURCE_ID,
+      }),
+    ).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "STATE_CHANGED",
+    });
+    expect(clear).not.toHaveBeenCalled();
+  });
+
+  it("NEEDS_CLARIFICATION avança e não cancela PARSE", async () => {
+    const { load, create, parse, advance, cancelParse, clear } = spies();
+    load.mockResolvedValue({ ok: true, source: readySource() });
+    create.mockResolvedValue({
+      ok: true,
+      outcome: "created",
+      row: parseRow(),
+    });
+    parse.mockReturnValue({
+      ok: false,
+      code: "AMBIGUOUS_INTENT",
+      message: "Não entendi se é troca ou cessão.",
+    });
+    advance.mockResolvedValue({
+      ok: true,
+      outcome: "advanced",
+      row: parseRow({
+        stage: "CLARIFICATION",
+        clarificationPayload: { version: 1, code: "AMBIGUOUS_INTENT" },
+      }),
+    });
+    clear.mockResolvedValue({ ok: true, outcome: "cleared" });
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: SOURCE_ID,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      kind: "ADVANCED",
+      stage: "CLARIFICATION",
+    });
+    expect(advance).toHaveBeenCalledTimes(1);
+    expect(cancelParse).not.toHaveBeenCalled();
+  });
+
+  it("cancel PARSE already_terminal ainda devolve NEEDS_REFORMULATION", async () => {
+    const { load, create, actor, parse, resolve, cancelParse, clear } = spies();
+    load.mockResolvedValue({ ok: true, source: readySource() });
+    create.mockResolvedValue({
+      ok: true,
+      outcome: "created",
+      row: parseRow(),
+    });
+    actor.mockResolvedValue({
+      ok: true,
+      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+    });
+    parse.mockReturnValue(draft);
+    resolve.mockResolvedValue({
+      ok: false,
+      code: "OWN_SHIFT_NOT_FOUND",
+      message: "Não encontrei seu plantão.",
+    });
+    cancelParse.mockResolvedValue({
+      ok: true,
+      outcome: "already_terminal",
+      row: parseRow({ status: "EXPIRED", payloadClearedAt: new Date() }),
+    });
+    expect(
+      await processWhatsAppReadyForNlInbound({
+        sourceInboundMessageId: SOURCE_ID,
+      }),
+    ).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "NEEDS_REFORMULATION",
+      nlCode: "OWN_SHIFT_NOT_FOUND",
+    });
+    expect(clear).not.toHaveBeenCalled();
+  });
+
+  it("cancel PARSE NOT_FOUND não finge slot liberado nem limpa inbound", async () => {
+    const { load, create, actor, parse, resolve, cancelParse, clear } = spies();
+    load.mockResolvedValue({ ok: true, source: readySource() });
+    create.mockResolvedValue({
+      ok: true,
+      outcome: "created",
+      row: parseRow(),
+    });
+    actor.mockResolvedValue({
+      ok: true,
+      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+    });
+    parse.mockReturnValue(draft);
+    resolve.mockResolvedValue({
+      ok: false,
+      code: "OWN_SHIFT_NOT_FOUND",
+      message: "Não encontrei seu plantão.",
+    });
+    cancelParse.mockResolvedValue({ ok: false, code: "NOT_FOUND" });
+    expect(
+      await processWhatsAppReadyForNlInbound({
+        sourceInboundMessageId: SOURCE_ID,
+      }),
+    ).toEqual({
+      ok: false,
+      kind: "RETRYABLE_INFRA",
+      code: "PERSISTENCE_FAILED",
+    });
     expect(clear).not.toHaveBeenCalled();
   });
 });
