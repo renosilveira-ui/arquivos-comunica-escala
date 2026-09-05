@@ -127,7 +127,7 @@
     "@types/react": "~19.1.17",
     "@types/supertest": "^7.2.1",
     "concurrently": "^10.0.5",
-    "cross-env": "^7.0.3",
+    "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.10",
     "esbuild": "^0.28.2",
     "eslint": "^9.39.2",
