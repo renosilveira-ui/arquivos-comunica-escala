@@ -14,8 +14,8 @@
  *
  * Não executa swap. Não chama createSwapOffer. Não envia WhatsApp.
  * Não processa AUDIO. Não é route HTTP nem worker: o webhook Twilio
- * continua ACK rápido após persistir o inbound. Outra frente define
- * QUEM/QUANDO invoca esta primitive.
+ * continua ACK rápido após persistir o inbound. O driver B2-D
+ * (`ready-for-nl-driver.ts`) define QUEM/QUANDO invoca esta primitive.
  *
  * Atomicidade crítica já está em advanceWhatsAppPendingFromParse e
  * cancelWhatsAppPendingOpenParse (OPEN/PARSE → CANCELLED).

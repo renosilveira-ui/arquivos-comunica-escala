@@ -293,10 +293,145 @@ Incremento B2-C (consumer READY_FOR_NL, esta camada): primitive interna
 `processWhatsAppReadyForNlInbound({ sourceInboundMessageId })` em
 `server/integrations/whatsapp/ready-for-nl-consumer.ts`. B2-C não é worker
 nem route HTTP nem cron. O webhook Twilio
-continua ACK rápido após persistir o inbound; outra frente define
-QUEM/QUANDO invoca B2-C.
+continua ACK rápido após persistir o inbound.
+
+Incremento B2-D (driver assíncrono, esta camada): poll durável da tabela
+`whatsapp_inbound_messages` que descobre TEXT `READY_FOR_NL` autenticado
+e chama B2-C. Semântica **at-least-once** + consumer B2-C idempotente —
+não é exactly-once distribuído. O webhook **não** espera B2-C. ACK **não**
+depende de NL. Work item nasce no banco, não em memória.
 
 Pipeline:
+
+```
+Twilio webhook
+  → persist inbound
+  → READY_FOR_NL
+  → ACK
+Async driver (B2-D)
+  → discovers READY_FOR_NL
+  → processWhatsAppReadyForNlInbound (B2-C)
+  → B1 → B2-B → parser/resolver → B2-A
+  → CLARIFICATION | CONFIRMATION
+  → stop
+```
+
+B2-D **não** executa a intenção. **Não** responde ao WhatsApp.
+
+Arquitetura: polling periódico (8s ±1s jitter) da inbound como fila
+durável. Rejeitado fire-and-forget in-process após o ACK (o processo
+pode morrer e o wake-up nunca ocorre). Sem Redis/SQS. Sem tabela de
+job nova: elegibilidade = `provider=TWILIO` + `READY_FOR_NL` + `TEXT` +
+`user_id IS NOT NULL` + `payload_cleared_at IS NULL` + (payload ainda
+utilizável **ou** pending OPEN em CLARIFICATION/CONFIRMATION). Sucesso
+B2-C limpa o payload; a row deixa de ser elegível.
+
+Claim multi-réplica: `SELECT … FOR UPDATE SKIP LOCKED` + ocupação
+durável de `error_code` com prefixo `WA_NL_DRV_` (CLAIMED / RETRY / WAIT /
+PARK) enquanto o status permanece `READY_FOR_NL` (status terminal do replay
+Twilio). Lease stale (90s) recupera crash após claim. Backoff de infra:
+30s → 2m → 10m → 30m → 60m, limitado pelo TTL do payload
+(`payload_expires_at`, 24h). `ALREADY_OPEN` é WAIT (30s → 2m → 5m → 10m),
+não PARK: WAIT só quando **outro** pending OPEN **legítimo** impede este
+source de adquirir o slot (CLARIFICATION, CONFIRMATION, ou PARSE
+transitório). A row reentra quando esse pending termina ou expira (TTL
+conversacional 15 min) sem exigir terceira mensagem. `NEEDS_REFORMULATION`
+é PARK deste inbound (reprocessar o mesmo texto não ajuda). Após #416,
+B2-C terminaliza o pending OPEN/PARSE; o slot OPEN já está livre; a
+mensagem seguinte é um **novo source** e cria novo pending — **não** cai
+em `ALREADY_OPEN` → WAIT. Poison (`INVALID_PAYLOAD`) e domínio terminal
+continuam PARK e não bloqueiam o batch. Occupancy malformada
+(`WAIT:abc`, attempt não inteiro, prefixo `WA_NL_DRV_` ilegível) não
+entra na discovery (REGEXP) e, se selecionada, estaciona
+`WA_NL_DRV_PARK:MALFORMED_OCCUPANCY` em vez de consumir o LIMIT.
+
+Call graph:
+
+```
+bootstrap (WHATSAPP_NL_DRIVER_ENABLED, default OFF; NODE_ENV=test no-op)
+  → timer 8s ±1s jitter, batch 20, um item por vez por processo
+  → SELECT … FOR UPDATE SKIP LOCKED (eligibility)
+  → parse occupancy
+  → UPDATE error_code = WA_NL_DRV_CLAIMED:<n>:<token>  (COMMIT)
+  → processWhatsAppReadyForNlInbound (B2-C)  // fora da transação
+  → classifyWhatsAppNlDriverOutcome
+  → applyWhatsAppNlDriverDecision WHERE error_code = claimCode
+  → próxima elegibilidade
+```
+
+Fronteiras transacionais: SELECT+claim+COMMIT **antes** de B2-C;
+bookkeeping **depois**, fenced pelo token. Crash no meio: lease 90s.
+
+Estado real (eligibility):
+
+| inbound | error_code | elegível? | ação |
+|---|---|---|---|
+| fresh READY TEXT + user + payload | NULL | sim | claim → B2-C |
+| CLAIMED dentro do lease | `WA_NL_DRV_CLAIMED:n:token` | não | espera 90s |
+| CLAIMED stale | idem | sim | reclaim, token novo |
+| RETRY / WAIT não vencido | `WA_NL_DRV_RETRY:n` / `WAIT:n` | não | backoff |
+| RETRY / WAIT vencido | idem | sim | reclaim |
+| PARK | `WA_NL_DRV_PARK:*` | não | occupancy exclui |
+| foreign / malformed | outro / prefixo ilegível | não | SQL exclui; claim parks |
+| payload limpo | qualquer | não | `payload_cleared_at` |
+| status terminal (IDENTITY_*) | n/a | não | status gate |
+| AUDIO / não TEXT | n/a | não | `content_kind` |
+| identity missing | n/a | não | `user_id` null |
+
+PARK lifecycle (opção B do inbound): `processing_status` permanece
+`READY_FOR_NL`; `operational_text` permanece até o TTL 24h; occupancy
+exclui da discovery; nenhuma mensagem nova altera essa row. Sweep
+`clearExpiredWhatsAppInboundPayloads` alcança PARK (P3 inbound; job
+ainda futuro — a mesma retenção de qualquer inbound uncleared, não um
+TTL extra do driver). Cardinalidade uncleared PARK ≤ volume 24h quando
+o sweep roda. 100 / 1k / 10k msgs/dia → teto ~3k / 30k / 300k rows
+uncleared em 30d **sem** sweep; **com** sweep, teto ~24h de volume.
+
+WAIT liveness: backoff 30s evita hot-loop; após o slot OPEN legítimo
+liberar, a row WAIT vencida reentra, chama B2-C e cria pending próprio.
+Expiração: payload TTL 24h sem pending reconciliável → deixa de ser
+elegível (não loop infinito); pending 15 min → o WAIT cap 10m reentra
+depois do expiry. Fairness do driver = oldest-first **entre elegíveis**.
+WAIT em backoff não é elegível: um inbound novo (NULL) pode ser
+processado antes. Isso não é fila conversacional — continuidade B2-A
+permanece arquitetura futura.
+
+Clock/lease: `updated_at` gravado com o `now` da aplicação; a
+eligibility compara `UNIX_TIMESTAMP(updated_at)` com `nowUnix` da
+aplicação (injetável nos testes). Correctness sob skew: token fencing
+impede bookkeeping do worker stale. Liveness: relógio atrasado só
+atrasa o reclaim por `|skew|`, não para sempre. Duplicate B2-C sob
+skew prematuro ≤ 1 extra call por steal (at-least-once).
+
+Flag `WHATSAPP_NL_DRIVER_ENABLED=true` (default off; só o literal
+`true` liga; ausência = OFF). Merge **não** ativa staging.
+`NODE_ENV=test` não inicia o loop. SIGTERM chama
+`stopWhatsAppNlDriver` e não inicia novo batch.
+
+Batch máximo 20, oldest-first (`received_at`, `id`), um item por vez
+por processo. Concorrência entre réplicas via SKIP LOCKED.
+WHATSAPP_B2D_INDEX_REQUIRED: índice composto do poll **não** entra
+nesta PR (schema inbound). Evidência local MySQL 8, dataset misto
+(terminal/PARK/WAIT/RETRY/CLAIMED/cleared/fresh), LIMIT 20:
+
+| escala | acesso | rows examined | Extra | median |
+|---|---|---|---|---|
+| 1k | index `received_at` | 91 | Using where | ~0.3 ms |
+| 10k | ref UNIQUE provider | 10k | filesort | ~34 ms |
+| 100k | ref UNIQUE provider | 100k | filesort | ~127 ms |
+| 100k + composto* | ref composto | 25 | index condition | ~0.16 ms |
+
+\* composto medido ad-hoc, não instalado: `(provider, processing_status,
+content_kind, payload_cleared_at, received_at, id)`. Poll ~8s →
+~10.800/dia/instância; a 100k sem índice ≈23 min CPU/dia; 2–4
+réplicas multiplicam. Write-cost do composto: 1 INSERT inbound por
+mensagem. Prerequisite: PR #420. #415 permanece Draft até esse
+merge + main verde + rebase.
+
+O driver **não** importa `createSwapOffer`, Twilio outbound, push,
+transcrição nem UI mobile. Só chama `processWhatsAppReadyForNlInbound`.
+
+Pipeline B2-C (inalterado):
 
 ```
 READY_FOR_NL
@@ -453,7 +588,11 @@ preservar material de `RETRYABLE` além do TTL.
 - B2-B **não** altera schema nem persiste actor.
 - B2-C **não** altera schema nem migration. Consumer invocável/testável;
   **não** conecta o webhook Twilio; **não** é worker.
+- B2-D **não** altera schema nem migration. Driver in-process (poll 8s)
+  da inbound como fila; flag `WHATSAPP_NL_DRIVER_ENABLED` (default off).
+  Não é cron Render, não é fila externa, não é fire-and-forget do webhook.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
-- Parser/resolver só no consumer B2-C, nunca no route inbound
-- Sem `createSwapOffer`, sem push, sem áudio/transcrição, sem cron novo
+- Parser/resolver só no consumer B2-C, nunca no route inbound nem no driver
+- Sem `createSwapOffer`, sem push, sem áudio/transcrição
+- Driver B2-D: at-least-once, B2-C idempotente, sem execução, sem outbound

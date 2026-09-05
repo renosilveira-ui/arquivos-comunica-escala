@@ -128,6 +128,8 @@ export default defineConfig({
       "tests/whatsapp-ready-for-nl-source.test.ts",
       "tests/whatsapp-ready-for-nl-fail-closed.test.ts",
       "tests/whatsapp-ready-for-nl-homonym.test.ts",
+      "tests/whatsapp-ready-for-nl-driver-outcome.test.ts",
+      "tests/whatsapp-ready-for-nl-driver-source.test.ts",
       "tests/vacancy-broadcast-outbox.test.ts",
       "tests/vacancy-broadcast-source.test.ts",
       "tests/vacancy-push-route.test.ts",
