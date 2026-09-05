@@ -15,8 +15,8 @@
 //    812pt.
 // 4. TintedGlassCard → Surface. Blur é iOS-only; Android já caía para o
 //    fallback opaco, então a mesma tela tinha duas aparências.
-// 5. "Integração" e "Diagnóstico" deixaram de ser seções com cabeçalho para
-//    carregar uma linha cada: viraram linhas em Notificações e Conta e app.
+// 5. "Diagnóstico" virou linha em Conta e app. Notificações é informativo:
+//    não há preferência granular persistida — switches decorativos mentiam.
 // 6. "Testar Notificações" removido (PR #232) — disparava push falso em build
 //    de produção.
 // 7. Estados: skeleton com a forma do conteúdo, e erro LOCAL ao bloco do mês
@@ -39,7 +39,6 @@ import {
   AlertTriangle,
   Bell,
   Building2,
-  CalendarDays,
   History,
   Inbox,
   KeyRound,
@@ -83,6 +82,10 @@ import {
   combineActionableBadgeStates,
   deriveActionableBadgeState,
 } from "@/lib/actionable-badge";
+import {
+  PROFILE_NOTIFICATION_ACCESSIBILITY_LABEL,
+  PROFILE_NOTIFICATION_COPY,
+} from "@/lib/profile-notification-copy";
 
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -256,23 +259,6 @@ export default function ProfileScreen() {
 
     return { totalHours: Math.round(totalHours), totalShifts: relevant.length, manha, tarde, noite };
   }, [isManager, monthQuery.data, professional]);
-
-  // ── Notificações ───────────────────────────────────────────────────────
-  // TODO: sem API ainda — valores iniciais fixos, sem efeito de sincronização.
-  const [enableShiftChanges, setEnableShiftChanges] = useState(true);
-  const [enableReminders, setEnableReminders] = useState(true);
-  const [enableHospitalAlert, setEnableHospitalAlert] = useState(true);
-
-  const updateSettings = (data: Record<string, unknown>) => {
-    // TODO: mutation quando a API existir.
-    console.log("Atualizar configurações:", data);
-  };
-
-  const toggleWithHaptic = (setter: (v: boolean) => void, key: string) => (value: boolean) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setter(value);
-    updateSettings({ userId: user?.id ?? 0, [key]: value });
-  };
 
   const go = (href: string) => () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -553,36 +539,25 @@ export default function ProfileScreen() {
             </Surface>
           </View>
 
-          {/* ── Notificações (Integração virou a terceira linha) ── */}
+          {/* Notificações: informativo. Sem preferência granular persistida. */}
           <View style={{ gap: theme.space[2] }}>
-            <SectionHeader title="Notificações" eyebrow="Avisos" />
+            <SectionHeader
+              title={PROFILE_NOTIFICATION_COPY.sectionTitle}
+              eyebrow={PROFILE_NOTIFICATION_COPY.sectionEyebrow}
+            />
             <Surface padded={false}>
-              <ListRow
-                title="Mudanças de escala"
-                subtitle="Quando uma escala for alterada ou cancelada"
-                Icon={CalendarDays}
-                divided={false}
-                toggle={{
-                  value: enableShiftChanges,
-                  onValueChange: toggleWithHaptic(setEnableShiftChanges, "enableShiftChanges"),
-                }}
-              />
-              <ListRow
-                title="Lembrete de plantão"
-                subtitle="30 minutos antes do início"
-                Icon={Bell}
-                toggle={{
-                  value: enableReminders,
-                  onValueChange: toggleWithHaptic(setEnableReminders, "enableReminders"),
-                }}
-              />
-              <ListRow
-                title="Comunica+"
-                subtitle="Alertas do sistema hospitalar"
-                Icon={Link2}
-                tone="success"
-                toggle={{ value: enableHospitalAlert, onValueChange: setEnableHospitalAlert }}
-              />
+              <View
+                accessible
+                accessibilityRole="text"
+                accessibilityLabel={PROFILE_NOTIFICATION_ACCESSIBILITY_LABEL}
+              >
+                <ListRow
+                  title={PROFILE_NOTIFICATION_COPY.rowTitle}
+                  subtitle={`${PROFILE_NOTIFICATION_COPY.body} ${PROFILE_NOTIFICATION_COPY.deviceHint}`}
+                  Icon={Bell}
+                  divided={false}
+                />
+              </View>
             </Surface>
           </View>
 
