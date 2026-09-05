@@ -87,6 +87,30 @@ export type WhatsAppPendingMutationResult =
       code: "DB_UNAVAILABLE" | "NOT_FOUND" | "PERSISTENCE_FAILED";
     };
 
+export type CancelWhatsAppPendingOpenParseInput = {
+  pendingId: number;
+  userId: number;
+  expectedSourceInboundMessageId: number;
+};
+
+/**
+ * Cancel guardado de OPEN/PARSE (B2-C NEEDS_REFORMULATION).
+ * Não cancela CLARIFICATION/CONFIRMATION — isso é STATE_CHANGED.
+ */
+export type WhatsAppPendingParseCancelResult =
+  | { ok: true; outcome: "cancelled"; row: WhatsAppPendingIntentRecord }
+  | { ok: true; outcome: "already_terminal"; row: WhatsAppPendingIntentRecord }
+  | {
+      ok: false;
+      code:
+        | "STATE_CHANGED"
+        | "NOT_FOUND"
+        | "INVALID_PAYLOAD"
+        | "DB_UNAVAILABLE"
+        | "PERSISTENCE_FAILED";
+      row?: WhatsAppPendingIntentRecord;
+    };
+
 export type WhatsAppPendingReadResult =
   | { ok: true; row: WhatsAppPendingIntentRecord | null }
   | { ok: false; code: "DB_UNAVAILABLE" | "PERSISTENCE_FAILED" };

@@ -4,6 +4,7 @@ import { logger } from "../server/_core/logger";
 import {
   advanceWhatsAppPendingFromParse,
   cancelWhatsAppPendingIntent,
+  cancelWhatsAppPendingOpenParse,
   clearExpiredWhatsAppPendingIntents,
   createWhatsAppPendingIntent,
   expireWhatsAppPendingIntent,
@@ -72,6 +73,11 @@ async function everyPublicPrimitive() {
     open: await getOpenWhatsAppPendingIntentForUser(1),
     expire: await expireWhatsAppPendingIntent(1, 1),
     cancel: await cancelWhatsAppPendingIntent(1, 1),
+    cancelParse: await cancelWhatsAppPendingOpenParse({
+      pendingId: 1,
+      userId: 1,
+      expectedSourceInboundMessageId: 1,
+    }),
     cleanup: await clearExpiredWhatsAppPendingIntents(),
   };
 }
@@ -125,7 +131,7 @@ describe("WhatsApp pending intent — fail-closed de persistência", () => {
     await restoreGetDb();
   });
 
-  it("DB null: as sete primitives devolvem DB_UNAVAILABLE, nunca negócio/zero/ausência", async () => {
+  it("DB null: as oito primitives devolvem DB_UNAVAILABLE, nunca negócio/zero/ausência", async () => {
     vi.mocked(getDb).mockResolvedValue(null);
     const results = await everyPublicPrimitive();
     for (const result of Object.values(results)) {
@@ -134,7 +140,7 @@ describe("WhatsApp pending intent — fail-closed de persistência", () => {
     expect(isWhatsAppPendingCleanupFailure(results.cleanup)).toBe(true);
   });
 
-  it("getDb rejeitado: as sete primitives devolvem PERSISTENCE_FAILED sem erro cru", async () => {
+  it("getDb rejeitado: as oito primitives devolvem PERSISTENCE_FAILED sem erro cru", async () => {
     vi.mocked(getDb).mockRejectedValue(new Error("pool closed"));
     const results = await everyPublicPrimitive();
     for (const result of Object.values(results)) {
@@ -338,6 +344,81 @@ describe("WhatsApp pending intent — fail-closed de persistência", () => {
       await advanceWhatsAppPendingFromParse(validAdvanceInput),
       "PERSISTENCE_FAILED",
     );
+  });
+
+  it("cancel PARSE: UPDATE falha não vira cancelled nem already_terminal", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.reject(new Error("update failed"))),
+    } as never);
+    expectInfra(
+      await cancelWhatsAppPendingOpenParse({
+        pendingId: 7,
+        userId: 4,
+        expectedSourceInboundMessageId: 10,
+      }),
+      "PERSISTENCE_FAILED",
+    );
+  });
+
+  it("cancel PARSE: reload após UPDATE não vira cancelled", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.resolve({ affectedRows: 1 })),
+      select: scriptedSelect(["throw"]),
+    } as never);
+    expectInfra(
+      await cancelWhatsAppPendingOpenParse({
+        pendingId: 7,
+        userId: 4,
+        expectedSourceInboundMessageId: 10,
+      }),
+      "PERSISTENCE_FAILED",
+    );
+  });
+
+  it("cancel PARSE: reload nulo após UPDATE → PERSISTENCE_FAILED", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.resolve({ affectedRows: 1 })),
+      select: scriptedSelect([[]]),
+    } as never);
+    expectInfra(
+      await cancelWhatsAppPendingOpenParse({
+        pendingId: 7,
+        userId: 4,
+        expectedSourceInboundMessageId: 10,
+      }),
+      "PERSISTENCE_FAILED",
+    );
+  });
+
+  it("cancel PARSE: miss + SELECT falha não vira NOT_FOUND", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.resolve({ affectedRows: 0 })),
+      select: scriptedSelect(["throw"]),
+    } as never);
+    expectInfra(
+      await cancelWhatsAppPendingOpenParse({
+        pendingId: 7,
+        userId: 4,
+        expectedSourceInboundMessageId: 10,
+      }),
+      "PERSISTENCE_FAILED",
+    );
+  });
+
+  it("cancel PARSE: ids não positivos → INVALID_PAYLOAD sem tocar DB", async () => {
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => {
+        throw new Error("should not update");
+      },
+    } as never);
+    expect(
+      await cancelWhatsAppPendingOpenParse({
+        pendingId: 0,
+        userId: 4,
+        expectedSourceInboundMessageId: 10,
+      }),
+    ).toEqual({ ok: false, code: "INVALID_PAYLOAD" });
+    expect(getDb).not.toHaveBeenCalled();
   });
 
   it("advance: payload desconhecido → INVALID_PAYLOAD sem tocar DB", async () => {

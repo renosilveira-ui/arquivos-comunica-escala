@@ -33,8 +33,10 @@ import {
   type WhatsAppPendingCleanupResult,
   type WhatsAppPendingIntentRecord,
   type WhatsAppPendingMutationResult,
+  type WhatsAppPendingParseCancelResult,
   type WhatsAppPendingReadResult,
   type WhatsAppPendingStoreResult,
+  type CancelWhatsAppPendingOpenParseInput,
 } from "./pending-intent-types";
 
 type PendingOp =
@@ -44,6 +46,7 @@ type PendingOp =
   | "create"
   | "expire"
   | "cancel"
+  | "cancel_parse"
   | "cleanup"
   | "advance";
 
@@ -626,6 +629,96 @@ export async function cancelWhatsAppPendingIntent(
     return { ok: true, outcome: "updated", row: latest };
   } catch {
     return persistenceFailed("cancel", { pendingId: id, userId });
+  }
+}
+
+function isPositiveInt(value: number): boolean {
+  return Number.isInteger(value) && value > 0;
+}
+
+/**
+ * Terminaliza OPEN/PARSE do source informado. Compare-and-set: se o
+ * pending já avançou para CLARIFICATION/CONFIRMATION, devolve
+ * STATE_CHANGED e não sobrescreve. Reusa a limpeza de payload de cancel.
+ */
+export async function cancelWhatsAppPendingOpenParse(
+  input: CancelWhatsAppPendingOpenParseInput,
+  now: Date = new Date(),
+): Promise<WhatsAppPendingParseCancelResult> {
+  const { pendingId, userId, expectedSourceInboundMessageId } = input;
+  if (
+    !isPositiveInt(pendingId) ||
+    !isPositiveInt(userId) ||
+    !isPositiveInt(expectedSourceInboundMessageId)
+  ) {
+    return { ok: false, code: "INVALID_PAYLOAD" };
+  }
+
+  const acquired = await acquireDb("cancel_parse");
+  if (!acquired.ok) return acquired;
+
+  try {
+    const updated = await acquired.db
+      .update(whatsappPendingIntents)
+      .set({
+        status: WhatsAppPendingStatuses.CANCELLED,
+        ...clearedConversationPayload(now),
+      })
+      .where(
+        and(
+          eq(whatsappPendingIntents.id, pendingId),
+          eq(whatsappPendingIntents.userId, userId),
+          eq(
+            whatsappPendingIntents.sourceInboundMessageId,
+            expectedSourceInboundMessageId,
+          ),
+          eq(whatsappPendingIntents.status, WhatsAppPendingStatuses.OPEN),
+          eq(whatsappPendingIntents.stage, WhatsAppPendingStages.PARSE),
+        ),
+      );
+
+    if (affectedRows(updated) > 0) {
+      const latest = await loadByIdForUser(acquired.db, pendingId, userId);
+      if (!latest || latest.status !== WhatsAppPendingStatuses.CANCELLED) {
+        return persistenceFailed("cancel_parse", { pendingId, userId });
+      }
+      logSafe({
+        event: "whatsapp_pending_cancelled",
+        ...technicalLogFields(latest),
+        outcome: "cancelled",
+        expectedStage: WhatsAppPendingStages.PARSE,
+      });
+      return { ok: true, outcome: "cancelled", row: latest };
+    }
+
+    const current = await loadByIdForUser(acquired.db, pendingId, userId);
+    if (!current) {
+      logSafe({
+        event: "whatsapp_pending_parse_cancel_miss",
+        pendingId,
+        userId,
+        sourceInboundId: expectedSourceInboundMessageId,
+        outcome: "NOT_FOUND",
+      });
+      return { ok: false, code: "NOT_FOUND" };
+    }
+    if (isWhatsAppPendingTerminalStatus(current.status)) {
+      logSafe({
+        event: "whatsapp_pending_parse_cancel_miss",
+        ...technicalLogFields(current),
+        outcome: "already_terminal",
+      });
+      return { ok: true, outcome: "already_terminal", row: current };
+    }
+    logSafe({
+      event: "whatsapp_pending_parse_cancel_miss",
+      ...technicalLogFields(current),
+      sourceInboundId: expectedSourceInboundMessageId,
+      outcome: "STATE_CHANGED",
+    });
+    return { ok: false, code: "STATE_CHANGED", row: current };
+  } catch {
+    return persistenceFailed("cancel_parse", { pendingId, userId });
   }
 }
 

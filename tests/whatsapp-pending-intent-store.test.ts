@@ -9,6 +9,7 @@ import { getDb } from "../server/db";
 import { logger } from "../server/_core/logger";
 import {
   cancelWhatsAppPendingIntent,
+  cancelWhatsAppPendingOpenParse,
   clearExpiredWhatsAppPendingIntents,
   createWhatsAppPendingIntent,
   expireWhatsAppPendingIntent,
@@ -672,5 +673,170 @@ describe("WhatsApp pending intent store", () => {
     expect(joined).not.toContain("+55");
     expect(joined).not.toContain("slots semânticos futuros");
     expect(joined).not.toMatch(/X-Twilio-Signature|TWILIO_AUTH_TOKEN|Body/i);
+  });
+
+  it("cancel OPEN/PARSE terminaliza o slot e limpa payload conversacional", async () => {
+    const sourceId = await insertInbound(userA, "parse-c1");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    if (!created.ok) throw new Error(created.code);
+    const cancelled = await cancelWhatsAppPendingOpenParse({
+      pendingId: created.row.id,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceId,
+    });
+    expect(cancelled).toMatchObject({ ok: true, outcome: "cancelled" });
+    if (!cancelled.ok) throw new Error(cancelled.code);
+    expect(cancelled.row.status).toBe("CANCELLED");
+    expect(cancelled.row.stage).toBe("PARSE");
+    expect(cancelled.row.parsedPayload).toBeNull();
+    expect(cancelled.row.resolvedPayload).toBeNull();
+    expect(cancelled.row.clarificationPayload).toBeNull();
+    expect(cancelled.row.payloadClearedAt).toBeTruthy();
+    expectHealthyAbsent(await getOpenWhatsAppPendingIntentForUser(userA));
+
+    const replay = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    expect(replay).toMatchObject({ ok: true, outcome: "already_terminal" });
+    if (!replay.ok) throw new Error(replay.code);
+    expect(replay.row.id).toBe(created.row.id);
+    expect(replay.row.status).toBe("CANCELLED");
+
+    const nextSource = await insertInbound(userA, "parse-c1b");
+    const next = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: nextSource,
+    });
+    expect(next).toMatchObject({ ok: true, outcome: "created" });
+    if (!next.ok) throw new Error(next.code);
+    expect(next.row.status).toBe("OPEN");
+    expect(next.row.stage).toBe("PARSE");
+    expect(next.row.id).not.toBe(created.row.id);
+  });
+
+  it("dois cancel PARSE no mesmo source convergem sem recriar OPEN", async () => {
+    const sourceId = await insertInbound(userA, "parse-c4");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    if (!created.ok) throw new Error(created.code);
+    const [first, second] = await Promise.all([
+      cancelWhatsAppPendingOpenParse({
+        pendingId: created.row.id,
+        userId: userA,
+        expectedSourceInboundMessageId: sourceId,
+      }),
+      cancelWhatsAppPendingOpenParse({
+        pendingId: created.row.id,
+        userId: userA,
+        expectedSourceInboundMessageId: sourceId,
+      }),
+    ]);
+    const outcomes = [first, second].map((item) =>
+      item.ok ? item.outcome : item.code,
+    );
+    expect(outcomes.sort()).toEqual(["already_terminal", "cancelled"].sort());
+    const [row] = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.id, created.row.id));
+    expect(row?.status).toBe("CANCELLED");
+    expectHealthyAbsent(await getOpenWhatsAppPendingIntentForUser(userA));
+    const replay = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    expect(replay).toMatchObject({ ok: true, outcome: "already_terminal" });
+  });
+
+  it("expire vs cancel PARSE convergem em terminal", async () => {
+    const sourceId = await insertInbound(userA, "parse-c2");
+    const createdAt = new Date("2026-09-04T08:00:00.000Z");
+    const created = await createWhatsAppPendingIntent(
+      { sourceInboundMessageId: sourceId },
+      createdAt,
+    );
+    if (!created.ok) throw new Error(created.code);
+    const dueAt = new Date(createdAt.getTime() + WHATSAPP_PENDING_INTENT_TTL_MS);
+    const [expired, cancelled] = await Promise.all([
+      expireWhatsAppPendingIntent(created.row.id, userA, dueAt),
+      cancelWhatsAppPendingOpenParse({
+        pendingId: created.row.id,
+        userId: userA,
+        expectedSourceInboundMessageId: sourceId,
+      }),
+    ]);
+    for (const result of [expired, cancelled]) {
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(["updated", "cancelled", "already_terminal"]).toContain(
+          result.outcome,
+        );
+      }
+    }
+    const [row] = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.id, created.row.id));
+    expect(["CANCELLED", "EXPIRED"]).toContain(row?.status);
+    expectHealthyAbsent(await getOpenWhatsAppPendingIntentForUser(userA, dueAt));
+  });
+
+  it("user cancel vs cancel PARSE convergem em CANCELLED", async () => {
+    const sourceId = await insertInbound(userA, "parse-c3");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    if (!created.ok) throw new Error(created.code);
+    const [userCancel, parseCancel] = await Promise.all([
+      cancelWhatsAppPendingIntent(created.row.id, userA),
+      cancelWhatsAppPendingOpenParse({
+        pendingId: created.row.id,
+        userId: userA,
+        expectedSourceInboundMessageId: sourceId,
+      }),
+    ]);
+    const outcomes = [userCancel, parseCancel].map((item) =>
+      item.ok ? item.outcome : item.code,
+    );
+    expect(outcomes).toContain("already_terminal");
+    expect(
+      outcomes.some((item) => item === "updated" || item === "cancelled"),
+    ).toBe(true);
+    const [row] = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(eq(whatsappPendingIntents.id, created.row.id));
+    expect(row?.status).toBe("CANCELLED");
+    expectHealthyAbsent(await getOpenWhatsAppPendingIntentForUser(userA));
+  });
+
+  it("cancel PARSE de outro user ou source não destrói o OPEN", async () => {
+    const sourceId = await insertInbound(userA, "parse-own");
+    const otherSource = await insertInbound(userA, "parse-own-b");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceId,
+    });
+    if (!created.ok) throw new Error(created.code);
+    expect(
+      await cancelWhatsAppPendingOpenParse({
+        pendingId: created.row.id,
+        userId: userB,
+        expectedSourceInboundMessageId: sourceId,
+      }),
+    ).toEqual({ ok: false, code: "NOT_FOUND" });
+    expect(
+      await cancelWhatsAppPendingOpenParse({
+        pendingId: created.row.id,
+        userId: userA,
+        expectedSourceInboundMessageId: otherSource,
+      }),
+    ).toMatchObject({ ok: false, code: "STATE_CHANGED" });
+    expect(
+      await getWhatsAppPendingIntentByIdForUser(created.row.id, userA),
+    ).toMatchObject({
+      ok: true,
+      row: { id: created.row.id, status: "OPEN", stage: "PARSE" },
+    });
   });
 });

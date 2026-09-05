@@ -11,8 +11,10 @@ import { logger } from "../server/_core/logger";
 import {
   advanceWhatsAppPendingFromParse,
   cancelWhatsAppPendingIntent,
+  cancelWhatsAppPendingOpenParse,
   createWhatsAppPendingIntent,
   expireWhatsAppPendingIntent,
+  getWhatsAppPendingIntentByIdForUser,
 } from "../server/integrations/whatsapp/pending-intent-store";
 import {
   clarificationInvariantsHold,
@@ -530,5 +532,99 @@ describe("WhatsApp pending advance from PARSE", () => {
     expect(joined).not.toContain("SR-UNICO-B2A-LOG");
     expect(joined).not.toContain("Joao");
     expect(joined).not.toMatch(/parsedPayload|resolvedPayload|clarificationPayload/);
+  });
+
+  it("cancel PARSE após CLARIFICATION devolve STATE_CHANGED e não destrói o estágio", async () => {
+    const { sourceId, pendingId } = await openParse(userA, "c5clar");
+    const advanced = await advanceWhatsAppPendingFromParse({
+      pendingId,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceId,
+      outcome: {
+        type: "clarification",
+        parsed: parsedSwap,
+        clarification: clarificationOwn,
+      },
+    });
+    expect(advanced).toMatchObject({ ok: true, outcome: "advanced" });
+    const cancelled = await cancelWhatsAppPendingOpenParse({
+      pendingId,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceId,
+    });
+    expect(cancelled).toMatchObject({ ok: false, code: "STATE_CHANGED" });
+    const latest = await getWhatsAppPendingIntentByIdForUser(pendingId, userA);
+    expect(latest).toMatchObject({
+      ok: true,
+      row: { status: "OPEN", stage: "CLARIFICATION" },
+    });
+    if (!latest.ok || !latest.row) throw new Error("missing row");
+    expect(clarificationInvariantsHold(latest.row)).toBe(true);
+  });
+
+  it("cancel PARSE após CONFIRMATION devolve STATE_CHANGED e não destrói o estágio", async () => {
+    const { sourceId, pendingId } = await openParse(userA, "c5conf");
+    const resolved = { ...resolvedSwap, institutionId };
+    const advanced = await advanceWhatsAppPendingFromParse({
+      pendingId,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceId,
+      outcome: {
+        type: "resolved",
+        parsed: parsedSwap,
+        resolved,
+      },
+    });
+    expect(advanced).toMatchObject({ ok: true, outcome: "advanced" });
+    const cancelled = await cancelWhatsAppPendingOpenParse({
+      pendingId,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceId,
+    });
+    expect(cancelled).toMatchObject({ ok: false, code: "STATE_CHANGED" });
+    const latest = await getWhatsAppPendingIntentByIdForUser(pendingId, userA);
+    expect(latest).toMatchObject({
+      ok: true,
+      row: { status: "OPEN", stage: "CONFIRMATION" },
+    });
+    if (!latest.ok || !latest.row) throw new Error("missing row");
+    expect(confirmationInvariantsHold(latest.row)).toBe(true);
+  });
+
+  it("concorrência advance vs cancel PARSE: vencedor coerente, nunca CLARIFICATION cancelada", async () => {
+    const { sourceId, pendingId } = await openParse(userA, "c5race");
+    const [advanced, cancelled] = await Promise.all([
+      advanceWhatsAppPendingFromParse({
+        pendingId,
+        userId: userA,
+        expectedSourceInboundMessageId: sourceId,
+        outcome: {
+          type: "clarification",
+          parsed: parsedSwap,
+          clarification: clarificationOwn,
+        },
+      }),
+      cancelWhatsAppPendingOpenParse({
+        pendingId,
+        userId: userA,
+        expectedSourceInboundMessageId: sourceId,
+      }),
+    ]);
+    const latest = await getWhatsAppPendingIntentByIdForUser(pendingId, userA);
+    if (!latest.ok || !latest.row) throw new Error("missing row");
+    if (latest.row.stage === "CLARIFICATION") {
+      expect(latest.row.status).toBe("OPEN");
+      expect(cancelled).toMatchObject({ ok: false, code: "STATE_CHANGED" });
+      expect(advanced.ok).toBe(true);
+      expect(clarificationInvariantsHold(latest.row)).toBe(true);
+    } else {
+      expect(latest.row.status).toBe("CANCELLED");
+      expect(latest.row.stage).toBe("PARSE");
+      expect(cancelled).toMatchObject({ ok: true, outcome: "cancelled" });
+      expect(advanced.ok).toBe(false);
+      if (!advanced.ok) {
+        expect(advanced.code).toBe("TERMINAL");
+      }
+    }
   });
 });
