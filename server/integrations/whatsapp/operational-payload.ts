@@ -4,9 +4,10 @@
  * READY_FOR_* significa: há material persistido suficiente para o próximo
  * estágio. Não é dump Twilio. Nunca persiste signature/Auth Token/From.
  *
- * Retenção curta + limpeza após consumo. Incremento B deve chamar
- * `clearWhatsAppInboundOperationalPayload` depois de consumir o texto.
- * Incremento D deve chamar o mesmo depois de obter a mídia.
+ * Retenção curta + limpeza após consumo. B2-C TEXT usa o
+ * compare-and-clear `clearWhatsAppInboundOperationalPayloadForReadyNl`.
+ * Incremento D pode chamar `clearWhatsAppInboundOperationalPayload`
+ * depois de obter a mídia.
  */
 
 import { and, eq, inArray, isNotNull, isNull, lte } from "drizzle-orm";
