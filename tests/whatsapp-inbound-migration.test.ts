@@ -43,6 +43,7 @@ describe("migration manual whatsapp_inbound_messages", () => {
     expect(ddl).toContain("payload_expires_at");
     expect(ddl).toContain("payload_cleared_at");
     expect(ddl).toContain("idx_whatsapp_inbound_payload_expires");
+    expect(ddl).toContain("idx_whatsapp_inbound_nl_poll");
     expect(ddl).not.toMatch(/\bFAILED\b/);
     expect(ddl).not.toMatch(/\bbody\b/i);
     expect(ddl).not.toMatch(/signature/i);
@@ -131,6 +132,8 @@ describe("migration manual whatsapp_inbound_messages", () => {
     expect(block).toContain("uniq_whatsapp_inbound_provider_message");
     expect(ddl).toContain("KEY idx_whatsapp_inbound_payload_expires");
     expect(block).toContain("idx_whatsapp_inbound_payload_expires");
+    expect(ddl).toContain("KEY idx_whatsapp_inbound_nl_poll");
+    expect(block).toContain("idx_whatsapp_inbound_nl_poll");
     expect(block).not.toContain("FAILED");
   });
 });
