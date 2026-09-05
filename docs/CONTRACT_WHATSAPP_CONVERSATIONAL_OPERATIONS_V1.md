@@ -286,16 +286,48 @@ B2-B **não** escolhe instituição.
 
 Snapshot ≠ autorização. Read-only. Sem persistir actor no pending.
 
-Incremento B2-C (não implementado aqui): `READY_FOR_NL` →
-`createWhatsAppPendingIntent` (só source) → lê `operational_text` →
-obtém `userId` do inbound identificado →
-`resolveCanonicalOperationalActorForUser` →
-parser/resolver de `server/natural-language/` (actor = saída B2-B,
-sem `if source === "WHATSAPP"`) →
-`advanceWhatsAppPendingFromParse` → confirmação futura →
-`createSwapOffer` (revalida tudo; `resolved_payload` não é autorização)
-→ `clearWhatsAppInboundOperationalPayload`. O inbound **não** importa
-esses módulos.
+Incremento B2-C (consumer READY_FOR_NL, esta camada): primitive interna
+`processWhatsAppReadyForNlInbound({ sourceInboundMessageId })` em
+`server/integrations/whatsapp/ready-for-nl-consumer.ts`. B2-C não é worker
+nem route HTTP nem cron. O webhook Twilio
+continua ACK rápido após persistir o inbound; outra frente define
+QUEM/QUANDO invoca B2-C.
+
+Pipeline:
+
+```
+READY_FOR_NL
+  → pending B1 (só source)
+  → actor canônico B2-B
+  → parser/resolver (núcleo NL, sem `if source === "WHATSAPP"`)
+  → CLARIFICATION | CONFIRMATION (B2-A)
+  → clear operational_text
+```
+
+Regras:
+
+- **sem execução** — mesmo resolved completo para em `OPEN/CONFIRMATION`;
+  não chama `createSwapOffer`;
+- **sem outbound** — não envia WhatsApp, não monta template, não Twilio
+  outbound;
+- **cleanup somente pós-durabilidade** — `clearWhatsAppInboundOperationalPayload`
+  só depois de pending comprovadamente `OPEN/CLARIFICATION` ou
+  `OPEN/CONFIRMATION` do mesmo source/user (ou replay que comprova esse
+  estado). Nunca o inverso;
+- **replay não reparsa** — pending persistido é a autoridade. Crash
+  entre advance e clear: a próxima tentativa só reconcilia cleanup;
+- identidade nasce do inbound (`source.userId`); o caller não passa
+  userId, texto, telefone nem tenant;
+- multi-instituição: B2-B devolve `[A,B,C]`; o resolver escolhe o
+  contexto. B2-C não elege tenant;
+- AUDIO / `READY_FOR_TRANSCRIPTION` / terminais de identidade não entram;
+- erro de infra (DB, actor infra, parser/resolver interno, advance,
+  clear) é retryable e **não** apaga o material operacional;
+- reformulation / conflito de domínio NL **não** são persistidos como
+  clarification (B2-A não tem família para isso): `BLOCKED`, inbound
+  preservado, pending permanece `PARSE` se chegou a ser criado.
+
+O inbound **não** importa o consumer. O route Twilio **não** espera NL.
 
 Incremento D: `READY_FOR_TRANSCRIPTION` → usa `media_url` → transcreve →
 limpa o payload.
@@ -396,6 +428,9 @@ preservar material de `RETRYABLE` além do TTL.
   `drizzle/migrations/manual/2026-09-04-whatsapp-pending-intents.sql`
 - B2-A **não** altera schema nem reaplica migration.
 - B2-B **não** altera schema nem persiste actor.
+- B2-C **não** altera schema nem migration. Consumer invocável/testável;
+  **não** conecta o webhook Twilio; **não** é worker.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
-- Sem parser/resolver em runtime, sem `createSwapOffer`, sem cron novo
+- Parser/resolver só no consumer B2-C, nunca no route inbound
+- Sem `createSwapOffer`, sem push, sem áudio/transcrição, sem cron novo
