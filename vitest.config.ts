@@ -36,6 +36,7 @@ export default defineConfig({
       "tests/sector-service-specialties-migration-mysql.test.ts",
       "tests/readiness-fence-v1-mysql.test.ts",
       "tests/vacancy-query-indexes-migration-mysql.test.ts",
+      "tests/whatsapp-inbound-nl-poll-index-mysql.test.ts",
     ],
   },
   define: {
