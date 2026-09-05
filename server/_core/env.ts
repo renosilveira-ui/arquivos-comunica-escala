@@ -35,6 +35,13 @@ export const ENV = {
   get sessionExactBindingSupported() {
     return getEnvOrDefault("SESSION_EXACT_BINDING_SUPPORTED", "0") === "1";
   },
+  /**
+   * Driver B2-D (poll READY_FOR_NL → B2-C). Default off: merge não ativa
+   * staging/produção. Só o literal `true` liga.
+   */
+  get whatsappNlDriverEnabled() {
+    return getEnvOrDefault("WHATSAPP_NL_DRIVER_ENABLED", "false") === "true";
+  },
   get isDev() {
     return this.nodeEnv === "development";
   },

@@ -35,6 +35,10 @@ import {
 } from "./error-handling";
 import { pingDb } from "../db";
 import { startConfirmationCron } from "../cron/shift-confirmation-dispatcher";
+import {
+  startWhatsAppNlDriver,
+  stopWhatsAppNlDriver,
+} from "../integrations/whatsapp/ready-for-nl-driver";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -244,9 +248,16 @@ async function startServer() {
       "api server listening",
     );
     startConfirmationCron();
+    startWhatsAppNlDriver();
   });
 
-  installShutdownHandlers({ server, logger });
+  installShutdownHandlers({
+    server,
+    logger,
+    onBeforeExit: () => {
+      stopWhatsAppNlDriver();
+    },
+  });
 }
 
 startServer().catch((err) => {

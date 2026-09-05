@@ -293,10 +293,58 @@ Incremento B2-C (consumer READY_FOR_NL, esta camada): primitive interna
 `processWhatsAppReadyForNlInbound({ sourceInboundMessageId })` em
 `server/integrations/whatsapp/ready-for-nl-consumer.ts`. B2-C não é worker
 nem route HTTP nem cron. O webhook Twilio
-continua ACK rápido após persistir o inbound; outra frente define
-QUEM/QUANDO invoca B2-C.
+continua ACK rápido após persistir o inbound.
+
+Incremento B2-D (driver assíncrono, esta camada): poll durável da tabela
+`whatsapp_inbound_messages` que descobre TEXT `READY_FOR_NL` autenticado
+e chama B2-C. Semântica **at-least-once** + consumer B2-C idempotente —
+não é exactly-once distribuído. O webhook **não** espera B2-C. ACK **não**
+depende de NL. Work item nasce no banco, não em memória.
 
 Pipeline:
+
+```
+Twilio webhook
+  → persist inbound
+  → READY_FOR_NL
+  → ACK
+Async driver (B2-D)
+  → discovers READY_FOR_NL
+  → processWhatsAppReadyForNlInbound (B2-C)
+  → B1 → B2-B → parser/resolver → B2-A
+  → CLARIFICATION | CONFIRMATION
+  → stop
+```
+
+B2-D **não** executa a intenção. **Não** responde ao WhatsApp.
+
+Arquitetura: polling periódico (8s ±1s jitter) da inbound como fila
+durável. Rejeitado fire-and-forget in-process após o ACK (o processo
+pode morrer e o wake-up nunca ocorre). Sem Redis/SQS. Sem tabela de
+job nova: elegibilidade = `provider=TWILIO` + `READY_FOR_NL` + `TEXT` +
+`user_id IS NOT NULL` + `payload_cleared_at IS NULL` + (payload ainda
+utilizável **ou** pending OPEN em CLARIFICATION/CONFIRMATION). Sucesso
+B2-C limpa o payload; a row deixa de ser elegível.
+
+Claim multi-réplica: `SELECT … FOR UPDATE SKIP LOCKED` + ocupação
+durável de `error_code` com prefixo `WA_NL_DRV_` (CLAIMED / RETRY / PARK)
+enquanto o status permanece `READY_FOR_NL` (status terminal do replay
+Twilio). Lease stale (90s) recupera crash após claim. Backoff de infra:
+30s → 2m → 10m → 30m → 60m, limitado pelo TTL do payload
+(`payload_expires_at`, 24h). Erro de domínio é PARK (não entra em hot
+loop). Poison (`INVALID_PAYLOAD`) é PARK e não bloqueia o batch.
+
+Flag `WHATSAPP_NL_DRIVER_ENABLED=true` (default off). Merge **não**
+ativa staging. `NODE_ENV=test` não inicia o loop. SIGTERM chama
+`stopWhatsAppNlDriver` e não inicia novo batch.
+
+Batch máximo 20, oldest-first (`received_at`, `id`), um item por vez
+por processo. Concorrência entre réplicas via SKIP LOCKED.
+
+O driver **não** importa `createSwapOffer`, Twilio outbound, push,
+transcrição nem UI mobile. Só chama `processWhatsAppReadyForNlInbound`.
+
+Pipeline B2-C (inalterado):
 
 ```
 READY_FOR_NL
@@ -453,7 +501,11 @@ preservar material de `RETRYABLE` além do TTL.
 - B2-B **não** altera schema nem persiste actor.
 - B2-C **não** altera schema nem migration. Consumer invocável/testável;
   **não** conecta o webhook Twilio; **não** é worker.
+- B2-D **não** altera schema nem migration. Driver in-process (poll 8s)
+  da inbound como fila; flag `WHATSAPP_NL_DRIVER_ENABLED` (default off).
+  Não é cron Render, não é fila externa, não é fire-and-forget do webhook.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
-- Parser/resolver só no consumer B2-C, nunca no route inbound
-- Sem `createSwapOffer`, sem push, sem áudio/transcrição, sem cron novo
+- Parser/resolver só no consumer B2-C, nunca no route inbound nem no driver
+- Sem `createSwapOffer`, sem push, sem áudio/transcrição
+- Driver B2-D: at-least-once, B2-C idempotente, sem execução, sem outbound
