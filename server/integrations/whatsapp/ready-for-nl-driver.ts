@@ -40,20 +40,25 @@ import {
   parseWhatsAppNlDriverOccupancy,
   WHATSAPP_NL_DRIVER_BATCH_SIZE,
   WHATSAPP_NL_DRIVER_CLAIMED_LIKE,
+  WHATSAPP_NL_DRIVER_CLAIMED_REGEXP,
   WHATSAPP_NL_DRIVER_INTERVAL_MS,
   WHATSAPP_NL_DRIVER_JITTER_MS,
   WHATSAPP_NL_DRIVER_LEASE_MS,
+  WHATSAPP_NL_DRIVER_MALFORMED_PARK_CODE,
   WHATSAPP_NL_DRIVER_RETRY_ATTEMPT_SQL_OFFSET,
   WHATSAPP_NL_DRIVER_RETRY_DELAY_MS,
   WHATSAPP_NL_DRIVER_RETRY_LIKE,
+  WHATSAPP_NL_DRIVER_RETRY_REGEXP,
   WHATSAPP_NL_DRIVER_WAIT_ATTEMPT_SQL_OFFSET,
   WHATSAPP_NL_DRIVER_WAIT_DELAY_MS,
   WHATSAPP_NL_DRIVER_WAIT_LIKE,
+  WHATSAPP_NL_DRIVER_WAIT_REGEXP,
   type WhatsAppNlDriverDecision,
 } from "./ready-for-nl-driver-occupancy";
 import { WhatsAppPendingStages, WhatsAppPendingStatuses } from "./pending-intent-types";
 
 type Db = NonNullable<Awaited<ReturnType<typeof dbMod.getDb>>>;
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export type WhatsAppNlDriverTickOptions = {
   now?: Date;
@@ -146,17 +151,20 @@ function occupancyEligibleSql(now: Date, leaseMs: number) {
     ${whatsappInboundMessages.errorCode} IS NULL
     OR (
       ${whatsappInboundMessages.errorCode} LIKE ${WHATSAPP_NL_DRIVER_CLAIMED_LIKE}
+      AND ${whatsappInboundMessages.errorCode} REGEXP ${WHATSAPP_NL_DRIVER_CLAIMED_REGEXP}
       AND UNIX_TIMESTAMP(${whatsappInboundMessages.updatedAt}) + ${leaseSeconds}
         <= ${nowUnix}
     )
     OR (
       ${whatsappInboundMessages.errorCode} LIKE ${WHATSAPP_NL_DRIVER_RETRY_LIKE}
+      AND ${whatsappInboundMessages.errorCode} REGEXP ${WHATSAPP_NL_DRIVER_RETRY_REGEXP}
       AND UNIX_TIMESTAMP(${whatsappInboundMessages.updatedAt}) + (
         ${retryBackoffSecondsSql()}
       ) <= ${nowUnix}
     )
     OR (
       ${whatsappInboundMessages.errorCode} LIKE ${WHATSAPP_NL_DRIVER_WAIT_LIKE}
+      AND ${whatsappInboundMessages.errorCode} REGEXP ${WHATSAPP_NL_DRIVER_WAIT_REGEXP}
       AND UNIX_TIMESTAMP(${whatsappInboundMessages.updatedAt}) + (
         ${waitBackoffSecondsSql()}
       ) <= ${nowUnix}
@@ -235,6 +243,90 @@ export async function listWhatsAppReadyForNlEligibleIds(
   return rows.map((row) => row.id);
 }
 
+async function parkMalformedOccupancy(
+  tx: Tx,
+  row: { id: number; errorCode: string | null },
+  now: Date,
+): Promise<number> {
+  if (row.errorCode == null || row.errorCode === "") return 0;
+  const updated = await tx
+    .update(whatsappInboundMessages)
+    .set({
+      errorCode: formatWhatsAppNlDriverPark(
+        WHATSAPP_NL_DRIVER_MALFORMED_PARK_CODE,
+      ),
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(whatsappInboundMessages.id, row.id),
+        eq(whatsappInboundMessages.errorCode, row.errorCode),
+        eq(
+          whatsappInboundMessages.processingStatus,
+          WhatsAppInboundStatuses.READY_FOR_NL,
+        ),
+        isNull(whatsappInboundMessages.payloadClearedAt),
+      ),
+    );
+  return affectedRows(updated);
+}
+
+async function claimPass(
+  tx: Tx,
+  now: Date,
+  batchSize: number,
+  leaseMs: number,
+): Promise<{ claimed: ClaimedWork[]; repaired: number }> {
+  const rows = await tx
+    .select({
+      id: whatsappInboundMessages.id,
+      errorCode: whatsappInboundMessages.errorCode,
+      payloadExpiresAt: whatsappInboundMessages.payloadExpiresAt,
+    })
+    .from(whatsappInboundMessages)
+    .where(eligibilityWhere(now, leaseMs))
+    .orderBy(whatsappInboundMessages.receivedAt, whatsappInboundMessages.id)
+    .limit(batchSize)
+    .for("update", { skipLocked: true });
+
+  const claimed: ClaimedWork[] = [];
+  let repaired = 0;
+  for (const row of rows) {
+    const occupancy = parseWhatsAppNlDriverOccupancy(row.errorCode);
+    if (occupancy.kind === "park") continue;
+    if (occupancy.kind === "foreign") {
+      repaired += await parkMalformedOccupancy(tx, row, now);
+      continue;
+    }
+    const attempt = nextWhatsAppNlDriverAttempt(occupancy);
+    const claimCode = formatWhatsAppNlDriverClaimed(attempt, claimToken());
+    const updated = await tx
+      .update(whatsappInboundMessages)
+      .set({
+        errorCode: claimCode,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(whatsappInboundMessages.id, row.id),
+          eq(
+            whatsappInboundMessages.processingStatus,
+            WhatsAppInboundStatuses.READY_FOR_NL,
+          ),
+          isNull(whatsappInboundMessages.payloadClearedAt),
+        ),
+      );
+    if (affectedRows(updated) < 1) continue;
+    claimed.push({
+      id: row.id,
+      attempt,
+      claimCode,
+      payloadExpiresAt: row.payloadExpiresAt,
+    });
+  }
+  return { claimed, repaired };
+}
+
 async function claimBatch(
   db: Db,
   now: Date,
@@ -242,54 +334,11 @@ async function claimBatch(
   leaseMs: number,
 ): Promise<ClaimedWork[]> {
   return db.transaction(async (tx) => {
-    const rows = await tx
-      .select({
-        id: whatsappInboundMessages.id,
-        errorCode: whatsappInboundMessages.errorCode,
-        payloadExpiresAt: whatsappInboundMessages.payloadExpiresAt,
-      })
-      .from(whatsappInboundMessages)
-      .where(eligibilityWhere(now, leaseMs))
-      .orderBy(
-        whatsappInboundMessages.receivedAt,
-        whatsappInboundMessages.id,
-      )
-      .limit(batchSize)
-      .for("update", { skipLocked: true });
-
-    const claimed: ClaimedWork[] = [];
-    for (const row of rows) {
-      const occupancy = parseWhatsAppNlDriverOccupancy(row.errorCode);
-      if (occupancy.kind === "park" || occupancy.kind === "foreign") {
-        continue;
-      }
-      const attempt = nextWhatsAppNlDriverAttempt(occupancy);
-      const claimCode = formatWhatsAppNlDriverClaimed(attempt, claimToken());
-      const updated = await tx
-        .update(whatsappInboundMessages)
-        .set({
-          errorCode: claimCode,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(whatsappInboundMessages.id, row.id),
-            eq(
-              whatsappInboundMessages.processingStatus,
-              WhatsAppInboundStatuses.READY_FOR_NL,
-            ),
-            isNull(whatsappInboundMessages.payloadClearedAt),
-          ),
-        );
-      if (affectedRows(updated) < 1) continue;
-      claimed.push({
-        id: row.id,
-        attempt,
-        claimCode,
-        payloadExpiresAt: row.payloadExpiresAt,
-      });
+    const first = await claimPass(tx, now, batchSize, leaseMs);
+    if (first.claimed.length > 0 || first.repaired === 0) {
+      return first.claimed;
     }
-    return claimed;
+    return (await claimPass(tx, now, batchSize, leaseMs)).claimed;
   });
 }
 

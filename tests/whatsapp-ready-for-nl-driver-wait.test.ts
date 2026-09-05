@@ -65,14 +65,18 @@ describe("WhatsApp B2-D — WAIT liveness (ALREADY_OPEN)", () => {
     return row.id;
   }
 
-  async function insertOpenPending(sourceId: number, expiresAt: Date) {
+  async function insertOpenPending(
+    sourceId: number,
+    expiresAt: Date,
+    stage: "PARSE" | "CLARIFICATION" | "CONFIRMATION" = "PARSE",
+  ) {
     const [row] = await db
       .insert(whatsappPendingIntents)
       .values({
         userId: ownerId,
         sourceInboundMessageId: sourceId,
         status: "OPEN",
-        stage: "PARSE",
+        stage,
         expiresAt,
       })
       .$returningId();
@@ -140,6 +144,7 @@ describe("WhatsApp B2-D — WAIT liveness (ALREADY_OPEN)", () => {
     const pendingId = await insertOpenPending(
       inboundA,
       new Date(Date.now() + 15 * 60 * 1000),
+      "CLARIFICATION",
     );
 
     const spy = vi.spyOn(consumer, "processWhatsAppReadyForNlInbound");
@@ -290,14 +295,14 @@ describe("WhatsApp B2-D — WAIT liveness (ALREADY_OPEN)", () => {
     ).not.toContain(id);
   });
 
-  it("reformulation: inbound insuficiente PARK; nova mensagem WAIT e não se perde", async () => {
+  it("reformulation: inbound insuficiente PARK; mensagem nova cria progresso sem WAIT", async () => {
     const insufficient = await insertInbound("refa", {
       receivedAt: new Date(Date.now() - 3_000),
     });
     const followUp = await insertInbound("refb", {
       receivedAt: new Date(Date.now() - 1_000),
     });
-    await insertOpenPending(
+    const pendingId = await insertOpenPending(
       insufficient,
       new Date(Date.now() + 15 * 60 * 1000),
     );
@@ -305,30 +310,16 @@ describe("WhatsApp B2-D — WAIT liveness (ALREADY_OPEN)", () => {
     const spy = vi.spyOn(consumer, "processWhatsAppReadyForNlInbound");
     spy.mockImplementation(async ({ sourceInboundMessageId }) => {
       if (sourceInboundMessageId === insufficient) {
+        await db
+          .update(whatsappPendingIntents)
+          .set({ status: "CANCELLED" })
+          .where(eq(whatsappPendingIntents.id, pendingId));
         return {
           ok: false,
           kind: "BLOCKED",
           code: "NEEDS_REFORMULATION",
         };
       }
-      return { ok: false, kind: "BLOCKED", code: "ALREADY_OPEN" };
-    });
-
-    const now = new Date();
-    await runWhatsAppNlDriverTick({ now, batchSize: 10 });
-    expect((await loadInbound(insufficient))?.errorCode).toBe(
-      `${WHATSAPP_NL_DRIVER_PARK_PREFIX}:NEEDS_REFORMULATION`,
-    );
-    expect((await loadInbound(followUp))?.errorCode).toBe(
-      `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:1`,
-    );
-
-    await db
-      .update(whatsappPendingIntents)
-      .set({ status: "EXPIRED" })
-      .where(eq(whatsappPendingIntents.sourceInboundMessageId, insufficient));
-
-    spy.mockImplementation(async ({ sourceInboundMessageId }) => {
       await db
         .update(whatsappInboundMessages)
         .set({
@@ -343,9 +334,59 @@ describe("WhatsApp B2-D — WAIT liveness (ALREADY_OPEN)", () => {
         pendingId: sourceInboundMessageId,
       };
     });
-    const due = new Date(now.getTime() + whatsAppNlDriverWaitDelayMs(1) + 2_000);
-    await runWhatsAppNlDriverTick({ now: due, batchSize: 10 });
+
+    await runWhatsAppNlDriverTick({ now: new Date(), batchSize: 10 });
+    expect((await loadInbound(insufficient))?.errorCode).toBe(
+      `${WHATSAPP_NL_DRIVER_PARK_PREFIX}:NEEDS_REFORMULATION`,
+    );
+    expect((await loadInbound(followUp))?.errorCode).toBeNull();
     expect((await loadInbound(followUp))?.payloadClearedAt).toBeTruthy();
     expect((await loadInbound(insufficient))?.payloadClearedAt).toBeNull();
+    expect((await loadInbound(insufficient))?.operationalText).toBeTruthy();
+    expect(
+      spy.mock.calls.map((call) => call[0]?.sourceInboundMessageId),
+    ).toEqual([insufficient, followUp]);
+  });
+
+  it("WAIT due oldest-first; inbound novo em backoff pula a fila do driver, não a conversa", async () => {
+    const olderWait = await insertInbound("wold", {
+      receivedAt: new Date(Date.now() - 8_000),
+      errorCode: `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:1`,
+    });
+    const newerWait = await insertInbound("wnew", {
+      receivedAt: new Date(Date.now() - 6_000),
+      errorCode: `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:1`,
+    });
+    await db.execute(sql`
+      UPDATE whatsapp_inbound_messages
+      SET updated_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)
+      WHERE id = ${olderWait} OR id = ${newerWait}
+    `);
+    const due = new Date();
+    const ordered = await listWhatsAppReadyForNlEligibleIds({
+      now: due,
+      batchSize: 50,
+    });
+    const waitOrder = ordered.filter((id) => id === olderWait || id === newerWait);
+    expect(waitOrder).toEqual([olderWait, newerWait]);
+
+    const jumping = await insertInbound("wjmp", {
+      receivedAt: new Date(),
+    });
+    const olderStillWaiting = await insertInbound("whot", {
+      receivedAt: new Date(Date.now() - 4_000),
+      errorCode: `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:1`,
+    });
+    await db.execute(sql`
+      UPDATE whatsapp_inbound_messages
+      SET updated_at = UTC_TIMESTAMP()
+      WHERE id = ${olderStillWaiting}
+    `);
+    const eligibleNow = await listWhatsAppReadyForNlEligibleIds({
+      now: new Date(),
+      batchSize: 50,
+    });
+    expect(eligibleNow).toContain(jumping);
+    expect(eligibleNow).not.toContain(olderStillWaiting);
   });
 });

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { ENV } from "../server/_core/env";
 import {
   startWhatsAppNlDriver,
   isWhatsAppNlDriverLoopRunning,
@@ -21,6 +22,10 @@ const occupancy = readFileSync(
 );
 const boot = readFileSync(
   new URL("../server/_core/index.ts", import.meta.url),
+  "utf8",
+);
+const envSrc = readFileSync(
+  new URL("../server/_core/env.ts", import.meta.url),
   "utf8",
 );
 const route = readFileSync(
@@ -76,6 +81,7 @@ describe("WhatsApp B2-D — source guards", () => {
       expect(src).not.toMatch(/transcribeAudio|whisper|speech-to-text/);
       expect(src).not.toMatch(/from ["'][^"']*app\//);
       expect(src).not.toMatch(/from ["'][^"']*components\//);
+      expect(src).not.toMatch(/sendWhatsApp|twilio\.messages|sendPush/);
     }
   });
 
@@ -101,9 +107,37 @@ describe("WhatsApp B2-D — source guards", () => {
     expect(stopIdx).toBeGreaterThan(boot.indexOf("onBeforeExit"));
     expect(driver).toContain('ENV.nodeEnv === "test"');
     expect(driver).toContain("isWhatsAppNlDriverEnabled");
+    expect(envSrc).toContain(
+      'getEnvOrDefault("WHATSAPP_NL_DRIVER_ENABLED", "false") === "true"',
+    );
+    expect(envSrc).not.toMatch(/WHATSAPP_NL_DRIVER_ENABLED[\s\S]{0,80}=== "1"/);
     expect(isWhatsAppNlDriverLoopRunning()).toBe(false);
     startWhatsAppNlDriver();
     expect(isWhatsAppNlDriverLoopRunning()).toBe(false);
+  });
+
+  it("WHATSAPP_NL_DRIVER_ENABLED é server-only, default OFF, parse estrito", () => {
+    const previous = process.env.WHATSAPP_NL_DRIVER_ENABLED;
+    try {
+      delete process.env.WHATSAPP_NL_DRIVER_ENABLED;
+      expect(ENV.whatsappNlDriverEnabled).toBe(false);
+      process.env.WHATSAPP_NL_DRIVER_ENABLED = "false";
+      expect(ENV.whatsappNlDriverEnabled).toBe(false);
+      process.env.WHATSAPP_NL_DRIVER_ENABLED = "";
+      expect(ENV.whatsappNlDriverEnabled).toBe(false);
+      process.env.WHATSAPP_NL_DRIVER_ENABLED = "TRUE";
+      expect(ENV.whatsappNlDriverEnabled).toBe(false);
+      process.env.WHATSAPP_NL_DRIVER_ENABLED = "1";
+      expect(ENV.whatsappNlDriverEnabled).toBe(false);
+      process.env.WHATSAPP_NL_DRIVER_ENABLED = "true";
+      expect(ENV.whatsappNlDriverEnabled).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.WHATSAPP_NL_DRIVER_ENABLED;
+      } else {
+        process.env.WHATSAPP_NL_DRIVER_ENABLED = previous;
+      }
+    }
   });
 
   it("claim é transacional com SKIP LOCKED; WAIT reentra; fence usa token", () => {
@@ -120,10 +154,15 @@ describe("WhatsApp B2-D — source guards", () => {
     expect(driver).not.toMatch(/let running = false/);
     expect(occupancy).toContain("WA_NL_DRV_WAIT");
     expect(occupancy).toContain("WAITING_FOR_OTHER_CONVERSATION");
-    expect(occupancy).toContain("WHATSAPP_B2D_INDEX_FOLLOWUP_REQUIRED");
+    expect(occupancy).toContain("WHATSAPP_B2D_INDEX_REQUIRED");
     expect(occupancy).not.toContain("WAITING_FOR_DIFFERENT_INPUT");
+    expect(occupancy).not.toContain("o seguinte cai em ALREADY_OPEN");
+    expect(driver).toContain("WHATSAPP_NL_DRIVER_WAIT_REGEXP");
+    expect(driver).toContain("WHATSAPP_NL_DRIVER_MALFORMED_PARK_CODE");
     expect(contract).toContain("ALREADY_OPEN` é WAIT");
-    expect(contract).toContain("WHATSAPP_B2D_INDEX_FOLLOWUP_REQUIRED");
+    expect(contract).toContain("WHATSAPP_B2D_INDEX_REQUIRED");
+    expect(contract).toContain("novo source** e cria novo pending");
+    expect(contract).not.toContain("cai em `ALREADY_OPEN` → WAIT");
   });
 
   it("schema inbound/pending não muda nesta frente", () => {
