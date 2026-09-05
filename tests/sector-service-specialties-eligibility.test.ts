@@ -110,7 +110,9 @@ describe("especialidades assistenciais são somente descritivas", () => {
     expect(directAssignment).not.toContain(
       "loadSectorServiceSpecialtiesByTopology",
     );
-    expect(directAssignment).not.toContain("qualificationMatches");
+    expect(directAssignment).toContain(
+      "assertProfessionalQualificationMatchesScheduleContext",
+    );
     expect(activeContextSelection).not.toContain("serviceSpecialties");
     expect(activeContextSelection).not.toContain(
       "loadSectorServiceSpecialtiesByTopology",

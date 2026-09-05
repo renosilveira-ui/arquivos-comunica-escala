@@ -52,7 +52,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("isNull(scheduleInvites.declinedAt)");
     expect(eligible).toContain("accessCoversScheduleContext");
     expect(eligible).toContain("managerScopeCoversContext");
-    expect(eligible).not.toContain("qualificationMatches");
+    expect(eligible).toContain("assertProfessionalQualificationMatchesScheduleContext");
     expect(eligible).not.toContain("listAssumableScheduleContextIds");
   });
 

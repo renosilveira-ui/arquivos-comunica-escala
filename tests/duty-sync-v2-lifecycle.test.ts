@@ -30,7 +30,10 @@ import {
   getDutySyncLocalStatusForConfirmation,
 } from "../server/sso/duty-sync-status";
 import { enqueueDutySyncIntervalRewrite } from "../server/sso/duty-sync-lifecycle";
-import { openTestScale } from "./helpers/open-test-scale";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 
 const keyState = vi.hoisted(() => ({ privateKey: null as CryptoKey | null }));
 const orgMappingState = vi.hoisted(() => ({
@@ -71,6 +74,7 @@ describe("duty-sync V2 lifecycle", () => {
   let hospitalId: number;
   let sectorId: number;
   let scheduleContextId: number;
+  let anesthesiaSpecialtyId: number;
   let managerUserId: number;
   let managerProId: number;
   let titularUserId: number;
@@ -135,6 +139,7 @@ describe("duty-sync V2 lifecycle", () => {
         name: `DV2 ${tag} ${stamp}`,
         role: "Médico",
         userRole: role === "manager" ? "GESTOR_PLUS" : "USER",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
       })
       .$returningId();
     await db.insert(professionalInstitutions).values({
@@ -294,6 +299,7 @@ describe("duty-sync V2 lifecycle", () => {
       })
       .$returningId();
     sectorId = sector.id;
+    anesthesiaSpecialtyId = await ensureTestAnesthesiaSpecialty(db);
     scheduleContextId = await openTestScale(db, {
       institutionId,
       hospitalId,

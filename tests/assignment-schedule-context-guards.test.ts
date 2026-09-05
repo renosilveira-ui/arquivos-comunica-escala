@@ -5,6 +5,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  scheduleContextAllowedQualifications,
   scheduleContexts,
 } from "../drizzle/schema";
 import { assertProfessionalEligibleForScheduleContext } from "../server/schedule-contexts";
@@ -68,32 +69,64 @@ function activeRecoveryContext(id = 202) {
   };
 }
 
-function exactSectorAccessDb() {
-  return fakeSelectDb(
-    new Map([
+function occupancyGateDb(input: {
+  roleInInstitution: "USER" | "GESTOR_PLUS";
+  medicalSpecialtyId: number | null;
+  includeSectorAccess: boolean;
+  includeAllowlist: boolean;
+}) {
+  const contextQueue = [
+    [activeRecoveryContext()],
+    [activeRecoveryContext()],
+    [activeRecoveryContext()],
+  ];
+  const allowlistRow = [
+    {
+      scheduleContextId: 202,
+      medicalSpecialtyId: 3,
+      operationalProfileCode: null,
+    },
+  ];
+  const rows: [unknown, unknown[][]][] = [
+    [scheduleContexts, contextQueue],
+    [
+      professionals,
       [
-        scheduleContexts,
-        [[activeRecoveryContext()], [activeRecoveryContext()]],
-      ],
-      [professionals, [[{ userId: 9 }]]],
-      [professionalInstitutions, [[{ roleInInstitution: "USER" }]]],
-      [managerScope, [[]]],
-      [
-        professionalAccess,
+        [{ userId: 9 }],
         [
-          [
-            {
-              institutionId: 1,
-              professionalId: 55,
-              hospitalId: 10,
-              sectorId: 20,
-              canAccess: true,
-            },
-          ],
+          {
+            medicalSpecialtyId: input.medicalSpecialtyId,
+            operationalProfileCode: null,
+          },
         ],
       ],
-    ]),
-  );
+    ],
+    [professionalInstitutions, [[{ roleInInstitution: input.roleInInstitution }]]],
+    [managerScope, [[]]],
+  ];
+  if (input.includeAllowlist) {
+    rows.push([
+      scheduleContextAllowedQualifications,
+      [allowlistRow, allowlistRow, allowlistRow],
+    ]);
+  }
+  if (input.includeSectorAccess) {
+    rows.push([
+      professionalAccess,
+      [
+        [
+          {
+            institutionId: 1,
+            professionalId: 55,
+            hospitalId: 10,
+            sectorId: 20,
+            canAccess: true,
+          },
+        ],
+      ],
+    ]);
+  }
+  return fakeSelectDb(new Map(rows));
 }
 
 function ambiguousSectorContextDb() {
@@ -131,9 +164,57 @@ function expectGuardBeforeWrite(
 }
 
 describe("elegibilidade canônica em toda escrita de alocação", () => {
-  it("aceita membro ativo com acesso exato ao setor mesmo sem allowlist clínica", async () => {
-    const db = exactSectorAccessDb();
-    let writes = 0;
+  it("nega alocação com acesso setorial em ALLOWLIST sem qualificação canônica", async () => {
+    const db = occupancyGateDb({
+      roleInInstitution: "USER",
+      medicalSpecialtyId: null,
+      includeSectorAccess: true,
+      includeAllowlist: true,
+    });
+
+    await expect(
+      assertProfessionalEligibleForScheduleContext({
+        institutionId: 1,
+        professionalId: 55,
+        scheduleContextId: 202,
+        db: db as any,
+        lockForShare: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem qualificação compatível com a escala do plantão.",
+    });
+  });
+
+  it("nega GESTOR_PLUS sem qualificação canônica mesmo admitido na escala", async () => {
+    const db = occupancyGateDb({
+      roleInInstitution: "GESTOR_PLUS",
+      medicalSpecialtyId: null,
+      includeSectorAccess: false,
+      includeAllowlist: true,
+    });
+
+    await expect(
+      assertProfessionalEligibleForScheduleContext({
+        institutionId: 1,
+        professionalId: 55,
+        scheduleContextId: 202,
+        db: db as any,
+        lockForShare: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Profissional sem qualificação compatível com a escala do plantão.",
+    });
+  });
+
+  it("aceita membro com acesso setorial e especialidade da allowlist", async () => {
+    const db = occupancyGateDb({
+      roleInInstitution: "USER",
+      medicalSpecialtyId: 3,
+      includeSectorAccess: true,
+      includeAllowlist: true,
+    });
 
     await assertProfessionalEligibleForScheduleContext({
       institutionId: 1,
@@ -142,9 +223,23 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
       db: db as any,
       lockForShare: true,
     });
-    writes += 1;
+  });
 
-    expect(writes).toBe(1);
+  it("aceita GESTOR_PLUS sem professional_access quando a especialidade casa com a allowlist", async () => {
+    const db = occupancyGateDb({
+      roleInInstitution: "GESTOR_PLUS",
+      medicalSpecialtyId: 3,
+      includeSectorAccess: false,
+      includeAllowlist: true,
+    });
+
+    await assertProfessionalEligibleForScheduleContext({
+      institutionId: 1,
+      professionalId: 55,
+      scheduleContextId: 202,
+      db: db as any,
+      lockForShare: true,
+    });
   });
 
   it("nega alocação sem acesso, scope ou convite pendente", async () => {
@@ -216,10 +311,8 @@ describe("elegibilidade canônica em toda escrita de alocação", () => {
     );
     expect(structuredBranch).toContain("assertActiveScheduleContextTopology");
     expect(structuredBranch).not.toContain("assertSpecialtyCompatible");
-    expect(writeGuard).toContain('if (coverage === "manager")');
-    expect(writeGuard).toContain(
-      "managerCoveredProfessionalIds.add(professional.id)",
-    );
+    expect(structuredBranch).not.toContain("managerCoveredProfessionalIds");
+    expect(writeGuard).not.toContain("managerCoveredProfessionalIds");
     expect(validations).toContain(
       "async function assignmentCoverageWithoutSectorAccess",
     );

@@ -153,10 +153,11 @@ export function qualificationMatches(
   professional: ProfessionalQualification,
   context: ScheduleContextQualification,
 ): boolean {
-  // Predicado de classificação clínica. Não é ACL, convite, candidatura
-  // nem alocação direta. Receber/responder oferta de plantão reusa este
-  // matcher via `assertProfessionalQualificationMatchesScheduleContext`
-  // e o SQL `plantonistaQualificationMatchesContextSql`.
+  // Predicado de classificação clínica. Não é ACL, convite nem
+  // visibilidade administrativa. Toda ocupação (alocação direta,
+  // indicação, receive/accept de oferta) reusa este matcher via
+  // `assertProfessionalQualificationMatchesScheduleContext` e o SQL
+  // `plantonistaQualificationMatchesContextSql`.
   const professionalHasExactlyOne =
     (professional.medicalSpecialtyId === null) !==
     (professional.operationalProfileCode === null);
@@ -1268,8 +1269,9 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
     });
   }
 
-  // Alocação não filtra por especialidade / QUALIFICATION_ALLOWLIST.
-  // Vale GESTOR_PLUS, acesso setorial, manager_scope ou convite nominal pendente.
+  // Admissão na escala (ACL, GESTOR_PLUS, manager_scope ou convite) é
+  // necessária e insuficiente: a ocupação ainda exige a mesma
+  // qualificação canônica do receive.
   const [membership] = await database
     .select({
       roleInInstitution: professionalInstitutions.roleInInstitution,
@@ -1290,49 +1292,44 @@ export async function assertProfessionalEligibleForScheduleContext(input: {
       message: "Profissional sem vínculo ativo nesta instituição.",
     });
   }
-  if (membership.roleInInstitution === "GESTOR_PLUS") {
-    return;
-  }
   const scopes = await loadManagerScopes(
     database,
     input.institutionId,
     input.professionalId,
   );
-  if (
-    scopes.some((scope) =>
-      managerScopeCoversContext(scope, input.professionalId, context),
-    )
-  ) {
-    return;
-  }
-
   const accesses = await loadProfessionalAccesses(
     database,
     input.institutionId,
     input.professionalId,
   );
-  if (
+  const admitted =
+    membership.roleInInstitution === "GESTOR_PLUS" ||
+    scopes.some((scope) =>
+      managerScopeCoversContext(scope, input.professionalId, context),
+    ) ||
     accesses.some((access) =>
       accessCoversScheduleContext(access, input.professionalId, context),
-    )
-  ) {
-    return;
-  }
-
-  if (
-    await pendingNamedInviteCoversScale(database, {
+    ) ||
+    (await pendingNamedInviteCoversScale(database, {
       institutionId: input.institutionId,
       hospitalId: context.hospitalId,
       sectorId: context.sectorId,
       userId: professional.userId,
-    })
-  ) {
-    return;
+    }));
+  if (!admitted) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Profissional sem acesso para esta escala.",
+    });
   }
 
-  throw new TRPCError({
-    code: "FORBIDDEN",
-    message: "Profissional sem acesso para esta escala.",
+  // Papel gerencial, manager_scope e convite admitem na escala; não
+  // ocupam o plantão sem a mesma qualificação canônica do receive.
+  await assertProfessionalQualificationMatchesScheduleContext({
+    institutionId: input.institutionId,
+    professionalId: input.professionalId,
+    scheduleContextId: input.scheduleContextId,
+    db: database,
   });
 }
 

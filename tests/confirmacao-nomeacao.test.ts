@@ -46,7 +46,10 @@ import {
 } from "../server/confirmation-state";
 import { enqueueAutoSsoPush, triggerAutoSso } from "../server/sso/auto-sso";
 import { enqueueDutySync, processPendingDutySyncs } from "../server/sso/duty-sync";
-import { openTestScale } from "./helpers/open-test-scale";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 
 const dutySyncMockState = vi.hoisted(() => ({ useReal: false }));
 const orgMappingState = vi.hoisted(() => ({ organizationId: null as string | null }));
@@ -106,6 +109,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   let hospitalId: number;
   let sectorId: number;
   let scheduleContextId: number;
+  let anesthesiaSpecialtyId: number;
   let titularUserId: number;
   let titularProId: number;
   let subUserId: number;
@@ -136,7 +140,13 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   async function person(tag: string) {
     const [u] = await db.insert(users).values({ name: `CN ${tag} ${stamp}`, email: `cn-${tag}-${stamp}@test.local`, passwordHash: "test", role: "doctor" }).$returningId();
-    const [p] = await db.insert(professionals).values({ userId: u.id, name: `CN ${tag} ${stamp}`, role: "Médico", userRole: "USER" }).$returningId();
+    const [p] = await db.insert(professionals).values({
+      userId: u.id,
+      name: `CN ${tag} ${stamp}`,
+      role: "Médico",
+      userRole: "USER",
+      medicalSpecialtyId: anesthesiaSpecialtyId,
+    }).$returningId();
     await db.insert(professionalInstitutions).values({ professionalId: p.id, userId: u.id, institutionId, roleInInstitution: "USER", isPrimary: true, active: true });
     await db.insert(professionalAccess).values({ institutionId, professionalId: p.id, hospitalId, sectorId, canAccess: true });
     userIds.push(u.id);
@@ -401,6 +411,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     hospitalId = h.id;
     const [sec] = await db.insert(sectors).values({ institutionId, hospitalId, name: `CN Setor ${stamp}`, category: "cirurgico", color: "#2563EB" }).$returningId();
     sectorId = sec.id;
+    anesthesiaSpecialtyId = await ensureTestAnesthesiaSpecialty(db);
     scheduleContextId = await openTestScale(db, {
       institutionId,
       hospitalId,
@@ -847,6 +858,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         name: `CN alias ${stamp}`,
         role: "Médico",
         userRole: "USER",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
       })
       .$returningId();
     await db.insert(professionalAccess).values({

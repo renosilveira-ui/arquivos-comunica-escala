@@ -98,7 +98,8 @@ async function managerScopeCoversAssignment(
 }
 
 /** Quem cobre escrita sem ACL de setor. Convite pendente libera o
- *  acesso (assign-direct); só gestor/PLUS/scope pulam especialidade. */
+ *  acesso (assign-direct); GESTOR_PLUS/scope/convite não pulam
+ *  especialidade — a ocupação revalida qualificação canônica. */
 type AssignmentAccessCoverage = "manager" | "invite";
 
 async function assignmentCoverageWithoutSectorAccess(
@@ -489,7 +490,6 @@ export async function assertAssignmentWritesAllowedForUpdate(
   }
 
   const accessCache = new Set<string>();
-  const managerCoveredProfessionalIds = new Set<number>();
   const accessLocks: {
     id: number;
     professionalId: number;
@@ -549,13 +549,10 @@ export async function assertAssignmentWritesAllowedForUpdate(
           "Profissional sem acesso ativo ao hospital/setor do plantão.",
         );
       }
-      // Mesma porta de receive/oferta: GESTOR_PLUS e manager_scope
-      // escrevem a alocação sem especialidade/allowlist. Sem isso o
-      // aceite de um coordenador (Reno/Maurilio) 500 no effectuate.
-      // Convite pendente não é receive — não alarga o skip.
-      if (coverage === "manager") {
-        managerCoveredProfessionalIds.add(professional.id);
-      }
+      // Sem professional_access setorial: GESTOR_PLUS/manager_scope ou
+      // convite pendente cobrem a admissão. A ocupação ainda passa por
+      // assertProfessionalEligibleForScheduleContext (qualificação
+      // canônica). Convite não é atalho de especialidade.
       accessCache.add(key);
       continue;
     }
@@ -630,31 +627,22 @@ export async function assertAssignmentWritesAllowedForUpdate(
 
     // A autorização é exclusivamente estruturada e revalidada contra o
     // schedule_context_id. O texto clínico é descritivo e nunca concede nem
-    // nega uma alocação.
-    if (managerCoveredProfessionalIds.has(professional.id)) {
-      await assertActiveScheduleContextTopology({
-        institutionId: candidate.institutionId,
-        hospitalId: candidate.hospitalId,
-        sectorId: candidate.sectorId,
-        scheduleContextId: candidate.scheduleContextId,
-        db: tx,
-      });
-    } else {
-      await assertProfessionalEligibleForScheduleContext({
-        institutionId: candidate.institutionId,
-        professionalId: candidate.professionalId,
-        scheduleContextId: candidate.scheduleContextId,
-        db: tx,
-        lockForShare: true,
-      });
-      await assertActiveScheduleContextTopology({
-        institutionId: candidate.institutionId,
-        hospitalId: candidate.hospitalId,
-        sectorId: candidate.sectorId,
-        scheduleContextId: candidate.scheduleContextId,
-        db: tx,
-      });
-    }
+    // nega uma alocação. GESTOR_PLUS/manager_scope admitem na escala; a
+    // ocupação ainda exige a mesma qualificação canônica do receive.
+    await assertProfessionalEligibleForScheduleContext({
+      institutionId: candidate.institutionId,
+      professionalId: candidate.professionalId,
+      scheduleContextId: candidate.scheduleContextId,
+      db: tx,
+      lockForShare: true,
+    });
+    await assertActiveScheduleContextTopology({
+      institutionId: candidate.institutionId,
+      hospitalId: candidate.hospitalId,
+      sectorId: candidate.sectorId,
+      scheduleContextId: candidate.scheduleContextId,
+      db: tx,
+    });
 
     let activeSchedule = scheduleCache.get(professional.id);
     if (!activeSchedule) {
