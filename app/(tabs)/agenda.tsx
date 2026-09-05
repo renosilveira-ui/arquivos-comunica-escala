@@ -34,6 +34,12 @@ import { CreateSectorScaleButton } from "@/components/agenda/CreateSectorScaleBu
 import { MobileDayList } from "@/components/agenda/MobileDayList";
 import { NextShiftCard } from "@/components/agenda/NextShiftCard";
 import { resolveNextShiftState } from "@/lib/next-shift-state";
+import {
+  AGENDA_MONTH_OFFERS_ERROR_TITLE,
+  agendaMonthOffersSurface,
+  canDisplayAgendaMonthOffers,
+  resolveAgendaMonthOffersState,
+} from "@/lib/agenda-month-offers-state";
 import { PanoramicAgenda } from "@/components/agenda/PanoramicAgenda";
 import { DayNumeral, numeral } from "@/components/agenda/CalendarSheet";
 import { SkeletonList } from "@/components/ui/Skeleton";
@@ -324,7 +330,14 @@ export default function AgendaScreen() {
     return buildEmptyAgendaWeeks(queryStartDate, queryWeeks);
   }, [queryStartDate, data?.weeks, queryWeeks]);
 
-  const { data: availableSwaps } = trpc.swaps.listAvailable.useQuery(
+  const {
+    data: availableSwaps,
+    isLoading: availableSwapsLoading,
+    isPending: availableSwapsPending,
+    isError: availableSwapsIsError,
+    error: availableSwapsError,
+    refetch: refetchAvailableSwaps,
+  } = trpc.swaps.listAvailable.useQuery(
     { scheduleContextId: selectedAgendaContextId },
     {
       enabled:
@@ -334,8 +347,18 @@ export default function AgendaScreen() {
       staleTime: 60_000,
     },
   );
+  const offersState = resolveAgendaMonthOffersState({
+    isLoading: availableSwapsLoading,
+    isPending: availableSwapsPending,
+    isError: availableSwapsIsError,
+    data: availableSwaps,
+    error: availableSwapsError,
+  });
+  const offersSurface = agendaMonthOffersSurface(offersState);
   const dayOffers = useMemo<DayOffer[]>(() => {
-    return ((availableSwaps ?? []) as any[]).map((sw) => {
+    if (!canDisplayAgendaMonthOffers(offersState)) return [];
+    if (!Array.isArray(availableSwaps)) return [];
+    return availableSwaps.map((sw) => {
       const start = new Date(sw.fromShift?.startAt ?? 0);
       const end = new Date(sw.fromShift?.endAt ?? 0);
       return {
@@ -346,7 +369,7 @@ export default function AgendaScreen() {
         timeRange: formatHospitalTimeRange(start, end),
       };
     });
-  }, [availableSwaps]);
+  }, [availableSwaps, offersState]);
 
   const activeInstitutionName = useMemo(
     () =>
@@ -943,6 +966,15 @@ export default function AgendaScreen() {
                 selectedContext={selectedManagerContext}
                 onChanged={() => {
                   refetch();
+                }}
+              />
+            ) : null}
+            {offersSurface.kind === "ERROR" ? (
+              <QueryErrorState
+                title={AGENDA_MONTH_OFFERS_ERROR_TITLE}
+                error={availableSwapsError}
+                onRetry={() => {
+                  void refetchAvailableSwaps();
                 }}
               />
             ) : null}
