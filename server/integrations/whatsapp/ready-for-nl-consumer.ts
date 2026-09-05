@@ -34,6 +34,10 @@ import {
   projectSectorClarificationFromResolver,
   projectTargetProfessionalClarificationFromResolver,
 } from "./ready-for-nl-homonym-projection";
+import {
+  clearWhatsAppInboundOperationalPayloadForReadyNl,
+  isWhatsAppInboundReadyNlClearFailure,
+} from "./ready-for-nl-cleanup";
 import { loadWhatsAppInboundSourceForReadyNl } from "./ready-for-nl-source";
 import type { WhatsAppInboundSourceForNl } from "./ready-for-nl-source";
 import type {
@@ -42,10 +46,7 @@ import type {
   ReadyForNlDurableStage,
   ReadyForNlInfraCode,
 } from "./ready-for-nl-types";
-import {
-  clearWhatsAppInboundOperationalPayload,
-  isWhatsAppInboundPayloadUsable,
-} from "./operational-payload";
+import { isWhatsAppInboundPayloadUsable } from "./operational-payload";
 import {
   clarificationInvariantsHold,
   confirmationInvariantsHold,
@@ -221,26 +222,17 @@ async function cleanupAfterDurable(input: {
   const stage = durableStageOf(pending);
   if (!stage) return blocked("STATE_CHANGED");
 
-  const cleared = await clearWhatsAppInboundOperationalPayload(
+  const cleared = await clearWhatsAppInboundOperationalPayloadForReadyNl({
     sourceInboundMessageId,
-  );
-  if (cleared) {
+    expectedUserId: sourceUserId,
+  });
+  if (!isWhatsAppInboundReadyNlClearFailure(cleared)) {
     return { ok: true, kind, stage, pendingId: pending.id };
   }
-
-  const reload = await loadWhatsAppInboundSourceForReadyNl(
-    sourceInboundMessageId,
-  );
-  if (!reload.ok) {
-    if (reload.code === "SOURCE_NOT_FOUND") {
-      return retry("PERSISTENCE_FAILED");
-    }
-    return retry(reload.code);
+  if (cleared.code === "STATE_CHANGED") {
+    return blocked("STATE_CHANGED");
   }
-  if (reload.source.payloadClearedAt != null || reload.source.operationalText == null) {
-    return { ok: true, kind, stage, pendingId: pending.id };
-  }
-  return retry("CLEANUP_FAILED");
+  return retry(cleared.code);
 }
 
 async function persistAndCleanup(input: {

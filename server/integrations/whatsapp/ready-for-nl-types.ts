@@ -16,7 +16,6 @@ export type ReadyForNlDurableStage = Extract<
 export type ReadyForNlInfraCode =
   | "DB_UNAVAILABLE"
   | "PERSISTENCE_FAILED"
-  | "CLEANUP_FAILED"
   | "INTERNAL_FAILURE";
 
 export type ReadyForNlBlockedCode =

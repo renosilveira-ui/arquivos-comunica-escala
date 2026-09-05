@@ -16,6 +16,13 @@ const source = readFileSync(
   ),
   "utf8",
 );
+const cleanup = readFileSync(
+  new URL(
+    "../server/integrations/whatsapp/ready-for-nl-cleanup.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 const homonym = readFileSync(
   new URL(
     "../server/integrations/whatsapp/ready-for-nl-homonym-projection.ts",
@@ -50,7 +57,7 @@ const schema = readFileSync(
   "utf8",
 );
 
-const production = [consumer, source, homonym, types];
+const production = [consumer, source, homonym, types, cleanup];
 
 function assertOnlySourceId(value: ProcessWhatsAppReadyForNlInboundInput): void {
   const keys = Object.keys(value).sort();
@@ -114,18 +121,67 @@ describe("WhatsApp B2-C READY_FOR_NL — source guards", () => {
     expect(consumer).not.toMatch(/institutionIds:\s*\[[^\]]*\.slice\(0,\s*1\)/);
   });
 
-  it("cleanup do inbound só depois da transição durável", () => {
-    expect(consumer).toContain("clearWhatsAppInboundOperationalPayload");
+  it("cleanup do inbound só depois da transição durável via compare-and-clear", () => {
+    expect(consumer).toContain("clearWhatsAppInboundOperationalPayloadForReadyNl");
     expect(consumer).toContain("cleanupAfterDurable");
     expect(consumer).toContain("isDurableNlPending");
+    expect(consumer).toContain("expectedUserId: sourceUserId");
+    const withoutAtomic = consumer.replaceAll(
+      "clearWhatsAppInboundOperationalPayloadForReadyNl",
+      "",
+    );
+    expect(withoutAtomic).not.toContain("clearWhatsAppInboundOperationalPayload");
     const clearIndex = consumer.indexOf(
-      "clearWhatsAppInboundOperationalPayload",
+      "clearWhatsAppInboundOperationalPayloadForReadyNl",
     );
     const advanceIndex = consumer.indexOf("advanceWhatsAppPendingFromParse({");
     expect(advanceIndex).toBeGreaterThan(-1);
     expect(clearIndex).toBeGreaterThan(-1);
-    expect(consumer).toContain("CLEANUP_FAILED");
+    expect(consumer).not.toContain("CLEANUP_FAILED");
+    expect(types).not.toContain("CLEANUP_FAILED");
     expect(consumer).toContain("kind: \"REPLAY\"");
+  });
+
+  it("compare-and-clear exige os guards atômicos e não aceita texto do caller", () => {
+    const start = cleanup.indexOf(
+      "export async function clearWhatsAppInboundOperationalPayloadForReadyNl",
+    );
+    const end = cleanup.indexOf(
+      "const reload = await loadWhatsAppInboundSourceForReadyNl",
+    );
+    const update = cleanup.slice(start, end);
+    expect(update).toContain("eq(whatsappInboundMessages.id, sourceInboundMessageId)");
+    expect(update).toContain(
+      "eq(whatsappInboundMessages.provider, WHATSAPP_INBOUND_PROVIDER)",
+    );
+    expect(update).toContain("eq(whatsappInboundMessages.userId, expectedUserId)");
+    expect(update).toContain("whatsappInboundMessages.processingStatus");
+    expect(update).toContain("WhatsAppInboundStatuses.READY_FOR_NL");
+    expect(update).toContain(
+      "eq(whatsappInboundMessages.contentKind, CONTENT_KIND_TEXT)",
+    );
+    expect(update).toContain("isNull(whatsappInboundMessages.payloadClearedAt)");
+    expect(update).not.toContain("READY_FOR_TRANSCRIPTION");
+    expect(update).not.toContain("inArray");
+    expect(update.match(/\.update\(/g)?.length).toBe(1);
+    expect(cleanup).toContain("Nunca um segundo UPDATE mais permissivo");
+    const inputBlock = cleanup.slice(
+      cleanup.indexOf(
+        "export type ClearWhatsAppInboundOperationalPayloadForReadyNlInput",
+      ),
+      cleanup.indexOf("export type WhatsAppInboundReadyNlClearResult"),
+    );
+    expect(inputBlock).toContain("sourceInboundMessageId: number");
+    expect(inputBlock).toContain("expectedUserId: number");
+    expect(inputBlock).not.toMatch(
+      /operationalText|payload|text:|phone|intentKind/,
+    );
+    expect(cleanup).toContain('outcome: "cleared"');
+    expect(cleanup).toContain('outcome: "already_cleared"');
+    expect(cleanup).toContain('"STATE_CHANGED"');
+    expect(cleanup).toContain('"DB_UNAVAILABLE"');
+    expect(cleanup).toContain("whatsapp_inbound_ready_nl_clear_miss");
+    expect(cleanup).toContain("whatsapp_inbound_ready_nl_clear_failed");
   });
 
   it("schema WhatsApp inbound/pending não muda nesta frente", () => {
@@ -133,6 +189,8 @@ describe("WhatsApp B2-C READY_FOR_NL — source guards", () => {
     expect(schema).toContain("whatsappPendingIntents");
     expect(consumer).not.toMatch(/alter table|CREATE TABLE|drizzle\/migrations/i);
     expect(source).not.toMatch(/\.insert\s*\(|\.update\s*\(|\.delete\s*\(/);
+    expect(cleanup).not.toMatch(/alter table|CREATE TABLE|drizzle\/migrations/i);
+    expect(cleanup).not.toMatch(/mysqlTable|pgTable/);
   });
 
   it("contrato registra B2-C como orquestrador sem execução nem outbound", () => {
@@ -145,5 +203,7 @@ describe("WhatsApp B2-C READY_FOR_NL — source guards", () => {
     expect(contract).toContain("não é worker");
     expect(contract).toContain("replay não reparsa");
     expect(contract).toContain("cleanup somente pós-durabilidade");
+    expect(contract).toContain("clearWhatsAppInboundOperationalPayloadForReadyNl");
+    expect(contract).toContain("compare-and-clear");
   });
 });

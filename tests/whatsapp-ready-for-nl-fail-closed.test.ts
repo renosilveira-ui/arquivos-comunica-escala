@@ -6,6 +6,7 @@ import * as actorMod from "../server/_core/canonical-operational-actor";
 import * as parserMod from "../server/natural-language/swap-intent-parser";
 import * as resolverMod from "../server/natural-language/swap-intent-resolver";
 import * as payloadMod from "../server/integrations/whatsapp/operational-payload";
+import * as cleanupMod from "../server/integrations/whatsapp/ready-for-nl-cleanup";
 import type { WhatsAppPendingIntentRecord } from "../server/integrations/whatsapp/pending-intent-types";
 import type { WhatsAppInboundSourceForNl } from "../server/integrations/whatsapp/ready-for-nl-source";
 import type { SwapIntentDraft } from "../server/natural-language/swap-intent-types";
@@ -72,8 +73,15 @@ function spies() {
   const parse = vi.spyOn(parserMod, "parseSwapIntent");
   const resolve = vi.spyOn(resolverMod, "resolveSwapIntent");
   const advance = vi.spyOn(pendingStore, "advanceWhatsAppPendingFromParse");
-  const clear = vi.spyOn(payloadMod, "clearWhatsAppInboundOperationalPayload");
-  return { load, create, bySource, actor, parse, resolve, advance, clear };
+  const clear = vi.spyOn(
+    cleanupMod,
+    "clearWhatsAppInboundOperationalPayloadForReadyNl",
+  );
+  const legacyClear = vi.spyOn(
+    payloadMod,
+    "clearWhatsAppInboundOperationalPayload",
+  );
+  return { load, create, bySource, actor, parse, resolve, advance, clear, legacyClear };
 }
 
 describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
@@ -425,8 +433,9 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     expect(clear).not.toHaveBeenCalled();
   });
 
-  it("clear falha após advance → CLEANUP_FAILED retryable, pending preservado", async () => {
-    const { load, create, actor, parse, resolve, advance, clear } = spies();
+  it("clear falha após advance → PERSISTENCE_FAILED retryable, pending preservado", async () => {
+    const { load, create, actor, parse, resolve, advance, clear, legacyClear } =
+      spies();
     const confirmation = parseRow({
       stage: "CONFIRMATION",
       intentKind: "CESSAO",
@@ -500,16 +509,17 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
       outcome: "advanced",
       row: confirmation,
     });
-    clear.mockResolvedValue(false);
+    clear.mockResolvedValue({ ok: false, code: "PERSISTENCE_FAILED" });
     const result = await processWhatsAppReadyForNlInbound({
       sourceInboundMessageId: SOURCE_ID,
     });
     expect(result).toEqual({
       ok: false,
       kind: "RETRYABLE_INFRA",
-      code: "CLEANUP_FAILED",
+      code: "PERSISTENCE_FAILED",
     });
     expect(advance).toHaveBeenCalledTimes(1);
+    expect(legacyClear).not.toHaveBeenCalled();
   });
 
   it("already_open de outro source não apaga o texto do novo inbound", async () => {
@@ -573,7 +583,8 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
   });
 
   it("pending já CONFIRMATION com payload ainda presente só faz cleanup", async () => {
-    const { load, create, parse, resolve, advance, clear } = spies();
+    const { load, create, parse, resolve, advance, clear, legacyClear } =
+      spies();
     const confirmation = parseRow({
       stage: "CONFIRMATION",
       intentKind: "CESSAO",
@@ -612,7 +623,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
       outcome: "replay",
       row: confirmation,
     });
-    clear.mockResolvedValue(true);
+    clear.mockResolvedValue({ ok: true, outcome: "cleared" });
     const result = await processWhatsAppReadyForNlInbound({
       sourceInboundMessageId: SOURCE_ID,
     });
@@ -625,7 +636,112 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     expect(parse).not.toHaveBeenCalled();
     expect(resolve).not.toHaveBeenCalled();
     expect(advance).not.toHaveBeenCalled();
-    expect(clear).toHaveBeenCalledWith(SOURCE_ID);
+    expect(clear).toHaveBeenCalledWith({
+      sourceInboundMessageId: SOURCE_ID,
+      expectedUserId: USER_ID,
+    });
+    expect(legacyClear).not.toHaveBeenCalled();
+  });
+
+  it("ALREADY_CLEARED do compare-and-clear é replay de sucesso", async () => {
+    const { load, create, parse, clear, legacyClear } = spies();
+    load.mockResolvedValue({ ok: true, source: readySource() });
+    create.mockResolvedValue({
+      ok: true,
+      outcome: "replay",
+      row: parseRow({
+        stage: "CONFIRMATION",
+        intentKind: "CESSAO",
+        institutionId: 1,
+        parsedPayload: {
+          version: 1,
+          kind: "CESSAO",
+          ownShift: {
+            date: { kind: "OFFSET", days: 1, said: "amanhã" },
+            period: "NIGHT",
+            sectorText: "sr",
+          },
+          targetProfessional: { name: "Joao" },
+        },
+        resolvedPayload: {
+          version: 1,
+          kind: "CESSAO",
+          institutionId: 1,
+          fromShiftInstanceId: 10,
+          fromAssignmentId: 11,
+          toProfessionalId: 20,
+          toShiftInstanceId: null,
+          targetProfessionalName: "Joao",
+          ownShift: {
+            label: "Noite",
+            sectorName: "SR",
+            dayKey: "2026-09-10",
+            timeRange: "19:00–07:00",
+          },
+          targetShift: null,
+        },
+      }),
+    });
+    clear.mockResolvedValue({ ok: true, outcome: "already_cleared" });
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: SOURCE_ID,
+    });
+    expect(result).toEqual({
+      ok: true,
+      kind: "REPLAY",
+      stage: "CONFIRMATION",
+      pendingId: 7,
+    });
+    expect(parse).not.toHaveBeenCalled();
+    expect(legacyClear).not.toHaveBeenCalled();
+  });
+
+  it("STATE_CHANGED do compare-and-clear bloqueia sem retry opaco", async () => {
+    const { load, create, parse, clear, legacyClear } = spies();
+    load.mockResolvedValue({ ok: true, source: readySource() });
+    create.mockResolvedValue({
+      ok: true,
+      outcome: "replay",
+      row: parseRow({
+        stage: "CLARIFICATION",
+        clarificationPayload: { version: 1, code: "AMBIGUOUS_INTENT" },
+      }),
+    });
+    clear.mockResolvedValue({ ok: false, code: "STATE_CHANGED" });
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: SOURCE_ID,
+    });
+    expect(result).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "STATE_CHANGED",
+    });
+    expect(parse).not.toHaveBeenCalled();
+    expect(legacyClear).not.toHaveBeenCalled();
+  });
+
+  it("DB_UNAVAILABLE do compare-and-clear é RETRYABLE_INFRA", async () => {
+    const { load, create, parse, clear, legacyClear } = spies();
+    load.mockResolvedValue({ ok: true, source: readySource() });
+    create.mockResolvedValue({
+      ok: true,
+      outcome: "replay",
+      row: parseRow({
+        stage: "CLARIFICATION",
+        clarificationPayload: { version: 1, code: "AMBIGUOUS_INTENT" },
+      }),
+    });
+    clear.mockResolvedValue({ ok: false, code: "DB_UNAVAILABLE" });
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: SOURCE_ID,
+    });
+    expect(result).toEqual({
+      ok: false,
+      kind: "RETRYABLE_INFRA",
+      code: "DB_UNAVAILABLE",
+    });
+    expect(parse).not.toHaveBeenCalled();
+    expect(legacyClear).not.toHaveBeenCalled();
   });
 
   it("NL reformulation/not found/domain conflict usam o classificador B2-A e não persistem", async () => {

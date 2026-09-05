@@ -23,7 +23,8 @@ import {
 } from "../server/integrations/whatsapp/pending-intent-payloads";
 import * as parserMod from "../server/natural-language/swap-intent-parser";
 import * as resolverMod from "../server/natural-language/swap-intent-resolver";
-import * as payloadMod from "../server/integrations/whatsapp/operational-payload";
+import * as cleanupMod from "../server/integrations/whatsapp/ready-for-nl-cleanup";
+import * as pendingStore from "../server/integrations/whatsapp/pending-intent-store";
 import * as swapCreate from "../server/swap-offer-create";
 import { resolveCanonicalOperationalActorForUser } from "../server/_core/canonical-operational-actor";
 
@@ -444,10 +445,14 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
   it("crash window: advance ok, clear falha, replay só limpa", async () => {
     const parseSpy = vi.spyOn(parserMod, "parseSwapIntent");
     const resolveSpy = vi.spyOn(resolverMod, "resolveSwapIntent");
-    const actualClear = payloadMod.clearWhatsAppInboundOperationalPayload;
+    const actualClear =
+      cleanupMod.clearWhatsAppInboundOperationalPayloadForReadyNl;
     const clearSpy = vi
-      .spyOn(payloadMod, "clearWhatsAppInboundOperationalPayload")
-      .mockImplementationOnce(async () => false)
+      .spyOn(cleanupMod, "clearWhatsAppInboundOperationalPayloadForReadyNl")
+      .mockImplementationOnce(async () => ({
+        ok: false,
+        code: "PERSISTENCE_FAILED",
+      }))
       .mockImplementation(actualClear);
 
     const text = `passar meu plantão de amanhã à noite na SR para o Colg Silva`;
@@ -462,7 +467,7 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
     expect(first).toEqual({
       ok: false,
       kind: "RETRYABLE_INFRA",
-      code: "CLEANUP_FAILED",
+      code: "PERSISTENCE_FAILED",
     });
     const pendingAfterAdvance = await loadPendingBySource(sourceId);
     expect(pendingAfterAdvance?.stage).toBe("CONFIRMATION");
@@ -505,14 +510,12 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
       processWhatsAppReadyForNlInbound({ sourceInboundMessageId: sourceId }),
       processWhatsAppReadyForNlInbound({ sourceInboundMessageId: sourceId }),
     ]);
-    expect(a.ok || b.ok).toBe(true);
+    expect(a.ok && b.ok).toBe(true);
     for (const result of [a, b]) {
+      expect(result.ok).toBe(true);
       if (result.ok) {
         expect(["ADVANCED", "REPLAY"]).toContain(result.kind);
         expect(result.stage).toBe("CONFIRMATION");
-      } else {
-        expect(result.kind).toBe("RETRYABLE_INFRA");
-        expect(result.code).toBe("CLEANUP_FAILED");
       }
     }
     const pendings = await db
@@ -522,14 +525,90 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
     expect(pendings).toHaveLength(1);
     expect(pendings[0]?.stage).toBe("CONFIRMATION");
     const inbound = await loadInbound(sourceId);
-    if (inbound?.operationalText != null) {
-      const retry = await processWhatsAppReadyForNlInbound({
+    expect(inbound?.operationalText).toBeNull();
+  });
+
+  it("advance durável + owner muda antes do clear → pending permanece; inbound não é destruído", async () => {
+    const text = `passar meu plantão de amanhã à noite na SR para o Colg Silva`;
+    const sourceId = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "ownchg",
+      text,
+    });
+    const actualAdvance = pendingStore.advanceWhatsAppPendingFromParse;
+    const advanceSpy = vi
+      .spyOn(pendingStore, "advanceWhatsAppPendingFromParse")
+      .mockImplementation(async (input) => {
+        const result = await actualAdvance(input);
+        if (result.ok) {
+          await db
+            .update(whatsappInboundMessages)
+            .set({ userId: colleague.userId })
+            .where(eq(whatsappInboundMessages.id, sourceId));
+        }
+        return result;
+      });
+    try {
+      const processed = await processWhatsAppReadyForNlInbound({
         sourceInboundMessageId: sourceId,
       });
-      expect(retry.ok).toBe(true);
+      expect(processed).toEqual({
+        ok: false,
+        kind: "BLOCKED",
+        code: "STATE_CHANGED",
+      });
+      const pending = await loadPendingBySource(sourceId);
+      expect(pending?.status).toBe("OPEN");
+      expect(pending?.stage).toBe("CONFIRMATION");
+      expect(pending?.userId).toBe(actor.userId);
+      const inbound = await loadInbound(sourceId);
+      expect(inbound?.operationalText).toBe(text);
+      expect(inbound?.payloadClearedAt).toBeNull();
+      expect(inbound?.userId).toBe(colleague.userId);
+    } finally {
+      advanceSpy.mockRestore();
     }
-    const cleared = await loadInbound(sourceId);
-    expect(cleared?.operationalText).toBeNull();
+  });
+
+  it("advance durável + status muda antes do clear → não destrói payload", async () => {
+    const text = `passar meu plantão de amanhã à noite na SR para o Colg Silva`;
+    const sourceId = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "stchg",
+      text,
+    });
+    const actualAdvance = pendingStore.advanceWhatsAppPendingFromParse;
+    const advanceSpy = vi
+      .spyOn(pendingStore, "advanceWhatsAppPendingFromParse")
+      .mockImplementation(async (input) => {
+        const result = await actualAdvance(input);
+        if (result.ok) {
+          await db
+            .update(whatsappInboundMessages)
+            .set({ processingStatus: "READY_FOR_TRANSCRIPTION" })
+            .where(eq(whatsappInboundMessages.id, sourceId));
+        }
+        return result;
+      });
+    try {
+      const processed = await processWhatsAppReadyForNlInbound({
+        sourceInboundMessageId: sourceId,
+      });
+      expect(processed).toEqual({
+        ok: false,
+        kind: "BLOCKED",
+        code: "STATE_CHANGED",
+      });
+      const pending = await loadPendingBySource(sourceId);
+      expect(pending?.status).toBe("OPEN");
+      expect(pending?.stage).toBe("CONFIRMATION");
+      const inbound = await loadInbound(sourceId);
+      expect(inbound?.operationalText).toBe(text);
+      expect(inbound?.payloadClearedAt).toBeNull();
+      expect(inbound?.processingStatus).toBe("READY_FOR_TRANSCRIPTION");
+    } finally {
+      advanceSpy.mockRestore();
+    }
   });
 
   it("ambiguidade de plantão próprio → CLARIFICATION e limpa inbound", async () => {

@@ -231,11 +231,14 @@ Não logar: Body, `operational_text`, URL de mídia, telefone, token.
 ### Retenção e limpeza
 
 - TTL curto: 24 horas a partir da persistência/refresh do payload.
-- Após consumo previsto: Incremento B chama
-  `clearWhatsAppInboundOperationalPayload(id)` depois de ler o texto;
-  Incremento D faz o mesmo depois de obter a mídia. A limpeza só atua
-  em `READY_FOR_NL` / `READY_FOR_TRANSCRIPTION` — não apaga payload de
-  row `RETRYABLE` (a retomada ainda precisa do material).
+- Após consumo previsto: B2-C TEXT `READY_FOR_NL` chama
+  `clearWhatsAppInboundOperationalPayloadForReadyNl({ sourceInboundMessageId, expectedUserId })`
+  (compare-and-clear atômico: owner + `READY_FOR_NL` + `TEXT` +
+  `payload_cleared_at IS NULL`). Incremento D chama
+  `clearWhatsAppInboundOperationalPayload(id)` depois de obter a mídia.
+  O helper boolean por id continua atuando em `READY_FOR_NL` /
+  `READY_FOR_TRANSCRIPTION` — não apaga payload de row `RETRYABLE`
+  (a retomada ainda precisa do material). B2-C não usa o helper boolean.
 - Consumidor deve checar `isWhatsAppInboundPayloadUsable` (expirado ou
   limpo ≠ material disponível).
 - `media_url` só é persistida se for `https:`.
@@ -301,7 +304,7 @@ READY_FOR_NL
   → actor canônico B2-B
   → parser/resolver (núcleo NL, sem `if source === "WHATSAPP"`)
   → CLARIFICATION | CONFIRMATION (B2-A)
-  → clear operational_text
+  → compare-and-clear operational_text
 ```
 
 Regras:
@@ -310,10 +313,16 @@ Regras:
   não chama `createSwapOffer`;
 - **sem outbound** — não envia WhatsApp, não monta template, não Twilio
   outbound;
-- **cleanup somente pós-durabilidade** — `clearWhatsAppInboundOperationalPayload`
-  só depois de pending comprovadamente `OPEN/CLARIFICATION` ou
+- **cleanup somente pós-durabilidade** —
+  `clearWhatsAppInboundOperationalPayloadForReadyNl({ sourceInboundMessageId, expectedUserId })`
+  compare-and-clear atômico: o UPDATE exige `id` + provider TWILIO +
+  `user_id` + `READY_FOR_NL` + `TEXT` + `payload_cleared_at IS NULL`.
+  Só depois de pending comprovadamente `OPEN/CLARIFICATION` ou
   `OPEN/CONFIRMATION` do mesmo source/user (ou replay que comprova esse
-  estado). Nunca o inverso;
+  estado). Nunca o inverso. Resultado discriminado (`cleared` /
+  `already_cleared` / `STATE_CHANGED` / `DB_UNAVAILABLE` /
+  `PERSISTENCE_FAILED`); zero rows recarrega fail-closed, sem segundo
+  UPDATE permissivo. B2-C não usa o helper boolean por id;
 - **replay não reparsa** — pending persistido é a autoridade. Crash
   entre advance e clear: a próxima tentativa só reconcilia cleanup;
 - identidade nasce do inbound (`source.userId`); o caller não passa
