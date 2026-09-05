@@ -161,6 +161,7 @@ describe("WhatsApp B2-D — source guards", () => {
     expect(driver).toContain("WHATSAPP_NL_DRIVER_MALFORMED_PARK_CODE");
     expect(contract).toContain("ALREADY_OPEN` é WAIT");
     expect(contract).toContain("WHATSAPP_B2D_INDEX_REQUIRED");
+    expect(contract).toContain("PR #420");
     expect(contract).toContain("novo source** e cria novo pending");
     expect(contract).not.toContain("cai em `ALREADY_OPEN` → WAIT");
   });
