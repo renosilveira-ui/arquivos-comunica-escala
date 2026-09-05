@@ -490,8 +490,7 @@ describe("elegibilidade canônica de oferta de plantão", () => {
       contexts.indexOf("export async function assertProfessionalEligibleForScheduleContext"),
       contexts.indexOf("export async function assertActiveScheduleContextTopology"),
     );
-    expect(allocation).not.toContain("qualificationMatches");
-    expect(allocation).not.toContain("assertProfessionalQualificationMatchesScheduleContext");
+    expect(allocation).toContain("assertProfessionalQualificationMatchesScheduleContext");
     expect(listSlice).toContain("actorClinicallyCoversOfferedShiftSql");
     expect(listSlice).toContain("listedOfferIsClinicallyActionable");
     expect(eligibility).toContain("actorClinicallyCoversOfferedShiftSql");

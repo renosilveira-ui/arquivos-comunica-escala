@@ -28,7 +28,10 @@ import { dayKeyBrt } from "../server/local-time";
 import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
-import { openTestScale } from "./helpers/open-test-scale";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 
 describe("status do turno derivado das alocações", () => {
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -113,6 +116,7 @@ describe("status do turno derivado das alocações", () => {
       hospitalId,
       sectorId,
     });
+    const anesthesiaSpecialtyId = await ensureTestAnesthesiaSpecialty(db);
     const [poisonedSector] = await db
       .insert(sectors)
       .values({
@@ -132,7 +136,13 @@ describe("status do turno derivado das alocações", () => {
     managerUserId = mu.id;
     const [mp] = await db
       .insert(professionals)
-      .values({ userId: managerUserId, name: `Status Manager ${stamp}`, role: "Gestor", userRole: "GESTOR_MEDICO" })
+      .values({
+        userId: managerUserId,
+        name: `Status Manager ${stamp}`,
+        role: "Gestor",
+        userRole: "GESTOR_MEDICO",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
+      })
       .$returningId();
     managerProfessionalId = mp.id;
     await db.insert(professionalInstitutions).values({
@@ -152,7 +162,13 @@ describe("status do turno derivado das alocações", () => {
         .$returningId();
       const [p] = await db
         .insert(professionals)
-        .values({ userId: u.id, name: `Status Dr ${tag} ${stamp}`, role: "Médico", userRole: "USER" })
+        .values({
+          userId: u.id,
+          name: `Status Dr ${tag} ${stamp}`,
+          role: "Médico",
+          userRole: "USER",
+          medicalSpecialtyId: anesthesiaSpecialtyId,
+        })
         .$returningId();
       doctorUserIds.push(u.id);
       doctorProfessionalIds.push(p.id);

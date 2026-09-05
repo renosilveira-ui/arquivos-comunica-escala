@@ -123,6 +123,8 @@ describe("editor.assignDirect", () => {
         name: `Assign Direct Manager ${stamp}`,
         role: "Gestor",
         userRole: "GESTOR_MEDICO",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
+        specialty: "Anestesiologia",
       })
       .$returningId();
     managerProfessionalId = managerProfessional.id;
@@ -462,7 +464,7 @@ describe("editor.assignDirect", () => {
     }
   });
 
-  it("aloca clínico, genética e gestor sem especialidade da allowlist", async () => {
+  it("recusa clínico, genética e gestor sem especialidade da allowlist", async () => {
     const stamp = Date.now();
     const caller = editorRouter.createCaller({
       user: {
@@ -577,39 +579,58 @@ describe("editor.assignDirect", () => {
     ]);
 
     try {
-      const clinica = await caller.assignDirect({
-        shiftInstanceId,
-        professionalId: clinicaProfessional.id,
-        assignmentType: "ON_DUTY",
-        reason: "Clínica Médica fora da allowlist",
-      });
-      expect(clinica.ok).toBe(true);
-
-      await caller.unassignDirect({
-        assignmentId: clinica.assignmentId,
-        reason: "Liberar vaga para genética",
-      });
-
-      const genetica = await caller.assignDirect({
-        shiftInstanceId,
-        professionalId: geneticaProfessional.id,
-        assignmentType: "ON_DUTY",
-        reason: "Genética fora da allowlist",
-      });
-      expect(genetica.ok).toBe(true);
-
-      await caller.unassignDirect({
-        assignmentId: genetica.assignmentId,
-        reason: "Liberar vaga para gestor",
+      await expect(
+        caller.assignDirect({
+          shiftInstanceId,
+          professionalId: clinicaProfessional.id,
+          assignmentType: "ON_DUTY",
+          reason: "Clínica Médica fora da allowlist",
+        }),
+      ).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message:
+          "Profissional sem qualificação compatível com a escala do plantão.",
       });
 
-      const gestor = await caller.assignDirect({
-        shiftInstanceId,
-        professionalId: managerProfessionalId,
-        assignmentType: "ON_DUTY",
-        reason: "Gestor sem especialidade",
+      await expect(
+        caller.assignDirect({
+          shiftInstanceId,
+          professionalId: geneticaProfessional.id,
+          assignmentType: "ON_DUTY",
+          reason: "Genética fora da allowlist",
+        }),
+      ).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message:
+          "Profissional sem qualificação compatível com a escala do plantão.",
       });
-      expect(gestor.ok).toBe(true);
+
+      await db
+        .update(professionals)
+        .set({ medicalSpecialtyId: null, specialty: null })
+        .where(eq(professionals.id, managerProfessionalId));
+      try {
+        await expect(
+          caller.assignDirect({
+            shiftInstanceId,
+            professionalId: managerProfessionalId,
+            assignmentType: "ON_DUTY",
+            reason: "Gestor sem especialidade",
+          }),
+        ).rejects.toMatchObject({
+          code: "FORBIDDEN",
+          message:
+            "Profissional sem qualificação compatível com a escala do plantão.",
+        });
+      } finally {
+        await db
+          .update(professionals)
+          .set({
+            medicalSpecialtyId: anesthesiaSpecialtyId,
+            specialty: "Anestesiologia",
+          })
+          .where(eq(professionals.id, managerProfessionalId));
+      }
     } finally {
       await db
         .delete(shiftAssignmentsV2)

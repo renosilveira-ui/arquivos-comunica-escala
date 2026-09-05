@@ -19,7 +19,10 @@ import {
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { appRouter } from "../server/routers";
-import { openTestScale } from "./helpers/open-test-scale";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 
 describe("Vagas acionáveis — lista e contadores", () => {
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -54,6 +57,7 @@ describe("Vagas acionáveis — lista e contadores", () => {
   let foreignShiftId: number;
   let pendingShiftId: number;
   let namedInviteId: number;
+  let anesthesiaSpecialtyId: number;
 
   const stamp = Date.now();
   const cnpjBase = String(stamp).slice(-12).padStart(12, "7");
@@ -139,6 +143,7 @@ describe("Vagas acionáveis — lista e contadores", () => {
     const connection = await getDb();
     if (!connection) throw new Error("Database not available");
     db = connection;
+    anesthesiaSpecialtyId = await ensureTestAnesthesiaSpecialty(db);
 
     const [institutionA] = await db
       .insert(institutions)
@@ -232,6 +237,7 @@ describe("Vagas acionáveis — lista e contadores", () => {
           name: `VAC ${suffix} ${stamp}`,
           role: "Médico",
           userRole: roleInInstitution,
+          medicalSpecialtyId: anesthesiaSpecialtyId,
         })
         .$returningId();
       await db.insert(professionalInstitutions).values({
