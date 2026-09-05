@@ -1175,6 +1175,15 @@ export async function listReadableScheduleContexts(
   });
 }
 
+/**
+ * Contextos em que o profissional tem admissão topológica (ACL setorial
+ * ou manager_scope). Não é autoridade de ocupação e não aplica o matcher
+ * clínico canônico. Quem ocupa passa por
+ * assertProfessionalEligibleForScheduleContext no write.
+ *
+ * Callers: visibilidade de listAvailable (ofertas) e a etapa de admissão
+ * das vagas acionáveis. Ocupar / solicitar / alocar revalida no write.
+ */
 export async function listAssumableScheduleContextIds(
   institutionId: number,
   professionalId: number,
@@ -1208,8 +1217,9 @@ export async function listAssumableScheduleContextIds(
       const scoped = scopes.some((scope) =>
         managerScopeCoversContext(scope, professionalId, context),
       );
-      // listAssumable = vagas que o próprio plantonista vê. A política é
-      // institucional/topológica: vínculo ativo, escopo ou acesso setorial.
+      // Admissão institucional/topológica: vínculo, escopo ou acesso
+      // setorial. O matcher clínico fica no write e nos readers de
+      // occupancy candidate / actionability.
       if (scoped) return true;
       return accesses.some((access) =>
         accessCoversScheduleContext(access, professionalId, context),

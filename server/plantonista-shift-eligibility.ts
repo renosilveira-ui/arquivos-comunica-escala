@@ -147,8 +147,8 @@ export type VacantShiftEligibilityTarget = {
 
 /**
  * Plantonistas que poderiam assumir este plantão vago: vínculo institucional
- * ativo + professional_access, **sem** atalho gerencial.
- * GESTOR_MEDICO / GESTOR_PLUS só entram se passarem como médico.
+ * ativo + professional_access + matcher clínico canônico, **sem** atalho
+ * gerencial. GESTOR_MEDICO / GESTOR_PLUS só entram se passarem como médico.
  */
 export async function eligibleProfessionalUserIdsForShift(
   db: EligibilityDb,
@@ -181,6 +181,7 @@ export async function eligibleProfessionalUserIdsForShift(
       AND si.status = 'VAGO'
       AND si.start_at > NOW()
       AND ${plantonistaAccessCoversShiftSql("ap", "si", "sc")}
+      AND ${plantonistaQualificationMatchesContextSql("ap", "sc")}
       AND NOT EXISTS (
         SELECT 1 FROM monthly_rosters mr
         WHERE mr.institution_id = si.institution_id

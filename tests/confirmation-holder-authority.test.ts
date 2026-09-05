@@ -535,8 +535,16 @@ describe("confirmation holder authority — MySQL", () => {
     try {
       const integrity = readFileSync("server/confirmation-integrity.ts", "utf8");
       const router = readFileSync("server/confirmation-router.ts", "utf8");
+      const confirmStart = router.indexOf("confirm: protectedProcedure");
+      const confirmEnd = router.indexOf("decline: protectedProcedure");
+      expect(confirmStart).toBeGreaterThan(-1);
+      expect(confirmEnd).toBeGreaterThan(confirmStart);
+      const confirmProcedure = router.slice(confirmStart, confirmEnd);
       expect(integrity).not.toContain("qualificationMatches");
-      expect(router).not.toContain("qualificationMatches");
+      // Readers de candidatos devem filtrar pela mesma qualificação do write,
+      // mas confirmar um plantão já OCUPADO continua validando o titular e a
+      // alocação persistida — nunca reaplica a qualificação clínica atual.
+      expect(confirmProcedure).not.toContain("qualificationMatches");
       await expect(
         confirmationRouter
           .createCaller(ctx(titularUserId))

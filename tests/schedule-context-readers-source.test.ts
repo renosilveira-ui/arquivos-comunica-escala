@@ -73,10 +73,7 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain(
       "${shift.admissionPolicy} = 'QUALIFICATION_ALLOWLIST'",
     );
-    expect(source).not.toContain("schedule_context_allowed_qualifications");
-    expect(source).not.toContain(
-      "p.medical_specialty_id = aq.medical_specialty_id",
-    );
+    expect(source).toContain("plantonistaQualificationMatchesContextSql");
     expect(source).toContain("LEFT JOIN manager_scope mgr");
     expect(source).toContain("LEFT JOIN professional_institutions pi");
     expect(source).toContain("LEFT JOIN schedule_invites pending_invite");

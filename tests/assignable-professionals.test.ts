@@ -375,7 +375,7 @@ describe("professionals.listAssignableForShift", () => {
     ]);
   });
 
-  it("inclui gestor, acesso, especialidade fora da allowlist e convite pendente", async () => {
+  it("inclui gestor e convite pendentes qualificados; recusa especialidade fora da allowlist", async () => {
     const caller = appRouter.createCaller({
       user: {
         id: managerUserId,
@@ -398,9 +398,9 @@ describe("professionals.listAssignableForShift", () => {
     expect(ids).toContain(pendingHouseProfessionalId);
     expect(ids).toContain(pendingWaitingProfessionalId);
     expect(ids).toContain(pendingGestorInviteeProfessionalId);
-    expect(ids).toContain(unqualifiedGestorProfessionalId);
-    expect(ids).toContain(clinicaMedicaProfessionalId);
-    expect(ids).toContain(geneticaProfessionalId);
+    expect(ids).not.toContain(unqualifiedGestorProfessionalId);
+    expect(ids).not.toContain(clinicaMedicaProfessionalId);
+    expect(ids).not.toContain(geneticaProfessionalId);
     expect(ids).not.toContain(assignedProfessionalId);
     expect(ids).not.toContain(hospitalWideProfessionalId);
     expect(ids).not.toContain(crossSectorProfessionalId);

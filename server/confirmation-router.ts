@@ -45,6 +45,7 @@ import {
   assertAssignmentWritesAllowedForUpdate,
   assertShiftAssignmentCapacityForUpdate,
 } from "./shift-validations-v2";
+import { plantonistaQualificationMatchesContextSql } from "./plantonista-shift-eligibility";
 import {
   assertActiveScheduleContextTopology,
   assertProfessionalEligibleForScheduleContext,
@@ -287,9 +288,9 @@ export const confirmationRouter = router({
         });
       }
 
-      // A lista usa a mesma verdade canônica da mutation: contexto ativo,
-      // topologia composta e ACL setorial. Metadados clínicos não concedem
-      // nem negam um candidato.
+      // Picker de ocupação: contexto ativo, topologia, ACL setorial e o
+      // mesmo qualificationMatches do write (nominate / accept). A lista
+      // não substitui a revalidação na mutation.
       const result = await db.execute(sql`
         SELECT DISTINCT p.id, p.name, p.role
         FROM professionals p
@@ -326,6 +327,7 @@ export const confirmationRouter = router({
          )
         WHERE p.id != ${current.original.professionalId}
           AND p.user_id != ${current.original.userId}
+          AND ${plantonistaQualificationMatchesContextSql("p", "sc")}
           AND NOT EXISTS (
             SELECT 1
             FROM shift_assignments_v2 conflict_assignment
