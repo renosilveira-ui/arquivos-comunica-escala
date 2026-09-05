@@ -12,7 +12,7 @@ import { getDb } from "../server/db";
 import { logger } from "../server/_core/logger";
 import * as consumer from "../server/integrations/whatsapp/ready-for-nl-consumer";
 import { processWhatsAppReadyForNlInbound } from "../server/integrations/whatsapp/ready-for-nl-consumer";
-import { runWhatsAppNlDriverTick } from "../server/integrations/whatsapp/ready-for-nl-driver";
+import { runWhatsAppNlDriverTick, listWhatsAppReadyForNlEligibleIds } from "../server/integrations/whatsapp/ready-for-nl-driver";
 import {
   WHATSAPP_NL_DRIVER_BATCH_SIZE,
   WHATSAPP_NL_DRIVER_PARK_PREFIX,
@@ -51,7 +51,12 @@ describe("WhatsApp B2-D — driver integração", () => {
     ownerId: number | null;
     suffix: string;
     text?: string | null;
-    status?: "READY_FOR_NL" | "IDENTITY_NOT_FOUND" | "READY_FOR_TRANSCRIPTION";
+    status?:
+      | "READY_FOR_NL"
+      | "IDENTITY_NOT_FOUND"
+      | "READY_FOR_TRANSCRIPTION"
+      | "RECEIVED"
+      | "RETRYABLE";
     kind?: "TEXT" | "AUDIO" | "UNSUPPORTED_MEDIA";
     receivedAt?: Date;
     expiresAt?: Date | null;
@@ -328,6 +333,33 @@ describe("WhatsApp B2-D — driver integração", () => {
     expect(called).not.toContain(audioId);
     expect(called).not.toContain(terminalId);
     expect(called).not.toContain(missingId);
+  });
+
+  it("READY_FOR_NL gate: RECEIVED com demais campos elegíveis não entra na discovery", async () => {
+    const notReady = await insertInbound({
+      ownerId,
+      suffix: "rcv",
+      status: "RECEIVED",
+      text: "texto operacional",
+    });
+    const eligible = await insertInbound({ ownerId, suffix: "rdy" });
+    const ids = await listWhatsAppReadyForNlEligibleIds({ batchSize: 50 });
+    expect(ids).toContain(eligible);
+    expect(ids).not.toContain(notReady);
+  });
+
+  it("TEXT gate: AUDIO com READY_FOR_NL e operational_text artificial não entra", async () => {
+    const audioReady = await insertInbound({
+      ownerId,
+      suffix: "ara",
+      kind: "AUDIO",
+      status: "READY_FOR_NL",
+      text: "texto operacional",
+    });
+    const eligible = await insertInbound({ ownerId, suffix: "txg" });
+    const ids = await listWhatsAppReadyForNlEligibleIds({ batchSize: 50 });
+    expect(ids).toContain(eligible);
+    expect(ids).not.toContain(audioReady);
   });
 
   it("24. privacidade: CPF, telefone e email não aparecem nos logs do worker", async () => {

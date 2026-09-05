@@ -7,22 +7,34 @@
  * - NULL — elegível
  * - WA_NL_DRV_CLAIMED:<attempt>:<token> — em processamento; stale → recover
  * - WA_NL_DRV_RETRY:<attempt> — backoff de infra / STATE_CHANGED
+ * - WA_NL_DRV_WAIT:<attempt> — espera conversa alheia (ALREADY_OPEN); reentra
  * - WA_NL_DRV_PARK:<code> — não reprocessar este inbound (domínio / poison)
  *
  * Persistência inbound (webhook) não escreve error_code em READY_FOR_NL.
  * Prefixos `WA_NL_DRV_` não colidem com IDENTITY_NOT_FOUND / UNSUPPORTED_MEDIA.
+ *
+ * WHATSAPP_B2D_INDEX_FOLLOWUP_REQUIRED (P2): o poll oldest-first sobre
+ * históricas `payload_cleared_at` não ganha índice nesta PR.
  */
 
 import type { ProcessWhatsAppReadyForNlInboundResult } from "./ready-for-nl-types";
+import { WHATSAPP_PENDING_INTENT_TTL_MS } from "./pending-intent-types";
+
+/** Espelha o TTL conversacional B1 para justificar o backoff de WAIT. */
+export const WHATSAPP_NL_DRIVER_WAIT_PENDING_TTL_MS =
+  WHATSAPP_PENDING_INTENT_TTL_MS;
 
 export const WHATSAPP_NL_DRIVER_CLAIMED_PREFIX = "WA_NL_DRV_CLAIMED";
 export const WHATSAPP_NL_DRIVER_RETRY_PREFIX = "WA_NL_DRV_RETRY";
+export const WHATSAPP_NL_DRIVER_WAIT_PREFIX = "WA_NL_DRV_WAIT";
 export const WHATSAPP_NL_DRIVER_PARK_PREFIX = "WA_NL_DRV_PARK";
 
 /** LIKE `WA_NL_DRV_CLAIMED:%` */
 export const WHATSAPP_NL_DRIVER_CLAIMED_LIKE = `${WHATSAPP_NL_DRIVER_CLAIMED_PREFIX}:%`;
 /** LIKE `WA_NL_DRV_RETRY:%` */
 export const WHATSAPP_NL_DRIVER_RETRY_LIKE = `${WHATSAPP_NL_DRIVER_RETRY_PREFIX}:%`;
+/** LIKE `WA_NL_DRV_WAIT:%` */
+export const WHATSAPP_NL_DRIVER_WAIT_LIKE = `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:%`;
 
 /**
  * Offset 1-based do dígito de attempt em `WA_NL_DRV_RETRY:<n>` para SQL
@@ -30,6 +42,9 @@ export const WHATSAPP_NL_DRIVER_RETRY_LIKE = `${WHATSAPP_NL_DRIVER_RETRY_PREFIX}
  */
 export const WHATSAPP_NL_DRIVER_RETRY_ATTEMPT_SQL_OFFSET =
   WHATSAPP_NL_DRIVER_RETRY_PREFIX.length + 2;
+
+export const WHATSAPP_NL_DRIVER_WAIT_ATTEMPT_SQL_OFFSET =
+  WHATSAPP_NL_DRIVER_WAIT_PREFIX.length + 2;
 
 export const WHATSAPP_NL_DRIVER_BATCH_SIZE = 20;
 export const WHATSAPP_NL_DRIVER_INTERVAL_MS = 8_000;
@@ -42,10 +57,22 @@ export const WHATSAPP_NL_DRIVER_RETRY_DELAY_MS = [
   30_000, 120_000, 600_000, 1_800_000, 3_600_000,
 ] as const;
 
+/**
+ * Espera por conversa alheia (ALREADY_OPEN). Alinhado ao TTL pending 15 min
+ * (`WHATSAPP_PENDING_INTENT_TTL_MS`): 30s pega OPEN que está acabando;
+ * 2m/5m ainda dentro da janela; cap 10m evita hot-loop e reentra após o
+ * pending expirar (~15 min) sem exigir terceira mensagem do usuário.
+ * Limitado pelo TTL do payload inbound (24h), não pelo pending.
+ */
+export const WHATSAPP_NL_DRIVER_WAIT_DELAY_MS = [
+  30_000, 120_000, 300_000, 600_000,
+] as const;
+
 export type WhatsAppNlDriverOccupancy =
   | { kind: "idle" }
   | { kind: "claimed"; attempt: number; token: string }
   | { kind: "retry"; attempt: number }
+  | { kind: "wait"; attempt: number }
   | { kind: "park"; code: string }
   | { kind: "foreign" };
 
@@ -53,8 +80,9 @@ export type WhatsAppNlDriverDisposition =
   | "COMPLETE"
   | "RETRY_INFRA"
   | "RETRY_STATE_CHANGED"
+  | "WAITING_FOR_OTHER_CONVERSATION"
   | "TERMINAL_MANUAL"
-  | "WAITING_FOR_DIFFERENT_INPUT"
+  | "INSUFFICIENT_MATERIAL"
   | "POISON";
 
 export type WhatsAppNlDriverDecision =
@@ -66,11 +94,14 @@ export type WhatsAppNlDriverDecision =
       delayMs: number;
     }
   | {
+      action: "wait";
+      disposition: "WAITING_FOR_OTHER_CONVERSATION";
+      nextAttempt: number;
+      delayMs: number;
+    }
+  | {
       action: "park";
-      disposition:
-        | "TERMINAL_MANUAL"
-        | "WAITING_FOR_DIFFERENT_INPUT"
-        | "POISON";
+      disposition: "TERMINAL_MANUAL" | "INSUFFICIENT_MATERIAL" | "POISON";
       code: string;
     };
 
@@ -88,12 +119,27 @@ export function whatsAppNlDriverRetryDelayMs(attempt: number): number {
   return WHATSAPP_NL_DRIVER_RETRY_DELAY_MS[index]!;
 }
 
+export function whatsAppNlDriverWaitDelayMs(attempt: number): number {
+  const safe = Number.isInteger(attempt) && attempt > 0 ? attempt : 1;
+  const index = Math.min(safe, WHATSAPP_NL_DRIVER_WAIT_DELAY_MS.length) - 1;
+  return WHATSAPP_NL_DRIVER_WAIT_DELAY_MS[index]!;
+}
+
 export function whatsAppNlDriverRetryDueAt(
   lastAttemptAt: Date,
   attempt: number,
 ): Date {
   return new Date(
     lastAttemptAt.getTime() + whatsAppNlDriverRetryDelayMs(attempt),
+  );
+}
+
+export function whatsAppNlDriverWaitDueAt(
+  lastAttemptAt: Date,
+  attempt: number,
+): Date {
+  return new Date(
+    lastAttemptAt.getTime() + whatsAppNlDriverWaitDelayMs(attempt),
   );
 }
 
@@ -108,8 +154,19 @@ export function formatWhatsAppNlDriverRetry(attempt: number): string {
   return `${WHATSAPP_NL_DRIVER_RETRY_PREFIX}:${attempt}`;
 }
 
+export function formatWhatsAppNlDriverWait(attempt: number): string {
+  return `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:${attempt}`;
+}
+
 export function formatWhatsAppNlDriverPark(code: string): string {
   return `${WHATSAPP_NL_DRIVER_PARK_PREFIX}:${code}`;
+}
+
+function parseAttempt(raw: string): number | null {
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const attempt = Number(raw);
+  if (!Number.isSafeInteger(attempt) || attempt < 1) return null;
+  return attempt;
 }
 
 export function parseWhatsAppNlDriverOccupancy(
@@ -120,19 +177,24 @@ export function parseWhatsAppNlDriverOccupancy(
     const rest = errorCode.slice(WHATSAPP_NL_DRIVER_CLAIMED_PREFIX.length + 1);
     const sep = rest.indexOf(":");
     if (sep <= 0) return { kind: "foreign" };
-    const attempt = Number(rest.slice(0, sep));
+    const attempt = parseAttempt(rest.slice(0, sep));
     const token = rest.slice(sep + 1);
-    if (!Number.isInteger(attempt) || attempt < 1 || token.length === 0) {
-      return { kind: "foreign" };
-    }
+    if (attempt == null || token.length === 0) return { kind: "foreign" };
     return { kind: "claimed", attempt, token };
   }
   if (errorCode.startsWith(`${WHATSAPP_NL_DRIVER_RETRY_PREFIX}:`)) {
-    const attempt = Number(
+    const attempt = parseAttempt(
       errorCode.slice(WHATSAPP_NL_DRIVER_RETRY_PREFIX.length + 1),
     );
-    if (!Number.isInteger(attempt) || attempt < 1) return { kind: "foreign" };
+    if (attempt == null) return { kind: "foreign" };
     return { kind: "retry", attempt };
+  }
+  if (errorCode.startsWith(`${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:`)) {
+    const attempt = parseAttempt(
+      errorCode.slice(WHATSAPP_NL_DRIVER_WAIT_PREFIX.length + 1),
+    );
+    if (attempt == null) return { kind: "foreign" };
+    return { kind: "wait", attempt };
   }
   if (errorCode.startsWith(`${WHATSAPP_NL_DRIVER_PARK_PREFIX}:`)) {
     const code = errorCode.slice(WHATSAPP_NL_DRIVER_PARK_PREFIX.length + 1);
@@ -145,6 +207,9 @@ export function parseWhatsAppNlDriverOccupancy(
 export function nextWhatsAppNlDriverAttempt(
   occupancy: WhatsAppNlDriverOccupancy,
 ): number {
+  if (occupancy.kind === "wait") {
+    return occupancy.attempt + 1;
+  }
   if (occupancy.kind === "claimed" || occupancy.kind === "retry") {
     return occupancy.attempt;
   }
@@ -169,6 +234,17 @@ function retryDecision(
     disposition,
     nextAttempt,
     delayMs: whatsAppNlDriverRetryDelayMs(nextAttempt),
+  };
+}
+
+function waitDecision(
+  attempt: number,
+): Extract<WhatsAppNlDriverDecision, { action: "wait" }> {
+  return {
+    action: "wait",
+    disposition: "WAITING_FOR_OTHER_CONVERSATION",
+    nextAttempt: attempt,
+    delayMs: whatsAppNlDriverWaitDelayMs(attempt),
   };
 }
 
@@ -200,8 +276,6 @@ export function classifyWhatsAppNlDriverOutcome(
 
   return classifyBlocked(result.code, attempt, input);
 }
-
-const WAITING_CODES = new Set<string>(["ALREADY_OPEN", "NEEDS_REFORMULATION"]);
 
 const POISON_CODES = new Set<string>(["INVALID_PAYLOAD"]);
 
@@ -236,8 +310,16 @@ function classifyBlocked(
     }
     return retryDecision("RETRY_STATE_CHANGED", attempt);
   }
-  if (WAITING_CODES.has(code)) {
-    return park("WAITING_FOR_DIFFERENT_INPUT", code);
+  if (code === "ALREADY_OPEN") {
+    if (!payloadStillRetryable(input)) {
+      return park("TERMINAL_MANUAL", code);
+    }
+    return waitDecision(attempt);
+  }
+  if (code === "NEEDS_REFORMULATION") {
+    // A) reprocessar o mesmo texto não ajuda. B) só mensagem nova ajuda.
+    // Este inbound estaciona; o seguinte cai em ALREADY_OPEN → WAIT.
+    return park("INSUFFICIENT_MATERIAL", code);
   }
   if (POISON_CODES.has(code)) {
     return park("POISON", code);

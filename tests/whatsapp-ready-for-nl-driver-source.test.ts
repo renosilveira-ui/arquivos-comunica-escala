@@ -106,14 +106,24 @@ describe("WhatsApp B2-D — source guards", () => {
     expect(isWhatsAppNlDriverLoopRunning()).toBe(false);
   });
 
-  it("claim é transacional com SKIP LOCKED; não depende só de let running", () => {
+  it("claim é transacional com SKIP LOCKED; WAIT reentra; fence usa token", () => {
     expect(driver).toContain('for("update", { skipLocked: true })');
     expect(driver).toContain("WHATSAPP_NL_DRIVER_CLAIMED");
+    expect(driver).toContain("WHATSAPP_NL_DRIVER_WAIT_LIKE");
+    expect(driver).toContain("eq(whatsappInboundMessages.errorCode, work.claimCode)");
+    expect(driver).toContain("listWhatsAppReadyForNlEligibleIds");
+    expect(driver).toContain("applyWhatsAppNlDriverDecision");
     expect(driver).toContain("loopStarted");
     expect(driver).toContain("WHATSAPP_NL_DRIVER_BATCH_SIZE");
     expect(driver).toContain(".limit(batchSize)");
     expect(driver).toContain("receivedAt");
     expect(driver).not.toMatch(/let running = false/);
+    expect(occupancy).toContain("WA_NL_DRV_WAIT");
+    expect(occupancy).toContain("WAITING_FOR_OTHER_CONVERSATION");
+    expect(occupancy).toContain("WHATSAPP_B2D_INDEX_FOLLOWUP_REQUIRED");
+    expect(occupancy).not.toContain("WAITING_FOR_DIFFERENT_INPUT");
+    expect(contract).toContain("ALREADY_OPEN` é WAIT");
+    expect(contract).toContain("WHATSAPP_B2D_INDEX_FOLLOWUP_REQUIRED");
   });
 
   it("schema inbound/pending não muda nesta frente", () => {

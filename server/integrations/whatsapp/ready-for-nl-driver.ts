@@ -35,6 +35,7 @@ import {
   formatWhatsAppNlDriverClaimed,
   formatWhatsAppNlDriverPark,
   formatWhatsAppNlDriverRetry,
+  formatWhatsAppNlDriverWait,
   nextWhatsAppNlDriverAttempt,
   parseWhatsAppNlDriverOccupancy,
   WHATSAPP_NL_DRIVER_BATCH_SIZE,
@@ -45,6 +46,9 @@ import {
   WHATSAPP_NL_DRIVER_RETRY_ATTEMPT_SQL_OFFSET,
   WHATSAPP_NL_DRIVER_RETRY_DELAY_MS,
   WHATSAPP_NL_DRIVER_RETRY_LIKE,
+  WHATSAPP_NL_DRIVER_WAIT_ATTEMPT_SQL_OFFSET,
+  WHATSAPP_NL_DRIVER_WAIT_DELAY_MS,
+  WHATSAPP_NL_DRIVER_WAIT_LIKE,
   type WhatsAppNlDriverDecision,
 } from "./ready-for-nl-driver-occupancy";
 import { WhatsAppPendingStages, WhatsAppPendingStatuses } from "./pending-intent-types";
@@ -73,6 +77,7 @@ export type WhatsAppNlDriverTickSummary = {
   claimed: number;
   completed: number;
   retried: number;
+  waited: number;
   parked: number;
   skipped: number;
   durationMs: number;
@@ -98,10 +103,11 @@ export function isWhatsAppNlDriverEnabled(): boolean {
   return ENV.whatsappNlDriverEnabled;
 }
 
-function retryBackoffSecondsSql() {
-  const seconds = WHATSAPP_NL_DRIVER_RETRY_DELAY_MS.map((ms) =>
-    Math.round(ms / 1000),
-  );
+function backoffSecondsSql(
+  delayMs: readonly number[],
+  attemptSqlOffset: number,
+) {
+  const seconds = delayMs.map((ms) => Math.round(ms / 1000));
   const first = seconds[0] ?? 30;
   const last = seconds[seconds.length - 1] ?? 3600;
   const whenClauses = seconds.map(
@@ -110,13 +116,27 @@ function retryBackoffSecondsSql() {
   return sql`CASE CAST(
       SUBSTRING(
         ${whatsappInboundMessages.errorCode},
-        ${WHATSAPP_NL_DRIVER_RETRY_ATTEMPT_SQL_OFFSET}
+        ${attemptSqlOffset}
       ) AS UNSIGNED
     )
       WHEN 0 THEN ${first}
       ${sql.join(whenClauses, sql` `)}
       ELSE ${last}
     END`;
+}
+
+function retryBackoffSecondsSql() {
+  return backoffSecondsSql(
+    WHATSAPP_NL_DRIVER_RETRY_DELAY_MS,
+    WHATSAPP_NL_DRIVER_RETRY_ATTEMPT_SQL_OFFSET,
+  );
+}
+
+function waitBackoffSecondsSql() {
+  return backoffSecondsSql(
+    WHATSAPP_NL_DRIVER_WAIT_DELAY_MS,
+    WHATSAPP_NL_DRIVER_WAIT_ATTEMPT_SQL_OFFSET,
+  );
 }
 
 function occupancyEligibleSql(now: Date, leaseMs: number) {
@@ -133,6 +153,12 @@ function occupancyEligibleSql(now: Date, leaseMs: number) {
       ${whatsappInboundMessages.errorCode} LIKE ${WHATSAPP_NL_DRIVER_RETRY_LIKE}
       AND UNIX_TIMESTAMP(${whatsappInboundMessages.updatedAt}) + (
         ${retryBackoffSecondsSql()}
+      ) <= ${nowUnix}
+    )
+    OR (
+      ${whatsappInboundMessages.errorCode} LIKE ${WHATSAPP_NL_DRIVER_WAIT_LIKE}
+      AND UNIX_TIMESTAMP(${whatsappInboundMessages.updatedAt}) + (
+        ${waitBackoffSecondsSql()}
       ) <= ${nowUnix}
     )
   )`;
@@ -186,6 +212,27 @@ export async function claimWhatsAppReadyForNlWork(
   const db = await dbMod.getDb();
   if (!db) return [];
   return claimBatch(db, now, batchSize, leaseMs);
+}
+
+/**
+ * Discovery sem claim — mesmo predicado de elegibilidade do poll.
+ * Usado para provar gates READY_FOR_NL / TEXT sem depender do UPDATE.
+ */
+export async function listWhatsAppReadyForNlEligibleIds(
+  options: WhatsAppNlDriverTickOptions = {},
+): Promise<number[]> {
+  const now = options.now ?? new Date();
+  const batchSize = options.batchSize ?? WHATSAPP_NL_DRIVER_BATCH_SIZE;
+  const leaseMs = options.leaseMs ?? WHATSAPP_NL_DRIVER_LEASE_MS;
+  const db = await dbMod.getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ id: whatsappInboundMessages.id })
+    .from(whatsappInboundMessages)
+    .where(eligibilityWhere(now, leaseMs))
+    .orderBy(whatsappInboundMessages.receivedAt, whatsappInboundMessages.id)
+    .limit(batchSize);
+  return rows.map((row) => row.id);
 }
 
 async function claimBatch(
@@ -281,14 +328,14 @@ async function hasReconcileablePending(
   return rows.length > 0;
 }
 
-async function applyDecision(
+export async function applyWhatsAppNlDriverDecision(
   db: Db,
   work: ClaimedWork,
   decision: WhatsAppNlDriverDecision,
   now: Date,
-): Promise<void> {
+): Promise<number> {
   if (decision.action === "complete") {
-    await db
+    const updated = await db
       .update(whatsappInboundMessages)
       .set({
         errorCode: null,
@@ -300,10 +347,10 @@ async function applyDecision(
           eq(whatsappInboundMessages.errorCode, work.claimCode),
         ),
       );
-    return;
+    return affectedRows(updated);
   }
   if (decision.action === "retry") {
-    await db
+    const updated = await db
       .update(whatsappInboundMessages)
       .set({
         errorCode: formatWhatsAppNlDriverRetry(decision.nextAttempt),
@@ -319,9 +366,28 @@ async function applyDecision(
           ),
         ),
       );
-    return;
+    return affectedRows(updated);
   }
-  await db
+  if (decision.action === "wait") {
+    const updated = await db
+      .update(whatsappInboundMessages)
+      .set({
+        errorCode: formatWhatsAppNlDriverWait(decision.nextAttempt),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(whatsappInboundMessages.id, work.id),
+          eq(whatsappInboundMessages.errorCode, work.claimCode),
+          eq(
+            whatsappInboundMessages.processingStatus,
+            WhatsAppInboundStatuses.READY_FOR_NL,
+          ),
+        ),
+      );
+    return affectedRows(updated);
+  }
+  const updated = await db
     .update(whatsappInboundMessages)
     .set({
       errorCode: formatWhatsAppNlDriverPark(decision.code),
@@ -337,6 +403,7 @@ async function applyDecision(
         ),
       ),
     );
+  return affectedRows(updated);
 }
 
 async function processClaimed(
@@ -368,7 +435,7 @@ async function processClaimed(
   });
 
   try {
-    await applyDecision(db, work, decision, now);
+    await applyWhatsAppNlDriverDecision(db, work, decision, now);
   } catch {
     logSafe({
       event: "whatsapp_nl_driver_bookkeeping_failed",
@@ -381,7 +448,7 @@ async function processClaimed(
 
   const durationMs = Date.now() - started;
   const retryAt =
-    decision.action === "retry"
+    decision.action === "retry" || decision.action === "wait"
       ? new Date(now.getTime() + decision.delayMs).toISOString()
       : undefined;
   const b2cKind = result.kind;
@@ -421,6 +488,7 @@ export async function runWhatsAppNlDriverTick(
     claimed: 0,
     completed: 0,
     retried: 0,
+    waited: 0,
     parked: 0,
     skipped: 0,
     durationMs: Date.now() - started,
@@ -468,7 +536,7 @@ export async function runWhatsAppNlDriverTick(
           code: "INTERNAL_FAILURE",
         });
         try {
-          await applyDecision(
+          await applyWhatsAppNlDriverDecision(
             db,
             work,
             classifyWhatsAppNlDriverOutcome({
@@ -501,6 +569,7 @@ export async function runWhatsAppNlDriverTick(
     claimed: claimedCount,
     completed: items.filter((item) => item.action === "complete").length,
     retried: items.filter((item) => item.action === "retry").length,
+    waited: items.filter((item) => item.action === "wait").length,
     parked: items.filter((item) => item.action === "park").length,
     skipped: 0,
     durationMs: Date.now() - started,
@@ -511,6 +580,7 @@ export async function runWhatsAppNlDriverTick(
     claimed: summary.claimed,
     completed: summary.completed,
     retried: summary.retried,
+    waited: summary.waited,
     parked: summary.parked,
     durationMs: summary.durationMs,
     batchSize,
