@@ -425,7 +425,7 @@ nesta PR (schema inbound). Evidência local MySQL 8, dataset misto
 content_kind, payload_cleared_at, received_at, id)`. Poll ~8s →
 ~10.800/dia/instância; a 100k sem índice ≈23 min CPU/dia; 2–4
 réplicas multiplicam. Write-cost do composto: 1 INSERT inbound por
-mensagem. Prerequisite de schema; #415 permanece Draft até esse
+mensagem. Prerequisite: PR #420. #415 permanece Draft até esse
 merge + main verde + rebase.
 
 O driver **não** importa `createSwapOffer`, Twilio outbound, push,
