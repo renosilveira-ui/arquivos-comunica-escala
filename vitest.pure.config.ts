@@ -93,6 +93,7 @@ export default defineConfig({
       "tests/institution-roles.test.ts",
       "tests/duty-sync-v2-contract.test.ts",
       "tests/swap-offer-actions.test.ts",
+      "tests/swap-offer-create-live-mutex-source.test.ts",
       "tests/swap-list-eligible-recipients-source.test.ts",
       "tests/directed-offer-recipient-picker.test.ts",
       "tests/swap-offer-badge-refresh.test.ts",

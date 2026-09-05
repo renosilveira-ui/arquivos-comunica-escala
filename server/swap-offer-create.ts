@@ -189,6 +189,12 @@ export async function createSwapOffer(
         date: preflight.toShift.startAt,
       });
     }
+    // Unicidade LIVE (≤1 PENDING|ACCEPTED por fromAssignmentId): o mutex
+    // é este par FOR UPDATE (mês, depois turno de origem), não UNIQUE SQL
+    // nem o SELECT de existência abaixo. Em REPEATABLE READ o primeiro
+    // SELECT consistente da transação não pode ocorrer ANTES destes locks
+    // — se ocorrer, o waiter reusa snapshot vazio e o INSERT duplica.
+    // Não reordenar sem prova de concorrência MySQL.
     await assertPublishedSwapMonthsForUpdate(tx, monthTargets);
     await lockSwapShiftsForUpdate(tx, institutionId, [
       input.fromShiftInstanceId,
