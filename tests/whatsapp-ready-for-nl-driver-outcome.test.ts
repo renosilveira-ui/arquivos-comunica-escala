@@ -289,9 +289,12 @@ describe("WhatsApp B2-D — classificação de outcome", () => {
     expect(parseWhatsAppNlDriverOccupancy("WA_NL_DRV_CLAIMED:1e21:tok")).toEqual(
       { kind: "foreign" },
     );
-    expect(
-      parseWhatsAppNlDriverOccupancy("WA_NL_DRV_RETRY:99999999999999999999"),
-    ).toEqual({ kind: "foreign" });
+    expect(parseWhatsAppNlDriverOccupancy("WA_NL_DRV_RETRY:99999999999999999999")).toEqual(
+      { kind: "foreign" },
+    );
+    expect(parseWhatsAppNlDriverOccupancy("WA_NL_DRV_UNKNOWN:1")).toEqual({
+      kind: "foreign",
+    });
     expect(nextWhatsAppNlDriverAttempt({ kind: "idle" })).toBe(1);
     expect(
       nextWhatsAppNlDriverAttempt({ kind: "claimed", attempt: 7, token: "x" }),

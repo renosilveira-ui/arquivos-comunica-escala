@@ -13,8 +13,14 @@
  * Persistência inbound (webhook) não escreve error_code em READY_FOR_NL.
  * Prefixos `WA_NL_DRV_` não colidem com IDENTITY_NOT_FOUND / UNSUPPORTED_MEDIA.
  *
- * WHATSAPP_B2D_INDEX_FOLLOWUP_REQUIRED (P2): o poll oldest-first sobre
- * históricas `payload_cleared_at` não ganha índice nesta PR.
+ * PARK é terminal operacional deste source: status permanece READY_FOR_NL;
+ * occupancy exclui da discovery; payload segue o TTL inbound (24h) e o
+ * sweep `clearExpiredWhatsAppInboundPayloads` (P3 inbound, job futuro).
+ * PARK não estende retenção além do TTL B1.
+ *
+ * WHATSAPP_B2D_INDEX_REQUIRED: o poll a ≥10k rows usa filesort no
+ * UNIQUE (provider, …) e o custo cresce linearmente. Índice composto é
+ * schema inbound — prerequisite, não esta PR.
  */
 
 import type { ProcessWhatsAppReadyForNlInboundResult } from "./ready-for-nl-types";
@@ -35,6 +41,20 @@ export const WHATSAPP_NL_DRIVER_CLAIMED_LIKE = `${WHATSAPP_NL_DRIVER_CLAIMED_PRE
 export const WHATSAPP_NL_DRIVER_RETRY_LIKE = `${WHATSAPP_NL_DRIVER_RETRY_PREFIX}:%`;
 /** LIKE `WA_NL_DRV_WAIT:%` */
 export const WHATSAPP_NL_DRIVER_WAIT_LIKE = `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:%`;
+
+/**
+ * REGEXP âncora o attempt. LIKE sozinho aceita `WAIT:abc` / `RETRY:1e21`
+ * e o CAST UNSIGNED vira 0 — HOL no tick LIMIT 1 se o JS só skipa.
+ */
+export const WHATSAPP_NL_DRIVER_CLAIMED_REGEXP =
+  `^${WHATSAPP_NL_DRIVER_CLAIMED_PREFIX}:[1-9][0-9]*:[^:]+$`;
+export const WHATSAPP_NL_DRIVER_RETRY_REGEXP =
+  `^${WHATSAPP_NL_DRIVER_RETRY_PREFIX}:[1-9][0-9]*$`;
+export const WHATSAPP_NL_DRIVER_WAIT_REGEXP =
+  `^${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:[1-9][0-9]*$`;
+
+/** Occupancy driver que não parseia: estaciona fail-closed, não skipa o LIMIT. */
+export const WHATSAPP_NL_DRIVER_MALFORMED_PARK_CODE = "MALFORMED_OCCUPANCY";
 
 /**
  * Offset 1-based do dígito de attempt em `WA_NL_DRV_RETRY:<n>` para SQL
@@ -318,7 +338,8 @@ function classifyBlocked(
   }
   if (code === "NEEDS_REFORMULATION") {
     // A) reprocessar o mesmo texto não ajuda. B) só mensagem nova ajuda.
-    // Este inbound estaciona; o seguinte cai em ALREADY_OPEN → WAIT.
+    // Este inbound estaciona. B2-C já terminalizou OPEN/PARSE (#416);
+    // o source seguinte cria novo pending — não cai em ALREADY_OPEN/WAIT.
     return park("INSUFFICIENT_MATERIAL", code);
   }
   if (POISON_CODES.has(code)) {
