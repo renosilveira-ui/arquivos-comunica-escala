@@ -64,6 +64,7 @@ export default defineConfig({
       "tests/hospital-time.test.ts",
       "tests/list-by-period-window.test.ts",
       "tests/next-shift-state.test.ts",
+      "tests/report-shifts-state.test.ts",
       "tests/sala-recuperacao-shift-blueprint.test.ts",
       "tests/open-month-shifts.test.ts",
       "tests/schedule-invite-mail.test.ts",
