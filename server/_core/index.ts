@@ -34,7 +34,10 @@ import {
   installProcessGuards,
 } from "./error-handling";
 import { pingDb } from "../db";
-import { startConfirmationCron } from "../cron/shift-confirmation-dispatcher";
+import {
+  startConfirmationCron,
+  stopConfirmationCron,
+} from "../cron/shift-confirmation-dispatcher";
 import {
   startWhatsAppNlDriver,
   stopWhatsAppNlDriver,
@@ -255,6 +258,7 @@ async function startServer() {
     server,
     logger,
     onBeforeExit: () => {
+      stopConfirmationCron();
       stopWhatsAppNlDriver();
     },
   });

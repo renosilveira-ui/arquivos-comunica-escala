@@ -20,6 +20,11 @@ services:
     # chegam depois). Para o piloto não depender disso: `starter`
     # (US$ 7/mês, sem spin-down). Decisão de custo do PO — ver
     # docs/operations/cold-start.md.
+    #
+    # O dispatcher de confirmação (setInterval 60s neste processo) some
+    # com o spin-down. 24/7 = EXTERNAL_INFRA_ACTION_REQUIRED (Starter ou
+    # Cron cobrado). Não criar type: cron aqui sem aprovação de custo —
+    # ver docs/operations/confirmation-coverage.md.
     plan: free
     region: oregon
     branch: main

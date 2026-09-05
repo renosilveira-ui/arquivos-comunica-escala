@@ -828,6 +828,13 @@ export async function notifyManagersConfirmationEscalation(
 }
 
 // ── Start the cron interval ─────────────────────────────────────────────────
+//
+// O setInterval só vive enquanto o processo web está acordado. No plano
+// Render free a instância dorme após 15 min: os gatilhos 11h/17h/22h
+// (America/Sao_Paulo) e a rechecagem +30 min falham em silêncio. Fechar
+// 24/7 é EXTERNAL_INFRA_ACTION_REQUIRED — ver
+// docs/operations/confirmation-coverage.md. O CLI `pnpm confirmation:tick`
+// é o gancho de um Cron cobrado; este módulo não cria o serviço.
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 

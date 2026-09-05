@@ -41,6 +41,8 @@
     "normalize:corporate-structure": "tsx scripts/normalize-corporate-schedule-structure.ts",
     "apply:migration": "tsx scripts/apply-manual-migration.ts",
     "apply:readiness-fence-v1": "tsx scripts/apply-readiness-fence-v1-migration.ts",
+    "build:confirmation-tick": "esbuild scripts/run-confirmation-tick.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/run-confirmation-tick.mjs",
+    "confirmation:tick": "tsx scripts/run-confirmation-tick.ts",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "qr": "node scripts/generate_qr.mjs"
