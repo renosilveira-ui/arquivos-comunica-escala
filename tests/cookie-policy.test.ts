@@ -3,6 +3,7 @@ import type { Request } from "express";
 import {
   resolveClearCookieOptions,
   resolveCookiePolicy,
+  resolveSessionTtlMs,
   resolveSetCookieOptions,
 } from "../server/_core/cookie-policy";
 
@@ -70,6 +71,19 @@ describe("Frente 2.4 - resolveCookiePolicy (env parsing)", () => {
     expect(
       resolveCookiePolicy({ env: { COOKIE_MAX_AGE_DAYS: "abc" } }).maxAgeMs,
     ).toBe(30 * ONE_DAY_MS);
+  });
+
+  it("resolveSessionTtlMs é o mesmo maxAge da política (cookie = JWT)", () => {
+    expect(resolveSessionTtlMs({ env: {} })).toBe(30 * ONE_DAY_MS);
+    expect(resolveSessionTtlMs({ env: { COOKIE_MAX_AGE_DAYS: "7" } })).toBe(
+      7 * ONE_DAY_MS,
+    );
+    expect(resolveSessionTtlMs({ env: { COOKIE_MAX_AGE_DAYS: "365" } })).toBe(
+      90 * ONE_DAY_MS,
+    );
+    expect(resolveSetCookieOptions(buildRequest({}), { env: {} }).maxAge).toBe(
+      resolveSessionTtlMs({ env: {} }),
+    );
   });
 
   it("trims and exposes COOKIE_DOMAIN, treating empty as undefined", () => {
