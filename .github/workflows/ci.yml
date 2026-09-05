@@ -19,7 +19,9 @@ jobs:
   ci-core:
     name: ci-core
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Headroom after lint/typecheck/build: provas MySQL do driver B2-D
+    # (WAIT liveness + PARK/HOL) estouraram o teto de 20 min (Test cancelado).
+    timeout-minutes: 30
 
     services:
       mysql:
