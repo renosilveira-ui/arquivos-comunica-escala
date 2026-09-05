@@ -338,7 +338,9 @@ Regras:
   pending `OPEN/PARSE` é terminalizado (`CANCELLED`) via
   `cancelWhatsAppPendingOpenParse` (compare-and-set: `id` + `userId` +
   source + `OPEN` + `PARSE`). Slot OPEN libera. Replay do mesmo source
-  vê `already_terminal` e **não** recria OPEN. A próxima mensagem é um
+  vê `already_terminal` e **não** recria OPEN. `already_terminal` exige o
+  mesmo tuple `pendingId` + `userId` + source; source divergente no
+  reload devolve `STATE_CHANGED`, nunca sucesso. A próxima mensagem é um
   novo source e inicia novo pending. Se o pending já avançou para
   `CLARIFICATION`/`CONFIRMATION`, o cancel devolve `STATE_CHANGED` e
   **não** destrói o estágio durável;

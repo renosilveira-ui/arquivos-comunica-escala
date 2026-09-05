@@ -839,4 +839,54 @@ describe("WhatsApp pending intent store", () => {
       row: { id: created.row.id, status: "OPEN", stage: "PARSE" },
     });
   });
+
+  it("cancel PARSE already_terminal é source-bound; source divergente não é sucesso", async () => {
+    const sourceA = await insertInbound(userA, "parse-term-a");
+    const sourceB = await insertInbound(userA, "parse-term-b");
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: sourceA,
+    });
+    if (!created.ok) throw new Error(created.code);
+    const cancelled = await cancelWhatsAppPendingOpenParse({
+      pendingId: created.row.id,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceA,
+    });
+    expect(cancelled).toMatchObject({ ok: true, outcome: "cancelled" });
+
+    const replay = await cancelWhatsAppPendingOpenParse({
+      pendingId: created.row.id,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceA,
+    });
+    expect(replay).toMatchObject({ ok: true, outcome: "already_terminal" });
+    if (!replay.ok) throw new Error("expected already_terminal");
+    expect(replay.row.sourceInboundMessageId).toBe(sourceA);
+    expect(replay.row.status).toBe("CANCELLED");
+    expect(replay.row.id).toBe(created.row.id);
+
+    const wrongSource = await cancelWhatsAppPendingOpenParse({
+      pendingId: created.row.id,
+      userId: userA,
+      expectedSourceInboundMessageId: sourceB,
+    });
+    expect(wrongSource.ok).toBe(false);
+    if (wrongSource.ok) throw new Error("wrong source must not succeed");
+    expect(wrongSource.code).toBe("STATE_CHANGED");
+    expect(wrongSource).not.toHaveProperty("outcome", "already_terminal");
+    expect(wrongSource.row?.sourceInboundMessageId).toBe(sourceA);
+    expect(wrongSource.row?.status).toBe("CANCELLED");
+
+    expect(
+      await getWhatsAppPendingIntentByIdForUser(created.row.id, userA),
+    ).toMatchObject({
+      ok: true,
+      row: {
+        id: created.row.id,
+        status: "CANCELLED",
+        sourceInboundMessageId: sourceA,
+      },
+    });
+    expectHealthyAbsent(await getOpenWhatsAppPendingIntentForUser(userA));
+  });
 });

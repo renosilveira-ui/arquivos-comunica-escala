@@ -405,6 +405,27 @@ describe("WhatsApp pending intent — fail-closed de persistência", () => {
     );
   });
 
+  it("cancel PARSE: miss terminal de outro source não vira already_terminal", async () => {
+    const foreignTerminal = {
+      ...dueOpenRow,
+      status: "CANCELLED",
+      sourceInboundMessageId: 99,
+      payloadClearedAt: new Date("2020-01-02T00:00:00.000Z"),
+    };
+    vi.mocked(getDb).mockResolvedValue({
+      update: () => thenable(Promise.resolve({ affectedRows: 0 })),
+      select: scriptedSelect([[foreignTerminal]]),
+    } as never);
+    const result = await cancelWhatsAppPendingOpenParse({
+      pendingId: 7,
+      userId: 4,
+      expectedSourceInboundMessageId: 10,
+    });
+    expect(result).toMatchObject({ ok: false, code: "STATE_CHANGED" });
+    expect(result).not.toMatchObject({ outcome: "already_terminal" });
+    expect(result).not.toMatchObject({ ok: true });
+  });
+
   it("cancel PARSE: ids não positivos → INVALID_PAYLOAD sem tocar DB", async () => {
     vi.mocked(getDb).mockResolvedValue({
       update: () => {

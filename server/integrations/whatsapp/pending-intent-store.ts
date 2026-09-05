@@ -702,6 +702,15 @@ export async function cancelWhatsAppPendingOpenParse(
       });
       return { ok: false, code: "NOT_FOUND" };
     }
+    if (current.sourceInboundMessageId !== expectedSourceInboundMessageId) {
+      logSafe({
+        event: "whatsapp_pending_parse_cancel_miss",
+        ...technicalLogFields(current),
+        sourceInboundId: expectedSourceInboundMessageId,
+        outcome: "STATE_CHANGED",
+      });
+      return { ok: false, code: "STATE_CHANGED", row: current };
+    }
     if (isWhatsAppPendingTerminalStatus(current.status)) {
       logSafe({
         event: "whatsapp_pending_parse_cancel_miss",
