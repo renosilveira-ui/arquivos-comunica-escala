@@ -1,13 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { users, whatsappInboundMessages } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import * as consumer from "../server/integrations/whatsapp/ready-for-nl-consumer";
 import {
   claimWhatsAppReadyForNlWork,
+  applyWhatsAppNlDriverDecision,
   runWhatsAppNlDriverTick,
 } from "../server/integrations/whatsapp/ready-for-nl-driver";
 import {
+  classifyWhatsAppNlDriverOutcome,
   WHATSAPP_NL_DRIVER_CLAIMED_PREFIX,
   WHATSAPP_NL_DRIVER_RETRY_PREFIX,
 } from "../server/integrations/whatsapp/ready-for-nl-driver-occupancy";
@@ -336,5 +338,70 @@ describe("WhatsApp B2-D — concorrência e crash", () => {
     expect((await loadInbound(afterAdvance))?.payloadClearedAt).toBeTruthy();
     expect((await loadInbound(afterSuccess))?.payloadClearedAt).toBeTruthy();
     expect((await loadInbound(afterCleanup))?.payloadClearedAt).toBeTruthy();
+  });
+
+  it("stale worker A não escreve bookkeeping depois que B rouba o lease", async () => {
+    const id = await insertInbound("fence");
+    const now = new Date();
+    const claimedA = await claimWhatsAppReadyForNlWork({
+      now,
+      batchSize: 1,
+      leaseMs: 500,
+    });
+    const workA = claimedA.find((item) => item.id === id);
+    expect(workA?.claimCode).toBeTruthy();
+    await db.execute(sql`
+      UPDATE whatsapp_inbound_messages
+      SET updated_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 SECOND)
+      WHERE id = ${id}
+    `);
+    const claimedB = await claimWhatsAppReadyForNlWork({
+      now: new Date(now.getTime() + 5_000),
+      batchSize: 5,
+      leaseMs: 500,
+    });
+    const workB = claimedB.find((item) => item.id === id);
+    expect(workB?.claimCode).toBeTruthy();
+    expect(workB!.claimCode).not.toBe(workA!.claimCode);
+
+    const staleAffected = await applyWhatsAppNlDriverDecision(
+      db,
+      workA!,
+      classifyWhatsAppNlDriverOutcome({
+        result: {
+          ok: false,
+          kind: "RETRYABLE_INFRA",
+          code: "INTERNAL_FAILURE",
+        },
+        attempt: workA!.attempt,
+        now,
+        payloadExpiresAt: workA!.payloadExpiresAt,
+      }),
+      now,
+    );
+    expect(staleAffected).toBe(0);
+    const afterStale = await loadInbound(id);
+    expect(afterStale?.errorCode).toBe(workB!.claimCode);
+
+    const ownerAffected = await applyWhatsAppNlDriverDecision(
+      db,
+      workB!,
+      classifyWhatsAppNlDriverOutcome({
+        result: {
+          ok: false,
+          kind: "RETRYABLE_INFRA",
+          code: "INTERNAL_FAILURE",
+        },
+        attempt: workB!.attempt,
+        now,
+        payloadExpiresAt: workB!.payloadExpiresAt,
+      }),
+      now,
+    );
+    expect(ownerAffected).toBe(1);
+    const afterOwner = await loadInbound(id);
+    expect(afterOwner?.errorCode?.startsWith(`${WHATSAPP_NL_DRIVER_RETRY_PREFIX}:`)).toBe(
+      true,
+    );
   });
 });

@@ -327,12 +327,17 @@ utilizável **ou** pending OPEN em CLARIFICATION/CONFIRMATION). Sucesso
 B2-C limpa o payload; a row deixa de ser elegível.
 
 Claim multi-réplica: `SELECT … FOR UPDATE SKIP LOCKED` + ocupação
-durável de `error_code` com prefixo `WA_NL_DRV_` (CLAIMED / RETRY / PARK)
-enquanto o status permanece `READY_FOR_NL` (status terminal do replay
+durável de `error_code` com prefixo `WA_NL_DRV_` (CLAIMED / RETRY / WAIT /
+PARK) enquanto o status permanece `READY_FOR_NL` (status terminal do replay
 Twilio). Lease stale (90s) recupera crash após claim. Backoff de infra:
 30s → 2m → 10m → 30m → 60m, limitado pelo TTL do payload
-(`payload_expires_at`, 24h). Erro de domínio é PARK (não entra em hot
-loop). Poison (`INVALID_PAYLOAD`) é PARK e não bloqueia o batch.
+(`payload_expires_at`, 24h). `ALREADY_OPEN` é WAIT (30s → 2m → 5m → 10m),
+não PARK: a row reentra quando o pending alheio termina ou expira (TTL
+conversacional 15 min) sem exigir terceira mensagem. `NEEDS_REFORMULATION`
+é PARK deste inbound (reprocessar o mesmo texto não ajuda); a mensagem
+seguinte não se perde — cai em `ALREADY_OPEN` → WAIT. Poison
+(`INVALID_PAYLOAD`) e domínio terminal continuam PARK e não bloqueiam o
+batch.
 
 Flag `WHATSAPP_NL_DRIVER_ENABLED=true` (default off). Merge **não**
 ativa staging. `NODE_ENV=test` não inicia o loop. SIGTERM chama
@@ -340,6 +345,8 @@ ativa staging. `NODE_ENV=test` não inicia o loop. SIGTERM chama
 
 Batch máximo 20, oldest-first (`received_at`, `id`), um item por vez
 por processo. Concorrência entre réplicas via SKIP LOCKED.
+WHATSAPP_B2D_INDEX_FOLLOWUP_REQUIRED (P2): índice composto do poll
+não entra nesta PR.
 
 O driver **não** importa `createSwapOffer`, Twilio outbound, push,
 transcrição nem UI mobile. Só chama `processWhatsAppReadyForNlInbound`.
