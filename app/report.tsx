@@ -3,6 +3,7 @@ import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
@@ -15,6 +16,14 @@ import { formatHospitalTime, formatHospitalTimeRange } from "@/lib/hospital-time
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale/pt-BR";
 import { toLocalISODateString } from "@/lib/datetime-utils";
+import {
+  REPORT_SHIFTS_EMPTY_TITLE,
+  REPORT_SHIFTS_ERROR_TITLE,
+  REPORT_SHIFTS_LOADING_LABEL,
+  canDisplayReportStatistics,
+  reportShiftsSurface,
+  resolveReportShiftsState,
+} from "@/lib/report-shifts-state";
 
 type UnifiedShift = {
   id: number;
@@ -24,6 +33,57 @@ type UnifiedShift = {
   turnLabel: string;
   sectorName: string;
 };
+
+type ReportApiShift = {
+  id: number;
+  startAt: Date | string;
+  endAt: Date | string;
+  status: string;
+  sectorId: number;
+};
+
+function turnLabelFromStart(start: Date): string {
+  const hour = Number(formatHospitalTime(start).slice(0, 2));
+  return hour >= 7 && hour < 13 ? "Manhã" : hour >= 13 && hour < 19 ? "Tarde" : "Noite";
+}
+
+function mapApiShift(item: ReportApiShift): UnifiedShift {
+  const start = new Date(item.startAt);
+  const status: UnifiedShift["status"] =
+    item.status === "OCUPADO" ? "confirmada" : item.status === "PENDENTE" ? "pendente" : "cancelada";
+  return {
+    id: item.id,
+    startTime: start,
+    endTime: new Date(item.endAt),
+    status,
+    turnLabel: turnLabelFromStart(start),
+    // TODO: acrescentar nome real do setor quando endpoint retornar join/setor no payload de report.
+    sectorName: `Setor #${item.sectorId}`,
+  };
+}
+
+function mapDemoShifts(
+  items: typeof DEMO_SHIFTS,
+  selectedMonth: number,
+  selectedYear: number,
+): UnifiedShift[] {
+  return items
+    .filter((s) => {
+      const shiftDate = new Date(s.shift.startTime);
+      return (
+        shiftDate.getMonth() === selectedMonth &&
+        shiftDate.getFullYear() === selectedYear
+      );
+    })
+    .map((item) => ({
+      id: item.shift.id,
+      startTime: new Date(item.shift.startTime),
+      endTime: new Date(item.shift.endTime),
+      status: item.shift.status,
+      turnLabel: item.shiftType === "manha" ? "Manhã" : item.shiftType === "tarde" ? "Tarde" : "Noite",
+      sectorName: item.sector?.name || "Setor não definido",
+    }));
+}
 
 /**
  * Tela de Relatório de Escalas
@@ -36,67 +96,53 @@ export default function ReportScreen() {
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
 
-  // Verificar modo demo
   useEffect(() => {
     isDemoMode().then(setIsDemo);
   }, []);
 
-  // Buscar escalas do mês (API ou demo)
   const startDate = new Date(selectedYear, selectedMonth, 1);
   const endDate = new Date(selectedYear, selectedMonth + 1, 0);
   const startDateIso = toLocalISODateString(startDate);
   const endDateIso = toLocalISODateString(endDate);
 
-  const { data: apiShifts, isLoading: apiLoading } = trpc.shifts.listByPeriod.useQuery(
+  const {
+    data: apiShifts,
+    isLoading: apiLoading,
+    isPending: apiPending,
+    isError: apiError,
+    error: apiQueryError,
+    refetch: refetchShifts,
+  } = trpc.shifts.listByPeriod.useQuery(
     { startDate: startDateIso, endDate: endDateIso },
-    { enabled: !!user?.id && !isDemo }
+    { enabled: !!user?.id && !isDemo },
   );
 
-  // Dados demo
   const demoShifts = isDemo
-    ? DEMO_SHIFTS.filter((s) => {
-        const shiftDate = new Date(s.shift.startTime);
-        return (
-          shiftDate.getMonth() === selectedMonth &&
-          shiftDate.getFullYear() === selectedYear
-        );
-      })
+    ? mapDemoShifts(DEMO_SHIFTS, selectedMonth, selectedYear)
     : [];
 
-  const shifts: UnifiedShift[] = isDemo
-    ? demoShifts.map((item) => ({
-        id: item.shift.id,
-        startTime: new Date(item.shift.startTime),
-        endTime: new Date(item.shift.endTime),
-        status: item.shift.status,
-        turnLabel: item.shiftType === "manha" ? "Manhã" : item.shiftType === "tarde" ? "Tarde" : "Noite",
-        sectorName: item.sector?.name || "Setor não definido",
-      }))
-    : (apiShifts || []).map((item) => {
-        const start = new Date(item.startAt);
-        const hour = Number(formatHospitalTime(start).slice(0, 2));
-        const turnLabel = hour >= 7 && hour < 13 ? "Manhã" : hour >= 13 && hour < 19 ? "Tarde" : "Noite";
-        const status: UnifiedShift["status"] =
-          item.status === "OCUPADO" ? "confirmada" : item.status === "PENDENTE" ? "pendente" : "cancelada";
-        return {
-          id: item.id,
-          startTime: start,
-          endTime: new Date(item.endAt),
-          status,
-          turnLabel,
-          // TODO: acrescentar nome real do setor quando endpoint retornar join/setor no payload de report.
-          sectorName: `Setor #${item.sectorId}`,
-        };
-      });
-  const isLoading = isDemo ? false : apiLoading;
+  const contentState = resolveReportShiftsState({
+    isDemo,
+    demoCount: demoShifts.length,
+    isLoading: apiLoading,
+    isPending: apiPending,
+    isError: apiError,
+    data: apiShifts,
+    error: apiQueryError,
+  });
+  const surface = reportShiftsSurface(contentState);
 
-  // Calcular estatísticas
+  const shifts: UnifiedShift[] = isDemo
+    ? demoShifts
+    : canDisplayReportStatistics(contentState) && Array.isArray(apiShifts)
+      ? apiShifts.map(mapApiShift)
+      : [];
+
   const totalShifts = shifts.length;
   const confirmedShifts = shifts.filter((s) => s.status === "confirmada").length;
   const pendingShifts = shifts.filter((s) => s.status === "pendente").length;
   const canceledShifts = shifts.filter((s) => s.status === "cancelada").length;
 
-  // Calcular total de horas
   const totalHours = shifts.reduce((acc: number, item) => {
     const start = new Date(item.startTime);
     const end = new Date(item.endTime);
@@ -104,7 +150,6 @@ export default function ReportScreen() {
     return acc + hours;
   }, 0);
 
-  // Distribuição por turno
   const shiftsByTurn = shifts.reduce<Record<string, number>>((acc, item) => {
     const turn = item.turnLabel;
     acc[turn] = (acc[turn] || 0) + 1;
@@ -159,7 +204,6 @@ export default function ReportScreen() {
   return (
     <ScreenGradient scrollable>
       <View className="gap-6">
-        {/* Header */}
         <View className="flex-row items-center justify-between">
           <TouchableOpacity
             onPress={handleBack}
@@ -177,7 +221,6 @@ export default function ReportScreen() {
           <View className="w-10" />
         </View>
 
-        {/* Seletor de Mês */}
         <TintedGlassCard variant="light">
           <View className="flex-row items-center justify-between">
             <TouchableOpacity
@@ -200,14 +243,23 @@ export default function ReportScreen() {
           </View>
         </TintedGlassCard>
 
-        {isLoading ? (
+        {surface.kind === "LOADING" ? (
           <View className="items-center py-12">
             <ActivityIndicator size="large" color={theme.colors.primary} />
-            <Text className="text-base mt-4" style={{ color: theme.colors.textMuted }}>Carregando dados...</Text>
+            <Text className="text-base mt-4" style={{ color: theme.colors.textMuted }}>
+              {REPORT_SHIFTS_LOADING_LABEL}
+            </Text>
           </View>
-        ) : (
+        ) : surface.kind === "ERROR" ? (
+          <QueryErrorState
+            title={REPORT_SHIFTS_ERROR_TITLE}
+            error={apiQueryError}
+            onRetry={() => {
+              void refetchShifts();
+            }}
+          />
+        ) : surface.showStatistics ? (
           <>
-            {/* Estatísticas Gerais */}
             <View className="gap-4">
               <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Resumo do Mês</Text>
               <View className="flex-row gap-4">
@@ -227,7 +279,6 @@ export default function ReportScreen() {
                 </View>
               </View>
 
-              {/* Status das Escalas */}
               <View className="flex-row gap-4">
                 <View className="flex-1">
                   <TintedGlassCard variant="light">
@@ -250,7 +301,6 @@ export default function ReportScreen() {
               </View>
             </View>
 
-            {/* Distribuição por Turno */}
             <View className="gap-4">
               <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Distribuição por Turno</Text>
               <TintedGlassCard variant="light">
@@ -277,7 +327,6 @@ export default function ReportScreen() {
               </TintedGlassCard>
             </View>
 
-            {/* Botão de Exportar PDF */}
             <TouchableOpacity
               onPress={handleExportPDF}
               activeOpacity={0.7}
@@ -296,7 +345,6 @@ export default function ReportScreen() {
               <Text className="text-lg font-bold" style={{ color: theme.colors.surface }}>Exportar Relatório (PDF)</Text>
             </TouchableOpacity>
 
-            {/* Lista de Escalas do Mês */}
             <View className="gap-4">
               <Text className="text-2xl font-bold" style={{ color: theme.colors.textPrimary }}>Escalas do Mês</Text>
               {shifts.length > 0 ? (
@@ -350,15 +398,14 @@ export default function ReportScreen() {
                 <TintedGlassCard variant="light" className="items-center py-8">
                   <Calendar size={48} color={theme.colors.textMuted} />
                   <Text className="text-base mt-3" style={{ color: theme.colors.textMuted }}>
-                    Nenhuma escala neste mês
+                    {REPORT_SHIFTS_EMPTY_TITLE}
                   </Text>
                 </TintedGlassCard>
               )}
             </View>
           </>
-        )}
+        ) : null}
 
-        {/* Espaçamento inferior */}
         <View className="h-8" />
       </View>
     </ScreenGradient>
