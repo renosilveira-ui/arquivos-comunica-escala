@@ -209,11 +209,14 @@ describe("WhatsApp B2-C READY_FOR_NL — source guards", () => {
     expect(contract).toContain("compare-and-clear");
   });
 
-  it("NEEDS_REFORMULATION terminaliza OPEN/PARSE; CLARIFICATION permanece OPEN; sem B2-D", () => {
+  it("NEEDS_REFORMULATION terminaliza OPEN/PARSE; CLARIFICATION permanece OPEN; B2-C não importa o driver", () => {
     expect(consumer).toContain("cancelWhatsAppPendingOpenParse");
     expect(consumer).toContain('classification.class === "NEEDS_REFORMULATION"');
     expect(consumer).toContain("releaseParseSlotForReformulation");
-    expect(consumer).not.toMatch(/startWhatsAppNlDriver|ready-for-nl-driver/);
+    expect(consumer).not.toMatch(
+      /from ["'][^"']*ready-for-nl-driver|import[\s\S]{0,120}startWhatsAppNlDriver/,
+    );
+    expect(consumer).not.toMatch(/startWhatsAppNlDriver\s*\(/);
     expect(contract).toContain("cancelWhatsAppPendingOpenParse");
     expect(contract).toContain("Slot OPEN libera");
     expect(contract).toContain("`NEEDS_CLARIFICATION` permanece");
