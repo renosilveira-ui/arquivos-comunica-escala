@@ -21,8 +21,8 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 
 /**
  * Perfil → WhatsApp.
- * V1: cadastrar/alterar E.164. Verificação (Twilio Verify) vem no Incremento 2B —
- * o botão fica desabilitado sem fingir fluxo de OTP.
+ * Cadastro de E.164 + verificação Twilio Verify (OTP no próprio WhatsApp).
+ * Informar o número não o verifica.
  */
 export default function WhatsAppContactScreen() {
   const router = useRouter();
@@ -39,13 +39,29 @@ export default function WhatsAppContactScreen() {
       await utils.profile.getWhatsAppContact.invalidate();
     },
   });
+  const startMutation = trpc.profile.startWhatsAppVerification.useMutation({
+    onSuccess: async () => {
+      await utils.profile.getWhatsAppContact.invalidate();
+    },
+  });
+  const checkMutation = trpc.profile.checkWhatsAppVerification.useMutation({
+    onSuccess: async () => {
+      await utils.profile.getWhatsAppContact.invalidate();
+    },
+  });
 
   const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
   const [editing, setEditing] = useState(false);
+  const [awaitingCode, setAwaitingCode] = useState(false);
 
   useEffect(() => {
     if (contactQuery.data?.status === "missing") {
       setEditing(true);
+      setAwaitingCode(false);
+    }
+    if (contactQuery.data?.status === "verified") {
+      setAwaitingCode(false);
     }
   }, [contactQuery.data?.status]);
 
@@ -57,9 +73,7 @@ export default function WhatsAppContactScreen() {
   const handleSave = async () => {
     try {
       await setMutation.mutateAsync({ phone });
-      feedback.success(
-        "WhatsApp salvo. A verificação estará disponível em breve.",
-      );
+      feedback.success("WhatsApp salvo. Verifique o número com o código.");
       setEditing(false);
       setPhone("");
     } catch (error) {
@@ -67,6 +81,49 @@ export default function WhatsAppContactScreen() {
         error instanceof Error
           ? error.message
           : "Não foi possível salvar o WhatsApp.";
+      feedback.error(message);
+    }
+  };
+
+  const handleStartVerify = async () => {
+    try {
+      const result = await startMutation.mutateAsync({});
+      if (result.ok && result.alreadyVerified) {
+        feedback.success("WhatsApp já verificado.");
+        setAwaitingCode(false);
+        return;
+      }
+      if (!result.ok) {
+        feedback.error(result.message);
+        return;
+      }
+      setAwaitingCode(true);
+      setCode("");
+      feedback.success("Código enviado ao WhatsApp.");
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Não foi possível enviar o código.";
+      feedback.error(message);
+    }
+  };
+
+  const handleCheck = async () => {
+    try {
+      const result = await checkMutation.mutateAsync({ code });
+      if (!result.ok) {
+        feedback.error(result.message);
+        return;
+      }
+      setAwaitingCode(false);
+      setCode("");
+      feedback.success("WhatsApp verificado.");
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Não foi possível verificar o código.";
       feedback.error(message);
     }
   };
@@ -82,6 +139,8 @@ export default function WhatsAppContactScreen() {
       await deactivateMutation.mutateAsync();
       feedback.success("WhatsApp removido.");
       setEditing(true);
+      setAwaitingCode(false);
+      setCode("");
     } catch (error) {
       const message =
         error instanceof Error
@@ -92,7 +151,11 @@ export default function WhatsAppContactScreen() {
   };
 
   const data = contactQuery.data;
-  const busy = setMutation.isPending || deactivateMutation.isPending;
+  const busy =
+    setMutation.isPending ||
+    deactivateMutation.isPending ||
+    startMutation.isPending ||
+    checkMutation.isPending;
 
   return (
     <ScreenGradient scrollable>
@@ -142,8 +205,8 @@ export default function WhatsAppContactScreen() {
               marginBottom: theme.space[5],
             }}
           >
-            Cadastre o número que você usará para solicitar troca ou cessão pelo
-            WhatsApp. A verificação chega em uma próxima etapa.
+            Cadastre o número e confirme o código enviado ao WhatsApp. Informar
+            o número não o verifica.
           </Text>
 
           {contactQuery.isLoading ? (
@@ -262,25 +325,66 @@ export default function WhatsAppContactScreen() {
                   >
                     {data?.maskedAddress}
                   </Text>
-                  <AppButton
-                    title="Verificar WhatsApp"
-                    variant="secondary"
-                    disabled
-                    onPress={() => undefined}
-                  />
-                  <Text
-                    style={{
-                      ...theme.text.caption,
-                      color: theme.colors.textMuted,
-                    }}
-                  >
-                    A verificação por código chega na próxima etapa (Twilio
-                    Verify). Não há OTP nesta versão.
-                  </Text>
+                  {data?.verified ? null : (
+                    <>
+                      <AppButton
+                        title={
+                          startMutation.isPending
+                            ? "Enviando…"
+                            : awaitingCode
+                              ? "Reenviar código"
+                              : "Verificar WhatsApp"
+                        }
+                        variant="secondary"
+                        disabled={busy}
+                        onPress={() => {
+                          void handleStartVerify();
+                        }}
+                      />
+                      {awaitingCode ? (
+                        <>
+                          <TextInput
+                            value={code}
+                            onChangeText={setCode}
+                            placeholder="Código"
+                            placeholderTextColor={theme.colors.textMuted}
+                            keyboardType="number-pad"
+                            editable={!busy}
+                            style={{
+                              ...theme.text.body,
+                              color: theme.colors.textPrimary,
+                              borderWidth: 1,
+                              borderColor: theme.colors.border,
+                              borderRadius: theme.radius.md,
+                              paddingHorizontal: theme.space[3],
+                              paddingVertical: theme.space[3],
+                              minHeight: 44,
+                            }}
+                            accessibilityLabel="Código de verificação do WhatsApp"
+                          />
+                          <AppButton
+                            title={
+                              checkMutation.isPending
+                                ? "Verificando…"
+                                : "Confirmar código"
+                            }
+                            onPress={() => {
+                              void handleCheck();
+                            }}
+                            disabled={busy || code.trim().length < 4}
+                          />
+                        </>
+                      ) : null}
+                    </>
+                  )}
                   <AppButton
                     title="Alterar número"
                     variant="ghost"
-                    onPress={() => setEditing(true)}
+                    onPress={() => {
+                      setEditing(true);
+                      setAwaitingCode(false);
+                      setCode("");
+                    }}
                     disabled={busy}
                   />
                   <AppButton

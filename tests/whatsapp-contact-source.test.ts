@@ -31,6 +31,8 @@ describe("WhatsApp contact identity — source contracts", () => {
     expect(router).toContain("getWhatsAppContact");
     expect(router).toContain("setWhatsAppContact");
     expect(router).toContain("deactivateWhatsAppContact");
+    expect(router).toContain("startWhatsAppVerification");
+    expect(router).toContain("checkWhatsAppVerification");
     expect(router).not.toMatch(/verifiedAt\s*:/);
     expect(router).toContain("ctx.user.id");
   });
@@ -40,10 +42,18 @@ describe("WhatsApp contact identity — source contracts", () => {
     expect(router).not.toContain("markWhatsAppContactVerified");
   });
 
-  it("Twilio Verify é contrato sem adapter real", () => {
+  it("Twilio Verify tem adapter real separado do stub fail-closed", () => {
     expect(verify).toContain("WhatsAppVerificationProvider");
     expect(verify).toContain("UnimplementedWhatsAppVerificationProvider");
-    expect(verify).not.toMatch(/twilio\.com|require\(["']twilio["']\)/i);
+    const adapter = readFileSync(
+      new URL(
+        "../server/integrations/whatsapp/twilio-verify-provider.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(adapter).toContain("TwilioWhatsAppVerificationProvider");
+    expect(adapter).toContain('TWILIO_VERIFY_CHANNEL = "whatsapp"');
   });
 
   it("domínio não armazena OTP próprio", () => {

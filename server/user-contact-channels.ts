@@ -2,7 +2,7 @@
  * Domínio: canais de contato WhatsApp do usuário.
  *
  * verifiedAt é autoridade server-side — só `markWhatsAppContactVerified`
- * (chamado futuramente pelo adapter Twilio Verify) pode preenchê-lo.
+ * (após Twilio Verify status=approved) pode preenchê-lo.
  * Mutations de perfil NUNCA marcam verificado.
  */
 import { createHash } from "node:crypto";
@@ -29,7 +29,18 @@ export type WhatsAppContactView = {
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
-function e164AuditHash(e164: string): string {
+export async function assertOperableWhatsAppUser(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "DB unavailable",
+    });
+  }
+  await requireOperableWhatsAppUser(db, userId);
+}
+
+export function e164AuditHash(e164: string): string {
   return createHash("sha256").update(e164).digest("hex").slice(0, 16);
 }
 
@@ -47,7 +58,7 @@ function isDuplicateKeyError(error: unknown): boolean {
   });
 }
 
-async function requireOperableUser(db: Db, userId: number) {
+export async function requireOperableWhatsAppUser(db: Db, userId: number) {
   const [user] = await db
     .select({
       id: users.id,
@@ -111,6 +122,41 @@ export async function getWhatsAppContactForUser(
 }
 
 /**
+ * Canal ativo do próprio usuário — E.164 para Verify start/check.
+ * Não expor via tRPC ao cliente.
+ */
+export async function getActiveWhatsAppChannelForUser(
+  userId: number,
+): Promise<{ e164: string; verified: boolean } | null> {
+  const db = await getDb();
+  if (!db) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "DB unavailable",
+    });
+  }
+  const [row] = await db
+    .select({
+      normalizedAddress: userContactChannels.normalizedAddress,
+      verifiedAt: userContactChannels.verifiedAt,
+      active: userContactChannels.active,
+    })
+    .from(userContactChannels)
+    .where(
+      and(
+        eq(userContactChannels.userId, userId),
+        eq(userContactChannels.channel, WHATSAPP_CHANNEL),
+      ),
+    )
+    .limit(1);
+  if (!row || !row.active) return null;
+  return {
+    e164: row.normalizedAddress,
+    verified: row.verifiedAt != null,
+  };
+}
+
+/**
  * Canal verificado e ativo de um usuário operable — para inbound futuro.
  * Fail-closed se conta deleted/pending ou canal não verificado.
  */
@@ -161,7 +207,7 @@ export async function upsertUserWhatsAppContact(input: {
     throw new TRPCError({ code: "BAD_REQUEST", message: normalized.reason });
   }
 
-  const user = await requireOperableUser(db, input.userId);
+  const user = await requireOperableWhatsAppUser(db, input.userId);
 
   const [existing] = await db
     .select()
@@ -260,7 +306,7 @@ export async function deactivateUserWhatsAppContact(input: {
       message: "DB unavailable",
     });
   }
-  const user = await requireOperableUser(db, input.userId);
+  const user = await requireOperableWhatsAppUser(db, input.userId);
   const [existing] = await db
     .select()
     .from(userContactChannels)
@@ -306,7 +352,7 @@ export async function deactivateUserWhatsAppContact(input: {
 
 /**
  * Primitive domain — NÃO expor via tRPC ao cliente.
- * Somente o adapter Twilio Verify (Incremento 2B) deve chamar após approved.
+ * Somente o check Twilio Verify com status `approved` deve chamar.
  */
 export async function markWhatsAppContactVerified(input: {
   userId: number;
@@ -319,7 +365,7 @@ export async function markWhatsAppContactVerified(input: {
       message: "DB unavailable",
     });
   }
-  await requireOperableUser(db, input.userId);
+  await requireOperableWhatsAppUser(db, input.userId);
   const expected = normalizeWhatsAppInput(input.expectedE164);
   if (!expected.ok) {
     throw new TRPCError({
@@ -330,7 +376,7 @@ export async function markWhatsAppContactVerified(input: {
 
   const updated = await db
     .update(userContactChannels)
-    .set({ verifiedAt: new Date(), active: true })
+    .set({ verifiedAt: new Date() })
     .where(
       and(
         eq(userContactChannels.userId, input.userId),

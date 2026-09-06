@@ -1,0 +1,110 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+const schema = readFileSync(
+  new URL("../drizzle/schema.ts", import.meta.url),
+  "utf8",
+);
+const domain = readFileSync(
+  new URL("../server/user-contact-channels.ts", import.meta.url),
+  "utf8",
+);
+const router = readFileSync(
+  new URL("../server/profile-router.ts", import.meta.url),
+  "utf8",
+);
+const service = readFileSync(
+  new URL("../server/whatsapp-verification.ts", import.meta.url),
+  "utf8",
+);
+const provider = readFileSync(
+  new URL("../server/whatsapp-verification-provider.ts", import.meta.url),
+  "utf8",
+);
+const twilioAdapter = readFileSync(
+  new URL(
+    "../server/integrations/whatsapp/twilio-verify-provider.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const env = readFileSync(
+  new URL("../server/_core/env.ts", import.meta.url),
+  "utf8",
+);
+const driver = readFileSync(
+  new URL(
+    "../server/integrations/whatsapp/ready-for-nl-driver.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
+describe("WhatsApp Verify — source contracts", () => {
+  it("profile não aceita verifiedAt/verified do cliente", () => {
+    expect(router).toContain("startWhatsAppVerification");
+    expect(router).toContain("checkWhatsAppVerification");
+    expect(router).not.toMatch(/verifiedAt\s*:/);
+    expect(router).not.toMatch(/verified\s*:\s*z\./);
+    expect(router).not.toContain("markWhatsAppContactVerified");
+    expect(router).toContain("ctx.user.id");
+  });
+
+  it("check usa só code — sem telefone no input", () => {
+    const marker = "checkWhatsAppVerification: protectedProcedure";
+    expect(router).toContain(marker);
+    const checkBlock = router.slice(router.indexOf(marker));
+    const inputBlock = checkBlock.slice(
+      checkBlock.indexOf(".input("),
+      checkBlock.indexOf(".mutation("),
+    );
+    expect(inputBlock).toContain("code:");
+    expect(inputBlock).not.toMatch(/phone:/);
+  });
+
+  it("único writer positivo de verifiedAt é markWhatsAppContactVerified", () => {
+    expect(domain).toContain("export async function markWhatsAppContactVerified");
+    expect(service).toContain("markWhatsAppContactVerified");
+    expect(service).toContain("expectedE164: channel.e164");
+    expect(router).not.toMatch(/verifiedAt\s*:/);
+    expect(router).not.toContain("markWhatsAppContactVerified");
+    expect(schema).toContain("verifiedAt");
+  });
+
+  it("adapter Twilio usa channel whatsapp e SID por env", () => {
+    expect(twilioAdapter).toContain('TWILIO_VERIFY_CHANNEL = "whatsapp"');
+    expect(twilioAdapter).toContain("TWILIO_ACCOUNT_SID");
+    expect(twilioAdapter).toContain("TWILIO_AUTH_TOKEN");
+    expect(twilioAdapter).toContain("TWILIO_VERIFY_SERVICE_SID");
+    expect(twilioAdapter).toContain("channel: TWILIO_VERIFY_CHANNEL");
+    expect(provider).toContain("isTwilioVerifyApprovedStatus");
+    expect(provider).toContain('status === "approved"');
+  });
+
+  it("OTP não é logado; secrets não são logados", () => {
+    expect(service).not.toMatch(/logSafe\([\s\S]{0,200}input\.code/);
+    expect(service).not.toMatch(/logger\.[a-z]+\([^)]*code[^)]*OTP/i);
+    expect(twilioAdapter).not.toMatch(/logger\.(info|warn|error)/);
+    expect(service).not.toMatch(/TWILIO_AUTH_TOKEN|TWILIO_ACCOUNT_SID|TWILIO_VERIFY_SERVICE_SID/);
+  });
+
+  it("Verify não liga o driver nem chama createSwapOffer", () => {
+    expect(service).not.toMatch(/startWhatsAppNlDriver|WHATSAPP_NL_DRIVER_ENABLED/);
+    expect(service).not.toMatch(/createSwapOffer/);
+    expect(twilioAdapter).not.toMatch(/createSwapOffer|startWhatsAppNlDriver/);
+    expect(env).toContain(
+      'getEnvOrDefault("WHATSAPP_NL_DRIVER_ENABLED", "false") === "true"',
+    );
+    expect(driver).toContain("if (!isWhatsAppNlDriverEnabled()) return");
+  });
+
+  it("domínio não persiste OTP local", () => {
+    expect(domain).not.toMatch(/codeHash|otpCode|whatsapp_channel_verifications/);
+    expect(service).not.toMatch(/whatsapp_channel_verifications/);
+  });
+
+  it("hook de provider só existe no ramo de teste", () => {
+    expect(service).toContain('process.env.NODE_ENV === "test"');
+    expect(service).toContain("whatsappVerificationRuntime.provider");
+  });
+});

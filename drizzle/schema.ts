@@ -116,7 +116,7 @@ export type PasswordReset = typeof passwordResets.$inferSelect;
 /**
  * Canais de contato do usuário (WhatsApp V1).
  * Identidade canônica: user → channel → E.164 normalizado.
- * verifiedAt só é preenchido server-side após Twilio Verify (futuro) —
+ * verifiedAt só é preenchido server-side após Twilio Verify (status approved) —
  * mutations de perfil NUNCA marcam verificado.
  * Migração: drizzle/migrations/manual/2026-08-31-user-contact-channels.sql
  */
