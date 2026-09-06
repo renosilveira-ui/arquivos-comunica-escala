@@ -50,12 +50,16 @@ describe("confirmation tick CLI — source", () => {
     expect(cli).not.toMatch(/from ["'][^"']*_core\/index/);
     expect(cli).not.toMatch(/import[\s\S]{0,120}startConfirmationCron/);
     expect(cli).not.toMatch(/startConfirmationCron\s*\(/);
+    expect(cli).not.toMatch(/startWhatsAppNlDriver/);
     expect(cli).not.toMatch(/setInterval\s*\(/);
     expect(cli).not.toMatch(/createServer|express\(/);
+    expect(cli).toContain("process.exit(0)");
+    expect(cli).toContain("process.exit(1)");
     expect(moduleSrc).toContain("await tick(now)");
     expect(moduleSrc).toContain("await closeDb()");
     expect(moduleSrc).not.toMatch(/import[\s\S]{0,120}startConfirmationCron/);
     expect(moduleSrc).not.toMatch(/startConfirmationCron\s*\(/);
+    expect(moduleSrc).not.toMatch(/startWhatsAppNlDriver/);
     expect(moduleSrc).not.toMatch(/setInterval\s*\(/);
   });
 
@@ -82,9 +86,21 @@ describe("confirmation tick CLI — source", () => {
     expect(startIdx).toBeGreaterThan(listenIdx);
     expect(beforeExitIdx).toBeGreaterThan(startIdx);
     expect(stopIdx).toBeGreaterThan(beforeExitIdx);
+    expect(boot).toContain("try {");
+    expect(boot).toContain("stopWhatsAppNlDriver();");
+    const beforeExit = boot.slice(boot.indexOf("onBeforeExit"));
+    const cronStop = beforeExit.indexOf("stopConfirmationCron();");
+    const waStop = beforeExit.indexOf("stopWhatsAppNlDriver();");
+    expect(cronStop).toBeGreaterThan(-1);
+    expect(waStop).toBeGreaterThan(cronStop);
+    expect(beforeExit).toContain("stopConfirmationCron failed");
+    expect(beforeExit).toContain("stopWhatsAppNlDriver failed");
     expect(dispatcher).toContain("setInterval");
-    expect(dispatcher).toContain("TRIGGER_WINDOW_MIN");
+    expect(dispatcher).toContain("isDueForConfirmation");
     expect(dispatcher).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
+    expect(dispatcher).not.toContain("TRIGGER_WINDOW_MIN");
+    expect(dispatcher).not.toContain("qualificationMatches");
+    expect(dispatcher).not.toContain("professionalAccess");
   });
 
   it("Blueprint não cobra Cron sozinho; finding permanece EXTERNAL_INFRA", () => {
@@ -92,6 +108,11 @@ describe("confirmation tick CLI — source", () => {
     expect(uncommentedRenderYaml(renderYaml)).toContain("plan: free");
     expect(renderYaml).toContain("docs/operations/confirmation-coverage.md");
     expect(coverageDoc).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
+    expect(coverageDoc).toContain("due-based");
+    expect(coverageDoc).toContain("[06:30, 07:30]");
+    expect(coverageDoc).toContain("professional_access");
+    expect(coverageDoc).not.toContain("CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED");
+    expect(coverageDoc).not.toContain("CONFIRMATION_REQUEST_ACTION_AUTHORITY_DIVERGENCE_CONFIRMED");
     expect(coverageDoc).toContain("pnpm confirmation:tick");
     expect(coverageDoc).toContain("node dist/run-confirmation-tick.mjs");
     expect(coverageDoc).toContain('schedule: "* * * * *"');
@@ -163,6 +184,30 @@ describe("confirmation tick CLI — comportamento", () => {
       else process.env.DATABASE_URL = previous;
     }
     expect(tick).not.toHaveBeenCalled();
+  });
+
+  it("closeDb após tick ok não falha o CLI", async () => {
+    const previous = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "mysql://root:root@127.0.0.1:3306/escalas_test";
+    vi.mocked(getDb).mockResolvedValue({ ok: true } as never);
+    vi.mocked(closeDb).mockRejectedValue(new Error("pool close"));
+    vi.mocked(tick).mockResolvedValue(undefined);
+    try {
+      await expect(runConfirmationTickCli()).resolves.toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous;
+    }
+    expect(closeDb).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifica closeDb pós-sucesso como teardown: CLI resolve mesmo se o pool falhar", async () => {
+    const src = readFileSync("server/cron/confirmation-tick-cli.ts", "utf8");
+    expect(src).toContain("harmless teardown");
+    expect(src).toContain("await tick(now)");
+    expect(src.indexOf("await tick(now)")).toBeLessThan(
+      src.indexOf("confirmation tick closeDb failed"),
+    );
   });
 
   it("encerra o pool mesmo quando o tick falha", async () => {

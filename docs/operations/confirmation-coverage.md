@@ -1,21 +1,65 @@
 # Cobertura 24/7 das confirmações de plantão
 
 Finding 4 da auditoria. O dispatcher (`server/cron/shift-confirmation-dispatcher.ts`)
-roda **dentro do processo web**, com `setInterval` de 60 s após o `listen`.
-No plano Render **free** a instância dorme após 15 min sem tráfego. Enquanto
-dorme, não há tick: os gatilhos 11:00 / 17:00 / 22:00 (`America/Sao_Paulo`)
-e a rechecagem +30 min não disparam. A janela de catch-up de 20 min no
-próximo tick **não** cobre um spin-down que atravessa o horário-gatilho.
+roda **dentro do processo web**, com `setInterval` de 60 s após o `listen`,
+e também via CLI one-shot (`pnpm confirmation:tick`). Os dois chamam o
+mesmo `tick()`.
 
-O código deste repositório **não consegue** manter o processo acordado. Fechar
-o finding é `EXTERNAL_INFRA_ACTION_REQUIRED` (decisão de custo do PO).
+No plano Render **free** a instância dorme após 15 min sem tráfego.
+Enquanto dorme, não há tick in-process: a rechecagem +30 min e o push de
+início (lookback 5 min) não correm. A **discovery** de pedidos de
+confirmação é due-based e faz catch-up no próximo tick enquanto o plantão
+ainda não começou — um deploy/sleep que atravessa 11:00 BRT **não** perde
+mais o pedido do dia. Pontualidade 24/7 (recheck, start-push, primeiro
+aviso no due) continua `EXTERNAL_INFRA_ACTION_REQUIRED`.
+
+O código deste repositório **não consegue** manter o processo acordado.
+Fechar o finding operacional é decisão de custo do PO.
+
+## Algoritmo de discovery (código)
+
+```
+now
+  → assignments OCUPADO + is_active
+  → user APPROVED + membership ativa
+  → schedule_context ativo
+  → professional_access canônico (#317/#426)
+  → roster oficial (revalidado na materialização)
+  → startAt ∈ (now, now + maxLead]
+  → sem duty_confirmation
+  → dueAt = startAt - lead ≤ now
+  → INSERT PENDING + enqueue outbox
+    (requireValidDutyConfirmation, requireOriginalAccess default true)
+```
+
+Lead (owner): início ∈ [06:30, 07:30] hospital local → 9h; demais → 2h.
+Relógio `TZ_HOSPITAL` / `America/Sao_Paulo`. `maxLead` deriva do maior lead.
+
+| Início do plantão | Lead vigente (opção A) | dueAt histórico equivalente |
+|---|---|---|
+| 07:00 ±30 min | 9h | 22:00 do dia anterior |
+| 13:00, 19:00 e demais | 2h | 11:00 / 17:00 |
+
+Plantão já iniciado (`startAt <= now`): nenhuma solicitação nova.
+Assignment tardio, swap/substituição com novo `assignment_id`, publicação
+tardia e restart: o próximo tick captura se o due já venceu e o plantão
+ainda não começou.
+
+Idempotência: `unique(assignment_id)`. CLI × web no mesmo instante = 1
+linha.
+
+Confirmação é presença de quem **já está OCUPADO** na escala publicada
+**e** tem `professional_access` canônico atual (#426). Papel, scope,
+convite e qualification **não** substituem access. `qualificationMatches`
+não reentra no integrity pós-occupancy. Occupancy sem ACL continua
+possível (#422); confirmation recusa — decisão A/B/C de occupancy
+permanece aberta.
 
 ## O que o código já faz
 
-- `tick()` imediato no boot (catch-up se a instância acordar ainda dentro da
-  janela de 20 min).
+- `tick()` imediato no boot (catch-up due-based).
 - `setInterval` 60 s enquanto o processo web está vivo.
-- `stopConfirmationCron()` no SIGTERM, para o intervalo não atrasar o drain.
+- `stopConfirmationCron()` no SIGTERM (isolado do stop do driver WhatsApp).
 - CLI one-shot: `pnpm confirmation:tick` (dev) e
   `node dist/run-confirmation-tick.mjs` (artefato de produção).
 - O tick é idempotente entre processos: `unique(assignment_id)` na criação da
@@ -27,17 +71,23 @@ o finding é `EXTERNAL_INFRA_ACTION_REQUIRED` (decisão de custo do PO).
 - Não muda `plan: free` → `starter` neste repositório.
 - Não cria um serviço `type: cron` ativo no Blueprint (mínimo US$ 1/mês;
   aplicar o YAML cobraria).
-- Não liga o CLI sozinho. Sem serviço sempre-on ou Cron cobrado, o gap
-  permanece.
+- Não liga o CLI sozinho. Sem serviço sempre-on ou Cron cobrado, recheck e
+  start-push continuam sujeitos ao spin-down.
 
 ## Opções de infra (PO)
 
-Qualquer uma fecha o finding. Não são exclusivas; A+B é redundante e seguro.
+Qualquer uma fecha o finding operacional. Não são exclusivas; A+B é
+redundante e seguro.
 
 | Opção | Custo (ordem de grandeza) | Efeito |
 |---|---|---|
 | **A.** `plan: starter` no web `escalas-staging` | US$ 7/mês | Sem spin-down. O `setInterval` in-process cobre 24/7. |
 | **B.** Render Cron cobrado chamando o CLI a cada minuto | US$ 1/mês mínimo | Cobre o web dormindo. O web no free continua com o intervalo só quando acordado. |
+
+A discovery due-based tolera intervalo maior que 1 min (o atraso máximo do
+primeiro pedido é o intervalo, não uma janela de 20 min). Recheck +30 min e
+o push de início (lookback 5 min) ainda pedem frequência **≤ 5 min**;
+`* * * * *` permanece a recomendação.
 
 Recomendação para o piloto São Carlos: **A** (também elimina o cold start
 percebido — ver `docs/operations/cold-start.md`). **B** resolve só o
@@ -47,7 +97,8 @@ dispatcher, não o spin-down do app.
 
 Serviço **separado** (não reutilizar o startCommand do web). Expressão em
 **UTC**; o tick já converte para `America/Sao_Paulo`, então `* * * * *` é o
-certo (não tentar “11h BRT” no cron da plataforma).
+certo (não tentar “11h BRT” no cron da plataforma — a discovery não depende
+mais desse minuto).
 
 ```yaml
 # NÃO descomentar / NÃO aplicar sem decisão explícita de custo do PO.
@@ -74,5 +125,4 @@ Comunica+). Sem elas o tick não quebra a escala, mas o outbox não sai.
 - Starter: logs do web com `[ConfirmationCron] Started` contínuos; ausência de
   spin-down em `docs/operations/cold-start.md` (“Como medir”).
 - Cron: um run por minuto no dashboard Render; log JSON
-  `confirmation tick ok`; gatilho 11:00 BRT gera `Found N assignments` no
-  mesmo minuto UTC correspondente (14:00Z no horário padrão de São Paulo).
+  `confirmation tick ok`; assignment due gera `Found N due assignments`.

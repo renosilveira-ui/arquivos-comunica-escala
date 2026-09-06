@@ -1248,14 +1248,6 @@ describe("hierarquia institution → hospital → sector", () => {
     try {
       await dispatchConfirmations(
         new Date("2030-02-09T22:00:00-03:00"),
-        {
-          notifyHour: 22,
-          notifyMinute: 0,
-          shiftStartTime: "07:00",
-          shiftEndTime: "13:00",
-          label: "Manhã",
-          shiftNextDay: true,
-        },
       );
       const dispatched = await db
         .select({ assignmentId: dutyConfirmations.assignmentId })

@@ -258,8 +258,22 @@ async function startServer() {
     server,
     logger,
     onBeforeExit: () => {
-      stopConfirmationCron();
-      stopWhatsAppNlDriver();
+      try {
+        stopConfirmationCron();
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopConfirmationCron failed",
+        );
+      }
+      try {
+        stopWhatsAppNlDriver();
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopWhatsAppNlDriver failed",
+        );
+      }
     },
   });
 }

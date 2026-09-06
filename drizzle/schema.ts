@@ -2226,10 +2226,14 @@ export const swapRequestDismissals = mysqlTable(
  * Confirmação de presença antes do plantão.
  *
  * Fluxo:
- *   CRON (11h/17h/22h) → Push "Confirma plantão?" → PENDING
+ *   tick due-based (dueAt = startAt - lead ≤ agora, startAt futuro)
+ *     → Push "Confirma plantão?" → PENDING
  *     → SIM: CONFIRMED (declara o intervalo no Comunica+ via duty-sync; sem SSO)
  *     → NÃO: DECLINED (abre tela indicar substituto)
  *     → sem resposta +30min: mantém estado e escala para decisão humana
+ *
+ * Lead (owner): 9h se início ∈ [06:30, 07:30] hospital local; 2h nos demais.
+ * Ver server/cron/confirmation-due.ts.
  *
  * Substituição:
  *   Médico original DECLINED → indica substituto → NOMINATED

@@ -7,7 +7,7 @@
 //   decisão humana; nunca produz confirmação, SSO ou duty-sync.
 // - confirm em alocação removida → erro claro.
 // - push token: reatribuído ao usuário atual; desregistro remove.
-// - cron: gatilho dispara dentro da janela (não só no minuto exato) e é
+// - cron: discovery due-based (startAt futuro e dueAt <= agora) é
 //   idempotente.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -2150,7 +2150,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(pushSpy).not.toHaveBeenCalled();
   });
 
-  it("não confirma candidatura PENDENTE nem titular sem acesso ao setor", async () => {
+  it("não confirma candidatura PENDENTE; OCUPADO sem ACL não materializa confirmação", async () => {
     const [shift] = await db
       .insert(shiftInstances)
       .values({
@@ -2178,17 +2178,9 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         createdBy: titularUserId,
       })
       .$returningId();
-    const trigger = {
-      notifyHour: 11,
-      notifyMinute: 0,
-      shiftStartTime: "13:00",
-      shiftEndTime: "19:00",
-      label: "Tarde",
-      shiftNextDay: false,
-    };
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
 
-    await dispatchConfirmations(dispatchAt, trigger);
+    await dispatchConfirmations(dispatchAt);
     expect(
       await db
         .select({ id: dutyConfirmations.id })
@@ -2227,39 +2219,16 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       .set({ canAccess: false })
       .where(eq(professionalAccess.professionalId, titularProId));
     try {
-      await dispatchConfirmations(dispatchAt, trigger);
-      expect(
-        await db
-          .select({ id: dutyConfirmations.id })
-          .from(dutyConfirmations)
-          .where(eq(dutyConfirmations.assignmentId, assignment.id)),
-      ).toHaveLength(0);
-
-      const noAccessToken = crypto.randomUUID();
-      const [noAccess] = await db
-        .insert(dutyConfirmations)
-        .values({
-          institutionId,
-          shiftInstanceId: shift.id,
-          assignmentId: assignment.id,
-          professionalId: titularProId,
-          userId: titularUserId,
-          status: "PENDING",
-          notifiedAt: new Date(),
-          confirmationToken: noAccessToken,
+      await dispatchConfirmations(dispatchAt);
+      const created = await db
+        .select({
+          id: dutyConfirmations.id,
+          status: dutyConfirmations.status,
+          confirmationToken: dutyConfirmations.confirmationToken,
         })
-        .$returningId();
-      await expect(
-        confirmationRouter.createCaller(ctx(titularUserId)).confirm({
-          confirmationToken: noAccessToken,
-        }),
-      ).rejects.toMatchObject({ code: "FORBIDDEN" });
-      const [unchanged] = await db
-        .select({ status: dutyConfirmations.status })
         .from(dutyConfirmations)
-        .where(eq(dutyConfirmations.id, noAccess.id));
-      expect(unchanged.status).toBe("PENDING");
-      expect(pushSpy).not.toHaveBeenCalled();
+        .where(eq(dutyConfirmations.assignmentId, assignment.id));
+      expect(created).toHaveLength(0);
       expect(trackedPushMock).not.toHaveBeenCalled();
     } finally {
       await db
@@ -2271,11 +2240,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("cron: disparo dentro da janela é idempotente (uma confirmação por alocação)", async () => {
     const { assignmentId } = await shiftWithTitular();
-    // Gatilho "Tarde" (11:00 → plantão 13:00 do mesmo dia), simulando 11:07 no dia do plantão.
-    const trigger = { notifyHour: 11, notifyMinute: 0, shiftStartTime: "13:00", shiftEndTime: "19:00", label: "Tarde", shiftNextDay: false };
+    // 13:00 com lead de 2h: 11:07 já está due.
     const at1107 = new Date(`${shiftDay}T11:07:00-03:00`);
-    await dispatchConfirmations(at1107, trigger);
-    await dispatchConfirmations(new Date(at1107.getTime() + 60_000), trigger);
+    await dispatchConfirmations(at1107);
+    await dispatchConfirmations(new Date(at1107.getTime() + 60_000));
     const rows = await db.select({ id: dutyConfirmations.id }).from(dutyConfirmations).where(eq(dutyConfirmations.assignmentId, assignmentId));
     expect(rows).toHaveLength(1);
     expect(trackedPushMock).toHaveBeenCalledTimes(1);
@@ -2313,14 +2281,6 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       isActive: true,
       createdBy: titularUserId,
     })));
-    const trigger = {
-      notifyHour: 11,
-      notifyMinute: 0,
-      shiftStartTime: "13:00",
-      shiftEndTime: "19:00",
-      label: "Tarde",
-      shiftNextDay: false,
-    };
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
     let inFlight = 0;
     let maxInFlight = 0;
@@ -2348,7 +2308,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       };
     });
 
-    await dispatchConfirmations(dispatchAt, trigger);
+    await dispatchConfirmations(dispatchAt);
 
     expect(queuedPushMock).toHaveBeenCalledTimes(6);
     expect(trackedPushMock).toHaveBeenCalledTimes(6);
@@ -2357,14 +2317,6 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("cron revalida conta APPROVED depois de aguardar o lock operacional", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
-    const trigger = {
-      notifyHour: 11,
-      notifyMinute: 0,
-      shiftStartTime: "13:00",
-      shiftEndTime: "19:00",
-      label: "Tarde",
-      shiftNextDay: false,
-    };
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
     let releaseShift!: () => void;
     const holdShift = new Promise<void>((resolve) => {
@@ -2398,7 +2350,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     });
 
     try {
-      const dispatch = dispatchConfirmations(dispatchAt, trigger);
+      const dispatch = dispatchConfirmations(dispatchAt);
       await innerStarted;
       await db
         .update(users)
@@ -2429,7 +2381,6 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("cron não cria confirmação para roster ausente/DRAFT e libera somente PUBLISHED", async () => {
     const { assignmentId } = await shiftWithTitular();
-    const trigger = { notifyHour: 11, notifyMinute: 0, shiftStartTime: "13:00", shiftEndTime: "19:00", label: "Tarde", shiftNextDay: false };
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
 
     await db.delete(monthlyRosters).where(
@@ -2439,7 +2390,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         eq(monthlyRosters.yearMonth, yearMonthBrt(start)),
       ),
     );
-    await dispatchConfirmations(dispatchAt, trigger);
+    await dispatchConfirmations(dispatchAt);
     expect(
       await db
         .select({ id: dutyConfirmations.id })
@@ -2450,7 +2401,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(trackedPushMock).not.toHaveBeenCalled();
 
     await setRosterStatus(start, "DRAFT");
-    await dispatchConfirmations(dispatchAt, trigger);
+    await dispatchConfirmations(dispatchAt);
     expect(
       await db
         .select({ id: dutyConfirmations.id })
@@ -2461,7 +2412,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(trackedPushMock).not.toHaveBeenCalled();
 
     await setRosterStatus(start, "PUBLISHED");
-    await dispatchConfirmations(dispatchAt, trigger);
+    await dispatchConfirmations(dispatchAt);
     expect(
       await db
         .select({ id: dutyConfirmations.id })
@@ -2535,11 +2486,10 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
   it("cron reverte a confirmação quando não consegue persistir o outbox", async () => {
     const { assignmentId } = await shiftWithTitular();
-    const trigger = { notifyHour: 11, notifyMinute: 0, shiftStartTime: "13:00", shiftEndTime: "19:00", label: "Tarde", shiftNextDay: false };
     const dispatchAt = new Date(`${shiftDay}T11:07:00-03:00`);
     queuedPushMock.mockRejectedValueOnce(new Error("outbox indisponível"));
 
-    await expect(dispatchConfirmations(dispatchAt, trigger)).rejects.toThrow("outbox indisponível");
+    await expect(dispatchConfirmations(dispatchAt)).rejects.toThrow("outbox indisponível");
     expect(
       await db
         .select({ id: dutyConfirmations.id })
