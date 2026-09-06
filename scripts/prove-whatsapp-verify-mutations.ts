@@ -60,7 +60,6 @@ function runVitest(test: string, filter?: string): { ok: boolean; output: string
 const providerSrc = readFileSync(providerPath, "utf8");
 const serviceSrc = readFileSync(servicePath, "utf8");
 const domainSrc = readFileSync(domainPath, "utf8");
-const routerSrc = readFileSync(routerPath, "utf8");
 
 const proofs: Proof[] = [
   {
