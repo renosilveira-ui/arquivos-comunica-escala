@@ -23,6 +23,7 @@
     "security:lockfile": "node scripts/security/lockfile-osv-audit.mjs",
     "test": "vitest run",
     "test:sector-service-specialties-migration": "vitest run --config vitest.migration.config.ts",
+    "test:professional-identity-migration": "vitest run --config vitest.migration.config.ts tests/professional-identity-migration-mysql.test.ts",
     "test:readiness-fence-v1-mysql": "vitest run --config vitest.readiness-fence-v1-mysql.config.ts",
     "test:e2e": "cross-env NODE_ENV=test vitest run --config vitest.e2e-guard.config.ts",
     "e2e:workflow:destructive": "tsx scripts/run-e2e-workflow.ts",

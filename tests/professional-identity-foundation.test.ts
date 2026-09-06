@@ -59,7 +59,12 @@ describe("schema de identidade profissional", () => {
     );
     expect(uniqueColumns).not.toContain("user_id");
     expect(professionalsSchema).not.toMatch(/mysqlEnum\(\s*["']profession/);
-    expect(professionalsSchema).toContain('varchar("profession_code"');
+    expect(professionalsSchema).toContain(
+      'varchar("profession_code", { length: 64 })',
+    );
+    expect(professionalsSchema).toContain(
+      'varchar("custom_profession_name", { length: 120 })',
+    );
     expect(professionalsSchema).not.toMatch(
       /unique\(\)\.on\(\s*table\.userId/,
     );
@@ -91,13 +96,35 @@ describe("migração de identidade profissional", () => {
     expect(executableMigration).not.toMatch(/\bENUM\s*\(/i);
   });
 
-  it("não classifica gestão como profissão no backfill", () => {
-    expect(migration).toContain("AND user_account.role IN ('doctor', 'nurse', 'tech')");
-    expect(migration).not.toMatch(/WHEN user_account\.role = 'admin' THEN 'MEDIC'/);
-    expect(migration).not.toMatch(/WHEN user_account\.role = 'manager' THEN 'MEDIC'/);
-    expect(migration).toContain("SET profession_code = 'MEDIC'");
-    expect(migration).toContain("SET profession_code = 'NURSING'");
-    expect(migration).toContain("SET profession_code = 'NURSING_TECHNICIAN'");
+  it("backfill histórico usa só professionals.role e labels inequívocos", () => {
+    expect(executableMigration).not.toMatch(/\bJOIN\s+users\b/i);
+    expect(executableMigration).not.toMatch(/user_account/);
+    expect(executableMigration).not.toMatch(/users\.role/);
+    expect(executableMigration).not.toMatch(
+      /WHEN user_account\.role = 'doctor' THEN 'MEDIC'/,
+    );
+    expect(executableMigration).not.toMatch(
+      /user_account\.role IN \('doctor', 'nurse', 'tech'\)/,
+    );
+    expect(migration).toContain("WHEN 'Médico' THEN 'MEDIC'");
+    expect(migration).toContain("WHEN 'Enfermeiro' THEN 'NURSING'");
+    expect(migration).toContain(
+      "WHEN 'Técnico de Enfermagem' THEN 'NURSING_TECHNICIAN'",
+    );
+    expect(migration).toContain(
+      "WHEN 'Técnico de enfermagem' THEN 'NURSING_TECHNICIAN'",
+    );
+    expect(migration).not.toContain("'Enfermeiro(a)'");
+    expect(executableMigration).not.toMatch(/WHEN\s+'Técnico'\s+THEN/);
+    expect(executableMigration).not.toMatch(/'Técnico'\s*[,)]/);
+    expect(executableMigration).not.toMatch(/\bOTHER\b/);
+    expect(migration).toContain("professional_identity_profession_code_contract_mismatch");
+    expect(migration).toContain(
+      "professional_identity_custom_profession_name_contract_mismatch",
+    );
+    expect(migration).toContain(
+      "professional_identity_profession_code_index_contract_mismatch",
+    );
   });
 
   it("não cria motor de verificação nem colunas de credencial", () => {
@@ -106,6 +133,7 @@ describe("migração de identidade profissional", () => {
       /crm_number|coren_number|registration_number/i,
     );
     expect(executableMigration).not.toMatch(/CREATE TABLE/i);
+    expect(executableMigration).not.toMatch(/INSERT\s+INTO\b/i);
   });
 });
 

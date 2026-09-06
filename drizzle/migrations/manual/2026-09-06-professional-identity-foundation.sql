@@ -5,15 +5,25 @@
 -- e pode crescer sem redesenhar AuthZ.
 --
 -- NÃO cria UNIQUE(user_id): a cardinalidade user↔professional permanece
--- UNPROVEN (writers convencionam 1 linha; leitores usam limit(1); o schema
--- já admite >1). Não misturar tenant, registro profissional (PR 2) nem
--- verificação externa.
+-- UNPROVEN.
+--
+-- Backfill histórico: SOMENTE professionals.role, labels inequívocos já
+-- usados pelo produto. users.role NÃO é fonte de identidade (leftover
+-- global/AuthZ, default doctor). Gestão não é profissão. "Técnico" isolado
+-- não é técnico de enfermagem. UNKNOWN/vazio/NULL permanecem NULL.
+-- Nunca classifica OTHER.
+--
+-- Homônimo incompatível (INT, VARCHAR curto, generated, índice errado)
+-- aborta com SELECT em tabela-sentinela — não coage, não redimensiona.
 --
 -- Aplicar no staging ANTES do merge (o deploy não roda migrações):
 --   pnpm apply:migration drizzle/migrations/manual/2026-09-06-professional-identity-foundation.sql
 --
--- Idempotente: consulta INFORMATION_SCHEMA antes de ALTER; backfill só
--- preenche linhas ainda NULL.
+-- Idempotente: INFORMATION_SCHEMA antes de ALTER; backfill só preenche NULL.
+
+-- ---------------------------------------------------------------------------
+-- Preflight: todas as inspeções ANTES de qualquer ALTER/UPDATE.
+-- ---------------------------------------------------------------------------
 
 SET @profession_code_exists := (
   SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
@@ -21,10 +31,27 @@ SET @profession_code_exists := (
     AND TABLE_NAME = 'professionals'
     AND COLUMN_NAME = 'profession_code'
 );
+SET @profession_code_contract_matches := (
+  SELECT COUNT(*) = 1
+    AND SUM(
+      CASE
+        WHEN DATA_TYPE = 'varchar'
+          AND CHARACTER_MAXIMUM_LENGTH = 64
+          AND IS_NULLABLE = 'YES'
+          AND IFNULL(GENERATION_EXPRESSION, '') = ''
+          AND EXTRA NOT LIKE '%GENERATED%'
+        THEN 1 ELSE 0
+      END
+    ) = 1
+  FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'professionals'
+    AND COLUMN_NAME = 'profession_code'
+);
 SET @ddl := IF(
-  @profession_code_exists = 0,
-  'ALTER TABLE professionals ADD COLUMN profession_code VARCHAR(64) NULL',
-  'SELECT 1'
+  @profession_code_exists = 0 OR @profession_code_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM professional_identity_profession_code_contract_mismatch WHERE 1 = 0'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -36,10 +63,28 @@ SET @custom_profession_name_exists := (
     AND TABLE_NAME = 'professionals'
     AND COLUMN_NAME = 'custom_profession_name'
 );
+SET @custom_profession_name_contract_matches := (
+  SELECT COUNT(*) = 1
+    AND SUM(
+      CASE
+        WHEN DATA_TYPE = 'varchar'
+          AND CHARACTER_MAXIMUM_LENGTH = 120
+          AND IS_NULLABLE = 'YES'
+          AND IFNULL(GENERATION_EXPRESSION, '') = ''
+          AND EXTRA NOT LIKE '%GENERATED%'
+        THEN 1 ELSE 0
+      END
+    ) = 1
+  FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'professionals'
+    AND COLUMN_NAME = 'custom_profession_name'
+);
 SET @ddl := IF(
-  @custom_profession_name_exists = 0,
-  'ALTER TABLE professionals ADD COLUMN custom_profession_name VARCHAR(120) NULL',
-  'SELECT 1'
+  @custom_profession_name_exists = 0
+    OR @custom_profession_name_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM professional_identity_custom_profession_name_contract_mismatch WHERE 1 = 0'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -51,6 +96,53 @@ SET @profession_code_index_exists := (
     AND TABLE_NAME = 'professionals'
     AND INDEX_NAME = 'idx_professionals_profession_code'
 );
+SET @profession_code_index_contract_matches := (
+  SELECT COUNT(*) = 1
+    AND SUM(
+      CASE
+        WHEN SEQ_IN_INDEX = 1
+          AND COLUMN_NAME = 'profession_code'
+          AND NON_UNIQUE = 1
+        THEN 1 ELSE 0
+      END
+    ) = 1
+  FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'professionals'
+    AND INDEX_NAME = 'idx_professionals_profession_code'
+);
+SET @ddl := IF(
+  @profession_code_index_exists = 0
+    OR @profession_code_index_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM professional_identity_profession_code_index_contract_mismatch WHERE 1 = 0'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------------
+-- DDL aditivo somente após contrato compatível ou ausência.
+-- ---------------------------------------------------------------------------
+
+SET @ddl := IF(
+  @profession_code_exists = 0,
+  'ALTER TABLE professionals ADD COLUMN profession_code VARCHAR(64) NULL',
+  'SELECT 1'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl := IF(
+  @custom_profession_name_exists = 0,
+  'ALTER TABLE professionals ADD COLUMN custom_profession_name VARCHAR(120) NULL',
+  'SELECT 1'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 SET @ddl := IF(
   @profession_code_index_exists = 0,
   'ALTER TABLE professionals ADD INDEX idx_professionals_profession_code (profession_code)',
@@ -60,38 +152,104 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- Backfill conservador: só classifica quando o leftover users.role é uma
--- profissão (doctor/nurse/tech). admin/manager NÃO viram MEDIC — gestão
--- não é profissão. Labels conhecidos cobrem cascas cujo users.role não
--- reflete o dado de exibição. Demais linhas permanecem NULL (legado
--- não classificado), sem forçar médico.
+-- Postflight: o contrato tem de existir depois do ALTER.
+SET @profession_code_contract_matches := (
+  SELECT COUNT(*) = 1
+    AND SUM(
+      CASE
+        WHEN DATA_TYPE = 'varchar'
+          AND CHARACTER_MAXIMUM_LENGTH = 64
+          AND IS_NULLABLE = 'YES'
+          AND IFNULL(GENERATION_EXPRESSION, '') = ''
+          AND EXTRA NOT LIKE '%GENERATED%'
+        THEN 1 ELSE 0
+      END
+    ) = 1
+  FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'professionals'
+    AND COLUMN_NAME = 'profession_code'
+);
+SET @ddl := IF(
+  @profession_code_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM professional_identity_profession_code_contract_mismatch WHERE 1 = 0'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-UPDATE professionals AS professional
-INNER JOIN users AS user_account ON user_account.id = professional.user_id
-SET professional.profession_code = CASE
-  WHEN user_account.role = 'doctor' THEN 'MEDIC'
-  WHEN user_account.role = 'nurse' THEN 'NURSING'
-  WHEN user_account.role = 'tech' THEN 'NURSING_TECHNICIAN'
-  ELSE professional.profession_code
+SET @custom_profession_name_contract_matches := (
+  SELECT COUNT(*) = 1
+    AND SUM(
+      CASE
+        WHEN DATA_TYPE = 'varchar'
+          AND CHARACTER_MAXIMUM_LENGTH = 120
+          AND IS_NULLABLE = 'YES'
+          AND IFNULL(GENERATION_EXPRESSION, '') = ''
+          AND EXTRA NOT LIKE '%GENERATED%'
+        THEN 1 ELSE 0
+      END
+    ) = 1
+  FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'professionals'
+    AND COLUMN_NAME = 'custom_profession_name'
+);
+SET @ddl := IF(
+  @custom_profession_name_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM professional_identity_custom_profession_name_contract_mismatch WHERE 1 = 0'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @profession_code_index_contract_matches := (
+  SELECT COUNT(*) = 1
+    AND SUM(
+      CASE
+        WHEN SEQ_IN_INDEX = 1
+          AND COLUMN_NAME = 'profession_code'
+          AND NON_UNIQUE = 1
+        THEN 1 ELSE 0
+      END
+    ) = 1
+  FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'professionals'
+    AND INDEX_NAME = 'idx_professionals_profession_code'
+);
+SET @ddl := IF(
+  @profession_code_index_contract_matches = 1,
+  'SELECT 1',
+  'SELECT * FROM professional_identity_profession_code_index_contract_mismatch WHERE 1 = 0'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------------
+-- Backfill: professionals.role ONLY. Precisão > recall.
+-- Labels inequívocos comprovados no repositório:
+--   "Médico" (writers/seeds/testes)
+--   "Enfermeiro" (seed-shifts / label de /register nurse)
+--   "Técnico de Enfermagem" (mapRoleToLabel histórico / bulk-import)
+--   "Técnico de enfermagem" (catálogo atual / writers da PR1)
+-- ---------------------------------------------------------------------------
+
+UPDATE professionals
+SET profession_code = CASE role
+  WHEN 'Médico' THEN 'MEDIC'
+  WHEN 'Enfermeiro' THEN 'NURSING'
+  WHEN 'Técnico de Enfermagem' THEN 'NURSING_TECHNICIAN'
+  WHEN 'Técnico de enfermagem' THEN 'NURSING_TECHNICIAN'
+  ELSE profession_code
 END
-WHERE professional.profession_code IS NULL
-  AND user_account.role IN ('doctor', 'nurse', 'tech');
-
-UPDATE professionals
-SET profession_code = 'MEDIC'
-WHERE profession_code IS NULL
-  AND role = 'Médico';
-
-UPDATE professionals
-SET profession_code = 'NURSING'
-WHERE profession_code IS NULL
-  AND role IN ('Enfermeiro', 'Enfermeiro(a)');
-
-UPDATE professionals
-SET profession_code = 'NURSING_TECHNICIAN'
 WHERE profession_code IS NULL
   AND role IN (
+    'Médico',
+    'Enfermeiro',
     'Técnico de Enfermagem',
-    'Técnico de enfermagem',
-    'Técnico'
+    'Técnico de enfermagem'
   );

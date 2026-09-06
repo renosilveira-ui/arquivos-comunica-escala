@@ -37,6 +37,7 @@ export default defineConfig({
       "tests/readiness-fence-v1-mysql.test.ts",
       "tests/vacancy-query-indexes-migration-mysql.test.ts",
       "tests/whatsapp-inbound-nl-poll-index-mysql.test.ts",
+      "tests/professional-identity-migration-mysql.test.ts",
     ],
   },
   define: {
