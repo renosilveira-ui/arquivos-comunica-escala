@@ -3,7 +3,6 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import {
   dutyConfirmations,
   managerScope,
-  professionalAccess,
   professionalInstitutions,
   professionals,
   sectors,
@@ -14,6 +13,7 @@ import {
 import type { getDb } from "./db";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import { assertOfficialRoster } from "./month-guards";
+import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type ConfirmationReadDb = Pick<Db, "select">;
@@ -769,55 +769,38 @@ export async function requireValidDutyConfirmation(
       }
     }
     const accesses: { target: AuthorityTarget; id: number }[] = [];
+    const scheduleContextId =
+      currentLockedShift?.scheduleContextId ?? row.shiftScheduleContextId;
     for (const target of targets) {
       if (!target.requireAccess) continue;
-      const [access] = await db
-        .select({ id: professionalAccess.id })
-        .from(professionalAccess)
-        .where(
-          and(
-            eq(professionalAccess.professionalId, target.professionalId),
-            eq(professionalAccess.institutionId, row.shiftInstitutionId),
-            eq(professionalAccess.hospitalId, row.shiftHospitalId),
-            or(
-              isNull(professionalAccess.sectorId),
-              eq(professionalAccess.sectorId, row.shiftSectorId),
-            ),
-            eq(professionalAccess.canAccess, true),
-          ),
-        )
-        .orderBy(professionalAccess.id)
-        .limit(1);
-      if (!access) {
+      const accessId = await findCanonicalConfirmationAccessId(db, {
+        professionalId: target.professionalId,
+        institutionId: row.shiftInstitutionId,
+        hospitalId: row.shiftHospitalId,
+        sectorId: row.shiftSectorId,
+        scheduleContextId,
+      });
+      if (!accessId) {
         invalid(
           target.original
             ? "Titular sem acesso ao hospital ou setor deste plantão"
             : "Substituto sem acesso ao hospital ou setor deste plantão",
         );
       }
-      accesses.push({ target, id: access.id });
+      accesses.push({ target, id: accessId });
     }
     for (const { target, id } of accesses.sort(
       (left, right) => left.id - right.id,
     )) {
-      const [lockedAccess] = await db
-        .select({ id: professionalAccess.id })
-        .from(professionalAccess)
-        .where(
-          and(
-            eq(professionalAccess.id, id),
-            eq(professionalAccess.professionalId, target.professionalId),
-            eq(professionalAccess.institutionId, row.shiftInstitutionId),
-            eq(professionalAccess.hospitalId, row.shiftHospitalId),
-            or(
-              isNull(professionalAccess.sectorId),
-              eq(professionalAccess.sectorId, row.shiftSectorId),
-            ),
-            eq(professionalAccess.canAccess, true),
-          ),
-        )
-        .limit(1)
-        .for("update");
+      const lockedAccess = await findCanonicalConfirmationAccessId(db, {
+        professionalId: target.professionalId,
+        institutionId: row.shiftInstitutionId,
+        hospitalId: row.shiftHospitalId,
+        sectorId: row.shiftSectorId,
+        scheduleContextId,
+        accessId: id,
+        lockForUpdate: true,
+      });
       if (!lockedAccess) {
         invalid(
           target.original
@@ -831,23 +814,13 @@ export async function requireValidDutyConfirmation(
   }
 
   if (requireOriginalAccess && !options.lockForUpdate) {
-    const originalAccessQuery = db
-      .select({ id: professionalAccess.id })
-      .from(professionalAccess)
-      .where(
-        and(
-          eq(professionalAccess.professionalId, conf.professionalId),
-          eq(professionalAccess.institutionId, row.shiftInstitutionId),
-          eq(professionalAccess.hospitalId, row.shiftHospitalId),
-          or(
-            isNull(professionalAccess.sectorId),
-            eq(professionalAccess.sectorId, row.shiftSectorId),
-          ),
-          eq(professionalAccess.canAccess, true),
-        ),
-      )
-      .limit(1);
-    const [originalAccess] = await originalAccessQuery;
+    const originalAccess = await findCanonicalConfirmationAccessId(db, {
+      professionalId: conf.professionalId,
+      institutionId: row.shiftInstitutionId,
+      hospitalId: row.shiftHospitalId,
+      sectorId: row.shiftSectorId,
+      scheduleContextId: row.shiftScheduleContextId,
+    });
     if (!originalAccess)
       invalid("Titular sem acesso ao hospital ou setor deste plantão");
   }
@@ -907,19 +880,6 @@ export async function requireValidDutyConfirmation(
             isNull(users.deletedAt),
           ),
         )
-        .innerJoin(
-          professionalAccess,
-          and(
-            eq(professionalAccess.professionalId, professionals.id),
-            eq(professionalAccess.institutionId, conf.institutionId),
-            eq(professionalAccess.hospitalId, row.shiftHospitalId),
-            or(
-              isNull(professionalAccess.sectorId),
-              eq(professionalAccess.sectorId, row.shiftSectorId),
-            ),
-            eq(professionalAccess.canAccess, true),
-          ),
-        )
         .where(
           and(
             eq(professionals.id, conf.replacementProfessionalId!),
@@ -930,6 +890,15 @@ export async function requireValidDutyConfirmation(
       const [replacementPerson] = await replacementQuery;
       if (!replacementPerson)
         invalid("Substituto sem vínculo ativo nesta instituição");
+      const replacementAccess = await findCanonicalConfirmationAccessId(db, {
+        professionalId: replacementPerson.professionalId,
+        institutionId: conf.institutionId,
+        hospitalId: row.shiftHospitalId,
+        sectorId: row.shiftSectorId,
+        scheduleContextId: row.shiftScheduleContextId,
+      });
+      if (!replacementAccess)
+        invalid("Substituto sem acesso ao hospital ou setor deste plantão");
       replacement = {
         assignmentId: null,
         professionalId: replacementPerson.professionalId,
@@ -1247,24 +1216,14 @@ export async function requireAuthorizedDutyConfirmationRecipient(
         ),
       )
       .limit(1);
-    const [access] = await db
-      .select({ id: professionalAccess.id })
-      .from(professionalAccess)
-      .where(
-        and(
-          eq(professionalAccess.professionalId, valid.original.professionalId),
-          eq(professionalAccess.institutionId, valid.shift.institutionId),
-          eq(professionalAccess.hospitalId, valid.shift.hospitalId),
-          or(
-            isNull(professionalAccess.sectorId),
-            eq(professionalAccess.sectorId, valid.shift.sectorId),
-          ),
-          eq(professionalAccess.canAccess, true),
-        ),
-      )
-      .orderBy(professionalAccess.id)
-      .limit(1);
-    if (!membership || !access) {
+    const accessId = await findCanonicalConfirmationAccessId(db, {
+      professionalId: valid.original.professionalId,
+      institutionId: valid.shift.institutionId,
+      hospitalId: valid.shift.hospitalId,
+      sectorId: valid.shift.sectorId,
+      scheduleContextId: valid.shift.scheduleContextId,
+    });
+    if (!membership || !accessId) {
       invalid("Titular sem vinculo ou acesso ativo para receber o push");
     }
     if (input.lockForUpdate) {
@@ -1288,27 +1247,15 @@ export async function requireAuthorizedDutyConfirmationRecipient(
         )
         .limit(1)
         .for("update");
-      const [lockedAccess] = await db
-        .select({ id: professionalAccess.id })
-        .from(professionalAccess)
-        .where(
-          and(
-            eq(professionalAccess.id, access.id),
-            eq(
-              professionalAccess.professionalId,
-              valid.original.professionalId,
-            ),
-            eq(professionalAccess.institutionId, valid.shift.institutionId),
-            eq(professionalAccess.hospitalId, valid.shift.hospitalId),
-            or(
-              isNull(professionalAccess.sectorId),
-              eq(professionalAccess.sectorId, valid.shift.sectorId),
-            ),
-            eq(professionalAccess.canAccess, true),
-          ),
-        )
-        .limit(1)
-        .for("update");
+      const lockedAccess = await findCanonicalConfirmationAccessId(db, {
+        professionalId: valid.original.professionalId,
+        institutionId: valid.shift.institutionId,
+        hospitalId: valid.shift.hospitalId,
+        sectorId: valid.shift.sectorId,
+        scheduleContextId: valid.shift.scheduleContextId,
+        accessId,
+        lockForUpdate: true,
+      });
       if (!lockedMembership || !lockedAccess) {
         invalid("Titular sem vinculo ou acesso ativo para receber o push");
       }

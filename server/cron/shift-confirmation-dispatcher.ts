@@ -14,7 +14,7 @@
 
 import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq, gte, lte, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, getTableName, gte, lte, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   shiftInstances,
@@ -23,11 +23,12 @@ import {
   dutyConfirmations,
   hospitals,
   managerScope as managerScopeTable,
-  professionalAccess,
   professionalInstitutions,
+  scheduleContexts,
   sectors,
   users,
 } from "../../drizzle/schema";
+import { plantonistaAccessCoversShiftSql } from "../plantonista-shift-eligibility";
 import {
   dutyShiftSnapshot,
   isCanonicalDutyConfirmationRejection,
@@ -337,16 +338,13 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
       ),
     )
     .innerJoin(
-      professionalAccess,
+      scheduleContexts,
       and(
-        eq(professionalAccess.professionalId, professionals.id),
-        eq(professionalAccess.institutionId, shiftInstances.institutionId),
-        eq(professionalAccess.hospitalId, shiftInstances.hospitalId),
-        or(
-          isNull(professionalAccess.sectorId),
-          eq(professionalAccess.sectorId, shiftInstances.sectorId),
-        ),
-        eq(professionalAccess.canAccess, true),
+        eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+        eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+        eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+        eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+        eq(scheduleContexts.active, true),
       ),
     )
     .where(
@@ -355,6 +353,11 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
         eq(shiftAssignmentsV2.status, "OCUPADO"),
         gte(shiftInstances.startAt, startLow),
         lte(shiftInstances.startAt, startHigh),
+        plantonistaAccessCoversShiftSql(
+          getTableName(professionals),
+          getTableName(shiftInstances),
+          getTableName(scheduleContexts),
+        ),
       ),
     );
 
@@ -376,8 +379,10 @@ export async function dispatchConfirmations(now: Date, trigger: TriggerWindow) {
 
     // Confirmação e intenção de transporte nascem na mesma transação. A
     // pré-seleção acima é apenas descoberta: shift, assignment, identidade,
-    // vínculo, ACL, roster e texto do plantão são todos reconstruídos sob lock
-    // antes de qualquer INSERT. A unique(assignment_id) fecha o segundo worker.
+    // vínculo, access canônico (#317/#422), roster e texto do plantão são
+    // reconstruídos sob lock antes de qualquer INSERT. Papel, scope e
+    // convite não substituem professional_access. unique(assignment_id)
+    // fecha o segundo worker.
     let created: typeof createdIntents[number] | null;
     try {
       created = await db.transaction(async (tx) => {
