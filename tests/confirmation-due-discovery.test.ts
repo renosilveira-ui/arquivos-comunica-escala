@@ -86,6 +86,10 @@ describe("confirmation due-based discovery — MySQL", () => {
   const start07 = new Date(`${day}T07:00:00-03:00`);
   const end13 = new Date(`${day}T13:00:00-03:00`);
   const start08 = new Date(`${day}T08:00:00-03:00`);
+  const start0630 = new Date(`${day}T06:30:00-03:00`);
+  const start0730 = new Date(`${day}T07:30:00-03:00`);
+  const start0731 = new Date(`${day}T07:31:00-03:00`);
+  const start14 = new Date(`${day}T14:00:00-03:00`);
 
   async function setRoster(
     at: Date,
@@ -569,7 +573,7 @@ describe("confirmation due-based discovery — MySQL", () => {
     expect(await confirmationsFor(assignmentId)).toHaveLength(1);
   });
 
-  it("GESTOR_PLUS OCUPADO sem ACL entra na discovery", async () => {
+  it("GESTOR_PLUS OCUPADO sem ACL não entra na discovery", async () => {
     const { assignmentId } = await occupy({
       startAt: start13,
       endAt: end19,
@@ -577,9 +581,33 @@ describe("confirmation due-based discovery — MySQL", () => {
       createdBy: plusUserId,
     });
     await dispatchConfirmations(new Date(`${day}T11:07:00-03:00`));
-    const rows = await confirmationsFor(assignmentId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].userId).toBe(plusUserId);
+    expect(await confirmationsFor(assignmentId)).toHaveLength(0);
+    expect(queuedPushMock).not.toHaveBeenCalled();
+    expect(trackedPushMock).not.toHaveBeenCalled();
+  });
+
+  it("06:30 / 07:30 usam lead 9h; 07:31 e 14:00 usam 2h", async () => {
+    const morningEnd = new Date(`${day}T13:00:00-03:00`);
+    const cases = [
+      { start: start0630, end: morningEnd, due: new Date(`2036-04-09T21:30:00-03:00`) },
+      { start: start0730, end: morningEnd, due: new Date(`2036-04-09T22:30:00-03:00`) },
+      { start: start0731, end: morningEnd, due: new Date(`${day}T05:31:00-03:00`) },
+      { start: start14, end: new Date(`${day}T20:00:00-03:00`), due: new Date(`${day}T12:00:00-03:00`) },
+    ];
+    for (const item of cases) {
+      await wipeShifts();
+      await setRoster(item.start, "PUBLISHED");
+      const { assignmentId } = await occupy({
+        startAt: item.start,
+        endAt: item.end,
+        professionalId: titularProId,
+        createdBy: titularUserId,
+      });
+      await dispatchConfirmations(new Date(item.due.getTime() - 60_000));
+      expect(await confirmationsFor(assignmentId)).toHaveLength(0);
+      await dispatchConfirmations(item.due);
+      expect(await confirmationsFor(assignmentId)).toHaveLength(1);
+    }
   });
 
   it("sem ticket aceito: permanece PENDING (silêncio não confirma)", async () => {

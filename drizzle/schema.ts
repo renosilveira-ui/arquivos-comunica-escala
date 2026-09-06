@@ -2232,9 +2232,7 @@ export const swapRequestDismissals = mysqlTable(
  *     → NÃO: DECLINED (abre tela indicar substituto)
  *     → sem resposta +30min: mantém estado e escala para decisão humana
  *
- * Lead vigente: compatibilidade histórica 9h (07:00±30) / 2h demais.
- * Owner ainda precisa escolher o contrato:
- * CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED.
+ * Lead (owner): 9h se início ∈ [06:30, 07:30] hospital local; 2h nos demais.
  * Ver server/cron/confirmation-due.ts.
  *
  * Substituição:

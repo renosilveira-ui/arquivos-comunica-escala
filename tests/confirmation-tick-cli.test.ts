@@ -109,8 +109,10 @@ describe("confirmation tick CLI — source", () => {
     expect(renderYaml).toContain("docs/operations/confirmation-coverage.md");
     expect(coverageDoc).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
     expect(coverageDoc).toContain("due-based");
-    expect(coverageDoc).toContain("CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED");
-    expect(coverageDoc).toContain("CONFIRMATION_REQUEST_ACTION_AUTHORITY_DIVERGENCE_CONFIRMED");
+    expect(coverageDoc).toContain("[06:30, 07:30]");
+    expect(coverageDoc).toContain("professional_access");
+    expect(coverageDoc).not.toContain("CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED");
+    expect(coverageDoc).not.toContain("CONFIRMATION_REQUEST_ACTION_AUTHORITY_DIVERGENCE_CONFIRMED");
     expect(coverageDoc).toContain("pnpm confirmation:tick");
     expect(coverageDoc).toContain("node dist/run-confirmation-tick.mjs");
     expect(coverageDoc).toContain('schedule: "* * * * *"');

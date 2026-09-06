@@ -21,18 +21,19 @@ Fechar o finding operacional é decisão de custo do PO.
 ```
 now
   → assignments OCUPADO + is_active
+  → user APPROVED + membership ativa
+  → schedule_context ativo
+  → professional_access canônico (#317/#426)
   → roster oficial (revalidado na materialização)
   → startAt ∈ (now, now + maxLead]
   → sem duty_confirmation
   → dueAt = startAt - lead ≤ now
   → INSERT PENDING + enqueue outbox
+    (requireValidDutyConfirmation, requireOriginalAccess default true)
 ```
 
-Lead vigente = **compatibilidade histórica** do cron 11/17/22, não contrato
-de produto escrito. `CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED`
-(A=9h manhã / 2h demais; B=2h universal; C=configurável). Relógio
-`TZ_HOSPITAL` / `America/Sao_Paulo`. `maxLead` deriva do maior lead,
-não de 9h hardcoded.
+Lead (owner): início ∈ [06:30, 07:30] hospital local → 9h; demais → 2h.
+Relógio `TZ_HOSPITAL` / `America/Sao_Paulo`. `maxLead` deriva do maior lead.
 
 | Início do plantão | Lead vigente (opção A) | dueAt histórico equivalente |
 |---|---|---|
@@ -47,14 +48,12 @@ ainda não começou.
 Idempotência: `unique(assignment_id)`. CLI × web no mesmo instante = 1
 linha.
 
-Confirmação é presença de quem **já está OCUPADO** na escala publicada.
-A discovery **não** filtra `professional_access` nem `qualificationMatches`
-(#422). `confirm()` / `getPending` / retry de push do titular **ainda
-exigem** ACL (`requireOriginalAccess` default). Isso é divergência de
-autoridade, não contrato de produto escrito:
-`CONFIRMATION_REQUEST_ACTION_AUTHORITY_DIVERGENCE_CONFIRMED`.
-Correção de AuthZ **não** cabe nesta PR de discovery — ver plano
-`CONFIRMATION_CANONICAL_HOLDER_AUTHORITY`.
+Confirmação é presença de quem **já está OCUPADO** na escala publicada
+**e** tem `professional_access` canônico atual (#426). Papel, scope,
+convite e qualification **não** substituem access. `qualificationMatches`
+não reentra no integrity pós-occupancy. Occupancy sem ACL continua
+possível (#422); confirmation recusa — decisão A/B/C de occupancy
+permanece aberta.
 
 ## O que o código já faz
 

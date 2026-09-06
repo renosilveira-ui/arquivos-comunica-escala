@@ -4,15 +4,12 @@
 // dueAt = startAt - lead <= agora. Não depende de gatilho 11/17/22 nem
 // de janela de 20 min no relógio de parede.
 //
-// Lead operacional atual = compatibilidade histórica do cron 11/17/22
-// (commit 74e73ad / #145). Não há requisito de produto inequívoco de
-// “2h” ou “9h” em docs/product. Até o owner escolher:
-//   CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED
-//   A = 07:00±30 → 9h; demais → 2h  (compatibilidade histórica; vigente)
-//   B = 2h universal
-//   C = configurável (só com requisito real de múltiplas políticas)
-//
-// A dúvida é dueAt = startAt - ?, não due-based vs trigger fixo.
+// Lead fechado pelo owner:
+//   start ∈ [06:30, 07:30] no relógio do hospital → 9h
+//   demais inícios → 2h
+//   dueAt = startAt − lead
+// Timezone: TZ_HOSPITAL, fallback America/Sao_Paulo.
+// Implementação: 07:00 ±30 min (circular) ≡ [06:30, 07:30] inclusive.
 
 export const HOSPITAL_TIME_ZONE =
   process.env.TZ_HOSPITAL || "America/Sao_Paulo";

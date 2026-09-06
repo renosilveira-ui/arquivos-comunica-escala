@@ -340,43 +340,17 @@ describe("confirmation holder authority — MySQL", () => {
     expect(peerUserId).toBeGreaterThan(0);
   });
 
-  it("GESTOR_PLUS OCUPADO sem ACL: discovery cria; push/read/confirm/decline/nominate divergem", async () => {
+  it("GESTOR_PLUS OCUPADO sem ACL: discovery zero; sem outbox inicial", async () => {
     const occupied = await occupy(plusProId, plusUserId);
     await dispatchConfirmations(dueAt);
-    const rows = await confirmationFor(occupied.assignmentId);
-    expect(rows).toHaveLength(1);
-    const created = rows[0]!;
-    expect(created.status).toBe("PENDING");
-    expect(created.userId).toBe(plusUserId);
-
-    await expect(holderPushAuthority(created.id, plusUserId)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    });
-
-    const [queued] = await db
-      .select({
-        status: notifications.status,
-        errorMessage: notifications.errorMessage,
-      })
+    expect(await confirmationFor(occupied.assignmentId)).toHaveLength(0);
+    const queued = await db
+      .select({ id: notifications.id })
       .from(notifications)
       .where(eq(notifications.shiftInstanceId, occupied.shiftId));
-    expect(queued?.status).toBe("FAILED");
-    expect(queued?.errorMessage).toMatch(/Autoridade do destinatário revogada/);
-
+    expect(queued).toHaveLength(0);
     const caller = confirmationRouter.createCaller(ctx(plusUserId));
     await expect(caller.getPending()).resolves.toBeNull();
-    await expect(
-      caller.confirm({ confirmationToken: created.confirmationToken }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(
-      caller.decline({ confirmationToken: created.confirmationToken }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(
-      caller.nominateReplacement({
-        confirmationToken: created.confirmationToken,
-        replacementProfessionalId: peerProId,
-      }),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("ACL revogada após materialização: retry de push cancela; read/confirm falham; assignment segue OCUPADO", async () => {

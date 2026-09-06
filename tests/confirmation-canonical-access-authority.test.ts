@@ -75,15 +75,6 @@ vi.mock("../server/integrations/comunica-plus", () => ({
   processPendingComunicaPlusOutbox: vi.fn(async () => 0),
 }));
 
-const TARDE = {
-  notifyHour: 11,
-  notifyMinute: 0,
-  shiftStartTime: "13:00",
-  shiftEndTime: "19:00",
-  label: "Tarde",
-  shiftNextDay: false,
-};
-
 describe("confirmation canonical current eligibility — MySQL", () => {
   let db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
   const stamp = Date.now();
@@ -240,7 +231,7 @@ describe("confirmation canonical current eligibility — MySQL", () => {
   }
 
   async function dispatch() {
-    await dispatchConfirmations(dueAt, TARDE);
+    await dispatchConfirmations(dueAt);
   }
 
   async function setPolicy(
@@ -794,8 +785,11 @@ describe("confirmation canonical access — source mutations", () => {
     const discovery = dispatcher.slice(start, end);
     expect(discovery).toContain("plantonistaAccessCoversShiftSql");
     expect(discovery).toContain("scheduleContexts");
+    expect(discovery).toContain("isDueForConfirmation");
     expect(discovery).not.toContain("GESTOR_PLUS");
     expect(discovery).not.toContain("managerScopeTable");
+    expect(discovery).not.toContain("requireOriginalAccess: false");
+    expect(discovery).not.toMatch(/notifyHour:\s*11/);
   });
 
   it("M3: integrity não reaplica qualificationMatches", () => {

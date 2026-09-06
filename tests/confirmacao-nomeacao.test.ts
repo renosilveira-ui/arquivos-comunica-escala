@@ -2150,7 +2150,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(pushSpy).not.toHaveBeenCalled();
   });
 
-  it("não confirma candidatura PENDENTE; OCUPADO sem ACL entra na discovery e confirm() exige acesso", async () => {
+  it("não confirma candidatura PENDENTE; OCUPADO sem ACL não materializa confirmação", async () => {
     const [shift] = await db
       .insert(shiftInstances)
       .values({
@@ -2228,18 +2228,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         })
         .from(dutyConfirmations)
         .where(eq(dutyConfirmations.assignmentId, assignment.id));
-      expect(created).toHaveLength(1);
-      expect(created[0].status).toBe("PENDING");
-      await expect(
-        confirmationRouter.createCaller(ctx(titularUserId)).confirm({
-          confirmationToken: created[0].confirmationToken,
-        }),
-      ).rejects.toMatchObject({ code: "FORBIDDEN" });
-      const [unchanged] = await db
-        .select({ status: dutyConfirmations.status })
-        .from(dutyConfirmations)
-        .where(eq(dutyConfirmations.id, created[0].id));
-      expect(unchanged.status).toBe("PENDING");
+      expect(created).toHaveLength(0);
+      expect(trackedPushMock).not.toHaveBeenCalled();
     } finally {
       await db
         .update(professionalAccess)

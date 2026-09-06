@@ -87,16 +87,20 @@ describe("confirmation due-based lead", () => {
     );
   });
 
-  it("dispatcher não usa gatilho 11/17/22 nem qualificationMatches", () => {
+  it("dispatcher compõe due-based com ACL canônico; INSERT do titular não relaxa access", () => {
     const dispatcher = readFileSync(
       "server/cron/shift-confirmation-dispatcher.ts",
       "utf8",
     );
-    expect(dispatcher).toContain("isDueForConfirmation");
+    const start = dispatcher.indexOf("export async function dispatchConfirmations");
+    const end = dispatcher.indexOf("export async function processRechecks");
+    const discovery = dispatcher.slice(start, end);
+    expect(discovery).toContain("isDueForConfirmation");
+    expect(discovery).toContain("plantonistaAccessCoversShiftSql");
+    expect(discovery).not.toContain("requireOriginalAccess: false");
     expect(dispatcher).toContain("requireOriginalAccess: false");
     expect(dispatcher).not.toMatch(/notifyHour:\s*11/);
     expect(dispatcher).not.toContain("TRIGGER_WINDOW_MIN");
     expect(dispatcher).not.toContain("qualificationMatches");
-    expect(dispatcher).not.toContain("professionalAccess");
   });
 });
