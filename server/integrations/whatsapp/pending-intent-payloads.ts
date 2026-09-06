@@ -456,6 +456,36 @@ function shiftSummaryFromResolved(shift: {
   };
 }
 
+export function draftFromStoredParsedIntent(
+  parsed: WhatsAppParsedSwapIntentV1,
+): SwapIntentDraft {
+  if (parsed.kind === "SWAP") {
+    return {
+      kind: "SWAP",
+      ownShift: {
+        date: parsed.ownShift.date,
+        period: parsed.ownShift.period,
+        sectorText: parsed.ownShift.sectorText,
+      },
+      targetProfessional: { name: parsed.targetProfessional.name },
+      targetShift: {
+        date: parsed.targetShift.date,
+        period: parsed.targetShift.period,
+        sectorText: parsed.targetShift.sectorText,
+      },
+    };
+  }
+  return {
+    kind: "CESSAO",
+    ownShift: {
+      date: parsed.ownShift.date,
+      period: parsed.ownShift.period,
+      sectorText: parsed.ownShift.sectorText,
+    },
+    targetProfessional: { name: parsed.targetProfessional.name },
+  };
+}
+
 export function serializeParsedSwapIntentV1(
   draft: SwapIntentDraft,
 ): WhatsAppPayloadParseResult<WhatsAppParsedSwapIntentV1> {

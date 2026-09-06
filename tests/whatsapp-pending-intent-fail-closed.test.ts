@@ -102,6 +102,7 @@ const dueOpenRow = {
   expiresAt: new Date("2020-01-01T00:00:00.000Z"),
   consumedAt: null,
   payloadClearedAt: null,
+  confirmationDisposition: null,
 };
 
 function scriptedSelect(steps: (unknown[] | "throw")[]) {

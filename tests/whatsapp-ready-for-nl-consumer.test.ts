@@ -733,16 +733,16 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
     parseSpy.mockRestore();
   });
 
-  it("already_open de outro source não limpa o novo inbound", async () => {
+  it("already_open em OPEN/PARSE não limpa o novo inbound", async () => {
     const firstId = await insertInbound({
       ownerId: actor.userId,
       suffix: "open1",
       text: `passar meu plantão de amanhã à noite na SR para o Colg Silva`,
     });
-    const first = await processWhatsAppReadyForNlInbound({
+    const created = await pendingStore.createWhatsAppPendingIntent({
       sourceInboundMessageId: firstId,
     });
-    expect(first.ok).toBe(true);
+    expect(created).toMatchObject({ ok: true, outcome: "created" });
     const secondText = `passar meu plantão de amanhã à noite na SR para o Colg Silva`;
     const secondId = await insertInbound({
       ownerId: actor.userId,
@@ -760,6 +760,34 @@ describe("WhatsApp B2-C READY_FOR_NL — integração", () => {
     const inbound = await loadInbound(secondId);
     expect(inbound?.operationalText).toBe(secondText);
     expect(await loadPendingBySource(secondId)).toBeUndefined();
+  });
+
+  it("already_open em CONFIRMATION com intent novo é FRESH_INTENT NOOP e limpa o filho", async () => {
+    const firstId = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "fresh1",
+      text: `passar meu plantão de amanhã à noite na SR para o Colg Silva`,
+    });
+    const first = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: firstId,
+    });
+    expect(first.ok).toBe(true);
+    const secondText = `passar meu plantão de amanhã à noite na SR para o Colg Silva`;
+    const secondId = await insertInbound({
+      ownerId: actor.userId,
+      suffix: "fresh2",
+      text: secondText,
+    });
+    const second = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: secondId,
+    });
+    expect(second.ok).toBe(true);
+    const inbound = await loadInbound(secondId);
+    expect(inbound?.operationalText).toBeNull();
+    expect(inbound?.continuationOutcome).toBe("NOOP");
+    const founding = await loadPendingBySource(firstId);
+    expect(founding?.status).toBe("OPEN");
+    expect(founding?.stage).toBe("CONFIRMATION");
   });
 
   it("resolved payload é o mesmo que outro canal obteria para o mesmo actor/texto", async () => {

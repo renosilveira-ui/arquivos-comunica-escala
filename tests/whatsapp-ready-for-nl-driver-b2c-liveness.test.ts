@@ -18,12 +18,10 @@ import { addDaysToKey, dayKeyBrt } from "../server/local-time";
 import * as swapCreate from "../server/swap-offer-create";
 import { processWhatsAppReadyForNlInbound } from "../server/integrations/whatsapp/ready-for-nl-consumer";
 import {
-  listWhatsAppReadyForNlEligibleIds,
   runWhatsAppNlDriverTick,
 } from "../server/integrations/whatsapp/ready-for-nl-driver";
 import {
   WHATSAPP_NL_DRIVER_PARK_PREFIX,
-  WHATSAPP_NL_DRIVER_WAIT_PREFIX,
   whatsAppNlDriverWaitDelayMs,
 } from "../server/integrations/whatsapp/ready-for-nl-driver-occupancy";
 
@@ -337,7 +335,7 @@ describe("WhatsApp B2-D — WAIT liveness e A→B com B2-C real", () => {
     }
   });
 
-  async function waitThenProgress(input: {
+  async function continueWhileOpen(input: {
     textA: string;
     suffixA: string;
     expectedA: "CLARIFICATION" | "CONFIRMATION";
@@ -355,8 +353,10 @@ describe("WhatsApp B2-D — WAIT liveness e A→B com B2-C real", () => {
       text: "passar meu plantão de amanhã à noite na SR para o Colg Silva",
       receivedAt: new Date(Date.now() - 2_000),
     });
-    const now = new Date();
-    const first = await runWhatsAppNlDriverTick({ now, batchSize: 20 });
+    const first = await runWhatsAppNlDriverTick({
+      now: new Date(),
+      batchSize: 20,
+    });
     const itemA = first.items.find(
       (item) => item.sourceInboundMessageId === inboundA,
     );
@@ -369,51 +369,20 @@ describe("WhatsApp B2-D — WAIT liveness e A→B com B2-C real", () => {
       b2cCode: input.expectedA,
     });
     expect(itemB).toMatchObject({
-      action: "wait",
-      b2cKind: "BLOCKED",
-      b2cCode: "ALREADY_OPEN",
-    });
-    expect((await loadInbound(inboundB))?.errorCode).toBe(
-      `${WHATSAPP_NL_DRIVER_WAIT_PREFIX}:1`,
-    );
-    const pendingA = await loadPendingBySource(inboundA);
-    expect(pendingA?.status).toBe("OPEN");
-    expect(pendingA?.stage).toBe(input.expectedA);
-
-    const hot = await runWhatsAppNlDriverTick({
-      now: new Date(now.getTime() + 5_000),
-      batchSize: 5,
-    });
-    expect(
-      hot.items.some((item) => item.sourceInboundMessageId === inboundB),
-    ).toBe(false);
-
-    await db
-      .update(whatsappPendingIntents)
-      .set({ status: "CANCELLED" })
-      .where(eq(whatsappPendingIntents.id, pendingA!.id));
-
-    const due = new Date(now.getTime() + whatsAppNlDriverWaitDelayMs(1) + 2_000);
-    expect(
-      await listWhatsAppReadyForNlEligibleIds({ now: due, batchSize: 20 }),
-    ).toContain(inboundB);
-
-    const recovered = await runWhatsAppNlDriverTick({ now: due, batchSize: 5 });
-    expect(
-      recovered.items.find((item) => item.sourceInboundMessageId === inboundB),
-    ).toMatchObject({
       action: "complete",
       b2cKind: "ADVANCED",
     });
-    const pendingB = await loadPendingBySource(inboundB);
-    expect(pendingB?.status).toBe("OPEN");
-    expect(["CLARIFICATION", "CONFIRMATION"]).toContain(pendingB?.stage);
-    expect((await loadInbound(inboundB))?.payloadClearedAt).toBeTruthy();
     expect((await loadInbound(inboundB))?.errorCode).toBeNull();
+    expect((await loadInbound(inboundB))?.continuationOutcome).toBe("NOOP");
+    expect((await loadInbound(inboundB))?.payloadClearedAt).toBeTruthy();
+    const pendingA = await loadPendingBySource(inboundA);
+    expect(pendingA?.status).toBe("OPEN");
+    expect(pendingA?.stage).toBe(input.expectedA);
+    expect(await loadPendingBySource(inboundB)).toBeUndefined();
   }
 
-  it("W1: OPEN/CLARIFICATION → B WAIT → slot livre → B progride", async () => {
-    await waitThenProgress({
+  it("W1: OPEN/CLARIFICATION → B continua (FRESH_INTENT NOOP), não WAIT", async () => {
+    await continueWhileOpen({
       textA: "passar meu plantão de amanhã para o Colg Silva",
       suffixA: "w1a",
       expectedA: "CLARIFICATION",
@@ -421,8 +390,8 @@ describe("WhatsApp B2-D — WAIT liveness e A→B com B2-C real", () => {
     });
   }, 30_000);
 
-  it("W2: OPEN/CONFIRMATION → B WAIT → slot livre → B progride", async () => {
-    await waitThenProgress({
+  it("W2: OPEN/CONFIRMATION → B continua (FRESH_INTENT NOOP), não WAIT", async () => {
+    await continueWhileOpen({
       textA: "passar meu plantão de amanhã à noite na SR para o Colg Silva",
       suffixA: "w2a",
       expectedA: "CONFIRMATION",

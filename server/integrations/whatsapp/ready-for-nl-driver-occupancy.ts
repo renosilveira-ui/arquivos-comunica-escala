@@ -7,7 +7,7 @@
  * - NULL — elegível
  * - WA_NL_DRV_CLAIMED:<attempt>:<token> — em processamento; stale → recover
  * - WA_NL_DRV_RETRY:<attempt> — backoff de infra / STATE_CHANGED
- * - WA_NL_DRV_WAIT:<attempt> — espera conversa alheia (ALREADY_OPEN); reentra
+ * - WA_NL_DRV_WAIT:<attempt> — espera conversa OPEN/PARSE (ALREADY_OPEN); reentra
  * - WA_NL_DRV_PARK:<code> — não reprocessar este inbound (domínio / poison)
  *
  * Persistência inbound (webhook) não escreve error_code em READY_FOR_NL.
@@ -78,10 +78,12 @@ export const WHATSAPP_NL_DRIVER_RETRY_DELAY_MS = [
 ] as const;
 
 /**
- * Espera por conversa alheia (ALREADY_OPEN). Alinhado ao TTL pending 15 min
- * (`WHATSAPP_PENDING_INTENT_TTL_MS`): 30s pega OPEN que está acabando;
- * 2m/5m ainda dentro da janela; cap 10m evita hot-loop e reentra após o
- * pending expirar (~15 min) sem exigir terceira mensagem do usuário.
+ * Espera por conversa OPEN/PARSE do mesmo usuário (ALREADY_OPEN).
+ * OPEN/CLARIFICATION|CONFIRMATION segue attach+interpret, não WAIT.
+ * Alinhado ao TTL pending 15 min (`WHATSAPP_PENDING_INTENT_TTL_MS`):
+ * 30s pega OPEN/PARSE que está acabando; 2m/5m ainda dentro da janela;
+ * cap 10m evita hot-loop e reentra após o pending expirar (~15 min)
+ * sem exigir terceira mensagem do usuário.
  * Limitado pelo TTL do payload inbound (24h), não pelo pending.
  */
 export const WHATSAPP_NL_DRIVER_WAIT_DELAY_MS = [

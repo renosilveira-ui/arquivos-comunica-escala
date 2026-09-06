@@ -332,10 +332,12 @@ PARK) enquanto o status permanece `READY_FOR_NL` (status terminal do replay
 Twilio). Lease stale (90s) recupera crash após claim. Backoff de infra:
 30s → 2m → 10m → 30m → 60m, limitado pelo TTL do payload
 (`payload_expires_at`, 24h). `ALREADY_OPEN` é WAIT (30s → 2m → 5m → 10m),
-não PARK: WAIT só quando **outro** pending OPEN **legítimo** impede este
-source de adquirir o slot (CLARIFICATION, CONFIRMATION, ou PARSE
-transitório). A row reentra quando esse pending termina ou expira (TTL
-conversacional 15 min) sem exigir terceira mensagem. `NEEDS_REFORMULATION`
+não PARK: WAIT só quando o pending OPEN está em **PARSE** (ainda sem
+CLARIFICATION/CONFIRMATION) e impede este source de adquirir o slot.
+OPEN/CLARIFICATION|CONFIRMATION **não** espera: o inbound filho anexa e
+interpreta. A row WAIT de PARSE reentra quando esse pending avança,
+termina ou expira (TTL conversacional 15 min) sem exigir terceira
+mensagem. `NEEDS_REFORMULATION`
 é PARK deste inbound (reprocessar o mesmo texto não ajuda). Após #416,
 B2-C terminaliza o pending OPEN/PARSE; o slot OPEN já está livre; a
 mensagem seguinte é um **novo source** e cria novo pending — **não** cai
@@ -393,8 +395,9 @@ Expiração: payload TTL 24h sem pending reconciliável → deixa de ser
 elegível (não loop infinito); pending 15 min → o WAIT cap 10m reentra
 depois do expiry. Fairness do driver = oldest-first **entre elegíveis**.
 WAIT em backoff não é elegível: um inbound novo (NULL) pode ser
-processado antes. Isso não é fila conversacional — continuidade B2-A
-permanece arquitetura futura.
+processado antes. OPEN/PARSE em WAIT é fila de slot, não continuação.
+Resposta a CLARIFICATION/CONFIRMATION é inbound filho próprio
+(`continuation_pending_id` + `continuation_outcome`).
 
 Clock/lease: `updated_at` gravado com o `now` da aplicação; a
 eligibility compara `UNIX_TIMESTAMP(updated_at)` com `nowUnix` da
@@ -425,8 +428,8 @@ nesta PR (schema inbound). Evidência local MySQL 8, dataset misto
 content_kind, payload_cleared_at, received_at, id)`. Poll ~8s →
 ~10.800/dia/instância; a 100k sem índice ≈23 min CPU/dia; 2–4
 réplicas multiplicam. Write-cost do composto: 1 INSERT inbound por
-mensagem. Prerequisite: PR #420. #415 permanece Draft até esse
-merge + main verde + rebase.
+mensagem. Índice composto do poll: PR #420 (merged). #415 foi squash
+em B2-D e não permanece Draft.
 
 O driver **não** importa `createSwapOffer`, Twilio outbound, push,
 transcrição nem UI mobile. Só chama `processWhatsAppReadyForNlInbound`.
@@ -479,9 +482,15 @@ Regras:
   novo source e inicia novo pending. Se o pending já avançou para
   `CLARIFICATION`/`CONFIRMATION`, o cancel devolve `STATE_CHANGED` e
   **não** destrói o estágio durável;
-- `NEEDS_CLARIFICATION` permanece `OPEN/CLARIFICATION`. Continuidade da
-  próxima mensagem (resposta à clarification) é arquitetura futura —
-  esta frente não rebinda source nem implementa outbound;
+- `NEEDS_CLARIFICATION` permanece `OPEN/CLARIFICATION`. O inbound
+  seguinte do mesmo usuário, se READY_FOR_NL autenticado, **anexa** ao
+  pending OPEN (`continuation_pending_id`) quando o stage é
+  CLARIFICATION ou CONFIRMATION e interpreta CHOICE|CANCEL|AFFIRM|DENY|
+  FRESH_INTENT|UNRESOLVED. Não rebinda `source_inbound_message_id`.
+  FRESH_INTENT: KEEP_CURRENT_PENDING + `continuation_outcome=NOOP`.
+  AFFIRM: `confirmation_disposition=AFFIRMED`, permanece OPEN/CONFIRMATION,
+  **sem** `createSwapOffer`. DENY e CANCEL: OPEN→CANCELLED. Não implementa
+  outbound.
 - conflito de domínio NL (`TERMINAL_DOMAIN_CONFLICT`) continua `BLOCKED`
   sem clarification e **sem** cancel de PARSE nesta frente.
 
@@ -558,6 +567,43 @@ Idempotência: mesmo payload → `already_advanced`. Payload diferente →
 `STATE_CHANGED` (não last-writer-wins). TTL vencido → `EXPIRED` (helper
 B1). Terminais → `TERMINAL`. `institution_id` só no resolved completo.
 
+## Continuação (inbound subsequente)
+
+Um segundo inbound autenticado do mesmo usuário continua o único pending
+OPEN em CLARIFICATION ou CONFIRMATION. OPEN/PARSE permanece `ALREADY_OPEN`
+→ WAIT, sem attach.
+
+Schema (3 colunas nullable; sem FK circular pending→child):
+
+- `whatsapp_inbound_messages.continuation_pending_id` INT NULL,
+  índice `idx_whatsapp_inbound_continuation_pending`, FK
+  `fk_whatsapp_inbound_continuation_pending` → `whatsapp_pending_intents.id`
+  ON DELETE SET NULL
+- `whatsapp_inbound_messages.continuation_outcome` ENUM('APPLIED','NOOP') NULL
+  — autoridade de idempotência deste inbound filho
+- `whatsapp_pending_intents.confirmation_disposition` ENUM('AFFIRMED') NULL
+
+Lock order: pending FOR UPDATE, depois child inbound. Attach é CAS em
+`continuation_pending_id`. Apply e `continuation_outcome` no mesmo commit.
+Replay com outcome preenchido não reinterpreta, não reaplica, não desliza TTL.
+`NOOP` é definitivo (UNRESOLVED, FRESH_INTENT, EXPIRED, terminal).
+`STATE_CHANGED` recarrega e reclassifica contra o stage atual — não grava
+NOOP prematuro. TTL +15 min só em CHOICE ou AFFIRM aplicados de novo.
+Child sem payload operacional usável **não** adquire `continuation_pending_id`
+novo enquanto `continuation_outcome IS NULL`. Replay já reconciliado
+(`continuation_pending_id=P` e outcome NOT NULL) permanece válido.
+Fundar novo pending exige payload usável: pending expirado é terminalizado
+sem criar `OPEN/PARSE` e sem ocupar `uniq_whatsapp_pending_open_user`.
+CHOICE que permanece no mesmo stage faz CAS da geração interpretada
+(`parsed_payload` + `clarification_payload`); stage sozinho não autoriza
+last-writer-wins. Zero execução de domínio. Driver permanece
+`WHATSAPP_NL_DRIVER_ENABLED=false`.
+
+Migration incremental:
+`drizzle/migrations/manual/2026-09-06-whatsapp-continuation-link.sql`
+— aditiva, nullable, sem backfill, rerodável, preflight INFORMATION_SCHEMA.
+**Não aplicada no staging nesta PR.**
+
 ## Follow-ups (não bloqueiam o Incremento A)
 
 **P2 — origem da mídia (antes do Incremento D):** `media_url` hoje só
@@ -591,6 +637,10 @@ preservar material de `RETRYABLE` além do TTL.
 - B2-D **não** altera schema nem migration. Driver in-process (poll 8s)
   da inbound como fila; flag `WHATSAPP_NL_DRIVER_ENABLED` (default off).
   Não é cron Render, não é fila externa, não é fire-and-forget do webhook.
+- Continuação: migration
+  `drizzle/migrations/manual/2026-09-06-whatsapp-continuation-link.sql`
+  **não** aplicada no staging nesta PR. CREATE greenfield já inclui as
+  colunas; a FK circular-safe entra no ALTER incremental.
 - Sem alteração de webhook/sender/Verify/templates na Twilio
 - Sem Render config, secrets, EAS, WhatsApp outbound
 - Parser/resolver só no consumer B2-C, nunca no route inbound nem no driver

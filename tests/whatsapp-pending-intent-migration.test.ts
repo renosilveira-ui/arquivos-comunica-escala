@@ -85,6 +85,7 @@ describe("migration manual whatsapp_pending_intents", () => {
       "expires_at",
       "consumed_at",
       "payload_cleared_at",
+      "confirmation_disposition",
       "created_at",
       "updated_at",
       "open_slot",
@@ -103,6 +104,7 @@ describe("migration manual whatsapp_pending_intents", () => {
       'timestamp("expires_at")',
       'timestamp("consumed_at")',
       'timestamp("payload_cleared_at")',
+      'mysqlEnum("confirmation_disposition"',
       'timestamp("created_at")',
       'timestamp("updated_at")',
       'tinyint("open_slot")',
@@ -134,6 +136,8 @@ describe("migration manual whatsapp_pending_intents", () => {
     expect(block).toContain("fk_whatsapp_pending_institution");
     expect(block).toContain("uniq_whatsapp_pending_source");
     expect(block).toContain("uniq_whatsapp_pending_open_user");
+    expect(ddl).toContain("confirmation_disposition");
+    expect(block).toContain("confirmationDisposition");
     expect(ddl).toContain("ENGINE=InnoDB");
     expect(ddl).toContain("utf8mb4_0900_ai_ci");
   });

@@ -75,6 +75,8 @@ describe("migration manual whatsapp_inbound_messages", () => {
       "processed_at",
       "created_at",
       "updated_at",
+      "continuation_pending_id",
+      "continuation_outcome",
     ];
     const drizzleColumns = [
       'int("id")',
@@ -95,6 +97,8 @@ describe("migration manual whatsapp_inbound_messages", () => {
       'timestamp("processed_at")',
       'timestamp("created_at")',
       'timestamp("updated_at")',
+      'int("continuation_pending_id")',
+      'mysqlEnum("continuation_outcome"',
     ];
     for (const column of sqlColumns) {
       expect(ddl).toContain(column);
@@ -134,6 +138,12 @@ describe("migration manual whatsapp_inbound_messages", () => {
     expect(block).toContain("idx_whatsapp_inbound_payload_expires");
     expect(ddl).toContain("KEY idx_whatsapp_inbound_nl_poll");
     expect(block).toContain("idx_whatsapp_inbound_nl_poll");
+    expect(ddl).toContain("continuation_pending_id");
+    expect(ddl).toContain("continuation_outcome");
+    expect(ddl).toContain("KEY idx_whatsapp_inbound_continuation_pending");
+    expect(block).toContain("idx_whatsapp_inbound_continuation_pending");
+    expect(block).toContain("continuationPendingId");
+    expect(block).toContain("continuationOutcome");
     expect(block).not.toContain("FAILED");
   });
 });

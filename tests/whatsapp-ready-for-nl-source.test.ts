@@ -220,7 +220,8 @@ describe("WhatsApp B2-C READY_FOR_NL — source guards", () => {
     expect(contract).toContain("cancelWhatsAppPendingOpenParse");
     expect(contract).toContain("Slot OPEN libera");
     expect(contract).toContain("`NEEDS_CLARIFICATION` permanece");
-    expect(contract).toContain("arquitetura futura");
+    expect(contract).toContain("continuation_pending_id");
+    expect(contract).toContain("KEEP_CURRENT_PENDING");
     expect(contract).toContain("cancel de PARSE nesta frente");
     expect(schema).toContain("whatsappPendingIntents");
     expect(consumer).not.toMatch(/alter table|CREATE TABLE|drizzle\/migrations/i);
