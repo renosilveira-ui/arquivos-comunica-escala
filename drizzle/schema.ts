@@ -211,6 +211,18 @@ export const whatsappInboundMessages = mysqlTable(
     processedAt: timestamp("processed_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+    /**
+     * Child inbound → unique OPEN pending in CLARIFICATION|CONFIRMATION.
+     * Null = not attached. Named FK lives in SQL
+     * (`fk_whatsapp_inbound_continuation_pending`) because the Drizzle
+     * auto-name exceeds MySQL's 64-char identifier limit.
+     * Authority of apply is continuation_outcome, not this pointer alone.
+     */
+    continuationPendingId: int("continuation_pending_id"),
+    continuationOutcome: mysqlEnum("continuation_outcome", [
+      "APPLIED",
+      "NOOP",
+    ]),
   },
   (table) => ({
     uniqWhatsappInboundProviderMessage: unique(
@@ -231,6 +243,9 @@ export const whatsappInboundMessages = mysqlTable(
       table.receivedAt,
       table.id,
     ),
+    idxWhatsappInboundContinuationPending: index(
+      "idx_whatsapp_inbound_continuation_pending",
+    ).on(table.continuationPendingId),
   }),
 );
 
@@ -292,6 +307,13 @@ export const whatsappPendingIntents = mysqlTable(
     expiresAt: timestamp("expires_at").notNull(),
     consumedAt: timestamp("consumed_at"),
     payloadClearedAt: timestamp("payload_cleared_at"),
+    /**
+     * Explicit user confirmation recorded while OPEN/CONFIRMATION.
+     * Null until AFFIRM. Does not mean executed, CONSUMED or createSwapOffer.
+     */
+    confirmationDisposition: mysqlEnum("confirmation_disposition", [
+      "AFFIRMED",
+    ]),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
     /**

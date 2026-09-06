@@ -95,6 +95,7 @@ function toRecord(row: {
   expiresAt: Date;
   consumedAt: Date | null;
   payloadClearedAt: Date | null;
+  confirmationDisposition: string | null;
 }): WhatsAppPendingIntentRecord {
   return {
     id: row.id,
@@ -110,6 +111,7 @@ function toRecord(row: {
     expiresAt: row.expiresAt,
     consumedAt: row.consumedAt,
     payloadClearedAt: row.payloadClearedAt,
+    confirmationDisposition: row.confirmationDisposition,
   };
 }
 
@@ -128,6 +130,7 @@ function clearedConversationPayload(now: Date) {
     parsedPayload: null,
     resolvedPayload: null,
     clarificationPayload: null,
+    confirmationDisposition: null,
     payloadClearedAt: now,
   };
 }
@@ -147,6 +150,7 @@ function emptyFoundationInsert(
     parsedPayload: null,
     resolvedPayload: null,
     clarificationPayload: null,
+    confirmationDisposition: null,
     expiresAt: pendingExpiresAtFrom(now),
     consumedAt: null,
     payloadClearedAt: null,

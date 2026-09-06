@@ -1,7 +1,7 @@
 /**
  * Consumer B2-C: READY_FOR_NL TEXT autenticado → estado conversacional.
  *
- * Fluxo:
+ * Fluxo fundador (mesmo source):
  *   inbound READY_FOR_NL
  *     → create/load pending B1 (só sourceInboundMessageId)
  *     → actor canônico B2-B (userId do inbound/pending)
@@ -11,6 +11,10 @@
  *     → OPEN/CLARIFICATION | OPEN/CONFIRMATION
  *     → clear operational_text
  *     → PARE
+ *
+ * Fluxo continuação (outro inbound, mesmo usuário):
+ *   OPEN/PARSE → ALREADY_OPEN → WAIT
+ *   OPEN/CLARIFICATION|CONFIRMATION → attach → interpret → apply → cleanup
  *
  * Não executa swap. Não chama createSwapOffer. Não envia WhatsApp.
  * Não processa AUDIO. Não é route HTTP nem worker: o webhook Twilio
@@ -55,10 +59,13 @@ import {
   serializeResolvedSwapIntentV1,
   type WhatsAppPendingParseAdvanceOutcome,
 } from "./pending-intent-payloads";
+import { processWhatsAppContinuation } from "./continuation-consumer";
 import {
   advanceWhatsAppPendingFromParse,
   cancelWhatsAppPendingOpenParse,
   createWhatsAppPendingIntent,
+  expireWhatsAppPendingIntent,
+  getOpenWhatsAppPendingIntentForUser,
   getWhatsAppPendingIntentBySourceForUser,
 } from "./pending-intent-store";
 import { classifySwapIntentErrorForConversation } from "./swap-intent-error-classification";
@@ -622,6 +629,131 @@ async function handleExistingPending(input: {
   });
 }
 
+async function handleAlreadyOpen(input: {
+  pending: WhatsAppPendingIntentRecord;
+  source: WhatsAppInboundSourceForNl;
+  payloadUsable: boolean;
+  text: string;
+  ctx: LogCtx;
+}): Promise<ProcessWhatsAppReadyForNlInboundResult> {
+  const sourceUserId = input.source.userId;
+  if (sourceUserId == null) return blocked("SOURCE_IDENTITY_MISSING");
+  if (input.pending.userId !== sourceUserId) return blocked("OWNERSHIP_MISMATCH");
+
+  const now = new Date();
+  if (input.pending.expiresAt.getTime() <= now.getTime()) {
+    if (!input.payloadUsable || !input.text) {
+      return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
+    }
+    const expired = await expireWhatsAppPendingIntent(
+      input.pending.id,
+      sourceUserId,
+      now,
+    );
+    if (!expired.ok) {
+      if (
+        expired.code === "DB_UNAVAILABLE" ||
+        expired.code === "PERSISTENCE_FAILED"
+      ) {
+        return retry(expired.code);
+      }
+      return retry("PERSISTENCE_FAILED");
+    }
+    const created = await createWhatsAppPendingIntent({
+      sourceInboundMessageId: input.source.id,
+    });
+    if (!created.ok) {
+      if (
+        created.code === "DB_UNAVAILABLE" ||
+        created.code === "PERSISTENCE_FAILED"
+      ) {
+        return retry(created.code);
+      }
+      if (created.code === "SOURCE_INBOUND_NOT_FOUND") {
+        return blocked("SOURCE_NOT_FOUND");
+      }
+      if (created.code === "SOURCE_INBOUND_NOT_READY") {
+        return blocked("SOURCE_NOT_READY");
+      }
+      if (created.code === "SOURCE_INBOUND_IDENTITY_MISSING") {
+        return blocked("SOURCE_IDENTITY_MISSING");
+      }
+      return retry("PERSISTENCE_FAILED");
+    }
+    if (created.outcome === "already_open") {
+      if (created.row.stage === WhatsAppPendingStages.PARSE) {
+        return blocked("ALREADY_OPEN");
+      }
+      if (
+        created.row.stage === WhatsAppPendingStages.CLARIFICATION ||
+        created.row.stage === WhatsAppPendingStages.CONFIRMATION
+      ) {
+        return continueOpenPending({
+          pending: created.row,
+          source: input.source,
+          payloadUsable: input.payloadUsable,
+          text: input.text,
+          ctx: input.ctx,
+        });
+      }
+      return blocked("STATE_CHANGED");
+    }
+    if (created.outcome === "already_terminal") {
+      return created.row.status === WhatsAppPendingStatuses.EXPIRED
+        ? blocked("PENDING_EXPIRED")
+        : blocked("PENDING_TERMINAL");
+    }
+    return handleExistingPending({
+      pending: created.row,
+      source: input.source,
+      payloadUsable: input.payloadUsable,
+      text: input.text,
+      ctx: input.ctx,
+    });
+  }
+
+  if (input.pending.stage === WhatsAppPendingStages.PARSE) {
+    return blocked("ALREADY_OPEN");
+  }
+  if (
+    input.pending.stage === WhatsAppPendingStages.CLARIFICATION ||
+    input.pending.stage === WhatsAppPendingStages.CONFIRMATION
+  ) {
+    return continueOpenPending({
+      pending: input.pending,
+      source: input.source,
+      payloadUsable: input.payloadUsable,
+      text: input.text,
+      ctx: input.ctx,
+    });
+  }
+  return blocked("STATE_CHANGED");
+}
+
+function continueOpenPending(input: {
+  pending: WhatsAppPendingIntentRecord;
+  source: WhatsAppInboundSourceForNl;
+  payloadUsable: boolean;
+  text: string;
+  ctx: LogCtx;
+}): Promise<ProcessWhatsAppReadyForNlInboundResult> {
+  input.ctx.pendingId = input.pending.id;
+  return processWhatsAppContinuation({
+    pending: input.pending,
+    source: input.source,
+    payloadUsable: input.payloadUsable,
+    text: input.text,
+    onFoundingSlot: (pending) =>
+      handleExistingPending({
+        pending,
+        source: input.source,
+        payloadUsable: input.payloadUsable,
+        text: input.text,
+        ctx: input.ctx,
+      }),
+  });
+}
+
 /**
  * Interpreta TEXT inbound já autenticado em READY_FOR_NL.
  * Input: somente o id do inbound. Identidade, texto e tenant nascem das
@@ -688,6 +820,17 @@ async function run(
         ctx,
       });
     }
+    const open = await getOpenWhatsAppPendingIntentForUser(sourceUserId);
+    if (!open.ok) return retry(open.code);
+    if (open.row) {
+      return handleAlreadyOpen({
+        pending: open.row,
+        source,
+        payloadUsable: false,
+        text,
+        ctx,
+      });
+    }
     return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
   }
 
@@ -717,7 +860,13 @@ async function run(
   ctx.userId = created.row.userId;
 
   if (created.outcome === "already_open") {
-    return blocked("ALREADY_OPEN");
+    return handleAlreadyOpen({
+      pending: created.row,
+      source,
+      payloadUsable: true,
+      text,
+      ctx,
+    });
   }
   if (created.outcome === "already_terminal") {
     return created.row.status === WhatsAppPendingStatuses.EXPIRED
