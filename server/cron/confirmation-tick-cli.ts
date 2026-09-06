@@ -57,6 +57,15 @@ export async function runConfirmationTickCli(): Promise<void> {
       }),
     );
   } finally {
-    await closeDb();
+    try {
+      await closeDb();
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          msg: "confirmation tick closeDb failed",
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
   }
 }

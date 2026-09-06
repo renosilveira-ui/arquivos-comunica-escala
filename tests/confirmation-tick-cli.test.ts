@@ -82,9 +82,14 @@ describe("confirmation tick CLI — source", () => {
     expect(startIdx).toBeGreaterThan(listenIdx);
     expect(beforeExitIdx).toBeGreaterThan(startIdx);
     expect(stopIdx).toBeGreaterThan(beforeExitIdx);
+    expect(boot).toContain("try {");
+    expect(boot).toContain("stopWhatsAppNlDriver();");
     expect(dispatcher).toContain("setInterval");
-    expect(dispatcher).toContain("TRIGGER_WINDOW_MIN");
+    expect(dispatcher).toContain("isDueForConfirmation");
     expect(dispatcher).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
+    expect(dispatcher).not.toContain("TRIGGER_WINDOW_MIN");
+    expect(dispatcher).not.toContain("qualificationMatches");
+    expect(dispatcher).not.toContain("professionalAccess");
   });
 
   it("Blueprint não cobra Cron sozinho; finding permanece EXTERNAL_INFRA", () => {
@@ -92,6 +97,7 @@ describe("confirmation tick CLI — source", () => {
     expect(uncommentedRenderYaml(renderYaml)).toContain("plan: free");
     expect(renderYaml).toContain("docs/operations/confirmation-coverage.md");
     expect(coverageDoc).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
+    expect(coverageDoc).toContain("due-based");
     expect(coverageDoc).toContain("pnpm confirmation:tick");
     expect(coverageDoc).toContain("node dist/run-confirmation-tick.mjs");
     expect(coverageDoc).toContain('schedule: "* * * * *"');
@@ -163,6 +169,21 @@ describe("confirmation tick CLI — comportamento", () => {
       else process.env.DATABASE_URL = previous;
     }
     expect(tick).not.toHaveBeenCalled();
+  });
+
+  it("closeDb após tick ok não falha o CLI", async () => {
+    const previous = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "mysql://root:root@127.0.0.1:3306/escalas_test";
+    vi.mocked(getDb).mockResolvedValue({ ok: true } as never);
+    vi.mocked(closeDb).mockRejectedValue(new Error("pool close"));
+    vi.mocked(tick).mockResolvedValue(undefined);
+    try {
+      await expect(runConfirmationTickCli()).resolves.toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous;
+    }
+    expect(closeDb).toHaveBeenCalledTimes(1);
   });
 
   it("encerra o pool mesmo quando o tick falha", async () => {
