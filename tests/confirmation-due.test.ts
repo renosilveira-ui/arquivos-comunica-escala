@@ -38,6 +38,9 @@ describe("confirmation due-based lead", () => {
     expect(confirmationLeadMs(new Date("2036-04-10T06:29:00-03:00"), TZ)).toBe(
       CONFIRMATION_DEFAULT_LEAD_MS,
     );
+    expect(confirmationLeadMs(new Date("2036-04-10T07:31:00-03:00"), TZ)).toBe(
+      CONFIRMATION_DEFAULT_LEAD_MS,
+    );
   });
 
   it("dueAt histórico: 13:00→11:00, 19:00→17:00, 07:00→22:00 anterior", () => {
@@ -79,7 +82,9 @@ describe("confirmation due-based lead", () => {
     expect(range.until.getTime() - range.after.getTime()).toBe(
       CONFIRMATION_MAX_LEAD_MS,
     );
-    expect(CONFIRMATION_MAX_LEAD_MS).toBe(CONFIRMATION_MORNING_LEAD_MS);
+    expect(CONFIRMATION_MAX_LEAD_MS).toBe(
+      Math.max(CONFIRMATION_MORNING_LEAD_MS, CONFIRMATION_DEFAULT_LEAD_MS),
+    );
   });
 
   it("dispatcher não usa gatilho 11/17/22 nem qualificationMatches", () => {

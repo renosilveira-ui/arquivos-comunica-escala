@@ -57,6 +57,10 @@ export async function runConfirmationTickCli(): Promise<void> {
       }),
     );
   } finally {
+    // closeDb após tick ok é teardown do processo one-shot. O trabalho já
+    // está commitado e o próximo Cron abre pool novo. Falha aqui é
+    // harmless teardown: loga e o CLI permanece exit 0 (retry do tick
+    // seria ruído idempotente, não recuperação). Falha do tick() sobe.
     try {
       await closeDb();
     } catch (err) {

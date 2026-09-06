@@ -4,14 +4,15 @@
 // dueAt = startAt - lead <= agora. Não depende de gatilho 11/17/22 nem
 // de janela de 20 min no relógio de parede.
 //
-// Lead times canônicos (contrato histórico, não inventado nesta correção):
-//   Manhã 07:00 ±30 min → 9h (antes disparava às 22:00 do dia anterior)
-//   Demais inícios, inclusive Tarde 13:00 e Noite 19:00 → 2h
-//     (antes 11:00→13:00 e 17:00→19:00)
+// Lead operacional atual = compatibilidade histórica do cron 11/17/22
+// (commit 74e73ad / #145). Não há requisito de produto inequívoco de
+// “2h” ou “9h” em docs/product. Até o owner escolher:
+//   CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED
+//   A = 07:00±30 → 9h; demais → 2h  (compatibilidade histórica; vigente)
+//   B = 2h universal
+//   C = configurável (só com requisito real de múltiplas políticas)
 //
-// Plantão fora da malha 07/13/19 usa 2h (a antecedência da maioria
-// histórica). Um valor distinto para turnos customizados é
-// CONFIRMATION_LEAD_TIME_PRODUCT_DECISION_REQUIRED.
+// A dúvida é dueAt = startAt - ?, não due-based vs trigger fixo.
 
 export const HOSPITAL_TIME_ZONE =
   process.env.TZ_HOSPITAL || "America/Sao_Paulo";
@@ -22,8 +23,11 @@ export const CONFIRMATION_MORNING_LEAD_MS = 9 * 60 * 60 * 1000;
 /** Antecedência histórica de Tarde/Noite e default para início off-grid. */
 export const CONFIRMATION_DEFAULT_LEAD_MS = 2 * 60 * 60 * 1000;
 
-/** Teto da janela SQL de discovery (= maior lead). */
-export const CONFIRMATION_MAX_LEAD_MS = CONFIRMATION_MORNING_LEAD_MS;
+/** Teto da janela SQL de discovery: deriva do maior lead vigente, não de 9h solto. */
+export const CONFIRMATION_MAX_LEAD_MS = Math.max(
+  CONFIRMATION_MORNING_LEAD_MS,
+  CONFIRMATION_DEFAULT_LEAD_MS,
+);
 
 /** Tolerância histórica de matching do início canônico (±30 min). */
 export const CANONICAL_START_TOLERANCE_MIN = 30;

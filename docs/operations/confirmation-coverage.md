@@ -22,15 +22,19 @@ Fechar o finding operacional é decisão de custo do PO.
 now
   → assignments OCUPADO + is_active
   → roster oficial (revalidado na materialização)
-  → startAt ∈ (now, now + 9h]
+  → startAt ∈ (now, now + maxLead]
   → sem duty_confirmation
   → dueAt = startAt - lead ≤ now
   → INSERT PENDING + enqueue outbox
 ```
 
-Lead (relógio `TZ_HOSPITAL` / `America/Sao_Paulo`):
+Lead vigente = **compatibilidade histórica** do cron 11/17/22, não contrato
+de produto escrito. `CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED`
+(A=9h manhã / 2h demais; B=2h universal; C=configurável). Relógio
+`TZ_HOSPITAL` / `America/Sao_Paulo`. `maxLead` deriva do maior lead,
+não de 9h hardcoded.
 
-| Início do plantão | Lead | dueAt histórico equivalente |
+| Início do plantão | Lead vigente (opção A) | dueAt histórico equivalente |
 |---|---|---|
 | 07:00 ±30 min | 9h | 22:00 do dia anterior |
 | 13:00, 19:00 e demais | 2h | 11:00 / 17:00 |
@@ -45,8 +49,12 @@ linha.
 
 Confirmação é presença de quem **já está OCUPADO** na escala publicada.
 A discovery **não** filtra `professional_access` nem `qualificationMatches`
-(#422). O outbox de push e o `confirm()` do titular continuam com o
-contrato de autoridade já provado (ACL revogada cancela retry de push).
+(#422). `confirm()` / `getPending` / retry de push do titular **ainda
+exigem** ACL (`requireOriginalAccess` default). Isso é divergência de
+autoridade, não contrato de produto escrito:
+`CONFIRMATION_REQUEST_ACTION_AUTHORITY_DIVERGENCE_CONFIRMED`.
+Correção de AuthZ **não** cabe nesta PR de discovery — ver plano
+`CONFIRMATION_CANONICAL_HOLDER_AUTHORITY`.
 
 ## O que o código já faz
 

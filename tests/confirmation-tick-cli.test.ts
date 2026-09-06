@@ -50,12 +50,16 @@ describe("confirmation tick CLI — source", () => {
     expect(cli).not.toMatch(/from ["'][^"']*_core\/index/);
     expect(cli).not.toMatch(/import[\s\S]{0,120}startConfirmationCron/);
     expect(cli).not.toMatch(/startConfirmationCron\s*\(/);
+    expect(cli).not.toMatch(/startWhatsAppNlDriver/);
     expect(cli).not.toMatch(/setInterval\s*\(/);
     expect(cli).not.toMatch(/createServer|express\(/);
+    expect(cli).toContain("process.exit(0)");
+    expect(cli).toContain("process.exit(1)");
     expect(moduleSrc).toContain("await tick(now)");
     expect(moduleSrc).toContain("await closeDb()");
     expect(moduleSrc).not.toMatch(/import[\s\S]{0,120}startConfirmationCron/);
     expect(moduleSrc).not.toMatch(/startConfirmationCron\s*\(/);
+    expect(moduleSrc).not.toMatch(/startWhatsAppNlDriver/);
     expect(moduleSrc).not.toMatch(/setInterval\s*\(/);
   });
 
@@ -84,6 +88,13 @@ describe("confirmation tick CLI — source", () => {
     expect(stopIdx).toBeGreaterThan(beforeExitIdx);
     expect(boot).toContain("try {");
     expect(boot).toContain("stopWhatsAppNlDriver();");
+    const beforeExit = boot.slice(boot.indexOf("onBeforeExit"));
+    const cronStop = beforeExit.indexOf("stopConfirmationCron();");
+    const waStop = beforeExit.indexOf("stopWhatsAppNlDriver();");
+    expect(cronStop).toBeGreaterThan(-1);
+    expect(waStop).toBeGreaterThan(cronStop);
+    expect(beforeExit).toContain("stopConfirmationCron failed");
+    expect(beforeExit).toContain("stopWhatsAppNlDriver failed");
     expect(dispatcher).toContain("setInterval");
     expect(dispatcher).toContain("isDueForConfirmation");
     expect(dispatcher).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
@@ -98,6 +109,8 @@ describe("confirmation tick CLI — source", () => {
     expect(renderYaml).toContain("docs/operations/confirmation-coverage.md");
     expect(coverageDoc).toContain("EXTERNAL_INFRA_ACTION_REQUIRED");
     expect(coverageDoc).toContain("due-based");
+    expect(coverageDoc).toContain("CONFIRMATION_LEAD_TIME_OWNER_DECISION_REQUIRED");
+    expect(coverageDoc).toContain("CONFIRMATION_REQUEST_ACTION_AUTHORITY_DIVERGENCE_CONFIRMED");
     expect(coverageDoc).toContain("pnpm confirmation:tick");
     expect(coverageDoc).toContain("node dist/run-confirmation-tick.mjs");
     expect(coverageDoc).toContain('schedule: "* * * * *"');
@@ -184,6 +197,15 @@ describe("confirmation tick CLI — comportamento", () => {
       else process.env.DATABASE_URL = previous;
     }
     expect(closeDb).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifica closeDb pós-sucesso como teardown: CLI resolve mesmo se o pool falhar", async () => {
+    const src = readFileSync("server/cron/confirmation-tick-cli.ts", "utf8");
+    expect(src).toContain("harmless teardown");
+    expect(src).toContain("await tick(now)");
+    expect(src.indexOf("await tick(now)")).toBeLessThan(
+      src.indexOf("confirmation tick closeDb failed"),
+    );
   });
 
   it("encerra o pool mesmo quando o tick falha", async () => {
