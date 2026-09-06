@@ -254,4 +254,22 @@ describe("leitores SQL alinhados com accessCoversScheduleContext", () => {
       "expect(ids).not.toContain(hospitalWideProfessionalId)",
     );
   });
+
+  it("discovery e integrity de confirmação usam o predicado canônico #317", () => {
+    const dispatcher = readFileSync(
+      "server/cron/shift-confirmation-dispatcher.ts",
+      "utf8",
+    );
+    const integrity = readFileSync("server/confirmation-integrity.ts", "utf8");
+    const helper = readFileSync(
+      "server/confirmation-canonical-access.ts",
+      "utf8",
+    );
+    expect(dispatcher).toContain("plantonistaAccessCoversShiftSql");
+    expect(dispatcher).not.toContain("professionalAccess.sectorId");
+    expect(integrity).toContain("findCanonicalConfirmationAccessId");
+    expect(integrity).not.toContain("qualificationMatches");
+    expect(helper).toContain("accessCoversScheduleContext");
+    expect(helper).toContain("QUALIFICATION_ALLOWLIST");
+  });
 });
