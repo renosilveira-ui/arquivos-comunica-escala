@@ -5,6 +5,9 @@
  * STATE_CHANGED: reload, reclassify against current stage; não grava NOOP
  * prematuro.
  *
+ * CONTINUATION_FOUNDING_REQUIRES_PAYLOAD: EXPIRED não funda OPEN/PARSE
+ * sem payload operacional usável — libera o open_slot e PARE.
+ *
  * Não chama createSwapOffer. Não envia WhatsApp. Não rebinda o source fundador.
  */
 import { resolveCanonicalOperationalActorForUser } from "../../_core/canonical-operational-actor";
@@ -392,6 +395,10 @@ async function applyInterpreted(input: {
       expectedSourceInboundMessageId: pending.sourceInboundMessageId,
       expectedStage: pending.stage,
       action: mapped.action,
+      generation: {
+        parsedPayload: pending.parsedPayload,
+        clarificationPayload: pending.clarificationPayload,
+      },
     });
     if (!applied.ok) {
       if (
@@ -421,6 +428,10 @@ async function applyInterpreted(input: {
               ? WhatsAppPendingStages.CONFIRMATION
               : WhatsAppPendingStages.CLARIFICATION,
           action: { type: "NOOP", reason: "TERMINAL" },
+          generation: {
+            parsedPayload: pending.parsedPayload,
+            clarificationPayload: pending.clarificationPayload,
+          },
         });
         if (!terminal.ok) {
           if (
@@ -460,6 +471,8 @@ async function finish(
 async function releaseExpiredToFounding(input: {
   pending: WhatsAppPendingIntentRecord;
   source: WhatsAppInboundSourceForNl;
+  payloadUsable: boolean;
+  text: string;
   onFoundingSlot: (
     pending: WhatsAppPendingIntentRecord,
   ) => Promise<ProcessWhatsAppReadyForNlInboundResult>;
@@ -476,6 +489,10 @@ async function releaseExpiredToFounding(input: {
       return retry(expired.code);
     }
     return retry("PERSISTENCE_FAILED");
+  }
+  // CONTINUATION_FOUNDING_REQUIRES_PAYLOAD
+  if (!input.payloadUsable || !input.text) {
+    return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
   }
   const created = await createWhatsAppPendingIntent({
     sourceInboundMessageId: input.source.id,
@@ -533,6 +550,8 @@ export async function processWhatsAppContinuation(input: {
       return releaseExpiredToFounding({
         pending: attached.pending ?? input.pending,
         source: input.source,
+        payloadUsable: input.payloadUsable,
+        text: input.text,
         onFoundingSlot: input.onFoundingSlot,
       });
     }
@@ -541,6 +560,9 @@ export async function processWhatsAppContinuation(input: {
     }
     if (attached.code === "ATTACH_CONFLICT") {
       return blocked("STATE_CHANGED");
+    }
+    if (attached.code === "PAYLOAD_UNAVAILABLE") {
+      return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
     }
     if (attached.code === "NOT_ATTACHABLE") {
       return blocked("ALREADY_OPEN");

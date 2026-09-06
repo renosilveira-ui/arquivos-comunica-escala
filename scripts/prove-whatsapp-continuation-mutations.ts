@@ -1,5 +1,5 @@
 /**
- * Mutation proofs M1–M5 da continuação WhatsApp.
+ * Mutation proofs M1–M5 + MF1–MF3 da continuação WhatsApp.
  * Aplica uma mutação cirúrgica, espera falha nos testes-alvo, restaura.
  *
  * Uso (local, DATABASE_URL unset):
@@ -19,12 +19,28 @@ const interpreterPath = resolve(
   root,
   "server/integrations/whatsapp/continuation-interpreter.ts",
 );
+const attachPath = resolve(
+  root,
+  "server/integrations/whatsapp/continuation-attach.ts",
+);
+const consumerPath = resolve(
+  root,
+  "server/integrations/whatsapp/continuation-consumer.ts",
+);
+const readyNlPath = resolve(
+  root,
+  "server/integrations/whatsapp/ready-for-nl-consumer.ts",
+);
 
-type Proof = {
-  id: string;
+type FileChange = {
   file: string;
   original: string;
   mutated: string;
+};
+
+type Proof = {
+  id: string;
+  changes: FileChange[];
   test: string;
   filter?: string;
 };
@@ -59,53 +75,74 @@ function runVitest(test: string, filter?: string): { ok: boolean; output: string
 
 const applySrc = readFileSync(applyPath, "utf8");
 const interpreterSrc = readFileSync(interpreterPath, "utf8");
+const attachSrc = readFileSync(attachPath, "utf8");
+const consumerSrc = readFileSync(consumerPath, "utf8");
+const readyNlSrc = readFileSync(readyNlPath, "utf8");
+
+const originals = new Map<string, string>([
+  [applyPath, applySrc],
+  [interpreterPath, interpreterSrc],
+  [attachPath, attachSrc],
+  [consumerPath, consumerSrc],
+  [readyNlPath, readyNlSrc],
+]);
 
 const proofs: Proof[] = [
   {
     id: "M1",
-    file: applyPath,
-    original: applySrc,
-    mutated: replaceOnce(
-      replaceOnce(
-        applySrc,
-        "pending.stage !== expectedStage ||\n        pending.sourceInboundMessageId !== input.expectedSourceInboundMessageId",
-        "pending.sourceInboundMessageId !== input.expectedSourceInboundMessageId",
-      ),
-      "eq(whatsappPendingIntents.stage, expectedStage), // CONTINUATION_STAGE_FENCE",
-      "// MUTATED: stage fence removed",
-    ),
+    changes: [
+      {
+        file: applyPath,
+        original: applySrc,
+        mutated: replaceOnce(
+          replaceOnce(
+            applySrc,
+            "pending.stage !== expectedStage ||\n        pending.sourceInboundMessageId !== input.expectedSourceInboundMessageId",
+            "pending.sourceInboundMessageId !== input.expectedSourceInboundMessageId",
+          ),
+          "eq(whatsappPendingIntents.stage, expectedStage), // CONTINUATION_STAGE_FENCE",
+          "// MUTATED: stage fence removed",
+        ),
+      },
+    ],
     test: "tests/whatsapp-continuation.test.ts",
     filter: "stage fence|T19 STATE_CHANGED_TRANSIENT",
   },
   {
     id: "M2",
-    file: applyPath,
-    original: applySrc,
-    mutated: replaceOnce(
-      replaceOnce(
-        applySrc,
-        "eq(whatsappPendingIntents.userId, input.userId), // CONTINUATION_USER_OWNERSHIP",
-        "// MUTATED: user ownership removed",
-      ),
-      `if (
+    changes: [
+      {
+        file: applyPath,
+        original: applySrc,
+        mutated: replaceOnce(
+          replaceOnce(
+            applySrc,
+            "eq(whatsappPendingIntents.userId, input.userId), // CONTINUATION_USER_OWNERSHIP",
+            "// MUTATED: user ownership removed",
+          ),
+          `if (
         pending.userId !== input.userId ||
         child.userId !== input.userId
       ) {
         return fail("OWNERSHIP_MISMATCH", { pendingId: pending.id }, pending);
       }`,
-      "// MUTATED: in-memory ownership removed",
-    ),
+          "// MUTATED: in-memory ownership removed",
+        ),
+      },
+    ],
     test: "tests/whatsapp-continuation.test.ts",
     filter: "T7 apply recusa user_id divergente",
   },
   {
     id: "M3",
-    file: interpreterPath,
-    original: interpreterSrc,
-    mutated: replaceOnce(
-      interpreterSrc,
-      "if (/^\\d+$/.test(folded)) {\n    const position = Number(folded);\n    if (!Number.isSafeInteger(position) || position < 1) return null;\n    const choice = candidates[position - 1];\n    if (!choice) return null;\n    return { choice, position };\n  }",
-      `if (/^\\d+$/.test(folded)) {
+    changes: [
+      {
+        file: interpreterPath,
+        original: interpreterSrc,
+        mutated: replaceOnce(
+          interpreterSrc,
+          "if (/^\\d+$/.test(folded)) {\n    const position = Number(folded);\n    if (!Number.isSafeInteger(position) || position < 1) return null;\n    const choice = candidates[position - 1];\n    if (!choice) return null;\n    return { choice, position };\n  }",
+          `if (/^\\d+$/.test(folded)) {
     const asId = Number(folded);
     const byId = candidates.find((candidate) =>
       "shiftInstanceId" in candidate && candidate.shiftInstanceId === asId,
@@ -117,29 +154,37 @@ const proofs: Proof[] = [
     if (!choice) return null;
     return { choice, position };
   }`,
-    ),
+        ),
+      },
+    ],
     test: "tests/whatsapp-continuation-interpreter.test.ts",
     filter: "CONTINUATION_CHOICE_NEVER_INTERNAL_ID",
   },
   {
     id: "M4",
-    file: applyPath,
-    original: applySrc,
-    mutated: replaceOnce(
-      applySrc,
-      "requireOutcomeWrite(\n        await writeOutcome(tx, {\n          childId: child.id,\n          pendingId: pending.id,\n          userId: input.userId,\n          outcome: childOutcome,\n        }),\n      );",
-      "const wrote = true; // MUTATED: skip CONTINUATION_PERSIST_OUTCOME",
-    ),
+    changes: [
+      {
+        file: applyPath,
+        original: applySrc,
+        mutated: replaceOnce(
+          applySrc,
+          "requireOutcomeWrite(\n        await writeOutcome(tx, {\n          childId: child.id,\n          pendingId: pending.id,\n          userId: input.userId,\n          outcome: childOutcome,\n        }),\n      );",
+          "const wrote = true; // MUTATED: skip CONTINUATION_PERSIST_OUTCOME",
+        ),
+      },
+    ],
     test: "tests/whatsapp-continuation.test.ts",
     filter: "T15–T17 TTL",
   },
   {
     id: "M5",
-    file: applyPath,
-    original: applySrc,
-    mutated: replaceOnce(
-      applySrc,
-      `      if (
+    changes: [
+      {
+        file: applyPath,
+        original: applySrc,
+        mutated: replaceOnce(
+          applySrc,
+          `      if (
         pending.status !== WhatsAppPendingStatuses.OPEN ||
         pending.stage !== expectedStage ||
         pending.sourceInboundMessageId !== input.expectedSourceInboundMessageId
@@ -147,7 +192,7 @@ const proofs: Proof[] = [
         // CONTINUATION_NOOP_NOT_ON_STATE_CHANGED
         return fail("STATE_CHANGED", { pendingId: pending.id }, pending);
       }`,
-      `      if (
+          `      if (
         pending.status !== WhatsAppPendingStatuses.OPEN ||
         pending.stage !== expectedStage ||
         pending.sourceInboundMessageId !== input.expectedSourceInboundMessageId
@@ -166,21 +211,134 @@ const proofs: Proof[] = [
           childOutcome: "NOOP",
         };
       }`,
-    ),
+        ),
+      },
+    ],
     test: "tests/whatsapp-continuation.test.ts",
     filter: "T19 STATE_CHANGED_TRANSIENT",
+  },
+  {
+    id: "MF1",
+    changes: [
+      {
+        file: attachPath,
+        original: attachSrc,
+        mutated: replaceOnce(
+          replaceOnce(
+            attachSrc,
+            `      // CONTINUATION_NO_NEW_ATTACH_WITHOUT_PAYLOAD
+      if (
+        !isWhatsAppInboundPayloadUsable(
+          {
+            contentKind: child.contentKind,
+            operationalText: child.operationalText,
+            mediaUrl: child.mediaUrl,
+            payloadExpiresAt: child.payloadExpiresAt,
+            payloadClearedAt: child.payloadClearedAt,
+          },
+          now,
+        )
+      ) {
+        return fail("PAYLOAD_UNAVAILABLE", {
+          pendingId: pending.id,
+          childInboundId: child.id,
+        });
+      }
+
+`,
+            "",
+          ),
+          `            isNull(whatsappInboundMessages.continuationPendingId),
+            isNull(whatsappInboundMessages.payloadClearedAt),
+            isNotNull(whatsappInboundMessages.operationalText),
+            or(
+              isNull(whatsappInboundMessages.payloadExpiresAt),
+              gt(whatsappInboundMessages.payloadExpiresAt, now),
+            ),`,
+          `            isNull(whatsappInboundMessages.continuationPendingId),`,
+        ),
+      },
+    ],
+    test: "tests/whatsapp-continuation.test.ts",
+    filter: "F1-T1|F1-T2",
+  },
+  {
+    id: "MF2",
+    changes: [
+      {
+        file: consumerPath,
+        original: consumerSrc,
+        mutated: replaceOnce(
+          consumerSrc,
+          `  // CONTINUATION_FOUNDING_REQUIRES_PAYLOAD
+  if (!input.payloadUsable || !input.text) {
+    return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
+  }
+`,
+          "",
+        ),
+      },
+      {
+        file: readyNlPath,
+        original: readyNlSrc,
+        mutated: replaceOnce(
+          readyNlSrc,
+          `    // CONTINUATION_FOUNDING_REQUIRES_PAYLOAD
+    if (!input.payloadUsable || !input.text) {
+      return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
+    }
+`,
+          "",
+        ),
+      },
+    ],
+    test: "tests/whatsapp-continuation.test.ts",
+    filter: "F2-T2 expired pending",
+  },
+  {
+    id: "MF3",
+    changes: [
+      {
+        file: applyPath,
+        original: applySrc,
+        mutated: replaceOnce(
+          applySrc,
+          `          eq(whatsappPendingIntents.stage, expectedStage), // CONTINUATION_STAGE_FENCE
+          gt(whatsappPendingIntents.expiresAt, now),
+          ...(input.generation
+            ? [
+                jsonGenerationEquals(
+                  whatsappPendingIntents.parsedPayload,
+                  input.generation.parsedPayload,
+                ),
+                jsonGenerationEquals(
+                  whatsappPendingIntents.clarificationPayload,
+                  input.generation.clarificationPayload,
+                ),
+              ]
+            : []),`,
+          `          eq(whatsappPendingIntents.stage, expectedStage), // CONTINUATION_STAGE_FENCE
+          gt(whatsappPendingIntents.expiresAt, now),`,
+        ),
+      },
+    ],
+    test: "tests/whatsapp-continuation.test.ts",
+    filter: "F3 same-stage CHOICE generation CAS",
   },
 ];
 
 function restoreAll() {
-  writeFileSync(applyPath, applySrc);
-  writeFileSync(interpreterPath, interpreterSrc);
+  for (const [file, contents] of originals) {
+    writeFileSync(file, contents);
+  }
 }
 
 const failures: string[] = [];
 try {
   for (const proof of proofs) {
-    writeFileSync(proof.file, proof.mutated);
+    for (const change of proof.changes) {
+      writeFileSync(change.file, change.mutated);
+    }
     const ran = runVitest(proof.test, proof.filter);
     restoreAll();
     if (ran.ok) {

@@ -7,8 +7,10 @@
  * CONTINUATION_STAGE_FENCE e CONTINUATION_USER_OWNERSHIP no WHERE.
  * CONTINUATION_PERSIST_OUTCOME no mesmo commit da mutação do pending.
  * CONTINUATION_NOOP_NOT_ON_STATE_CHANGED: STATE_CHANGED não grava NOOP.
+ * CONTINUATION_GENERATION_FENCE: CHOICE no mesmo stage CAS no payload
+ * persistido da geração interpretada — não last-writer-wins.
  */
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import {
   whatsappInboundMessages,
   whatsappPendingIntents,
@@ -198,6 +200,16 @@ function pendingMutation(
   };
 }
 
+function jsonGenerationEquals(
+  column:
+    | typeof whatsappPendingIntents.parsedPayload
+    | typeof whatsappPendingIntents.clarificationPayload,
+  expected: unknown,
+) {
+  if (expected == null) return isNull(column);
+  return sql`${column} <=> CAST(${JSON.stringify(expected)} AS JSON)`;
+}
+
 export async function applyWhatsAppContinuation(input: {
   pendingId: number;
   userId: number;
@@ -205,6 +217,10 @@ export async function applyWhatsAppContinuation(input: {
   expectedSourceInboundMessageId: number;
   expectedStage: "CLARIFICATION" | "CONFIRMATION";
   action: WhatsAppContinuationApplyAction;
+  generation?: {
+    parsedPayload: unknown;
+    clarificationPayload: unknown;
+  };
   now?: Date;
 }): Promise<WhatsAppContinuationApplyResult> {
   const now = input.now ?? new Date();
@@ -359,6 +375,18 @@ export async function applyWhatsAppContinuation(input: {
           eq(whatsappPendingIntents.status, WhatsAppPendingStatuses.OPEN),
           eq(whatsappPendingIntents.stage, expectedStage), // CONTINUATION_STAGE_FENCE
           gt(whatsappPendingIntents.expiresAt, now),
+          ...(input.generation
+            ? [
+                jsonGenerationEquals(
+                  whatsappPendingIntents.parsedPayload,
+                  input.generation.parsedPayload,
+                ),
+                jsonGenerationEquals(
+                  whatsappPendingIntents.clarificationPayload,
+                  input.generation.clarificationPayload,
+                ),
+              ]
+            : []),
         );
         const updated = await tx
           .update(whatsappPendingIntents)

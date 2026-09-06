@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -24,11 +24,21 @@ import {
 import {
   applyWhatsAppContinuation,
   continuationApplyTestHooks,
+  type WhatsAppContinuationApplyAction,
 } from "../server/integrations/whatsapp/continuation-apply";
 import {
   continuationConsumerTestHooks,
 } from "../server/integrations/whatsapp/continuation-consumer";
-import { parseStoredClarification } from "../server/integrations/whatsapp/pending-intent-payloads";
+import { interpretWhatsAppContinuation } from "../server/integrations/whatsapp/continuation-interpreter";
+import {
+  draftFromStoredParsedIntent,
+  parseStoredClarification,
+  parseStoredParsedIntent,
+  serializeParsedSwapIntentV1,
+} from "../server/integrations/whatsapp/pending-intent-payloads";
+import { clearedOperationalPayload } from "../server/integrations/whatsapp/operational-payload";
+import { resolveCanonicalOperationalActorForUser } from "../server/_core/canonical-operational-actor";
+import { resolveSwapIntent } from "../server/natural-language/swap-intent-resolver";
 import * as swapCreate from "../server/swap-offer-create";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -248,6 +258,131 @@ describe("WhatsApp continuation T1–T18", () => {
     const pending = await loadPendingBySource(sourceId);
     expect(pending?.stage).toBe("CONFIRMATION");
     return { sourceId, pending: pending! };
+  }
+
+  async function clearInboundPayload(id: number) {
+    await db
+      .update(whatsappInboundMessages)
+      .set(clearedOperationalPayload())
+      .where(eq(whatsappInboundMessages.id, id));
+  }
+
+  async function loadOpenForUser(userId: number) {
+    const [row] = await db
+      .select()
+      .from(whatsappPendingIntents)
+      .where(
+        and(
+          eq(whatsappPendingIntents.userId, userId),
+          eq(whatsappPendingIntents.status, "OPEN"),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function openSectorClarification() {
+    const recoveryB = await makeSector(tenantA, hospitalA, "Setor Recuperação");
+    await makeShift({
+      owner: actor,
+      sectorId: recoveryA,
+      date: tomorrow,
+      start: "13:00:00",
+      end: "19:00:00",
+      label: "Tarde",
+    });
+    await makeShift({
+      owner: actor,
+      sectorId: recoveryB,
+      date: tomorrow,
+      start: "07:00:00",
+      end: "13:00:00",
+      label: "Manhã",
+    });
+    await makeShift({
+      owner: actor,
+      sectorId: recoveryB,
+      date: tomorrow,
+      start: "13:00:00",
+      end: "19:00:00",
+      label: "Tarde",
+    });
+    const sourceId = await insertInbound({
+      ownerId: actor.userId,
+      text: "passar meu plantão de amanhã na SR para o Colg Silva",
+    });
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: sourceId,
+    });
+    expect(result).toMatchObject({ ok: true, stage: "CLARIFICATION" });
+    const pending = await loadPendingBySource(sourceId);
+    expect(pending?.stage).toBe("CLARIFICATION");
+    const clarification = parseStoredClarification(pending!.clarificationPayload);
+    expect(clarification.ok).toBe(true);
+    if (!clarification.ok || clarification.value.code !== "AMBIGUOUS_SECTOR") {
+      throw new Error("expected sector clarification");
+    }
+    expect(clarification.value.candidates.length).toBe(2);
+    return { sourceId, pending: pending! };
+  }
+
+  async function sectorChoiceClarificationAction(
+    pending: NonNullable<Awaited<ReturnType<typeof loadPendingBySource>>>,
+    text: string,
+  ): Promise<Extract<WhatsAppContinuationApplyAction, { type: "CHOICE_CLARIFICATION" }>> {
+    const clarification = parseStoredClarification(pending.clarificationPayload);
+    expect(clarification.ok).toBe(true);
+    if (!clarification.ok) throw new Error("expected stored clarification");
+    const interpretation = interpretWhatsAppContinuation({
+      text,
+      stage: "CLARIFICATION",
+      clarification: clarification.value,
+    });
+    expect(interpretation.category).toBe("CHOICE");
+    if (interpretation.category !== "CHOICE") {
+      throw new Error("expected CHOICE");
+    }
+    expect(interpretation.choice.kind).toBe("SECTOR");
+    const storedParsed = parseStoredParsedIntent(pending.parsedPayload);
+    expect(storedParsed.ok).toBe(true);
+    if (!storedParsed.ok) throw new Error("expected stored parsed intent");
+    let draft = draftFromStoredParsedIntent(storedParsed.value);
+    if (interpretation.choice.kind === "SECTOR") {
+      draft = {
+        ...draft,
+        ownShift: { ...draft.ownShift, sectorText: interpretation.choice.label },
+      };
+    }
+    const actorResolved = await resolveCanonicalOperationalActorForUser({
+      userId: pending.userId,
+    });
+    expect(actorResolved.ok).toBe(true);
+    if (!actorResolved.ok) throw new Error("expected canonical actor");
+    const resolved = await resolveSwapIntent(draft, actorResolved.actor);
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) throw new Error("expected still-clarification choice");
+    expect(resolved.code).toBe("AMBIGUOUS_OWN_SHIFT");
+    const parsedV1 = serializeParsedSwapIntentV1(draft);
+    expect(parsedV1.ok).toBe(true);
+    if (!parsedV1.ok) throw new Error("expected serialized parsed intent");
+    const candidates = (resolved.shiftCandidates ?? []).map((item) => ({
+      shiftInstanceId: item.shiftInstanceId,
+      label: item.label,
+      dayKey: item.dayKey,
+      timeRange: item.timeRange,
+      sectorName: item.sectorName,
+      institutionName: item.institutionName,
+    }));
+    expect(candidates.length).toBeGreaterThanOrEqual(2);
+    return {
+      type: "CHOICE_CLARIFICATION",
+      parsed: parsedV1.value,
+      clarification: {
+        version: 1,
+        code: "AMBIGUOUS_OWN_SHIFT",
+        candidates,
+      },
+    };
   }
 
   beforeAll(async () => {
@@ -869,5 +1004,319 @@ describe("WhatsApp continuation T1–T18", () => {
     });
     expect(replay).toMatchObject({ ok: true, kind: "REPLAY" });
     expect((await loadInbound(childId))?.operationalText).toBeNull();
+  });
+
+  it("F1-T1 cleared child pointer NULL outcome NULL OPEN/CLARIFICATION does not attach", async () => {
+    const { pending } = await openClarification();
+    const before = {
+      status: pending.status,
+      stage: pending.stage,
+      expiresAt: pending.expiresAt.getTime(),
+      parsed: JSON.stringify(pending.parsedPayload),
+      clarification: JSON.stringify(pending.clarificationPayload),
+    };
+    const childId = await insertInbound({ ownerId: actor.userId, text: "1" });
+    await clearInboundPayload(childId);
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(result).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE",
+    });
+    const child = await loadInbound(childId);
+    expect(child?.continuationPendingId).toBeNull();
+    expect(child?.continuationOutcome).toBeNull();
+    const latest = await loadPendingBySource(pending.sourceInboundMessageId);
+    expect(latest?.status).toBe(before.status);
+    expect(latest?.stage).toBe(before.stage);
+    expect(latest?.expiresAt.getTime()).toBe(before.expiresAt);
+    expect(JSON.stringify(latest?.parsedPayload)).toBe(before.parsed);
+    expect(JSON.stringify(latest?.clarificationPayload)).toBe(before.clarification);
+  });
+
+  it("F1-T2 cleared child pointer NULL outcome NULL OPEN/CONFIRMATION does not attach", async () => {
+    const { pending } = await openConfirmation();
+    const before = pending.expiresAt.getTime();
+    const childId = await insertInbound({ ownerId: actor.userId, text: "sim" });
+    await clearInboundPayload(childId);
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(result).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE",
+    });
+    const child = await loadInbound(childId);
+    expect(child?.continuationPendingId).toBeNull();
+    expect(child?.continuationOutcome).toBeNull();
+    const latest = await loadPendingBySource(pending.sourceInboundMessageId);
+    expect(latest?.status).toBe("OPEN");
+    expect(latest?.stage).toBe("CONFIRMATION");
+    expect(latest?.confirmationDisposition).toBeNull();
+    expect(latest?.expiresAt.getTime()).toBe(before);
+  });
+
+  it("F1-T3 cleared child already attached outcome APPLIED remains REPLAY", async () => {
+    const { pending } = await openClarification();
+    await db
+      .update(whatsappPendingIntents)
+      .set({ expiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(whatsappPendingIntents.id, pending.id));
+    const childId = await insertInbound({ ownerId: actor.userId, text: "1" });
+    const first = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(first.ok).toBe(true);
+    const afterApply = await loadPendingBySource(pending.sourceInboundMessageId);
+    const slid = afterApply!.expiresAt.getTime();
+    expect((await loadInbound(childId))?.operationalText).toBeNull();
+    expect((await loadInbound(childId))?.continuationOutcome).toBe("APPLIED");
+    const replay = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(replay).toMatchObject({ ok: true, kind: "REPLAY" });
+    const afterReplay = await loadPendingBySource(pending.sourceInboundMessageId);
+    expect(afterReplay?.expiresAt.getTime()).toBe(slid);
+    expect(afterReplay?.stage).toBe("CONFIRMATION");
+    expect((await loadInbound(childId))?.continuationOutcome).toBe("APPLIED");
+  });
+
+  it("F1-T4 cleared child already attached outcome NOOP remains REPLAY", async () => {
+    const { pending } = await openConfirmation();
+    const before = pending.expiresAt.getTime();
+    const childId = await insertInbound({
+      ownerId: actor.userId,
+      text: "passar meu plantão de amanhã à noite na SR para o Colg Silva",
+    });
+    const first = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(first.ok).toBe(true);
+    expect((await loadInbound(childId))?.continuationOutcome).toBe("NOOP");
+    expect((await loadInbound(childId))?.operationalText).toBeNull();
+    const replay = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(replay).toMatchObject({ ok: true, kind: "REPLAY" });
+    const latest = await loadPendingBySource(pending.sourceInboundMessageId);
+    expect(latest?.status).toBe("OPEN");
+    expect(latest?.stage).toBe("CONFIRMATION");
+    expect(latest?.expiresAt.getTime()).toBe(before);
+    expect((await loadInbound(childId))?.continuationOutcome).toBe("NOOP");
+  });
+
+  it("F1-T5 cleared child attached to another pending fail-closed", async () => {
+    const first = await openClarification();
+    const childId = await insertInbound({
+      ownerId: actor.userId,
+      text: "texto-filho-f1t5",
+    });
+    const attached = await attachWhatsAppContinuation({
+      pendingId: first.pending.id,
+      childInboundId: childId,
+      userId: actor.userId,
+    });
+    expect(attached).toMatchObject({ ok: true });
+    await clearInboundPayload(childId);
+    const cancelId = await insertInbound({
+      ownerId: actor.userId,
+      text: "cancela",
+    });
+    await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: cancelId,
+    });
+    const second = await openClarification();
+    const conflict = await attachWhatsAppContinuation({
+      pendingId: second.pending.id,
+      childInboundId: childId,
+      userId: actor.userId,
+    });
+    expect(conflict.ok).toBe(false);
+    if (conflict.ok) throw new Error("expected attach conflict");
+    expect(conflict.code).toBe("ATTACH_CONFLICT");
+    expect((await loadInbound(childId))?.continuationPendingId).toBe(
+      first.pending.id,
+    );
+    expect((await loadInbound(childId))?.continuationOutcome).toBeNull();
+  });
+
+  it("F2-T1 expired pending + child payload usable may found", async () => {
+    const { pending } = await openClarification();
+    await db
+      .update(whatsappPendingIntents)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(whatsappPendingIntents.id, pending.id));
+    const childId = await insertInbound({
+      ownerId: actor.userId,
+      text: "passar meu plantão de amanhã à noite na SR para o Colg Silva",
+    });
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(result.ok).toBe(true);
+    const old = await loadPendingBySource(pending.sourceInboundMessageId);
+    expect(old?.status).toBe("EXPIRED");
+    const founded = await loadPendingBySource(childId);
+    expect(founded?.status).toBe("OPEN");
+    expect(founded?.sourceInboundMessageId).toBe(childId);
+    expect((await loadInbound(childId))?.continuationPendingId).toBeNull();
+    expect(await loadOpenForUser(actor.userId)).toMatchObject({
+      id: founded!.id,
+    });
+  });
+
+  it("F2-T2 expired pending + child payload cleared does not found or occupy open_slot", async () => {
+    const { pending } = await openClarification();
+    const childId = await insertInbound({ ownerId: actor.userId, text: "1" });
+    await clearInboundPayload(childId);
+    continuationAttachTestHooks.throwDuringAttach = async () => {
+      await db
+        .update(whatsappPendingIntents)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(whatsappPendingIntents.id, pending.id));
+    };
+    const result = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(result).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE",
+    });
+    const old = await loadPendingBySource(pending.sourceInboundMessageId);
+    expect(old?.status).toBe("EXPIRED");
+    expect(await loadPendingBySource(childId)).toBeUndefined();
+    expect(await loadOpenForUser(actor.userId)).toBeNull();
+    const child = await loadInbound(childId);
+    expect(child?.continuationPendingId).toBeNull();
+    expect(child?.continuationOutcome).toBeNull();
+  });
+
+  it("F2-T3 replay after F2-T2 remains convergent", async () => {
+    const { pending } = await openClarification();
+    const childId = await insertInbound({ ownerId: actor.userId, text: "1" });
+    await clearInboundPayload(childId);
+    continuationAttachTestHooks.throwDuringAttach = async () => {
+      await db
+        .update(whatsappPendingIntents)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(whatsappPendingIntents.id, pending.id));
+    };
+    await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    continuationAttachTestHooks.throwDuringAttach = undefined;
+    const replay = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: childId,
+    });
+    expect(replay).toEqual({
+      ok: false,
+      kind: "BLOCKED",
+      code: "SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE",
+    });
+    expect(await loadPendingBySource(childId)).toBeUndefined();
+    expect(await loadOpenForUser(actor.userId)).toBeNull();
+    expect((await loadInbound(childId))?.continuationPendingId).toBeNull();
+  });
+
+  it("F2-T4 valid inbound after F2-T2 can found; no zombie OPEN slot", async () => {
+    const { pending } = await openClarification();
+    const clearedId = await insertInbound({ ownerId: actor.userId, text: "1" });
+    await clearInboundPayload(clearedId);
+    continuationAttachTestHooks.throwDuringAttach = async () => {
+      await db
+        .update(whatsappPendingIntents)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(whatsappPendingIntents.id, pending.id));
+    };
+    await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: clearedId,
+    });
+    continuationAttachTestHooks.throwDuringAttach = undefined;
+    expect(await loadOpenForUser(actor.userId)).toBeNull();
+    const nextId = await insertInbound({
+      ownerId: actor.userId,
+      text: "passar meu plantão de amanhã à noite na SR para o Colg Silva",
+    });
+    const founded = await processWhatsAppReadyForNlInbound({
+      sourceInboundMessageId: nextId,
+    });
+    expect(founded.ok).toBe(true);
+    const next = await loadPendingBySource(nextId);
+    expect(next?.status).toBe("OPEN");
+    expect(next?.sourceInboundMessageId).toBe(nextId);
+    expect(await loadOpenForUser(actor.userId)).toMatchObject({ id: next!.id });
+  });
+
+  it("F3 same-stage CHOICE generation CAS: at most one G0 winner", async () => {
+    const { pending } = await openSectorClarification();
+    const generation = {
+      parsedPayload: pending.parsedPayload,
+      clarificationPayload: pending.clarificationPayload,
+    };
+    const actionA = await sectorChoiceClarificationAction(pending, "1");
+    const actionB = await sectorChoiceClarificationAction(pending, "2");
+    expect(JSON.stringify(actionA.clarification)).not.toBe(
+      JSON.stringify(actionB.clarification),
+    );
+    expect(actionA.clarification.code).toBe("AMBIGUOUS_OWN_SHIFT");
+    expect(actionB.clarification.code).toBe("AMBIGUOUS_OWN_SHIFT");
+
+    const childA = await insertInbound({ ownerId: actor.userId, text: "1" });
+    const childB = await insertInbound({ ownerId: actor.userId, text: "2" });
+    const attachedA = await attachWhatsAppContinuation({
+      pendingId: pending.id,
+      childInboundId: childA,
+      userId: actor.userId,
+    });
+    const attachedB = await attachWhatsAppContinuation({
+      pendingId: pending.id,
+      childInboundId: childB,
+      userId: actor.userId,
+    });
+    expect(attachedA).toMatchObject({ ok: true });
+    expect(attachedB).toMatchObject({ ok: true });
+
+    const [rA, rB] = await Promise.all([
+      applyWhatsAppContinuation({
+        pendingId: pending.id,
+        userId: actor.userId,
+        childInboundId: childA,
+        expectedSourceInboundMessageId: pending.sourceInboundMessageId,
+        expectedStage: "CLARIFICATION",
+        action: actionA,
+        generation,
+      }),
+      applyWhatsAppContinuation({
+        pendingId: pending.id,
+        userId: actor.userId,
+        childInboundId: childB,
+        expectedSourceInboundMessageId: pending.sourceInboundMessageId,
+        expectedStage: "CLARIFICATION",
+        action: actionB,
+        generation,
+      }),
+    ]);
+    const applied = [rA, rB].filter((row) => row.ok && row.outcome === "APPLIED");
+    const changed = [rA, rB].filter(
+      (row) => !row.ok && row.code === "STATE_CHANGED",
+    );
+    expect(applied).toHaveLength(1);
+    expect(changed).toHaveLength(1);
+    const latest = await loadPendingBySource(pending.sourceInboundMessageId);
+    expect(latest?.status).toBe("OPEN");
+    expect(latest?.stage).toBe("CLARIFICATION");
+    const winner = applied[0]!;
+    if (!winner.ok) throw new Error("expected winner");
+    expect(JSON.stringify(latest?.clarificationPayload)).toBe(
+      JSON.stringify(winner.row.clarificationPayload),
+    );
+    const oA = (await loadInbound(childA))?.continuationOutcome;
+    const oB = (await loadInbound(childB))?.continuationOutcome;
+    expect([oA, oB].filter((value) => value === "APPLIED")).toHaveLength(1);
+    expect([oA, oB].filter((value) => value == null)).toHaveLength(1);
   });
 });

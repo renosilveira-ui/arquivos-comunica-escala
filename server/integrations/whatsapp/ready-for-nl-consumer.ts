@@ -642,9 +642,6 @@ async function handleAlreadyOpen(input: {
 
   const now = new Date();
   if (input.pending.expiresAt.getTime() <= now.getTime()) {
-    if (!input.payloadUsable || !input.text) {
-      return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
-    }
     const expired = await expireWhatsAppPendingIntent(
       input.pending.id,
       sourceUserId,
@@ -658,6 +655,10 @@ async function handleAlreadyOpen(input: {
         return retry(expired.code);
       }
       return retry("PERSISTENCE_FAILED");
+    }
+    // CONTINUATION_FOUNDING_REQUIRES_PAYLOAD
+    if (!input.payloadUsable || !input.text) {
+      return blocked("SOURCE_OPERATIONAL_PAYLOAD_UNAVAILABLE");
     }
     const created = await createWhatsAppPendingIntent({
       sourceInboundMessageId: input.source.id,

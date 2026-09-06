@@ -589,7 +589,15 @@ Replay com outcome preenchido não reinterpreta, não reaplica, não desliza TTL
 `NOOP` é definitivo (UNRESOLVED, FRESH_INTENT, EXPIRED, terminal).
 `STATE_CHANGED` recarrega e reclassifica contra o stage atual — não grava
 NOOP prematuro. TTL +15 min só em CHOICE ou AFFIRM aplicados de novo.
-Zero execução de domínio. Driver permanece `WHATSAPP_NL_DRIVER_ENABLED=false`.
+Child sem payload operacional usável **não** adquire `continuation_pending_id`
+novo enquanto `continuation_outcome IS NULL`. Replay já reconciliado
+(`continuation_pending_id=P` e outcome NOT NULL) permanece válido.
+Fundar novo pending exige payload usável: pending expirado é terminalizado
+sem criar `OPEN/PARSE` e sem ocupar `uniq_whatsapp_pending_open_user`.
+CHOICE que permanece no mesmo stage faz CAS da geração interpretada
+(`parsed_payload` + `clarification_payload`); stage sozinho não autoriza
+last-writer-wins. Zero execução de domínio. Driver permanece
+`WHATSAPP_NL_DRIVER_ENABLED=false`.
 
 Migration incremental:
 `drizzle/migrations/manual/2026-09-06-whatsapp-continuation-link.sql`

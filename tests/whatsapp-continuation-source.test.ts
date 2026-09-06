@@ -94,8 +94,13 @@ describe("WhatsApp continuation — source guards", () => {
     expect(apply).toContain("CONTINUATION_USER_OWNERSHIP");
     expect(apply).toContain("CONTINUATION_PERSIST_OUTCOME");
     expect(apply).toContain("CONTINUATION_NOOP_NOT_ON_STATE_CHANGED");
+    expect(apply).toContain("CONTINUATION_GENERATION_FENCE");
     expect(apply).toContain("writeOutcome");
     expect(apply).toContain("requireOutcomeWrite");
+    expect(attach).toContain("CONTINUATION_NO_NEW_ATTACH_WITHOUT_PAYLOAD");
+    expect(attach).toContain("PAYLOAD_UNAVAILABLE");
+    expect(continuationConsumer).toContain("CONTINUATION_FOUNDING_REQUIRES_PAYLOAD");
+    expect(consumer).toContain("CONTINUATION_FOUNDING_REQUIRES_PAYLOAD");
     expect(attach).toContain('.for("update")');
     const txStart = attach.indexOf("db.transaction");
     const pendingLock = attach.indexOf(
@@ -129,6 +134,8 @@ describe("WhatsApp continuation — source guards", () => {
     expect(contract).toContain("continuation_pending_id");
     expect(contract).toContain("KEEP_CURRENT_PENDING");
     expect(contract).toContain("confirmation_disposition=AFFIRMED");
+    expect(contract).toContain("adquire `continuation_pending_id`");
+    expect(contract).toContain("CAS da geração interpretada");
     expect(contract).not.toContain("esta frente não rebinda source");
   });
 });

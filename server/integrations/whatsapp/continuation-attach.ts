@@ -5,8 +5,10 @@
  * Lock order: pending FOR UPDATE → child inbound FOR UPDATE.
  * Idempotente se já aponta ao mesmo P. Outro P → fail-closed.
  * OPEN/PARSE não anexa (caller WAIT).
+ * CONTINUATION_NO_NEW_ATTACH_WITHOUT_PAYLOAD: child sem payload operacional
+ * usável não adquire ponteiro novo. Replay com outcome já gravado permanece.
  */
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, or } from "drizzle-orm";
 import {
   whatsappInboundMessages,
   whatsappPendingIntents,
@@ -19,6 +21,7 @@ import {
   isWhatsAppPendingTerminalStatus,
   type WhatsAppPendingIntentRecord,
 } from "./pending-intent-types";
+import { isWhatsAppInboundPayloadUsable } from "./operational-payload";
 import { WHATSAPP_INBOUND_PROVIDER, WhatsAppInboundStatuses } from "./types";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -40,6 +43,7 @@ export type WhatsAppContinuationAttachResult =
         | "CHILD_NOT_FOUND"
         | "PENDING_NOT_FOUND"
         | "STATE_CHANGED"
+        | "PAYLOAD_UNAVAILABLE"
         | "DB_UNAVAILABLE"
         | "PERSISTENCE_FAILED";
       pending?: WhatsAppPendingIntentRecord;
@@ -153,6 +157,10 @@ export async function attachWhatsAppContinuation(input: {
           userId: whatsappInboundMessages.userId,
           processingStatus: whatsappInboundMessages.processingStatus,
           contentKind: whatsappInboundMessages.contentKind,
+          operationalText: whatsappInboundMessages.operationalText,
+          mediaUrl: whatsappInboundMessages.mediaUrl,
+          payloadExpiresAt: whatsappInboundMessages.payloadExpiresAt,
+          payloadClearedAt: whatsappInboundMessages.payloadClearedAt,
           continuationPendingId: whatsappInboundMessages.continuationPendingId,
           continuationOutcome: whatsappInboundMessages.continuationOutcome,
         })
@@ -227,6 +235,25 @@ export async function attachWhatsAppContinuation(input: {
         });
       }
 
+      // CONTINUATION_NO_NEW_ATTACH_WITHOUT_PAYLOAD
+      if (
+        !isWhatsAppInboundPayloadUsable(
+          {
+            contentKind: child.contentKind,
+            operationalText: child.operationalText,
+            mediaUrl: child.mediaUrl,
+            payloadExpiresAt: child.payloadExpiresAt,
+            payloadClearedAt: child.payloadClearedAt,
+          },
+          now,
+        )
+      ) {
+        return fail("PAYLOAD_UNAVAILABLE", {
+          pendingId: pending.id,
+          childInboundId: child.id,
+        });
+      }
+
       const updated = await tx
         .update(whatsappInboundMessages)
         .set({ continuationPendingId: pending.id })
@@ -241,6 +268,12 @@ export async function attachWhatsAppContinuation(input: {
             eq(whatsappInboundMessages.provider, WHATSAPP_INBOUND_PROVIDER),
             eq(whatsappInboundMessages.contentKind, "TEXT"),
             isNull(whatsappInboundMessages.continuationPendingId),
+            isNull(whatsappInboundMessages.payloadClearedAt),
+            isNotNull(whatsappInboundMessages.operationalText),
+            or(
+              isNull(whatsappInboundMessages.payloadExpiresAt),
+              gt(whatsappInboundMessages.payloadExpiresAt, now),
+            ),
           ),
         );
 
