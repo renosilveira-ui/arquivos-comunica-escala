@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS whatsapp_inbound_messages (
   KEY idx_whatsapp_inbound_user (user_id),
   KEY idx_whatsapp_inbound_received (received_at),
   KEY idx_whatsapp_inbound_payload_expires (payload_expires_at),
+  KEY idx_whatsapp_inbound_nl_poll (
+    provider,
+    processing_status,
+    content_kind,
+    payload_cleared_at,
+    received_at,
+    id
+  ),
   CONSTRAINT fk_whatsapp_inbound_user
     FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE SET NULL

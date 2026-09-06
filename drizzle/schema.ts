@@ -223,6 +223,14 @@ export const whatsappInboundMessages = mysqlTable(
     idxWhatsappInboundPayloadExpires: index(
       "idx_whatsapp_inbound_payload_expires",
     ).on(table.payloadExpiresAt),
+    idxWhatsappInboundNlPoll: index("idx_whatsapp_inbound_nl_poll").on(
+      table.provider,
+      table.processingStatus,
+      table.contentKind,
+      table.payloadClearedAt,
+      table.receivedAt,
+      table.id,
+    ),
   }),
 );
 
