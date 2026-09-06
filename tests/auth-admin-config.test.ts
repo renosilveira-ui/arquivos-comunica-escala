@@ -542,6 +542,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         globalRole: "doctor",
         institutionRole: "GESTOR_PLUS",
         professionalLabel: "Médico",
+        professionCode: "MEDIC",
       },
       {
         tag: "legacy-manager",
@@ -552,6 +553,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         globalRole: "doctor",
         institutionRole: "GESTOR_MEDICO",
         professionalLabel: "Médico",
+        professionCode: "MEDIC",
       },
       {
         tag: "new-nurse-plus",
@@ -562,6 +564,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         globalRole: "nurse",
         institutionRole: "GESTOR_PLUS",
         professionalLabel: "Enfermeiro",
+        professionCode: "NURSING",
       },
     ] as const;
 
@@ -588,12 +591,14 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         .select({
           label: professionals.role,
           legacyRole: professionals.userRole,
+          professionCode: professionals.professionCode,
         })
         .from(professionals)
         .where(eq(professionals.userId, created.id));
       expect(professional).toEqual({
         label: item.professionalLabel,
         legacyRole: item.institutionRole,
+        professionCode: item.professionCode,
       });
       const [membership] = await db
         .select({ role: professionalInstitutions.roleInInstitution })

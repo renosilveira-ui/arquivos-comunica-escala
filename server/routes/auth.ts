@@ -85,6 +85,10 @@ import {
   enqueueScheduleInviteAcceptedSignal,
   enqueueScheduleInviteDeclinedSignal,
 } from "../schedule-invite-response-signal";
+import {
+  professionalIdentityWriteFields,
+  professionCodeFromLegacyProfessionalRole,
+} from "../../lib/profession-definitions";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -108,19 +112,10 @@ const VALID_INSTITUTION_ROLES: readonly InstitutionRole[] = [
   "GESTOR_PLUS",
 ];
 
-function mapRoleToLabel(role: UserRole): string {
-  const labels: Record<UserRole, string> = {
-    admin: "Administrador",
-    manager: "Gestor",
-    doctor: "Médico",
-    nurse: "Enfermeiro",
-    tech: "Técnico de Enfermagem",
-  };
-  return labels[role];
-}
-
-function mapProfessionalRoleToLabel(role: ProfessionalRole): string {
-  return mapRoleToLabel(role);
+function professionalIdentityForLegacyRole(role: ProfessionalRole) {
+  return professionalIdentityWriteFields(
+    professionCodeFromLegacyProfessionalRole(role),
+  );
 }
 
 export const authRouter = Router();
@@ -2872,6 +2867,9 @@ authRouter.post(
           throw new Error("password-hash-not-persisted");
         }
 
+        const professionalIdentity = professionalIdentityForLegacyRole(
+          requestedRoles.professionalRole,
+        );
         const [existingProfessional] = await tx
           .select({ id: professionals.id })
           .from(professionals)
@@ -2884,7 +2882,7 @@ authRouter.post(
             .values({
               userId: newUserId,
               name: normalizedName,
-              role: mapProfessionalRoleToLabel(requestedRoles.professionalRole),
+              ...professionalIdentity,
               // Projeção legada para a build atual; autorização lê exclusivamente PI.
               userRole: requestedRoles.roleInInstitution,
               specialty: qualification.legacyLabel,
@@ -2898,7 +2896,7 @@ authRouter.post(
             .update(professionals)
             .set({
               name: normalizedName,
-              role: mapProfessionalRoleToLabel(requestedRoles.professionalRole),
+              ...professionalIdentity,
               userRole: requestedRoles.roleInInstitution,
               specialty: qualification.legacyLabel,
               medicalSpecialtyId,
@@ -3369,6 +3367,9 @@ authRouter.post(
           throw new Error("password-hash-not-persisted");
         }
 
+        // Cadastro público permanece MEDIC nesta PR: o wizard de profissão
+        // é a PR 3. A identidade deixa de ser inferida de users.role=doctor.
+        const professionalIdentity = professionalIdentityWriteFields("MEDIC");
         const [existingProfessional] = await tx
           .select({ id: professionals.id })
           .from(professionals)
@@ -3381,7 +3382,7 @@ authRouter.post(
             .values({
               userId: newUserId,
               name: trimmedName,
-              role: mapRoleToLabel("doctor"),
+              ...professionalIdentity,
               userRole: "USER",
               specialty: qualification.legacyLabel,
               medicalSpecialtyId,
@@ -3394,7 +3395,7 @@ authRouter.post(
             .update(professionals)
             .set({
               name: trimmedName,
-              role: mapRoleToLabel("doctor"),
+              ...professionalIdentity,
               userRole: "USER",
               specialty: qualification.legacyLabel,
               medicalSpecialtyId,

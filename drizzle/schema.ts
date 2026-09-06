@@ -609,6 +609,19 @@ export const professionals = mysqlTable(
     ),
     /** Perfil não-CFM, por exemplo médico generalista. */
     operationalProfileCode: operationalProfileCodeEnum,
+    /**
+     * Código de profissão do catálogo de domínio (`lib/profession-definitions.ts`).
+     * Identidade profissional — não é papel institucional, não concede gestão
+     * nem ocupação de plantão. VARCHAR (não ENUM MySQL) para permitir extensão
+     * sem redesenhar AuthZ. NULL = legado ainda não classificado.
+     * Sem UNIQUE(user_id): a cardinalidade 1:1 não está provada no runtime.
+     */
+    professionCode: varchar("profession_code", { length: 64 }),
+    /**
+     * Nome livre quando professionCode = OTHER. Obrigatório no produto para
+     * Outro; a coluna permanece nullable para legado e linhas sem classificação.
+     */
+    customProfessionName: varchar("custom_profession_name", { length: 120 }),
     userRole: userRoleEnum.notNull().default("USER"), // RBAC: USER, GESTOR_MEDICO, GESTOR_PLUS
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
@@ -616,6 +629,9 @@ export const professionals = mysqlTable(
     idxProfessionalsMedicalSpecialty: index(
       "idx_professionals_medical_specialty",
     ).on(table.medicalSpecialtyId),
+    idxProfessionalsProfessionCode: index("idx_professionals_profession_code").on(
+      table.professionCode,
+    ),
     chkProfessionalsAtMostOneMedicalQualification: check(
       "chk_professionals_at_most_one_medical_qualification",
       sql`(${table.medicalSpecialtyId} is null or ${table.operationalProfileCode} is null)`,
