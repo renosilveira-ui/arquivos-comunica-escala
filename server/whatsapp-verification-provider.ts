@@ -22,22 +22,27 @@ export type WhatsAppVerificationFailureCode =
   | "RATE_LIMITED"
   | "START_REJECTED";
 
+/** Números finitos do SDK Twilio — só para log server-side. Sem message/URL/SID. */
+export type SafeProviderDiagnostics = {
+  providerHttpStatus?: number;
+  providerErrorCode?: number;
+};
+
+export type WhatsAppVerificationProviderFailure = {
+  ok: false;
+  kind: WhatsAppVerificationFailureKind;
+  code: WhatsAppVerificationFailureCode;
+  diagnostics?: SafeProviderDiagnostics;
+};
+
 export type WhatsAppVerificationStartResult =
   | { ok: true; status: string }
-  | {
-      ok: false;
-      kind: WhatsAppVerificationFailureKind;
-      code: WhatsAppVerificationFailureCode;
-    };
+  | WhatsAppVerificationProviderFailure;
 
 export type WhatsAppVerificationCheckResult =
   | { ok: true; approved: true }
   | { ok: true; approved: false; status: string }
-  | {
-      ok: false;
-      kind: WhatsAppVerificationFailureKind;
-      code: WhatsAppVerificationFailureCode;
-    };
+  | WhatsAppVerificationProviderFailure;
 
 export interface WhatsAppVerificationProvider {
   startVerification(e164: string): Promise<WhatsAppVerificationStartResult>;

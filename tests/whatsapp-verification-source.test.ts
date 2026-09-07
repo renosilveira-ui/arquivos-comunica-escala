@@ -86,6 +86,24 @@ describe("WhatsApp Verify — source contracts", () => {
     expect(service).not.toMatch(/logger\.[a-z]+\([^)]*code[^)]*OTP/i);
     expect(twilioAdapter).not.toMatch(/logger\.(info|warn|error)/);
     expect(service).not.toMatch(/TWILIO_AUTH_TOKEN|TWILIO_ACCOUNT_SID|TWILIO_VERIFY_SERVICE_SID/);
+    expect(twilioAdapter).not.toContain("JSON.stringify(error");
+    expect(twilioAdapter).not.toMatch(/diagnostics:[\s\S]{0,80}message/);
+  });
+
+  it("diagnóstico Twilio é numérico e só no log server-side", () => {
+    expect(twilioAdapter).toContain("extractSafeTwilioVerifyDiagnostics");
+    expect(twilioAdapter).toContain("Number.isFinite");
+    expect(service).toContain("providerHttpStatus");
+    expect(service).toContain("providerErrorCode");
+    const failFn = service.slice(
+      service.indexOf("function fail("),
+      service.indexOf("function clientIp"),
+    );
+    expect(failFn).not.toContain("providerHttpStatus");
+    expect(failFn).not.toContain("providerErrorCode");
+    expect(failFn).not.toContain("diagnostics");
+    expect(service).toContain("return fail(started.kind, started.code)");
+    expect(service).toContain("return fail(checked.kind, checked.code)");
   });
 
   it("Verify não liga o driver nem chama createSwapOffer", () => {

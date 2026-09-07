@@ -94,6 +94,38 @@ function logSafe(payload: Record<string, unknown>): void {
   logger.info(payload);
 }
 
+function logProviderFailure(
+  event: "whatsapp_verify_start_failed" | "whatsapp_verify_check_failed",
+  userId: number,
+  e164: string,
+  failed: {
+    kind: WhatsAppVerificationFailureKind;
+    code: WhatsAppVerificationFailureCode;
+    diagnostics?: {
+      providerHttpStatus?: number;
+      providerErrorCode?: number;
+    };
+  },
+): void {
+  const payload: Record<string, unknown> = {
+    event,
+    userId,
+    channel: "WHATSAPP",
+    addressHash: e164AuditHash(e164),
+    kind: failed.kind,
+    code: failed.code,
+  };
+  const http = failed.diagnostics?.providerHttpStatus;
+  const providerCode = failed.diagnostics?.providerErrorCode;
+  if (typeof http === "number" && Number.isFinite(http)) {
+    payload.providerHttpStatus = http;
+  }
+  if (typeof providerCode === "number" && Number.isFinite(providerCode)) {
+    payload.providerErrorCode = providerCode;
+  }
+  logSafe(payload);
+}
+
 export type WhatsAppVerificationAppFailure = {
   ok: false;
   kind: WhatsAppVerificationFailureKind | "USER_ERROR";
@@ -250,14 +282,12 @@ export async function startWhatsAppVerification(input: {
   const provider = resolveProvider();
   const started = await provider.startVerification(channel.e164);
   if (!started.ok) {
-    logSafe({
-      event: "whatsapp_verify_start_failed",
-      userId: input.userId,
-      channel: "WHATSAPP",
-      addressHash: e164AuditHash(channel.e164),
-      kind: started.kind,
-      code: started.code,
-    });
+    logProviderFailure(
+      "whatsapp_verify_start_failed",
+      input.userId,
+      channel.e164,
+      started,
+    );
     return fail(started.kind, started.code);
   }
 
@@ -328,14 +358,12 @@ export async function checkWhatsAppVerification(input: {
   const provider = resolveProvider();
   const checked = await provider.checkVerification(channel.e164, code);
   if (!checked.ok) {
-    logSafe({
-      event: "whatsapp_verify_check_failed",
-      userId: input.userId,
-      channel: "WHATSAPP",
-      addressHash: e164AuditHash(channel.e164),
-      kind: checked.kind,
-      code: checked.code,
-    });
+    logProviderFailure(
+      "whatsapp_verify_check_failed",
+      input.userId,
+      channel.e164,
+      checked,
+    );
     return fail(checked.kind, checked.code);
   }
   if (!checked.approved) {
