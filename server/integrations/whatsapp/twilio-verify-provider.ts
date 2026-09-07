@@ -4,6 +4,7 @@
 import twilio from "twilio";
 import {
   classifyTwilioVerifyCheckStatus,
+  type SafeProviderDiagnostics,
   type WhatsAppVerificationCheckResult,
   type WhatsAppVerificationFailureCode,
   type WhatsAppVerificationFailureKind,
@@ -52,39 +53,80 @@ function asTwilioError(error: unknown): TwilioLikeError | null {
   return error as TwilioLikeError;
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export function extractSafeTwilioVerifyDiagnostics(
+  error: unknown,
+): SafeProviderDiagnostics | undefined {
+  const rest = asTwilioError(error);
+  const providerHttpStatus = finiteNumber(rest?.status);
+  const providerErrorCode = finiteNumber(rest?.code);
+  if (providerHttpStatus === undefined && providerErrorCode === undefined) {
+    return undefined;
+  }
+  return {
+    ...(providerHttpStatus !== undefined ? { providerHttpStatus } : {}),
+    ...(providerErrorCode !== undefined ? { providerErrorCode } : {}),
+  };
+}
+
 export function mapTwilioVerifyError(
   error: unknown,
 ): {
   kind: WhatsAppVerificationFailureKind;
   code: WhatsAppVerificationFailureCode;
+  diagnostics?: SafeProviderDiagnostics;
 } {
   const rest = asTwilioError(error);
-  const httpStatus =
-    typeof rest?.status === "number" ? rest.status : undefined;
-  const twilioCode = typeof rest?.code === "number" ? rest.code : undefined;
+  const httpStatus = finiteNumber(rest?.status);
+  const twilioCode = finiteNumber(rest?.code);
 
+  let kind: WhatsAppVerificationFailureKind = "RETRYABLE_PROVIDER_ERROR";
+  let code: WhatsAppVerificationFailureCode = "TWILIO_UNAVAILABLE";
   if (httpStatus === 401 || httpStatus === 403 || twilioCode === 20003) {
-    return { kind: "SERVER_CONFIGURATION_ERROR", code: "PROVIDER_AUTH_FAILURE" };
+    kind = "SERVER_CONFIGURATION_ERROR";
+    code = "PROVIDER_AUTH_FAILURE";
+  } else if (twilioCode === 20404 || httpStatus === 404) {
+    kind = "USER_ERROR";
+    code = "EXPIRED";
+  } else if (twilioCode === 60202) {
+    kind = "USER_ERROR";
+    code = "TOO_MANY_ATTEMPTS";
+  } else if (twilioCode === 60203) {
+    kind = "USER_ERROR";
+    code = "TOO_MANY_SENDS";
+  } else if (twilioCode === 60200 || twilioCode === 60205) {
+    kind = "USER_ERROR";
+    code = "INVALID_PHONE";
+  } else if (twilioCode === 60003 || httpStatus === 429) {
+    kind = "USER_ERROR";
+    code = "RATE_LIMITED";
+  } else if (httpStatus !== undefined && httpStatus >= 500) {
+    kind = "RETRYABLE_PROVIDER_ERROR";
+    code = "TWILIO_UNAVAILABLE";
   }
-  if (twilioCode === 20404 || httpStatus === 404) {
-    return { kind: "USER_ERROR", code: "EXPIRED" };
-  }
-  if (twilioCode === 60202) {
-    return { kind: "USER_ERROR", code: "TOO_MANY_ATTEMPTS" };
-  }
-  if (twilioCode === 60203) {
-    return { kind: "USER_ERROR", code: "TOO_MANY_SENDS" };
-  }
-  if (twilioCode === 60200 || twilioCode === 60205) {
-    return { kind: "USER_ERROR", code: "INVALID_PHONE" };
-  }
-  if (twilioCode === 60003 || httpStatus === 429) {
-    return { kind: "USER_ERROR", code: "RATE_LIMITED" };
-  }
-  if (httpStatus !== undefined && httpStatus >= 500) {
-    return { kind: "RETRYABLE_PROVIDER_ERROR", code: "TWILIO_UNAVAILABLE" };
-  }
-  return { kind: "RETRYABLE_PROVIDER_ERROR", code: "TWILIO_UNAVAILABLE" };
+
+  const diagnostics = extractSafeTwilioVerifyDiagnostics(error);
+  return diagnostics ? { kind, code, diagnostics } : { kind, code };
+}
+
+function asProviderFailure(error: unknown): {
+  ok: false;
+  kind: WhatsAppVerificationFailureKind;
+  code: WhatsAppVerificationFailureCode;
+  diagnostics?: SafeProviderDiagnostics;
+} {
+  const mapped = mapTwilioVerifyError(error);
+  return mapped.diagnostics
+    ? {
+        ok: false,
+        kind: mapped.kind,
+        code: mapped.code,
+        diagnostics: mapped.diagnostics,
+      }
+    : { ok: false, kind: mapped.kind, code: mapped.code };
 }
 
 export function readTwilioVerifyConfig(
@@ -143,8 +185,7 @@ export class TwilioWhatsAppVerificationProvider
         code: "START_REJECTED",
       };
     } catch (error) {
-      const mapped = mapTwilioVerifyError(error);
-      return { ok: false, kind: mapped.kind, code: mapped.code };
+      return asProviderFailure(error);
     }
   }
 
@@ -161,8 +202,7 @@ export class TwilioWhatsAppVerificationProvider
         });
       return classifyTwilioVerifyCheckStatus(check.status);
     } catch (error) {
-      const mapped = mapTwilioVerifyError(error);
-      return { ok: false, kind: mapped.kind, code: mapped.code };
+      return asProviderFailure(error);
     }
   }
 }

@@ -28,6 +28,10 @@ import {
   type WhatsAppVerificationProvider,
   type WhatsAppVerificationStartResult,
 } from "../server/whatsapp-verification-provider";
+import {
+  TwilioWhatsAppVerificationProvider,
+  type TwilioVerifyClient,
+} from "../server/integrations/whatsapp/twilio-verify-provider";
 
 class FakeWhatsAppVerificationProvider implements WhatsAppVerificationProvider {
   starts: string[] = [];
@@ -529,5 +533,163 @@ describe("WhatsApp L2 Twilio Verify", () => {
     expect(blocked.ok).toBe(false);
     if (!blocked.ok) expect(blocked.code).toBe("RATE_LIMITED");
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
+  });
+
+  it("D6 start failure log contém diagnóstico seguro e não o payload cru", async () => {
+    const poison = {
+      status: 400,
+      code: 68008,
+      message:
+        "OTP 123456 for +5585988810020 token SKleak VA111 MG222 AC_FAKE_ACCOUNT",
+      moreInfo: "https://verify.twilio.com/v2/Services/VAsecret",
+    };
+    const client: TwilioVerifyClient = {
+      verify: {
+        v2: {
+          services: () => ({
+            verifications: {
+              create: async () => {
+                throw poison;
+              },
+            },
+            verificationChecks: {
+              create: async () => {
+                throw poison;
+              },
+            },
+          }),
+        },
+      },
+    };
+    whatsappVerificationRuntime.provider = new TwilioWhatsAppVerificationProvider({
+      config: {
+        accountSid: "ACtest",
+        authToken: "token",
+        serviceSid: "VAtest",
+      },
+      client,
+    });
+    const a = await createUser("d6");
+    infoSpy.mockClear();
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
+      phone: "+5585988810020",
+    });
+    expect(started.ok).toBe(false);
+    if (!started.ok) {
+      expect(started.code).toBe("TWILIO_UNAVAILABLE");
+      expect(started.kind).toBe("RETRYABLE_PROVIDER_ERROR");
+    }
+    const dumped = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    expect(dumped).toContain("whatsapp_verify_start_failed");
+    expect(dumped).toContain('"providerHttpStatus":400');
+    expect(dumped).toContain('"providerErrorCode":68008');
+    expect(dumped).not.toContain("123456");
+    expect(dumped).not.toContain("+5585988810020");
+    expect(dumped).not.toContain("SKleak");
+    expect(dumped).not.toContain("VAsecret");
+    expect(dumped).not.toContain("MG222");
+    expect(dumped).not.toContain("AC_FAKE_ACCOUNT");
+    expect(dumped).not.toContain("OTP 123456");
+  });
+
+  it("D7 check failure log contém diagnóstico seguro", async () => {
+    const a = await createUser("d7");
+    await callerFor(a.userId).profile.startWhatsAppVerification({
+      phone: "+5585988810021",
+    });
+    const poison = {
+      status: 503,
+      code: 20500,
+      message: "OTP 654321 for +5585988810021 VA333 MG444",
+    };
+    const client: TwilioVerifyClient = {
+      verify: {
+        v2: {
+          services: () => ({
+            verifications: {
+              create: async () => ({ status: "pending" }),
+            },
+            verificationChecks: {
+              create: async () => {
+                throw poison;
+              },
+            },
+          }),
+        },
+      },
+    };
+    whatsappVerificationRuntime.provider = new TwilioWhatsAppVerificationProvider({
+      config: {
+        accountSid: "ACtest",
+        authToken: "token",
+        serviceSid: "VAtest",
+      },
+      client,
+    });
+    infoSpy.mockClear();
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
+      code: "654321",
+    });
+    expect(checked.ok).toBe(false);
+    const dumped = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    expect(dumped).toContain("whatsapp_verify_check_failed");
+    expect(dumped).toContain('"providerHttpStatus":503');
+    expect(dumped).toContain('"providerErrorCode":20500');
+    expect(dumped).not.toContain("654321");
+    expect(dumped).not.toContain("+5585988810021");
+    expect(dumped).not.toContain("VA333");
+    expect(dumped).not.toContain("MG444");
+  });
+
+  it("D8 resposta ao usuário não contém diagnóstico do provider", async () => {
+    const poison = {
+      status: 400,
+      code: 68008,
+      message: "OTP 123456 for +5585988810022",
+    };
+    const client: TwilioVerifyClient = {
+      verify: {
+        v2: {
+          services: () => ({
+            verifications: {
+              create: async () => {
+                throw poison;
+              },
+            },
+            verificationChecks: {
+              create: async () => {
+                throw poison;
+              },
+            },
+          }),
+        },
+      },
+    };
+    whatsappVerificationRuntime.provider = new TwilioWhatsAppVerificationProvider({
+      config: {
+        accountSid: "ACtest",
+        authToken: "token",
+        serviceSid: "VAtest",
+      },
+      client,
+    });
+    const a = await createUser("d8");
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
+      phone: "+5585988810022",
+    });
+    expect(started.ok).toBe(false);
+    const dumped = JSON.stringify(started);
+    expect(dumped).not.toContain("68008");
+    expect(dumped).not.toContain("providerHttpStatus");
+    expect(dumped).not.toContain("providerErrorCode");
+    expect(dumped).not.toContain("diagnostics");
+    expect(dumped).not.toContain("123456");
+    expect(dumped).not.toContain("+5585988810022");
+    if (!started.ok) {
+      expect(started.code).toBe("TWILIO_UNAVAILABLE");
+      expect(started.message).toBe(
+        "Não foi possível falar com o verificador. Tente de novo em instantes.",
+      );
+    }
   });
 });

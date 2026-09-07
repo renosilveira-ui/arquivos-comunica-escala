@@ -5,6 +5,7 @@ import {
   UnimplementedWhatsAppVerificationProvider,
 } from "../server/whatsapp-verification-provider";
 import {
+  extractSafeTwilioVerifyDiagnostics,
   mapTwilioVerifyError,
   readTwilioVerifyConfig,
   TwilioWhatsAppVerificationProvider,
@@ -150,30 +151,139 @@ describe("Twilio Verify provider contract", () => {
     expect(mapTwilioVerifyError({ status: 401, code: 20003 })).toEqual({
       kind: "SERVER_CONFIGURATION_ERROR",
       code: "PROVIDER_AUTH_FAILURE",
+      diagnostics: { providerHttpStatus: 401, providerErrorCode: 20003 },
     });
     expect(mapTwilioVerifyError({ status: 404, code: 20404 })).toEqual({
       kind: "USER_ERROR",
       code: "EXPIRED",
+      diagnostics: { providerHttpStatus: 404, providerErrorCode: 20404 },
     });
     expect(mapTwilioVerifyError({ status: 429, code: 60003 })).toEqual({
       kind: "USER_ERROR",
       code: "RATE_LIMITED",
+      diagnostics: { providerHttpStatus: 429, providerErrorCode: 60003 },
     });
     expect(mapTwilioVerifyError({ status: 500 })).toEqual({
       kind: "RETRYABLE_PROVIDER_ERROR",
       code: "TWILIO_UNAVAILABLE",
+      diagnostics: { providerHttpStatus: 500 },
     });
     expect(mapTwilioVerifyError({ code: 60202 })).toEqual({
       kind: "USER_ERROR",
       code: "TOO_MANY_ATTEMPTS",
+      diagnostics: { providerErrorCode: 60202 },
     });
     expect(mapTwilioVerifyError({ code: 60203 })).toEqual({
       kind: "USER_ERROR",
       code: "TOO_MANY_SENDS",
+      diagnostics: { providerErrorCode: 60203 },
     });
     expect(mapTwilioVerifyError({ code: 60200 })).toEqual({
       kind: "USER_ERROR",
       code: "INVALID_PHONE",
+      diagnostics: { providerErrorCode: 60200 },
     });
+  });
+
+  it("D1 400/68008 preserva diagnóstico e classifica como TWILIO_UNAVAILABLE", () => {
+    const mapped = mapTwilioVerifyError({
+      status: 400,
+      code: 68008,
+      message: "sensitive OTP 123456",
+    });
+    expect(mapped.kind).toBe("RETRYABLE_PROVIDER_ERROR");
+    expect(mapped.code).toBe("TWILIO_UNAVAILABLE");
+    expect(mapped.diagnostics).toEqual({
+      providerHttpStatus: 400,
+      providerErrorCode: 68008,
+    });
+    expect(JSON.stringify(mapped)).not.toContain("123456");
+    expect(JSON.stringify(mapped)).not.toContain("sensitive");
+  });
+
+  it("D2 401/20003 permanece PROVIDER_AUTH_FAILURE com diagnóstico", () => {
+    const mapped = mapTwilioVerifyError({ status: 401, code: 20003 });
+    expect(mapped).toEqual({
+      kind: "SERVER_CONFIGURATION_ERROR",
+      code: "PROVIDER_AUTH_FAILURE",
+      diagnostics: { providerHttpStatus: 401, providerErrorCode: 20003 },
+    });
+  });
+
+  it("D3 503 preserva diagnóstico e permanece TWILIO_UNAVAILABLE", () => {
+    const mapped = mapTwilioVerifyError({ status: 503, code: 20500 });
+    expect(mapped).toEqual({
+      kind: "RETRYABLE_PROVIDER_ERROR",
+      code: "TWILIO_UNAVAILABLE",
+      diagnostics: { providerHttpStatus: 503, providerErrorCode: 20500 },
+    });
+  });
+
+  it("D4 strings não são diagnóstico numérico", () => {
+    expect(
+      extractSafeTwilioVerifyDiagnostics({ status: "400", code: "68008" }),
+    ).toBeUndefined();
+    const mapped = mapTwilioVerifyError({ status: "400", code: "68008" });
+    expect(mapped.kind).toBe("RETRYABLE_PROVIDER_ERROR");
+    expect(mapped.code).toBe("TWILIO_UNAVAILABLE");
+    expect(mapped.diagnostics).toBeUndefined();
+  });
+
+  it("D4 NaN/Infinity não são diagnóstico", () => {
+    expect(
+      extractSafeTwilioVerifyDiagnostics({ status: Number.NaN, code: Number.POSITIVE_INFINITY }),
+    ).toBeUndefined();
+  });
+
+  it("D5 adapter não devolve message/OTP/E.164/SID no resultado", async () => {
+    const poison = {
+      status: 400,
+      code: 68008,
+      message:
+        "OTP 123456 for +5585988810099 token SKleak VA111 MG222 AC_FAKE_ACCOUNT",
+      moreInfo: "https://verify.twilio.com/v2/Services/VAsecret",
+    };
+    const client: TwilioVerifyClient = {
+      verify: {
+        v2: {
+          services: () => ({
+            verifications: {
+              create: async () => {
+                throw poison;
+              },
+            },
+            verificationChecks: {
+              create: async () => {
+                throw poison;
+              },
+            },
+          }),
+        },
+      },
+    };
+    const provider = new TwilioWhatsAppVerificationProvider({
+      config: {
+        accountSid: "ACtest",
+        authToken: "token",
+        serviceSid: "VAtest",
+      },
+      client,
+    });
+    const started = await provider.startVerification("+5585988810099");
+    const checked = await provider.checkVerification("+5585988810099", "123456");
+    expect(started).toEqual({
+      ok: false,
+      kind: "RETRYABLE_PROVIDER_ERROR",
+      code: "TWILIO_UNAVAILABLE",
+      diagnostics: { providerHttpStatus: 400, providerErrorCode: 68008 },
+    });
+    expect(checked).toEqual(started);
+    const dumped = JSON.stringify({ started, checked, poisonIgnored: true });
+    expect(dumped).not.toContain("123456");
+    expect(dumped).not.toContain("+5585988810099");
+    expect(dumped).not.toContain("SKleak");
+    expect(dumped).not.toContain("VAsecret");
+    expect(dumped).not.toContain("MG222");
+    expect(dumped).not.toContain("AC_FAKE_ACCOUNT");
   });
 });
