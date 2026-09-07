@@ -1,17 +1,43 @@
 /**
- * Contrato futuro para verificação WhatsApp via Twilio Verify.
- * Adapter real: Incremento 2B — NÃO implementar aqui.
- *
+ * Contrato de verificação WhatsApp. Twilio Verify é a autoridade do OTP.
  * O Escala+ NÃO gera/armazena OTP próprio.
+ *
+ * Sucesso de check é somente status `approved` do provider — nunca HTTP 2xx.
  */
+export type WhatsAppVerificationFailureKind =
+  | "USER_ERROR"
+  | "RETRYABLE_PROVIDER_ERROR"
+  | "SERVER_CONFIGURATION_ERROR";
+
+export type WhatsAppVerificationFailureCode =
+  | "VERIFY_NOT_CONFIGURED"
+  | "PROVIDER_AUTH_FAILURE"
+  | "PROVIDER_MALFORMED"
+  | "TWILIO_UNAVAILABLE"
+  | "INVALID_PHONE"
+  | "INVALID_CODE"
+  | "EXPIRED"
+  | "TOO_MANY_ATTEMPTS"
+  | "TOO_MANY_SENDS"
+  | "RATE_LIMITED"
+  | "START_REJECTED";
+
 export type WhatsAppVerificationStartResult =
-  | { ok: true; provider: "twilio_verify"; status: string }
-  | { ok: false; reason: string };
+  | { ok: true; status: string }
+  | {
+      ok: false;
+      kind: WhatsAppVerificationFailureKind;
+      code: WhatsAppVerificationFailureCode;
+    };
 
 export type WhatsAppVerificationCheckResult =
   | { ok: true; approved: true }
   | { ok: true; approved: false; status: string }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      kind: WhatsAppVerificationFailureKind;
+      code: WhatsAppVerificationFailureCode;
+    };
 
 export interface WhatsAppVerificationProvider {
   startVerification(e164: string): Promise<WhatsAppVerificationStartResult>;
@@ -21,9 +47,16 @@ export interface WhatsAppVerificationProvider {
   ): Promise<WhatsAppVerificationCheckResult>;
 }
 
+const NOT_CONFIGURED: WhatsAppVerificationStartResult &
+  WhatsAppVerificationCheckResult = {
+  ok: false,
+  kind: "SERVER_CONFIGURATION_ERROR",
+  code: "VERIFY_NOT_CONFIGURED",
+};
+
 /**
- * Placeholder documentado — implementação futura:
- * `TwilioVerifyWhatsAppProvider` usando Twilio Verify Service.
+ * Fail-closed quando o Verify Service não está configurado.
+ * Nunca é um mock silencioso de sucesso.
  */
 export class UnimplementedWhatsAppVerificationProvider
   implements WhatsAppVerificationProvider
@@ -31,19 +64,37 @@ export class UnimplementedWhatsAppVerificationProvider
   async startVerification(
     _e164: string,
   ): Promise<WhatsAppVerificationStartResult> {
-    return {
-      ok: false,
-      reason: "Verificação WhatsApp ainda não está disponível.",
-    };
+    return NOT_CONFIGURED;
   }
 
   async checkVerification(
     _e164: string,
     _code: string,
   ): Promise<WhatsAppVerificationCheckResult> {
+    return NOT_CONFIGURED;
+  }
+}
+
+export const unimplementedWhatsAppVerificationProvider =
+  new UnimplementedWhatsAppVerificationProvider();
+
+/** Somente o literal `approved` autoriza verifiedAt. */
+export function isTwilioVerifyApprovedStatus(status: unknown): boolean {
+  return status === "approved";
+}
+
+export function classifyTwilioVerifyCheckStatus(
+  status: unknown,
+): WhatsAppVerificationCheckResult {
+  if (isTwilioVerifyApprovedStatus(status)) {
+    return { ok: true, approved: true };
+  }
+  if (typeof status !== "string" || status.trim() === "") {
     return {
       ok: false,
-      reason: "Verificação WhatsApp ainda não está disponível.",
+      kind: "RETRYABLE_PROVIDER_ERROR",
+      code: "PROVIDER_MALFORMED",
     };
   }
+  return { ok: true, approved: false, status };
 }

@@ -180,6 +180,15 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  "profile.checkWhatsAppVerification": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário confirma o OTP do WhatsApp",
+        audience: [],
+      },
+    ],
+  },
   "profile.deactivateWhatsAppContact": {
     targets: [
       {
@@ -194,6 +203,15 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       {
         policy: "SILENT_AUDITED",
         when: "quando o próprio usuário atualiza seu contato",
+        audience: [],
+      },
+    ],
+  },
+  "profile.startWhatsAppVerification": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário solicita o OTP do WhatsApp",
         audience: [],
       },
     ],
