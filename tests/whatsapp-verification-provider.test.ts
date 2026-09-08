@@ -209,6 +209,23 @@ describe("Twilio Verify provider contract", () => {
     });
   });
 
+  it("60242 template WhatsApp ausente é configuração, com diagnóstico", () => {
+    const mapped = mapTwilioVerifyError({
+      status: 400,
+      code: 60242,
+      message: "sensitive OTP 123456 template missing",
+    });
+    expect(mapped.kind).toBe("SERVER_CONFIGURATION_ERROR");
+    expect(mapped.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
+    expect(mapped.diagnostics).toEqual({
+      providerHttpStatus: 400,
+      providerErrorCode: 60242,
+    });
+    expect(JSON.stringify(mapped)).not.toContain("123456");
+    expect(JSON.stringify(mapped)).not.toContain("sensitive");
+    expect(JSON.stringify(mapped)).not.toContain("template missing");
+  });
+
   it("4xx desconhecido continua TWILIO_UNAVAILABLE", () => {
     const mapped = mapTwilioVerifyError({ status: 400, code: 19999 });
     expect(mapped.kind).toBe("RETRYABLE_PROVIDER_ERROR");
@@ -299,6 +316,58 @@ describe("Twilio Verify provider contract", () => {
     const dumped = JSON.stringify({ started, checked, poisonIgnored: true });
     expect(dumped).not.toContain("123456");
     expect(dumped).not.toContain("+5585988810099");
+    expect(dumped).not.toContain("SKleak");
+    expect(dumped).not.toContain("VAsecret");
+    expect(dumped).not.toContain("MG222");
+    expect(dumped).not.toContain("AC_FAKE_ACCOUNT");
+  });
+
+  it("adapter 60242 não aprova e não devolve conteúdo sensível", async () => {
+    const poison = {
+      status: 400,
+      code: 60242,
+      message:
+        "OTP 123456 for +5585988810233 token SKleak VA111 MG222 AC_FAKE_ACCOUNT",
+      moreInfo: "https://verify.twilio.com/v2/Services/VAsecret",
+    };
+    const client: TwilioVerifyClient = {
+      verify: {
+        v2: {
+          services: () => ({
+            verifications: {
+              create: async () => {
+                throw poison;
+              },
+            },
+            verificationChecks: {
+              create: async () => {
+                throw poison;
+              },
+            },
+          }),
+        },
+      },
+    };
+    const provider = new TwilioWhatsAppVerificationProvider({
+      config: {
+        accountSid: "ACtest",
+        authToken: "token",
+        serviceSid: "VAtest",
+      },
+      client,
+    });
+    const started = await provider.startVerification("+5585988810233");
+    const checked = await provider.checkVerification("+5585988810233", "123456");
+    expect(started).toEqual({
+      ok: false,
+      kind: "SERVER_CONFIGURATION_ERROR",
+      code: "PROVIDER_CHANNEL_NOT_CONFIGURED",
+      diagnostics: { providerHttpStatus: 400, providerErrorCode: 60242 },
+    });
+    expect(checked).toEqual(started);
+    const dumped = JSON.stringify({ started, checked, poisonIgnored: true });
+    expect(dumped).not.toContain("123456");
+    expect(dumped).not.toContain("+5585988810233");
     expect(dumped).not.toContain("SKleak");
     expect(dumped).not.toContain("VAsecret");
     expect(dumped).not.toContain("MG222");

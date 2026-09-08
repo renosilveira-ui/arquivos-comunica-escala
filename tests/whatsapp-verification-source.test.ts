@@ -138,8 +138,10 @@ describe("WhatsApp Verify — source contracts", () => {
     expect(service).toContain("whatsappVerificationRuntime.provider");
   });
 
-  it("68008/60428 são canal Verify não configurado, sem fallback SMS", () => {
-    expect(twilioAdapter).toContain("twilioCode === 68008 || twilioCode === 60428");
+  it("68008/60428/60242 são canal Verify não configurado, sem fallback SMS", () => {
+    expect(twilioAdapter).toContain("twilioCode === 68008");
+    expect(twilioAdapter).toContain("twilioCode === 60428");
+    expect(twilioAdapter).toContain("twilioCode === 60242");
     expect(twilioAdapter).toContain("PROVIDER_CHANNEL_NOT_CONFIGURED");
     expect(provider).toContain("PROVIDER_CHANNEL_NOT_CONFIGURED");
     expect(service).toContain("PROVIDER_CHANNEL_NOT_CONFIGURED");
