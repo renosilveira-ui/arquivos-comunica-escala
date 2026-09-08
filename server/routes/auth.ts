@@ -2475,6 +2475,137 @@ async function requireCanonicalRegisterActor(
   );
 }
 
+type RegisterableShellIdentity = {
+  professionalId: number | null;
+  existingMembershipId: number | null;
+};
+
+function refuseRegisterShellActivation(reason: string): never {
+  // Observabilidade sem PII: sem e-mail, senha, nome ou identificadores
+  // globais da conta-alvo. Só a classe da recusa.
+  console.warn(
+    "[register] ativação de casca recusada",
+    JSON.stringify({ reason }),
+  );
+  throw new RegisterValidationError(409, EMAIL_ALREADY_REGISTERED);
+}
+
+/**
+ * Prova fail-closed da topologia da casca sob o lock da linha global.
+ *
+ * /register só pode definir senha quando a conta não tem identidade
+ * institucional estrangeira e quando professionals ↔ professional_institutions
+ * é zero ou exatamente um profissional coerente. Ambiguidade (dois
+ * professionals, vínculo cruzado, PI órfão ou PI apontando para outro
+ * professional) recusa com 409 e zero mutações. Nunca desempata com
+ * LIMIT 1 / MIN(id) / isPrimary.
+ */
+async function proveRegisterableShellIdentity(
+  db: RegisterQueryDb,
+  userId: number,
+  targetInstitutionId: number,
+): Promise<RegisterableShellIdentity> {
+  const professionalRows = await db
+    .select({
+      id: professionals.id,
+      userId: professionals.userId,
+    })
+    .from(professionals)
+    .where(eq(professionals.userId, userId))
+    .for("update");
+
+  if (professionalRows.length > 1) {
+    refuseRegisterShellActivation("multiple_professionals");
+  }
+
+  const membershipsByUser = await db
+    .select({
+      id: professionalInstitutions.id,
+      userId: professionalInstitutions.userId,
+      professionalId: professionalInstitutions.professionalId,
+      institutionId: professionalInstitutions.institutionId,
+    })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, userId))
+    .for("update");
+
+  const professionalIds = professionalRows.map((row) => row.id);
+  const membershipsByProfessional =
+    professionalIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: professionalInstitutions.id,
+            userId: professionalInstitutions.userId,
+            professionalId: professionalInstitutions.professionalId,
+            institutionId: professionalInstitutions.institutionId,
+          })
+          .from(professionalInstitutions)
+          .where(
+            inArray(professionalInstitutions.professionalId, professionalIds),
+          )
+          .for("update");
+
+  const membershipById = new Map<
+    number,
+    (typeof membershipsByUser)[number]
+  >();
+  for (const row of [...membershipsByUser, ...membershipsByProfessional]) {
+    membershipById.set(row.id, row);
+  }
+  const memberships = [...membershipById.values()];
+
+  for (const membership of memberships) {
+    if (membership.userId !== userId) {
+      refuseRegisterShellActivation("identity_divergence");
+    }
+    if (membership.institutionId !== targetInstitutionId) {
+      refuseRegisterShellActivation("foreign_membership");
+    }
+  }
+
+  const tenantMemberships = memberships.filter(
+    (row) => row.institutionId === targetInstitutionId,
+  );
+  if (tenantMemberships.length > 1) {
+    refuseRegisterShellActivation("ambiguous_tenant_membership");
+  }
+
+  if (professionalRows.length === 0) {
+    if (tenantMemberships.length > 0) {
+      refuseRegisterShellActivation("orphan_membership");
+    }
+    return { professionalId: null, existingMembershipId: null };
+  }
+
+  const professional = professionalRows[0];
+  if (!professional || professional.userId !== userId) {
+    refuseRegisterShellActivation("identity_divergence");
+  }
+
+  if (tenantMemberships.length === 0) {
+    return {
+      professionalId: professional.id,
+      existingMembershipId: null,
+    };
+  }
+
+  const membership = tenantMemberships[0];
+  if (
+    !membership ||
+    membership.userId !== userId ||
+    membership.professionalId !== professional.id ||
+    professional.userId !== userId
+  ) {
+    refuseRegisterShellActivation("identity_divergence");
+  }
+
+  return {
+    professionalId: professional.id,
+    existingMembershipId: membership.id,
+  };
+}
+
 function resolveExplicitRegisterTenant(req: Request): number {
   const tenantId = parseTenantIdHeader(req.headers["x-tenant-id"]);
   if (!tenantId) {
@@ -2814,10 +2945,13 @@ authRouter.post(
             : [];
 
         let newUserId: number;
+        let provenProfessionalId: number | null = null;
+        let existingMembershipId: number | null = null;
         if (existingShellId) {
           const [locked] = await tx
             .select({
               id: users.id,
+              email: users.email,
               passwordHash: users.passwordHash,
               deletedAt: users.deletedAt,
             })
@@ -2832,6 +2966,19 @@ authRouter.post(
           ) {
             throw new RegisterValidationError(409, EMAIL_ALREADY_REGISTERED);
           }
+          if ((locked.email ?? "").toLowerCase().trim() !== normalizedEmail) {
+            refuseRegisterShellActivation("email_mismatch");
+          }
+
+          // Topologia inteira sob o lock global, antes de qualquer escrita.
+          const proof = await proveRegisterableShellIdentity(
+            tx,
+            locked.id,
+            targetInstitutionId,
+          );
+          provenProfessionalId = proof.professionalId;
+          existingMembershipId = proof.existingMembershipId;
+
           await tx
             .update(users)
             .set({
@@ -2870,12 +3017,7 @@ authRouter.post(
         const professionalIdentity = professionalIdentityForLegacyRole(
           requestedRoles.professionalRole,
         );
-        const [existingProfessional] = await tx
-          .select({ id: professionals.id })
-          .from(professionals)
-          .where(eq(professionals.userId, newUserId))
-          .limit(1);
-        let professionalId = existingProfessional?.id;
+        let professionalId = provenProfessionalId;
         if (!professionalId) {
           const [createdProfessional] = await tx
             .insert(professionals)
@@ -2902,20 +3044,15 @@ authRouter.post(
               medicalSpecialtyId,
               operationalProfileCode: qualification.operationalProfileCode,
             })
-            .where(eq(professionals.id, professionalId));
+            .where(
+              and(
+                eq(professionals.id, professionalId),
+                eq(professionals.userId, newUserId),
+              ),
+            );
         }
 
-        const [existingMembership] = await tx
-          .select({ id: professionalInstitutions.id })
-          .from(professionalInstitutions)
-          .where(
-            and(
-              eq(professionalInstitutions.userId, newUserId),
-              eq(professionalInstitutions.institutionId, targetInstitutionId),
-            ),
-          )
-          .limit(1);
-        if (!existingMembership) {
+        if (!existingMembershipId) {
           await tx.insert(professionalInstitutions).values({
             professionalId,
             userId: newUserId,
@@ -2931,7 +3068,52 @@ authRouter.post(
               roleInInstitution: requestedRoles.roleInInstitution,
               active: true,
             })
-            .where(eq(professionalInstitutions.id, existingMembership.id));
+            .where(
+              and(
+                eq(professionalInstitutions.id, existingMembershipId),
+                eq(professionalInstitutions.userId, newUserId),
+                eq(professionalInstitutions.professionalId, professionalId),
+                eq(professionalInstitutions.institutionId, targetInstitutionId),
+              ),
+            );
+        }
+
+        const [boundProfessional] = await tx
+          .select({
+            id: professionals.id,
+            userId: professionals.userId,
+          })
+          .from(professionals)
+          .where(
+            and(
+              eq(professionals.id, professionalId),
+              eq(professionals.userId, newUserId),
+            ),
+          );
+        const boundMemberships = await tx
+          .select({
+            id: professionalInstitutions.id,
+            userId: professionalInstitutions.userId,
+            professionalId: professionalInstitutions.professionalId,
+            institutionId: professionalInstitutions.institutionId,
+            active: professionalInstitutions.active,
+          })
+          .from(professionalInstitutions)
+          .where(
+            and(
+              eq(professionalInstitutions.userId, newUserId),
+              eq(professionalInstitutions.institutionId, targetInstitutionId),
+            ),
+          );
+        if (
+          !boundProfessional ||
+          boundMemberships.length !== 1 ||
+          boundMemberships[0]?.userId !== newUserId ||
+          boundMemberships[0]?.professionalId !== professionalId ||
+          boundMemberships[0]?.institutionId !== targetInstitutionId ||
+          boundMemberships[0]?.active !== true
+        ) {
+          throw new Error("register-shell-identity-unbound");
         }
 
         await tx
