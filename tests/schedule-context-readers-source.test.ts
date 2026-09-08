@@ -24,6 +24,28 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("assignment.userId === actor.userId");
   });
 
+  it("Agenda, período e detalhe compartilham o entitlement institucional", () => {
+    const contexts = readFileSync("server/schedule-contexts.ts", "utf8");
+    const readableStart = contexts.indexOf(
+      "export async function listReadableScheduleContexts",
+    );
+    const readableEnd = contexts.indexOf(
+      "export async function listAssumableScheduleContextIds",
+      readableStart,
+    );
+    const readable = contexts.slice(readableStart, readableEnd);
+    const shifts = readFileSync("server/shifts-crud.ts", "utf8");
+
+    expect(readable).toContain("loadInstitutionRosterReadPolicy");
+    expect(readable).toContain("filterScheduleContextsForRosterRead");
+    expect(
+      shifts.match(/listReadableScheduleContexts\(actor, db\)/g)?.length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(contexts).toContain(
+      "const contexts = await listReadableScheduleContexts(input.actor, database)",
+    );
+  });
+
   it("alocar o gestor médico usa o mesmo manager_scope e acesso operacional", () => {
     const source = readFileSync("server/schedule-contexts.ts", "utf8");
     const start = source.indexOf(

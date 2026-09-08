@@ -27,6 +27,10 @@ import {
   users,
 } from "../drizzle/schema";
 import { isGeneralistOperationalProfile } from "../lib/medical-specialties";
+import {
+  ROSTER_READ_POLICIES,
+  type RosterReadPolicy,
+} from "../lib/institution-features";
 import type { ScheduleContextAdmissionPolicy } from "../lib/sao-carlos-schedule-blueprint";
 import {
   assertCanManageInstitutionSchedule,
@@ -38,6 +42,7 @@ import {
 import { protectedProcedure, router } from "./_core/trpc";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
+import { loadInstitutionRosterReadPolicy } from "./institution-features";
 import {
   ensureDefaultSectorScale,
   listManageableTopology,
@@ -457,10 +462,11 @@ export function filterScheduleContextsForActor(input: {
 }
 
 /**
- * Leitura do panorama Geral: qualquer membro ativo do tenant vê as
- * escalas ativas da instituição (quem está no plantão). canManage e
- * prática continuam na allowlist — isto não concede professional_access
- * nem mutação.
+ * Leitura do panorama Geral: o pacote institucional pode ampliar a leitura
+ * para todas as escalas ativas do tenant (quem está no plantão). Sem a
+ * política exata, permanecem apenas os contextos já autorizados. canManage e
+ * prática continuam na allowlist — isto não concede professional_access nem
+ * mutação.
  */
 export function filterScheduleContextsForRosterRead(input: {
   actor: Pick<
@@ -470,11 +476,14 @@ export function filterScheduleContextsForRosterRead(input: {
   contexts: ActiveScheduleContext[];
   accesses: ScheduleContextAccess[];
   managerScopes: ScheduleContextManagerScope[];
+  rosterReadPolicy: RosterReadPolicy;
 }): AuthorizedScheduleContext[] {
+  const authorized = filterScheduleContextsForActor(input);
+  if (input.rosterReadPolicy !== ROSTER_READ_POLICIES.institutionWide) {
+    return authorized;
+  }
   const authorizedById = new Map(
-    filterScheduleContextsForActor(input).map(
-      (context) => [context.id, context] as const,
-    ),
+    authorized.map((context) => [context.id, context] as const),
   );
   const tenantContexts = input.contexts.filter(
     (context) =>
@@ -718,9 +727,10 @@ export function resolveShiftScheduleContextReadGrant(input: {
 }
 
 /**
- * Política compartilhada dos leitores de turno. Qualquer membro do
- * tenant lê escalas ativas da instituição (panorama Geral). A exceção
- * estreita da própria alocação cobre plantão sem contexto classificado.
+ * Política compartilhada dos leitores de turno. O pacote institucional pode
+ * ampliar o panorama Geral para as escalas ativas do tenant. A exceção
+ * estreita da própria alocação cobre plantão sem contexto autorizado ou
+ * classificado.
  */
 export async function assertActorCanReadShiftScheduleContext(input: {
   actor: TenantActor;
@@ -1174,8 +1184,13 @@ export async function listReadableScheduleContexts(
 ): Promise<AuthorizedScheduleContext[]> {
   const database = db ?? (await getDb());
   if (!database) throw new Error("Database not available");
+  const rosterReadPolicy = await loadInstitutionRosterReadPolicy(
+    actor.institutionId,
+    database,
+  );
   return filterScheduleContextsForRosterRead({
     actor,
+    rosterReadPolicy,
     ...(await loadActorScheduleContextPolicy(actor, database)),
   });
 }
@@ -1534,7 +1549,7 @@ export const scheduleContextsRouter = router({
     );
   }),
 
-  /** Escalas ativas do tenant para o panorama Geral — só leitura. */
+  /** Escalas legíveis no panorama Geral conforme o pacote — só leitura. */
   listReadable: protectedProcedure.query(async ({ ctx }) => {
     const actor = await getTenantActorFromContext(ctx);
     const db = await getDb();

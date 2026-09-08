@@ -708,6 +708,15 @@ export const EXPRESS_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  "PUT /api/admin/institution-features/cross-schedule-roster-view": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando a configuração comercial de leitura entre escalas é alterada para a instituição",
+        audience: [],
+      },
+    ],
+  },
 } as const satisfies MutationNotificationTargetInventory;
 
 export type ExpressMutationEndpoint =

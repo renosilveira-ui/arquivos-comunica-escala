@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  institutionFeatureEntitlements,
   managerScope,
   professionals,
   professionalAccess,
@@ -190,6 +191,22 @@ describe("scheduleContexts.listMine no appRouter", () => {
     mocks.getDb.mockResolvedValue(
       fakeSelectDb(
         new Map([
+          [
+            institutionFeatureEntitlements,
+            [
+              {
+                id: 1,
+                institutionId: 1,
+                featureCode: "CROSS_SCHEDULE_ROSTER_VIEW",
+                enabled: true,
+                source: "LEGACY_COMPATIBILITY",
+                version: 1,
+                updatedByUserId: null,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              },
+            ],
+          ],
           [
             scheduleContexts,
             [

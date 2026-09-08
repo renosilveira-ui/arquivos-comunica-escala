@@ -86,6 +86,7 @@ const expectedExpressMutationEndpoints = [
   "POST /api/integrations/twilio/whatsapp",
   "POST /api/sso/generate",
   "POST /api/sso/launch-code",
+  "PUT /api/admin/institution-features/cross-schedule-roster-view",
   "PUT /api/admin/users/:id",
 ];
 

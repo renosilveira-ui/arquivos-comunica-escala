@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inArray } from "drizzle-orm";
 import {
   hospitals,
+  institutionFeatureEntitlements,
   institutions,
   professionalAccess,
   professionalInstitutions,
@@ -90,6 +91,14 @@ describe("panorama Geral: todos vêem quem está no plantão", () => {
       })
       .$returningId();
     otherInstitutionId = otherInst.id;
+
+    await db.insert(institutionFeatureEntitlements).values({
+      institutionId,
+      featureCode: "CROSS_SCHEDULE_ROSTER_VIEW",
+      enabled: true,
+      source: "LEGACY_COMPATIBILITY",
+      version: 1,
+    });
 
     const [hosp] = await db
       .insert(hospitals)
@@ -326,6 +335,9 @@ describe("panorama Geral: todos vêem quem está no plantão", () => {
       .where(inArray(scheduleContexts.institutionId, tenantIds));
     await db.delete(sectors).where(inArray(sectors.institutionId, tenantIds));
     await db.delete(hospitals).where(inArray(hospitals.institutionId, tenantIds));
+    await db
+      .delete(institutionFeatureEntitlements)
+      .where(inArray(institutionFeatureEntitlements.institutionId, tenantIds));
     await db.delete(institutions).where(inArray(institutions.id, tenantIds));
     await db
       .delete(users)

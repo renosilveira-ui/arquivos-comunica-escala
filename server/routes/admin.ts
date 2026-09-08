@@ -16,6 +16,7 @@ import {
 import { getDb } from "../db";
 import {
   users,
+  institutionFeatureEntitlements,
   passwordResets,
   professionals,
   auditTrail,
@@ -31,6 +32,8 @@ import { AuthenticationInfrastructureError, sdk } from "../_core/sdk";
 import { SessionInstanceConstraintError } from "../_core/session-instance";
 import { ExpectedUserConstraintError } from "../_core/expected-user";
 import { recordAudit } from "../audit-trail";
+import { INSTITUTION_FEATURE_CODES } from "../../lib/institution-features";
+import { readInstitutionFeatureEntitlement } from "../institution-features";
 import { mailer } from "../mailer";
 import type { OperationalProfileCode } from "../../lib/medical-specialties";
 import { parseTenantIdHeader } from "../_core/tenant";
@@ -528,11 +531,13 @@ type LockedIdentityRows = {
 
 /**
  * Ordem única de identidade: users(X) → professionals(X) → PI(X) →
- * institutions(S). Cada tabela é travada por PK crescente, sem JOIN FOR UPDATE.
+ * institutions(S ou X, conforme a operação). Cada tabela é travada por PK
+ * crescente, sem JOIN FOR UPDATE.
  */
 async function lockIdentityRowsInOrder(
   db: AdminQueryDb,
   targets: readonly IdentityLockTarget[],
+  options: { institutionLock?: "share" | "update" } = {},
 ): Promise<LockedIdentityRows> {
   const lockedUsers: LockedIdentityRows["users"] = new Map();
   const userIds = [...new Set(targets.map((target) => target.userId))].sort(
@@ -631,7 +636,7 @@ async function lockIdentityRowsInOrder(
         ),
       )
       .limit(1)
-      .for("share");
+      .for(options.institutionLock ?? "share");
     if (!institution) {
       throw new AdminTenantError(
         403,
@@ -645,6 +650,46 @@ async function lockIdentityRowsInOrder(
     professionals: lockedProfessionals,
     memberships: lockedMemberships,
   };
+}
+
+async function lockAndRevalidateInstitutionFeatureAdmin(
+  db: AdminQueryDb,
+  input: {
+    institutionId: number;
+    caller: AdminMutationAuthoritySnapshot;
+    expectedCallerSessionVersion: number;
+  },
+): Promise<AdminMutationAuthoritySnapshot> {
+  const locked = await lockIdentityRowsInOrder(
+    db,
+    [{ ...input.caller, institutionId: input.institutionId }],
+    { institutionLock: "update" },
+  );
+  const caller = rebuildApprovedAdminAuthoritySnapshot(
+    locked,
+    input.caller,
+    input.institutionId,
+  );
+  if (caller.globalRole !== "admin") {
+    throw new AdminTenantError(
+      403,
+      "A conta deixou de possuir papel administrativo global",
+    );
+  }
+  if (caller.sessionVersion !== input.expectedCallerSessionVersion) {
+    throw new AdminTenantError(
+      409,
+      "A sessão administrativa foi revogada durante a operação; entre novamente",
+    );
+  }
+  if (!sameAdminMutationSnapshot(input.caller, caller)) {
+    throw new AdminTenantError(
+      409,
+      "Autoridade administrativa mudou durante a operação",
+    );
+  }
+  assertAuditSafeActorName(caller.userName);
+  return caller;
 }
 
 function rebuildApprovedAdminAuthoritySnapshot(
@@ -1108,6 +1153,222 @@ adminRouter.get(
       hospitals: topology.hospitals,
       sectors: topology.sectors,
     });
+  },
+);
+
+function projectInstitutionFeatureResponse(
+  institutionId: number,
+  entitlement: Awaited<ReturnType<typeof readInstitutionFeatureEntitlement>>,
+) {
+  return {
+    institutionId,
+    featureCode: INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
+    enabled: entitlement?.enabled === true,
+    source: entitlement?.source ?? null,
+    version: entitlement?.version ?? 0,
+    updatedAt: entitlement?.updatedAt?.toISOString() ?? null,
+  };
+}
+
+// Leitura da chave comercial. Ausência de linha é sempre interpretada como
+// desabilitada, inclusive para instituições criadas depois do backfill.
+adminRouter.get(
+  "/institution-features/cross-schedule-roster-view",
+  async (req: Request, res: Response): Promise<void> => {
+    const db = await getDb();
+    if (!db) {
+      res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+    try {
+      const institutionId = await requireExplicitAdminTenant(db, req);
+      const entitlement = await readInstitutionFeatureEntitlement(
+        db,
+        institutionId,
+        INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
+      );
+      res.json(projectInstitutionFeatureResponse(institutionId, entitlement));
+    } catch (error) {
+      if (sendAdminTenantError(res, error)) return;
+      throw error;
+    }
+  },
+);
+
+// Alteração transacional com versão otimista. A instituição é travada antes
+// da linha de entitlement para serializar também a primeira criação da linha.
+adminRouter.put(
+  "/institution-features/cross-schedule-roster-view",
+  async (req: Request, res: Response): Promise<void> => {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      res.status(400).json({ error: "Payload deve ser um objeto JSON" });
+      return;
+    }
+    const body = req.body as Record<string, unknown>;
+    if (
+      Object.keys(body).some(
+        (key) => key !== "enabled" && key !== "expectedVersion",
+      ) ||
+      typeof body.enabled !== "boolean" ||
+      !Number.isInteger(body.expectedVersion) ||
+      (body.expectedVersion as number) < 0
+    ) {
+      res.status(400).json({
+        error:
+          "Informe somente enabled (boolean) e expectedVersion (inteiro não negativo)",
+      });
+      return;
+    }
+    const enabled = body.enabled as boolean;
+    const expectedVersion = body.expectedVersion as number;
+
+    const db = await getDb();
+    if (!db) {
+      res.status(503).json({ error: "Banco de dados indisponível" });
+      return;
+    }
+
+    let institutionId: number;
+    try {
+      institutionId = requireExplicitTenantHeader(req);
+    } catch (error) {
+      if (sendAdminTenantError(res, error)) return;
+      throw error;
+    }
+    const caller = (req as any).user as {
+      id: number;
+      sessionVersion: number;
+    };
+
+    try {
+      const callerSnapshot = await readAdminMutationAuthoritySnapshot(db, {
+        userId: caller.id,
+        institutionId,
+        requireGlobalAdmin: true,
+      });
+      if (!callerSnapshot) {
+        throw new AdminTenantError(
+          403,
+          "Administrador sem vínculo canônico ativo no tenant informado",
+        );
+      }
+
+      const result = await db.transaction(
+        async (tx) => {
+          const lockedCaller = await lockAndRevalidateInstitutionFeatureAdmin(
+            tx,
+            {
+              institutionId,
+              caller: callerSnapshot,
+              expectedCallerSessionVersion: caller.sessionVersion,
+            },
+          );
+          const current = await readInstitutionFeatureEntitlement(
+            tx,
+            institutionId,
+            INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
+            { lockForUpdate: true },
+          );
+          const currentVersion = current?.version ?? 0;
+          if (expectedVersion !== currentVersion) {
+            throw new AdminTenantError(
+              409,
+              "Configuração mudou; atualize a tela e tente novamente",
+            );
+          }
+
+          if (!current && !enabled) {
+            return null;
+          }
+
+          if (current && current.enabled === enabled) {
+            return current;
+          }
+
+          if (current) {
+            const update = await tx
+              .update(institutionFeatureEntitlements)
+              .set({
+                enabled,
+                source: "ADMIN_OVERRIDE",
+                updatedByUserId: lockedCaller.userId,
+                version: sql`${institutionFeatureEntitlements.version} + 1`,
+              })
+              .where(
+                and(
+                  eq(institutionFeatureEntitlements.id, current.id),
+                  eq(
+                    institutionFeatureEntitlements.institutionId,
+                    institutionId,
+                  ),
+                  eq(
+                    institutionFeatureEntitlements.featureCode,
+                    INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
+                  ),
+                  eq(institutionFeatureEntitlements.version, current.version),
+                ),
+              );
+            if (affectedRows(update) !== 1) {
+              throw new AdminTenantError(
+                409,
+                "Configuração mudou; atualize a tela e tente novamente",
+              );
+            }
+          } else {
+            await tx.insert(institutionFeatureEntitlements).values({
+              institutionId,
+              featureCode: INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
+              enabled,
+              source: "ADMIN_OVERRIDE",
+              version: 1,
+              updatedByUserId: lockedCaller.userId,
+            });
+          }
+
+          const updated = await readInstitutionFeatureEntitlement(
+            tx,
+            institutionId,
+            INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
+            { lockForUpdate: true },
+          );
+          if (!updated) {
+            throw new AdminTenantError(
+              409,
+              "Configuração não pôde ser confirmada após a alteração",
+            );
+          }
+
+          await recordAudit(
+            {
+              institutionId,
+              action: "INSTITUTION_FEATURE_UPDATED",
+              entityType: "INSTITUTION",
+              entityId: institutionId,
+              actorUserId: lockedCaller.userId,
+              actorRole: lockedCaller.globalRole,
+              actorName: lockedCaller.userName ?? undefined,
+              description:
+                "Visualização de equipes entre escalas da instituição atualizada",
+              metadata: {
+                featureCode: INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
+                previousEnabled: current?.enabled ?? false,
+                enabled: updated.enabled,
+                previousVersion: currentVersion,
+                version: updated.version,
+                source: updated.source,
+              },
+            },
+            { db: tx, strict: true },
+          );
+          return updated;
+        },
+        { isolationLevel: "read committed" },
+      );
+      res.json(projectInstitutionFeatureResponse(institutionId, result));
+    } catch (error) {
+      if (sendAdminTenantError(res, error)) return;
+      throw error;
+    }
   },
 );
 

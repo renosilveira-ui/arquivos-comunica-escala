@@ -100,6 +100,8 @@ export default defineConfig({
       "tests/query-error-presentation.test.ts",
       "tests/web-verified-session.test.ts",
       "tests/institution-roles.test.ts",
+      "tests/institution-features.test.ts",
+      "tests/institution-feature-entitlements-migration.test.ts",
       "tests/duty-sync-v2-contract.test.ts",
       "tests/swap-offer-actions.test.ts",
       "tests/swap-offer-create-live-mutex-source.test.ts",
