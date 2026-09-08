@@ -143,9 +143,10 @@ describe("migração de identidade profissional", () => {
 });
 
 describe("writers de identidade — source guards", () => {
-  it("signup público persiste MEDIC pelo catálogo e ignora professionCode do body", () => {
-    expect(signupHandler).toContain('professionalIdentityWriteFields("MEDIC")');
-    expect(signupHandler).not.toMatch(/professionCode/);
+  it("signup público persiste identidade validada sem promover autoridade", () => {
+    expect(signupHandler).toContain("parseSignupProfessionalIdentity({");
+    expect(signupHandler).toContain("const professionalIdentity = parsedIdentity.identity;");
+    expect(signupHandler).toContain('userRole: "USER"');
     expect(signupHandler).toContain('role: "doctor"');
     expect(auth).toContain('from "../../lib/profession-definitions"');
   });

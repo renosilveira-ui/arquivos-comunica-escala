@@ -967,6 +967,19 @@ describe("auto-cadastro público e aprovação", () => {
 
     const session = await login(email, PASSWORD);
     expect(session.status).toBe(200);
+    await db.update(scheduleInvites)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(scheduleInvites.codeHash, hashScheduleInviteCode(recoveryCode)));
+    const expired = await request(app)
+      .post("/api/auth/redeem-invite")
+      .set("Cookie", cookieOf(session))
+      .send({ inviteCode: "ABCD-2345" });
+    expect(expired.status).toBe(400);
+    expect(await db.select().from(professionalInstitutions)
+      .where(eq(professionalInstitutions.userId, user.id))).toEqual([]);
+    await db.update(scheduleInvites)
+      .set({ expiresAt: new Date(Date.now() + 86_400_000) })
+      .where(eq(scheduleInvites.codeHash, hashScheduleInviteCode(recoveryCode)));
     const joined = await request(app)
       .post("/api/auth/redeem-invite")
       .set("Cookie", cookieOf(session))
