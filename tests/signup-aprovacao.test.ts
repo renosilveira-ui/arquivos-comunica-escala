@@ -450,6 +450,9 @@ describe("auto-cadastro público e aprovação", () => {
     expect(link.roleInInstitution).toBe("USER");
     const [pro] = await db
       .select({
+        role: professionals.role,
+        professionCode: professionals.professionCode,
+        customProfessionName: professionals.customProfessionName,
         specialty: professionals.specialty,
         medicalSpecialtyId: professionals.medicalSpecialtyId,
         operationalProfileCode: professionals.operationalProfileCode,
@@ -462,6 +465,9 @@ describe("auto-cadastro público e aprovação", () => {
       )
       .where(eq(professionals.userId, u.id));
     expect(pro).toMatchObject({
+      role: "Médico",
+      professionCode: "MEDIC",
+      customProfessionName: null,
       specialty: "Anestesiologia",
       medicalSpecialtyCode: "ANESTESIOLOGIA",
       operationalProfileCode: null,
