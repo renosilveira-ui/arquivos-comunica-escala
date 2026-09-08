@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { resolveOperationalListState } from "@/lib/operational-screen-state";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
@@ -65,18 +66,20 @@ export default function MyOffersScreen({
   const router = useRouter();
 
   // Filtro role=OFFERER (PR #64): só ofertas onde sou o ofertante.
-  const { data, isLoading, isError, refetch } = trpc.swaps.list.useQuery(
-    { role: "OFFERER" },
-    { enabled: !!user?.id },
-  );
+  const { data, isLoading, isPending, isError, error, refetch } =
+    trpc.swaps.list.useQuery({ role: "OFFERER" }, { enabled: !!user?.id });
 
   const utils = trpc.useUtils();
   const feedback = useActionFeedback();
 
   const cancelMutation = trpc.swaps.cancel.useMutation({
-    onSuccess: () => {
-      utils.swaps.list.invalidate();
-      refetch();
+    onSuccess: async () => {
+      await Promise.all([
+        utils.swaps.list.invalidate(),
+        utils.swaps.listAvailable.invalidate(),
+        utils.swaps.countActionable.invalidate(),
+      ]);
+      await refetch();
       feedback.success("Oferta cancelada.");
     },
     onError: (error) => {
@@ -137,10 +140,20 @@ export default function MyOffersScreen({
   const history = offers.filter(
     (o) => o.status !== "PENDING" && o.status !== "ACCEPTED",
   );
+  const contentState = resolveOperationalListState({
+    isLoading,
+    isPending,
+    isError,
+    hasResolvedData: data !== undefined,
+    itemCount: offers.length,
+    error,
+  });
 
   useEffect(() => {
-    if (data !== undefined && !isError) onCountChange?.(openOffers.length);
-  }, [data, isError, onCountChange, openOffers.length]);
+    if (contentState === "READY" || contentState === "EMPTY") {
+      onCountChange?.(openOffers.length);
+    }
+  }, [contentState, onCountChange, openOffers.length]);
 
   if (authLoading) {
     if (embedded) {
@@ -182,19 +195,27 @@ export default function MyOffersScreen({
     );
   }
 
-  const content = isLoading ? (
+  const content =
+    contentState === "ERROR" ? (
+          <QueryErrorState
+            title="Não foi possível carregar as ofertas"
+            error={error}
+            onRetry={() => refetch()}
+          />
+        ) : contentState === "LOADING" ? (
           <View className="items-center py-20">
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>
               Carregando ofertas...
             </Text>
           </View>
-        ) : isError ? (
+        ) : contentState === "UNRESOLVED" ? (
           <QueryErrorState
-            title="Não foi possível carregar as ofertas"
+            title="Ainda estamos aguardando as ofertas"
+            description="A lista ainda não foi confirmada pelo sistema. Tente novamente para atualizar."
             onRetry={() => refetch()}
           />
-        ) : offers.length === 0 ? (
+        ) : contentState === "EMPTY" ? (
           <View className="items-center justify-center py-20">
             <Inbox size={64} color={theme.colors.textMuted} />
             <Text className="mt-4 text-lg font-semibold text-center" style={{ color: theme.colors.textPrimary }}>

@@ -68,6 +68,8 @@ export default defineConfig({
       "tests/next-shift-state.test.ts",
       "tests/report-shifts-state.test.ts",
       "tests/agenda-month-offers-state.test.ts",
+      "tests/agenda-list-error-state.test.ts",
+      "tests/my-offers-operational-state.test.ts",
       "tests/confirmation-tick-cli.test.ts",
       "tests/sala-recuperacao-shift-blueprint.test.ts",
       "tests/open-month-shifts.test.ts",

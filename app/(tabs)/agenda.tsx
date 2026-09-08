@@ -293,7 +293,7 @@ export default function AgendaScreen() {
     clearSsoError();
   }, [ssoError, clearSsoError, feedback]);
 
-  const { data, isLoading, isError, refetch } = trpc.shifts.listAgenda.useQuery(
+  const { data, isLoading, isError, error, refetch } = trpc.shifts.listAgenda.useQuery(
     {
       startDate: queryStartDate,
       weeks: queryWeeks,
@@ -845,50 +845,16 @@ export default function AgendaScreen() {
           <SkeletonList count={3} />
         ) : isError && !data ? (
           // Falha na consulta NÃO pode renderizar a grade vazia como se
-          // não houvesse plantões ("nada aparece" sem explicação) — era
-          // exatamente o sintoma reportado no primeiro teste com dados
-          // reais. Mostra o erro e oferece retry.
-          <View
-            style={{
-              alignItems: "center",
-              paddingVertical: theme.space[10],
-              gap: theme.space[4],
+          // não houvesse plantões. QueryErrorState classifica ACCESS /
+          // NETWORK / SERVICE — 403 e 500 não podem virar "verifique a
+          // conexão".
+          <QueryErrorState
+            title="Não foi possível carregar a agenda"
+            error={error}
+            onRetry={() => {
+              void refetch();
             }}
-          >
-            <Text
-              style={{
-                fontSize: 15,
-                fontWeight: "600",
-                color: theme.colors.textPrimary,
-                textAlign: "center",
-              }}
-            >
-              Não foi possível carregar a agenda
-            </Text>
-            <Text
-              style={{
-                fontSize: 13,
-                color: theme.colors.textSecondary,
-                textAlign: "center",
-              }}
-            >
-              Verifique sua conexão e tente novamente.
-            </Text>
-            <TouchableOpacity
-              onPress={() => refetch()}
-              activeOpacity={0.8}
-              style={{
-                paddingHorizontal: theme.space[5],
-                paddingVertical: theme.space[3],
-                borderRadius: theme.radius.md,
-                backgroundColor: theme.colors.primary,
-              }}
-            >
-              <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>
-                Tentar novamente
-              </Text>
-            </TouchableOpacity>
-          </View>
+          />
         ) : scope === "geral" &&
           !scheduleContext.isSelectionHydrating &&
           !scheduleContext.isError &&
