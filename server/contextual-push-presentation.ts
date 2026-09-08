@@ -170,3 +170,14 @@ export function assignmentLifecyclePushPresentation(
       );
   }
 }
+
+export function vacancyBroadcastPushPresentation(
+  context: CanonicalShiftPushContext,
+): ContextualPushPresentation | null {
+  const title = normalizedContextTitle(context);
+  if (!title) return null;
+  return contextualPresentation(
+    title,
+    `Há um plantão vago em ${shiftReference(context)}.`,
+  );
+}

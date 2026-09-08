@@ -191,9 +191,9 @@ describe("outbox de push sem projeção de entrega", () => {
       {
         ...input("account-badge-marker"),
         payload: {
-          title: "Vaga disponível",
-          body: "Há uma vaga para você.",
-          data: { type: "vacancy_available", route: "/(tabs)/vacancies" },
+          title: "Lembrete de plantão",
+          body: "Você tem um plantão agendado.",
+          data: { type: "shift_reminder", route: "/(tabs)/schedule" },
         },
       },
       now,
@@ -218,8 +218,8 @@ describe("outbox de push sem projeção de entrega", () => {
     };
     expect(body).not.toHaveProperty("badge");
     expect(body.data).toMatchObject({
-      type: "vacancy_available",
-      route: "/(tabs)/vacancies",
+      type: "shift_reminder",
+      route: "/(tabs)/schedule",
       recipientUserId: userId,
     });
     expect(body.data).not.toHaveProperty("accountWideBadgeVersion");
@@ -252,9 +252,9 @@ describe("outbox de push sem projeção de entrega", () => {
       {
         ...input("snapshot-latency"),
         payload: {
-          title: "Vaga disponível",
-          body: "Há uma vaga para você.",
-          data: { type: "vacancy_available" },
+          title: "Lembrete de plantão",
+          body: "Você tem um plantão agendado.",
+          data: { type: "shift_reminder" },
         },
       },
       now,
