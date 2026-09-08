@@ -576,6 +576,13 @@ export default function ProfileScreen() {
                 />
               ) : null}
               <ListRow
+                title="Começar em uma escala"
+                subtitle="Veja as opções para criar uma escala ou aceitar um convite."
+                Icon={Link2}
+                onPress={go("/onboarding")}
+                accessibilityLabel="Escolher como começar em uma escala"
+              />
+              <ListRow
                 title="Entrar em outra escala"
                 subtitle="Use o convite de 24 horas que o gestor enviou por e-mail."
                 Icon={KeyRound}

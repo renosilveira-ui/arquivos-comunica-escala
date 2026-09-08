@@ -1,3 +1,4 @@
+import type { ProfessionCode } from "../profession-definitions";
 // lib/_core/api.ts — Wrapper HTTP para chamadas à API do server.
 //
 // ÚNICA fonte da URL base e dos headers de sessão/tenant do app. Cópias
@@ -732,6 +733,8 @@ export const authApi = {
 
   /** Auto-cadastro público. Sem instituição nasce aprovado, sem escala. */
   async signup(input: {
+    professionCode?: ProfessionCode;
+    customProfessionName?: string;
     name: string;
     email: string;
     password: string;

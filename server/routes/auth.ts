@@ -1,3 +1,4 @@
+import { parseSignupProfessionalIdentity } from "../signup-professional-identity";
 import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "node:crypto";
@@ -3268,6 +3269,8 @@ authRouter.post(
       medicalSpecialtyCode,
       operationalProfileCode,
       specialty,
+      professionCode,
+      customProfessionName,
     } = req.body as {
       name?: unknown;
       email?: unknown;
@@ -3277,6 +3280,8 @@ authRouter.post(
       medicalSpecialtyCode?: unknown;
       operationalProfileCode?: unknown;
       specialty?: unknown;
+      professionCode?: unknown;
+      customProfessionName?: unknown;
     };
     const password =
       typeof rawSignupPassword === "string"
@@ -3309,21 +3314,16 @@ authRouter.post(
         .json({ error: "name ou email excede o tamanho permitido" });
       return;
     }
-    const parsedQualification = parseMedicalQualification({
+    const parsedIdentity = parseSignupProfessionalIdentity({
+      professionCode,
+      customProfessionName,
       medicalSpecialtyCode,
       operationalProfileCode,
-      legacySpecialty: specialty,
-      // Sem instituição: a qualificação ainda identifica o perfil clínico do
-      // profissional. Com instituição, o acesso operacional é escolhido pelo
-      // hospital e setor, independentemente desse metadado.
-      allowMissing: Boolean(
-        institutionId !== undefined &&
-        institutionId !== null &&
-        institutionId !== "",
-      ),
+      specialty,
+      institutionId,
     });
-    if (!parsedQualification.ok) {
-      res.status(400).json({ error: parsedQualification.error });
+    if (!parsedIdentity.ok) {
+      res.status(400).json({ error: parsedIdentity.error });
       return;
     }
 
@@ -3383,7 +3383,7 @@ authRouter.post(
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const trimmedName = name.trim();
-    const qualification = parsedQualification.value;
+    const qualification = parsedIdentity.qualification;
 
     let awaitingApproval = hasInstitution;
     try {
@@ -3549,9 +3549,8 @@ authRouter.post(
           throw new Error("password-hash-not-persisted");
         }
 
-        // Cadastro público permanece MEDIC nesta PR: o wizard de profissão
-        // é a PR 3. A identidade deixa de ser inferida de users.role=doctor.
-        const professionalIdentity = professionalIdentityWriteFields("MEDIC");
+        // Identity metadata never supplies institutional authority.
+        const professionalIdentity = parsedIdentity.identity;
         const [existingProfessional] = await tx
           .select({ id: professionals.id })
           .from(professionals)

@@ -1,6 +1,11 @@
+import { ProfessionPicker } from "@/components/ProfessionPicker";
+import {
+  getProfessionDefinition,
+  type ProfessionCode,
+} from "@/lib/profession-definitions";
 // app/signup.tsx — auto-cadastro público.
 //
-// O médico cria a conta (nome, e-mail, senha, especialidade) sem escala.
+// O profissional cria a conta sem escala; profissão não concede gestão.
 // O gestor escolhe quem entra e o sistema envia um convite nominal de 24 h.
 
 import { useState } from "react";
@@ -27,9 +32,16 @@ import {
 import { theme } from "@/lib/theme";
 import { authApi } from "@/lib/_core/api";
 
-type Field = "name" | "email" | "password" | "confirm";
+type Field = "name" | "email" | "password" | "confirm" | "customProfession";
 
 export default function SignupScreen() {
+  const [professionCode, setProfessionCode] = useState<ProfessionCode | null>(
+    null,
+  );
+  const [customProfessionName, setCustomProfessionName] = useState("");
+  const profession = professionCode
+    ? getProfessionDefinition(professionCode)
+    : null;
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -77,7 +89,19 @@ export default function SignupScreen() {
       setErrorMsg("As senhas não coincidem.");
       return;
     }
-    if (!qualification) {
+    if (!profession) {
+      setErrorMsg("Selecione sua profissão.");
+      return;
+    }
+    if (
+      profession.customProfessionNameRequired &&
+      (!customProfessionName.trim() ||
+        Array.from(customProfessionName.trim()).length > 100)
+    ) {
+      setErrorMsg("Informe o nome da profissão com até 100 caracteres.");
+      return;
+    }
+    if (profession.specialtyRequired && !qualification) {
       setErrorMsg(
         "Selecione sua especialidade ou o perfil operacional aceito.",
       );
@@ -90,13 +114,23 @@ export default function SignupScreen() {
         name: name.trim(),
         email: email.trim(),
         password,
-        ...qualificationPayload(qualification),
+        professionCode: profession.code,
+        ...(profession.customProfessionNameRequired
+          ? { customProfessionName: customProfessionName.trim() }
+          : {}),
+        ...qualificationPayload(
+          profession.specialtyRequired ? qualification : null,
+        ),
       });
       if (result.ok) {
         setDone(result.pending ? "pending" : "awaiting");
       } else {
         setErrorMsg(result.error ?? "Erro ao criar cadastro.");
       }
+    } catch {
+      setErrorMsg(
+        "Não foi possível criar a conta. Verifique sua conexão e tente novamente.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -112,7 +146,10 @@ export default function SignupScreen() {
             paddingHorizontal: theme.space[4],
           }}
         >
-          <Surface level="raised" style={{ padding: theme.space[7], gap: theme.space[4] }}>
+          <Surface
+            level="raised"
+            style={{ padding: theme.space[7], gap: theme.space[4] }}
+          >
             <View style={{ alignItems: "center", gap: theme.space[4] }}>
               <CheckCircle2 size={56} color={theme.colors.success} />
               <Text
@@ -135,7 +172,7 @@ export default function SignupScreen() {
               >
                 {done === "pending"
                   ? "Sua conta foi criada e aguarda aprovação do gestor da instituição."
-                  : "Entre com o e-mail e a senha. O gestor envia o convite da escala por e-mail depois."}
+                  : "Entre com seu e-mail e senha para escolher como começar: gerenciar uma escala ou entrar com um convite."}
               </Text>
               <AppButton
                 title="Voltar ao login"
@@ -196,8 +233,8 @@ export default function SignupScreen() {
                   textAlign: "center",
                 }}
               >
-                Sem código de convite nesta etapa. Depois do cadastro, o gestor
-                escolhe quem entra na escala e envia o acesso por e-mail.
+                Primeiro, conte quem você é. Depois de entrar, escolha como
+                participar de uma escala.
               </Text>
             </View>
 
@@ -212,7 +249,7 @@ export default function SignupScreen() {
                     returnKeyType="next"
                     onFocus={() => setFocusedField("name")}
                     onBlur={() => setFocusedField(null)}
-                    placeholder="Dr(a). Nome Sobrenome"
+                    placeholder="Nome Sobrenome"
                     placeholderTextColor={theme.colors.textDisabled}
                     accessibilityLabel="Nome completo"
                     style={inputStyle("name")}
@@ -272,12 +309,41 @@ export default function SignupScreen() {
                   />
                 </View>
 
-                <ProfessionalQualificationPicker
-                  value={qualification}
-                  onChange={setQualification}
-                  required
-                  tone="light"
+                <ProfessionPicker
+                  value={professionCode}
+                  disabled={submitting}
+                  onChange={(value) => {
+                    setProfessionCode(value);
+                    setQualification(null);
+                    setCustomProfessionName("");
+                    setErrorMsg(null);
+                  }}
                 />
+                {profession?.customProfessionNameRequired ? (
+                  <View>
+                    <Text style={labelStyle}>Nome da profissão</Text>
+                    <TextInput
+                      value={customProfessionName}
+                      onChangeText={setCustomProfessionName}
+                      editable={!submitting}
+                      accessibilityLabel="Nome da profissão"
+                      placeholder="Informe sua profissão"
+                      placeholderTextColor={theme.colors.textDisabled}
+                      onFocus={() => setFocusedField("customProfession")}
+                      onBlur={() => setFocusedField(null)}
+                      style={inputStyle("customProfession")}
+                    />
+                  </View>
+                ) : null}
+                {profession?.specialtyRequired ? (
+                  <ProfessionalQualificationPicker
+                    value={qualification}
+                    onChange={setQualification}
+                    disabled={submitting}
+                    required
+                    tone="light"
+                  />
+                ) : null}
 
                 {errorMsg ? (
                   <Surface level="card" tone="danger" padded="compact">
@@ -313,7 +379,12 @@ export default function SignupScreen() {
                     justifyContent: "center",
                   }}
                 >
-                  <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                  <Text
+                    style={{
+                      ...theme.text.body,
+                      color: theme.colors.textSecondary,
+                    }}
+                  >
                     Já tenho conta?{" "}
                     <Text
                       style={{
