@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   assignmentLifecyclePushPresentation,
   dutyConfirmationPushPresentation,
+  swapOfferPushPresentation,
+  swapTakenPushPresentation,
   vacancyBroadcastPushPresentation,
   vacancyRequestPushPresentation,
   type CanonicalShiftPushContext,
@@ -84,6 +86,33 @@ describe("apresentação contextual de push", () => {
     });
   });
 
+  it.each([
+    [
+      "DIRECTED",
+      "Há uma nova oferta direcionada a você para 12/09/2032, 07:00–13:00.",
+    ],
+    [
+      "OPEN",
+      "Há uma nova oferta de plantão disponível para 12/09/2032, 07:00–13:00.",
+    ],
+  ] as const)("renderiza oferta %s com contexto canônico", (audience, body) => {
+    expect(swapOfferPushPresentation(audience, context)).toEqual({
+      title: "Hospital São Carlos · Sala de Recuperação",
+      body,
+    });
+  });
+
+  it.each([
+    ["SWAP", "Sua troca de plantão de 12/09/2032, 07:00–13:00 foi concluída."],
+    ["CESSAO", "Seu plantão de 12/09/2032, 07:00–13:00 foi assumido."],
+    ["TRANSFER", "Seu plantão de 12/09/2032, 07:00–13:00 foi assumido."],
+  ] as const)("renderiza conclusão %s sem nome de pessoa", (type, body) => {
+    expect(swapTakenPushPresentation(type, context)).toEqual({
+      title: "Hospital São Carlos · Sala de Recuperação",
+      body,
+    });
+  });
+
   it("mantém fallback neutro quando o contexto canônico não tem nome útil", () => {
     expect(
       dutyConfirmationPushPresentation("CONFIRMATION_REQUEST", {
@@ -105,6 +134,18 @@ describe("apresentação contextual de push", () => {
     ).toBeNull();
     expect(
       vacancyBroadcastPushPresentation({
+        ...context,
+        hospitalName: "\n",
+      }),
+    ).toBeNull();
+    expect(
+      swapOfferPushPresentation("DIRECTED", {
+        ...context,
+        sectorName: "\u200b",
+      }),
+    ).toBeNull();
+    expect(
+      swapTakenPushPresentation("SWAP", {
         ...context,
         hospitalName: "\n",
       }),

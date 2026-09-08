@@ -1,13 +1,34 @@
 import { sql, type SQLWrapper } from "drizzle-orm";
 import type { swapRequests } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
-import { actorClinicallyCoversOfferedShiftSql } from "./plantonista-shift-eligibility";
+import {
+  actorClinicallyCoversOfferedShiftSql,
+  plantonistaQualificationMatchesContextSql,
+} from "./plantonista-shift-eligibility";
 
 type SwapRow = typeof swapRequests.$inferSelect;
 
 type EligibilityDb = {
   execute: (query: string | SQLWrapper) => Promise<unknown>;
 };
+
+type SwapOfferLookup = Pick<SwapRow, "id" | "fromUserId" | "institutionId">;
+
+export type SwapOfferAudience = "OPEN" | "DIRECTED";
+
+type SwapOfferRecipientConstraint = Readonly<{
+  expectedUserId: number;
+  expectedFromUserId: number;
+  expectedFromProfessionalId: number;
+  expectedSourceAssignmentId: number;
+  expectedSwapVersion: number;
+  swapType: SwapRow["type"];
+  expectedTargetShiftInstanceId: number | null;
+  hospitalId: number;
+  sectorId: number;
+  audience: SwapOfferAudience;
+  lockForShare?: boolean;
+}>;
 
 /**
  * Destinatários de sinal de oferta = atores com autoridade clínica
@@ -20,13 +41,46 @@ type EligibilityDb = {
  * A mesma expressão clínica alimenta o SELECT de queryListAvailableRows.
  * Não reintroduzir atalho gerencial no destinatário (aliases api/ap).
  */
-export async function eligibleRecipientUserIdsForSwapOffer(
+async function queryEligibleRecipientUserIdsForSwapOffer(
   db: EligibilityDb,
-  swap: Pick<
-    SwapRow,
-    "id" | "fromUserId" | "toUserId" | "toProfessionalId" | "institutionId"
-  >,
+  swap: SwapOfferLookup,
+  constraint?: SwapOfferRecipientConstraint,
 ): Promise<number[]> {
+  const recipientPredicate = constraint
+    ? sql`AND au.id = ${constraint.expectedUserId}
+          AND sr.from_user_id = ${constraint.expectedFromUserId}
+          AND sr.from_professional_id = ${constraint.expectedFromProfessionalId}
+          AND sr.from_assignment_id = ${constraint.expectedSourceAssignmentId}
+          AND sr.version = ${constraint.expectedSwapVersion}
+          AND sr.type = ${constraint.swapType}
+          AND (
+            (
+              ${constraint.swapType} IN ('TRANSFER', 'CESSAO')
+              AND sr.to_shift_instance_id IS NULL
+            )
+            OR (
+              ${constraint.swapType} = 'SWAP'
+              AND sr.to_shift_instance_id = ${constraint.expectedTargetShiftInstanceId}
+            )
+          )
+          AND sr.hospital_id = ${constraint.hospitalId}
+          AND sr.sector_id = ${constraint.sectorId}
+          AND fsi.hospital_id = ${constraint.hospitalId}
+          AND fsi.sector_id = ${constraint.sectorId}
+          AND (
+            (
+              ${constraint.audience} = 'OPEN'
+              AND sr.to_professional_id IS NULL
+              AND sr.to_user_id IS NULL
+            )
+            OR (
+              ${constraint.audience} = 'DIRECTED'
+              AND sr.to_professional_id = ap.id
+              AND sr.to_user_id = au.id
+            )
+          )`
+    : sql``;
+  const lockClause = constraint?.lockForShare ? sql`FOR SHARE` : sql``;
   // Destinatário = actorClinicallyCoversOfferedShiftSql.
   // O OR GESTOR_PLUS/manager_scope abaixo é só validade da ORIGEM
   // (quem oferta o próprio plantão), não atalho de destinatário.
@@ -121,6 +175,7 @@ export async function eligibleRecipientUserIdsForSwapOffer(
       AND sr.institution_id = ${swap.institutionId}
       AND sr.status = 'PENDING'
       AND sr.from_user_id != au.id
+      ${recipientPredicate}
       AND (
         (sr.to_professional_id IS NULL AND sr.to_user_id IS NULL)
         OR (sr.to_professional_id = ap.id AND sr.to_user_id = au.id)
@@ -138,25 +193,46 @@ export async function eligibleRecipientUserIdsForSwapOffer(
           AND source_duplicate.is_active = 1
           AND source_duplicate.id != fsa.id
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM shift_assignments_v2 poisoned_source_assignment
+        WHERE poisoned_source_assignment.shift_instance_id = fsi.id
+          AND poisoned_source_assignment.is_active = 1
+          AND (
+            poisoned_source_assignment.institution_id != fsi.institution_id
+            OR poisoned_source_assignment.hospital_id != fsi.hospital_id
+            OR poisoned_source_assignment.sector_id != fsi.sector_id
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM swap_request_dismissals actor_dismissal
+        WHERE actor_dismissal.swap_request_id = sr.id
+          AND actor_dismissal.institution_id = sr.institution_id
+          AND actor_dismissal.user_id = au.id
+      )
       AND (
-        EXISTS (
-          SELECT 1
-          FROM professional_access source_access
-          WHERE source_access.institution_id = fsi.institution_id
-            AND source_access.professional_id = fp.id
-            AND source_access.hospital_id = fsi.hospital_id
-            AND source_access.can_access = 1
-            AND (
-              (
-                fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
-                AND source_access.sector_id = fsi.sector_id
+        (
+          EXISTS (
+            SELECT 1
+            FROM professional_access source_access
+            WHERE source_access.institution_id = fsi.institution_id
+              AND source_access.professional_id = fp.id
+              AND source_access.hospital_id = fsi.hospital_id
+              AND source_access.can_access = 1
+              AND (
+                (
+                  fsc.admission_policy = 'QUALIFICATION_ALLOWLIST'
+                  AND source_access.sector_id = fsi.sector_id
+                )
+                OR
+                (
+                  fsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
+                  AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
+                )
               )
-              OR
-              (
-                fsc.admission_policy <> 'QUALIFICATION_ALLOWLIST'
-                AND (source_access.sector_id IS NULL OR source_access.sector_id = fsi.sector_id)
-              )
-            )
+          )
+          AND ${plantonistaQualificationMatchesContextSql("fp", "fsc")}
         )
         OR fpi.role_in_institution = 'GESTOR_PLUS'
         OR EXISTS (
@@ -217,6 +293,17 @@ export async function eligibleRecipientUserIdsForSwapOffer(
               AND target_duplicate.is_active = 1
               AND target_duplicate.id != tsa.id
           )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM shift_assignments_v2 poisoned_target_assignment
+            WHERE poisoned_target_assignment.shift_instance_id = tsi.id
+              AND poisoned_target_assignment.is_active = 1
+              AND (
+                poisoned_target_assignment.institution_id != tsi.institution_id
+                OR poisoned_target_assignment.hospital_id != tsi.hospital_id
+                OR poisoned_target_assignment.sector_id != tsi.sector_id
+              )
+          )
           AND EXISTS (
             SELECT 1
             FROM professional_access source_target_access
@@ -236,6 +323,7 @@ export async function eligibleRecipientUserIdsForSwapOffer(
                 )
               )
           )
+          AND ${plantonistaQualificationMatchesContextSql("fp", "tsc")}
           AND NOT EXISTS (
             SELECT 1
             FROM shift_assignments_v2 source_target_conflict
@@ -249,6 +337,7 @@ export async function eligibleRecipientUserIdsForSwapOffer(
           )
         )
       )
+    ${lockClause}
   `);
 
   const unique = new Set<number>();
@@ -259,4 +348,60 @@ export async function eligibleRecipientUserIdsForSwapOffer(
     unique.add(userId);
   }
   return [...unique];
+}
+
+export async function eligibleRecipientUserIdsForSwapOffer(
+  db: EligibilityDb,
+  swap: Pick<
+    SwapRow,
+    "id" | "fromUserId" | "toUserId" | "toProfessionalId" | "institutionId"
+  >,
+): Promise<number[]> {
+  return queryEligibleRecipientUserIdsForSwapOffer(db, swap);
+}
+
+/** Revalida um único destinatário no instante da submissão ao Expo. */
+export async function isRecipientUserEligibleForSwapOffer(
+  db: EligibilityDb,
+  swap: SwapOfferLookup & SwapOfferRecipientConstraint,
+): Promise<boolean> {
+  if (
+    !Number.isSafeInteger(swap.expectedUserId) ||
+    swap.expectedUserId <= 0 ||
+    !Number.isSafeInteger(swap.expectedFromUserId) ||
+    swap.expectedFromUserId <= 0 ||
+    !Number.isSafeInteger(swap.expectedFromProfessionalId) ||
+    swap.expectedFromProfessionalId <= 0 ||
+    !Number.isSafeInteger(swap.expectedSourceAssignmentId) ||
+    swap.expectedSourceAssignmentId <= 0 ||
+    !Number.isSafeInteger(swap.expectedSwapVersion) ||
+    swap.expectedSwapVersion <= 0 ||
+    (swap.swapType !== "SWAP" &&
+      swap.swapType !== "TRANSFER" &&
+      swap.swapType !== "CESSAO") ||
+    (swap.swapType === "SWAP"
+      ? !Number.isSafeInteger(swap.expectedTargetShiftInstanceId) ||
+        (swap.expectedTargetShiftInstanceId as number) <= 0
+      : swap.expectedTargetShiftInstanceId !== null) ||
+    !Number.isSafeInteger(swap.hospitalId) ||
+    swap.hospitalId <= 0 ||
+    !Number.isSafeInteger(swap.sectorId) ||
+    swap.sectorId <= 0
+  ) {
+    return false;
+  }
+  const userIds = await queryEligibleRecipientUserIdsForSwapOffer(db, swap, {
+    expectedUserId: swap.expectedUserId,
+    expectedFromUserId: swap.expectedFromUserId,
+    expectedFromProfessionalId: swap.expectedFromProfessionalId,
+    expectedSourceAssignmentId: swap.expectedSourceAssignmentId,
+    expectedSwapVersion: swap.expectedSwapVersion,
+    swapType: swap.swapType,
+    expectedTargetShiftInstanceId: swap.expectedTargetShiftInstanceId,
+    hospitalId: swap.hospitalId,
+    sectorId: swap.sectorId,
+    audience: swap.audience,
+    lockForShare: swap.lockForShare,
+  });
+  return userIds.length === 1 && userIds[0] === swap.expectedUserId;
 }

@@ -1,6 +1,16 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   auditTrail,
   hospitals,
@@ -12,6 +22,7 @@ import {
   professionalAccess,
   professionalInstitutions,
   professionals,
+  pushTokens,
   scheduleContextAllowedQualifications,
   scheduleContexts,
   sectors,
@@ -31,6 +42,8 @@ import { isExpectedSwapVisibilityDenial, swapRouter } from "../server/swap-route
 import { StaleCanonicalAssignmentError } from "../server/swap-domain";
 import { yearMonthBrt } from "../server/local-time";
 import { SWAP_OFFER_PUSH_TITLE } from "../lib/swap-offer-badge-refresh";
+import { drainAccountWideNativeBadgeSnapshotDispatches } from "../server/notifications-service";
+import { processPendingPushDeliveries } from "../server/push-delivery";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type Identity = {
@@ -55,6 +68,7 @@ describe("sinal de oferta de plantão", () => {
   const userIds: number[] = [];
   const professionalIds: number[] = [];
   const stamp = Date.now();
+  const fetchMock = vi.fn();
 
   const at = (dayOffset: number, hour: number): Date => {
     const value = new Date();
@@ -275,7 +289,12 @@ describe("sinal de oferta de plantão", () => {
   });
 
   beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+    if (userIds.length > 0) {
+      await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
+    }
     await db
       .delete(swapRequestDismissals)
       .where(eq(swapRequestDismissals.institutionId, institutionId));
@@ -287,10 +306,19 @@ describe("sinal de oferta de plantão", () => {
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
   });
 
+  afterEach(async () => {
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   afterAll(async () => {
     if (!db) return;
     await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
     await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+    if (userIds.length > 0) {
+      await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
+    }
     await db
       .delete(swapRequestDismissals)
       .where(eq(swapRequestDismissals.institutionId, institutionId));
@@ -372,6 +400,25 @@ describe("sinal de oferta de plantão", () => {
     expect(sourceTuple).toContain("findManagerScopeId");
     expect(sourceTuple).toContain("GESTOR_PLUS");
     expect(sourceTuple).toContain("assertProfessionalQualifiedForShift");
+    const residualApproval = routerSource.slice(
+      routerSource.indexOf("async function effectuateApprovedSwap"),
+      routerSource.indexOf("// ─── router"),
+    );
+    expect(
+      residualApproval.indexOf("assertPublishedSwapMonthsForUpdate"),
+    ).toBeLessThan(residualApproval.indexOf('.for("update")'));
+    expect(residualApproval).toContain("sameSwapExecutionSnapshot");
+    const notificationService = readFileSync(
+      "server/notifications-service.ts",
+      "utf8",
+    );
+    const finalClaim = notificationService.slice(
+      notificationService.indexOf("async function submitOwnedExpoPushTicket"),
+      notificationService.indexOf("export async function getExpoPushReceipts"),
+    );
+    expect(finalClaim).toMatch(
+      /transaction<PushTicketClaim>[\s\S]*isolationLevel: "read committed"/,
+    );
   });
 
   it("mostra a cessão ao colega com outra especialidade da allowlist", async () => {
@@ -537,6 +584,65 @@ describe("sinal de oferta de plantão", () => {
       .where(eq(notifications.institutionId, institutionId));
   }
 
+  function installSuccessfulExpoTransport(): void {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: { status: "ok", id: `swap-ticket-${crypto.randomUUID()}` },
+      }),
+    }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+  }
+
+  function pushTokenFor(identity: Identity): string {
+    return `ExponentPushToken[swap-${stamp}-${identity.userId}]`;
+  }
+
+  async function registerPushToken(identity: Identity): Promise<number> {
+    const [token] = await db
+      .insert(pushTokens)
+      .values({
+        institutionId,
+        userId: identity.userId,
+        token: pushTokenFor(identity),
+        platform: "ios",
+      })
+      .$returningId();
+    return token.id;
+  }
+
+  function operationalPush(type: "swap_offer" | "swap_taken") {
+    for (const [, options] of fetchMock.mock.calls) {
+      const raw = (options as RequestInit | undefined)?.body;
+      if (typeof raw !== "string") continue;
+      const message = JSON.parse(raw) as Record<string, unknown>;
+      const data = message.data as Record<string, unknown> | undefined;
+      if (data?.type === type) return message;
+    }
+    return null;
+  }
+
+  async function processQueuedPushes(): Promise<void> {
+    await processPendingPushDeliveries(new Date(Date.now() + 1_000));
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+  }
+
+  async function trackedSignal(dedupKey: string) {
+    const [row] = await db
+      .select({
+        status: notifications.status,
+        providerReceipt: notifications.providerReceipt,
+      })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, dedupKey))
+      .limit(1);
+    return row;
+  }
+
   it("oferta direcionada notifica só o alvo elegível, não gestores", async () => {
     const shift = await createOccupiedShift(offerer, 3, "Clínica Médica");
     const created = await callerFor(offerer).offer({
@@ -579,6 +685,726 @@ describe("sinal de oferta de plantão", () => {
     await expect(callerFor(gestor).countActionable()).resolves.toEqual({
       swapOffers: 0,
     });
+  });
+
+  it("entrega oferta direcionada com hospital e setor canônicos", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 40, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_offer")).toMatchObject({
+      title: `Offer Signal Hospital ${stamp} · Sala de Recuperação ${stamp}`,
+      body: expect.stringMatching(
+        /^Há uma nova oferta direcionada a você para \d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}–\d{2}:\d{2}\.$/,
+      ),
+      data: {
+        type: "swap_offer",
+        swapRequestId: Number(created.id),
+        institutionId,
+        hospitalId,
+        sectorId,
+        shiftInstanceId: shift.shiftId,
+        userId: peer.userId,
+      },
+    });
+  });
+
+  it("suprime oferta aberta recusada antes da entrega", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 41, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    await callerFor(peer).reject({ swapRequestId: Number(created.id) });
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_offer")).toBeNull();
+    const stored = await trackedSignal(
+      `swap-offer:${created.id}:${peer.userId}`,
+    );
+    expect(stored?.status).toBe("FAILED");
+    expect(stored?.providerReceipt).toMatchObject({
+      phase: "FAILED",
+      evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+    });
+  });
+
+  it("não usa ACL de hospital irmão para entregar oferta", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const [siblingHospital] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `Sibling Hospital ${stamp}` })
+      .$returningId();
+    const [siblingSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId: siblingHospital.id,
+        name: `Sibling Sector ${stamp}`,
+        category: "cirurgico",
+        color: "#334155",
+      })
+      .$returningId();
+    try {
+      const shift = await createOccupiedShift(offerer, 42, "Clínica Médica");
+      const created = await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+      });
+      await db
+        .update(professionalAccess)
+        .set({ canAccess: false })
+        .where(
+          and(
+            eq(professionalAccess.professionalId, peer.professionalId),
+            eq(professionalAccess.hospitalId, hospitalId),
+            eq(professionalAccess.sectorId, sectorId),
+          ),
+        );
+      await db.insert(professionalAccess).values({
+        institutionId,
+        professionalId: peer.professionalId,
+        hospitalId: siblingHospital.id,
+        sectorId: siblingSector.id,
+        canAccess: true,
+      });
+
+      await processQueuedPushes();
+
+      expect(operationalPush("swap_offer")).toBeNull();
+      const stored = await trackedSignal(
+        `swap-offer:${created.id}:${peer.userId}`,
+      );
+      expect(stored?.status).toBe("FAILED");
+      expect(stored?.providerReceipt).toMatchObject({
+        evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+      });
+    } finally {
+      await db
+        .delete(professionalAccess)
+        .where(eq(professionalAccess.hospitalId, siblingHospital.id));
+      await db
+        .update(professionalAccess)
+        .set({ canAccess: true })
+        .where(
+          and(
+            eq(professionalAccess.professionalId, peer.professionalId),
+            eq(professionalAccess.hospitalId, hospitalId),
+            eq(professionalAccess.sectorId, sectorId),
+          ),
+        );
+      await db.delete(sectors).where(eq(sectors.id, siblingSector.id));
+      await db.delete(hospitals).where(eq(hospitals.id, siblingHospital.id));
+    }
+  });
+
+  it("suprime oferta cancelada antes da entrega", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 43, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    await callerFor(offerer).cancel({ swapRequestId: Number(created.id) });
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_offer")).toBeNull();
+    expect(
+      await trackedSignal(`swap-offer:${created.id}:${peer.userId}`),
+    ).toMatchObject({
+      status: "FAILED",
+      providerReceipt: {
+        evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+      },
+    });
+  });
+
+  it("suprime oferta se a alocação de origem for reamarrada sem nova versão", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 57, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+    const [replacement] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        shiftInstanceId: shift.shiftId,
+        institutionId,
+        hospitalId,
+        sectorId,
+        professionalId: offerer.professionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: true,
+      })
+      .$returningId();
+    await db
+      .update(swapRequests)
+      .set({ fromAssignmentId: replacement.id })
+      .where(eq(swapRequests.id, Number(created.id)));
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_offer")).toBeNull();
+    expect(
+      await trackedSignal(`swap-offer:${created.id}:${peer.userId}`),
+    ).toMatchObject({
+      status: "FAILED",
+      providerReceipt: {
+        authority: { expectedSourceAssignmentId: shift.assignmentId },
+        evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+      },
+    });
+  });
+
+  it("avisa conclusão sem expor o nome de quem assumiu", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(offerer);
+    const shift = await createOccupiedShift(offerer, 44, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+
+    await processQueuedPushes();
+
+    const message = operationalPush("swap_taken");
+    expect(message).toMatchObject({
+      title: `Offer Signal Hospital ${stamp} · Sala de Recuperação ${stamp}`,
+      body: expect.stringMatching(
+        /^Seu plantão de \d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}–\d{2}:\d{2} foi assumido\.$/,
+      ),
+      data: {
+        type: "swap_taken",
+        swapRequestId: Number(created.id),
+        userId: offerer.userId,
+      },
+    });
+    expect(String(message?.body)).not.toContain(peer.name);
+  });
+
+  it("suprime conclusão se a alocação de origem for reamarrada sem nova versão", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(offerer);
+    const shift = await createOccupiedShift(offerer, 58, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+    const [replacement] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        shiftInstanceId: shift.shiftId,
+        institutionId,
+        hospitalId,
+        sectorId,
+        professionalId: offerer.professionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: false,
+      })
+      .$returningId();
+    await db
+      .update(swapRequests)
+      .set({ fromAssignmentId: replacement.id })
+      .where(eq(swapRequests.id, Number(created.id)));
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_taken")).toBeNull();
+    expect(
+      await trackedSignal(`swap-taken:${created.id}:${offerer.userId}`),
+    ).toMatchObject({
+      status: "FAILED",
+      providerReceipt: {
+        authority: { expectedSourceAssignmentId: shift.assignmentId },
+        evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+      },
+    });
+  });
+
+  it("permite conclusão ao dono via manager_scope e preserva coproplantonista", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(gestor);
+    const shift = await createOccupiedShift(gestor, 45, "Clínica Médica");
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: shift.shiftId,
+      institutionId,
+      hospitalId,
+      sectorId,
+      professionalId: plus.professionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+    });
+    const created = await callerFor(gestor).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_taken")).toMatchObject({
+      title: `Offer Signal Hospital ${stamp} · Sala de Recuperação ${stamp}`,
+      data: { userId: gestor.userId },
+    });
+    const active = await db
+      .select({ professionalId: shiftAssignmentsV2.professionalId })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shift.shiftId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    expect(active.map((row) => row.professionalId)).toEqual(
+      expect.arrayContaining([peer.professionalId, plus.professionalId]),
+    );
+  });
+
+  it("suprime oferta se uma alocação ativa aponta o turno para outro hospital", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const [siblingHospital] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `Poison Hospital ${stamp}` })
+      .$returningId();
+    const [siblingSector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId: siblingHospital.id,
+        name: `Poison Sector ${stamp}`,
+        category: "cirurgico",
+        color: "#7F1D1D",
+      })
+      .$returningId();
+    let shiftId: number | undefined;
+    try {
+      const shift = await createOccupiedShift(offerer, 46, "Clínica Médica");
+      shiftId = shift.shiftId;
+      const created = await callerFor(offerer).offer({
+        type: "CESSAO",
+        fromShiftInstanceId: shift.shiftId,
+        fromAssignmentId: shift.assignmentId,
+      });
+      await db.insert(shiftAssignmentsV2).values({
+        shiftInstanceId: shift.shiftId,
+        institutionId,
+        hospitalId: siblingHospital.id,
+        sectorId: siblingSector.id,
+        professionalId: plus.professionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: true,
+      });
+
+      await processQueuedPushes();
+
+      expect(operationalPush("swap_offer")).toBeNull();
+      expect(
+        await trackedSignal(`swap-offer:${created.id}:${peer.userId}`),
+      ).toMatchObject({
+        status: "FAILED",
+        providerReceipt: {
+          evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+        },
+      });
+    } finally {
+      if (shiftId) {
+        await db
+          .delete(shiftAssignmentsV2)
+          .where(
+            and(
+              eq(shiftAssignmentsV2.shiftInstanceId, shiftId),
+              eq(shiftAssignmentsV2.hospitalId, siblingHospital.id),
+            ),
+          );
+      }
+      await db.delete(sectors).where(eq(sectors.id, siblingSector.id));
+      await db.delete(hospitals).where(eq(hospitals.id, siblingHospital.id));
+    }
+  });
+
+  it("suprime conclusão diante de duas alocações ativas do mesmo receptor", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(offerer);
+    const shift = await createOccupiedShift(offerer, 47, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: shift.shiftId,
+      institutionId,
+      hospitalId,
+      sectorId,
+      professionalId: peer.professionalId,
+      assignmentType: "ON_DUTY",
+      status: "PENDENTE",
+      isActive: true,
+    });
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_taken")).toBeNull();
+    expect(
+      await trackedSignal(`swap-taken:${created.id}:${offerer.userId}`),
+    ).toMatchObject({
+      status: "FAILED",
+      providerReceipt: {
+        evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+      },
+    });
+  });
+
+  it("suprime conclusão quando o dono perde seu manager_scope", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(gestor);
+    const shift = await createOccupiedShift(gestor, 48, "Clínica Médica");
+    const created = await callerFor(gestor).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+    try {
+      await db
+        .update(managerScope)
+        .set({ active: false })
+        .where(
+          and(
+            eq(managerScope.managerProfessionalId, gestor.professionalId),
+            eq(managerScope.hospitalId, hospitalId),
+            eq(managerScope.sectorId, sectorId),
+          ),
+        );
+
+      await processQueuedPushes();
+
+      expect(operationalPush("swap_taken")).toBeNull();
+      expect(
+        await trackedSignal(`swap-taken:${created.id}:${gestor.userId}`),
+      ).toMatchObject({
+        status: "FAILED",
+        providerReceipt: {
+          evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+        },
+      });
+    } finally {
+      await db
+        .update(managerScope)
+        .set({ active: true })
+        .where(
+          and(
+            eq(managerScope.managerProfessionalId, gestor.professionalId),
+            eq(managerScope.hospitalId, hospitalId),
+            eq(managerScope.sectorId, sectorId),
+          ),
+        );
+    }
+  });
+
+  it("entrega conclusão de troca bidirecional com contexto da origem", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(offerer);
+    const source = await createOccupiedShift(offerer, 49, "Clínica Médica");
+    const target = await createOccupiedShift(peer, 50, "Anestesiologia");
+    const created = await callerFor(offerer).offer({
+      type: "SWAP",
+      fromShiftInstanceId: source.shiftId,
+      fromAssignmentId: source.assignmentId,
+      toShiftInstanceId: target.shiftId,
+    });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_taken")).toMatchObject({
+      title: `Offer Signal Hospital ${stamp} · Sala de Recuperação ${stamp}`,
+      body: expect.stringMatching(
+        /^Sua troca de plantão de \d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}–\d{2}:\d{2} foi concluída\.$/,
+      ),
+      data: {
+        type: "swap_taken",
+        swapRequestId: Number(created.id),
+        userId: offerer.userId,
+      },
+    });
+  });
+
+  it("reconstrói autoridade de oferta legada antes de enviar", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 51, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+    const dedupKey = `swap-offer:${created.id}:${peer.userId}`;
+    const [signal] = await db
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, dedupKey))
+      .limit(1);
+    await db
+      .update(notifications)
+      .set({
+        providerReceipt: {
+          trackingVersion: 1,
+          revision: 0,
+          attemptCount: 0,
+          phase: "QUEUED",
+          availableAt: new Date(Date.now() - 1_000).toISOString(),
+          payloadData: {
+            type: "swap_offer",
+            swapRequestId: Number(created.id),
+            institutionId,
+            shiftInstanceId: shift.shiftId,
+            userId: peer.userId,
+            recipientUserId: peer.userId,
+          },
+        },
+      })
+      .where(eq(notifications.id, signal.id));
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_offer")).toMatchObject({
+      title: `Offer Signal Hospital ${stamp} · Sala de Recuperação ${stamp}`,
+      data: { hospitalId, sectorId, userId: peer.userId },
+    });
+    expect((await trackedSignal(dedupKey))?.providerReceipt).toMatchObject({
+      phase: "TICKET_ACCEPTED",
+      authority: {
+        kind: "SWAP_OFFER",
+        purpose: "OFFER_AVAILABLE",
+        audience: "DIRECTED",
+        expectedUserId: peer.userId,
+      },
+    });
+  });
+
+  it("rejeita conclusão legada corrompida como auto-troca", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(offerer);
+    const source = await createOccupiedShift(offerer, 53, "Clínica Médica");
+    const target = await createOccupiedShift(peer, 54, "Anestesiologia");
+    const created = await callerFor(offerer).offer({
+      type: "SWAP",
+      fromShiftInstanceId: source.shiftId,
+      fromAssignmentId: source.assignmentId,
+      toShiftInstanceId: target.shiftId,
+    });
+    await callerFor(peer).accept({ swapRequestId: Number(created.id) });
+    const dedupKey = `swap-taken:${created.id}:${offerer.userId}`;
+    const [signal] = await db
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, dedupKey))
+      .limit(1);
+    await db
+      .update(notifications)
+      .set({
+        providerReceipt: {
+          trackingVersion: 1,
+          revision: 0,
+          attemptCount: 0,
+          phase: "QUEUED",
+          availableAt: new Date(Date.now() - 1_000).toISOString(),
+          payloadData: {
+            type: "swap_taken",
+            swapRequestId: Number(created.id),
+            institutionId,
+            shiftInstanceId: source.shiftId,
+            userId: offerer.userId,
+          },
+        },
+      })
+      .where(eq(notifications.id, signal.id));
+    await db
+      .update(swapRequests)
+      .set({
+        toShiftInstanceId: source.shiftId,
+        toUserId: offerer.userId,
+        toProfessionalId: offerer.professionalId,
+      })
+      .where(eq(swapRequests.id, Number(created.id)));
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_taken")).toBeNull();
+    expect(await trackedSignal(dedupKey)).toMatchObject({
+      status: "FAILED",
+      providerReceipt: {
+        evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+      },
+    });
+  });
+
+  it("acompanha receipt legado já submetido sem reenviar a oferta", async () => {
+    installSuccessfulExpoTransport();
+    const pushTokenId = await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 55, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+    const dedupKey = `swap-offer:${created.id}:${peer.userId}`;
+    const [signal] = await db
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, dedupKey))
+      .limit(1);
+    const ticketId = `legacy-swap-ticket-${stamp}`;
+    await db
+      .update(notifications)
+      .set({
+        providerReceipt: {
+          trackingVersion: 1,
+          revision: 0,
+          attemptCount: 1,
+          phase: "TICKET_ACCEPTED",
+          submittedAt: new Date(Date.now() - 2_000).toISOString(),
+          receiptDueAt: new Date(Date.now() - 1_000).toISOString(),
+          receiptAttempts: 0,
+          payloadData: {
+            type: "swap_offer",
+            swapRequestId: Number(created.id),
+            institutionId,
+            shiftInstanceId: shift.shiftId,
+            userId: peer.userId,
+          },
+          tickets: [
+            {
+              ticketId,
+              pushTokenId,
+              expectedUserId: peer.userId,
+              tokenFingerprint: createHash("sha256")
+                .update(pushTokenFor(peer))
+                .digest("hex"),
+            },
+          ],
+          submission: {
+            status: "TICKETS_ACCEPTED",
+            message: "Ticket legado aceito",
+            tickets: [],
+            acceptedCount: 1,
+            rejectedCount: 0,
+          },
+        },
+      })
+      .where(eq(notifications.id, signal.id));
+    fetchMock.mockImplementation(async (_url, options) => {
+      const body = JSON.parse(String((options as RequestInit).body)) as {
+        ids?: unknown;
+      };
+      return Array.isArray(body.ids)
+        ? ({
+            ok: true,
+            status: 200,
+            json: async () => ({ data: { [ticketId]: { status: "ok" } } }),
+          } as Response)
+        : ({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: { status: "ok", id: `badge-${crypto.randomUUID()}` },
+            }),
+          } as Response);
+    });
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_offer")).toBeNull();
+    expect(await trackedSignal(dedupKey)).toMatchObject({
+      status: "SENT",
+      providerReceipt: { phase: "PROVIDER_ACCEPTED" },
+    });
+  });
+
+  it("não toma lease legado ainda pertencente a outro worker", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 52, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+    const dedupKey = `swap-offer:${created.id}:${peer.userId}`;
+    const [signal] = await db
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, dedupKey))
+      .limit(1);
+    const leaseUntil = new Date(Date.now() + 60_000).toISOString();
+    await db
+      .update(notifications)
+      .set({
+        providerReceipt: {
+          trackingVersion: 1,
+          revision: 0,
+          attemptCount: 0,
+          phase: "SUBMITTING",
+          leaseUntil,
+          payloadData: {
+            type: "swap_offer",
+            swapRequestId: Number(created.id),
+            institutionId,
+            shiftInstanceId: shift.shiftId,
+            userId: peer.userId,
+          },
+        },
+      })
+      .where(eq(notifications.id, signal.id));
+
+    await processQueuedPushes();
+
+    expect(operationalPush("swap_offer")).toBeNull();
+    expect((await trackedSignal(dedupKey))?.providerReceipt).toMatchObject({
+      phase: "SUBMITTING",
+      revision: 0,
+      leaseUntil,
+    });
+    expect((await trackedSignal(dedupKey))?.providerReceipt).not.toHaveProperty(
+      "authority",
+    );
   });
 
   it("oferta direcionada aparece na lista de quem recebeu o sinal", async () => {

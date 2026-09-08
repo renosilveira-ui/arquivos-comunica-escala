@@ -48,7 +48,7 @@ function offerRow(overrides: Partial<SwapRow> = {}): SwapRow {
     expiresAt: null,
     createdAt: new Date("2026-08-28T00:00:00.000Z"),
     updatedAt: new Date("2026-08-28T00:00:00.000Z"),
-    version: 0,
+    version: 1,
     ...overrides,
   };
 }
@@ -97,9 +97,28 @@ describe("outbox de sinal de oferta", () => {
           data: expect.objectContaining({
             type: "swap_offer",
             swapRequestId: 91,
+            hospitalId: 4,
+            sectorId: 5,
             userId: 22,
           }),
         }),
+        authority: {
+          kind: "SWAP_OFFER",
+          purpose: "OFFER_AVAILABLE",
+          audience: "DIRECTED",
+          expectedUserId: 22,
+          offerOwnerUserId: 11,
+          offerOwnerProfessionalId: 1,
+          expectedSourceAssignmentId: 8,
+          expectedSwapVersion: 1,
+          swapType: "CESSAO",
+          expectedTargetShiftInstanceId: null,
+          institutionId: 3,
+          hospitalId: 4,
+          sectorId: 5,
+          shiftInstanceId: 7,
+          swapRequestId: 91,
+        },
       }),
       expect.any(Date),
       expect.anything(),
@@ -115,6 +134,18 @@ describe("outbox de sinal de oferta", () => {
       startAt: new Date("2026-09-02T11:00:00.000Z"),
     });
     expect(persisted).toBe(0);
+    expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
+  });
+
+  it("não silencia oferta sem setor canônico", async () => {
+    await expect(
+      enqueueSwapOfferSignals({
+        db: offerSignalDb([]) as never,
+        swap: offerRow({ sectorId: null }),
+        shiftLabel: "Manhã",
+        sectorName: null,
+      }),
+    ).rejects.toThrow("Oferta sem setor canônico para o outbox de push");
     expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
   });
 
@@ -182,8 +213,7 @@ describe("outbox de sinal de oferta", () => {
     const persisted = await enqueueSwapTakenSignals({
       db: emptySelectDb() as never,
       swap: offerRow(),
-      takerName: "Reno",
-      shiftLabel: "Manhã",
+      approvedVersion: 2,
     });
     expect(persisted).toBe(1);
     expect(enqueueTrackedPushNotification).toHaveBeenCalledWith(
@@ -195,8 +225,30 @@ describe("outbox de sinal de oferta", () => {
         deepLink: "/my-offers",
         payload: expect.objectContaining({
           title: "Plantão assumido",
-          body: "Reno assumiu o plantão Manhã.",
+          body: "Seu plantão foi assumido.",
+          data: expect.objectContaining({
+            hospitalId: 4,
+            sectorId: 5,
+          }),
         }),
+        authority: {
+          kind: "SWAP_TAKEN",
+          purpose: "OFFER_TAKEN",
+          swapType: "CESSAO",
+          expectedUserId: 11,
+          expectedOwnerProfessionalId: 1,
+          expectedTakerUserId: 22,
+          expectedTakerProfessionalId: 2,
+          expectedSourceAssignmentId: 8,
+          expectedSwapVersion: 2,
+          institutionId: 3,
+          hospitalId: 4,
+          sectorId: 5,
+          shiftInstanceId: 7,
+          swapRequestId: 91,
+          expectedTargetShiftInstanceId: null,
+          expectedTargetAssignmentId: null,
+        },
       }),
       expect.any(Date),
       expect.anything(),

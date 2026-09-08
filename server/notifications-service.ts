@@ -721,7 +721,9 @@ async function submitOwnedExpoPushTicket(
                 : {}),
             },
           };
-        });
+          },
+          { isolationLevel: "read committed" },
+        );
         if (!("tokenData" in claimed)) return claimed;
 
         // A transação de autoridade já terminou e nenhum lock de linha fica

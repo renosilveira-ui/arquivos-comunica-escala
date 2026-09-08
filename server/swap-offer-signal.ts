@@ -10,12 +10,127 @@ import {
 } from "../lib/hospital-time";
 import { enqueueTrackedPushNotification } from "./push-delivery";
 import { eligibleRecipientUserIdsForSwapOffer } from "./swap-offer-eligibility";
+import type {
+  SwapOfferPushAuthority,
+  SwapTakenPushAuthority,
+} from "./swap-push-authority";
 
 type SwapRow = typeof swapRequests.$inferSelect;
 type EnqueueDb = NonNullable<Parameters<typeof enqueueTrackedPushNotification>[2]>;
 type SignalDb = EnqueueDb & {
   execute: (query: string | SQLWrapper) => Promise<unknown>;
 };
+
+function positiveId(value: number | null): value is number {
+  return Number.isSafeInteger(value) && (value ?? 0) > 0;
+}
+
+function swapOfferAuthority(
+  swap: SwapRow,
+  expectedUserId: number,
+): SwapOfferPushAuthority {
+  const open = swap.toProfessionalId === null && swap.toUserId === null;
+  const directed =
+    positiveId(swap.toProfessionalId) && positiveId(swap.toUserId);
+  const validTarget =
+    swap.type === "SWAP"
+      ? positiveId(swap.toShiftInstanceId) &&
+        swap.toShiftInstanceId !== swap.fromShiftInstanceId &&
+        swap.toAssignmentId === null
+      : swap.toShiftInstanceId === null && swap.toAssignmentId === null;
+  if (
+    !positiveId(swap.id) ||
+    !positiveId(swap.fromProfessionalId) ||
+    !positiveId(swap.fromUserId) ||
+    !positiveId(swap.fromAssignmentId) ||
+    !positiveId(swap.fromShiftInstanceId) ||
+    !positiveId(swap.institutionId) ||
+    !positiveId(swap.hospitalId) ||
+    !positiveId(swap.sectorId) ||
+    !positiveId(expectedUserId) ||
+    expectedUserId === swap.fromUserId ||
+    !positiveId(swap.version) ||
+    (!open && !directed) ||
+    !validTarget
+  ) {
+    throw new Error("Oferta sem topologia canônica para o outbox de push");
+  }
+  return {
+    kind: "SWAP_OFFER",
+    purpose: "OFFER_AVAILABLE",
+    audience: open ? "OPEN" : "DIRECTED",
+    expectedUserId,
+    offerOwnerUserId: swap.fromUserId,
+    offerOwnerProfessionalId: swap.fromProfessionalId,
+    expectedSourceAssignmentId: swap.fromAssignmentId,
+    expectedSwapVersion: swap.version,
+    swapType: swap.type,
+    expectedTargetShiftInstanceId: swap.toShiftInstanceId,
+    institutionId: swap.institutionId,
+    hospitalId: swap.hospitalId,
+    sectorId: swap.sectorId,
+    shiftInstanceId: swap.fromShiftInstanceId,
+    swapRequestId: swap.id,
+  };
+}
+
+function swapTakenAuthority(
+  swap: SwapRow,
+  approvedVersion: number,
+): SwapTakenPushAuthority {
+  const validTarget =
+    swap.type === "SWAP"
+      ? positiveId(swap.toShiftInstanceId) &&
+        swap.toShiftInstanceId !== swap.fromShiftInstanceId &&
+        positiveId(swap.toAssignmentId)
+      : swap.toShiftInstanceId === null && swap.toAssignmentId === null;
+  if (
+    !positiveId(swap.id) ||
+    !positiveId(swap.fromProfessionalId) ||
+    !positiveId(swap.fromUserId) ||
+    !positiveId(swap.fromAssignmentId) ||
+    !positiveId(swap.toProfessionalId) ||
+    !positiveId(swap.toUserId) ||
+    swap.fromProfessionalId === swap.toProfessionalId ||
+    swap.fromUserId === swap.toUserId ||
+    !positiveId(swap.fromShiftInstanceId) ||
+    !positiveId(swap.institutionId) ||
+    !positiveId(swap.hospitalId) ||
+    !positiveId(swap.sectorId) ||
+    !positiveId(approvedVersion) ||
+    !validTarget
+  ) {
+    throw new Error("Conclusão sem topologia canônica para o outbox de push");
+  }
+  const common = {
+    kind: "SWAP_TAKEN",
+    purpose: "OFFER_TAKEN",
+    expectedUserId: swap.fromUserId,
+    expectedOwnerProfessionalId: swap.fromProfessionalId,
+    expectedTakerUserId: swap.toUserId,
+    expectedTakerProfessionalId: swap.toProfessionalId,
+    expectedSourceAssignmentId: swap.fromAssignmentId,
+    expectedSwapVersion: approvedVersion,
+    institutionId: swap.institutionId,
+    hospitalId: swap.hospitalId,
+    sectorId: swap.sectorId,
+    shiftInstanceId: swap.fromShiftInstanceId,
+    swapRequestId: swap.id,
+  } as const;
+  return swap.type === "SWAP"
+    ? {
+        ...common,
+        swapType: "SWAP",
+        expectedTargetShiftInstanceId: swap.toShiftInstanceId as number,
+        expectedTargetAssignmentId: swap.toAssignmentId as number,
+      }
+    : {
+        ...common,
+        swapType: swap.type,
+        expectedTargetShiftInstanceId: null,
+        expectedTargetAssignmentId: null,
+      };
+}
 
 export type SwapOfferSignalInput = {
   db: SignalDb;
@@ -98,13 +213,16 @@ export async function enqueueSwapOfferSignals(
   input: SwapOfferSignalInput,
 ): Promise<number> {
   const { db, swap } = input;
-  if (swap.sectorId === null) return 0;
+  if (!positiveId(swap.sectorId)) {
+    throw new Error("Oferta sem setor canônico para o outbox de push");
+  }
   const userIds = await eligibleRecipientUserIdsForSwapOffer(db, swap);
   const copyContext = await resolveOfferCopyContext(db, input);
   const copy = swapOfferPushCopy(copyContext);
   let persisted = 0;
   for (const userId of userIds) {
     try {
+      const authority = swapOfferAuthority(swap, userId);
       await enqueueTrackedPushNotification(
         {
           institutionId: swap.institutionId,
@@ -118,10 +236,13 @@ export async function enqueueSwapOfferSignals(
               type: "swap_offer",
               swapRequestId: swap.id,
               institutionId: swap.institutionId,
+              hospitalId: authority.hospitalId,
+              sectorId: authority.sectorId,
               shiftInstanceId: swap.fromShiftInstanceId,
               userId,
             },
           },
+          authority,
         },
         new Date(),
         db,
@@ -141,16 +262,16 @@ export async function enqueueSwapOfferSignals(
   return persisted;
 }
 
-function takenCopy(type: SwapRow["type"], takerName: string, shiftLabel: string) {
+function takenCopy(type: SwapRow["type"]) {
   if (type === "SWAP") {
     return {
       title: "Troca concluída",
-      body: `${takerName} assumiu o plantão ${shiftLabel}. A troca foi concluída.`,
+      body: "Sua troca de plantão foi concluída.",
     };
   }
   return {
     title: "Plantão assumido",
-    body: `${takerName} assumiu o plantão ${shiftLabel}.`,
+    body: "Seu plantão foi assumido.",
   };
 }
 
@@ -161,13 +282,15 @@ function takenCopy(type: SwapRow["type"], takerName: string, shiftLabel: string)
 export async function enqueueSwapTakenSignals(input: {
   db: EnqueueDb;
   swap: SwapRow;
-  takerName: string;
-  shiftLabel: string;
+  approvedVersion: number;
 }): Promise<number> {
   const { db, swap } = input;
   const ownerUserId = swap.fromUserId;
-  if (!ownerUserId) return 0;
-  const copy = takenCopy(swap.type, input.takerName, input.shiftLabel);
+  if (!positiveId(ownerUserId)) {
+    throw new Error("Conclusão sem ofertante canônico para o outbox de push");
+  }
+  const copy = takenCopy(swap.type);
+  const authority = swapTakenAuthority(swap, input.approvedVersion);
   try {
     await enqueueTrackedPushNotification(
       {
@@ -182,10 +305,13 @@ export async function enqueueSwapTakenSignals(input: {
             type: "swap_taken",
             swapRequestId: swap.id,
             institutionId: swap.institutionId,
+            hospitalId: authority.hospitalId,
+            sectorId: authority.sectorId,
             shiftInstanceId: swap.fromShiftInstanceId,
             userId: ownerUserId,
           },
         },
+        authority,
       },
       new Date(),
       db,

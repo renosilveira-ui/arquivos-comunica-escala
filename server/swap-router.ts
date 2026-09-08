@@ -916,7 +916,6 @@ async function enqueueSwapCompletionNotifications(
   currentSwap: SwapRow,
   topology: SwapTransferTopology,
   approvedVersion: number,
-  takerName: string,
 ): Promise<void> {
   await enqueueComunicaSwapApproved({
     swapId: currentSwap.id,
@@ -944,9 +943,9 @@ async function enqueueSwapCompletionNotifications(
       ...currentSwap,
       toProfessionalId: topology.recipient.professionalId,
       toUserId: topology.recipient.userId,
+      toAssignmentId: topology.toTuple?.assignmentId ?? null,
     },
-    takerName,
-    shiftLabel: topology.source.shift.label,
+    approvedVersion,
   });
 }
 
@@ -1042,7 +1041,6 @@ async function applySwapAssignmentTransfer(
     currentSwap,
     topology,
     approvedVersion,
-    topology.recipient.name,
   );
   return approvedVersion;
 }
@@ -1054,6 +1052,23 @@ async function applySwapAssignmentTransfer(
  * dono. Ele só é alcançado pela mutation explícita `approveByOwner`; consultas
  * e novos aceites nunca reparam, cancelam ou efetivam esse estado legado.
  */
+function sameSwapExecutionSnapshot(left: SwapRow, right: SwapRow): boolean {
+  return (
+    left.type === right.type &&
+    left.institutionId === right.institutionId &&
+    left.hospitalId === right.hospitalId &&
+    left.sectorId === right.sectorId &&
+    left.fromUserId === right.fromUserId &&
+    left.fromProfessionalId === right.fromProfessionalId &&
+    left.fromShiftInstanceId === right.fromShiftInstanceId &&
+    left.fromAssignmentId === right.fromAssignmentId &&
+    left.toUserId === right.toUserId &&
+    left.toProfessionalId === right.toProfessionalId &&
+    left.toShiftInstanceId === right.toShiftInstanceId &&
+    left.toAssignmentId === right.toAssignmentId
+  );
+}
+
 async function effectuateApprovedSwap(
   db: any,
   swap: SwapRow,
@@ -1092,6 +1107,10 @@ async function effectuateApprovedSwap(
   }
 
   return db.transaction(async (tx: any) => {
+    // A ordem global do motor é mês → solicitação → turno → alocação →
+    // identidade. O snapshot externo serve apenas para descobrir os meses;
+    // a releitura abaixo rejeita qualquer troca de tupla sob a mesma versão.
+    await assertPublishedSwapMonthsForUpdate(tx, monthTargets);
     const [currentSwap] = await tx
       .select()
       .from(swapRequests)
@@ -1106,7 +1125,8 @@ async function effectuateApprovedSwap(
     if (
       !currentSwap ||
       currentSwap.status !== "ACCEPTED" ||
-      currentSwap.version !== swap.version
+      currentSwap.version !== swap.version ||
+      !sameSwapExecutionSnapshot(currentSwap, swap)
     ) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -1120,7 +1140,6 @@ async function effectuateApprovedSwap(
       });
     }
 
-    await assertPublishedSwapMonthsForUpdate(tx, monthTargets);
     if (!currentSwap.toProfessionalId)
       throw topologyDenied("Solicitação sem receptor canônico");
     await lockSwapShiftsForUpdate(tx, currentSwap.institutionId, [

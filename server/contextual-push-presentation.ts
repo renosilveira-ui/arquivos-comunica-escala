@@ -35,6 +35,10 @@ export type AssignmentLifecyclePresentationPurpose =
   | "ASSIGNED"
   | "UNASSIGNED";
 
+export type SwapOfferPresentationAudience = "OPEN" | "DIRECTED";
+
+export type SwapTakenPresentationType = "SWAP" | "TRANSFER" | "CESSAO";
+
 const MAX_CONTEXT_LABEL_CHARACTERS = 80;
 
 function normalizedLabel(value: string): string {
@@ -180,4 +184,40 @@ export function vacancyBroadcastPushPresentation(
     title,
     `Há um plantão vago em ${shiftReference(context)}.`,
   );
+}
+
+export function swapOfferPushPresentation(
+  audience: SwapOfferPresentationAudience,
+  context: CanonicalShiftPushContext,
+): ContextualPushPresentation | null {
+  const title = normalizedContextTitle(context);
+  if (!title) return null;
+  const shift = shiftReference(context);
+  return audience === "DIRECTED"
+    ? contextualPresentation(
+        title,
+        `Há uma nova oferta direcionada a você para ${shift}.`,
+      )
+    : contextualPresentation(
+        title,
+        `Há uma nova oferta de plantão disponível para ${shift}.`,
+      );
+}
+
+export function swapTakenPushPresentation(
+  type: SwapTakenPresentationType,
+  context: CanonicalShiftPushContext,
+): ContextualPushPresentation | null {
+  const title = normalizedContextTitle(context);
+  if (!title) return null;
+  const shift = shiftReference(context);
+  return type === "SWAP"
+    ? contextualPresentation(
+        title,
+        `Sua troca de plantão de ${shift} foi concluída.`,
+      )
+    : contextualPresentation(
+        title,
+        `Seu plantão de ${shift} foi assumido.`,
+      );
 }
