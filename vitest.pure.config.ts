@@ -113,6 +113,8 @@ export default defineConfig({
       "tests/local-notification-boundary.test.ts",
       "tests/mobile-push-config.test.ts",
       "tests/notifications-transport.test.ts",
+      "tests/contextual-push-presentation.test.ts",
+      "tests/contextual-push-presentation-boundary.test.ts",
       "tests/account-wide-notification-badge-parser.test.ts",
       "tests/sso-client-boundaries.test.ts",
       "tests/swap-offer-outbox.test.ts",

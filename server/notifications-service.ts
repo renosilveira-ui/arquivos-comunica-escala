@@ -23,6 +23,10 @@ import {
   parseAccountWideBadgeCount,
 } from "../lib/account-wide-native-badge";
 import { countUnreadAccountBadgeNotifications } from "./account-wide-notification-badge";
+import {
+  isContextualPushPresentation,
+  type ContextualPushPresentation,
+} from "./contextual-push-presentation";
 
 /**
  * Serviço de Notificações Push
@@ -120,7 +124,9 @@ export type PushReceiptEvidence =
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type TokenTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type TokenMutationDb = Pick<Db, "delete"> | Pick<TokenTransaction, "delete">;
-export type PushSubmissionGuard = (tx: TokenTransaction) => Promise<void>;
+export type PushSubmissionGuard = (
+  tx: TokenTransaction,
+) => Promise<ContextualPushPresentation | null | void>;
 type JsonRecord = Record<string, unknown>;
 
 type AccountWideBadgeSnapshotPayload = Readonly<{
@@ -325,6 +331,7 @@ async function submitExpoPushTicket(
     tokenFingerprint: string;
     platform: string;
     badgeCount?: number;
+    contextualPresentation?: ContextualPushPresentation;
   },
   payload: OutboundPushPayload,
 ): Promise<PushTicketEvidence> {
@@ -344,11 +351,15 @@ async function submitExpoPushTicket(
       : {
           to: tokenData.token,
           // Em background/killed, o sistema operacional pode apresentar esta
-          // mensagem antes de o JS conhecer o usuário atual. A visualização
-          // remota é propositalmente neutra; o app só obtém detalhes depois da
-          // autenticação e da cerca recipientUserId no listener.
-          title: EXPO_NEUTRAL_NOTIFICATION_TITLE,
-          body: EXPO_NEUTRAL_NOTIFICATION_BODY,
+          // mensagem antes de o JS conhecer o usuário atual. Contexto só é
+          // liberado quando a autoridade canônica foi reconstruída sob lock;
+          // qualquer fluxo sem essa prova conserva a apresentação neutra.
+          title:
+            tokenData.contextualPresentation?.title ??
+            EXPO_NEUTRAL_NOTIFICATION_TITLE,
+          body:
+            tokenData.contextualPresentation?.body ??
+            EXPO_NEUTRAL_NOTIFICATION_BODY,
           // O owner foi revalidado sob mutex imediatamente antes do fetch. O
           // campo do produtor é deliberadamente sobrescrito para impedir que um
           // payload stale ou forjado seja aceito pelo listener da outra conta.
@@ -486,6 +497,7 @@ async function submitOwnedExpoPushTicket(
             tokenFingerprint: string;
             platform: string;
             badgeCount?: number;
+            contextualPresentation?: ContextualPushPresentation;
           };
         };
     return await withExpoSubmissionSlot(() =>
@@ -501,9 +513,16 @@ async function submitOwnedExpoPushTicket(
           // Ordem global: autoridade operacional primeiro; depois
           // users → professionals → PI → token. A transação termina antes do
           // fetch, enquanto o advisory lock da conexão dedicada permanece.
+          let contextualPresentation: ContextualPushPresentation | null | void =
+            null;
           if (submissionGuard) {
             try {
-              await submissionGuard(tx);
+              const guardedPresentation = await submissionGuard(tx);
+              contextualPresentation = isContextualPushPresentation(
+                guardedPresentation,
+              )
+                ? guardedPresentation
+                : null;
             } catch (error) {
               if (isCanonicalPushAuthorityRejection(error)) {
                 return {
@@ -697,6 +716,9 @@ async function submitOwnedExpoPushTicket(
               tokenFingerprint: pushTokenFingerprint(expected.token),
               platform: expected.platform,
               ...(badgeCount === undefined ? {} : { badgeCount }),
+              ...(contextualPresentation
+                ? { contextualPresentation }
+                : {}),
             },
           };
         });
