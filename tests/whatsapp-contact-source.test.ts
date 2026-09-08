@@ -59,4 +59,21 @@ describe("WhatsApp contact identity — source contracts", () => {
   it("domínio não armazena OTP próprio", () => {
     expect(domain).not.toMatch(/codeHash|otpCode|whatsapp_channel_verifications/);
   });
+
+  it("WhatsApp é identidade de usuário, não de setor nem instituição", () => {
+    const start = schema.indexOf("export const userContactChannels");
+    const end = schema.indexOf("export type UserContactChannel");
+    const table = schema.slice(start, end);
+    expect(table).toContain("userId");
+    expect(table).not.toContain("institutionId");
+    expect(table).not.toContain("sectorId");
+    expect(table).not.toContain("hospitalId");
+  });
+
+  it("endpoints de perfil não exigem papel de gestor", () => {
+    expect(router).not.toContain("assertCanManageInstitutionSchedule");
+    expect(router).not.toContain("assertManagerScopeAccess");
+    expect(router).not.toContain("actorCapabilities");
+    expect(router).not.toContain("isManager");
+  });
 });

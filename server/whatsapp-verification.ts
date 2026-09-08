@@ -79,6 +79,7 @@ function userMessage(code: WhatsAppVerificationFailureCode): string {
       return "Muitas solicitações. Aguarde um pouco e tente de novo.";
     case "VERIFY_NOT_CONFIGURED":
     case "PROVIDER_AUTH_FAILURE":
+    case "PROVIDER_CHANNEL_NOT_CONFIGURED":
       return "Verificação WhatsApp indisponível no momento.";
     case "TWILIO_UNAVAILABLE":
     case "PROVIDER_MALFORMED":

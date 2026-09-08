@@ -12,6 +12,7 @@ export type WhatsAppVerificationFailureKind =
 export type WhatsAppVerificationFailureCode =
   | "VERIFY_NOT_CONFIGURED"
   | "PROVIDER_AUTH_FAILURE"
+  | "PROVIDER_CHANNEL_NOT_CONFIGURED"
   | "PROVIDER_MALFORMED"
   | "TWILIO_UNAVAILABLE"
   | "INVALID_PHONE"
