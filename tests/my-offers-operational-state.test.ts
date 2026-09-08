@@ -10,6 +10,7 @@ describe("Ofertas próprias: erro, vazio e invalidação", () => {
     expect(offers).toContain('contentState === "ERROR"');
     expect(offers).toContain('contentState === "UNRESOLVED"');
     expect(offers).toContain('contentState === "EMPTY"');
+    expect(offers).toContain("hasResolvedData: data !== undefined");
     expect(offers).toContain("error={error}");
     expect(offers).not.toMatch(/isLoading \? \(/);
   });
@@ -21,13 +22,21 @@ describe("Ofertas próprias: erro, vazio e invalidação", () => {
     expect(offers).not.toContain("if (data !== undefined && !isError)");
   });
 
-  it("cancelar invalida lista, disponíveis e badge na mesma conta", () => {
+  it("cancelar invalida lista, disponíveis e badge uma vez, sem refetch duplicado", () => {
     const cancelBlock = offers.slice(
       offers.indexOf("trpc.swaps.cancel.useMutation"),
       offers.indexOf("trpc.swaps.approveByOwner.useMutation"),
     );
-    expect(cancelBlock).toContain("utils.swaps.list.invalidate()");
-    expect(cancelBlock).toContain("utils.swaps.listAvailable.invalidate()");
-    expect(cancelBlock).toContain("utils.swaps.countActionable.invalidate()");
+    expect(cancelBlock.match(/utils\.swaps\.list\.invalidate\(\)/g)).toEqual([
+      "utils.swaps.list.invalidate()",
+    ]);
+    expect(
+      cancelBlock.match(/utils\.swaps\.listAvailable\.invalidate\(\)/g),
+    ).toEqual(["utils.swaps.listAvailable.invalidate()"]);
+    expect(
+      cancelBlock.match(/utils\.swaps\.countActionable\.invalidate\(\)/g),
+    ).toEqual(["utils.swaps.countActionable.invalidate()"]);
+    expect(cancelBlock).not.toContain("refetch(");
+    expect(cancelBlock).not.toContain("refetch()");
   });
 });

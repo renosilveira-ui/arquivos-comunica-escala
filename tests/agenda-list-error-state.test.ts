@@ -29,15 +29,23 @@ describe("erro da grade da agenda não vira falha de conexão", () => {
     expect(agenda).not.toMatch(/Verifique sua conexão e tente novamente/);
   });
 
-  it("403 e 500 da agenda não são apresentados como problema de rede", () => {
-    expect(presentQueryError({ data: { code: "FORBIDDEN" } }).body).not.toMatch(
-      /conexão/i,
-    );
-    expect(
-      presentQueryError({ data: { code: "INTERNAL_SERVER_ERROR" } }).body,
-    ).not.toMatch(/conexão/i);
-    expect(
-      presentQueryError({ message: "Network request failed" }).kind,
-    ).toBe("NETWORK");
+  it("401, 403 e 500 da agenda não usam a mensagem de conexão", () => {
+    const access = presentQueryError({ data: { code: "FORBIDDEN" } });
+    const unauthorized = presentQueryError({ data: { code: "UNAUTHORIZED" } });
+    const server = presentQueryError({
+      data: { code: "INTERNAL_SERVER_ERROR" },
+    });
+    const network = presentQueryError({
+      message: "Network request failed",
+    });
+    expect(access.kind).toBe("ACCESS");
+    expect(unauthorized.kind).toBe("ACCESS");
+    expect(server.kind).toBe("SERVICE");
+    expect(network.kind).toBe("NETWORK");
+    expect(access.body).not.toMatch(/conexão/i);
+    expect(unauthorized.body).not.toMatch(/conexão/i);
+    expect(server.body).not.toMatch(/conexão/i);
+    expect(network.body).toMatch(/conexão/i);
+    expect(new Set([access.body, server.body, network.body]).size).toBe(3);
   });
 });

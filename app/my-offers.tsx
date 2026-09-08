@@ -79,7 +79,6 @@ export default function MyOffersScreen({
         utils.swaps.listAvailable.invalidate(),
         utils.swaps.countActionable.invalidate(),
       ]);
-      await refetch();
       feedback.success("Oferta cancelada.");
     },
     onError: (error) => {
