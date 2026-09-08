@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, asc, eq, inArray, like } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import mysql from "mysql2/promise";
-import request, { type Test } from "supertest";
+import request, { type Response as SuperTestResponse, type Test } from "supertest";
 import express, { type Express } from "express";
 import {
   auditTrail,
@@ -81,50 +81,155 @@ function testDatabaseUrl(): string {
   return url;
 }
 
+type ShellLockWait = {
+  requestingTrx: string;
+  blockingTrx: string;
+  lockData: string | null;
+};
+
 type OverlapProof = {
-  usersPrimaryWaiters: number;
+  shellId: number;
+  lockData: string;
+  requestingTransactionIds: string[];
   innodbLockWaitTrx: number;
 };
 
-async function readOverlapProof(
+function startHttpOnce(test: Test): Promise<SuperTestResponse> {
+  return new Promise((resolve, reject) => {
+    test.end((err, res) => {
+      if (res) {
+        resolve(res);
+        return;
+      }
+      reject(err ?? new Error("HTTP sem resposta"));
+    });
+  });
+}
+
+async function readInnoDbLockWaitCount(
   observer: mysql.Connection,
-): Promise<OverlapProof> {
-  const [lockRows] = await observer.query(
-    `SELECT COUNT(*) AS n
-     FROM performance_schema.data_locks
-     WHERE OBJECT_SCHEMA = DATABASE()
-       AND OBJECT_NAME = 'users'
-       AND INDEX_NAME = 'PRIMARY'
-       AND LOCK_STATUS = 'WAITING'`,
-  );
+): Promise<number> {
   const [trxRows] = await observer.query(
     `SELECT COUNT(*) AS n
      FROM information_schema.innodb_trx
      WHERE trx_state = 'LOCK WAIT'`,
   );
-  const lockList = lockRows as { n: number | string }[];
   const trxList = trxRows as { n: number | string }[];
-  return {
-    usersPrimaryWaiters: Number(lockList[0]?.n ?? 0),
-    innodbLockWaitTrx: Number(trxList[0]?.n ?? 0),
-  };
+  return Number(trxList[0]?.n ?? 0);
+}
+
+async function readShellPrimaryLockWaits(
+  observer: mysql.Connection,
+  shellId: number,
+): Promise<ShellLockWait[]> {
+  const expectedLockData = String(shellId);
+  const [rows] = await observer.query(
+    `SELECT
+       CAST(waiting.ENGINE_TRANSACTION_ID AS CHAR) AS requestingTrx,
+       CAST(blocking.ENGINE_TRANSACTION_ID AS CHAR) AS blockingTrx,
+       waiting.LOCK_DATA AS lockData
+     FROM performance_schema.data_lock_waits AS waits
+     INNER JOIN performance_schema.data_locks AS waiting
+       ON waiting.ENGINE_LOCK_ID = waits.REQUESTING_ENGINE_LOCK_ID
+      AND waiting.ENGINE = waits.ENGINE
+     INNER JOIN performance_schema.data_locks AS blocking
+       ON blocking.ENGINE_LOCK_ID = waits.BLOCKING_ENGINE_LOCK_ID
+      AND blocking.ENGINE = waits.ENGINE
+     WHERE waiting.OBJECT_SCHEMA = DATABASE()
+       AND waiting.OBJECT_NAME = 'users'
+       AND waiting.INDEX_NAME = 'PRIMARY'
+       AND waiting.LOCK_TYPE = 'RECORD'
+       AND waiting.LOCK_STATUS = 'WAITING'
+       AND BINARY waiting.LOCK_DATA = BINARY ?
+       AND blocking.OBJECT_SCHEMA = DATABASE()
+       AND blocking.OBJECT_NAME = 'users'
+       AND blocking.INDEX_NAME = 'PRIMARY'
+       AND blocking.LOCK_TYPE = 'RECORD'
+       AND BINARY blocking.LOCK_DATA = BINARY ?`,
+    [expectedLockData, expectedLockData],
+  );
+  return (
+    rows as {
+      requestingTrx: string | number;
+      blockingTrx: string | number;
+      lockData: string | null;
+    }[]
+  )
+    .map((row) => ({
+      requestingTrx: String(row.requestingTrx),
+      blockingTrx: String(row.blockingTrx),
+      lockData: row.lockData,
+    }))
+    .filter((row) => row.lockData === expectedLockData);
+}
+
+async function readUsersPrimaryWaitDiagnostics(
+  observer: mysql.Connection,
+): Promise<{ lockData: string | null; requestingTrx: string }[]> {
+  const [rows] = await observer.query(
+    `SELECT
+       CAST(ENGINE_TRANSACTION_ID AS CHAR) AS requestingTrx,
+       LOCK_DATA AS lockData
+     FROM performance_schema.data_locks
+     WHERE OBJECT_SCHEMA = DATABASE()
+       AND OBJECT_NAME = 'users'
+       AND INDEX_NAME = 'PRIMARY'
+       AND LOCK_TYPE = 'RECORD'
+       AND LOCK_STATUS = 'WAITING'`,
+  );
+  return (
+    rows as { requestingTrx: string | number; lockData: string | null }[]
+  ).map((row) => ({
+    requestingTrx: String(row.requestingTrx),
+    lockData: row.lockData,
+  }));
 }
 
 async function waitForOverlappingShellLock(
   observer: mysql.Connection,
+  shellId: number,
   timeoutMs: number,
 ): Promise<OverlapProof> {
+  const expectedLockData = String(shellId);
   const deadline = Date.now() + timeoutMs;
-  let last: OverlapProof = { usersPrimaryWaiters: 0, innodbLockWaitTrx: 0 };
+  let lastWaits: ShellLockWait[] = [];
+  let lastDiagnostics: { lockData: string | null; requestingTrx: string }[] =
+    [];
+  let innodbLockWaitTrx = 0;
   while (Date.now() < deadline) {
-    last = await readOverlapProof(observer);
-    if (last.usersPrimaryWaiters >= 2 || last.innodbLockWaitTrx >= 2) {
-      return last;
+    try {
+      lastWaits = await readShellPrimaryLockWaits(observer, shellId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "unknown";
+      throw new Error(
+        `Não foi possível observar data_lock_waits/data_locks para users.PRIMARY LOCK_DATA=${expectedLockData}: ${detail}`,
+      );
     }
+    const requestingTransactionIds = [
+      ...new Set(lastWaits.map((row) => row.requestingTrx)),
+    ];
+    if (requestingTransactionIds.length >= 2) {
+      innodbLockWaitTrx = await readInnoDbLockWaitCount(observer).catch(
+        () => -1,
+      );
+      return {
+        shellId,
+        lockData: expectedLockData,
+        requestingTransactionIds,
+        innodbLockWaitTrx,
+      };
+    }
+    lastDiagnostics = await readUsersPrimaryWaitDiagnostics(observer).catch(
+      () => [],
+    );
+    innodbLockWaitTrx = await readInnoDbLockWaitCount(observer).catch(() => -1);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(
-    `Corrida não sobreposta na casca: ${JSON.stringify(last)}`,
+    `Não observei duas transações distintas WAITING em users.PRIMARY LOCK_DATA=${expectedLockData}. ` +
+      `waitersDoRegistro=${JSON.stringify(lastWaits)} ` +
+      `waitersUsersPrimary=${JSON.stringify(lastDiagnostics)} ` +
+      `innodb_trx_LOCK_WAIT=${innodbLockWaitTrx} (diagnóstico, não prova)`,
   );
 }
 
@@ -831,8 +936,8 @@ describe("register: cerca de tenant na ativação de casca", () => {
     const passwordB = "SenhaCorridaB8";
     const holder = await mysql.createConnection(testDatabaseUrl());
     const observer = await mysql.createConnection(testDatabaseUrl());
-    let fromAPromise: Test | undefined;
-    let fromBPromise: Test | undefined;
+    let fromAPromise: Promise<SuperTestResponse> | undefined;
+    let fromBPromise: Promise<SuperTestResponse> | undefined;
     let overlap: OverlapProof | null = null;
     try {
       await holder.beginTransaction();
@@ -844,35 +949,36 @@ describe("register: cerca de tenant na ativação de casca", () => {
         shell.id,
       ]);
 
-      fromAPromise = request(app)
-        .post("/api/auth/register")
-        .set("Cookie", gestorA.cookie)
-        .set("x-tenant-id", String(tenantA.institutionId))
-        .send(
-          registerPayload(
-            "RSTF corrida A",
-            shell.email,
-            tenantA.contextId,
-            passwordA,
+      fromAPromise = startHttpOnce(
+        request(app)
+          .post("/api/auth/register")
+          .set("Cookie", gestorA.cookie)
+          .set("x-tenant-id", String(tenantA.institutionId))
+          .send(
+            registerPayload(
+              "RSTF corrida A",
+              shell.email,
+              tenantA.contextId,
+              passwordA,
+            ),
           ),
-        );
-      fromBPromise = request(app)
-        .post("/api/auth/register")
-        .set("Cookie", gestorB.cookie)
-        .set("x-tenant-id", String(tenantB.institutionId))
-        .send(
-          registerPayload(
-            "RSTF corrida B",
-            shell.email,
-            tenantB.contextId,
-            passwordB,
+      );
+      fromBPromise = startHttpOnce(
+        request(app)
+          .post("/api/auth/register")
+          .set("Cookie", gestorB.cookie)
+          .set("x-tenant-id", String(tenantB.institutionId))
+          .send(
+            registerPayload(
+              "RSTF corrida B",
+              shell.email,
+              tenantB.contextId,
+              passwordB,
+            ),
           ),
-        );
-      // SuperTest só dispara o HTTP ao tratar o Test como thenable.
-      void fromAPromise.then(() => undefined);
-      void fromBPromise.then(() => undefined);
+      );
 
-      overlap = await waitForOverlappingShellLock(observer, 20_000);
+      overlap = await waitForOverlappingShellLock(observer, shell.id, 20_000);
       await holder.rollback();
     } catch (error) {
       await holder.rollback().catch(() => undefined);
@@ -889,8 +995,21 @@ describe("register: cerca de tenant na ativação de casca", () => {
       throw new Error("corrida não iniciou sob o lock da casca");
     }
 
-    expect(overlap.usersPrimaryWaiters >= 2 || overlap.innodbLockWaitTrx >= 2).toBe(
-      true,
+    expect(overlap.shellId).toBe(shell.id);
+    expect(overlap.lockData).toBe(String(shell.id));
+    expect(overlap.requestingTransactionIds.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(overlap.requestingTransactionIds).size).toBe(
+      overlap.requestingTransactionIds.length,
+    );
+    console.info(
+      JSON.stringify({
+        hOverlapProof: {
+          shellId: overlap.shellId,
+          lockData: overlap.lockData,
+          requestingTransactionIds: overlap.requestingTransactionIds,
+          innodbLockWaitTrxDiagnostic: overlap.innodbLockWaitTrx,
+        },
+      }),
     );
 
     const [fromA, fromB] = await Promise.all([fromAPromise, fromBPromise]);
