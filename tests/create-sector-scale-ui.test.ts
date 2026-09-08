@@ -57,6 +57,7 @@ describe("criar escala do setor — wiring", () => {
     );
     expect(button).toContain("ensureDefaultSectorScale");
     expect(button).toContain("listManageableTopology");
+    expect(button).toContain("invalidateOfficialScaleAndVacancyQueries(utils)");
     expect(button).toContain("useActionFeedback");
     expect(button).not.toContain("Alert.alert");
     expect(button).toContain("theme.colors");

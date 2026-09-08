@@ -49,9 +49,11 @@ describe("contrato de recuperação somente nas telas operacionais", () => {
     expect(refresh).toContain(
       "utils.shiftAssignments.listPending.invalidate()",
     );
-    expect(refresh).toContain("utils.filters.summaryCounts.invalidate()");
     expect(refresh).toContain("refreshVisibleVacancyQueries");
     expect(refresh).toContain("refreshVacancyMutationQueries");
+    expect(refresh).toContain(
+      "officialScaleAndVacancyQueryInvalidations(utils)",
+    );
     expect(vacancies).toContain("const refreshLease = captureLease()");
     expect(vacancies).toContain(
       "const refreshPromise = refreshVacancyMutationQueries(refreshLease)",

@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/Badge";
 import { theme } from "@/lib/theme";
 import { useAuth } from "@/hooks/use-auth";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -95,7 +96,7 @@ export default function ShiftDetailsScreen() {
       await Promise.all([
         utils.shifts.get.invalidate({ id: shiftId }),
         utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
-        utils.shifts.listAgenda.invalidate(),
+        invalidateOfficialScaleAndVacancyQueries(utils),
       ]);
       feedback.success(
         allocationRepeatToast(result.allocatedCount, result.skippedOccupiedCount),
@@ -110,7 +111,7 @@ export default function ShiftDetailsScreen() {
       await Promise.all([
         utils.shifts.get.invalidate({ id: shiftId }),
         utils.professionals.listAssignableForShift.invalidate({ shiftInstanceId: shiftId }),
-        utils.shifts.listAgenda.invalidate(),
+        invalidateOfficialScaleAndVacancyQueries(utils),
       ]);
       feedback.success("Alocação removida. O plantão voltou a ficar disponível.");
     },

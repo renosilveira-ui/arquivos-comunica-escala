@@ -38,6 +38,7 @@ import {
   usePublishedMonthRoster,
   validatePublishedMonthReason,
 } from "@/hooks/use-published-month-roster";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -135,9 +136,12 @@ export default function EditShiftScreen() {
 
   // Mutation para atualizar escala
   const updateShift = trpc.shifts.update.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      utils.shifts.get.invalidate({ id: shiftId });
+      await Promise.all([
+        utils.shifts.get.invalidate({ id: shiftId }),
+        invalidateOfficialScaleAndVacancyQueries(utils),
+      ]);
       router.back();
     },
     onError: (error) => {

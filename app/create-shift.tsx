@@ -14,6 +14,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { theme } from "@/lib/theme";
@@ -303,7 +304,7 @@ export default function CreateShiftScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       utils.shifts.listByPeriod.invalidate();
-      utils.shifts.listAgenda.invalidate();
+      void invalidateOfficialScaleAndVacancyQueries(utils);
       router.back();
     },
     onError: (error) => {

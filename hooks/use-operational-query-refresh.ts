@@ -6,6 +6,7 @@ import {
   isCurrentOperationalQueryContext,
   type OperationalTenantSnapshot,
 } from "@/lib/operational-query-refresh";
+import { officialScaleAndVacancyQueryInvalidations } from "@/lib/official-scale-vacancy-query-refresh";
 
 export type OperationalQueryRefreshLease = Readonly<{
   userId: number;
@@ -132,8 +133,8 @@ export function useOperationalQueryRefresh() {
       const [visibleRefreshed] = await Promise.all([
         refreshVisibleVacancyQueries(lease),
         utils.shiftAssignments.listPending.invalidate(),
-        utils.filters.summaryCounts.invalidate(),
         utils.shiftAssignments.listMyVacancyRequests.invalidate(),
+        ...officialScaleAndVacancyQueryInvalidations(utils),
       ]);
       return visibleRefreshed && isLeaseCurrent(lease);
     },
