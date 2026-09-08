@@ -7,9 +7,10 @@
 // de produção é hardcoded.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, asc, eq, inArray, like } from "drizzle-orm";
 import bcrypt from "bcryptjs";
-import request from "supertest";
+import mysql from "mysql2/promise";
+import request, { type Test } from "supertest";
 import express, { type Express } from "express";
 import {
   auditTrail,
@@ -58,15 +59,73 @@ function generalistRegistration(scheduleContextId: number) {
   };
 }
 
-function registerPayload(name: string, email: string, contextId: number) {
+function registerPayload(
+  name: string,
+  email: string,
+  contextId: number,
+  password = ATTEMPTED_PASSWORD,
+) {
   return {
     name,
     email,
-    password: ATTEMPTED_PASSWORD,
+    password,
     professionalRole: "doctor" as const,
     roleInInstitution: "USER" as const,
     ...generalistRegistration(contextId),
   };
+}
+
+function testDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL ausente no teste isolado");
+  return url;
+}
+
+type OverlapProof = {
+  usersPrimaryWaiters: number;
+  innodbLockWaitTrx: number;
+};
+
+async function readOverlapProof(
+  observer: mysql.Connection,
+): Promise<OverlapProof> {
+  const [lockRows] = await observer.query(
+    `SELECT COUNT(*) AS n
+     FROM performance_schema.data_locks
+     WHERE OBJECT_SCHEMA = DATABASE()
+       AND OBJECT_NAME = 'users'
+       AND INDEX_NAME = 'PRIMARY'
+       AND LOCK_STATUS = 'WAITING'`,
+  );
+  const [trxRows] = await observer.query(
+    `SELECT COUNT(*) AS n
+     FROM information_schema.innodb_trx
+     WHERE trx_state = 'LOCK WAIT'`,
+  );
+  const lockList = lockRows as { n: number | string }[];
+  const trxList = trxRows as { n: number | string }[];
+  return {
+    usersPrimaryWaiters: Number(lockList[0]?.n ?? 0),
+    innodbLockWaitTrx: Number(trxList[0]?.n ?? 0),
+  };
+}
+
+async function waitForOverlappingShellLock(
+  observer: mysql.Connection,
+  timeoutMs: number,
+): Promise<OverlapProof> {
+  const deadline = Date.now() + timeoutMs;
+  let last: OverlapProof = { usersPrimaryWaiters: 0, innodbLockWaitTrx: 0 };
+  while (Date.now() < deadline) {
+    last = await readOverlapProof(observer);
+    if (last.usersPrimaryWaiters >= 2 || last.innodbLockWaitTrx >= 2) {
+      return last;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    `Corrida não sobreposta na casca: ${JSON.stringify(last)}`,
+  );
 }
 
 async function createTenantGraph(
@@ -229,8 +288,13 @@ async function snapshotIdentity(db: TestDb, userId: number) {
     .select({
       id: users.id,
       name: users.name,
-      role: users.role,
+      email: users.email,
       passwordHash: users.passwordHash,
+      loginMethod: users.loginMethod,
+      role: users.role,
+      approvalStatus: users.approvalStatus,
+      mustChangePassword: users.mustChangePassword,
+      sessionVersion: users.sessionVersion,
     })
     .from(users)
     .where(eq(users.id, userId));
@@ -241,22 +305,76 @@ async function snapshotIdentity(db: TestDb, userId: number) {
       name: professionals.name,
       role: professionals.role,
       professionCode: professionals.professionCode,
+      customProfessionName: professionals.customProfessionName,
       specialty: professionals.specialty,
+      medicalSpecialtyId: professionals.medicalSpecialtyId,
+      operationalProfileCode: professionals.operationalProfileCode,
+      userRole: professionals.userRole,
     })
     .from(professionals)
-    .where(eq(professionals.userId, userId));
+    .where(eq(professionals.userId, userId))
+    .orderBy(asc(professionals.id));
   const membershipRows = await db
     .select({
       id: professionalInstitutions.id,
-      userId: professionalInstitutions.userId,
       professionalId: professionalInstitutions.professionalId,
+      userId: professionalInstitutions.userId,
       institutionId: professionalInstitutions.institutionId,
       roleInInstitution: professionalInstitutions.roleInInstitution,
+      isPrimary: professionalInstitutions.isPrimary,
       active: professionalInstitutions.active,
     })
     .from(professionalInstitutions)
-    .where(eq(professionalInstitutions.userId, userId));
-  return { user, professionalRows, membershipRows };
+    .where(eq(professionalInstitutions.userId, userId))
+    .orderBy(asc(professionalInstitutions.id));
+  const professionalIds = [
+    ...new Set([
+      ...professionalRows.map((row) => row.id),
+      ...membershipRows.map((row) => row.professionalId),
+    ]),
+  ];
+  const accessRows =
+    professionalIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: professionalAccess.id,
+            professionalId: professionalAccess.professionalId,
+            institutionId: professionalAccess.institutionId,
+            hospitalId: professionalAccess.hospitalId,
+            sectorId: professionalAccess.sectorId,
+            canAccess: professionalAccess.canAccess,
+          })
+          .from(professionalAccess)
+          .where(inArray(professionalAccess.professionalId, professionalIds))
+          .orderBy(asc(professionalAccess.id));
+  const scopeRows =
+    professionalIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: managerScope.id,
+            institutionId: managerScope.institutionId,
+            managerProfessionalId: managerScope.managerProfessionalId,
+            hospitalId: managerScope.hospitalId,
+            sectorId: managerScope.sectorId,
+            active: managerScope.active,
+          })
+          .from(managerScope)
+          .where(inArray(managerScope.managerProfessionalId, professionalIds))
+          .orderBy(asc(managerScope.id));
+  return { user, professionalRows, membershipRows, accessRows, scopeRows };
+}
+
+function expectIdentityFrozen(
+  before: Awaited<ReturnType<typeof snapshotIdentity>>,
+  after: Awaited<ReturnType<typeof snapshotIdentity>>,
+) {
+  expect(after.user).toEqual(before.user);
+  expect(after.professionalRows).toEqual(before.professionalRows);
+  expect(after.membershipRows).toEqual(before.membershipRows);
+  expect(after.accessRows).toEqual(before.accessRows);
+  expect(after.scopeRows).toEqual(before.scopeRows);
 }
 
 async function accessAndScopeRows(
@@ -402,19 +520,10 @@ describe("register: cerca de tenant na ativação de casca", () => {
     expect(response.body.error).toBe(EMAIL_ALREADY_REGISTERED);
 
     const after = await snapshotIdentity(db, shell.id);
+    expectIdentityFrozen(before, after);
     expect(after.user.passwordHash).toBeNull();
-    expect(after.user.name).toBe(before.user.name);
-    expect(after.user.role).toBe(before.user.role);
-    expect(after.professionalRows).toEqual(before.professionalRows);
-    expect(after.membershipRows).toEqual(before.membershipRows);
-
-    const sideEffects = await accessAndScopeRows(
-      db,
-      after.professionalRows.map((row) => row.id),
-      tenantB.institutionId,
-    );
-    expect(sideEffects.access).toEqual([]);
-    expect(sideEffects.scopes).toEqual([]);
+    expect(after.accessRows).toEqual([]);
+    expect(after.scopeRows).toEqual([]);
     expect(await successAudits(db, shell.id)).toEqual([]);
 
     const login = await request(app)
@@ -450,11 +559,8 @@ describe("register: cerca de tenant na ativação de casca", () => {
     expect(response.body.error).toBe(EMAIL_ALREADY_REGISTERED);
 
     const after = await snapshotIdentity(db, shell.id);
+    expectIdentityFrozen(before, after);
     expect(after.user.passwordHash).toBeNull();
-    expect(after.user.name).toBe(before.user.name);
-    expect(after.user.role).toBe(before.user.role);
-    expect(after.professionalRows).toEqual(before.professionalRows);
-    expect(after.membershipRows).toEqual(before.membershipRows);
     expect(after.membershipRows[0]?.active).toBe(false);
     expect(await successAudits(db, shell.id)).toEqual([]);
 
@@ -621,13 +727,11 @@ describe("register: cerca de tenant na ativação de casca", () => {
     expect(response.body.error).toBe(EMAIL_ALREADY_REGISTERED);
 
     const after = await snapshotIdentity(db, shell.id);
+    expectIdentityFrozen(before, after);
     expect(after.user.passwordHash).toBeNull();
-    expect(after.user.name).toBe(before.user.name);
-    expect(after.professionalRows).toEqual(before.professionalRows);
     expect(after.membershipRows).toEqual([]);
-    expect(
-      await accessAndScopeRows(db, [firstId, secondId], tenantB.institutionId),
-    ).toEqual({ access: [], scopes: [] });
+    expect(after.accessRows).toEqual([]);
+    expect(after.scopeRows).toEqual([]);
     expect(await successAudits(db, shell.id)).toEqual([]);
   });
 
@@ -665,17 +769,10 @@ describe("register: cerca de tenant na ativação de casca", () => {
     expect(response.body.error).toBe(EMAIL_ALREADY_REGISTERED);
 
     const after = await snapshotIdentity(db, shell.id);
+    expectIdentityFrozen(before, after);
     expect(after.user.passwordHash).toBeNull();
-    expect(after.user.name).toBe(before.user.name);
-    expect(after.professionalRows).toEqual(before.professionalRows);
-    expect(after.membershipRows).toEqual(before.membershipRows);
-    expect(
-      await accessAndScopeRows(
-        db,
-        [coherentId, decoyProfessionalId],
-        tenantB.institutionId,
-      ),
-    ).toEqual({ access: [], scopes: [] });
+    expect(after.accessRows).toEqual([]);
+    expect(after.scopeRows).toEqual([]);
     expect(await successAudits(db, shell.id)).toEqual([]);
   });
 
@@ -708,12 +805,18 @@ describe("register: cerca de tenant na ativação de casca", () => {
     expect(response.body.error).toBe(EMAIL_ALREADY_REGISTERED);
 
     const after = await snapshotIdentity(db, shell.id);
+    expectIdentityFrozen(before, after);
     expect(after.user.passwordHash).toBe(hash);
-    expect(after.user.name).toBe(before.user.name);
-    expect(after.user.role).toBe(before.user.role);
-    expect(after.professionalRows).toEqual(before.professionalRows);
-    expect(after.membershipRows).toEqual(before.membershipRows);
     expect(await successAudits(db, shell.id)).toEqual([]);
+
+    const originalLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ email: shell.email, password: "SenhaJaDefinida1" });
+    expect(originalLogin.status).toBe(200);
+    const attempted = await request(app)
+      .post("/api/auth/login")
+      .send({ email: shell.email, password: ATTEMPTED_PASSWORD });
+    expect(attempted.status).toBe(401);
   });
 
   it("H: dois gestores de tenants distintos não ativam a mesma casca em paralelo", async () => {
@@ -721,60 +824,164 @@ describe("register: cerca de tenant na ativação de casca", () => {
     const before = await snapshotIdentity(db, shell.id);
     expect(before.professionalRows).toHaveLength(0);
     expect(before.membershipRows).toHaveLength(0);
+    expect(before.user.passwordHash).toBeNull();
+    expect(before.user.loginMethod).toBeNull();
 
-    const [fromA, fromB] = await Promise.all([
-      request(app)
+    const passwordA = "SenhaCorridaA9";
+    const passwordB = "SenhaCorridaB8";
+    const holder = await mysql.createConnection(testDatabaseUrl());
+    const observer = await mysql.createConnection(testDatabaseUrl());
+    let fromAPromise: Test | undefined;
+    let fromBPromise: Test | undefined;
+    let overlap: OverlapProof | null = null;
+    try {
+      await holder.beginTransaction();
+      const [held] = await holder.query(
+        "SELECT id FROM users WHERE id = ? FOR UPDATE",
+        [shell.id],
+      );
+      expect((held as { id: number }[]).map((row) => row.id)).toEqual([
+        shell.id,
+      ]);
+
+      fromAPromise = request(app)
         .post("/api/auth/register")
         .set("Cookie", gestorA.cookie)
         .set("x-tenant-id", String(tenantA.institutionId))
-        .send(registerPayload("RSTF corrida A", shell.email, tenantA.contextId)),
-      request(app)
+        .send(
+          registerPayload(
+            "RSTF corrida A",
+            shell.email,
+            tenantA.contextId,
+            passwordA,
+          ),
+        );
+      fromBPromise = request(app)
         .post("/api/auth/register")
         .set("Cookie", gestorB.cookie)
         .set("x-tenant-id", String(tenantB.institutionId))
-        .send(registerPayload("RSTF corrida B", shell.email, tenantB.contextId)),
-    ]);
+        .send(
+          registerPayload(
+            "RSTF corrida B",
+            shell.email,
+            tenantB.contextId,
+            passwordB,
+          ),
+        );
+      // SuperTest só dispara o HTTP ao tratar o Test como thenable.
+      void fromAPromise.then(() => undefined);
+      void fromBPromise.then(() => undefined);
 
+      overlap = await waitForOverlappingShellLock(observer, 20_000);
+      await holder.rollback();
+    } catch (error) {
+      await holder.rollback().catch(() => undefined);
+      if (fromAPromise && fromBPromise) {
+        await Promise.allSettled([fromAPromise, fromBPromise]);
+      }
+      throw error;
+    } finally {
+      await holder.end();
+      await observer.end();
+    }
+
+    if (!fromAPromise || !fromBPromise || !overlap) {
+      throw new Error("corrida não iniciou sob o lock da casca");
+    }
+
+    expect(overlap.usersPrimaryWaiters >= 2 || overlap.innodbLockWaitTrx >= 2).toBe(
+      true,
+    );
+
+    const [fromA, fromB] = await Promise.all([fromAPromise, fromBPromise]);
     const statuses = [fromA.status, fromB.status];
     expect(statuses.filter((status) => status === 201)).toHaveLength(1);
     expect(statuses.filter((status) => status === 409)).toHaveLength(1);
 
+    const winnerIsA = fromA.status === 201;
+    const winner = winnerIsA ? fromA : fromB;
+    const loser = winnerIsA ? fromB : fromA;
+    const winnerTenant = winnerIsA ? tenantA : tenantB;
+    const loserTenant = winnerIsA ? tenantB : tenantA;
+    const winnerPassword = winnerIsA ? passwordA : passwordB;
+    const loserPassword = winnerIsA ? passwordB : passwordA;
+    const winnerName = winnerIsA ? "RSTF corrida A" : "RSTF corrida B";
+
+    expect(loser.status).toBe(409);
+    expect(loser.body.error).toBe(EMAIL_ALREADY_REGISTERED);
+    expect(winner.body.user.id).toBe(shell.id);
+
     const after = await snapshotIdentity(db, shell.id);
+    expect(after.user.email).toBe(shell.email);
+    expect(after.user.name).toBe(winnerName);
+    expect(after.user.loginMethod).toBe("email");
+    expect(after.user.approvalStatus).toBe(before.user.approvalStatus);
+    expect(after.user.mustChangePassword).toBe(before.user.mustChangePassword);
     expect(after.user.passwordHash?.startsWith("$2")).toBe(true);
-    expect(after.professionalRows).toHaveLength(1);
-    expect(after.membershipRows).toHaveLength(1);
-    const winnerInstitutionId = after.membershipRows[0]?.institutionId;
-    expect([tenantA.institutionId, tenantB.institutionId]).toContain(
-      winnerInstitutionId,
+    expect(await bcrypt.compare(winnerPassword, after.user.passwordHash!)).toBe(
+      true,
     );
-    const loserInstitutionId =
-      winnerInstitutionId === tenantA.institutionId
-        ? tenantB.institutionId
-        : tenantA.institutionId;
+    expect(await bcrypt.compare(loserPassword, after.user.passwordHash!)).toBe(
+      false,
+    );
+
+    expect(after.professionalRows).toHaveLength(1);
+    const provenId = after.professionalRows[0]!.id;
+    expect(after.professionalRows[0]?.userId).toBe(shell.id);
+    expect(after.membershipRows).toHaveLength(1);
+    expect(after.membershipRows[0]).toEqual(
+      expect.objectContaining({
+        professionalId: provenId,
+        userId: shell.id,
+        institutionId: winnerTenant.institutionId,
+        active: true,
+      }),
+    );
     expect(
       after.membershipRows.some(
-        (row) => row.institutionId === loserInstitutionId,
+        (row) => row.institutionId === loserTenant.institutionId,
       ),
     ).toBe(false);
 
-    const provenId = after.professionalRows[0]!.id;
-    expect(after.membershipRows[0]?.professionalId).toBe(provenId);
-    const winnerAccess = await accessAndScopeRows(
-      db,
-      [provenId],
-      winnerInstitutionId!,
-    );
-    expect(winnerAccess.access.every((row) => row.professionalId === provenId)).toBe(
-      true,
-    );
-    const loserAccess = await accessAndScopeRows(
-      db,
-      [provenId],
-      loserInstitutionId,
-    );
-    expect(loserAccess.access).toEqual([]);
-    expect(loserAccess.scopes).toEqual([]);
-  }, 30_000);
+    expect(
+      after.accessRows.every(
+        (row) =>
+          row.professionalId === provenId &&
+          row.institutionId === winnerTenant.institutionId,
+      ),
+    ).toBe(true);
+    expect(
+      after.accessRows.some(
+        (row) => row.institutionId === loserTenant.institutionId,
+      ),
+    ).toBe(false);
+    expect(
+      after.scopeRows.some(
+        (row) => row.institutionId === loserTenant.institutionId,
+      ),
+    ).toBe(false);
+
+    const audits = await successAudits(db, shell.id);
+    expect(audits).toEqual([
+      expect.objectContaining({
+        action: "USER_UPDATED",
+        institutionId: winnerTenant.institutionId,
+      }),
+    ]);
+    expect(
+      audits.some((row) => row.institutionId === loserTenant.institutionId),
+    ).toBe(false);
+
+    const winnerLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ email: shell.email, password: winnerPassword });
+    expect(winnerLogin.status).toBe(200);
+    expect(winnerLogin.body.user.id).toBe(shell.id);
+    const loserLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ email: shell.email, password: loserPassword });
+    expect(loserLogin.status).toBe(401);
+  }, 45_000);
 
   it("I: usuário totalmente novo continua nascendo só no tenant explícito do gestor", async () => {
     const email = `rstf-novo-${STAMP}@test.local`;
@@ -852,10 +1059,8 @@ describe("register: cerca de tenant na ativação de casca", () => {
     expect(signup.body).toMatchObject({ ok: true });
 
     const after = await snapshotIdentity(db, shell.id);
+    expectIdentityFrozen(before, after);
     expect(after.user.passwordHash).toBeNull();
-    expect(after.user.name).toBe(before.user.name);
-    expect(after.professionalRows).toEqual(before.professionalRows);
-    expect(after.membershipRows).toEqual(before.membershipRows);
 
     const login = await request(app)
       .post("/api/auth/login")
