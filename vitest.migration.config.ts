@@ -13,6 +13,7 @@ export default defineConfig({
       "tests/vacancy-query-indexes-migration-mysql.test.ts",
       "tests/whatsapp-inbound-nl-poll-index-mysql.test.ts",
       "tests/professional-identity-migration-mysql.test.ts",
+      "tests/whatsapp-continuation-migration-mysql.test.ts",
     ],
     setupFiles: [],
     fileParallelism: false,

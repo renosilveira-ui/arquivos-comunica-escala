@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_inbound_messages (
   processed_at TIMESTAMP NULL DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  continuation_pending_id INT NULL DEFAULT NULL,
+  continuation_outcome ENUM('APPLIED', 'NOOP') NULL DEFAULT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uniq_whatsapp_inbound_provider_message (provider, provider_message_id),
   KEY idx_whatsapp_inbound_user (user_id),
@@ -56,7 +58,11 @@ CREATE TABLE IF NOT EXISTS whatsapp_inbound_messages (
     received_at,
     id
   ),
+  KEY idx_whatsapp_inbound_continuation_pending (continuation_pending_id),
   CONSTRAINT fk_whatsapp_inbound_user
     FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE SET NULL
 );
+-- FK continuation_pending_id → whatsapp_pending_intents(id) ON DELETE SET NULL
+-- is added after the pending table exists
+-- (drizzle/migrations/manual/2026-09-06-whatsapp-continuation-link.sql).

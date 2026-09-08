@@ -29,6 +29,19 @@ export const WhatsAppPendingIntentKinds = {
 export type WhatsAppPendingIntentKind =
   (typeof WhatsAppPendingIntentKinds)[keyof typeof WhatsAppPendingIntentKinds];
 
+export const WhatsAppConfirmationDispositions = {
+  AFFIRMED: "AFFIRMED",
+} as const;
+export type WhatsAppConfirmationDisposition =
+  (typeof WhatsAppConfirmationDispositions)[keyof typeof WhatsAppConfirmationDispositions];
+
+export const WhatsAppContinuationOutcomes = {
+  APPLIED: "APPLIED",
+  NOOP: "NOOP",
+} as const;
+export type WhatsAppContinuationOutcome =
+  (typeof WhatsAppContinuationOutcomes)[keyof typeof WhatsAppContinuationOutcomes];
+
 export const WHATSAPP_PENDING_TERMINAL_STATUSES = [
   WhatsAppPendingStatuses.CANCELLED,
   WhatsAppPendingStatuses.EXPIRED,
@@ -61,6 +74,7 @@ export type WhatsAppPendingIntentRecord = {
   expiresAt: Date;
   consumedAt: Date | null;
   payloadClearedAt: Date | null;
+  confirmationDisposition: string | null;
 };
 
 export type WhatsAppPendingStoreResult =

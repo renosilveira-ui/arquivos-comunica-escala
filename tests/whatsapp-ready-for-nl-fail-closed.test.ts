@@ -12,14 +12,14 @@ import type { WhatsAppInboundSourceForNl } from "../server/integrations/whatsapp
 import type { SwapIntentDraft } from "../server/natural-language/swap-intent-types";
 
 const SOURCE_ID = 10;
-const USER_ID = 4;
+const MOCK_USER_ID = 9001;
 
 function readySource(
   overrides: Partial<WhatsAppInboundSourceForNl> = {},
 ): WhatsAppInboundSourceForNl {
   return {
     id: SOURCE_ID,
-    userId: USER_ID,
+    userId: MOCK_USER_ID,
     processingStatus: "READY_FOR_NL",
     contentKind: "TEXT",
     operationalText: "passo meu plantão de amanhã à noite na SR pro Joao",
@@ -36,7 +36,7 @@ function parseRow(
 ): WhatsAppPendingIntentRecord {
   return {
     id: 7,
-    userId: USER_ID,
+    userId: MOCK_USER_ID,
     sourceInboundMessageId: SOURCE_ID,
     institutionId: null,
     status: "OPEN",
@@ -48,6 +48,7 @@ function parseRow(
     expiresAt: new Date(Date.now() + 15 * 60 * 1000),
     consumedAt: null,
     payloadClearedAt: null,
+    confirmationDisposition: null,
     ...overrides,
   };
 }
@@ -362,7 +363,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     actor.mockResolvedValue({
       ok: true,
-      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1, 2] },
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1, 2] },
     });
     parse.mockImplementation(() => {
       throw new Error("parser boom");
@@ -406,13 +407,13 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     actor.mockResolvedValue({
       ok: true,
-      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1] },
     });
     parse.mockReturnValue(draft);
     resolve.mockResolvedValue({
       ok: true,
       kind: "CESSAO",
-      actorUserId: USER_ID,
+      actorUserId: MOCK_USER_ID,
       actorProfessionalId: 8,
       institutionId: 1,
       institutionName: "Unimed",
@@ -489,13 +490,13 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     actor.mockResolvedValue({
       ok: true,
-      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1] },
     });
     parse.mockReturnValue(draft);
     resolve.mockResolvedValue({
       ok: true,
       kind: "CESSAO",
-      actorUserId: USER_ID,
+      actorUserId: MOCK_USER_ID,
       actorProfessionalId: 8,
       institutionId: 1,
       institutionName: "Unimed",
@@ -650,7 +651,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     expect(advance).not.toHaveBeenCalled();
     expect(clear).toHaveBeenCalledWith({
       sourceInboundMessageId: SOURCE_ID,
-      expectedUserId: USER_ID,
+      expectedUserId: MOCK_USER_ID,
     });
     expect(legacyClear).not.toHaveBeenCalled();
   });
@@ -767,7 +768,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     actor.mockResolvedValue({
       ok: true,
-      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1] },
     });
     parse.mockReturnValue(draft);
     resolve.mockResolvedValue({
@@ -792,7 +793,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     expect(cancelParse).toHaveBeenCalledWith({
       pendingId: 7,
-      userId: USER_ID,
+      userId: MOCK_USER_ID,
       expectedSourceInboundMessageId: SOURCE_ID,
     });
 
@@ -847,7 +848,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     expect(clear).not.toHaveBeenCalled();
     expect(cancelParse).toHaveBeenCalledWith({
       pendingId: 7,
-      userId: USER_ID,
+      userId: MOCK_USER_ID,
       expectedSourceInboundMessageId: SOURCE_ID,
     });
   });
@@ -862,7 +863,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     actor.mockResolvedValue({
       ok: true,
-      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1] },
     });
     parse.mockReturnValue(draft);
     resolve.mockResolvedValue({
@@ -900,12 +901,16 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
   });
 
   it("NEEDS_CLARIFICATION avança e não cancela PARSE", async () => {
-    const { load, create, parse, advance, cancelParse, clear } = spies();
+    const { load, create, actor, parse, advance, cancelParse, clear } = spies();
     load.mockResolvedValue({ ok: true, source: readySource() });
     create.mockResolvedValue({
       ok: true,
       outcome: "created",
       row: parseRow(),
+    });
+    actor.mockResolvedValue({
+      ok: true,
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1] },
     });
     parse.mockReturnValue({
       ok: false,
@@ -943,7 +948,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     actor.mockResolvedValue({
       ok: true,
-      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1] },
     });
     parse.mockReturnValue(draft);
     resolve.mockResolvedValue({
@@ -979,7 +984,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
     });
     actor.mockResolvedValue({
       ok: true,
-      actor: { userId: USER_ID, professionalId: 8, institutionIds: [1] },
+      actor: { userId: MOCK_USER_ID, professionalId: 8, institutionIds: [1] },
     });
     parse.mockReturnValue(draft);
     resolve.mockResolvedValue({

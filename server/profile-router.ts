@@ -9,6 +9,10 @@ import {
   getWhatsAppContactForUser,
   upsertUserWhatsAppContact,
 } from "./user-contact-channels";
+import {
+  checkWhatsAppVerification,
+  startWhatsAppVerification,
+} from "./whatsapp-verification";
 
 export const profileRouter = router({
   getWhatsAppContact: protectedProcedure.query(async ({ ctx }) => {
@@ -66,4 +70,33 @@ export const profileRouter = router({
       active: false,
     };
   }),
+
+  startWhatsAppVerification: protectedProcedure
+    .input(
+      z.object({
+        phone: z.string().min(1).max(40).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return startWhatsAppVerification({
+        userId: ctx.user.id,
+        institutionId: ctx.institutionId!,
+        phone: input.phone,
+        req: ctx.req,
+      });
+    }),
+
+  checkWhatsAppVerification: protectedProcedure
+    .input(
+      z.object({
+        code: z.string().min(4).max(10),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return checkWhatsAppVerification({
+        userId: ctx.user.id,
+        code: input.code,
+        req: ctx.req,
+      });
+    }),
 });
