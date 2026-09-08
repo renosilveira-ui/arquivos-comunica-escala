@@ -576,8 +576,8 @@ describe("WhatsApp L2 Twilio Verify", () => {
     });
     expect(started.ok).toBe(false);
     if (!started.ok) {
-      expect(started.code).toBe("TWILIO_UNAVAILABLE");
-      expect(started.kind).toBe("RETRYABLE_PROVIDER_ERROR");
+      expect(started.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
+      expect(started.kind).toBe("SERVER_CONFIGURATION_ERROR");
     }
     const dumped = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
     expect(dumped).toContain("whatsapp_verify_start_failed");
@@ -686,10 +686,104 @@ describe("WhatsApp L2 Twilio Verify", () => {
     expect(dumped).not.toContain("123456");
     expect(dumped).not.toContain("+5585988810022");
     if (!started.ok) {
-      expect(started.code).toBe("TWILIO_UNAVAILABLE");
+      expect(started.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
       expect(started.message).toBe(
-        "Não foi possível falar com o verificador. Tente de novo em instantes.",
+        "Verificação WhatsApp indisponível no momento.",
       );
     }
+  });
+
+  it("60242 não verifica o contato, não recomenda repetição e não vaza conteúdo", async () => {
+    const poison = {
+      status: 400,
+      code: 60242,
+      message: "OTP 123456 for +5585988810023 template missing",
+    };
+    const poisonClient: TwilioVerifyClient = {
+      verify: {
+        v2: {
+          services: () => ({
+            verifications: {
+              create: async () => {
+                throw poison;
+              },
+            },
+            verificationChecks: {
+              create: async () => {
+                throw poison;
+              },
+            },
+          }),
+        },
+      },
+    };
+    const poisonProvider = new TwilioWhatsAppVerificationProvider({
+      config: {
+        accountSid: "ACtest",
+        authToken: "token",
+        serviceSid: "VAtest",
+      },
+      client: poisonClient,
+    });
+    whatsappVerificationRuntime.provider = poisonProvider;
+    const a = await createUser("d60242");
+    infoSpy.mockClear();
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
+      phone: "+5585988810023",
+    });
+    expect(started.ok).toBe(false);
+    if (!started.ok) {
+      expect(started.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
+      expect(started.kind).toBe("SERVER_CONFIGURATION_ERROR");
+      expect(started.message).toBe(
+        "Verificação WhatsApp indisponível no momento.",
+      );
+      expect(started.message.toLowerCase()).not.toContain("tente de novo");
+    }
+    expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
+    const startedDump = JSON.stringify(started);
+    expect(startedDump).not.toContain("60242");
+    expect(startedDump).not.toContain("providerHttpStatus");
+    expect(startedDump).not.toContain("providerErrorCode");
+    expect(startedDump).not.toContain("diagnostics");
+    expect(startedDump).not.toContain("123456");
+    expect(startedDump).not.toContain("+5585988810023");
+    expect(startedDump).not.toContain("template missing");
+    const startLogs = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    expect(startLogs).toContain("whatsapp_verify_start_failed");
+    expect(startLogs).toContain('"providerHttpStatus":400');
+    expect(startLogs).toContain('"providerErrorCode":60242');
+    expect(startLogs).not.toContain("123456");
+    expect(startLogs).not.toContain("+5585988810023");
+
+    fake.startResult = { ok: true, status: "pending" };
+    whatsappVerificationRuntime.provider = fake;
+    resetWhatsAppVerifyRateLimits();
+    const restarted = await callerFor(a.userId).profile.startWhatsAppVerification({
+      phone: "+5585988810023",
+    });
+    expect(restarted.ok).toBe(true);
+    whatsappVerificationRuntime.provider = poisonProvider;
+    infoSpy.mockClear();
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
+      code: "123456",
+    });
+    expect(checked.ok).toBe(false);
+    if (!checked.ok) {
+      expect(checked.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
+      expect(checked.message).toBe(
+        "Verificação WhatsApp indisponível no momento.",
+      );
+      expect(checked.message.toLowerCase()).not.toContain("tente de novo");
+    }
+    expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
+    const checkedDump = JSON.stringify(checked);
+    expect(checkedDump).not.toContain("60242");
+    expect(checkedDump).not.toContain("123456");
+    expect(checkedDump).not.toContain("+5585988810023");
+    const checkLogs = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    expect(checkLogs).toContain("whatsapp_verify_check_failed");
+    expect(checkLogs).toContain('"providerErrorCode":60242');
+    expect(checkLogs).not.toContain("123456");
   });
 });

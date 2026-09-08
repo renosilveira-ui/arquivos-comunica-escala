@@ -39,6 +39,18 @@ const driver = readFileSync(
   ),
   "utf8",
 );
+const inbound = readFileSync(
+  new URL("../server/routes/twilio-whatsapp.ts", import.meta.url),
+  "utf8",
+);
+const profileScreen = readFileSync(
+  new URL("../app/(tabs)/profile.tsx", import.meta.url),
+  "utf8",
+);
+const contactScreen = readFileSync(
+  new URL("../app/whatsapp-contact.tsx", import.meta.url),
+  "utf8",
+);
 
 describe("WhatsApp Verify — source contracts", () => {
   it("profile não aceita verifiedAt/verified do cliente", () => {
@@ -124,5 +136,40 @@ describe("WhatsApp Verify — source contracts", () => {
   it("hook de provider só existe no ramo de teste", () => {
     expect(service).toContain('process.env.NODE_ENV === "test"');
     expect(service).toContain("whatsappVerificationRuntime.provider");
+  });
+
+  it("68008/60428/60242 são canal Verify não configurado, sem fallback SMS", () => {
+    expect(twilioAdapter).toContain("twilioCode === 68008");
+    expect(twilioAdapter).toContain("twilioCode === 60428");
+    expect(twilioAdapter).toContain("twilioCode === 60242");
+    expect(twilioAdapter).toContain("PROVIDER_CHANNEL_NOT_CONFIGURED");
+    expect(provider).toContain("PROVIDER_CHANNEL_NOT_CONFIGURED");
+    expect(service).toContain("PROVIDER_CHANNEL_NOT_CONFIGURED");
+    expect(twilioAdapter).not.toMatch(/channel:\s*["']sms["']/);
+    expect(twilioAdapter).toContain('TWILIO_VERIFY_CHANNEL = "whatsapp"');
+  });
+
+  it("inbound Twilio permanece com validação de assinatura e fora do Verify", () => {
+    expect(inbound).toContain('req.headers["x-twilio-signature"]');
+    expect(inbound).toContain("validateInboundRequest");
+    expect(inbound).not.toContain("startWhatsAppVerification");
+    expect(inbound).not.toContain("checkWhatsAppVerification");
+    expect(inbound).not.toContain("TwilioWhatsAppVerificationProvider");
+    expect(inbound).not.toContain("markWhatsAppContactVerified");
+  });
+
+  it("linha de WhatsApp no perfil não depende de gestor", () => {
+    const contaStart = profileScreen.indexOf('title="Conta e app"');
+    const contaEnd = profileScreen.indexOf("Sair da conta", contaStart);
+    const conta = profileScreen.slice(contaStart, contaEnd);
+    expect(conta).toContain('title="WhatsApp"');
+    expect(conta).toContain('go("/whatsapp-contact")');
+    expect(conta).toContain("Cadastrar e verificar o número da conta");
+    expect(conta).not.toMatch(/\bisManager\b/);
+    expect(conta).not.toMatch(/\bcan\(/);
+    expect(contactScreen).toContain("trpc.profile.startWhatsAppVerification");
+    expect(contactScreen).toContain("trpc.profile.checkWhatsAppVerification");
+    expect(contactScreen).not.toMatch(/\bisManager\b/);
+    expect(contactScreen).not.toContain("createSwapOffer");
   });
 });
