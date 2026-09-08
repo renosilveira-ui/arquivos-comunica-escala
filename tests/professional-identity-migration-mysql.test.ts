@@ -1,9 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import mysql, {
-  type Connection,
-  type RowDataPacket,
-} from "mysql2/promise";
+import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 
 const MIGRATION_TEST_SERVER_URL =
   process.env.PROFESSIONAL_IDENTITY_MIGRATION_TEST_SERVER_URL;
@@ -453,10 +450,10 @@ async function seedFixtures(
   options: { includeProfessionColumns: boolean },
 ) {
   for (const fixture of fixtures) {
-    await connection.execute(
-      "INSERT INTO users (id, role) VALUES (?, ?)",
-      [fixture.id, fixture.userRole],
-    );
+    await connection.execute("INSERT INTO users (id, role) VALUES (?, ?)", [
+      fixture.id,
+      fixture.userRole,
+    ]);
     if (options.includeProfessionColumns) {
       await connection.execute(
         `INSERT INTO professionals (
@@ -527,12 +524,9 @@ async function readProfessionCodes(connection: Connection) {
   }));
 }
 
-async function readColumnContract(
-  connection: Connection,
-  columnName: string,
-) {
+async function readColumnContract(connection: Connection, columnName: string) {
   const [rows] = await connection.query<RowDataPacket[]>(
-    `SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE,
+    `SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT,
             IFNULL(GENERATION_EXPRESSION, '') AS GENERATION_EXPRESSION,
             EXTRA
      FROM INFORMATION_SCHEMA.COLUMNS
@@ -546,7 +540,8 @@ async function readColumnContract(
 
 async function readIndexContract(connection: Connection) {
   const [rows] = await connection.query<RowDataPacket[]>(
-    `SELECT COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE
+    `SELECT COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, COLLATION, SUB_PART,
+            INDEX_TYPE, IS_VISIBLE
      FROM INFORMATION_SCHEMA.STATISTICS
      WHERE TABLE_SCHEMA = DATABASE()
        AND TABLE_NAME = 'professionals'
@@ -557,7 +552,60 @@ async function readIndexContract(connection: Connection) {
     columnName: String(row.COLUMN_NAME),
     sequence: Number(row.SEQ_IN_INDEX),
     nonUnique: Number(row.NON_UNIQUE),
+    collation: row.COLLATION === null ? null : String(row.COLLATION),
+    subPart: row.SUB_PART === null ? null : Number(row.SUB_PART),
+    indexType: String(row.INDEX_TYPE),
+    isVisible: row.IS_VISIBLE === null ? null : String(row.IS_VISIBLE),
   }));
+}
+
+async function createLegacySentinelTables(connection: Connection) {
+  await connection.query(`
+    CREATE TABLE professional_identity_profession_code_contract_mismatch (id INT);
+    CREATE TABLE professional_identity_custom_profession_name_contract_mismatch (id INT);
+    CREATE TABLE professional_identity_profession_code_index_contract_mismatch (id INT);
+  `);
+}
+
+async function seedContractMismatchProfessional(
+  connection: Connection,
+  options: {
+    professionCode?: string | null;
+    customProfessionName?: string | null;
+  } = {},
+) {
+  await connection.execute("INSERT INTO users (id, role) VALUES (1, 'doctor')");
+  await connection.execute(
+    `INSERT INTO professionals (
+      id, user_id, name, role, profession_code, custom_profession_name
+    ) VALUES (1, 1, 'contract_mismatch', 'Médico', ?, ?)`,
+    [options.professionCode ?? null, options.customProfessionName ?? null],
+  );
+}
+
+async function readProfessionalIdentity(connection: Connection) {
+  const [rows] = await connection.query<RowDataPacket[]>(
+    `SELECT profession_code, custom_profession_name
+     FROM professionals
+     WHERE id = 1`,
+  );
+  return {
+    professionCode:
+      rows[0]?.profession_code === null
+        ? null
+        : String(rows[0]?.profession_code),
+    customProfessionName:
+      rows[0]?.custom_profession_name === null
+        ? null
+        : String(rows[0]?.custom_profession_name),
+  };
+}
+
+async function expectContractMismatch(connection: Connection) {
+  await expect(connection.query(migration)).rejects.toMatchObject({
+    code: "ER_INVALID_JSON_TEXT_IN_PARAM",
+    errno: 3141,
+  });
 }
 
 describeWithIsolatedMysql(
@@ -635,6 +683,7 @@ describeWithIsolatedMysql(
           DATA_TYPE: "varchar",
           CHARACTER_MAXIMUM_LENGTH: 64,
           IS_NULLABLE: "YES",
+          COLUMN_DEFAULT: null,
           GENERATION_EXPRESSION: "",
         });
         expect(String(professionCode?.EXTRA ?? "")).not.toMatch(/GENERATED/i);
@@ -642,10 +691,19 @@ describeWithIsolatedMysql(
           DATA_TYPE: "varchar",
           CHARACTER_MAXIMUM_LENGTH: 120,
           IS_NULLABLE: "YES",
+          COLUMN_DEFAULT: null,
           GENERATION_EXPRESSION: "",
         });
         expect(await readIndexContract(connection)).toEqual([
-          { columnName: "profession_code", sequence: 1, nonUnique: 1 },
+          {
+            columnName: "profession_code",
+            sequence: 1,
+            nonUnique: 1,
+            collation: "A",
+            subPart: null,
+            indexType: "BTREE",
+            isVisible: "YES",
+          },
         ]);
 
         const [users] = await connection.query<RowDataPacket[]>(
@@ -745,7 +803,15 @@ describeWithIsolatedMysql(
           })),
         );
         expect(await readIndexContract(connection)).toEqual([
-          { columnName: "profession_code", sequence: 1, nonUnique: 1 },
+          {
+            columnName: "profession_code",
+            sequence: 1,
+            nonUnique: 1,
+            collation: "A",
+            subPart: null,
+            indexType: "BTREE",
+            isVisible: "YES",
+          },
         ]);
       } finally {
         await connection.end();
@@ -769,12 +835,8 @@ describeWithIsolatedMysql(
            VALUES (1, 1, 'int_coercion', 'Médico')`,
         );
 
-        await expect(connection.query(migration)).rejects.toMatchObject({
-          code: "ER_NO_SUCH_TABLE",
-          message: expect.stringContaining(
-            "professional_identity_profession_code_contract_mismatch",
-          ),
-        });
+        await createLegacySentinelTables(connection);
+        await expectContractMismatch(connection);
 
         const [rows] = await connection.query<RowDataPacket[]>(
           "SELECT profession_code FROM professionals WHERE id = 1",
@@ -809,12 +871,7 @@ describeWithIsolatedMysql(
            VALUES (1, 1, 'short_varchar', 'Médico', NULL)`,
         );
 
-        await expect(connection.query(migration)).rejects.toMatchObject({
-          code: "ER_NO_SUCH_TABLE",
-          message: expect.stringContaining(
-            "professional_identity_profession_code_contract_mismatch",
-          ),
-        });
+        await expectContractMismatch(connection);
 
         const contract = await readColumnContract(
           connection,
@@ -850,12 +907,8 @@ describeWithIsolatedMysql(
            VALUES (1, 1, 'custom_short', 'Médico')`,
         );
 
-        await expect(connection.query(migration)).rejects.toMatchObject({
-          code: "ER_NO_SUCH_TABLE",
-          message: expect.stringContaining(
-            "professional_identity_custom_profession_name_contract_mismatch",
-          ),
-        });
+        await createLegacySentinelTables(connection);
+        await expectContractMismatch(connection);
 
         const contract = await readColumnContract(
           connection,
@@ -896,20 +949,291 @@ describeWithIsolatedMysql(
            VALUES (1, 1, 'wrong_index', 'Médico')`,
         );
 
-        await expect(connection.query(migration)).rejects.toMatchObject({
-          code: "ER_NO_SUCH_TABLE",
-          message: expect.stringContaining(
-            "professional_identity_profession_code_index_contract_mismatch",
-          ),
-        });
+        await createLegacySentinelTables(connection);
+        await expectContractMismatch(connection);
 
         expect(await readIndexContract(connection)).toEqual([
-          { columnName: "id", sequence: 1, nonUnique: 1 },
+          {
+            columnName: "id",
+            sequence: 1,
+            nonUnique: 1,
+            collation: "A",
+            subPart: null,
+            indexType: "BTREE",
+            isVisible: "YES",
+          },
         ]);
         const [rows] = await connection.query<RowDataPacket[]>(
           "SELECT profession_code FROM professionals WHERE id = 1",
         );
         expect(rows[0]?.profession_code).toBeNull();
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("H1: profession_code com DEFAULT falha fechado e não preenche a linha", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql:
+              "profession_code VARCHAR(64) NULL DEFAULT 'MEDIC'",
+            customProfessionNameSql: "custom_profession_name VARCHAR(120) NULL",
+          }),
+        );
+        await seedContractMismatchProfessional(connection);
+
+        await expectContractMismatch(connection);
+
+        expect(
+          await readColumnContract(connection, "profession_code"),
+        ).toMatchObject({
+          DATA_TYPE: "varchar",
+          CHARACTER_MAXIMUM_LENGTH: 64,
+          IS_NULLABLE: "YES",
+          COLUMN_DEFAULT: "MEDIC",
+        });
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: null,
+          customProfessionName: null,
+        });
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("H2: custom_profession_name com DEFAULT falha fechado e não preenche a linha", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql: "profession_code VARCHAR(64) NULL",
+            customProfessionNameSql:
+              "custom_profession_name VARCHAR(120) NULL DEFAULT 'x'",
+          }),
+        );
+        await seedContractMismatchProfessional(connection);
+
+        await expectContractMismatch(connection);
+
+        expect(
+          await readColumnContract(connection, "custom_profession_name"),
+        ).toMatchObject({
+          DATA_TYPE: "varchar",
+          CHARACTER_MAXIMUM_LENGTH: 120,
+          IS_NULLABLE: "YES",
+          COLUMN_DEFAULT: "x",
+        });
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: null,
+          customProfessionName: null,
+        });
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("H3: profession_code NOT NULL falha fechado e preserva o valor compatível pré-semeado", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql: "profession_code VARCHAR(64) NOT NULL",
+            customProfessionNameSql: "custom_profession_name VARCHAR(120) NULL",
+          }),
+        );
+        await seedContractMismatchProfessional(connection, {
+          professionCode: "NURSING",
+        });
+
+        await expectContractMismatch(connection);
+
+        expect(
+          await readColumnContract(connection, "profession_code"),
+        ).toMatchObject({
+          DATA_TYPE: "varchar",
+          CHARACTER_MAXIMUM_LENGTH: 64,
+          IS_NULLABLE: "NO",
+          COLUMN_DEFAULT: null,
+        });
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: "NURSING",
+          customProfessionName: null,
+        });
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("H4: custom_profession_name NOT NULL falha fechado e preserva o valor compatível pré-semeado", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql: "profession_code VARCHAR(64) NULL",
+            customProfessionNameSql:
+              "custom_profession_name VARCHAR(120) NOT NULL",
+          }),
+        );
+        await seedContractMismatchProfessional(connection, {
+          customProfessionName: "Profissão histórica",
+        });
+
+        await expectContractMismatch(connection);
+
+        expect(
+          await readColumnContract(connection, "custom_profession_name"),
+        ).toMatchObject({
+          DATA_TYPE: "varchar",
+          CHARACTER_MAXIMUM_LENGTH: 120,
+          IS_NULLABLE: "NO",
+          COLUMN_DEFAULT: null,
+        });
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: null,
+          customProfessionName: "Profissão histórica",
+        });
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("I1: índice UNIQUE homônimo falha fechado e permanece UNIQUE", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql: "profession_code VARCHAR(64) NULL",
+            customProfessionNameSql: "custom_profession_name VARCHAR(120) NULL",
+            extraIndexesSql:
+              "UNIQUE INDEX idx_professionals_profession_code (profession_code)",
+          }),
+        );
+        await seedContractMismatchProfessional(connection);
+
+        await expectContractMismatch(connection);
+
+        expect(await readIndexContract(connection)).toEqual([
+          {
+            columnName: "profession_code",
+            sequence: 1,
+            nonUnique: 0,
+            collation: "A",
+            subPart: null,
+            indexType: "BTREE",
+            isVisible: "YES",
+          },
+        ]);
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: null,
+          customProfessionName: null,
+        });
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("I2: índice prefixado homônimo falha fechado e preserva SUB_PART", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql: "profession_code VARCHAR(64) NULL",
+            customProfessionNameSql: "custom_profession_name VARCHAR(120) NULL",
+            extraIndexesSql:
+              "INDEX idx_professionals_profession_code (profession_code(8))",
+          }),
+        );
+        await seedContractMismatchProfessional(connection);
+
+        await expectContractMismatch(connection);
+
+        expect(await readIndexContract(connection)).toEqual([
+          {
+            columnName: "profession_code",
+            sequence: 1,
+            nonUnique: 1,
+            collation: "A",
+            subPart: 8,
+            indexType: "BTREE",
+            isVisible: "YES",
+          },
+        ]);
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: null,
+          customProfessionName: null,
+        });
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("I3: índice FULLTEXT homônimo falha fechado e preserva o tipo", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql: "profession_code VARCHAR(64) NULL",
+            customProfessionNameSql: "custom_profession_name VARCHAR(120) NULL",
+            extraIndexesSql:
+              "FULLTEXT INDEX idx_professionals_profession_code (profession_code)",
+          }),
+        );
+        await seedContractMismatchProfessional(connection);
+
+        await expectContractMismatch(connection);
+
+        expect(await readIndexContract(connection)).toEqual([
+          {
+            columnName: "profession_code",
+            sequence: 1,
+            nonUnique: 1,
+            collation: null,
+            subPart: null,
+            indexType: "FULLTEXT",
+            isVisible: "YES",
+          },
+        ]);
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: null,
+          customProfessionName: null,
+        });
+      } finally {
+        await connection.end();
+      }
+    });
+
+    it("I4: índice INVISIBLE homônimo falha fechado e preserva a invisibilidade", async () => {
+      const { connection } = await openEphemeralDatabase();
+      try {
+        await connection.query(
+          professionalsDdl({
+            professionCodeSql: "profession_code VARCHAR(64) NULL",
+            customProfessionNameSql: "custom_profession_name VARCHAR(120) NULL",
+            extraIndexesSql:
+              "INDEX idx_professionals_profession_code (profession_code) INVISIBLE",
+          }),
+        );
+        await seedContractMismatchProfessional(connection);
+
+        await expectContractMismatch(connection);
+
+        expect(await readIndexContract(connection)).toEqual([
+          {
+            columnName: "profession_code",
+            sequence: 1,
+            nonUnique: 1,
+            collation: "A",
+            subPart: null,
+            indexType: "BTREE",
+            isVisible: "NO",
+          },
+        ]);
+        expect(await readProfessionalIdentity(connection)).toEqual({
+          professionCode: null,
+          customProfessionName: null,
+        });
       } finally {
         await connection.end();
       }

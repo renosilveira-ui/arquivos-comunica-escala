@@ -13,8 +13,8 @@
 -- não é técnico de enfermagem. UNKNOWN/vazio/NULL permanecem NULL.
 -- Nunca classifica OTHER.
 --
--- Homônimo incompatível (INT, VARCHAR curto, generated, índice errado)
--- aborta com SELECT em tabela-sentinela — não coage, não redimensiona.
+-- Homônimo incompatível (tipo, nulidade, default, generated ou índice)
+-- aborta com JSON inválido — não coage, não redimensiona nem faz backfill.
 --
 -- Aplicar no staging ANTES do merge (o deploy não roda migrações):
 --   pnpm apply:migration drizzle/migrations/manual/2026-09-06-professional-identity-foundation.sql
@@ -38,6 +38,7 @@ SET @profession_code_contract_matches := (
         WHEN DATA_TYPE = 'varchar'
           AND CHARACTER_MAXIMUM_LENGTH = 64
           AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
           AND IFNULL(GENERATION_EXPRESSION, '') = ''
           AND EXTRA NOT LIKE '%GENERATED%'
         THEN 1 ELSE 0
@@ -51,7 +52,7 @@ SET @profession_code_contract_matches := (
 SET @ddl := IF(
   @profession_code_exists = 0 OR @profession_code_contract_matches = 1,
   'SELECT 1',
-  'SELECT * FROM professional_identity_profession_code_contract_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''PROFESSIONAL_IDENTITY_PROFESSION_CODE_CONTRACT_MISMATCH'', ''$'')'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -70,6 +71,7 @@ SET @custom_profession_name_contract_matches := (
         WHEN DATA_TYPE = 'varchar'
           AND CHARACTER_MAXIMUM_LENGTH = 120
           AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
           AND IFNULL(GENERATION_EXPRESSION, '') = ''
           AND EXTRA NOT LIKE '%GENERATED%'
         THEN 1 ELSE 0
@@ -84,7 +86,7 @@ SET @ddl := IF(
   @custom_profession_name_exists = 0
     OR @custom_profession_name_contract_matches = 1,
   'SELECT 1',
-  'SELECT * FROM professional_identity_custom_profession_name_contract_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''PROFESSIONAL_IDENTITY_CUSTOM_PROFESSION_NAME_CONTRACT_MISMATCH'', ''$'')'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -103,6 +105,10 @@ SET @profession_code_index_contract_matches := (
         WHEN SEQ_IN_INDEX = 1
           AND COLUMN_NAME = 'profession_code'
           AND NON_UNIQUE = 1
+          AND COLLATION = 'A'
+          AND SUB_PART IS NULL
+          AND INDEX_TYPE = 'BTREE'
+          AND IS_VISIBLE = 'YES'
         THEN 1 ELSE 0
       END
     ) = 1
@@ -115,7 +121,7 @@ SET @ddl := IF(
   @profession_code_index_exists = 0
     OR @profession_code_index_contract_matches = 1,
   'SELECT 1',
-  'SELECT * FROM professional_identity_profession_code_index_contract_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''PROFESSIONAL_IDENTITY_PROFESSION_CODE_INDEX_CONTRACT_MISMATCH'', ''$'')'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -160,6 +166,7 @@ SET @profession_code_contract_matches := (
         WHEN DATA_TYPE = 'varchar'
           AND CHARACTER_MAXIMUM_LENGTH = 64
           AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
           AND IFNULL(GENERATION_EXPRESSION, '') = ''
           AND EXTRA NOT LIKE '%GENERATED%'
         THEN 1 ELSE 0
@@ -173,7 +180,7 @@ SET @profession_code_contract_matches := (
 SET @ddl := IF(
   @profession_code_contract_matches = 1,
   'SELECT 1',
-  'SELECT * FROM professional_identity_profession_code_contract_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''PROFESSIONAL_IDENTITY_PROFESSION_CODE_CONTRACT_MISMATCH'', ''$'')'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -186,6 +193,7 @@ SET @custom_profession_name_contract_matches := (
         WHEN DATA_TYPE = 'varchar'
           AND CHARACTER_MAXIMUM_LENGTH = 120
           AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
           AND IFNULL(GENERATION_EXPRESSION, '') = ''
           AND EXTRA NOT LIKE '%GENERATED%'
         THEN 1 ELSE 0
@@ -199,7 +207,7 @@ SET @custom_profession_name_contract_matches := (
 SET @ddl := IF(
   @custom_profession_name_contract_matches = 1,
   'SELECT 1',
-  'SELECT * FROM professional_identity_custom_profession_name_contract_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''PROFESSIONAL_IDENTITY_CUSTOM_PROFESSION_NAME_CONTRACT_MISMATCH'', ''$'')'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -212,6 +220,10 @@ SET @profession_code_index_contract_matches := (
         WHEN SEQ_IN_INDEX = 1
           AND COLUMN_NAME = 'profession_code'
           AND NON_UNIQUE = 1
+          AND COLLATION = 'A'
+          AND SUB_PART IS NULL
+          AND INDEX_TYPE = 'BTREE'
+          AND IS_VISIBLE = 'YES'
         THEN 1 ELSE 0
       END
     ) = 1
@@ -223,7 +235,7 @@ SET @profession_code_index_contract_matches := (
 SET @ddl := IF(
   @profession_code_index_contract_matches = 1,
   'SELECT 1',
-  'SELECT * FROM professional_identity_profession_code_index_contract_mismatch WHERE 1 = 0'
+  'SELECT JSON_EXTRACT(''PROFESSIONAL_IDENTITY_PROFESSION_CODE_INDEX_CONTRACT_MISMATCH'', ''$'')'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;

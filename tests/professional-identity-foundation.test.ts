@@ -65,9 +65,7 @@ describe("schema de identidade profissional", () => {
     expect(professionalsSchema).toContain(
       'varchar("custom_profession_name", { length: 120 })',
     );
-    expect(professionalsSchema).not.toMatch(
-      /unique\(\)\.on\(\s*table\.userId/,
-    );
+    expect(professionalsSchema).not.toMatch(/unique\(\)\.on\(\s*table\.userId/);
     expect(professionalsSchema).not.toMatch(
       /unique\(["'][^"']*["']\)\.on\(\s*table\.userId/,
     );
@@ -89,6 +87,11 @@ describe("migração de identidade profissional", () => {
     expect(migration).toContain("INFORMATION_SCHEMA.STATISTICS");
     expect(migration).toContain("profession_code VARCHAR(64) NULL");
     expect(migration).toContain("custom_profession_name VARCHAR(120) NULL");
+    expect(migration).toContain("COLUMN_DEFAULT IS NULL");
+    expect(migration).toContain("COLLATION = 'A'");
+    expect(migration).toContain("SUB_PART IS NULL");
+    expect(migration).toContain("INDEX_TYPE = 'BTREE'");
+    expect(migration).toContain("IS_VISIBLE = 'YES'");
     expect(migration).toContain("idx_professionals_profession_code");
     expect(executableMigration).not.toMatch(/\bDROP\s+(TABLE|COLUMN)\b/i);
     expect(executableMigration).not.toMatch(/UNIQUE\s*\(\s*user_id\s*\)/i);
@@ -118,12 +121,14 @@ describe("migração de identidade profissional", () => {
     expect(executableMigration).not.toMatch(/WHEN\s+'Técnico'\s+THEN/);
     expect(executableMigration).not.toMatch(/'Técnico'\s*[,)]/);
     expect(executableMigration).not.toMatch(/\bOTHER\b/);
-    expect(migration).toContain("professional_identity_profession_code_contract_mismatch");
     expect(migration).toContain(
-      "professional_identity_custom_profession_name_contract_mismatch",
+      "JSON_EXTRACT(''PROFESSIONAL_IDENTITY_PROFESSION_CODE_CONTRACT_MISMATCH'', ''$'')",
     );
     expect(migration).toContain(
-      "professional_identity_profession_code_index_contract_mismatch",
+      "JSON_EXTRACT(''PROFESSIONAL_IDENTITY_CUSTOM_PROFESSION_NAME_CONTRACT_MISMATCH'', ''$'')",
+    );
+    expect(migration).toContain(
+      "JSON_EXTRACT(''PROFESSIONAL_IDENTITY_PROFESSION_CODE_INDEX_CONTRACT_MISMATCH'', ''$'')",
     );
   });
 
@@ -142,7 +147,7 @@ describe("writers de identidade — source guards", () => {
     expect(signupHandler).toContain('professionalIdentityWriteFields("MEDIC")');
     expect(signupHandler).not.toMatch(/professionCode/);
     expect(signupHandler).toContain('role: "doctor"');
-    expect(auth).toContain("from \"../../lib/profession-definitions\"");
+    expect(auth).toContain('from "../../lib/profession-definitions"');
   });
 
   it("register persiste a profissão pelo papel legado, sem redesenhar AuthZ", () => {
