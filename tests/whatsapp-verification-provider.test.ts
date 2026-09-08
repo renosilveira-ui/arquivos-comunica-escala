@@ -185,20 +185,38 @@ describe("Twilio Verify provider contract", () => {
     });
   });
 
-  it("D1 400/68008 preserva diagnóstico e classifica como TWILIO_UNAVAILABLE", () => {
+  it("D1 400/68008 é canal WhatsApp não configurado, com diagnóstico", () => {
     const mapped = mapTwilioVerifyError({
       status: 400,
       code: 68008,
       message: "sensitive OTP 123456",
     });
-    expect(mapped.kind).toBe("RETRYABLE_PROVIDER_ERROR");
-    expect(mapped.code).toBe("TWILIO_UNAVAILABLE");
+    expect(mapped.kind).toBe("SERVER_CONFIGURATION_ERROR");
+    expect(mapped.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
     expect(mapped.diagnostics).toEqual({
       providerHttpStatus: 400,
       providerErrorCode: 68008,
     });
     expect(JSON.stringify(mapped)).not.toContain("123456");
     expect(JSON.stringify(mapped)).not.toContain("sensitive");
+  });
+
+  it("60428 também é canal não configurado", () => {
+    expect(mapTwilioVerifyError({ status: 400, code: 60428 })).toEqual({
+      kind: "SERVER_CONFIGURATION_ERROR",
+      code: "PROVIDER_CHANNEL_NOT_CONFIGURED",
+      diagnostics: { providerHttpStatus: 400, providerErrorCode: 60428 },
+    });
+  });
+
+  it("4xx desconhecido continua TWILIO_UNAVAILABLE", () => {
+    const mapped = mapTwilioVerifyError({ status: 400, code: 19999 });
+    expect(mapped.kind).toBe("RETRYABLE_PROVIDER_ERROR");
+    expect(mapped.code).toBe("TWILIO_UNAVAILABLE");
+    expect(mapped.diagnostics).toEqual({
+      providerHttpStatus: 400,
+      providerErrorCode: 19999,
+    });
   });
 
   it("D2 401/20003 permanece PROVIDER_AUTH_FAILURE com diagnóstico", () => {
@@ -273,8 +291,8 @@ describe("Twilio Verify provider contract", () => {
     const checked = await provider.checkVerification("+5585988810099", "123456");
     expect(started).toEqual({
       ok: false,
-      kind: "RETRYABLE_PROVIDER_ERROR",
-      code: "TWILIO_UNAVAILABLE",
+      kind: "SERVER_CONFIGURATION_ERROR",
+      code: "PROVIDER_CHANNEL_NOT_CONFIGURED",
       diagnostics: { providerHttpStatus: 400, providerErrorCode: 68008 },
     });
     expect(checked).toEqual(started);

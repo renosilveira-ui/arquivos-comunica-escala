@@ -605,7 +605,7 @@ export default function ProfileScreen() {
                     ? `Verificado · ${whatsappContact.maskedAddress}`
                     : whatsappContact?.status === "unverified"
                       ? `Não verificado · ${whatsappContact.maskedAddress}`
-                      : "Cadastrar número para troca/cessão"
+                      : "Cadastrar e verificar o número da conta"
                 }
                 Icon={MessageCircle}
                 value={

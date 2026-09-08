@@ -576,8 +576,8 @@ describe("WhatsApp L2 Twilio Verify", () => {
     });
     expect(started.ok).toBe(false);
     if (!started.ok) {
-      expect(started.code).toBe("TWILIO_UNAVAILABLE");
-      expect(started.kind).toBe("RETRYABLE_PROVIDER_ERROR");
+      expect(started.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
+      expect(started.kind).toBe("SERVER_CONFIGURATION_ERROR");
     }
     const dumped = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
     expect(dumped).toContain("whatsapp_verify_start_failed");
@@ -686,9 +686,9 @@ describe("WhatsApp L2 Twilio Verify", () => {
     expect(dumped).not.toContain("123456");
     expect(dumped).not.toContain("+5585988810022");
     if (!started.ok) {
-      expect(started.code).toBe("TWILIO_UNAVAILABLE");
+      expect(started.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
       expect(started.message).toBe(
-        "Não foi possível falar com o verificador. Tente de novo em instantes.",
+        "Verificação WhatsApp indisponível no momento.",
       );
     }
   });

@@ -103,6 +103,12 @@ export function mapTwilioVerifyError(
   } else if (twilioCode === 60003 || httpStatus === 429) {
     kind = "USER_ERROR";
     code = "RATE_LIMITED";
+  } else if (twilioCode === 68008 || twilioCode === 60428) {
+    // Docs Twilio: 68008 = Verify WhatsApp channel not configured;
+    // 60428 = unsupported channel / sender WhatsApp ausente no Verify.
+    // Não é retry de transporte. Sem fallback SMS nesta frente.
+    kind = "SERVER_CONFIGURATION_ERROR";
+    code = "PROVIDER_CHANNEL_NOT_CONFIGURED";
   } else if (httpStatus !== undefined && httpStatus >= 500) {
     kind = "RETRYABLE_PROVIDER_ERROR";
     code = "TWILIO_UNAVAILABLE";
