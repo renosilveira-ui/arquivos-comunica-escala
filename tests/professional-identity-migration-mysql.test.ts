@@ -559,7 +559,12 @@ async function readIndexContract(connection: Connection) {
   }));
 }
 
-async function createLegacySentinelTables(connection: Connection) {
+/**
+ * Reproduz as tabelas homônimas que neutralizavam o abort legado. A migration
+ * atual não pode consultá-las: o JSON inválido deve continuar falhando mesmo
+ * quando todos esses nomes já existem no schema.
+ */
+async function createLegacySentinelCollisionTables(connection: Connection) {
   await connection.query(`
     CREATE TABLE professional_identity_profession_code_contract_mismatch (id INT);
     CREATE TABLE professional_identity_custom_profession_name_contract_mismatch (id INT);
@@ -835,7 +840,7 @@ describeWithIsolatedMysql(
            VALUES (1, 1, 'int_coercion', 'Médico')`,
         );
 
-        await createLegacySentinelTables(connection);
+        await createLegacySentinelCollisionTables(connection);
         await expectContractMismatch(connection);
 
         const [rows] = await connection.query<RowDataPacket[]>(
@@ -907,7 +912,7 @@ describeWithIsolatedMysql(
            VALUES (1, 1, 'custom_short', 'Médico')`,
         );
 
-        await createLegacySentinelTables(connection);
+        await createLegacySentinelCollisionTables(connection);
         await expectContractMismatch(connection);
 
         const contract = await readColumnContract(
@@ -949,7 +954,7 @@ describeWithIsolatedMysql(
            VALUES (1, 1, 'wrong_index', 'Médico')`,
         );
 
-        await createLegacySentinelTables(connection);
+        await createLegacySentinelCollisionTables(connection);
         await expectContractMismatch(connection);
 
         expect(await readIndexContract(connection)).toEqual([

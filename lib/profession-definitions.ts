@@ -181,6 +181,8 @@ export type ProfessionalIdentityWriteFields = {
   role: string;
 };
 
+const LEGACY_PROFESSIONAL_ROLE_MAX_LENGTH = 100;
+
 /**
  * Campos persistidos em `professionals` a partir do catálogo.
  * `role` permanece o rótulo de exibição legado; a identidade canônica
@@ -195,6 +197,9 @@ export function professionalIdentityWriteFields(
     const trimmed = customProfessionName?.trim() ?? "";
     if (!trimmed) {
       throw new Error("Nome da profissão é obrigatório para Outro.");
+    }
+    if (Array.from(trimmed).length > LEGACY_PROFESSIONAL_ROLE_MAX_LENGTH) {
+      throw new Error("Nome da profissão deve ter no máximo 100 caracteres.");
     }
     return {
       professionCode,

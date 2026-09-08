@@ -7,7 +7,6 @@ import {
   PROFESSION_DEFINITIONS,
   professionalIdentityWriteFields,
   professionCodeFromLegacyProfessionalRole,
-  type ProfessionDefinition,
 } from "../lib/profession-definitions";
 
 const AUTH_Z_LEAK =
@@ -104,19 +103,17 @@ describe("catálogo canônico de profissões", () => {
   });
 
   it("não carrega AuthZ, ocupação, gestão nem entitlement na definição", () => {
-    const keys = Object.keys(PROFESSION_DEFINITIONS.MEDIC).sort();
-    expect(keys).toEqual(
-      [
-        "code",
-        "customProfessionNameRequired",
-        "label",
-        "registrationLabel",
-        "registrationRequired",
-        "registrationStateRequired",
-        "specialtyRequired",
-      ].sort(),
-    );
+    const expectedKeys = [
+      "code",
+      "customProfessionNameRequired",
+      "label",
+      "registrationLabel",
+      "registrationRequired",
+      "registrationStateRequired",
+      "specialtyRequired",
+    ].sort();
     for (const item of PROFESSION_DEFINITION_LIST) {
+      expect(Object.keys(item).sort()).toEqual(expectedKeys);
       expect(JSON.stringify(item)).not.toMatch(AUTH_Z_LEAK);
     }
   });
@@ -161,19 +158,14 @@ describe("catálogo canônico de profissões", () => {
     expect(() => professionalIdentityWriteFields("OTHER", "   ")).toThrow(
       /Nome da profissão é obrigatório/,
     );
-  });
-
-  it("é extensão estável: acrescentar profissão não exige campo de autoridade", () => {
-    const extra: ProfessionDefinition = {
-      code: "OTHER",
-      label: "Outro",
-      registrationRequired: false,
-      registrationLabel: null,
-      registrationStateRequired: false,
-      specialtyRequired: false,
-      customProfessionNameRequired: true,
-    };
-    expect(extra).not.toHaveProperty("canManageSchedule");
-    expect(extra).not.toHaveProperty("canOccupyShift");
+    const maximumName = "A".repeat(100);
+    expect(professionalIdentityWriteFields("OTHER", maximumName)).toEqual({
+      professionCode: "OTHER",
+      customProfessionName: maximumName,
+      role: maximumName,
+    });
+    expect(() =>
+      professionalIdentityWriteFields("OTHER", "A".repeat(101)),
+    ).toThrow(/no máximo 100 caracteres/);
   });
 });
