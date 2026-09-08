@@ -17,6 +17,21 @@ export function previousMonthKey(monthKey: string): string {
   return monthKeyOf(new Date(year, month - 2, 1));
 }
 
+export function clampDayKeyToMonth(dayKey: string, monthKey: string): string {
+  const [year, month] = monthKey.split("-").map(Number);
+  const preferredDay = Number(dayKey.slice(8, 10));
+  const lastDay = new Date(year, month, 0).getDate();
+  return `${monthKey}-${String(Math.min(preferredDay, lastDay)).padStart(2, "0")}`;
+}
+
+export function stepDayKey(dayKey: string, delta: number): string {
+  const date = new Date(`${dayKey}T12:00:00`);
+  date.setDate(date.getDate() + delta);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
 export function sourceMonthForCalendarTarget(targetMonth: string): string {
   return previousMonthKey(targetMonth);
 }

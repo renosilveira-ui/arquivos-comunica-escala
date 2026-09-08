@@ -58,8 +58,10 @@ import { AppButton } from "@/components/ui/AppButton";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
   buildAgendaMonthPickerOptions,
+  clampDayKeyToMonth,
   countShiftsInMonth,
   monthKeyOf,
+  stepDayKey,
 } from "@/lib/agenda-month-navigation";
 import { openMonthShiftsDescription } from "@/lib/open-month-shifts";
 import {
@@ -88,10 +90,9 @@ import {
  *     um dia da semana; em cada célula, grupos colapsáveis por
  *     hospital+setor com a lista de plantões. Scroll vertical avança
  *     semanas.
- *   - Mobile/tablet: visão dia-a-dia com mini-strip de seleção. Cada
- *     dia mostra grupos hospital+setor em sequência. Mantida do design
- *     anterior pra não regredir UX mobile (refator focado em desktop
- *     conforme escopo do PO).
+ *   - Mobile/tablet: Lista é o censo do dia selecionado, agrupado por
+ *     hospital+setor; Panorama é a folha mensal. A navegação compacta usa
+ *     setas para mês e, na Lista, setas adicionais para o dia.
  *
  * Sub-modos no header (segmented):
  *   - "Geral": todos plantonistas do tenant (default).
@@ -137,6 +138,35 @@ function formatMonthTitle(monthKey: string): string {
     "Dez",
   ];
   return `${months[m - 1]} ${y}`;
+}
+
+function formatSelectedDay(dayKey: string, todayKey: string): string {
+  const date = new Date(`${dayKey}T12:00:00`);
+  const weekdays = [
+    "Domingo",
+    "Segunda",
+    "Terça",
+    "Quarta",
+    "Quinta",
+    "Sexta",
+    "Sábado",
+  ];
+  const months = [
+    "janeiro",
+    "fevereiro",
+    "março",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
+  ];
+  const label = `${weekdays[date.getDay()]}, ${date.getDate()} de ${months[date.getMonth()]}`;
+  return dayKey === todayKey ? `Hoje · ${label}` : label;
 }
 
 function formatMonthRange(weekStart: string, weekCount: number): string {
@@ -226,6 +256,7 @@ export default function AgendaScreen() {
     toDateKey(startOfWeekMon(new Date())),
   );
   const todayKey = useMemo(() => toDateKey(new Date()), []);
+  const [selectedDayKey, setSelectedDayKey] = useState(todayKey);
   const weeksCount = isDesktop ? 4 : 2;
 
   // Panorama: âncora por MÊS (grade completa). Calendário: por semanas.
@@ -238,12 +269,15 @@ export default function AgendaScreen() {
     : viewMode === "panorama";
   // Grade hospital × dia (semanas): só no desktop.
   const isHospitalGrid = isDesktop && viewMode === "panorama";
+  // No celular, Lista e Panorama são duas apresentações da mesma competência
+  // mensal. Isso evita trocar de mês ou refazer a consulta ao alternar a vista.
+  const usesMonthNavigation = !isDesktop || isMonthSheet;
   const panoramaStart = useMemo(() => {
     const [y, m] = anchorMonthKey.split("-").map(Number);
     return toDateKey(startOfWeekMon(new Date(y, m - 1, 1)));
   }, [anchorMonthKey]);
-  const queryStartDate = isMonthSheet ? panoramaStart : anchorWeekStart;
-  const queryWeeks = isMonthSheet ? 6 : weeksCount;
+  const queryStartDate = usesMonthNavigation ? panoramaStart : anchorWeekStart;
+  const queryWeeks = usesMonthNavigation ? 6 : weeksCount;
   const scheduleContext = useScheduleContext({
     userId: user?.id,
     institutionId: activeInstitutionId,
@@ -314,11 +348,15 @@ export default function AgendaScreen() {
               input?: {
                 scope?: AgendaScope;
                 scheduleContextId?: number;
+                startDate?: string;
+                weeks?: number;
               };
             }
           | undefined;
         return previousMeta?.input?.scope === scope &&
-          previousMeta.input.scheduleContextId === selectedAgendaContextId
+          previousMeta.input.scheduleContextId === selectedAgendaContextId &&
+          previousMeta.input.startDate === queryStartDate &&
+          previousMeta.input.weeks === queryWeeks
           ? previousData
           : undefined;
       },
@@ -377,7 +415,7 @@ export default function AgendaScreen() {
     [myInstitutions, activeInstitutionId],
   );
 
-  const visibleMonthKey = isMonthSheet
+  const visibleMonthKey = usesMonthNavigation
     ? anchorMonthKey
     : monthKeyOf(new Date(`${anchorWeekStart}T00:00:00`));
   const selectedMonthShiftCount = useMemo(
@@ -393,12 +431,26 @@ export default function AgendaScreen() {
     [visibleMonthKey],
   );
 
+  const setMonthAnchors = (monthKey: string) => {
+    const nextDayKey = clampDayKeyToMonth(selectedDayKey, monthKey);
+    setAnchorMonthKey(monthKey);
+    setAnchorWeekStart(
+      toDateKey(startOfWeekMon(new Date(`${nextDayKey}T12:00:00`))),
+    );
+    setSelectedDayKey(nextDayKey);
+  };
+
   const selectMonth = (monthKey: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const [year, month] = monthKey.split("-").map(Number);
-    setAnchorMonthKey(monthKey);
-    setAnchorWeekStart(toDateKey(startOfWeekMon(new Date(year, month - 1, 1))));
+    setMonthAnchors(monthKey);
     setViewMode(isDesktop ? "calendario" : "panorama");
+  };
+
+  const selectAgendaView = (nextViewMode: AgendaViewMode) => {
+    if (nextViewMode === viewMode) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setMonthAnchors(visibleMonthKey);
+    setViewMode(nextViewMode);
   };
 
   const handleSwitchInstitution = async () => {
@@ -415,19 +467,19 @@ export default function AgendaScreen() {
   };
 
   const stepMonth = (delta: number) => {
-    const [y, m] = anchorMonthKey.split("-").map(Number);
-    setAnchorMonthKey(monthKeyOf(new Date(y, m - 1 + delta, 1)));
+    const [y, m] = visibleMonthKey.split("-").map(Number);
+    setMonthAnchors(monthKeyOf(new Date(y, m - 1 + delta, 1)));
   };
   const goPrev = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (isMonthSheet) return stepMonth(-1);
+    if (usesMonthNavigation) return stepMonth(-1);
     const d = new Date(`${anchorWeekStart}T00:00:00`);
     d.setDate(d.getDate() - weeksCount * 7);
     setAnchorWeekStart(toDateKey(d));
   };
   const goNext = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (isMonthSheet) return stepMonth(1);
+    if (usesMonthNavigation) return stepMonth(1);
     const d = new Date(`${anchorWeekStart}T00:00:00`);
     d.setDate(d.getDate() + weeksCount * 7);
     setAnchorWeekStart(toDateKey(d));
@@ -436,6 +488,17 @@ export default function AgendaScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setAnchorWeekStart(toDateKey(startOfWeekMon(new Date())));
     setAnchorMonthKey(monthKeyOf(new Date()));
+    setSelectedDayKey(todayKey);
+  };
+
+  const stepDay = (delta: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const nextDayKey = stepDayKey(selectedDayKey, delta);
+    setSelectedDayKey(nextDayKey);
+    setAnchorMonthKey(nextDayKey.slice(0, 7));
+    setAnchorWeekStart(
+      toDateKey(startOfWeekMon(new Date(`${nextDayKey}T12:00:00`))),
+    );
   };
 
   return (
@@ -490,7 +553,10 @@ export default function AgendaScreen() {
                 onPress={goPrev}
                 style={navBtnStyle}
                 hitSlop={8}
-                accessibilityLabel="Período anterior"
+                accessibilityRole="button"
+                accessibilityLabel={
+                  usesMonthNavigation ? "Mês anterior" : "Período anterior"
+                }
               >
                 <ChevronLeft size={16} color={theme.colors.brand} />
               </TouchableOpacity>
@@ -505,15 +571,18 @@ export default function AgendaScreen() {
                   color: theme.colors.textPrimary,
                 }}
               >
-                {isMonthSheet
-                  ? formatMonthTitle(anchorMonthKey)
+                {usesMonthNavigation
+                  ? formatMonthTitle(visibleMonthKey)
                   : formatMonthRange(anchorWeekStart, weeksCount)}
               </Text>
               <TouchableOpacity
                 onPress={goNext}
                 style={navBtnStyle}
                 hitSlop={8}
-                accessibilityLabel="Próximo período"
+                accessibilityRole="button"
+                accessibilityLabel={
+                  usesMonthNavigation ? "Próximo mês" : "Próximo período"
+                }
               >
                 <ChevronRight size={16} color={theme.colors.brand} />
               </TouchableOpacity>
@@ -521,6 +590,7 @@ export default function AgendaScreen() {
                 onPress={goToday}
                 style={todayBtnStyle}
                 hitSlop={6}
+                accessibilityRole="button"
                 accessibilityLabel="Ir para hoje"
               >
                 <Text
@@ -650,7 +720,7 @@ export default function AgendaScreen() {
               label="Lista"
               Icon={ListChecks}
               active={viewMode === "lista"}
-              onPress={() => setViewMode("lista")}
+              onPress={() => selectAgendaView("lista")}
               stretch
               subtle
             />
@@ -659,7 +729,7 @@ export default function AgendaScreen() {
                 label="Calendário"
                 Icon={CalendarDays}
                 active={viewMode === "calendario"}
-                onPress={() => setViewMode("calendario")}
+                onPress={() => selectAgendaView("calendario")}
                 stretch
                 subtle
               />
@@ -668,17 +738,62 @@ export default function AgendaScreen() {
               label="Panorama"
               Icon={isDesktop ? LayoutGrid : CalendarDays}
               active={viewMode === "panorama"}
-              onPress={() => setViewMode("panorama")}
+              onPress={() => selectAgendaView("panorama")}
               stretch
               subtle
             />
           </Segmented>
 
-          <MonthPickerChips
-            monthKeys={monthPickerKeys}
-            selectedMonthKey={visibleMonthKey}
-            onSelect={selectMonth}
-          />
+          {!isDesktop && viewMode === "lista" ? (
+            <View
+              style={{
+                minHeight: 44,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: theme.space[2],
+              }}
+            >
+              <TouchableOpacity
+                onPress={() => stepDay(-1)}
+                style={navBtnStyle}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Dia anterior"
+              >
+                <ChevronLeft size={16} color={theme.colors.brand} />
+              </TouchableOpacity>
+              <Text
+                numberOfLines={1}
+                style={{
+                  ...theme.text.body,
+                  flex: 1,
+                  textAlign: "center",
+                  fontWeight: theme.weight.bold,
+                  color: theme.colors.textPrimary,
+                }}
+              >
+                {formatSelectedDay(selectedDayKey, todayKey)}
+              </Text>
+              <TouchableOpacity
+                onPress={() => stepDay(1)}
+                style={navBtnStyle}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Próximo dia"
+              >
+                <ChevronRight size={16} color={theme.colors.brand} />
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {isDesktop ? (
+            <MonthPickerChips
+              monthKeys={monthPickerKeys}
+              selectedMonthKey={visibleMonthKey}
+              onSelect={selectMonth}
+            />
+          ) : null}
 
           {canCreateShift && selectedManagerContext ? (
             selectedMonthShiftCount > 0 ? (
@@ -764,7 +879,7 @@ export default function AgendaScreen() {
                 variant="strip"
                 institutionId={activeInstitutionId ?? null}
                 period={
-                  isMonthSheet
+                  usesMonthNavigation
                     ? { kind: "month", monthKey: anchorMonthKey }
                     : { kind: "week", weekStart: anchorWeekStart }
                 }
@@ -998,8 +1113,9 @@ export default function AgendaScreen() {
           />
         ) : (
           <MobileDayList
+            key={selectedDayKey}
             weeks={weeksForRender}
-            todayKey={todayKey}
+            selectedDayKey={selectedDayKey}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
