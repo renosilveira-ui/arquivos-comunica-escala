@@ -18,6 +18,7 @@ import {
   tinyint,
   bigint,
   char,
+  date,
 } from "drizzle-orm/mysql-core";
 import { relations, sql } from "drizzle-orm";
 
@@ -167,6 +168,441 @@ export const userContactChannels = mysqlTable(
 
 export type UserContactChannel = typeof userContactChannels.$inferSelect;
 export type InsertUserContactChannel = typeof userContactChannels.$inferInsert;
+
+/**
+ * Agenda pessoal do titular da conta.
+ *
+ * Este domínio é deliberadamente account-wide: não carrega institution_id,
+ * professional_id, hospital_id ou sector_id. Esses eixos governam escalas
+ * institucionais e nunca podem se tornar autoridade sobre um compromisso
+ * privado. O owner sempre é derivado da sessão pelo servidor.
+ *
+ * Datas e horas são civis no fuso IANA informado. Instantes UTC destinados a
+ * busca, conflito e alertas vivem somente em personal_calendar_occurrences,
+ * onde são materializados pelo motor de recorrência.
+ */
+export const personalCalendarItems = mysqlTable(
+  "personal_calendar_items",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    ownerUserId: int("owner_user_id").notNull(),
+    clientMutationId: binaryVarchar("client_mutation_id", {
+      length: 64,
+    }).notNull(),
+    kind: mysqlEnum("kind", ["APPOINTMENT", "REMINDER", "BIRTHDAY"]).notNull(),
+    title: varchar("title", { length: 160 }).notNull(),
+    locationLabel: varchar("location_label", { length: 255 }),
+    /** Identificador futuro de Google Maps; nunca é autoridade de acesso. */
+    locationProvider: varchar("location_provider", { length: 32 }),
+    locationExternalId: varchar("location_external_id", { length: 191 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
+    notes: text("notes"),
+    startLocalDate: date("start_local_date", { mode: "string" }),
+    startLocalTime: time("start_local_time"),
+    endLocalDate: date("end_local_date", { mode: "string" }),
+    endLocalTime: time("end_local_time"),
+    birthdayMonth: tinyint("birthday_month", { unsigned: true }),
+    birthdayDay: tinyint("birthday_day", { unsigned: true }),
+    birthdayYear: int("birthday_year"),
+    allDay: boolean("all_day").notNull().default(false),
+    availability: mysqlEnum("availability", ["BUSY", "FREE"])
+      .notNull()
+      .default("BUSY"),
+    timeZone: varchar("time_zone", { length: 64 }).notNull(),
+    version: int("version").notNull().default(1),
+    deletedAt: datetime("deleted_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqPersonalCalendarItemOwnerMutation: unique(
+      "uniq_pc_item_owner_mutation",
+    ).on(table.ownerUserId, table.clientMutationId),
+    uniqPersonalCalendarItemIdOwner: unique("uniq_pc_item_id_owner").on(
+      table.id,
+      table.ownerUserId,
+    ),
+    idxPersonalCalendarItemOwnerRange: index("idx_pc_item_owner_range").on(
+      table.ownerUserId,
+      table.deletedAt,
+      table.startLocalDate,
+      table.id,
+    ),
+    fkPersonalCalendarItemOwner: foreignKey({
+      columns: [table.ownerUserId],
+      foreignColumns: [users.id],
+      name: "fk_pc_item_owner",
+    }).onDelete("cascade"),
+    chkPersonalCalendarItemTitle: check(
+      "chk_pc_item_title",
+      sql`CHAR_LENGTH(TRIM(${table.title})) BETWEEN 1 AND 160`,
+    ),
+    chkPersonalCalendarItemMutationId: check(
+      "chk_pc_item_mutation_id",
+      sql`CHAR_LENGTH(${table.clientMutationId}) BETWEEN 1 AND 64`,
+    ),
+    chkPersonalCalendarItemTimezone: check(
+      "chk_pc_item_timezone",
+      sql`CHAR_LENGTH(TRIM(${table.timeZone})) BETWEEN 1 AND 64`,
+    ),
+    chkPersonalCalendarItemLocation: check(
+      "chk_pc_item_location",
+      sql`(
+        (${table.latitude} IS NULL AND ${table.longitude} IS NULL)
+        OR
+        (
+          ${table.latitude} BETWEEN -90 AND 90
+          AND ${table.longitude} BETWEEN -180 AND 180
+        )
+      )`,
+    ),
+    chkPersonalCalendarItemLocationBinding: check(
+      "chk_pc_item_location_binding",
+      sql`(
+        (${table.locationProvider} IS NULL AND ${table.locationExternalId} IS NULL)
+        OR
+        (
+          CHAR_LENGTH(TRIM(${table.locationProvider})) BETWEEN 1 AND 32
+          AND CHAR_LENGTH(TRIM(${table.locationExternalId})) BETWEEN 1 AND 191
+        )
+      )`,
+    ),
+    chkPersonalCalendarItemAvailability: check(
+      "chk_pc_item_availability",
+      sql`${table.kind} = 'APPOINTMENT' OR ${table.availability} = 'FREE'`,
+    ),
+    chkPersonalCalendarItemVersion: check(
+      "chk_pc_item_version",
+      sql`${table.version} >= 1`,
+    ),
+    chkPersonalCalendarItemShape: check(
+      "chk_pc_item_shape",
+      sql`(
+        (
+          ${table.kind} = 'APPOINTMENT'
+          AND ${table.startLocalDate} IS NOT NULL
+          AND ${table.endLocalDate} IS NOT NULL
+          AND ${table.birthdayMonth} IS NULL
+          AND ${table.birthdayDay} IS NULL
+          AND ${table.birthdayYear} IS NULL
+          AND (
+            (
+              ${table.allDay} = 1
+              AND ${table.startLocalTime} IS NULL
+              AND ${table.endLocalTime} IS NULL
+              AND ${table.endLocalDate} > ${table.startLocalDate}
+            )
+            OR
+            (
+              ${table.allDay} = 0
+              AND ${table.startLocalTime} IS NOT NULL
+              AND ${table.endLocalTime} IS NOT NULL
+              AND TIMESTAMP(${table.endLocalDate}, ${table.endLocalTime})
+                > TIMESTAMP(${table.startLocalDate}, ${table.startLocalTime})
+            )
+          )
+        )
+        OR
+        (
+          ${table.kind} = 'REMINDER'
+          AND ${table.startLocalDate} IS NOT NULL
+          AND ${table.endLocalDate} IS NULL
+          AND ${table.endLocalTime} IS NULL
+          AND ${table.birthdayMonth} IS NULL
+          AND ${table.birthdayDay} IS NULL
+          AND ${table.birthdayYear} IS NULL
+          AND (
+            (${table.allDay} = 1 AND ${table.startLocalTime} IS NULL)
+            OR
+            (${table.allDay} = 0 AND ${table.startLocalTime} IS NOT NULL)
+          )
+        )
+        OR
+        (
+          ${table.kind} = 'BIRTHDAY'
+          AND ${table.allDay} = 1
+          AND ${table.startLocalDate} IS NULL
+          AND ${table.startLocalTime} IS NULL
+          AND ${table.endLocalDate} IS NULL
+          AND ${table.endLocalTime} IS NULL
+          AND ${table.birthdayMonth} BETWEEN 1 AND 12
+          AND ${table.birthdayDay} BETWEEN 1 AND
+            CASE ${table.birthdayMonth}
+              WHEN 2 THEN 29
+              WHEN 4 THEN 30
+              WHEN 6 THEN 30
+              WHEN 9 THEN 30
+              WHEN 11 THEN 30
+              ELSE 31
+            END
+          AND (${table.birthdayYear} IS NULL OR ${table.birthdayYear} BETWEEN 1800 AND 2200)
+        )
+      )`,
+    ),
+  }),
+);
+
+export type PersonalCalendarItem = typeof personalCalendarItems.$inferSelect;
+export type InsertPersonalCalendarItem =
+  typeof personalCalendarItems.$inferInsert;
+
+/**
+ * Subconjunto normalizado de recorrência. O cliente nunca fornece RRULE
+ * arbitrária: o servidor traduz estas colunas para uma regra limitada.
+ */
+export const personalCalendarRecurrences = mysqlTable(
+  "personal_calendar_recurrences",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    itemId: int("item_id").notNull(),
+    ownerUserId: int("owner_user_id").notNull(),
+    frequency: mysqlEnum("frequency", [
+      "DAILY",
+      "WEEKLY",
+      "MONTHLY",
+      "YEARLY",
+    ]).notNull(),
+    interval: int("interval_count").notNull().default(1),
+    /** Bits 0..6 representam domingo..sábado; obrigatório só em WEEKLY. */
+    weekdaysMask: tinyint("weekdays_mask", { unsigned: true }),
+    invalidDatePolicy: mysqlEnum("invalid_date_policy", [
+      "SKIP",
+      "CLAMP_LAST_DAY",
+    ])
+      .notNull()
+      .default("SKIP"),
+    termination: mysqlEnum("termination", ["NEVER", "UNTIL", "COUNT"])
+      .notNull()
+      .default("NEVER"),
+    untilLocalDate: date("until_local_date", { mode: "string" }),
+    occurrenceCount: int("occurrence_count"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqPersonalCalendarRecurrenceItem: unique("uniq_pc_recurrence_item").on(
+      table.itemId,
+    ),
+    idxPersonalCalendarRecurrenceOwner: index("idx_pc_recurrence_owner").on(
+      table.ownerUserId,
+      table.itemId,
+    ),
+    fkPersonalCalendarRecurrenceItemOwner: foreignKey({
+      columns: [table.itemId, table.ownerUserId],
+      foreignColumns: [
+        personalCalendarItems.id,
+        personalCalendarItems.ownerUserId,
+      ],
+      name: "fk_pc_recurrence_item_owner",
+    }).onDelete("cascade"),
+    chkPersonalCalendarRecurrenceInterval: check(
+      "chk_pc_recurrence_interval",
+      sql`${table.interval} BETWEEN 1 AND 100`,
+    ),
+    chkPersonalCalendarRecurrenceWeekdays: check(
+      "chk_pc_recurrence_weekdays",
+      sql`(
+        (${table.frequency} = 'WEEKLY' AND ${table.weekdaysMask} BETWEEN 1 AND 127)
+        OR
+        (${table.frequency} <> 'WEEKLY' AND ${table.weekdaysMask} IS NULL)
+      )`,
+    ),
+    chkPersonalCalendarRecurrenceTermination: check(
+      "chk_pc_recurrence_termination",
+      sql`(
+        (
+          ${table.termination} = 'NEVER'
+          AND ${table.untilLocalDate} IS NULL
+          AND ${table.occurrenceCount} IS NULL
+        )
+        OR
+        (
+          ${table.termination} = 'UNTIL'
+          AND ${table.untilLocalDate} IS NOT NULL
+          AND ${table.occurrenceCount} IS NULL
+        )
+        OR
+        (
+          ${table.termination} = 'COUNT'
+          AND ${table.untilLocalDate} IS NULL
+          AND ${table.occurrenceCount} BETWEEN 1 AND 10000
+        )
+      )`,
+    ),
+  }),
+);
+
+export type PersonalCalendarRecurrence =
+  typeof personalCalendarRecurrences.$inferSelect;
+export type InsertPersonalCalendarRecurrence =
+  typeof personalCalendarRecurrences.$inferInsert;
+
+/**
+ * Regras semânticas de aviso por item. O offset é persistido em minutos para
+ * suportar os atalhos do produto e valores customizados sem aceitar expressões
+ * livres do cliente. A materialização e a entrega pertencem a uma outbox
+ * futura; esta tabela nunca representa que um push já foi enviado.
+ */
+export const personalCalendarAlertRules = mysqlTable(
+  "personal_calendar_alert_rules",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    itemId: int("item_id").notNull(),
+    ownerUserId: int("owner_user_id").notNull(),
+    minutesBefore: int("minutes_before").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqPersonalCalendarAlertOffset: unique("uniq_pc_alert_item_offset").on(
+      table.itemId,
+      table.minutesBefore,
+    ),
+    idxPersonalCalendarAlertOwner: index("idx_pc_alert_owner").on(
+      table.ownerUserId,
+      table.itemId,
+    ),
+    fkPersonalCalendarAlertItemOwner: foreignKey({
+      columns: [table.itemId, table.ownerUserId],
+      foreignColumns: [
+        personalCalendarItems.id,
+        personalCalendarItems.ownerUserId,
+      ],
+      name: "fk_pc_alert_item_owner",
+    }).onDelete("cascade"),
+    chkPersonalCalendarAlertOffset: check(
+      "chk_pc_alert_offset",
+      sql`${table.minutesBefore} BETWEEN 0 AND 525600`,
+    ),
+  }),
+);
+
+export type PersonalCalendarAlertRule =
+  typeof personalCalendarAlertRules.$inferSelect;
+export type InsertPersonalCalendarAlertRule =
+  typeof personalCalendarAlertRules.$inferInsert;
+
+/** Ocorrências UTC materializadas e limitadas pelo motor de recorrência. */
+export const personalCalendarOccurrences = mysqlTable(
+  "personal_calendar_occurrences",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    itemId: int("item_id").notNull(),
+    ownerUserId: int("owner_user_id").notNull(),
+    occurrenceKey: binaryVarchar("occurrence_key", { length: 64 }).notNull(),
+    originalLocalDate: date("original_local_date", {
+      mode: "string",
+    }).notNull(),
+    originalLocalTime: time("original_local_time"),
+    startsAtUtc: datetime("starts_at_utc").notNull(),
+    endsAtUtc: datetime("ends_at_utc").notNull(),
+    state: mysqlEnum("state", ["ACTIVE", "CANCELLED", "REPLACED"])
+      .notNull()
+      .default("ACTIVE"),
+    sourceVersion: int("source_version").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqPersonalCalendarOccurrence: unique("uniq_pc_occurrence_item_key").on(
+      table.itemId,
+      table.occurrenceKey,
+    ),
+    idxPersonalCalendarOccurrenceOwnerRange: index(
+      "idx_pc_occurrence_owner_range",
+    ).on(table.ownerUserId, table.state, table.startsAtUtc, table.endsAtUtc),
+    fkPersonalCalendarOccurrenceItemOwner: foreignKey({
+      columns: [table.itemId, table.ownerUserId],
+      foreignColumns: [
+        personalCalendarItems.id,
+        personalCalendarItems.ownerUserId,
+      ],
+      name: "fk_pc_occurrence_item_owner",
+    }).onDelete("cascade"),
+    chkPersonalCalendarOccurrenceKey: check(
+      "chk_pc_occurrence_key",
+      sql`CHAR_LENGTH(${table.occurrenceKey}) BETWEEN 1 AND 64`,
+    ),
+    chkPersonalCalendarOccurrenceRange: check(
+      "chk_pc_occurrence_range",
+      sql`${table.endsAtUtc} > ${table.startsAtUtc}`,
+    ),
+    chkPersonalCalendarOccurrenceVersion: check(
+      "chk_pc_occurrence_version",
+      sql`${table.sourceVersion} >= 1`,
+    ),
+  }),
+);
+
+export type PersonalCalendarOccurrence =
+  typeof personalCalendarOccurrences.$inferSelect;
+export type InsertPersonalCalendarOccurrence =
+  typeof personalCalendarOccurrences.$inferInsert;
+
+/**
+ * Exceção estável de uma ocorrência. Alterar somente uma data cria um item
+ * não recorrente substituto; a série guarda apenas o vínculo, sem duplicar
+ * título, local ou anotações em JSON.
+ */
+export const personalCalendarOccurrenceExceptions = mysqlTable(
+  "personal_calendar_occurrence_exceptions",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    seriesItemId: int("series_item_id").notNull(),
+    ownerUserId: int("owner_user_id").notNull(),
+    occurrenceKey: binaryVarchar("occurrence_key", { length: 64 }).notNull(),
+    action: mysqlEnum("action", ["CANCELLED", "REPLACED"]).notNull(),
+    replacementItemId: int("replacement_item_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqPersonalCalendarOccurrenceException: unique(
+      "uniq_pc_exception_series_key",
+    ).on(table.seriesItemId, table.occurrenceKey),
+    idxPersonalCalendarExceptionReplacement: index(
+      "idx_pc_exception_replacement",
+    ).on(table.ownerUserId, table.replacementItemId),
+    fkPersonalCalendarExceptionSeriesOwner: foreignKey({
+      columns: [table.seriesItemId, table.ownerUserId],
+      foreignColumns: [
+        personalCalendarItems.id,
+        personalCalendarItems.ownerUserId,
+      ],
+      name: "fk_pc_exception_series_owner",
+    }).onDelete("cascade"),
+    fkPersonalCalendarExceptionReplacementOwner: foreignKey({
+      columns: [table.replacementItemId, table.ownerUserId],
+      foreignColumns: [
+        personalCalendarItems.id,
+        personalCalendarItems.ownerUserId,
+      ],
+      name: "fk_pc_exception_replacement_owner",
+    }).onDelete("cascade"),
+    chkPersonalCalendarExceptionKey: check(
+      "chk_pc_exception_key",
+      sql`CHAR_LENGTH(${table.occurrenceKey}) BETWEEN 1 AND 64`,
+    ),
+    chkPersonalCalendarExceptionAction: check(
+      "chk_pc_exception_action",
+      sql`(
+        (${table.action} = 'CANCELLED' AND ${table.replacementItemId} IS NULL)
+        OR
+        (
+          ${table.action} = 'REPLACED'
+          AND ${table.replacementItemId} IS NOT NULL
+          AND ${table.replacementItemId} <> ${table.seriesItemId}
+        )
+      )`,
+    ),
+  }),
+);
+
+export type PersonalCalendarOccurrenceException =
+  typeof personalCalendarOccurrenceExceptions.$inferSelect;
+export type InsertPersonalCalendarOccurrenceException =
+  typeof personalCalendarOccurrenceExceptions.$inferInsert;
 
 /**
  * Inbound técnico WhatsApp (Incremento A). Fila assíncrona:
