@@ -44,7 +44,10 @@ describe("wiring da prova MySQL da readiness fence V1 na CI", () => {
     expect(proofBlock).toContain("env:");
     const concurrencyBlock = CI_WORKFLOW.slice(concurrencyStep);
     expect(concurrencyBlock).toContain(
-      "READINESS_FENCE_V1_MYSQL_TEST_SERVER_URL: ${{ env.READINESS_FENCE_V1_PROOF_SERVER_URL }}",
+      "READINESS_FENCE_V1_MYSQL_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/",
+    );
+    expect(concurrencyBlock).not.toContain(
+      "READINESS_FENCE_V1_MYSQL_TEST_SERVER_URL: ${{ env.",
     );
     expect(concurrencyBlock).toContain(
       "run: pnpm test:readiness-fence-v1-mysql",

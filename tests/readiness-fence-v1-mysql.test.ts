@@ -82,9 +82,8 @@ function deferred(): Readonly<{
 }
 
 const server = parseTestServer(TEST_SERVER_URL);
-const describeWithIsolatedMysql = server ? describe.sequential : describe.skip;
 
-describeWithIsolatedMysql("readiness fence V1 no MySQL 8 efêmero", () => {
+describe.sequential("readiness fence V1 no MySQL 8 efêmero", () => {
   let serverConnection!: Connection;
   let connection!: Connection;
   let databaseName!: string;

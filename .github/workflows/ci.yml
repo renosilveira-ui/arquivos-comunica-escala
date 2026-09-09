@@ -144,8 +144,10 @@ jobs:
       - name: Validate readiness fence V1 event journal concurrency
         # Reaproveita a URL já declarada para a prova manual. O teste cria seu
         # próprio schema efêmero e não recebe a DATABASE_URL da aplicação.
+        # O valor é repetido de propósito: `env` de uma etapa não é propagado
+        # para a etapa seguinte pelo GitHub Actions.
         env:
-          READINESS_FENCE_V1_MYSQL_TEST_SERVER_URL: ${{ env.READINESS_FENCE_V1_PROOF_SERVER_URL }}
+          READINESS_FENCE_V1_MYSQL_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/
         run: pnpm test:readiness-fence-v1-mysql
 
       - name: Validate Unimed hospital provision plan
