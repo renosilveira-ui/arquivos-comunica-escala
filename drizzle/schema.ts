@@ -276,8 +276,9 @@ export const institutions = mysqlTable("institutions", {
 /**
  * Recursos comerciais habilitados por instituição.
  *
- * Ausência de linha significa recurso desabilitado. A decisão fica no servidor
- * e não altera papel, manager_scope, professional_access ou elegibilidade.
+ * Ausência de linha mantém o padrão do produto definido no servidor. Uma
+ * linha registra a materialização ou um override institucional explícito e
+ * não altera papel, manager_scope, professional_access ou elegibilidade.
  */
 export const institutionFeatureEntitlements = mysqlTable(
   "institution_feature_entitlements",
@@ -285,7 +286,7 @@ export const institutionFeatureEntitlements = mysqlTable(
     id: int("id").primaryKey().autoincrement(),
     institutionId: int("institution_id").notNull(),
     featureCode: varchar("feature_code", { length: 64 }).notNull(),
-    enabled: boolean("enabled").notNull().default(false),
+    enabled: boolean("enabled").notNull().default(true),
     source: mysqlEnum("source", [
       "LEGACY_COMPATIBILITY",
       "ADMIN_OVERRIDE",

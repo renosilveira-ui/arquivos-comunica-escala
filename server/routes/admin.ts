@@ -32,7 +32,10 @@ import { AuthenticationInfrastructureError, sdk } from "../_core/sdk";
 import { SessionInstanceConstraintError } from "../_core/session-instance";
 import { ExpectedUserConstraintError } from "../_core/expected-user";
 import { recordAudit } from "../audit-trail";
-import { INSTITUTION_FEATURE_CODES } from "../../lib/institution-features";
+import {
+  INSTITUTION_FEATURE_CODES,
+  INSTITUTION_FEATURE_DEFAULTS,
+} from "../../lib/institution-features";
 import { readInstitutionFeatureEntitlement } from "../institution-features";
 import { mailer } from "../mailer";
 import type { OperationalProfileCode } from "../../lib/medical-specialties";
@@ -1163,15 +1166,19 @@ function projectInstitutionFeatureResponse(
   return {
     institutionId,
     featureCode: INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
-    enabled: entitlement?.enabled === true,
+    enabled:
+      entitlement?.enabled ??
+      INSTITUTION_FEATURE_DEFAULTS[
+        INSTITUTION_FEATURE_CODES.crossScheduleRosterView
+      ],
     source: entitlement?.source ?? null,
     version: entitlement?.version ?? 0,
     updatedAt: entitlement?.updatedAt?.toISOString() ?? null,
   };
 }
 
-// Leitura da chave comercial. Ausência de linha é sempre interpretada como
-// desabilitada, inclusive para instituições criadas depois do backfill.
+// Leitura da chave comercial. Ausência de linha preserva o padrão do produto;
+// somente um override institucional explícito pode retirar a funcionalidade.
 adminRouter.get(
   "/institution-features/cross-schedule-roster-view",
   async (req: Request, res: Response): Promise<void> => {
@@ -1277,7 +1284,13 @@ adminRouter.put(
             );
           }
 
-          if (!current && !enabled) {
+          const currentEnabled =
+            current?.enabled ??
+            INSTITUTION_FEATURE_DEFAULTS[
+              INSTITUTION_FEATURE_CODES.crossScheduleRosterView
+            ];
+
+          if (!current && enabled === currentEnabled) {
             return null;
           }
 
@@ -1351,7 +1364,7 @@ adminRouter.put(
                 "Visualização de equipes entre escalas da instituição atualizada",
               metadata: {
                 featureCode: INSTITUTION_FEATURE_CODES.crossScheduleRosterView,
-                previousEnabled: current?.enabled ?? false,
+                previousEnabled: currentEnabled,
                 enabled: updated.enabled,
                 previousVersion: currentVersion,
                 version: updated.version,

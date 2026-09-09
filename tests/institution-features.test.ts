@@ -6,9 +6,9 @@ import {
 import { resolveRosterReadPolicyFromEntitlement } from "../server/institution-features";
 
 describe("política de leitura ampliada entre escalas", () => {
-  it("fecha por padrão quando a instituição não possui entitlement", () => {
+  it("mantém a funcionalidade do produto-base quando a instituição ainda não possui linha", () => {
     expect(resolveRosterReadPolicyFromEntitlement(null, 1)).toBe(
-      ROSTER_READ_POLICIES.authorizedContextsOnly,
+      ROSTER_READ_POLICIES.institutionWide,
     );
   });
 

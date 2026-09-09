@@ -127,7 +127,7 @@ describeWithIsolatedMysql(
       }
     });
 
-    it("preserva legado, mantém novos fechados e reaplica sem desfazer override", async () => {
+    it("habilita existentes sem corte e reaplica sem desfazer override", async () => {
       await database.query(migration);
 
       const [initialRows] = await database.query<RowDataPacket[]>(`
@@ -139,6 +139,14 @@ describeWithIsolatedMysql(
       expect(initialRows).toEqual([
         {
           institution_id: 1,
+          feature_code: "CROSS_SCHEDULE_ROSTER_VIEW",
+          enabled: 1,
+          source: "LEGACY_COMPATIBILITY",
+          version: 1,
+          updated_by_user_id: null,
+        },
+        {
+          institution_id: 2,
           feature_code: "CROSS_SCHEDULE_ROSTER_VIEW",
           enabled: 1,
           source: "LEGACY_COMPATIBILITY",
@@ -171,6 +179,13 @@ describeWithIsolatedMysql(
           source: "ADMIN_OVERRIDE",
           version: 2,
           updated_by_user_id: 50,
+        },
+        {
+          institution_id: 2,
+          enabled: 1,
+          source: "LEGACY_COMPATIBILITY",
+          version: 1,
+          updated_by_user_id: null,
         },
       ]);
 

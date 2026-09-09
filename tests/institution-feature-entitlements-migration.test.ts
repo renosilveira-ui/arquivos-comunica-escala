@@ -10,7 +10,7 @@ const migration = readFileSync(
 );
 
 describe("migration de recursos comerciais por instituição", () => {
-  it("é aditiva, tenant-scoped, auditada e fechada para instituições novas", () => {
+  it("é aditiva, tenant-scoped, auditada e habilita todas as instituições existentes", () => {
     expect(migration).toContain(
       "CREATE TABLE IF NOT EXISTS institution_feature_entitlements",
     );
@@ -19,8 +19,8 @@ describe("migration de recursos comerciais por instituição", () => {
     expect(migration).toContain("fk_institution_feature_institution");
     expect(migration).toContain("INSTITUTION_FEATURE_UPDATED");
     expect(migration).toContain("''INSTITUTION''");
-    expect(migration).toContain("UNIX_TIMESTAMP(institutions.created_at)");
-    expect(migration).toContain("<= 1788905520");
+    expect(migration).not.toContain("UNIX_TIMESTAMP(institutions.created_at)");
+    expect(migration).toContain("FROM institutions\nON DUPLICATE KEY UPDATE");
     expect(migration).toContain("ON DUPLICATE KEY UPDATE");
     expect(migration).toContain(
       "institution_feature_entitlements_contract_mismatch",

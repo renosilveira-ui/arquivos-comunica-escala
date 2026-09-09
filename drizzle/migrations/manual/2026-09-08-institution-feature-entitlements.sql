@@ -4,16 +4,17 @@
 -- escalas e equipes de outros setores da mesma instituição. Não concede papel,
 -- manager_scope, professional_access, elegibilidade nem qualquer mutação.
 --
--- Compatibilidade aprovada: instituições criadas até 2026-09-08T22:12:00Z
--- recebem o recurso habilitado. O corte usa epoch para não depender do fuso da
--- sessão MySQL. Instituições posteriores ficam fechadas por ausência de linha.
--- A reaplicação é segura e nunca sobrescreve uma decisão administrativa.
+-- Este recurso integra o produto-base: todas as instituições existentes são
+-- materializadas como habilitadas. Instituições futuras também permanecem
+-- habilitadas pelo padrão canônico do servidor quando ainda não possuem linha.
+-- Somente um override administrativo explícito pode desabilitar o recurso. A
+-- reaplicação é segura e nunca sobrescreve uma decisão administrativa.
 
 CREATE TABLE IF NOT EXISTS institution_feature_entitlements (
   id INT NOT NULL AUTO_INCREMENT,
   institution_id INT NOT NULL,
   feature_code VARCHAR(64) NOT NULL,
-  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
   source ENUM(
     'LEGACY_COMPATIBILITY',
     'ADMIN_OVERRIDE',
@@ -60,7 +61,7 @@ SET @institution_feature_columns_contract_matches := (
           AND DATA_TYPE = 'tinyint'
           AND COLUMN_TYPE = 'tinyint(1)'
           AND IS_NULLABLE = 'NO'
-          AND COLUMN_DEFAULT IN ('0', 0)
+          AND COLUMN_DEFAULT IN ('1', 1)
         THEN 1
         WHEN COLUMN_NAME = 'source'
           AND DATA_TYPE = 'enum'
@@ -330,6 +331,5 @@ SELECT
   1,
   NULL
 FROM institutions
-WHERE UNIX_TIMESTAMP(institutions.created_at) <= 1788905520
 ON DUPLICATE KEY UPDATE
   feature_code = institution_feature_entitlements.feature_code;

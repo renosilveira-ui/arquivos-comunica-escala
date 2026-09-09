@@ -426,7 +426,7 @@ describe("entitlement institucional de leitura entre escalas", () => {
     await db.delete(users).where(inArray(users.id, userIds));
   });
 
-  it("aplica o pacote por tenant, sem ampliar escrita nem vazar hospital ou instituição", async () => {
+  it("habilita o produto-base por tenant e permite override explícito sem ampliar escrita", async () => {
     const initial = await request(app)
       .get("/api/admin/institution-features/cross-schedule-roster-view")
       .set("Cookie", adminCookie)
@@ -435,7 +435,7 @@ describe("entitlement institucional de leitura entre escalas", () => {
     expect(initial.body).toMatchObject({
       institutionId: institutionAId,
       featureCode: "CROSS_SCHEDULE_ROSTER_VIEW",
-      enabled: false,
+      enabled: true,
       source: null,
       version: 0,
     });
@@ -456,13 +456,6 @@ describe("entitlement institucional de leitura entre escalas", () => {
       ).status,
     ).toBe(403);
 
-    const closedNoop = await request(app)
-      .put("/api/admin/institution-features/cross-schedule-roster-view")
-      .set("Cookie", adminCookie)
-      .set("x-tenant-id", String(institutionAId))
-      .send({ enabled: false, expectedVersion: 0 });
-    expect(closedNoop.status).toBe(200);
-    expect(closedNoop.body).toMatchObject({ enabled: false, version: 0 });
     expect(
       await db
         .select({ id: institutionFeatureEntitlements.id })
@@ -477,17 +470,35 @@ describe("entitlement institucional de leitura entre escalas", () => {
           ),
         ),
     ).toHaveLength(0);
+
     expect(
-      await db
-        .select({ id: auditTrail.id })
-        .from(auditTrail)
-        .where(
-          and(
-            eq(auditTrail.institutionId, institutionAId),
-            eq(auditTrail.action, "INSTITUTION_FEATURE_UPDATED"),
-          ),
-        ),
-    ).toHaveLength(0);
+      (await contextsAsReader().listReadable())
+        .map((row) => row.id)
+        .sort((a, b) => a - b),
+    ).toEqual([contextA1Id, contextA2Id].sort((a, b) => a - b));
+    const defaultGeneral = flattenAgenda(
+      await shiftsAsReader().listAgenda({
+        startDate: mondayOfKey(SHIFT_DAY),
+        weeks: 1,
+        scope: "geral",
+      }),
+    );
+    expect(defaultGeneral.map((row) => row.id).sort((a, b) => a - b)).toEqual(
+      [shiftA1Id, shiftA2Id, ownShiftA2Id].sort((a, b) => a - b),
+    );
+    expect(defaultGeneral.some((row) => row.id === shiftBId)).toBe(false);
+
+    const disabled = await request(app)
+      .put("/api/admin/institution-features/cross-schedule-roster-view")
+      .set("Cookie", adminCookie)
+      .set("x-tenant-id", String(institutionAId))
+      .send({ enabled: false, expectedVersion: 0 });
+    expect(disabled.status).toBe(200);
+    expect(disabled.body).toMatchObject({
+      enabled: false,
+      source: "ADMIN_OVERRIDE",
+      version: 1,
+    });
 
     expect(
       (await contextsAsReader().listReadable()).map((row) => row.id),
@@ -533,13 +544,13 @@ describe("entitlement institucional de leitura entre escalas", () => {
       .put("/api/admin/institution-features/cross-schedule-roster-view")
       .set("Cookie", adminCookie)
       .set("x-tenant-id", String(institutionAId))
-      .send({ enabled: true, expectedVersion: 0 });
+      .send({ enabled: true, expectedVersion: 1 });
     expect(enabled.status).toBe(200);
     expect(enabled.body).toMatchObject({
       institutionId: institutionAId,
       enabled: true,
       source: "ADMIN_OVERRIDE",
-      version: 1,
+      version: 2,
     });
 
     expect(
@@ -576,7 +587,7 @@ describe("entitlement institucional de leitura entre escalas", () => {
         .put("/api/admin/institution-features/cross-schedule-roster-view")
         .set("Cookie", adminCookie)
         .set("x-tenant-id", String(institutionAId))
-        .send({ enabled: false, expectedVersion: 1 });
+        .send({ enabled: false, expectedVersion: 2 });
     const concurrent = await Promise.all([disable(), disable()]);
     expect(concurrent.map((response) => response.status).sort()).toEqual([
       200, 409,
@@ -600,7 +611,7 @@ describe("entitlement institucional de leitura entre escalas", () => {
           .put("/api/admin/institution-features/cross-schedule-roster-view")
           .set("Cookie", adminCookie)
           .set("x-tenant-id", String(institutionAId))
-          .send({ enabled: true, expectedVersion: 2 }),
+          .send({ enabled: true, expectedVersion: 3 }),
       );
       await waitForAdminUserLockWaiter(blocker);
       await blocker.execute("UPDATE users SET role = 'doctor' WHERE id = ?", [
@@ -633,7 +644,7 @@ describe("entitlement institucional de leitura entre escalas", () => {
           ),
         ),
       );
-    expect(afterAuthorityRevocation).toEqual({ enabled: false, version: 2 });
+    expect(afterAuthorityRevocation).toEqual({ enabled: false, version: 3 });
 
     const auditRows = await db
       .select({ action: auditTrail.action, metadata: auditTrail.metadata })
@@ -644,10 +655,20 @@ describe("entitlement institucional de leitura entre escalas", () => {
           eq(auditTrail.action, "INSTITUTION_FEATURE_UPDATED"),
         ),
       );
-    expect(auditRows).toHaveLength(2);
+    expect(auditRows).toHaveLength(3);
     expect(
       auditRows.map((row) => (row.metadata as any)?.enabled).sort(),
-    ).toEqual([false, true]);
+    ).toEqual([false, false, true]);
+    expect(
+      auditRows.find((row) => (row.metadata as any)?.version === 1)?.metadata,
+    ).toMatchObject({
+      featureCode: "CROSS_SCHEDULE_ROSTER_VIEW",
+      previousEnabled: true,
+      enabled: false,
+      previousVersion: 0,
+      version: 1,
+      source: "ADMIN_OVERRIDE",
+    });
 
     await db.execute(
       sql.raw(`
@@ -665,7 +686,7 @@ describe("entitlement institucional de leitura entre escalas", () => {
       .put("/api/admin/institution-features/cross-schedule-roster-view")
       .set("Cookie", adminCookie)
       .set("x-tenant-id", String(institutionAId))
-      .send({ enabled: true, expectedVersion: 2 });
+      .send({ enabled: true, expectedVersion: 3 });
     expect(failedAudit.status).toBe(500);
     const [afterRollback] = await db
       .select({
@@ -682,6 +703,6 @@ describe("entitlement institucional de leitura entre escalas", () => {
           ),
         ),
       );
-    expect(afterRollback).toEqual({ enabled: false, version: 2 });
+    expect(afterRollback).toEqual({ enabled: false, version: 3 });
   });
 });

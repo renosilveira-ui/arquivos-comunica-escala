@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { institutionFeatureEntitlements } from "../drizzle/schema";
 import {
   INSTITUTION_FEATURE_CODES,
+  INSTITUTION_FEATURE_DEFAULTS,
   ROSTER_READ_POLICIES,
   type InstitutionFeatureCode,
   type RosterReadPolicy,
@@ -69,8 +70,15 @@ export function resolveRosterReadPolicyFromEntitlement(
   > | null,
   institutionId: number,
 ): RosterReadPolicy {
+  if (!entitlement) {
+    return INSTITUTION_FEATURE_DEFAULTS[
+      INSTITUTION_FEATURE_CODES.crossScheduleRosterView
+    ]
+      ? ROSTER_READ_POLICIES.institutionWide
+      : ROSTER_READ_POLICIES.authorizedContextsOnly;
+  }
   if (
-    entitlement?.institutionId === institutionId &&
+    entitlement.institutionId === institutionId &&
     entitlement.featureCode ===
       INSTITUTION_FEATURE_CODES.crossScheduleRosterView &&
     entitlement.enabled === true
