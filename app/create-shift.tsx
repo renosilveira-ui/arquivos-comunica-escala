@@ -46,6 +46,7 @@ import {
   getShiftTemplatesForSector,
 } from "@/lib/shift-template-options";
 import { useTenantState } from "@/lib/tenant-state";
+import { MAX_SHIFT_CAPACITY } from "@/lib/shift-capacity";
 import { useScheduleContext } from "@/hooks/use-schedule-context";
 import {
   groupScheduleContexts,
@@ -134,7 +135,7 @@ function addCalendarMonths(month: Date, amount: number): Date {
 
 /**
  * Tela de Criação de Escala
- * Formulário avançado com 3 profissionais por turno e repetição automática
+ * Um turno contém a capacidade necessária e múltiplas alocações.
  */
 export default function CreateShiftScreen() {
   const feedback = useActionFeedback();
@@ -179,6 +180,7 @@ export default function CreateShiftScreen() {
   const [repeatEndDate, setRepeatEndDate] = useState("");
 
   const [notes, setNotes] = useState("");
+  const [requiredCapacity, setRequiredCapacity] = useState("");
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
   const [modality, setModality] = useState<Modality>("PLANTAO");
@@ -361,6 +363,15 @@ export default function CreateShiftScreen() {
       showFormError("Selecione um turno disponível para este setor.");
       return;
     }
+    if (
+      requiredCapacity !== "" &&
+      (!Number.isSafeInteger(Number(requiredCapacity)) ||
+        Number(requiredCapacity) < 1 ||
+        Number(requiredCapacity) > MAX_SHIFT_CAPACITY)
+    ) {
+      showFormError(`Informe uma capacidade entre 1 e ${MAX_SHIFT_CAPACITY}.`);
+      return;
+    }
 
     // Validar data de término de repetição
     if (enableRepeat && repeatEndDate) {
@@ -396,6 +407,9 @@ export default function CreateShiftScreen() {
     createShift.mutate({
       date: selectedDate,
       shiftTemplateId: selectedTemplate.id,
+      ...(requiredCapacity !== ""
+        ? { requiredCapacity: Number(requiredCapacity) }
+        : {}),
       ...scheduleContextMutationFields(selectedScheduleContext),
       modality,
       coverageType: modality === "PLANTAO" ? coverageType : null,
@@ -698,6 +712,36 @@ export default function CreateShiftScreen() {
                     ? "Nenhum turno ativo para este setor."
                     : "Selecione hospital, setor e qualificação para ver os turnos."}
                 </Text>
+              ) : null}
+            </FormSection>
+
+            <FormSection title="Profissionais necessários">
+              <TextInput
+                accessibilityLabel="Capacidade deste turno"
+                keyboardType="number-pad"
+                value={requiredCapacity}
+                onChangeText={setRequiredCapacity}
+                placeholder="Usar regra semanal (padrão: 1)"
+                style={styles.textInput}
+              />
+              <Text style={styles.helperText}>
+                Cada profissional ocupa uma vaga dentro deste mesmo turno.
+              </Text>
+              {selectedScheduleContext ? (
+                <TouchableOpacity
+                  onPress={() =>
+                    router.push({
+                      pathname: "/schedule-capacity" as any,
+                      params: {
+                        scheduleContextId: String(selectedScheduleContext.id),
+                      },
+                    })
+                  }
+                >
+                  <Text style={{ color: theme.colors.primary }}>
+                    Configurar capacidade por dia da semana
+                  </Text>
+                </TouchableOpacity>
               ) : null}
             </FormSection>
 

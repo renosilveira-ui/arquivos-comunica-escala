@@ -14,6 +14,7 @@ import {
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { theme } from "@/lib/theme";
+import { MAX_SHIFT_CAPACITY } from "@/lib/shift-capacity";
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { trpc } from "@/lib/trpc";
@@ -105,6 +106,7 @@ export default function EditShiftScreen() {
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
   const [notes, setNotes] = useState("");
+  const [requiredCapacity, setRequiredCapacity] = useState("");
   const [editReason, setEditReason] = useState("");
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
@@ -157,6 +159,11 @@ export default function EditShiftScreen() {
   // Carregar dados da escala no formulário
   useEffect(() => {
     if (shiftData) {
+      setRequiredCapacity(
+        shiftData.requiredCapacity == null
+          ? ""
+          : String(shiftData.requiredCapacity),
+      );
       const start = new Date(shiftData.startAt);
       const end = new Date(shiftData.endAt);
       setStartDate(toISODateString(start));
@@ -325,8 +332,20 @@ export default function EditShiftScreen() {
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const trimmedReason = editReason.trim();
+    if (
+      requiredCapacity !== "" &&
+      (!Number.isSafeInteger(Number(requiredCapacity)) ||
+        Number(requiredCapacity) < 1 ||
+        Number(requiredCapacity) > MAX_SHIFT_CAPACITY)
+    ) {
+      uiAlert("Atenção", `Informe de 1 a ${MAX_SHIFT_CAPACITY} profissionais.`);
+      return;
+    }
     updateShift.mutate({
       id: shiftId,
+      ...(requiredCapacity !== ""
+        ? { requiredCapacity: Number(requiredCapacity) }
+        : {}),
       startAt: startDateTime.toISOString(),
       endAt: endDateTime.toISOString(),
       modality,
@@ -755,6 +774,32 @@ export default function EditShiftScreen() {
                 )}
               </View>
             </View>
+          </TintedGlassCard>
+
+          <TintedGlassCard variant="light" style={{ padding: 20, gap: 12 }}>
+            <Text
+              style={{ color: theme.colors.textPrimary, fontWeight: "600" }}
+            >
+              Profissionais necessários
+            </Text>
+            <TextInput
+              accessibilityLabel="Capacidade do turno"
+              keyboardType="number-pad"
+              value={requiredCapacity}
+              onChangeText={setRequiredCapacity}
+              placeholder="Manter configuração histórica"
+              style={{
+                padding: 12,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                color: theme.colors.textPrimary,
+                borderRadius: 8,
+              }}
+            />
+            <Text style={{ color: theme.colors.textSecondary }}>
+              A capacidade não pode ser menor que o número de alocações ativas,
+              incluindo candidaturas pendentes.
+            </Text>
           </TintedGlassCard>
 
           {/* Modalidade */}

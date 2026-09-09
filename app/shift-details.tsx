@@ -13,6 +13,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { theme } from "@/lib/theme";
+import { shiftCapacityLabel } from "@/lib/shift-capacity";
 import { useAuth } from "@/hooks/use-auth";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
@@ -475,7 +476,7 @@ export default function ShiftDetailsScreen() {
                   </View>
                 </View>
 
-                {shift.status === "VAGO" ? (
+                {(apiShiftData?.remainingCapacity ?? (shift.status === "VAGO" ? 1 : 0)) > 0 ? (
                   <ActionButton
                     label={notifyVacancy.isPending ? "Enviando aviso..." : "Avisar equipe"}
                     onPress={handleNotifyVacancy}
@@ -569,14 +570,18 @@ export default function ShiftDetailsScreen() {
                   onPress={handleAssignProfessional}
                   variant="primary"
                   icon={<UserPlus size={20} color={theme.colors.surface} />}
-                  disabled={!selectedProfessionalId || assignDirect.isPending}
+                  disabled={!selectedProfessionalId || assignDirect.isPending || (apiShiftData?.requiredCapacity != null && apiShiftData.remainingCapacity === 0)}
                 />
               </TintedGlassCard>
             ) : null}
 
             <View style={styles.sectionHeader}>
               <Users size={22} color={theme.colors.textPrimary} />
-              <Text style={styles.sectionHeading}>Profissionais ({activeAssignments.length})</Text>
+              <Text style={styles.sectionHeading}>
+                {apiShiftData?.requiredCapacity != null
+                  ? shiftCapacityLabel(apiShiftData.requiredCapacity, apiShiftData.activeCount)
+                  : `Profissionais (${activeAssignments.length})`}
+              </Text>
             </View>
 
             {activeAssignments.length > 0 ? (

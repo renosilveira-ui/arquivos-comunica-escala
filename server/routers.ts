@@ -28,6 +28,7 @@ import { swapRouter } from "./swap-router";
 import { auditRouter } from "./audit-router";
 import { calendarRouter } from "./calendar";
 import { shiftsRouter } from "./shifts-crud";
+import { scheduleCapacityRouter } from "./schedule-capacity-router";
 import {
   professionalsRouter,
   hospitalsRouter,
@@ -43,6 +44,7 @@ import {
 } from "./schedule-contexts";
 import { scheduleInvitesRouter } from "./schedule-invites";
 import { profileRouter } from "./profile-router";
+import { hasShiftVacancy } from "./shift-capacity";
 import { corporateReadinessRouter } from "./corporate-readiness-router";
 import { notificationsRouter } from "./notifications-router";
 import {
@@ -58,6 +60,7 @@ type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type AssignmentDecisionDb = Pick<Db, "select">;
 
 type VacancyShiftTarget = {
+  requiredCapacity: number | null;
   id: number;
   institutionId: number;
   hospitalId: number;
@@ -99,6 +102,7 @@ async function requireCanonicalVacancyShiftTarget(
       scheduleContextId: shiftInstances.scheduleContextId,
       specialty: shiftInstances.specialty,
       status: shiftInstances.status,
+      requiredCapacity: shiftInstances.requiredCapacity,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
     })
@@ -140,7 +144,7 @@ function assertSameVacancyShiftTarget(
   authorized: VacancyShiftTarget,
   locked: VacancyShiftTarget,
 ): void {
-  if (authorized.status !== locked.status) {
+  if (locked.requiredCapacity == null && authorized.status !== locked.status) {
     throw new TRPCError({
       code: "CONFLICT",
       message: "Este plantão acabou de ser assumido por outro profissional.",
@@ -152,6 +156,7 @@ function assertSameVacancyShiftTarget(
     authorized.hospitalId !== locked.hospitalId ||
     authorized.sectorId !== locked.sectorId ||
     authorized.scheduleContextId !== locked.scheduleContextId ||
+    authorized.requiredCapacity !== locked.requiredCapacity ||
     authorized.specialty !== locked.specialty ||
     authorized.startAt.getTime() !== locked.startAt.getTime() ||
     authorized.endAt.getTime() !== locked.endAt.getTime()
@@ -357,16 +362,14 @@ const shiftAssignmentsRouter = router({
         ctx.institutionId,
       );
 
-      if (shift.status !== "VAGO") {
+      if (!(await hasShiftVacancy(db, shift))) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "Este plantão não está vago.",
         });
       }
 
-      // Transação + guarda otimista: dois médicos assumindo a mesma vaga
-      // ao mesmo tempo → o UPDATE condicional (status ainda VAGO) é a
-      // trava; quem perde recebe CONFLICT e nada fica pela metade.
+      // The shift mutex serializes every reservation of its remaining places.
       const assignmentId = await db.transaction(async (tx) => {
         // A leitura com FOR UPDATE e as escritas compartilham a mesma
         // transação. Um lockMonth concorrente conclui antes e bloqueia esta
@@ -404,28 +407,11 @@ const shiftAssignmentsRouter = router({
           hospitalId: lockedShift.hospitalId,
           sectorId: lockedShift.sectorId,
           activeDelta: 1,
-          expectedCurrentActiveCount: 0,
+          ...(lockedShift.requiredCapacity == null
+            ? { expectedCurrentActiveCount: 0 }
+            : {}),
         });
 
-        const [claimed] = await tx
-          .update(shiftInstances)
-          .set({ status: "PENDENTE" })
-          .where(
-            and(
-              eq(shiftInstances.id, input.shiftInstanceId),
-              eq(shiftInstances.institutionId, lockedShift.institutionId),
-              eq(shiftInstances.hospitalId, lockedShift.hospitalId),
-              eq(shiftInstances.sectorId, lockedShift.sectorId),
-              eq(shiftInstances.status, "VAGO"),
-            ),
-          );
-        if (!claimed.affectedRows) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message:
-              "Este plantão acabou de ser assumido por outro profissional.",
-          });
-        }
         const [result] = await tx.insert(shiftAssignmentsV2).values({
           shiftInstanceId: input.shiftInstanceId,
           institutionId: lockedShift.institutionId,
@@ -438,6 +424,7 @@ const shiftAssignmentsRouter = router({
           createdBy: userId,
         });
         const createdAssignmentId = Number(result.insertId);
+        await recomputeShiftStatus(tx, lockedShift.id);
         await auditLog(
           {
             event: "VACANCY_REQUESTED",
@@ -1010,6 +997,10 @@ const shiftInstancesRouter = router({
         hospitalId: Number(r.hospitalId),
         sectorId: Number(r.sectorId),
         scheduleContextId: Number(r.scheduleContextId),
+        requiredCapacity:
+          r.requiredCapacity == null ? null : Number(r.requiredCapacity),
+        activeCount: Number(r.activeCount),
+        remainingCapacity: Number(r.remainingCapacity),
         canAssume: true as const,
         // Modalidade (PR #61). Tipos vêm como string do mysql2; expõe
         // direto pra o cliente formatar com os labels PT-BR.
@@ -1078,6 +1069,7 @@ export const appRouter = router({
   editor: editorRouter,
   calendar: calendarRouter,
   shifts: shiftsRouter,
+  scheduleCapacity: scheduleCapacityRouter,
   professionals: professionalsRouter,
   hospitals: hospitalsRouter,
   sectors: sectorsRouter,

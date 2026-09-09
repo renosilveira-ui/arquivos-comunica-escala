@@ -196,16 +196,11 @@ async function queryEligibleProfessionalUserIdsForShift(
     WHERE si.id = ${shift.id}
       AND si.institution_id = ${shift.institutionId}
       ${recipientPredicate}
-      AND si.status = 'VAGO'
+      AND (si.required_capacity IS NOT NULL OR si.status = 'VAGO')
+      AND (SELECT COUNT(*) FROM shift_assignments_v2 a WHERE a.shift_instance_id = si.id AND a.is_active = 1) < COALESCE(si.required_capacity, 1)
       AND si.start_at > NOW()
       AND ${plantonistaAccessCoversShiftSql("ap", "si", "sc")}
       AND ${plantonistaQualificationMatchesContextSql("ap", "sc")}
-      AND NOT EXISTS (
-        SELECT 1
-        FROM shift_assignments_v2 target_assignment
-        WHERE target_assignment.shift_instance_id = si.id
-          AND target_assignment.is_active = 1
-      )
       AND NOT EXISTS (
         SELECT 1 FROM monthly_rosters mr
         WHERE mr.institution_id = si.institution_id

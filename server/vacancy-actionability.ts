@@ -56,6 +56,9 @@ export type ActionableVacancyRow = {
   hospitalId: number;
   sectorId: number;
   scheduleContextId: number;
+  requiredCapacity?: number | null;
+  activeCount?: number;
+  remainingCapacity?: number;
 };
 
 export type ActionableVacancyCounts = {
@@ -200,9 +203,7 @@ async function filterOccupiableScheduleContextIds(
         {
           medicalSpecialtyId: professional.medicalSpecialtyId,
           operationalProfileCode: professional.operationalProfileCode as
-            | "MEDICO_GENERALISTA"
-            | "RESIDENTE_ANESTESIOLOGIA"
-            | null,
+            "MEDICO_GENERALISTA" | "RESIDENTE_ANESTESIOLOGIA" | null,
         },
         context,
       )
@@ -248,6 +249,9 @@ export async function listActionableVacancyRows(input: {
           si.end_at      AS endAt,
           si.label,
           si.status,
+          si.required_capacity AS requiredCapacity,
+          (SELECT COUNT(*) FROM shift_assignments_v2 a WHERE a.shift_instance_id = si.id AND a.is_active = true) AS activeCount,
+          GREATEST(0, COALESCE(si.required_capacity, 1) - (SELECT COUNT(*) FROM shift_assignments_v2 a WHERE a.shift_instance_id = si.id AND a.is_active = true)) AS remainingCapacity,
           si.modality            AS modality,
           si.coverage_type       AS coverageType,
           si.payment_model       AS paymentModel,
@@ -268,7 +272,7 @@ export async function listActionableVacancyRows(input: {
           AND sc.hospital_id = si.hospital_id
           AND sc.sector_id = si.sector_id
           AND sc.active = true
-        WHERE si.status = 'VAGO'
+        WHERE (si.required_capacity IS NOT NULL OR si.status = 'VAGO')
           AND si.institution_id = ${input.institutionId}
           -- IDs = admissão topológica ∩ qualificationMatches do ator.
           -- assumeVacancy revalida; a lista não substitui o write.
@@ -281,13 +285,16 @@ export async function listActionableVacancyRows(input: {
               AND mr.year_month = DATE_FORMAT(DATE_SUB(si.start_at, INTERVAL 3 HOUR), '%Y-%m')
               AND mr.status = 'LOCKED'
           )
-          -- A target with any active assignment will fail the same locked
-          -- capacity guard in assumeVacancy. Do not expose even a malformed
-          -- legacy assignment as an apparent vacancy.
+          AND (SELECT COUNT(*) FROM shift_assignments_v2 a
+            WHERE a.shift_instance_id = si.id AND a.is_active = true) < COALESCE(si.required_capacity, 1)
+          -- A malformed active assignment makes the whole target unavailable.
           AND NOT EXISTS (
             SELECT 1 FROM shift_assignments_v2 target_assignment
             WHERE target_assignment.shift_instance_id = si.id
               AND target_assignment.is_active = true
+              AND (target_assignment.institution_id <> si.institution_id
+                OR target_assignment.hospital_id <> si.hospital_id
+                OR target_assignment.sector_id <> si.sector_id)
           )
           -- The writer rejects a professional whose existing active
           -- assignment has contaminated tenant/hospital/sector topology.
@@ -355,15 +362,20 @@ export function countActionableVacancies(
   const vacanciesBySector: Record<number, number> = {};
 
   for (const row of rows) {
+    const remaining = Number(row.remainingCapacity ?? 1);
     const hospitalId = Number(row.hospitalId);
     const sectorId = Number(row.sectorId);
     vacanciesByHospital[hospitalId] =
-      (vacanciesByHospital[hospitalId] ?? 0) + 1;
-    vacanciesBySector[sectorId] = (vacanciesBySector[sectorId] ?? 0) + 1;
+      (vacanciesByHospital[hospitalId] ?? 0) + remaining;
+    vacanciesBySector[sectorId] =
+      (vacanciesBySector[sectorId] ?? 0) + remaining;
   }
 
   return {
-    total: rows.length,
+    total: rows.reduce(
+      (sum, row) => sum + Number(row.remainingCapacity ?? 1),
+      0,
+    ),
     vacanciesByHospital,
     vacanciesBySector,
   };

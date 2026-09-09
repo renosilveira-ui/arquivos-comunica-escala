@@ -42,6 +42,9 @@ import {
 import { ShiftRowCard } from "./ShiftRowCard";
 
 type AgendaShift = {
+  requiredCapacity?: number | null;
+  activeCount?: number;
+  remainingCapacity?: number;
   id: number;
   label: string;
   startAt: string | Date;
@@ -297,7 +300,7 @@ export function MonthAgenda({
                             : theme.colors.textSecondary,
                         }}
                       >
-                        +{extra}
+                        +{extra} itens
                       </Text>
                     ) : null}
                   </View>

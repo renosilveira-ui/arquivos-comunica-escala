@@ -99,6 +99,8 @@ describe("editor.assignDirect com regra de repetição", () => {
         sectorId: input.sectorId ?? sectorId,
         scheduleContextId: input.scheduleContextId ?? scheduleContextId,
         label: input.label ?? "Manhã teste",
+        // Legacy fixtures intentionally share a block under different labels.
+        requiredCapacity: null,
         startAt,
         endAt,
         status: input.status ?? "VAGO",

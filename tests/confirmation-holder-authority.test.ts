@@ -173,6 +173,7 @@ describe("confirmation holder authority — MySQL", () => {
         sectorId,
         scheduleContextId,
         label: `AuthZ ${stamp}`,
+        requiredCapacity: null, // Historical overlapping fixtures.
         startAt: start13,
         endAt: end19,
         status: "OCUPADO",

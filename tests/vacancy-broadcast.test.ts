@@ -473,6 +473,11 @@ describe("aviso deliberado de plantão vago", () => {
 
   it("shift ocupado não envia; vago envia", async () => {
     const shiftId = await createVacantShift(5);
+    await db.insert(shiftAssignmentsV2).values({
+      institutionId, hospitalId, sectorId, shiftInstanceId: shiftId,
+      professionalId: doctor.professionalId, assignmentType: "ON_DUTY",
+      status: "OCUPADO", isActive: true,
+    });
     await db
       .update(shiftInstances)
       .set({ status: "OCUPADO" })
@@ -485,6 +490,8 @@ describe("aviso deliberado de plantão vago", () => {
     ).rejects.toMatchObject({
       message: "Este plantão não está mais vago.",
     });
+    await db.update(shiftAssignmentsV2).set({ isActive: false })
+      .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftId));
     await db
       .update(shiftInstances)
       .set({ status: "VAGO" })
@@ -495,6 +502,11 @@ describe("aviso deliberado de plantão vago", () => {
 
   it("concorrência vaga→ocupada falha fechado", async () => {
     const shiftId = await createVacantShift(6);
+    await db.insert(shiftAssignmentsV2).values({
+      institutionId, hospitalId, sectorId, shiftInstanceId: shiftId,
+      professionalId: doctor.professionalId, assignmentType: "ON_DUTY",
+      status: "PENDENTE", isActive: true,
+    });
     await db
       .update(shiftInstances)
       .set({ status: "PENDENTE" })
@@ -505,6 +517,19 @@ describe("aviso deliberado de plantão vago", () => {
       message: "Este plantão não está mais vago.",
     });
     expect(await listBroadcasts(shiftId)).toEqual([]);
+  });
+
+  it("capacidade parcial permite avisar somente os profissionais ainda elegíveis", async () => {
+    const shiftId = await createVacantShift(16);
+    await db.update(shiftInstances).set({ requiredCapacity: 2, status: "OCUPADO" })
+      .where(eq(shiftInstances.id, shiftId));
+    await db.insert(shiftAssignmentsV2).values({
+      institutionId, hospitalId, sectorId, shiftInstanceId: shiftId,
+      professionalId: doctor.professionalId, assignmentType: "ON_DUTY",
+      status: "OCUPADO", isActive: true,
+    });
+    expect(await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }))
+      .toMatchObject({ notifiedCount: 1 });
   });
 
   it("zero elegíveis devolve count 0 sem outbox", async () => {

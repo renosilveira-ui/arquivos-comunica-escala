@@ -8,12 +8,15 @@
 
 import { Pressable, Text, View } from "react-native";
 import { theme } from "@/lib/theme";
+import { shiftCapacityLabel } from "@/lib/shift-capacity";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import type { ShiftStatusContext } from "@/lib/shift-status";
 import { numeral } from "./CalendarSheet";
 
 export interface ShiftRowShift {
+  requiredCapacity?: number | null;
+  activeCount?: number;
   id: number;
   label: string;
   startAt: Date | string;
@@ -23,7 +26,10 @@ export interface ShiftRowShift {
   isMine: boolean;
 }
 
-export function formatTimeRange(startAt: Date | string, endAt: Date | string): string {
+export function formatTimeRange(
+  startAt: Date | string,
+  endAt: Date | string,
+): string {
   return formatHospitalTimeRange(startAt, endAt);
 }
 
@@ -69,10 +75,23 @@ export function ShiftRowCard({
         opacity: pressed ? 0.9 : 1,
       })}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] + 1 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: theme.space[2] + 1,
+        }}
+      >
         <Text
           numberOfLines={1}
-          style={{ flex: 1, minWidth: 0, ...theme.text.titleSm, fontSize: 15, fontWeight: v.nameWeight, color: v.nameFg }}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            ...theme.text.titleSm,
+            fontSize: 15,
+            fontWeight: v.nameWeight,
+            color: v.nameFg,
+          }}
         >
           {names}
         </Text>
@@ -90,14 +109,41 @@ export function ShiftRowCard({
           }}
         >
           <Icon size={12} color={v.badgeFg} />
-          <Text style={{ ...theme.text.eyebrow, fontSize: 10, letterSpacing: 0.9, fontWeight: theme.weight.bold, textTransform: "uppercase", color: v.badgeFg }}>
+          <Text
+            style={{
+              ...theme.text.eyebrow,
+              fontSize: 10,
+              letterSpacing: 0.9,
+              fontWeight: theme.weight.bold,
+              textTransform: "uppercase",
+              color: v.badgeFg,
+            }}
+          >
             {v.label}
           </Text>
         </View>
       </View>
-      <Text style={{ ...theme.text.caption, fontSize: 13, lineHeight: 18, ...numeral, color: shift.isMine ? v.timeFg : theme.colors.textSecondary }}>
+      <Text
+        style={{
+          ...theme.text.caption,
+          fontSize: 13,
+          lineHeight: 18,
+          ...numeral,
+          color: shift.isMine ? v.timeFg : theme.colors.textSecondary,
+        }}
+      >
         {meta}
       </Text>
+      {shift.requiredCapacity != null ? (
+        <Text
+          style={{ ...theme.text.caption, color: theme.colors.textSecondary }}
+        >
+          {shiftCapacityLabel(
+            shift.requiredCapacity,
+            shift.activeCount ?? shift.professionalNames.length,
+          )}
+        </Text>
+      ) : null}
     </Pressable>
   );
 }

@@ -2,11 +2,13 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { activeShiftCounts } from "./shift-capacity";
+import { shiftCapacitySummary } from "../lib/shift-capacity";
 import { ForbiddenError } from "../shared/_core/errors";
 import { assertMonthEditableForUpdate } from "./month-guards";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { shiftAssignmentsV2, shiftInstances } from "../drizzle/schema";
 import { recomputeShiftStatus } from "./shift-status";
 import {
@@ -25,7 +27,6 @@ import {
 } from "./shift-validations-v2";
 import {
   ALLOCATION_REPEAT_RULES,
-  listActiveAssignmentShiftIds,
   listRepeatAssignmentCandidates,
   selectRepeatTargets,
   type AllocationRepeatRule,
@@ -39,6 +40,7 @@ import { enqueueDutySyncWithdrawsForRemovedProfessionals } from "./sso/duty-sync
 type EditorDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">;
 
 type ShiftTarget = {
+  requiredCapacity?: number | null;
   id: number;
   institutionId: number;
   hospitalId: number;
@@ -76,6 +78,7 @@ async function getShiftTarget(
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
       status: shiftInstances.status,
+      requiredCapacity: shiftInstances.requiredCapacity,
     })
     .from(shiftInstances)
     .where(
@@ -491,13 +494,35 @@ export const editorRouter = router({
           lockedById,
           repeatRule,
         );
-        const occupiedIds = await listActiveAssignmentShiftIds(
-          tx,
-          lockedShift.institutionId,
-          [...matchingTargets.map((row) => row.id)],
+        const capacityCounts = await activeShiftCounts(tx, [
+          ...matchingTargets.map((row) => row.id),
+        ]);
+        const alreadyAssigned = matchingTargets.length
+          ? await tx
+              .select({ id: shiftAssignmentsV2.shiftInstanceId })
+              .from(shiftAssignmentsV2)
+              .where(
+                and(
+                  inArray(
+                    shiftAssignmentsV2.shiftInstanceId,
+                    matchingTargets.map((row) => row.id),
+                  ),
+                  eq(shiftAssignmentsV2.professionalId, professionalId),
+                  eq(shiftAssignmentsV2.isActive, true),
+                ),
+              )
+          : [];
+        const alreadyAssignedIds = new Set(
+          alreadyAssigned.map((row) => row.id),
         );
         const vacantTargets = matchingTargets.filter(
-          (target) => target.status === "VAGO" && !occupiedIds.has(target.id),
+          (target) =>
+            !alreadyAssignedIds.has(target.id) &&
+            (target.requiredCapacity != null || target.status === "VAGO") &&
+            shiftCapacitySummary(
+              target.requiredCapacity,
+              capacityCounts.get(target.id) ?? 0,
+            ).remainingCapacity > 0,
         );
         const skippedOccupiedCount =
           matchingTargets.length - vacantTargets.length;

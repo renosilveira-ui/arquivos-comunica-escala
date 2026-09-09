@@ -655,6 +655,16 @@ describe("autoridade atual no broadcast de vaga", () => {
 
   it("suprime aviso quando o plantão deixa de estar vago", async () => {
     await enqueueVacancyAvailableSignals({ db, shift: shiftInput() });
+    await db.insert(shiftAssignmentsV2).values({
+      shiftInstanceId: shiftId,
+      institutionId,
+      hospitalId: hospitalAId,
+      sectorId: sectorAId,
+      professionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
+    });
     await db
       .update(shiftInstances)
       .set({ status: "OCUPADO" })

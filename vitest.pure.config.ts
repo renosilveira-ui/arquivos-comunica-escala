@@ -16,6 +16,7 @@ export default defineConfig({
     environment: "node",
     setupFiles: [],
     include: [
+      "tests/shift-capacity.test.ts",
       "tests/onboarding-direction.test.ts",
       "tests/onboarding-ui.test.ts",
       "tests/medical-specialties-catalog.test.ts",

@@ -159,6 +159,7 @@ describe("elegibilidade canônica de oferta de plantão", () => {
         sectorId: sid,
         scheduleContextId: cid,
         label: `canon-elig-${stamp}-shift-${dayOffset}`,
+        requiredCapacity: null, // Historical overlapping fixtures.
         specialty: "Clínica Médica",
         startAt,
         endAt: at(dayOffset, 14),

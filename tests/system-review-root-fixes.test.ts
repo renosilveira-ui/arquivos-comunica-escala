@@ -637,7 +637,7 @@ describe("system review — correções de raiz", () => {
     expect(foreign).toBeUndefined();
   });
 
-  it("6: assumeVacancy em plantão ocupado devolve CONFLICT em português", async () => {
+  it("6: assumeVacancy em plantão legado ocupado devolve CONFLICT em português", async () => {
     const [shift] = await db
       .insert(shiftInstances)
       .values({
@@ -645,6 +645,7 @@ describe("system review — correções de raiz", () => {
         hospitalId: hospitalA2,
         sectorId: sectorA2,
         scheduleContextId: contextA2,
+        requiredCapacity: null,
         label: "Manhã",
         specialty: "Anestesiologia",
         startAt: at(`${currentYm}-15`, "07:00:00"),

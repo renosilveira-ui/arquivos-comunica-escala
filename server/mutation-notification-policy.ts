@@ -284,6 +284,15 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  "scheduleCapacity.saveCapacityRule": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando configura capacidade semanal para novos turnos sem mudar alocações existentes",
+        audience: [],
+      },
+    ],
+  },
   "shifts.create": {
     targets: [
       {

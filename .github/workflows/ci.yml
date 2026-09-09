@@ -98,6 +98,11 @@ jobs:
       - name: Validate institution feature entitlement migration
         run: pnpm test:institution-feature-migration
 
+      - name: Validate prospective shift capacity migration
+        env:
+          CAPACITY_MIGRATION_TEST_URL: mysql://root:root@127.0.0.1:3306/
+        run: pnpm exec vitest run --config vitest.capacity-migration.config.ts
+
       - name: Validate readiness fence V1 over Drizzle PREPARED schema
         # Exercita o único estado retomável: o schema foi criado pelo Drizzle,
         # mas os triggers e o recibo ainda não existem. Continua restrito ao

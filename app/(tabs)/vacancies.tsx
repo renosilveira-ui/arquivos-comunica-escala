@@ -1,9 +1,4 @@
-import {
-  ActivityIndicator,
-  Pressable,
-  Text,
-  View,
-} from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import {
   ShiftFilters,
@@ -17,11 +12,7 @@ import {
 import { formatHospitalTime } from "@/lib/hospital-time";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import {
-  Briefcase,
-  MapPin,
-  Building2,
-} from "lucide-react-native";
+import { Briefcase, MapPin, Building2 } from "lucide-react-native";
 import { useAuth } from "@/hooks/use-auth";
 import { useFilterDefaults } from "@/hooks/use-filter-defaults";
 import { useTenantScopedShiftFilters } from "@/hooks/use-tenant-scoped-shift-filters";
@@ -294,6 +285,7 @@ export default function VacanciesScreen() {
       hospital: v.hospitalName,
       status: v.status as "VAGO" | "PENDENTE",
       canAssume: v.canAssume,
+      remainingCapacity: v.remainingCapacity,
       modality: item.modality ?? null,
       coverageType: item.coverageType ?? null,
       paymentModel: item.paymentModel ?? null,
@@ -316,7 +308,7 @@ export default function VacanciesScreen() {
   const vacanciesSubtitle = canDisplayOperationalListCount(
     vacanciesContentState,
   )
-    ? `${vacancies.length} ${vacancies.length === 1 ? "plantão" : "plantões"} aguardando profissional`
+    ? `${vacancies.reduce((sum, vacancy) => sum + vacancy.remainingCapacity, 0)} vagas em ${vacancies.length} ${vacancies.length === 1 ? "turno" : "turnos"}`
     : vacanciesContentState === "LOADING"
       ? "Buscando plantões sem profissional…"
       : vacanciesContentState === "ERROR"
@@ -752,7 +744,11 @@ export default function VacanciesScreen() {
         </Surface>
 
         {/* Filtro por modalidade: segmento compacto, sem rolagem horizontal. */}
-        <Surface padded="compact" level="card" style={{ marginBottom: theme.space[5] }}>
+        <Surface
+          padded="compact"
+          level="card"
+          style={{ marginBottom: theme.space[5] }}
+        >
           <Text
             style={{
               ...theme.text.eyebrow,
@@ -812,7 +808,9 @@ export default function VacanciesScreen() {
                       color: selected
                         ? theme.colors.brand
                         : theme.colors.textSecondary,
-                      fontWeight: selected ? theme.weight.bold : theme.weight.medium,
+                      fontWeight: selected
+                        ? theme.weight.bold
+                        : theme.weight.medium,
                     }}
                   >
                     {opt.label}
@@ -854,8 +852,16 @@ export default function VacanciesScreen() {
                     ...theme.shadow.sm,
                   }}
                 >
-                  <View style={{ padding: theme.space[4], gap: theme.space[3] }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                  <View
+                    style={{ padding: theme.space[4], gap: theme.space[3] }}
+                  >
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: theme.space[2],
+                      }}
+                    >
                       {modalityLabel ? (
                         <View
                           style={{
@@ -914,18 +920,50 @@ export default function VacanciesScreen() {
                       >
                         {vacancy.shift}
                       </Text>
+                      <Text style={{ color: theme.colors.textSecondary }}>
+                        {vacancy.remainingCapacity} vaga
+                        {vacancy.remainingCapacity === 1 ? "" : "s"} restante
+                        {vacancy.remainingCapacity === 1 ? "" : "s"}
+                      </Text>
                     </View>
 
                     <View style={{ gap: theme.space[2] }}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: theme.space[2],
+                        }}
+                      >
                         <MapPin size={16} color={theme.colors.textSecondary} />
-                        <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, flex: 1 }}>
+                        <Text
+                          style={{
+                            ...theme.text.body,
+                            color: theme.colors.textSecondary,
+                            flex: 1,
+                          }}
+                        >
                           {vacancy.sector}
                         </Text>
                       </View>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
-                        <Building2 size={16} color={theme.colors.textSecondary} />
-                        <Text style={{ ...theme.text.body, color: theme.colors.textSecondary, flex: 1 }}>
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: theme.space[2],
+                        }}
+                      >
+                        <Building2
+                          size={16}
+                          color={theme.colors.textSecondary}
+                        />
+                        <Text
+                          style={{
+                            ...theme.text.body,
+                            color: theme.colors.textSecondary,
+                            flex: 1,
+                          }}
+                        >
                           {vacancy.hospital}
                         </Text>
                       </View>

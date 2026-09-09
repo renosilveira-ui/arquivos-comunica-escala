@@ -36,7 +36,8 @@ describe("conformidade visual mobile corporativa", () => {
   it("preserva os estados de Vagas e explica bloqueios sem revelar topologia", () => {
     expect(vagas).toMatch(/<SkeletonList\s+count=\{3\}\s*\/>/);
     expect(vagas).toMatch(/variant=["']brand["']/);
-    expect(vagas).toMatch(/vacancies\.length\s*===\s*1\s*\?\s*["']plantão["']\s*:\s*["']plantões["']/);
+    expect(vagas).toMatch(/vacancies\.length\s*===\s*1\s*\?\s*["']turno["']\s*:\s*["']turnos["']/);
+    expect(vagas).toContain("vacancy.remainingCapacity");
     expect(vagas).toMatch(/Seu vínculo atual não permite solicitar esta vaga\./);
     expect(vagas).toMatch(/vacanciesContentState\s*===\s*["']ERROR["']/);
     expect(vagas).toMatch(/vacanciesContentState\s*===\s*["']UNRESOLVED["']/);
