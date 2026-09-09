@@ -53,6 +53,30 @@ type Identity = {
   role: "doctor" | "manager";
 };
 
+function deferredVoid() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function waitForMonthlyRosterLockWaiter(db: Db): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const [rows] = await db.execute("SHOW FULL PROCESSLIST");
+    const waiting = (rows as { Info?: unknown }[]).some(
+      (row) =>
+        typeof row.Info === "string" &&
+        row.Info.toLowerCase().includes("monthly_rosters") &&
+        row.Info.toLowerCase().includes("for share"),
+    );
+    if (waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Waiter do lock da escala mensal não observado");
+}
+
 describe("sinal de oferta de plantão", () => {
   let db: Db;
   let institutionId: number;
@@ -811,6 +835,93 @@ describe("sinal de oferta de plantão", () => {
       await db.delete(hospitals).where(eq(hospitals.id, siblingHospital.id));
     }
   });
+
+  it("revalida ACL revogada enquanto o envio aguarda o lock da escala", async () => {
+    installSuccessfulExpoTransport();
+    await registerPushToken(peer);
+    const shift = await createOccupiedShift(offerer, 59, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+      toProfessionalId: peer.professionalId,
+    });
+    const yearMonth = yearMonthBrt(at(59, 8));
+    const rosterLocked = deferredVoid();
+    const releaseRoster = deferredVoid();
+    let processing: Promise<void> | undefined;
+    const blocker = db.transaction(async (tx) => {
+      const [roster] = await tx
+        .select({ status: monthlyRosters.status })
+        .from(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+            eq(monthlyRosters.yearMonth, yearMonth),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      expect(roster?.status).toBe("PUBLISHED");
+      rosterLocked.resolve();
+      await releaseRoster.promise;
+      await tx
+        .update(professionalAccess)
+        .set({ canAccess: false })
+        .where(
+          and(
+            eq(professionalAccess.institutionId, institutionId),
+            eq(professionalAccess.professionalId, peer.professionalId),
+            eq(professionalAccess.hospitalId, hospitalId),
+            eq(professionalAccess.sectorId, sectorId),
+          ),
+        );
+    });
+
+    try {
+      await rosterLocked.promise;
+      processing = processQueuedPushes();
+      await waitForMonthlyRosterLockWaiter(db);
+      releaseRoster.resolve();
+      await blocker;
+      await processing;
+
+      expect(operationalPush("swap_offer")).toBeNull();
+      expect(
+        await trackedSignal(`swap-offer:${created.id}:${peer.userId}`),
+      ).toMatchObject({
+        status: "FAILED",
+        providerReceipt: {
+          evidence: {
+            status: "ALL_TICKETS_REJECTED",
+            acceptedCount: 0,
+            tickets: [
+              {
+                state: "TICKET_REJECTED",
+                retryability: "TERMINAL",
+                failureKind: "RECIPIENT_AUTHORITY_REVOKED",
+              },
+            ],
+          },
+        },
+      });
+    } finally {
+      releaseRoster.resolve();
+      await Promise.allSettled([blocker, ...(processing ? [processing] : [])]);
+      await db
+        .update(professionalAccess)
+        .set({ canAccess: true })
+        .where(
+          and(
+            eq(professionalAccess.institutionId, institutionId),
+            eq(professionalAccess.professionalId, peer.professionalId),
+            eq(professionalAccess.hospitalId, hospitalId),
+            eq(professionalAccess.sectorId, sectorId),
+          ),
+        );
+    }
+  }, 15_000);
 
   it("suprime oferta cancelada antes da entrega", async () => {
     installSuccessfulExpoTransport();
