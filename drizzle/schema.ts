@@ -206,9 +206,11 @@ export const personalCalendarItems = mysqlTable(
     birthdayDay: tinyint("birthday_day", { unsigned: true }),
     birthdayYear: int("birthday_year"),
     allDay: boolean("all_day").notNull().default(false),
-    availability: mysqlEnum("availability", ["BUSY", "FREE"])
-      .notNull()
-      .default("BUSY"),
+    /** VARCHAR + CHECK evita o default implícito do primeiro valor de ENUM. */
+    availability: varchar("availability", {
+      length: 4,
+      enum: ["BUSY", "FREE"],
+    }).notNull(),
     timeZone: varchar("time_zone", { length: 64 }).notNull(),
     version: int("version").notNull().default(1),
     deletedAt: datetime("deleted_at"),
@@ -270,7 +272,8 @@ export const personalCalendarItems = mysqlTable(
     ),
     chkPersonalCalendarItemAvailability: check(
       "chk_pc_item_availability",
-      sql`${table.kind} = 'APPOINTMENT' OR ${table.availability} = 'FREE'`,
+      sql`${table.availability} IN ('BUSY', 'FREE')
+        AND (${table.kind} = 'APPOINTMENT' OR ${table.availability} = 'FREE')`,
     ),
     chkPersonalCalendarItemVersion: check(
       "chk_pc_item_version",

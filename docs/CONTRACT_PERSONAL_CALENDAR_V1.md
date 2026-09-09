@@ -27,6 +27,11 @@ Registro privado com três formatos mutuamente exclusivos:
 - `REMINDER`: data ou instante pontual; nunca bloqueia horário.
 - `BIRTHDAY`: dia/mês, ano opcional, dia inteiro; nunca bloqueia horário.
 
+Disponibilidade é obrigatória na persistência: writers futuros deverão gravar
+`BUSY` ou `FREE` para compromisso e sempre `FREE` para lembrete/aniversário. O
+banco não possui um default ambíguo capaz de transformar silenciosamente um
+tipo no outro.
+
 `client_mutation_id` é único por conta e dará idempotência ao create. Título,
 local e anotações são dados pessoais e não podem ir para logs operacionais,
 push de gestor ou cache persistente do React Query.

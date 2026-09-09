@@ -20,7 +20,7 @@ CREATE TEMPORARY TABLE _personal_calendar_contract_expected (
 
 INSERT INTO _personal_calendar_contract_expected (table_name, contract_hash) VALUES
   ('personal_calendar_alert_rules', '44d17140775069cad145849f6888e21ef158b981e41e3386f2769f14623eafb8'),
-  ('personal_calendar_items', '41f081b4328004df7e35076555569cb11f19b1db1527f80019244044c35a0e96'),
+  ('personal_calendar_items', '9ed5c39b35e26d6cbd9253f481c8f85528dfd85fb720663360ec64774a31cd05'),
   ('personal_calendar_occurrence_exceptions', '227d19c08817e2578cd08588121ff344729fbfd643d57cd1a8c45ff2f890a41f'),
   ('personal_calendar_occurrences', '53d7cbc2c2c1ecc66aca3598632a4ec84bd1e77226d22f4b911072da81a36955'),
   ('personal_calendar_recurrences', '378d2d203c9c37dd3c424fcad13d7bbabe063aeb5f1387a4a445b9a22dc11fa5');
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS personal_calendar_items (
   birthday_day TINYINT UNSIGNED NULL,
   birthday_year INT NULL,
   all_day TINYINT(1) NOT NULL DEFAULT 0,
-  availability ENUM('BUSY','FREE') NOT NULL DEFAULT 'BUSY',
+  availability VARCHAR(4) NOT NULL,
   time_zone VARCHAR(64) NOT NULL,
   version INT NOT NULL DEFAULT 1,
   deleted_at DATETIME NULL,
@@ -101,7 +101,10 @@ CREATE TABLE IF NOT EXISTS personal_calendar_items (
     )
   ),
   CONSTRAINT chk_pc_item_availability
-    CHECK (kind = 'APPOINTMENT' OR availability = 'FREE'),
+    CHECK (
+      availability IN ('BUSY','FREE')
+      AND (kind = 'APPOINTMENT' OR availability = 'FREE')
+    ),
   CONSTRAINT chk_pc_item_version CHECK (version >= 1),
   CONSTRAINT chk_pc_item_shape CHECK (
     (

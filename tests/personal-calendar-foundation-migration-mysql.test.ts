@@ -122,8 +122,12 @@ function runFreshSchemaPush(schemaName: string) {
   );
   if (result.error) throw result.error;
   if (result.status !== 0 || result.signal) {
+    const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
+      .replace(/mysql:\/\/[^:\s/]+:[^@\s/]+@/giu, "mysql://***:***@")
+      .trim()
+      .slice(-4_000);
     throw new Error(
-      `drizzle-kit push falhou no schema descartável da Agenda (status ${String(result.status)})`,
+      `drizzle-kit push falhou no schema descartável da Agenda (status ${String(result.status)}, sinal ${String(result.signal)})${diagnostic ? `\n${diagnostic}` : ""}`,
     );
   }
 }
@@ -403,6 +407,16 @@ describeWithIsolatedMysql(
             '2026-09-10', 1, 'FREE', 'America/Fortaleza')`,
         ),
       ).rejects.toMatchObject({ code: "ER_CHECK_CONSTRAINT_VIOLATED" });
+
+      await expect(
+        database.execute(
+          `INSERT INTO personal_calendar_items (
+            owner_user_id, client_mutation_id, kind, title,
+            start_local_date, all_day, time_zone
+          ) VALUES (1, 'missing-availability', 'REMINDER', 'Sem semântica',
+            '2026-09-10', 1, 'America/Fortaleza')`,
+        ),
+      ).rejects.toMatchObject({ code: "ER_NO_DEFAULT_FOR_FIELD" });
 
       await expect(
         database.execute(
