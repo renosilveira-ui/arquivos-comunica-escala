@@ -1,8 +1,9 @@
 # Contrato V1 — Agenda pessoal
 
-Status desta frente: **fundação persistente inativa**. As tabelas existem no
-schema e na migration manual, mas nenhum endpoint, worker ou componente as
-consulta ou altera.
+Status desta frente: **fundação persistente e motor temporal puros, ainda
+inativos**. As tabelas existem no schema e na migration manual; o servidor já
+possui validação e expansão determinística, mas nenhum endpoint, worker ou
+componente consulta ou altera esses dados.
 
 ## Limites do domínio
 
@@ -81,6 +82,19 @@ aponta para outro item do mesmo owner; não copia conteúdo privado para JSON.
 
 - O item guarda data/hora civil e fuso IANA.
 - Somente o motor do servidor converte a ocorrência para UTC.
+- Entradas pontuais em horário inexistente ou ambíguo são recusadas. Para uma
+  repetição futura que atravesse mudança de fuso, a política compatível escolhe
+  o primeiro instante em uma sobreposição e avança pelo tamanho do salto em um
+  horário inexistente; a ocorrência registra que sofreu ajuste. Se esse salto
+  inverter o fim civil de um compromisso, o motor preserva a duração positiva
+  da ocorrência original.
+- A semana recorrente começa na segunda-feira. A máscara mantém o contrato de
+  bits `domingo..sábado`, e `COUNT` conta ocorrências, não semanas.
+- A data original ancora repetições mensais e anuais. `SKIP` não conta uma data
+  inexistente; `CLAMP_LAST_DAY` usa o último dia daquele mês.
+- Aniversário em 29 de fevereiro aparece em 28 de fevereiro nos anos comuns.
+- Cada consulta cobre no máximo 366 dias e nunca expande uma regra sem limite
+  temporal fornecido pelo chamador.
 - Um compromisso colide quando `a.start < b.end AND b.start < a.end`.
 - Lembretes, aniversários e compromissos com disponibilidade `FREE` não
   colidem.
