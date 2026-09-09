@@ -33,6 +33,7 @@ import {
   type AllocationRepeatRule,
 } from "@/lib/allocation-repeat";
 import { vacancyBroadcastFeedbackMessage } from "@/lib/vacancy-broadcast";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 
 const ICON_BOX_SIZE = theme.space[10] + theme.space[2];
 const PRIMARY_COLUMN_MIN_WIDTH = theme.spacing.contentMaxWidth / 2;
@@ -63,9 +64,15 @@ export default function ShiftDetailsScreen() {
   }, []);
 
   // Buscar detalhes da escala (API ou demo)
-  const { data: apiShiftData, isLoading: apiLoading } = trpc.shifts.get.useQuery(
+  const {
+    data: apiShiftData,
+    isLoading: apiLoading,
+    isError: apiShiftIsError,
+    error: apiShiftError,
+    refetch: refetchApiShift,
+  } = trpc.shifts.get.useQuery(
     { id: shiftId },
-    { enabled: !!user?.id && !isDemo }
+    { enabled: !!user?.id && !isDemo },
   );
   const canManageShift = can("edit:shift");
   const canRequestSwap = can("request:swap");
@@ -85,6 +92,9 @@ export default function ShiftDetailsScreen() {
   const {
     data: assignableProfessionals,
     isLoading: loadingAssignableProfessionals,
+    isError: assignableProfessionalsIsError,
+    error: assignableProfessionalsError,
+    refetch: refetchAssignableProfessionals,
   } = trpc.professionals.listAssignableForShift.useQuery(
     { shiftInstanceId: shiftId },
     { enabled: !!user?.id && !isDemo && canManageShift && Number.isFinite(shiftId) },
@@ -250,6 +260,22 @@ export default function ShiftDetailsScreen() {
         <View className="flex-1 justify-center items-center gap-4">
           <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text className="text-base" style={{ color: theme.colors.textMuted }}>Carregando detalhes...</Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (!isDemo && apiShiftIsError) {
+    return (
+      <ScreenGradient scrollable={false}>
+        <View style={{ flex: 1, justifyContent: "center" }}>
+          <QueryErrorState
+            title="Não foi possível carregar o plantão"
+            error={apiShiftError}
+            onRetry={() => {
+              void refetchApiShift();
+            }}
+          />
         </View>
       </ScreenGradient>
     );
@@ -502,6 +528,14 @@ export default function ShiftDetailsScreen() {
                     <ActivityIndicator size="small" color={theme.colors.primary} />
                     <Text style={styles.subtleText}>Carregando profissionais...</Text>
                   </View>
+                ) : assignableProfessionalsIsError ? (
+                  <QueryErrorState
+                    title="Não foi possível carregar os profissionais"
+                    error={assignableProfessionalsError}
+                    onRetry={() => {
+                      void refetchAssignableProfessionals();
+                    }}
+                  />
                 ) : filteredAssignableProfessionals.length > 0 ? (
                   <View style={styles.assignableList}>
                     {filteredAssignableProfessionals.map((professional) => {
@@ -570,7 +604,13 @@ export default function ShiftDetailsScreen() {
                   onPress={handleAssignProfessional}
                   variant="primary"
                   icon={<UserPlus size={20} color={theme.colors.surface} />}
-                  disabled={!selectedProfessionalId || assignDirect.isPending || (apiShiftData?.requiredCapacity != null && apiShiftData.remainingCapacity === 0)}
+                  disabled={
+                    assignableProfessionalsIsError ||
+                    !selectedProfessionalId ||
+                    assignDirect.isPending ||
+                    (apiShiftData?.requiredCapacity != null &&
+                      apiShiftData.remainingCapacity === 0)
+                  }
                 />
               </TintedGlassCard>
             ) : null}

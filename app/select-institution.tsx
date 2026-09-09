@@ -3,7 +3,9 @@ import { ActivityIndicator, Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Building2, Check } from "lucide-react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { trpc } from "@/lib/trpc";
+import { resolveOperationalListState } from "@/lib/operational-screen-state";
 import { useTenantState } from "@/lib/tenant-state";
 import { theme } from "@/lib/theme";
 
@@ -13,7 +15,16 @@ export default function SelectInstitutionScreen() {
   const { activeInstitutionId, setActiveInstitutionId } = useTenantState();
   const [isSubmitting, setIsSubmitting] = useState<number | null>(null);
 
-  const { data: institutions, isLoading } = trpc.professionals.listMyInstitutions.useQuery();
+  const institutionsQuery = trpc.professionals.listMyInstitutions.useQuery();
+  const institutions = institutionsQuery.data;
+  const institutionsState = resolveOperationalListState({
+    isLoading: institutionsQuery.isLoading,
+    isPending: institutionsQuery.isPending,
+    isError: institutionsQuery.isError,
+    hasResolvedData: institutions !== undefined,
+    itemCount: institutions?.length ?? 0,
+    error: institutionsQuery.error,
+  });
 
   const orderedInstitutions = useMemo(() => {
     return [...(institutions ?? [])].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
@@ -41,11 +52,19 @@ export default function SelectInstitutionScreen() {
           </Text>
         </View>
 
-        {isLoading ? (
+        {institutionsState === "LOADING" || institutionsState === "UNRESOLVED" ? (
           <View className="flex-1 items-center justify-center">
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text style={{ color: theme.colors.textSecondary, marginTop: 12 }}>Carregando instituições...</Text>
           </View>
+        ) : institutionsState === "ERROR" ? (
+          <QueryErrorState
+            title="Não foi possível carregar suas instituições"
+            error={institutionsQuery.error}
+            onRetry={() => {
+              void institutionsQuery.refetch();
+            }}
+          />
         ) : (
           <View className="gap-3">
             {orderedInstitutions.map((institution) => {

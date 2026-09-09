@@ -7,6 +7,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, History, AlertCircle, Search } from "lucide-react-native";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
+import { resolveOperationalListState } from "@/lib/operational-screen-state";
 
 /**
  * Tela "Auditoria de movimentações" — consume `audit.listShiftMovements`
@@ -88,20 +90,23 @@ export default function AuditLogScreen() {
   const [category, setCategory] = useState<FilterCategory>("ALL");
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Defensive cast — o tipo `trpc.audit` chega via PR #77 (ainda em
-  // review nesse momento). O padrão de defensive cast é igual ao usado
-  // em PRs #65/#67/#69/#70.
-  const trpcAny = trpc as any;
-  const auditQuery = trpcAny.audit?.listShiftMovements?.useQuery?.(
+  const auditQuery = trpc.audit.listShiftMovements.useQuery(
     {
       actions: category === "ALL" ? undefined : CATEGORY_ACTIONS[category],
       limit: 200,
     },
     { enabled: !!user?.id },
-  ) ?? { data: undefined, isLoading: false, refetch: () => {} };
+  );
 
-  const data = useMemo(() => (auditQuery.data ?? []) as any[], [auditQuery.data]);
-  const isLoading = auditQuery.isLoading as boolean;
+  const data = useMemo(() => auditQuery.data ?? [], [auditQuery.data]);
+  const queryState = resolveOperationalListState({
+    isLoading: auditQuery.isLoading,
+    isPending: auditQuery.isPending,
+    isError: auditQuery.isError,
+    hasResolvedData: auditQuery.data !== undefined,
+    itemCount: auditQuery.data?.length ?? 0,
+    error: auditQuery.error,
+  });
 
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -237,13 +242,21 @@ export default function AuditLogScreen() {
           })}
         </ScrollView>
 
-        {isLoading ? (
+        {queryState === "LOADING" || queryState === "UNRESOLVED" ? (
           <View className="items-center py-20">
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Text className="mt-4 text-base" style={{ color: theme.colors.textMuted }}>
               Carregando movimentações...
             </Text>
           </View>
+        ) : queryState === "ERROR" ? (
+          <QueryErrorState
+            title="Não foi possível carregar a auditoria"
+            error={auditQuery.error}
+            onRetry={() => {
+              void auditQuery.refetch();
+            }}
+          />
         ) : filteredRows.length === 0 ? (
           <View className="items-center justify-center py-20">
             <History size={64} color={theme.colors.textMuted} />

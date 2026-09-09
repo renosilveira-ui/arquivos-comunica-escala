@@ -234,7 +234,7 @@ describe("autoridade visual exclusivamente institucional", () => {
     expect(editShift).toContain('permissionState === "LOADING"');
     expect(editShift).toContain('permissionState === "UNAUTHENTICATED"');
     expect(editShift).toContain(
-      "enabled: canLoadEditShift(permissionState, !!shiftId)",
+      "Number.isSafeInteger(shiftId) && shiftId > 0",
     );
     expect(editShift).not.toContain("if (!canEditShift) router.back()");
   });

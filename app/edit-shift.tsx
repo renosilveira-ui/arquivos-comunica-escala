@@ -40,6 +40,7 @@ import {
   validatePublishedMonthReason,
 } from "@/hooks/use-published-month-roster";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
@@ -128,9 +129,20 @@ export default function EditShiftScreen() {
   const [tempEndDate, setTempEndDate] = useState<Date | null>(null);
 
   // Buscar detalhes da escala
-  const { data: shiftData, isLoading: loadingShift } = trpc.shifts.get.useQuery(
+  const {
+    data: shiftData,
+    isLoading: loadingShift,
+    isError: shiftIsError,
+    error: shiftError,
+    refetch: refetchShift,
+  } = trpc.shifts.get.useQuery(
     { id: shiftId },
-    { enabled: canLoadEditShift(permissionState, !!shiftId) },
+    {
+      enabled: canLoadEditShift(
+        permissionState,
+        Number.isSafeInteger(shiftId) && shiftId > 0,
+      ),
+    },
   );
   const { data: monthRoster, hasShifts: monthHasShifts } =
     usePublishedMonthRoster(shiftData?.hospitalId, startDate || undefined);
@@ -444,6 +456,36 @@ export default function EditShiftScreen() {
           <Text style={{ fontSize: 16, color: theme.colors.textMuted }}>
             Acesso não autorizado
           </Text>
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (shiftIsError || !shiftData) {
+    return (
+      <ScreenGradient>
+        <View style={{ flex: 1, justifyContent: "center" }}>
+          <QueryErrorState
+            title="Não foi possível carregar o plantão para edição"
+            error={shiftError}
+            description={
+              Number.isSafeInteger(shiftId) && shiftId > 0
+                ? undefined
+                : "O identificador deste plantão é inválido. Volte à Agenda e abra o plantão novamente."
+            }
+            retryLabel={
+              Number.isSafeInteger(shiftId) && shiftId > 0
+                ? undefined
+                : "Voltar à Agenda"
+            }
+            onRetry={() => {
+              if (Number.isSafeInteger(shiftId) && shiftId > 0) {
+                void refetchShift();
+              } else {
+                router.back();
+              }
+            }}
+          />
         </View>
       </ScreenGradient>
     );

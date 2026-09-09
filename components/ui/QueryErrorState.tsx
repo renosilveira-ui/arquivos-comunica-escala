@@ -17,11 +17,13 @@ export function QueryErrorState({
   error,
   description,
   onRetry,
+  retryLabel = "Tentar novamente",
 }: {
   title?: string;
   error?: unknown;
   description?: string;
   onRetry: () => void;
+  retryLabel?: string;
 }) {
   const presentation = presentQueryError(error);
   const Icon = presentation.kind === "NETWORK" ? CloudOff : AlertCircle;
@@ -66,7 +68,7 @@ export function QueryErrorState({
         }}
       >
         <Text style={{ color: theme.colors.surface, fontWeight: "600" }}>
-          Tentar novamente
+          {retryLabel}
         </Text>
       </TouchableOpacity>
     </View>

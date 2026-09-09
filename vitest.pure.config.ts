@@ -99,6 +99,7 @@ export default defineConfig({
       "tests/profile-notification-preferences.test.ts",
       "tests/operational-query-refresh.test.ts",
       "tests/operational-screen-state.test.ts",
+      "tests/tenant-permission-fallbacks.test.ts",
       "tests/query-error-presentation.test.ts",
       "tests/web-verified-session.test.ts",
       "tests/institution-roles.test.ts",
@@ -178,6 +179,7 @@ export default defineConfig({
       "tests/personal-calendar-domain.test.ts",
       "tests/calendar-holidays.test.ts",
       "tests/calendar-auxiliary-router.test.ts",
+      "tests/ui-query-error-states.test.ts",
     ],
   },
 });
