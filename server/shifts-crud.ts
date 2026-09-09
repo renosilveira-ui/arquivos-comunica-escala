@@ -2777,8 +2777,8 @@ export const shiftsRouter = router({
   // (semana → dia → grupo hospital+setor+contexto) — pronto pra renderizar sem
   // pós-processamento no cliente.
   //
-  // - scope = "geral": plantões das escalas ativas do tenant (quem está
-  //   alocado). Praticar/gerir continua na allowlist.
+  // - scope = "geral": plantões das escalas legíveis conforme o pacote da
+  //   instituição (quem está alocado). Praticar/gerir continua na allowlist.
   // - scope = "minha": filtra onde o profissional do user logado está
   //   ativo em alguma assignment
   //

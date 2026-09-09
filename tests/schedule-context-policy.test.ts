@@ -13,6 +13,10 @@ import {
   type ActiveScheduleContext,
   type AuthorizedScheduleContext,
 } from "../server/schedule-contexts";
+import {
+  ROSTER_READ_POLICIES,
+  type RosterReadPolicy,
+} from "../lib/institution-features";
 
 function context(
   id: number,
@@ -108,6 +112,7 @@ describe("política canônica de contextos de escala", () => {
   it("panorama Geral mostra todos os setores do tenant sem conceder gestão nem vazar outro tenant", () => {
     const result = filterScheduleContextsForRosterRead({
       actor: userActor,
+      rosterReadPolicy: ROSTER_READ_POLICIES.institutionWide,
       contexts: [
         context(1, 101),
         context(2, 102),
@@ -133,6 +138,7 @@ describe("política canônica de contextos de escala", () => {
   it("panorama legível preserva canManage só onde o gestor já podia gerir", () => {
     const result = filterScheduleContextsForRosterRead({
       actor: { ...userActor, roleInInstitution: "GESTOR_MEDICO" },
+      rosterReadPolicy: ROSTER_READ_POLICIES.institutionWide,
       contexts: [context(1, 101), context(2, 102), context(3, 103)],
       accesses: [
         {
@@ -158,6 +164,94 @@ describe("política canônica de contextos de escala", () => {
       { id: 1, canManage: true },
       { id: 2, canManage: false },
       { id: 3, canManage: false },
+    ]);
+  });
+
+  it("pacote fechado limita USER aos contextos autorizados", () => {
+    const result = filterScheduleContextsForRosterRead({
+      actor: userActor,
+      rosterReadPolicy: ROSTER_READ_POLICIES.authorizedContextsOnly,
+      contexts: [context(1, 101), context(2, 102), context(9, 901, 10, 2)],
+      accesses: [
+        {
+          institutionId: 1,
+          professionalId: 55,
+          hospitalId: 100,
+          sectorId: 101,
+          canAccess: true,
+        },
+      ],
+      managerScopes: [],
+    });
+
+    expect(result.map((row) => row.id)).toEqual([1]);
+    expect(result[0]?.canManage).toBe(false);
+  });
+
+  it("fecha diante de política desconhecida em tempo de execução", () => {
+    const result = filterScheduleContextsForRosterRead({
+      actor: userActor,
+      rosterReadPolicy: "UNKNOWN_POLICY" as unknown as RosterReadPolicy,
+      contexts: [context(1, 101), context(2, 102)],
+      accesses: [
+        {
+          institutionId: 1,
+          professionalId: 55,
+          hospitalId: 100,
+          sectorId: 101,
+          canAccess: true,
+        },
+      ],
+      managerScopes: [],
+    });
+
+    expect(result.map((row) => row.id)).toEqual([1]);
+  });
+
+  it("pacote fechado não reduz a autoridade própria de Gestor+", () => {
+    const result = filterScheduleContextsForRosterRead({
+      actor: {
+        ...userActor,
+        roleInInstitution: "GESTOR_PLUS",
+      },
+      rosterReadPolicy: ROSTER_READ_POLICIES.authorizedContextsOnly,
+      contexts: [context(1, 101), context(2, 102), context(9, 901, 10, 2)],
+      accesses: [],
+      managerScopes: [],
+    });
+
+    expect(result.map((row) => row.id)).toEqual([1, 2]);
+    expect(result.every((row) => row.canManage)).toBe(true);
+  });
+
+  it("pacote fechado preserva apenas scope e acesso próprios do gestor setorial", () => {
+    const result = filterScheduleContextsForRosterRead({
+      actor: { ...userActor, roleInInstitution: "GESTOR_MEDICO" },
+      rosterReadPolicy: ROSTER_READ_POLICIES.authorizedContextsOnly,
+      contexts: [context(1, 101), context(2, 102), context(3, 103)],
+      accesses: [
+        {
+          institutionId: 1,
+          professionalId: 55,
+          hospitalId: 100,
+          sectorId: 102,
+          canAccess: true,
+        },
+      ],
+      managerScopes: [
+        {
+          institutionId: 1,
+          managerProfessionalId: 55,
+          hospitalId: 100,
+          sectorId: 101,
+          active: true,
+        },
+      ],
+    });
+
+    expect(result.map(({ id, canManage }) => ({ id, canManage }))).toEqual([
+      { id: 1, canManage: true },
+      { id: 2, canManage: false },
     ]);
   });
 

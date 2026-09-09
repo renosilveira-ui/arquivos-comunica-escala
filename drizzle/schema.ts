@@ -274,6 +274,53 @@ export const institutions = mysqlTable("institutions", {
 });
 
 /**
+ * Recursos comerciais habilitados por instituição.
+ *
+ * Ausência de linha mantém o padrão do produto definido no servidor. Uma
+ * linha registra a materialização ou um override institucional explícito e
+ * não altera papel, manager_scope, professional_access ou elegibilidade.
+ */
+export const institutionFeatureEntitlements = mysqlTable(
+  "institution_feature_entitlements",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id").notNull(),
+    featureCode: varchar("feature_code", { length: 64 }).notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    source: mysqlEnum("source", [
+      "LEGACY_COMPATIBILITY",
+      "ADMIN_OVERRIDE",
+      "COMMERCIAL_PACKAGE",
+    ]).notNull(),
+    version: int("version").notNull().default(1),
+    updatedByUserId: int("updated_by_user_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqInstitutionFeature: unique("uniq_institution_feature").on(
+      table.institutionId,
+      table.featureCode,
+    ),
+    idxInstitutionFeatureLookup: index("idx_institution_feature_lookup").on(
+      table.institutionId,
+      table.enabled,
+      table.featureCode,
+    ),
+    fkInstitutionFeatureInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_institution_feature_institution",
+    }),
+    fkInstitutionFeatureUpdatedBy: foreignKey({
+      columns: [table.updatedByUserId],
+      foreignColumns: [users.id],
+      name: "fk_institution_feature_updated_by",
+    }).onDelete("set null"),
+  }),
+);
+
+/**
  * Conversa/intenção WhatsApp pendente (Incremento B1).
  * Memória de conversa — não é autoridade de acesso, elegibilidade ou swap.
  * institution_id nasce null; nunca vem de texto/webhook.
@@ -2067,6 +2114,7 @@ export const auditTrail = mysqlTable(
       "USER_CREATED",
       "USER_UPDATED",
       "USER_ROLE_CHANGED",
+      "INSTITUTION_FEATURE_UPDATED",
       "SECTOR_SERVICE_SPECIALTIES_UPDATED",
       "SSO_JIT_LINK_CREATED",
       "PUSH_DISPATCHED",
@@ -2084,6 +2132,7 @@ export const auditTrail = mysqlTable(
       "MONTHLY_ROSTER",
       "USER",
       "PROFESSIONAL",
+      "INSTITUTION",
       "SECTOR",
     ]).notNull(),
     entityId: int("entity_id").notNull(),
