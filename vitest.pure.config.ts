@@ -176,6 +176,8 @@ export default defineConfig({
       "tests/voice-interpret-choices.test.ts",
       "tests/voice-command-disambiguation-source.test.ts",
       "tests/personal-calendar-domain.test.ts",
+      "tests/calendar-holidays.test.ts",
+      "tests/calendar-auxiliary-router.test.ts",
     ],
   },
 });
