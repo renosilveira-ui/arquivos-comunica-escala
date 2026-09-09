@@ -139,6 +139,42 @@ export const TRPC_MUTATION_NOTIFICATION_TARGETS = {
       },
     ],
   },
+  "personalCalendar.checkConflicts": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário solicita uma prévia privada de conflitos sem alterar dados",
+        audience: [],
+      },
+    ],
+  },
+  "personalCalendar.createItem": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário cria um item privado da Agenda pessoal",
+        audience: [],
+      },
+    ],
+  },
+  "personalCalendar.deleteItem": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário remove um item privado da Agenda pessoal",
+        audience: [],
+      },
+    ],
+  },
+  "personalCalendar.updateItem": {
+    targets: [
+      {
+        policy: "SILENT_AUDITED",
+        when: "quando o próprio usuário altera um item privado da Agenda pessoal",
+        audience: [],
+      },
+    ],
+  },
   "editor.assignDirect": {
     targets: [
       {

@@ -1,9 +1,9 @@
 # Contrato V1 — Agenda pessoal
 
-Status desta frente: **fundação persistente e motor temporal puros, ainda
-inativos**. As tabelas existem no schema e na migration manual; o servidor já
-possui validação e expansão determinística, mas nenhum endpoint, worker ou
-componente consulta ou altera esses dados.
+Status desta frente: **fundação persistente, motor temporal e API account-wide
+ativos no código**. O servidor oferece CRUD privado, consulta por janela e
+prévia de conflitos; ainda não há componente mobile, worker de lembretes,
+integração externa, deploy ou migration em ambiente real nesta entrega.
 
 ## Limites do domínio
 
@@ -73,6 +73,11 @@ Projeção UTC materializada para consulta, conflito e alertas. Cada ocorrência
 ocorrência é binária/case-sensitive, única dentro da série, e o intervalo é
 sempre semiaberto `[starts_at_utc, ends_at_utc)`.
 
+A API V1 expande janelas de forma determinística em memória e reserva essa
+tabela para o futuro worker de lembretes. Update e soft-delete removem qualquer
+projeção materializada anterior, evitando que um worker futuro consuma uma
+ocorrência obsoleta ou apagada.
+
 ### `personal_calendar_occurrence_exceptions`
 
 Uma ocorrência de série pode ser cancelada ou substituída. Uma substituição
@@ -103,18 +108,38 @@ aponta para outro item do mesmo owner; não copia conteúdo privado para JSON.
   identidades profissionais ligadas a `ctx.user.id`, com topologia exata.
   Nunca usam acesso amplo à escala como substituto de ownership.
 
-## Gates antes de ativar o produto
+## Contrato da API V1
 
-1. Motor de recorrência limitado, determinístico e testado em fuso IANA.
-2. CRUD somente por `sessionProcedure`, com owner derivado da sessão,
+- `getItem` e `listWindow` leem um snapshot MySQL `REPEATABLE READ`, somente
+  leitura, sempre limitado ao owner derivado da sessão.
+- `checkConflicts` é uma mutation deliberadamente sem escrita: o método POST
+  impede datas e horários pessoais em query strings e access logs. Sua entrada
+  aceita apenas os campos temporais do compromisso, sem título, local ou notas.
+- `createItem` é idempotente por `owner + clientMutationId`.
+- `updateItem` e `deleteItem` exigem versão otimista. Todas as escritas relêem
+  `sessionVersion` sob lock antes de alterar dados.
+- A consulta privada nunca é persistida no cache em disco do React Query e não
+  devolve notas na listagem; notas permanecem disponíveis somente no detalhe.
+- Janelas, fontes, ocorrências e comparações possuem limites explícitos. Excesso
+  falha por inteiro, sem resposta parcial.
+- Exceções de recorrência ainda não implementadas falham fechado em vez de
+  serem silenciosamente ignoradas.
+- A exclusão da conta purga o agregado pessoal na mesma transação; troca ou
+  reset de senha preservam a Agenda.
+
+## Gates de ativação
+
+1. Concluído: motor de recorrência limitado, determinístico e testado em fuso
+   IANA.
+2. Concluído: CRUD somente por `sessionProcedure`, com owner derivado da sessão,
    idempotência de create e versão otimista em update/delete.
-3. Purga explícita desses dados no fluxo atual de soft-delete da conta; writers
+3. Concluído: purga explícita no fluxo atual de soft-delete da conta; writers
    não podem executar hard-delete de um item isolado.
-4. Bloqueio de persistência em disco no `query-persist-policy`.
-5. Leitor canônico de plantões próprios e testes entre instituições.
-6. Outbox pessoal sem `institution_id`, worker durável, retry, lease, dedupe e
+4. Concluído: bloqueio de persistência em disco no `query-persist-policy`.
+5. Concluído: leitor canônico de plantões próprios e testes entre instituições.
+6. Pendente: outbox pessoal sem `institution_id`, worker durável, retry, lease, dedupe e
    revalidação da conta antes de qualquer push.
-7. UI e integrações externas permanecem resilientes quando agenda, feriados
+7. Pendente: UI e integrações externas resilientes quando agenda, feriados
    ou clima estão indisponíveis.
 
 ## Integrações futuras

@@ -30,6 +30,7 @@ describe("política de persistência do cache de consultas", () => {
     expect(shouldPersistQuery(successful([["professionals", "listMyInstitutions"], { type: "query" }]))).toBe(false);
     expect(shouldPersistQuery(successful([["professionals", "getMyCapabilities"], { type: "query" }]))).toBe(false);
     expect(shouldPersistQuery(successful([["professionals", "getManagerScope"], { type: "query" }]))).toBe(false);
+    expect(shouldPersistQuery(successful([["personalCalendar", "listWindow"], { type: "query" }]))).toBe(false);
     // Erro/pending nunca vão para o disco.
     expect(shouldPersistQuery({ queryKey: [["shifts", "listAgenda"]], state: { status: "error" } } as any)).toBe(false);
     expect(shouldPersistQuery({ queryKey: [["shifts", "listAgenda"]], state: { status: "pending" } } as any)).toBe(false);
@@ -43,6 +44,7 @@ describe("política de persistência do cache de consultas", () => {
     expect(shouldPersistQuery(successful([["confirmations", "getPending"], { type: "query" }]))).toBe(false);
     expect(shouldPersistQuery(successful([["swaps", "listAvailable"], { type: "query" }]))).toBe(false);
     expect(PERSISTED_PROCEDURES.has("shiftAssignments.listPending")).toBe(false);
+    expect(PERSISTED_PROCEDURES.has("personalCalendar.listWindow")).toBe(false);
   });
 
   it("mantém whitelist mínima e fechada após prova fresca de membership", () => {
