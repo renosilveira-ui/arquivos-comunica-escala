@@ -238,6 +238,10 @@ describe("autoridade atual no outbox de alocação", () => {
       .set({ status: "OCUPADO", isActive: true })
       .where(eq(shiftAssignmentsV2.id, assignmentId));
     await db
+      .update(shiftInstances)
+      .set({ status: "OCUPADO" })
+      .where(eq(shiftInstances.id, shiftId));
+    await db
       .update(hospitals)
       .set({ name: `Hospital A ${stamp}` })
       .where(eq(hospitals.id, hospitalAId));
@@ -382,6 +386,55 @@ describe("autoridade atual no outbox de alocação", () => {
       .update(shiftAssignmentsV2)
       .set({ isActive: false })
       .where(eq(shiftAssignmentsV2.id, assignmentId));
+
+    await processQueued();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("suprime alocação quando a tupla ativa do profissional ficou duplicada", async () => {
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+    const [duplicate] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        institutionId,
+        hospitalId: hospitalAId,
+        sectorId: sectorAId,
+        shiftInstanceId: shiftId,
+        professionalId,
+        assignmentType: "ON_DUTY",
+        status: "PENDENTE",
+        isActive: true,
+        createdBy: userId,
+      })
+      .$returningId();
+
+    try {
+      await processQueued();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.id, duplicate.id));
+    }
+  });
+
+  it("suprime alocação quando o turno persistido deixou de estar ocupado", async () => {
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+    await db
+      .update(shiftInstances)
+      .set({ status: "VAGO" })
+      .where(eq(shiftInstances.id, shiftId));
 
     await processQueued();
 

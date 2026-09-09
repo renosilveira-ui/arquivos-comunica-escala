@@ -123,6 +123,7 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
     .select({
       assignmentStatus: shiftAssignmentsV2.status,
       assignmentActive: shiftAssignmentsV2.isActive,
+      shiftStatus: shiftInstances.status,
       scheduleContextId: shiftInstances.scheduleContextId,
     })
     .from(shiftAssignmentsV2)
@@ -176,6 +177,42 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
     invalid("Alocação não está mais no estado da notificação");
   }
 
+  if (authority.purpose === "ASSIGNED") {
+    if (assignment.shiftStatus !== "OCUPADO") {
+      invalid("Plantão não está mais ocupado pela alocação notificada");
+    }
+    const activeTupleQuery = db
+      .select({
+        id: shiftAssignmentsV2.id,
+        institutionId: shiftAssignmentsV2.institutionId,
+        hospitalId: shiftAssignmentsV2.hospitalId,
+        sectorId: shiftAssignmentsV2.sectorId,
+        status: shiftAssignmentsV2.status,
+      })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.professionalId, authority.professionalId),
+          eq(shiftAssignmentsV2.shiftInstanceId, authority.shiftInstanceId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      )
+      .limit(2);
+    const activeTuple = lockForShare
+      ? await activeTupleQuery.for("share")
+      : await activeTupleQuery;
+    if (
+      activeTuple.length !== 1 ||
+      activeTuple[0]?.id !== authority.assignmentId ||
+      activeTuple[0]?.institutionId !== authority.institutionId ||
+      activeTuple[0]?.hospitalId !== authority.hospitalId ||
+      activeTuple[0]?.sectorId !== authority.sectorId ||
+      activeTuple[0]?.status !== "OCUPADO"
+    ) {
+      invalid("Alocação ativa do profissional não é uma tupla canônica única");
+    }
+  }
+
   if (authority.purpose === "UNASSIGNED") {
     const currentAssignmentQuery = db
       .select({ id: shiftAssignmentsV2.id })
@@ -183,9 +220,6 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
       .where(
         and(
           eq(shiftAssignmentsV2.professionalId, authority.professionalId),
-          eq(shiftAssignmentsV2.institutionId, authority.institutionId),
-          eq(shiftAssignmentsV2.hospitalId, authority.hospitalId),
-          eq(shiftAssignmentsV2.sectorId, authority.sectorId),
           eq(shiftAssignmentsV2.shiftInstanceId, authority.shiftInstanceId),
           eq(shiftAssignmentsV2.status, "OCUPADO"),
           eq(shiftAssignmentsV2.isActive, true),
