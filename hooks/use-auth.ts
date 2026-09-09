@@ -2315,7 +2315,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           suspendQueryCachePersistence();
           if (!lease.isCurrent()) return { value: undefined };
           if (explicitRevocation.confirmed) {
-            let localCleanupError = explicitRevocation.localCleanupError;
+            let residualLocalCleanupError: unknown;
             try {
               await endSession(
                 lease.epoch,
@@ -2325,16 +2325,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 true,
               );
             } catch (error) {
-              localCleanupError = aggregateLocalCleanupErrors(
-                localCleanupError,
+              residualLocalCleanupError = aggregateLocalCleanupErrors(
+                explicitRevocation.localCleanupError,
                 error,
               );
             }
             if (explicitRevocation.requiresCanonicalReadmission) {
               sessionMutationState.reconciliationRequired = true;
             }
-            if (localCleanupError !== undefined) {
-              const reportedError = localCleanupError;
+            if (residualLocalCleanupError !== undefined) {
+              const reportedError = residualLocalCleanupError;
               return {
                 value: undefined,
                 afterSettled: async () => {
@@ -2800,17 +2800,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
 
           if (result.ok) {
-            let localCleanupError = confirmedDeletionLocalCleanupError;
+            let residualLocalCleanupError: unknown;
             try {
               await endSession(lease.epoch, true, false, false, true);
             } catch (error) {
-              localCleanupError = aggregateLocalCleanupErrors(
-                localCleanupError,
+              residualLocalCleanupError = aggregateLocalCleanupErrors(
+                confirmedDeletionLocalCleanupError,
                 error,
               );
             }
-            if (localCleanupError !== undefined) {
-              const reportedError = localCleanupError;
+            if (residualLocalCleanupError !== undefined) {
+              const reportedError = residualLocalCleanupError;
               return {
                 value: result,
                 afterSettled: async () => {
