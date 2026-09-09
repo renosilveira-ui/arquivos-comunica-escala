@@ -629,32 +629,28 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
     const ids = vacancies.map((row) => row.shiftInstanceId);
     expect(ids).toContain(allowlistShiftId);
     expect(ids).toContain(allCfmShiftId);
-    expect(ids).not.toContain(emptyShiftId);
+    expect(ids).toContain(emptyShiftId);
     expect(ids).not.toContain(foreignShiftId);
     expect(ids).not.toContain(profileShiftId);
     expect(vacancies.every((row) => row.canAssume === true)).toBe(true);
   });
 
-  it("T5 allowlist vazia recusa ocupação real", async () => {
-    await expect(
-      managerEditor().assignDirect({
-        shiftInstanceId: emptyShiftId,
-        professionalId: userProfessionalId,
-        assignmentType: "ON_DUTY",
-        reason: "allowlist vazia",
-      }),
-    ).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      message:
-        "Profissional sem qualificação compatível com a escala do plantão.",
-    });
+  it("T5 allowlist vazia preserva ocupação com ACL setorial e credencial", async () => {
     const vacancies = await userCaller().shiftInstances.listVacancies({});
-    expect(vacancies.map((row) => row.shiftInstanceId)).not.toContain(
+    expect(vacancies.map((row) => row.shiftInstanceId)).toContain(
       emptyShiftId,
     );
     expect(vacancies.map((row) => row.shiftInstanceId)).not.toContain(
       profileShiftId,
     );
+    await expect(
+      managerEditor().assignDirect({
+        shiftInstanceId: emptyShiftId,
+        professionalId: userProfessionalId,
+        assignmentType: "ON_DUTY",
+        reason: "allowlist ainda não configurada",
+      }),
+    ).resolves.toMatchObject({ ok: true });
   });
 
   it("T6 ALL_CFM com especialidade CFM ocupa", async () => {

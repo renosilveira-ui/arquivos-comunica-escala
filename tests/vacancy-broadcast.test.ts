@@ -406,6 +406,43 @@ describe("aviso deliberado de plantão vago", () => {
     );
   });
 
+  it("allowlist vazia não desliga vaga e broadcast para ACL setorial", async () => {
+    await db
+      .delete(scheduleContextAllowedQualifications)
+      .where(
+        eq(
+          scheduleContextAllowedQualifications.scheduleContextId,
+          scheduleContextId,
+        ),
+      );
+    try {
+      const shiftId = await createVacantShift(21);
+      const visible = await vacanciesCaller(
+        ineligible,
+      ).shiftInstances.listVacancies({});
+      expect(visible.map((row) => Number(row.shiftInstanceId))).toContain(
+        shiftId,
+      );
+
+      const result = await callerFor(manager).notifyVacancy({
+        shiftInstanceId: shiftId,
+      });
+      expect(result.notifiedCount).toBe(3);
+      expect((await listBroadcasts(shiftId)).map((row) => row.userId)).toEqual(
+        expect.arrayContaining([
+          doctor.userId,
+          doctorGestor.userId,
+          ineligible.userId,
+        ]),
+      );
+    } finally {
+      await db.insert(scheduleContextAllowedQualifications).values({
+        scheduleContextId,
+        medicalSpecialtyId: anesthesiaId,
+      });
+    }
+  });
+
   it("GESTOR_PLUS autorizado envia", async () => {
     const shiftId = await createVacantShift(2);
     const result = await callerFor(plus).notifyVacancy({ shiftInstanceId: shiftId });
