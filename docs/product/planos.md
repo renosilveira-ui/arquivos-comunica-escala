@@ -41,6 +41,12 @@ auditoria e confirmação institucional). O profissional compra o que é
 *dele* (ver próximo plantão, comando de voz…) quando a instituição não cobre.
 Detalhe em §4 e §6.
 
+**Agenda pessoal basal:** compromissos, lembretes e aniversários pertencem à
+conta e estão presentes em todos os planos, independentemente da instituição
+ativa. Isso não libera nomes ou escalas institucionais fora da autorização do
+usuário. A futura sincronização com Google Agenda continua sendo uma integração
+separada e não é necessária para usar a agenda pessoal local.
+
 ## 2. Os planos da instituição (4ª rodada)
 
 | | **Grátis** | **Lite** | **Lite+** | **Pro** | **Pro Intelligence** |
@@ -49,6 +55,7 @@ Detalhe em §4 e §6.
 | Preço **por usuário/mês** | R$ 0 | **R$ 12,90** | **R$ 14,90** | **R$ 24,90** | **R$ 24,90 + 4,90** (Pacote Intelligence) |
 | Preço **por gestor/adm/mês** | R$ 0 | **R$ 6,90** | **grátis** | **grátis** | **grátis** |
 | Agenda | **anônima**: o dia mostra só *ocupado/vago* — **não mostra quem** está no plantão | com nomes, qualquer dia | idem | idem | idem |
+| Agenda pessoal: compromissos, lembretes e aniversários | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Push de ofertas de troca | **não** (a oferta existe, mas sem notificação) | ✓ | ✓ | ✓ | ✓ |
 | Trocas e cessões entre colegas | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Criar/editar/alocar plantão; aprovar auto-cadastro (gestor) | ✓ | ✓ | ✓ | ✓ | ✓ |
