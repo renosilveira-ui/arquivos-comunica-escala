@@ -11,6 +11,7 @@ import {
   sendPushNotification,
   unregisterPushToken,
 } from "../server/notifications-service";
+import { dutyConfirmationPushPresentation } from "../server/contextual-push-presentation";
 import {
   ACCOUNT_WIDE_BADGE_SNAPSHOT_COLLAPSE_ID,
   ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
@@ -459,6 +460,80 @@ describe("transporte tipado de push Expo", () => {
     expect(sent.title).not.toContain("Hospital");
     expect(sent.body).not.toContain("UTI");
     expect(sent.body).not.toContain("19:00");
+  });
+
+  it("libera apresentação contextual somente pela autoridade revalidada sob lock", async () => {
+    const { db } = database([
+      { id: 121, token: "ExponentPushToken[contextual-copy]" },
+    ]);
+    dbModule.getDb.mockResolvedValue(db);
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: "ticket-contextual-copy" } }),
+    );
+    const submissionGuard = vi.fn(async () =>
+      dutyConfirmationPushPresentation("CONFIRMATION_REQUEST", {
+        hospitalName: "Hospital São Carlos",
+        sectorName: "Sala de Recuperação",
+        startAt: new Date("2032-09-12T10:00:00.000Z"),
+        endAt: new Date("2032-09-12T16:00:00.000Z"),
+      }),
+    );
+
+    await sendPushNotification(
+      7,
+      {
+        title: "TEXTO DO PRODUTOR NÃO CONFIÁVEL",
+        body: "Este corpo não pode chegar à tela bloqueada.",
+        data: { type: "duty_confirmation" },
+      },
+      99,
+      submissionGuard,
+    );
+
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(submissionGuard).toHaveBeenCalledTimes(1);
+    expect(sent).toMatchObject({
+      title: "Hospital São Carlos · Sala de Recuperação",
+      body: "Confirme seu plantão de 12/09/2032, 07:00–13:00.",
+      data: {
+        type: "duty_confirmation",
+        recipientUserId: 7,
+      },
+    });
+    expect(JSON.stringify(sent)).not.toContain("TEXTO DO PRODUTOR");
+    expect(JSON.stringify(sent)).not.toContain("Este corpo");
+  });
+
+  it("não aceita objeto textual comum como prova de apresentação contextual", async () => {
+    const { db } = database([
+      { id: 122, token: "ExponentPushToken[forged-contextual-copy]" },
+    ]);
+    dbModule.getDb.mockResolvedValue(db);
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: "ticket-forged-copy" } }),
+    );
+
+    await sendPushNotification(
+      7,
+      {
+        title: "Hospital indevido",
+        body: "Setor indevido",
+        data: { type: "duty_confirmation" },
+      },
+      99,
+      async () =>
+        ({
+          title: "Hospital forjado · Setor forjado",
+          body: "Texto forjado",
+        }) as never,
+    );
+
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(sent).toMatchObject({
+      title: "Escala+",
+      body: "Há uma atualização disponível. Abra o aplicativo para consultar.",
+    });
+    expect(JSON.stringify(sent)).not.toMatch(/indevido|forjado/i);
   });
 
   it("HTTP 200 com ticket error é falha terminal e remove DeviceNotRegistered", async () => {

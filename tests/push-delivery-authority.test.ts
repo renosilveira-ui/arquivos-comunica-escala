@@ -359,6 +359,8 @@ describe("autoridade atual no outbox de confirmação", () => {
       const request = fetchMock.mock.calls[0][1] as RequestInit;
       expect(JSON.parse(String(request.body))).toMatchObject({
         to: `ExponentPushToken[authority-${stamp}]`,
+        title: `Authority hospital ${stamp} · Authority sector ${stamp}`,
+        body: "Confirme seu plantão de 04/03/2032, 10:00–16:00.",
         data: { institutionId },
       });
     } finally {

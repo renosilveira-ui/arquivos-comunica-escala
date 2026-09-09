@@ -487,6 +487,22 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     }
     await drainAccountWideNativeBadgeSnapshotDispatches();
     expect(fetchMock).toHaveBeenCalledTimes(4);
+    const operationalBodies = fetchMock.mock.calls
+      .map((call) => JSON.parse(String((call[1] as RequestInit).body)))
+      .filter((body) => body.title !== undefined);
+    expect(operationalBodies).toHaveLength(2);
+    expect(
+      operationalBodies.every(
+        (body) =>
+          body.title === `Hospital A ${stamp} · Setor A ${stamp}` &&
+          body.body ===
+            "Há uma nova solicitação para o plantão de 02/09/2033, 10:00–16:00.",
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(operationalBodies)).not.toContain(
+      `Hospital B ${stamp}`,
+    );
+    expect(JSON.stringify(operationalBodies)).not.toContain(`Setor B ${stamp}`);
   });
 
   it("bloqueia Gestor+ e admin revogados depois do enqueue", async () => {

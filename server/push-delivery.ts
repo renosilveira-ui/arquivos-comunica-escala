@@ -1,5 +1,11 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { dutyConfirmations, notifications } from "../drizzle/schema";
+import {
+  dutyConfirmations,
+  hospitals,
+  notifications,
+  sectors,
+  shiftInstances,
+} from "../drizzle/schema";
 import { getDb } from "./db";
 import {
   getExpoPushReceipts,
@@ -11,6 +17,12 @@ import {
   type PushNotificationPayload,
   type PushSendResult,
 } from "./notifications-service";
+import {
+  dutyConfirmationPushPresentation,
+  vacancyRequestPushPresentation,
+  type CanonicalShiftPushContext,
+  type ContextualPushPresentation,
+} from "./contextual-push-presentation";
 import {
   isCanonicalDutyConfirmationRejection,
   PersistedDutyConfirmationBindingError,
@@ -647,7 +659,7 @@ async function requireCurrentPushAuthority(
   row: NotificationRow,
   state: Pick<TrackingBase, "authority" | "payloadData">,
   lockForUpdate = false,
-): Promise<void> {
+): Promise<ContextualPushPresentation | null | void> {
   if (!state.authority) return;
   if (
     row.userId !== state.authority.expectedUserId ||
@@ -671,7 +683,20 @@ async function requireCurrentPushAuthority(
       state.authority,
       lockForUpdate,
     );
-    return;
+    // O preflight fora do mutex só classifica autoridade/retry. A cópia que
+    // chegará ao SO é resolvida uma única vez no guard transacional sob lock.
+    if (!lockForUpdate) return;
+    const context = await requireCanonicalShiftPushContext(
+      db,
+      {
+        institutionId: state.authority.institutionId,
+        hospitalId: state.authority.hospitalId,
+        sectorId: state.authority.sectorId,
+        shiftInstanceId: state.authority.shiftInstanceId,
+      },
+      lockForUpdate,
+    );
+    return vacancyRequestPushPresentation(state.authority.purpose, context);
   }
   const valid = await requireAuthorizedDutyConfirmationRecipient(db, {
     confirmationId: state.authority.confirmationId,
@@ -692,6 +717,70 @@ async function requireCurrentPushAuthority(
       "Tenant ou plantão do outbox não corresponde à confirmação canônica",
     );
   }
+  if (!lockForUpdate) return;
+  const context = await requireCanonicalShiftPushContext(
+    db,
+    {
+      institutionId: valid.shift.institutionId,
+      hospitalId: valid.shift.hospitalId,
+      sectorId: valid.shift.sectorId,
+      shiftInstanceId: valid.shift.id,
+    },
+    lockForUpdate,
+  );
+  return dutyConfirmationPushPresentation(state.authority.purpose, context);
+}
+
+async function requireCanonicalShiftPushContext(
+  db: Pick<Db, "select">,
+  expected: Readonly<{
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    shiftInstanceId: number;
+  }>,
+  lockForShare: boolean,
+): Promise<CanonicalShiftPushContext> {
+  const query = db
+    .select({
+      hospitalName: hospitals.name,
+      sectorName: sectors.name,
+      startAt: shiftInstances.startAt,
+      endAt: shiftInstances.endAt,
+    })
+    .from(shiftInstances)
+    .innerJoin(
+      hospitals,
+      and(
+        eq(hospitals.id, shiftInstances.hospitalId),
+        eq(hospitals.institutionId, shiftInstances.institutionId),
+      ),
+    )
+    .innerJoin(
+      sectors,
+      and(
+        eq(sectors.id, shiftInstances.sectorId),
+        eq(sectors.institutionId, shiftInstances.institutionId),
+        eq(sectors.hospitalId, shiftInstances.hospitalId),
+      ),
+    )
+    .where(
+      and(
+        eq(shiftInstances.id, expected.shiftInstanceId),
+        eq(shiftInstances.institutionId, expected.institutionId),
+        eq(shiftInstances.hospitalId, expected.hospitalId),
+        eq(shiftInstances.sectorId, expected.sectorId),
+      ),
+    )
+    .limit(1);
+  const rows = lockForShare ? await query.for("share") : await query;
+  const context = rows[0];
+  if (!context) {
+    throw new PersistedPushAuthorityBindingError(
+      "Contexto do plantão não corresponde à topologia persistida",
+    );
+  }
+  return context;
 }
 
 async function claimSubmission(
