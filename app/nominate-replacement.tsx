@@ -14,9 +14,11 @@ import * as Haptics from "expo-haptics";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { theme } from "@/lib/theme";
+import { resolveOperationalListState } from "@/lib/operational-screen-state";
 
 export default function NominateReplacementScreen() {
   const { user } = useAuth();
@@ -25,11 +27,20 @@ export default function NominateReplacementScreen() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  const { data: professionals, isLoading } =
+  const candidatesQuery =
     trpc.confirmations.listReplacementCandidates.useQuery(
       { confirmationToken: params.token },
       { enabled: !!user && !!params.token },
     );
+  const professionals = candidatesQuery.data;
+  const candidatesState = resolveOperationalListState({
+    isLoading: candidatesQuery.isLoading,
+    isPending: candidatesQuery.isPending,
+    isError: candidatesQuery.isError,
+    hasResolvedData: professionals !== undefined,
+    itemCount: professionals?.length ?? 0,
+    error: candidatesQuery.error,
+  });
 
   const feedback = useActionFeedback();
   const nominateMutation = trpc.confirmations.nominateReplacement.useMutation({
@@ -115,12 +126,20 @@ export default function NominateReplacementScreen() {
           />
         </View>
 
-        {isLoading ? (
+        {candidatesState === "LOADING" || candidatesState === "UNRESOLVED" ? (
           <View
             style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
           >
             <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
+        ) : candidatesState === "ERROR" ? (
+          <QueryErrorState
+            title="Não foi possível carregar os profissionais"
+            error={candidatesQuery.error}
+            onRetry={() => {
+              void candidatesQuery.refetch();
+            }}
+          />
         ) : (
           <FlatList
             data={filtered}
@@ -212,7 +231,11 @@ export default function NominateReplacementScreen() {
           }
           icon={<UserPlus size={20} color="#FFFFFF" />}
           onPress={handleNominate}
-          disabled={!selectedId || nominateMutation.isPending}
+          disabled={
+            candidatesState === "ERROR" ||
+            !selectedId ||
+            nominateMutation.isPending
+          }
           loading={nominateMutation.isPending}
           style={{ marginBottom: 20 }}
         />

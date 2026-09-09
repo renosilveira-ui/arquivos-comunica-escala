@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   Text,
   View,
@@ -13,6 +13,7 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { TintedGlassCard } from "@/components/ui/TintedGlassCard";
+import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { useAuth } from "@/hooks/use-auth";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
@@ -1021,6 +1022,9 @@ export default function AdminScreen() {
   >([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [usersResolved, setUsersResolved] = useState(false);
+  const [usersError, setUsersError] = useState<unknown>(null);
+  const usersRequestSequence = useRef(0);
   const [searchQuery, setSearchQuery] = useState("");
 
   // Modals
@@ -1039,22 +1043,27 @@ export default function AdminScreen() {
   const [pendingError, setPendingError] = useState<string | null>(null);
 
   const fetchUsers = useCallback(async () => {
+    const requestSequence = ++usersRequestSequence.current;
+    setUsersError(null);
     try {
       const res = await adminFetch<{ users: AdminUser[] }>("/api/admin/users");
-      console.log(
-        "[AdminScreen] fetchUsers response:",
-        res.ok,
-        "count:",
-        res.data?.users?.length,
-      );
-      if (res.ok && res.data?.users) {
-        setUsers(res.data.users);
+      if (requestSequence !== usersRequestSequence.current) return;
+      if (!res.ok || !Array.isArray(res.data?.users)) {
+        setUsersError(
+          new Error(res.error ?? "Não foi possível carregar os usuários."),
+        );
+        return;
       }
+      setUsers(res.data.users);
+      setUsersResolved(true);
     } catch (err) {
-      console.error("[AdminScreen] fetchUsers error:", err);
+      if (requestSequence === usersRequestSequence.current) {
+        setUsersError(err);
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestSequence === usersRequestSequence.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -1187,12 +1196,15 @@ export default function AdminScreen() {
     ]),
   );
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setRefreshing(true);
-    fetchUsers();
-    fetchScheduleContexts();
-    fetchPendingSignups();
-    fetchRecentRegistrations();
+    await Promise.allSettled([
+      fetchUsers(),
+      fetchScheduleContexts(),
+      fetchPendingSignups(),
+      fetchRecentRegistrations(),
+    ]);
+    setRefreshing(false);
   };
 
   const matchesSearch = useCallback(
@@ -1680,6 +1692,20 @@ export default function AdminScreen() {
 
         {/* User list */}
         {loading ? (
+          <View style={{ alignItems: "center", paddingVertical: 40 }}>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+          </View>
+        ) : usersError ? (
+          <TintedGlassCard variant="light">
+            <QueryErrorState
+              title="Não foi possível carregar os usuários"
+              error={usersError}
+              onRetry={() => {
+                void fetchUsers();
+              }}
+            />
+          </TintedGlassCard>
+        ) : !usersResolved ? (
           <View style={{ alignItems: "center", paddingVertical: 40 }}>
             <ActivityIndicator size="large" color={theme.colors.primary} />
           </View>
