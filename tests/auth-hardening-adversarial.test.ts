@@ -322,6 +322,18 @@ describe("auth hardening adversarial", () => {
     }
   });
 
+  it("login inexistente paga comparação bcrypt sentinela antes de negar", async () => {
+    const compare = vi.spyOn(bcrypt, "compare");
+    try {
+      const response = await login(`missing-${STAMP}@test.local`);
+      expect(response.status).toBe(401);
+      expect(compare).toHaveBeenCalledTimes(1);
+      expect(compare.mock.calls[0]?.[1]).toMatch(/^\$2b\$12\$/);
+    } finally {
+      compare.mockRestore();
+    }
+  });
+
   it("credenciais de conta órfã ou PI adulterada falham sem write nem audit no tenant 1", async () => {
     const orphan = usersByKind.get("orphan")!;
     let poisonedProfessionalId: number | null = null;

@@ -124,8 +124,14 @@ function professionalIdentityForLegacyRole(role: ProfessionalRole) {
 export const authRouter = Router();
 
 const BCRYPT_ROUNDS = 12;
+const DUMMY_PASSWORD_HASH =
+  "$2b$12$kbCK0heWrK5N5G57C1OoJeeSGgkmA1E2Nl1qOQOs7fBh.a88y3OES";
 const EMAIL_ALREADY_REGISTERED =
   "Este e-mail já tem conta. Entre ou use Esqueci minha senha.";
+
+function normalizePasswordInput(value: unknown): unknown {
+  return typeof value === "string" ? value.trim() : value;
+}
 
 function sendNeutralSignupAccepted(
   res: Response,
@@ -320,8 +326,7 @@ authRouter.post(
       email?: unknown;
       password?: unknown;
     };
-    const password =
-      typeof rawPassword === "string" ? rawPassword.trim() : rawPassword;
+    const password = normalizePasswordInput(rawPassword);
 
     if (
       typeof email !== "string" ||
@@ -335,15 +340,16 @@ authRouter.post(
 
     const user = await getUserByEmail(email.toLowerCase().trim());
 
-    // Conta excluída (soft-delete) responde igual a credencial inválida —
-    // não revela que o e-mail já existiu.
-    if (!user || !user.passwordHash || user.deletedAt) {
-      res.status(401).json({ error: "Credenciais inválidas" });
-      return;
-    }
-
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) {
+    // Toda tentativa paga o mesmo custo bcrypt básico. Contas ausentes,
+    // excluídas ou sem senha usam um hash sentinela e continuam respondendo
+    // como credencial inválida, sem um atalho temporal de enumeração.
+    const valid = await bcrypt.compare(
+      password,
+      user && !user.deletedAt && user.passwordHash
+        ? user.passwordHash
+        : DUMMY_PASSWORD_HASH,
+    );
+    if (!user || !user.passwordHash || user.deletedAt || !valid) {
       res.status(401).json({ error: "Credenciais inválidas" });
       return;
     }
@@ -536,10 +542,15 @@ authRouter.post(
       throw error;
     }
 
-    const { currentPassword, newPassword } = req.body as {
+    const {
+      currentPassword: rawCurrentPassword,
+      newPassword: rawNewPassword,
+    } = req.body as {
       currentPassword?: unknown;
       newPassword?: unknown;
     };
+    const currentPassword = normalizePasswordInput(rawCurrentPassword);
+    const newPassword = normalizePasswordInput(rawNewPassword);
 
     if (
       typeof currentPassword !== "string" ||
@@ -960,6 +971,9 @@ authRouter.post(
     }
 
     const user = await getUserByEmail(normalizedEmail);
+    // O caminho inexistente não pode escapar do custo criptográfico que os
+    // demais fluxos de credencial pagam. A resposta pública segue neutra.
+    await bcrypt.compare("forgot-password-probe", DUMMY_PASSWORD_HASH);
     if (!user || user.deletedAt || !user.email) {
       res.json(neutral);
       return;
@@ -1090,10 +1104,11 @@ authRouter.post(
 authRouter.post(
   "/reset-password",
   async (req: Request, res: Response): Promise<void> => {
-    const { token, newPassword } = req.body as {
+    const { token, newPassword: rawNewPassword } = req.body as {
       token?: unknown;
       newPassword?: unknown;
     };
+    const newPassword = normalizePasswordInput(rawNewPassword);
 
     if (
       typeof token !== "string" ||
@@ -1317,7 +1332,8 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { password } = req.body as { password?: unknown };
+  const { password: rawPassword } = req.body as { password?: unknown };
+  const password = normalizePasswordInput(rawPassword);
   if (typeof password !== "string" || !password) {
     res.status(400).json({ error: "password é obrigatório" });
     return;
@@ -2793,8 +2809,7 @@ authRouter.post(
       scheduleContextIds?: unknown;
       managerScopes?: unknown;
     };
-    const password =
-      typeof rawPassword === "string" ? rawPassword.trim() : rawPassword;
+    const password = normalizePasswordInput(rawPassword);
 
     if (
       typeof name !== "string" ||
@@ -3297,10 +3312,7 @@ authRouter.post(
       professionCode?: unknown;
       customProfessionName?: unknown;
     };
-    const password =
-      typeof rawSignupPassword === "string"
-        ? rawSignupPassword.trim()
-        : rawSignupPassword;
+    const password = normalizePasswordInput(rawSignupPassword);
 
     if (
       typeof name !== "string" ||
@@ -3383,6 +3395,9 @@ authRouter.post(
 
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await getUserByEmail(normalizedEmail);
+    // Calcula antes da decisão de duplicidade para que cadastro novo e e-mail
+    // já registrado não exponham um atalho bcrypt mensurável.
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     if (
       existing?.deletedAt ||
       (existing && hasUsablePasswordHash(existing.passwordHash))
@@ -3395,7 +3410,6 @@ authRouter.post(
         ? existing.id
         : null;
 
-    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const trimmedName = name.trim();
     const qualification = parsedIdentity.qualification;
 
