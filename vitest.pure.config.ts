@@ -75,6 +75,7 @@ export default defineConfig({
       "tests/confirmation-tick-cli.test.ts",
       "tests/sala-recuperacao-shift-blueprint.test.ts",
       "tests/open-month-shifts.test.ts",
+      "tests/open-month-capacity-state.test.ts",
       "tests/schedule-invite-mail.test.ts",
       "tests/mailer.test.ts",
       "tests/request-deadline.test.ts",

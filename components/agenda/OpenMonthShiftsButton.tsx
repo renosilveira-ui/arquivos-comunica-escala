@@ -16,6 +16,10 @@ import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { useTenantState } from "@/lib/tenant-state";
 import { MAX_SHIFT_CAPACITY } from "@/lib/shift-capacity";
+import {
+  openMonthCapacityScopeKey,
+  resolveOpenMonthCapacityState,
+} from "@/lib/open-month-capacity-state";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
@@ -68,7 +72,9 @@ export function OpenMonthShiftsButton({
     "Noite",
   ]);
   const [capacityValues, setCapacityValues] = useState(emptyCapacityValues);
-  const [capacityHydrated, setCapacityHydrated] = useState(false);
+  const [capacityHydratedFor, setCapacityHydratedFor] = useState<string | null>(
+    null,
+  );
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
   const openMonthShifts = trpc.shifts.openMonthShifts.useMutation();
@@ -115,14 +121,28 @@ export function OpenMonthShiftsButton({
       value > MAX_SHIFT_CAPACITY
     );
   });
-  const capacityReady =
-    activeInstitutionId != null &&
-    capacityRules.isSuccess &&
-    capacityHydrated &&
-    !invalidCapacity;
+  const capacityScopeKey = openMonthCapacityScopeKey(
+    activeInstitutionId,
+    selectedContext.scheduleContextId,
+  );
+  const capacityState = resolveOpenMonthCapacityState({
+    currentScopeKey: capacityScopeKey,
+    hydratedScopeKey: capacityHydratedFor,
+    querySucceeded: capacityRules.isSuccess,
+    queryFailed: capacityRules.isError,
+    invalidCapacity,
+  });
+  const capacityReady = capacityState === "ready";
 
   useEffect(() => {
-    if (!open || !capacityRules.isSuccess || capacityHydrated) return;
+    if (
+      !open ||
+      capacityScopeKey == null ||
+      !capacityRules.isSuccess ||
+      capacityHydratedFor === capacityScopeKey
+    ) {
+      return;
+    }
     const next = emptyCapacityValues();
     for (const name of OPEN_MONTH_SHIFT_TEMPLATE_NAMES) {
       const rule = capacityRules.data.find((item) => item.name === name);
@@ -131,15 +151,21 @@ export function OpenMonthShiftsButton({
       next[name] = unique.size === 1 ? String(rule.capacities[0]) : "";
     }
     setCapacityValues(next);
-    setCapacityHydrated(true);
-  }, [capacityHydrated, capacityRules.data, capacityRules.isSuccess, open]);
+    setCapacityHydratedFor(capacityScopeKey);
+  }, [
+    capacityHydratedFor,
+    capacityRules.data,
+    capacityRules.isSuccess,
+    capacityScopeKey,
+    open,
+  ]);
 
   function close() {
     setOpen(false);
     setMode("all-applicable");
     setCustomNames(["Manhã", "Tarde", "Noite"]);
     setCapacityValues(emptyCapacityValues());
-    setCapacityHydrated(false);
+    setCapacityHydratedFor(null);
   }
 
   function openModal() {
@@ -366,7 +392,7 @@ export function OpenMonthShiftsButton({
                   O padrão é 1. Deixe vazio para manter uma regra semanal já
                   configurada.
                 </Text>
-                {capacityRules.isLoading || capacityRules.isFetching ? (
+                {capacityState === "loading" ? (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                     <ActivityIndicator size="small" color={theme.colors.primary} />
                     <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
@@ -374,7 +400,7 @@ export function OpenMonthShiftsButton({
                     </Text>
                   </View>
                 ) : null}
-                {capacityRules.error ? (
+                {capacityState === "error" ? (
                   <View style={{ gap: theme.space[2] }}>
                     <Text accessibilityRole="alert" style={{ color: theme.colors.danger }}>
                       Não foi possível conferir a capacidade desta escala.
@@ -389,7 +415,7 @@ export function OpenMonthShiftsButton({
                     />
                   </View>
                 ) : null}
-                {capacityRules.isSuccess && capacityHydrated
+                {capacityRules.isSuccess && capacityHydratedFor === capacityScopeKey
                   ? visibleCapacityNames.map((name) => {
                       const rule = capacityRules.data.find(
                         (item) => item.name === name,
@@ -459,7 +485,7 @@ export function OpenMonthShiftsButton({
                       );
                     })
                   : null}
-                {invalidCapacity ? (
+                {capacityState === "invalid" ? (
                   <Text accessibilityRole="alert" style={{ color: theme.colors.danger }}>
                     Informe de 1 a {MAX_SHIFT_CAPACITY} profissionais por turno.
                   </Text>
