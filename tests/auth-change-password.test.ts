@@ -561,7 +561,10 @@ describe("auth.changePassword endpoint", () => {
       .set("Cookie", cookie!)
       .set("x-client-expected-user-id", String(testUserId))
       .set("x-client-session-instance", proofForCookie(cookie!))
-      .send({ currentPassword: ORIGINAL_PASSWORD, newPassword: NEW_PASSWORD });
+      .send({
+        currentPassword: `  ${ORIGINAL_PASSWORD}  `,
+        newPassword: `  ${NEW_PASSWORD}  `,
+      });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true }); // + token: sessão nova deste aparelho (B3)
     expect(res.body.sessionBinding).toEqual({

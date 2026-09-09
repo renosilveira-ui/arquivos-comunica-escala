@@ -2033,6 +2033,97 @@ function generateTemporaryPassword(): string {
   return out;
 }
 
+async function compensateUndeliveredTemporaryPassword(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  input: {
+    userId: number;
+    institutionId: number;
+    actorUserId: number;
+    actorRole: UserRole;
+    actorName: string | null;
+    temporaryPasswordHash: string;
+    previousPasswordHash: string | null;
+    previousMustChangePassword: boolean;
+    committedSessionVersion: number;
+  },
+): Promise<boolean> {
+  try {
+    return await withPushAccountMutex(
+      db,
+      input.userId,
+      PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+      (connectionDb) =>
+        connectionDb.transaction(async (tx) => {
+          const [locked] = await tx
+            .select({
+              id: users.id,
+              passwordHash: users.passwordHash,
+              mustChangePassword: users.mustChangePassword,
+              sessionVersion: users.sessionVersion,
+              deletedAt: users.deletedAt,
+            })
+            .from(users)
+            .where(eq(users.id, input.userId))
+            .limit(1)
+            .for("update");
+          if (
+            !locked ||
+            locked.deletedAt ||
+            locked.passwordHash !== input.temporaryPasswordHash ||
+            !locked.mustChangePassword ||
+            locked.sessionVersion !== input.committedSessionVersion
+          ) {
+            return false;
+          }
+
+          // Nunca restaura a versão anterior: isso reviveria sessões que o
+          // reset já revogou. A senha volta ao valor anterior, mas o fence
+          // avança novamente para invalidar qualquer sessão temporária.
+          const restoredSessionVersion = locked.sessionVersion + 1;
+          const restore = await tx
+            .update(users)
+            .set({
+              passwordHash: input.previousPasswordHash,
+              mustChangePassword: input.previousMustChangePassword,
+              sessionVersion: restoredSessionVersion,
+            })
+            .where(
+              and(
+                eq(users.id, locked.id),
+                eq(users.passwordHash, input.temporaryPasswordHash),
+                eq(users.sessionVersion, input.committedSessionVersion),
+                isNull(users.deletedAt),
+              ),
+            );
+          if (affectedRows(restore) !== 1) return false;
+
+          await recordAudit(
+            {
+              action: "USER_UPDATED",
+              entityType: "USER",
+              entityId: input.userId,
+              actorUserId: input.actorUserId,
+              actorRole: input.actorRole,
+              actorName: input.actorName ?? undefined,
+              description: `Senha temporária do usuário #${input.userId} revogada após falha de entrega`,
+              metadata: {
+                temporaryCredentialRevoked: true,
+                previousPasswordRestored: true,
+                sessionVersionBefore: input.committedSessionVersion,
+                sessionVersionAfter: restoredSessionVersion,
+              },
+              institutionId: input.institutionId,
+            },
+            { db: tx, strict: true },
+          );
+          return true;
+        }),
+    );
+  } catch {
+    return false;
+  }
+}
+
 adminRouter.post(
   "/users/:id/reset-password",
   async (req: Request, res: Response): Promise<void> => {
@@ -2162,6 +2253,11 @@ adminRouter.post(
               },
               { db: tx, strict: true },
             );
+            return {
+              previousPasswordHash: locked.target.passwordHash,
+              previousMustChangePassword: locked.target.mustChangePassword,
+              committedSessionVersion: locked.target.sessionVersion + 1,
+            };
           }),
       );
     } catch (error) {
@@ -2170,24 +2266,57 @@ adminRouter.post(
     }
 
     const targetEmail = targetSnapshot.email?.trim();
+    let delivered = false;
     if (targetEmail) {
       const firstName = (targetSnapshot.userName ?? "usuário")
         .trim()
         .split(/\s+/)[0];
-      await mailer.sendMail({
-        to: targetEmail,
-        subject: "Escala+ — senha temporária",
-        text: [
-          `Olá, ${firstName}.`,
-          "",
-          "Um administrador redefiniu a senha da sua conta no Escala+.",
-          "Use a senha temporária abaixo no próximo login (será obrigatório escolher uma nova senha):",
-          "",
-          temporaryPassword,
-          "",
-          "Se você não esperava esta alteração, entre em contato com o administrador da sua escala.",
-        ].join("\n"),
+      try {
+        const delivery = await mailer.sendMail({
+          to: targetEmail,
+          subject: "Escala+ — senha temporária",
+          text: [
+            `Olá, ${firstName}.`,
+            "",
+            "Um administrador redefiniu a senha da sua conta no Escala+.",
+            "Use a senha temporária abaixo no próximo login (será obrigatório escolher uma nova senha):",
+            "",
+            temporaryPassword,
+            "",
+            "Se você não esperava esta alteração, entre em contato com o administrador da sua escala.",
+          ].join("\n"),
+        });
+        delivered = delivery.delivered;
+      } catch {
+        delivered = false;
+      }
+    }
+
+    if (!delivered) {
+      const restored = await compensateUndeliveredTemporaryPassword(db, {
+        userId,
+        institutionId,
+        actorUserId: caller.id,
+        actorRole: callerSnapshot.globalRole,
+        actorName: callerSnapshot.userName,
+        temporaryPasswordHash: passwordHash,
+        previousPasswordHash: targetSnapshot.passwordHash,
+        previousMustChangePassword: targetSnapshot.mustChangePassword,
+        committedSessionVersion: targetSnapshot.sessionVersion + 1,
       });
+      console.error("[admin-reset-password] TEMPORARY_PASSWORD_DELIVERY_FAILED", {
+        userId,
+        institutionId,
+        compensated: restored,
+      });
+      res.status(503).json({
+        ok: false,
+        code: "TEMPORARY_PASSWORD_DELIVERY_FAILED",
+        error: restored
+          ? "A senha temporária não foi entregue; a senha anterior foi restaurada. Peça ao usuário para entrar novamente."
+          : "A senha temporária não foi entregue e o estado da credencial exige revisão administrativa.",
+      });
+      return;
     }
 
     res.json({ ok: true });
