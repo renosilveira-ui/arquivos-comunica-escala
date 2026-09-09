@@ -11,6 +11,10 @@ import { Surface } from "@/components/ui/Surface";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { ShiftStatusBadge } from "@/components/ui/ShiftStatusBadge";
+import {
+  shiftCapacityLabel,
+  summarizeShiftCapacityStats,
+} from "@/lib/shift-capacity";
 
 export default function DashboardScreen() {
   const { user, isLoading: authLoading } = useAuth();
@@ -34,12 +38,7 @@ export default function DashboardScreen() {
 
   const shifts = useMemo(() => shiftsData ?? [], [shiftsData]);
 
-  const stats = useMemo(() => ({
-    total: shifts.length,
-    vago: shifts.filter(s => s.status === "VAGO").length,
-    pendente: shifts.filter(s => s.status === "PENDENTE").length,
-    ocupado: shifts.filter(s => s.status === "OCUPADO").length,
-  }), [shifts]);
+  const stats = useMemo(() => summarizeShiftCapacityStats(shifts), [shifts]);
 
   if (authLoading) {
     return (
@@ -51,7 +50,7 @@ export default function DashboardScreen() {
 
   const metricCards = [
     { label: "Total", value: stats.total, color: theme.colors.primary, icon: Calendar },
-    { label: "Vagos", value: stats.vago, color: theme.colors.textSecondary, icon: AlertCircle },
+    { label: "Vagas", value: stats.vago, color: theme.colors.textSecondary, icon: AlertCircle },
     { label: "Pendentes", value: stats.pendente, color: theme.colors.statusPendente, icon: Clock },
     { label: "Ocupados", value: stats.ocupado, color: theme.colors.statusOcupado, icon: CheckCircle },
   ];
@@ -119,6 +118,11 @@ export default function DashboardScreen() {
                   {formatDateBR(shift.startAt)}{" · "}
                   {formatHospitalTimeRange(shift.startAt, shift.endAt)}
                 </Text>
+                {shift.requiredCapacity != null ? (
+                  <Text style={{ ...theme.text.caption, color: theme.colors.textSecondary, marginTop: theme.space[1] }}>
+                    {shiftCapacityLabel(shift.requiredCapacity, shift.activeCount)}
+                  </Text>
+                ) : null}
               </Surface>
             ))}
           </View>

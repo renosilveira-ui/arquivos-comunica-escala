@@ -5,6 +5,8 @@
 import { z } from "zod";
 import { router, protectedProcedure, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { activeShiftCounts } from "./shift-capacity";
+import { shiftCapacitySummary } from "../lib/shift-capacity";
 import { rowsFromExecute } from "./_core/db-results";
 import { dayWindowBrt, monthWindowBrt } from "./local-time";
 import { eq, and, gte, isNull, sql, lt } from "drizzle-orm";
@@ -590,14 +592,24 @@ export const filtersRouter = router({
       const vacanciesBySector: Record<number, number> = {};
       const pendingBySector: Record<number, number> = {};
 
+      const activeCounts = await activeShiftCounts(
+        db,
+        instances.map(({ instance }) => instance.id),
+      );
       for (const { instance: inst, scheduleContextId } of instances) {
         if (!authorizedContextIds.has(scheduleContextId)) continue;
-        if (inst.status === "VAGO") {
+        const remaining = shiftCapacitySummary(
+          inst.requiredCapacity,
+          activeCounts.get(inst.id) ?? 0,
+          inst.status,
+        ).remainingCapacity;
+        if (remaining > 0) {
           vacanciesByHospital[inst.hospitalId] =
-            (vacanciesByHospital[inst.hospitalId] ?? 0) + 1;
+            (vacanciesByHospital[inst.hospitalId] ?? 0) + remaining;
           vacanciesBySector[inst.sectorId] =
-            (vacanciesBySector[inst.sectorId] ?? 0) + 1;
-        } else if (inst.status === "PENDENTE") {
+            (vacanciesBySector[inst.sectorId] ?? 0) + remaining;
+        }
+        if (inst.status === "PENDENTE") {
           pendingByHospital[inst.hospitalId] =
             (pendingByHospital[inst.hospitalId] ?? 0) + 1;
           pendingBySector[inst.sectorId] =

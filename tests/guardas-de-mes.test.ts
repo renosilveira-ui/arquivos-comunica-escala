@@ -92,7 +92,8 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     const endAt = new Date(startAt.getTime() + 6 * 60 * 60 * 1000);
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: `gm-${stamp}-${label}`, startAt, endAt, status: "VAGO" })
+      // Historical fixtures deliberately share blocks; managed turns cannot.
+      .values({ institutionId, hospitalId, sectorId, scheduleContextId, requiredCapacity: null, label: `gm-${stamp}-${label}`, startAt, endAt, status: "VAGO" })
       .$returningId();
     return s.id;
   }
@@ -912,7 +913,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     const seedDay = dayKeyBrt(currentStart) === `${currentYm}-02`
       ? `${currentYm}-03`
       : `${currentYm}-02`;
-    await insertShift(new Date(`${seedDay}T07:00:00-03:00`), "published-content");
+    await insertShift(new Date(`${seedDay}T13:00:00-03:00`), "published-content");
     const date = dayKeyBrt(currentStart);
     const createdByMedico = await asMedico().create({ date, shiftTemplateId: templateId });
     expect(createdByMedico).toBeTruthy();

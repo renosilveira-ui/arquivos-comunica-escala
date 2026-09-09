@@ -723,6 +723,10 @@ describe("editor.assignDirect", () => {
   });
 
   it("capacidade conta toda alocação ativa, inclusive PENDENTE", async () => {
+    await db
+      .update(shiftInstances)
+      .set({ requiredCapacity: 20 })
+      .where(eq(shiftInstances.id, shiftInstanceId));
     await db.insert(shiftAssignmentsV2).values(
       Array.from({ length: 20 }, () => ({
         shiftInstanceId,

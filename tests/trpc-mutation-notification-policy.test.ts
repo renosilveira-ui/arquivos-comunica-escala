@@ -35,6 +35,7 @@ const expectedMutationPaths = [
   "profile.deactivateWhatsAppContact",
   "profile.setWhatsAppContact",
   "profile.startWhatsAppVerification",
+  "scheduleCapacity.saveCapacityRule",
   "scheduleContexts.ensureDefaultSectorScale",
   "scheduleContexts.replaceSectorServiceSpecialties",
   "scheduleInvites.create",

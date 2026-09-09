@@ -460,6 +460,7 @@ export async function seedTestData() {
     hospitalId: hospital.id,
     sectorId: sector.id,
     label: "Plantão Noite (PENDENTE)",
+    requiredCapacity: null, // Legacy fixture has a non-active pending request.
     startAt: makeTime(tomorrow, 19),
     endAt: makeTime(dayAfterTomorrow, 7),
     status: "PENDENTE",
@@ -491,6 +492,7 @@ export async function seedTestData() {
     hospitalId: hospital.id,
     sectorId: sectorUti.id,
     label: "Plantão UTI (20 profissionais)",
+    requiredCapacity: 20,
     startAt: makeTime(tomorrow, 7),
     endAt: makeTime(tomorrow, 19),
     status: "OCUPADO",

@@ -29,12 +29,16 @@ import {
   UserCircle2,
 } from "lucide-react-native";
 import { theme } from "@/lib/theme";
+import { shiftCapacityLabel } from "@/lib/shift-capacity";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import { CalendarFrame, DayNumeral, numeral } from "./CalendarSheet";
 import { formatTimeRange } from "./ShiftRowCard";
 import { formatHospitalTime } from "@/lib/hospital-time";
 
 type AgendaShift = {
+  requiredCapacity?: number | null;
+  activeCount?: number;
+  remainingCapacity?: number;
   id: number;
   label: string;
   startAt: string | Date;
@@ -137,7 +141,7 @@ function summarizeWeeks(weeks: AgendaWeek[]) {
       for (const group of day.groups) {
         for (const shift of group.shifts) {
           shifts += 1;
-          if (shift.status === "VAGO") open += 1;
+          open += shift.remainingCapacity ?? (shift.status === "VAGO" ? 1 : 0);
           if (shift.status === "PENDENTE") pending += 1;
           if (shift.isMine) mine += 1;
         }
@@ -489,7 +493,7 @@ export function PanoramicAgenda({
                               paddingLeft: 2,
                             }}
                           >
-                            +{shifts.length - MAX_CHIPS}
+                            +{shifts.length - MAX_CHIPS} turnos
                           </Text>
                         ) : null}
                       </View>
@@ -552,7 +556,7 @@ function GridChip({
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`${shift.label}, ${formatTimeRange(shift.startAt, shift.endAt)}, ${name}, ${v.label}`}
+      accessibilityLabel={`${shift.label}, ${formatTimeRange(shift.startAt, shift.endAt)}, ${name}, ${v.label}${shift.requiredCapacity != null ? `, ${shiftCapacityLabel(shift.requiredCapacity, shift.activeCount ?? shift.professionalNames.length)}` : ""}`}
       style={({ pressed }) => ({
         gap: 1,
         paddingVertical: 5,
@@ -592,6 +596,14 @@ function GridChip({
       >
         {name}
       </Text>
+      {shift.requiredCapacity != null ? (
+        <Text style={{ fontSize: 10, color: theme.colors.textSecondary }}>
+          {shiftCapacityLabel(
+            shift.requiredCapacity,
+            shift.activeCount ?? shift.professionalNames.length,
+          )}
+        </Text>
+      ) : null}
     </Pressable>
   );
 }

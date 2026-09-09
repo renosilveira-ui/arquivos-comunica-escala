@@ -129,6 +129,7 @@ describe("Vagas acionáveis — lista e contadores", () => {
         sectorId: input.sectorId,
         scheduleContextId: input.scheduleContextId,
         label: input.label,
+        requiredCapacity: null, // Fixtures cover the pre-capacity data model.
         startAt: sql.raw(`'${input.startAt ?? time.plantao.startAt}'`),
         endAt: sql.raw(`'${input.endAt ?? time.plantao.endAt}'`),
         modality: input.modality ?? "PLANTAO",

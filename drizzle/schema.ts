@@ -1049,6 +1049,40 @@ export const scheduleContextAllowedQualifications = mysqlTable(
   }),
 );
 
+/** Weekly staffing targets, scoped to one operational schedule. */
+export const scheduleCapacityRules = mysqlTable(
+  "schedule_capacity_rules",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    scheduleContextId: int("schedule_context_id").notNull(),
+    startTime: time("start_time").notNull(),
+    endTime: time("end_time").notNull(),
+    weekday: tinyint("weekday").notNull(),
+    requiredCapacity: int("required_capacity").notNull(),
+  },
+  (table) => ({
+    uniqScheduleCapacityRule: unique("uniq_schedule_capacity_rule").on(
+      table.scheduleContextId,
+      table.startTime,
+      table.endTime,
+      table.weekday,
+    ),
+    fkCapacityRuleContext: foreignKey({
+      columns: [table.scheduleContextId],
+      foreignColumns: [scheduleContexts.id],
+      name: "fk_capacity_rule_context",
+    }),
+    chkCapacityRuleWeekday: check(
+      "chk_capacity_rule_weekday",
+      sql`${table.weekday} BETWEEN 0 AND 6`,
+    ),
+    chkCapacityRuleValue: check(
+      "chk_capacity_rule_value",
+      sql`${table.requiredCapacity} BETWEEN 1 AND 1000`,
+    ),
+  }),
+);
+
 export type ScheduleContext = typeof scheduleContexts.$inferSelect;
 export type InsertScheduleContext = typeof scheduleContexts.$inferInsert;
 
@@ -1145,6 +1179,13 @@ export const shiftInstances = mysqlTable(
     scheduleContextId: int("schedule_context_id").references(
       () => scheduleContexts.id,
     ),
+    /** NULL preserves pre-capacity historical records. New turns default to one place. */
+    requiredCapacity: int("required_capacity").default(1),
+    capacityContextId: int("capacity_context_id").generatedAlwaysAs(
+      (): ReturnType<typeof sql> =>
+        sql`IF(\`required_capacity\` IS NULL, NULL, \`schedule_context_id\`)`,
+      { mode: "stored" },
+    ),
     label: varchar("label", { length: 100 }).notNull(),
     /** Serviço/especialidade do plantão (separação entre especialistas). */
     specialty: varchar("specialty", { length: 100 }),
@@ -1189,6 +1230,18 @@ export const shiftInstances = mysqlTable(
     idxShiftInstanceInstitutionId: index(
       "idx_shift_instances_institution_id",
     ).on(table.institutionId, table.id),
+    uniqShiftCapacitySlot: unique("uniq_shift_capacity_slot").on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.capacityContextId,
+      table.startAt,
+      table.endAt,
+    ),
+    chkShiftCapacity: check(
+      "chk_shift_capacity",
+      sql`${table.requiredCapacity} IS NULL OR ${table.requiredCapacity} BETWEEN 1 AND 1000`,
+    ),
     // Chave-pai física da FK composta de eventos operacionais. Mantém o
     // vínculo de um turno com a topologia em instalações novas do schema.
     uniqShiftInstancesTopologyId: unique("uniq_shift_instances_topology_id").on(

@@ -682,7 +682,7 @@ describe("shifts.replicateRange", () => {
     const caller = callerFor(managerUserId, "manager");
     // Destino: semana de 02/11/2026. Cria um turno já ocupado pelo médico
     // na quarta 04/11 à noite (mesmo horário da cópia da Noite) → conflito.
-    const blockerStart = at("2026-11-04", "19:00:00");
+    const blockerStart = at("2026-11-04", "19:01:00");
     const blockerEnd = at("2026-11-05", "07:00:00");
     const [blocker] = await db!
       .insert(shiftInstances)

@@ -31,7 +31,8 @@ import {
   type SalaRecuperacaoShiftTemplate,
 } from "../lib/sala-recuperacao-shift-blueprint";
 import { buildShiftTimestamps } from "../lib/hospital-time";
-import { dayKeyBrt, monthWindowBrt } from "../server/local-time";
+import { dayKeyBrt, monthWindowBrt, weekdayOfKey } from "../server/local-time";
+import { shiftCapacitySummary } from "../lib/shift-capacity";
 import { assertExactSaoCarlosSectorTopology } from "./provision-sao-carlos-contexts";
 
 const PROVISION_CONFIRM = "SAO_CARLOS_SALA_RECUPERACAO";
@@ -493,30 +494,43 @@ async function seedMonthCalendar(
           WHERE institution_id = ?
             AND hospital_id = ?
             AND sector_id = ?
-            AND label = ?
+            AND schedule_context_id = ?
             AND start_at = ?
             AND end_at = ?
-          LIMIT 1
+          LIMIT 2
           FOR SHARE`,
         [
           input.institutionId,
           input.hospitalId,
           input.sectorId,
-          template.name,
+          input.scheduleContextId,
           startAt,
           endAt,
         ],
       );
+      if (existing.length > 1) {
+        throw new Error("Turnos legados duplicados no mesmo horário; revise a origem antes de semear.");
+      }
       if (existing[0]) {
         skipped += 1;
         continue;
       }
       if (input.apply) {
+        const [rules] = await connection.execute<
+          (RowDataPacket & { requiredCapacity: number })[]
+        >(
+          `SELECT required_capacity AS requiredCapacity FROM schedule_capacity_rules
+            WHERE schedule_context_id = ? AND start_time = ? AND end_time = ? AND weekday = ?
+            FOR SHARE`,
+          [input.scheduleContextId, template.startTime, template.endTime, weekdayOfKey(day.dayKey)],
+        );
+        const requiredCapacity = rules[0]?.requiredCapacity ?? 1;
+        shiftCapacitySummary(requiredCapacity, 0);
         await connection.execute(
           `INSERT INTO shift_instances
             (institution_id, hospital_id, sector_id, schedule_context_id,
-             label, start_at, end_at, status, modality, payment_model)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'VAGO', 'PLANTAO', 'FIXO')`,
+             label, start_at, end_at, required_capacity, status, modality, payment_model)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VAGO', 'PLANTAO', 'FIXO')`,
           [
             input.institutionId,
             input.hospitalId,
@@ -525,6 +539,7 @@ async function seedMonthCalendar(
             template.name,
             startAt,
             endAt,
+            requiredCapacity,
           ],
         );
       }

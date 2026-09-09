@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
+import { activeShiftCounts } from "./shift-capacity";
+import { shiftCapacitySummary } from "../lib/shift-capacity";
 import {
   dayKeyBrt,
   dayWindowBrt,
@@ -178,7 +180,7 @@ export const calendarRouter = router({
 
       // 3. Buscar shift_instances do hospital+setor no range
       const shiftResult = await db.execute<any>(
-        sql`SELECT si.id, si.label, si.start_at, si.end_at, si.status
+        sql`SELECT si.id, si.label, si.start_at, si.end_at, si.status, si.required_capacity
             FROM shift_instances si
             INNER JOIN schedule_contexts sc
               ON sc.id = si.schedule_context_id
@@ -193,6 +195,10 @@ export const calendarRouter = router({
             ORDER BY si.start_at ASC`,
       );
       const shiftRows = rowsFromExecute<any>(shiftResult);
+      const capacityCounts = await activeShiftCounts(
+        db,
+        shiftRows.map((row) => Number(row.id)),
+      );
 
       // 4. Agrupar por dia e label
       const groupedShifts = groupShiftsByDay(shiftRows);
@@ -205,6 +211,16 @@ export const calendarRouter = router({
         const shifts = groupedShifts[date] || {};
         return {
           date,
+          capacities: shiftRows
+            .filter((row) => dayKeyBrt(dateFromExecute(row.start_at)) === date)
+            .map((row) => ({
+              shiftInstanceId: Number(row.id),
+              ...shiftCapacitySummary(
+                row.required_capacity,
+                capacityCounts.get(Number(row.id)) ?? 0,
+                row.status,
+              ),
+            })),
           shifts: {
             M: shifts.M || "INATIVO",
             T: shifts.T || "INATIVO",
@@ -217,8 +233,12 @@ export const calendarRouter = router({
       // 7. Calcular contadores
       const counts = { VAGO: 0, PENDENTE: 0, OCUPADO: 0 };
       for (const shift of shiftRows) {
-        if (shift.status === "VAGO") counts.VAGO++;
-        else if (shift.status === "PENDENTE") counts.PENDENTE++;
+        counts.VAGO += shiftCapacitySummary(
+          shift.required_capacity,
+          capacityCounts.get(Number(shift.id)) ?? 0,
+          shift.status,
+        ).remainingCapacity;
+        if (shift.status === "PENDENTE") counts.PENDENTE++;
         else if (shift.status === "OCUPADO") counts.OCUPADO++;
       }
 
@@ -276,7 +296,7 @@ export const calendarRouter = router({
       const { start: startOfDay, end: endOfDay } = dayWindowBrt(date);
 
       const shiftResult = await db.execute<any>(
-        sql`SELECT si.id, si.label, si.start_at, si.end_at, si.status
+        sql`SELECT si.id, si.label, si.start_at, si.end_at, si.status, si.required_capacity
             FROM shift_instances si
             INNER JOIN schedule_contexts sc
               ON sc.id = si.schedule_context_id
@@ -292,10 +312,15 @@ export const calendarRouter = router({
       );
       const shiftRows = rowsFromExecute<any>(shiftResult);
 
+      const capacityCounts = await activeShiftCounts(
+        db,
+        shiftRows.map((row) => Number(row.id)),
+      );
       // 4. Para cada shift, buscar assignments
       const shifts = await Promise.all(
         shiftRows.map(
           async (shift: {
+            required_capacity: number | null;
             id: number;
             label: string;
             start_at: Date | string;
@@ -327,30 +352,28 @@ export const calendarRouter = router({
             );
             const assignmentRows = rowsFromExecute<any>(assignmentResult);
 
-            // Criar slots (ON_DUTY, BACKUP, ON_CALL)
-            const slotTypes = ["ON_DUTY", "BACKUP", "ON_CALL"];
-            const slots = slotTypes.map((type) => {
-              const assignment = assignmentRows.find(
-                (a: any) => a.assignmentType === type,
-              );
-              if (assignment) {
-                return {
-                  assignmentType: type,
-                  assignmentId: assignment.assignmentId,
-                  professionalId: assignment.professionalId,
-                  professionalName: assignment.professionalName,
-                  status: assignment.status,
-                };
-              } else {
-                return {
-                  assignmentType: type,
-                  status: "EMPTY",
-                };
-              }
-            });
+            const capacity = shiftCapacitySummary(
+              shift.required_capacity,
+              capacityCounts.get(Number(shift.id)) ?? 0,
+              shift.status,
+            );
+            const slots = [
+              ...assignmentRows.map((assignment: any) => ({
+                assignmentType: assignment.assignmentType,
+                assignmentId: assignment.assignmentId,
+                professionalId: assignment.professionalId,
+                professionalName: assignment.professionalName,
+                status: assignment.status,
+              })),
+              ...Array.from({ length: capacity.remainingCapacity }, () => ({
+                assignmentType: "ON_DUTY",
+                status: "EMPTY",
+              })),
+            ];
 
             return {
               shiftInstanceId: shift.id,
+              ...capacity,
               label: shift.label,
               startAt: dateFromExecute(shift.start_at).toISOString(),
               endAt: dateFromExecute(shift.end_at).toISOString(),

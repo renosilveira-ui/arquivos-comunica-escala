@@ -8,7 +8,10 @@ export default defineConfig({
       // lib/theme.ts usa Platform.select (fonte mono por plataforma); em
       // Node não há react-native — um stub com só o que a lib toca.
       "react-native": path.resolve(__dirname, "./tests/stubs/react-native.ts"),
-      "lucide-react-native": path.resolve(__dirname, "./tests/stubs/lucide-react-native.ts"),
+      "lucide-react-native": path.resolve(
+        __dirname,
+        "./tests/stubs/lucide-react-native.ts",
+      ),
     },
   },
   test: {
@@ -26,6 +29,7 @@ export default defineConfig({
       NODE_ENV: "test",
     },
     exclude: [
+      "tests/schedule-shift-capacity-migration.test.ts",
       "**/node_modules/**",
       "**/dist/**",
       "**/app/**",

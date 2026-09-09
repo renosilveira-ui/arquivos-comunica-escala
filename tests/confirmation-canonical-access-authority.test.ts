@@ -201,6 +201,7 @@ describe("confirmation canonical current eligibility — MySQL", () => {
         sectorId: sec,
         scheduleContextId: ctxId,
         label: `Canon ${stamp}`,
+        requiredCapacity: null, // Historical overlapping fixtures.
         startAt: start13,
         endAt: end19,
         status: "OCUPADO",

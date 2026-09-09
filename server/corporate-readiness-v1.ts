@@ -152,6 +152,7 @@ type ReadinessSource = Readonly<{
   qualificationAllowlistMetadata: readonly ReadinessAllowedQualification[];
   activeTemplates: readonly { id: number; sectorId: number | null }[];
   shifts: readonly {
+    requiredCapacity?: number | null;
     id: number;
     sectorId: number;
     scheduleContextId: number | null;
@@ -297,6 +298,7 @@ function buildSnapshotFingerprint(source: ReadinessSource) {
         sectorId: shift.sectorId,
         scheduleContextId: shift.scheduleContextId,
         status: shift.status,
+        requiredCapacity: shift.requiredCapacity ?? null,
         startAt: dateIso(shift.startAt),
         endAt: dateIso(shift.endAt),
       }))
@@ -647,7 +649,11 @@ export function buildCorporateReadinessReport(
           );
         }
 
-        if (shift.status === "VAGO") {
+        if (
+          shift.requiredCapacity != null
+            ? assignments.length < shift.requiredCapacity
+            : shift.status === "VAGO"
+        ) {
           addIssue(
             "VACANT_SHIFT_REQUIRES_ALLOCATION",
             "OPERATIONAL_WARNING",
@@ -732,8 +738,11 @@ export function buildCorporateReadinessReport(
           activeScheduleContextCount: sectorContexts.length,
           resolvedActiveTemplateCount: resolvedTemplates.length,
           calendarMonthShiftCount: sectorShifts.length,
-          vacantShiftCount: sectorShifts.filter(
-            (shift) => shift.status === "VAGO",
+          vacantShiftCount: sectorShifts.filter((shift) =>
+            shift.requiredCapacity != null
+              ? (assignmentsByShift.get(shift.id)?.length ?? 0) <
+                shift.requiredCapacity
+              : shift.status === "VAGO",
           ).length,
           pendingShiftCount,
           allocatedShiftCount,
@@ -1048,6 +1057,7 @@ async function loadCorporateReadinessSource(
       sectorId: shiftInstances.sectorId,
       scheduleContextId: shiftInstances.scheduleContextId,
       status: shiftInstances.status,
+      requiredCapacity: shiftInstances.requiredCapacity,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
     })
@@ -1241,6 +1251,7 @@ async function loadCorporateReadinessSource(
       sectorId: template.sectorId,
     })),
     shifts: validShifts.map((shift) => ({
+      requiredCapacity: shift.requiredCapacity,
       id: shift.id,
       sectorId: shift.sectorId,
       scheduleContextId: shift.scheduleContextId,

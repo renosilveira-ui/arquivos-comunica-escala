@@ -1,6 +1,7 @@
 export type VacancyDashboardTopology = Readonly<{
   hospitalId: number;
   sectorId: number;
+  remainingCapacity?: number;
 }>;
 
 export type VacancyDashboardFilters = Readonly<{
@@ -27,10 +28,11 @@ export function deriveVacancyDashboard<T extends VacancyDashboardTopology>(
   const vacanciesBySector: Record<number, number> = {};
 
   for (const row of rows) {
+    const remaining = row.remainingCapacity ?? 1;
     vacanciesByHospital[row.hospitalId] =
-      (vacanciesByHospital[row.hospitalId] ?? 0) + 1;
+      (vacanciesByHospital[row.hospitalId] ?? 0) + remaining;
     vacanciesBySector[row.sectorId] =
-      (vacanciesBySector[row.sectorId] ?? 0) + 1;
+      (vacanciesBySector[row.sectorId] ?? 0) + remaining;
   }
 
   return {
@@ -40,7 +42,7 @@ export function deriveVacancyDashboard<T extends VacancyDashboardTopology>(
         (filters.sectorId == null || row.sectorId === filters.sectorId),
     ),
     counts: {
-      total: rows.length,
+      total: rows.reduce((sum, row) => sum + (row.remainingCapacity ?? 1), 0),
       vacanciesByHospital,
       vacanciesBySector,
     },

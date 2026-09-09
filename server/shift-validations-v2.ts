@@ -13,6 +13,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
+import { readShiftCapacity } from "./shift-capacity";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import {
   assertActiveScheduleContextTopology,
@@ -769,7 +770,8 @@ export async function assertShiftAssignmentCapacityForUpdate(
   }
 
   const projected = active.length + (input.activeDelta ?? 0);
-  const max = input.maxActiveAssignments ?? 20;
+  const capacity = await readShiftCapacity(tx, input.shiftInstanceId);
+  const max = input.maxActiveAssignments ?? capacity ?? 20;
   if (projected < 0 || projected > max) {
     throw assignmentConflict(
       `Limite de ${max} profissionais por turno excedido (${projected}/${max}).`,

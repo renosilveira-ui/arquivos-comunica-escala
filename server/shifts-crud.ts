@@ -2,6 +2,16 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import {
+  activeShiftCounts,
+  assertDistinctShiftSlots,
+  capacityForNewShift,
+  hasShiftVacancy,
+  readShiftCapacity,
+  shiftSlotKey,
+} from "./shift-capacity";
+import { shiftCapacitySummary } from "../lib/shift-capacity";
+import { requiredCapacityInput } from "./schedule-capacity-router";
+import {
   addDaysToKey,
   dayKeyBrt,
   dayWindowBrt,
@@ -10,7 +20,18 @@ import {
   weekdayOfKey,
   yearMonthBrt,
 } from "./local-time";
-import { eq, and, gte, lte, lt, inArray, isNull, ne, or } from "drizzle-orm";
+import {
+  eq,
+  and,
+  gte,
+  lte,
+  lt,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { TRPCError } from "@trpc/server";
 import {
@@ -71,7 +92,6 @@ import {
   ensureDefaultShiftTemplates,
   planMissingDefaultShiftTemplates,
 } from "./sector-scale";
-import { deriveShiftStatus } from "./shift-status";
 import {
   enqueueVacancyAvailableSignals,
   recentVacancyBroadcastExists,
@@ -422,15 +442,7 @@ function naturalKey(x: {
   endAt: Date;
   label: string;
 }): string {
-  return JSON.stringify([
-    x.institutionId,
-    x.hospitalId,
-    x.sectorId,
-    x.scheduleContextId,
-    x.startAt.getTime(),
-    x.endAt.getTime(),
-    x.label,
-  ]);
+  return shiftSlotKey(x);
 }
 
 type ReplicateCtx = {
@@ -481,6 +493,11 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
     });
   }
 
+  assertDistinctShiftSlots(sourceShifts);
+  const sourceActiveCounts = await activeShiftCounts(
+    db,
+    sourceShifts.map((shift) => shift.id),
+  );
   // Sem sectorId no filtro, a origem pode conter mais de um setor. Cada
   // tupla é revalidada antes do planejamento para não replicar registros
   // legados que satisfaçam as FKs isoladas, mas cruzem a hierarquia.
@@ -797,6 +814,7 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
         current.startAt.getTime() !== source.startAt.getTime() ||
         current.endAt.getTime() !== source.endAt.getTime() ||
         current.status !== source.status ||
+        current.requiredCapacity !== source.requiredCapacity ||
         current.modality !== source.modality ||
         current.coverageType !== source.coverageType ||
         current.paymentModel !== source.paymentModel ||
@@ -898,6 +916,12 @@ async function replicateRange(ctx: ReplicateCtx, input: ReplicateRangeInput) {
           startAt: c.startAt,
           endAt: c.endAt,
           status,
+          requiredCapacity: await capacityForNewShift(
+            tx,
+            { ...c.source, startAt: c.startAt, endAt: c.endAt },
+            c.source.requiredCapacity ??
+              Math.max(1, sourceActiveCounts.get(c.source.id) ?? 0),
+          ),
           modality: c.source.modality,
           coverageType: c.source.coverageType,
           paymentModel: c.source.paymentModel,
@@ -1031,6 +1055,7 @@ function clockFromTemplate(value: unknown): string {
 }
 
 type MonthCalendarWriteCandidate = {
+  requiredCapacity?: number;
   sourceShiftId: number;
   label: string;
   startAt: Date;
@@ -1180,6 +1205,11 @@ async function replicateMonthCalendar(
       ),
     );
   const origin = sourceShifts.length > 0 ? "previous-month" : "templates";
+  assertDistinctShiftSlots(sourceShifts);
+  const sourceActiveCounts = await activeShiftCounts(
+    db,
+    sourceShifts.map((shift) => shift.id),
+  );
   if (origin === "previous-month" && input.sourceMonth === input.targetMonth) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -1217,6 +1247,9 @@ async function replicateMonthCalendar(
     candidates = selected
       .map((source) => ({
         sourceShiftId: source.id,
+        requiredCapacity:
+          source.requiredCapacity ??
+          Math.max(1, sourceActiveCounts.get(source.id) ?? 0),
         label: source.label,
         startAt: addDays(source.startAt, offsetDays),
         endAt: addDays(source.endAt, offsetDays),
@@ -1238,6 +1271,7 @@ async function replicateMonthCalendar(
   }
   for (const candidate of candidates)
     assertCanEditScheduleDate(actor, candidate.startAt);
+  assertDistinctShiftSlots(candidates);
 
   const targetConflictMessage = input.sectorId
     ? "O mês de destino deste setor já contém turnos. Nenhuma cópia foi feita."
@@ -1322,6 +1356,11 @@ async function replicateMonthCalendar(
         startAt: candidate.startAt,
         endAt: candidate.endAt,
         status: "VAGO",
+        requiredCapacity: await capacityForNewShift(
+          tx,
+          candidate,
+          candidate.requiredCapacity ?? 1,
+        ),
         ...(candidate.modality !== undefined
           ? { modality: candidate.modality }
           : {}),
@@ -1552,6 +1591,7 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
     for (const candidate of candidates) {
       assertCanEditScheduleDate(actor, candidate.startAt);
     }
+    assertDistinctShiftSlots(candidates);
 
     const existingKeys = new Set(
       (await loadExisting(tx as unknown as typeof db)).map((row) =>
@@ -1623,6 +1663,7 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
         endAt: candidate.endAt,
         status: "VAGO",
         createdBy: ctx.user.id,
+        requiredCapacity: await capacityForNewShift(tx, candidate),
       });
       created += 1;
       currentKeys.add(naturalKey(candidate));
@@ -1674,6 +1715,7 @@ export const shiftsRouter = router({
             .string()
             .regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
           shiftTemplateId: z.number().int(),
+          requiredCapacity: requiredCapacityInput.optional(),
           scheduleContextId: z.number().int().positive().optional(),
           sectorId: z.number().int().optional(),
           /** Só entra em LOCKED (Gestor+). Criar vago em PUBLISHED não exige motivo. */
@@ -1798,7 +1840,6 @@ export const shiftsRouter = router({
               eq(shiftInstances.scheduleContextId, selectedContext.id),
               eq(shiftInstances.startAt, startAt),
               eq(shiftInstances.endAt, endAt),
-              eq(shiftInstances.label, template.name),
             ),
           )
           .limit(1)
@@ -1827,6 +1868,16 @@ export const shiftsRouter = router({
           sectorId,
           scheduleContextId: selectedContext.id,
           label: template.name,
+          requiredCapacity:
+            input.requiredCapacity ??
+            (await capacityForNewShift(tx, {
+              institutionId: ctx.institutionId,
+              hospitalId: template.hospitalId,
+              sectorId,
+              scheduleContextId: selectedContext.id,
+              startAt,
+              endAt,
+            })),
           specialty: activeContext.qualificationName,
           startAt,
           endAt,
@@ -1918,6 +1969,7 @@ export const shiftsRouter = router({
           paymentModel: shiftInstances.paymentModel,
           productivityCapBrl: shiftInstances.productivityCapBrl,
           createdBy: shiftInstances.createdBy,
+          requiredCapacity: shiftInstances.requiredCapacity,
           createdAt: shiftInstances.createdAt,
           updatedAt: shiftInstances.updatedAt,
           hospitalName: hospitals.name,
@@ -2027,7 +2079,17 @@ export const shiftsRouter = router({
           ),
         );
 
-      return { ...instance, template: template ?? null, assignments };
+      const counts = await activeShiftCounts(db, [instance.id]);
+      return {
+        ...instance,
+        ...shiftCapacitySummary(
+          instance.requiredCapacity,
+          counts.get(instance.id) ?? 0,
+          instance.status,
+        ),
+        template: template ?? null,
+        assignments,
+      };
     }),
 
   /**
@@ -2097,7 +2159,12 @@ export const shiftsRouter = router({
       await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
       assertCanEditScheduleDate(actor, shift.startAt);
 
-      if (shift.status !== "VAGO") {
+      if (
+        !(await hasShiftVacancy(db, {
+          ...shift,
+          requiredCapacity: await readShiftCapacity(db, shift.id),
+        }))
+      ) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "Este plantão não está mais vago.",
@@ -2159,34 +2226,23 @@ export const shiftsRouter = router({
           locked.sectorId,
           [locked.startAt],
         );
-        if (locked.status !== "VAGO") {
+        const requiredCapacity = await readShiftCapacity(tx, locked.id);
+        if (requiredCapacity == null && locked.status !== "VAGO") {
           throw new TRPCError({
             code: "CONFLICT",
             message: "Este plantão não está mais vago.",
           });
         }
-        const activeAssignments = await tx
-          .select({ status: shiftAssignmentsV2.status })
-          .from(shiftAssignmentsV2)
-          .where(
-            and(
-              eq(shiftAssignmentsV2.shiftInstanceId, locked.id),
-              eq(shiftAssignmentsV2.institutionId, locked.institutionId),
-              eq(shiftAssignmentsV2.hospitalId, locked.hospitalId),
-              eq(shiftAssignmentsV2.sectorId, locked.sectorId),
-              eq(shiftAssignmentsV2.isActive, true),
-            ),
-          );
-        if (
-          activeAssignments.length > 0 ||
-          deriveShiftStatus(activeAssignments.map((row) => row.status)) !==
-            "VAGO"
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "Este plantão não está mais vago.",
-          });
-        }
+        await assertShiftAssignmentCapacityForUpdate(tx, {
+          shiftInstanceId: locked.id,
+          institutionId: locked.institutionId,
+          hospitalId: locked.hospitalId,
+          sectorId: locked.sectorId,
+          activeDelta: 1,
+          ...(requiredCapacity == null
+            ? { expectedCurrentActiveCount: 0 }
+            : {}),
+        });
 
         const now = new Date();
         if (
@@ -2263,6 +2319,7 @@ export const shiftsRouter = router({
           // titular o devolvia a "Plantões em aberto" (auditoria 22/08, M2).
           startAt: z.string().optional(),
           endAt: z.string().optional(),
+          requiredCapacity: requiredCapacityInput.optional(),
           /** Obrigatório (≥ 5 caracteres) para Gestor+ editar mês PUBLISHED/LOCKED. */
           reason: z.string().max(500).optional(),
         })
@@ -2300,6 +2357,8 @@ export const shiftsRouter = router({
       assertModalityCoherent(input, existing.modality);
 
       const patch: Partial<typeof shiftInstances.$inferInsert> = {};
+      if (input.requiredCapacity !== undefined)
+        patch.requiredCapacity = input.requiredCapacity;
       if (input.startAt !== undefined) patch.startAt = new Date(input.startAt);
       if (input.endAt !== undefined) patch.endAt = new Date(input.endAt);
       if (input.modality !== undefined) patch.modality = input.modality;
@@ -2372,6 +2431,7 @@ export const shiftsRouter = router({
           locked.scheduleContextId !== existing.scheduleContextId ||
           locked.startAt.getTime() !== existing.startAt.getTime() ||
           locked.endAt.getTime() !== existing.endAt.getTime() ||
+          locked.requiredCapacity !== existing.requiredCapacity ||
           locked.modality !== existing.modality ||
           locked.coverageType !== existing.coverageType ||
           locked.paymentModel !== existing.paymentModel ||
@@ -2432,7 +2492,6 @@ export const shiftsRouter = router({
                   ]),
               eq(shiftInstances.startAt, effectiveStartAt),
               eq(shiftInstances.endAt, effectiveEndAt),
-              eq(shiftInstances.label, locked.label),
             ),
           )
           .limit(1)
@@ -2507,6 +2566,14 @@ export const shiftsRouter = router({
           .update(shiftInstances)
           .set(patch)
           .where(eq(shiftInstances.id, input.id));
+        if (patch.requiredCapacity !== undefined) {
+          await assertShiftAssignmentCapacityForUpdate(tx, {
+            shiftInstanceId: locked.id,
+            institutionId: locked.institutionId,
+            hospitalId: locked.hospitalId,
+            sectorId: locked.sectorId,
+          });
+        }
         const nextDutyType =
           (patch.modality ?? locked.modality) === "SOBREAVISO"
             ? "SOBREAVISO"
@@ -2744,6 +2811,7 @@ export const shiftsRouter = router({
         assignmentsByShift.set(a.shiftInstanceId, list);
       }
 
+      const capacityCounts = await activeShiftCounts(db, instanceIds);
       return instanceRows
         .filter(({ instance, activeScheduleContextId }) => {
           if (input.scheduleContextId !== undefined) {
@@ -2765,6 +2833,11 @@ export const shiftsRouter = router({
         })
         .map(({ instance }) => ({
           ...instance,
+          ...shiftCapacitySummary(
+            instance.requiredCapacity,
+            capacityCounts.get(instance.id) ?? 0,
+            instance.status,
+          ),
           assignments: assignmentsByShift.get(instance.id) ?? [],
         }));
     }),
@@ -2839,6 +2912,8 @@ export const shiftsRouter = router({
           actorProfessionalId: professionalInstitutions.professionalId,
           id: shiftInstances.id,
           rawScheduleContextId: shiftInstances.scheduleContextId,
+          requiredCapacity: shiftInstances.requiredCapacity,
+          activeCount: sql<number>`(SELECT COUNT(*) FROM shift_assignments_v2 capacity_assignment WHERE capacity_assignment.shift_instance_id = ${shiftInstances.id} AND capacity_assignment.is_active = true)`,
           scheduleContextId: scheduleContexts.id,
           hospitalId: shiftInstances.hospitalId,
           sectorId: shiftInstances.sectorId,
@@ -2977,6 +3052,8 @@ export const shiftsRouter = router({
       }
 
       type AgendaRow = {
+        requiredCapacity: number | null;
+        activeCount: number;
         id: number;
         rawScheduleContextId: number | null;
         scheduleContextId: number | null;
@@ -3013,6 +3090,8 @@ export const shiftsRouter = router({
         }
         if (!rowsById.has(row.id)) {
           rowsById.set(row.id, {
+            requiredCapacity: row.requiredCapacity,
+            activeCount: Number(row.activeCount),
             id: row.id,
             rawScheduleContextId: row.rawScheduleContextId,
             scheduleContextId: row.scheduleContextId,
@@ -3077,6 +3156,9 @@ export const shiftsRouter = router({
 
       // 4. Agrupa por week → day → hospital+sector+context.
       type AgendaShift = {
+        requiredCapacity: number | null;
+        activeCount: number;
+        remainingCapacity: number;
         id: number;
         scheduleContextId: number | null;
         label: string;
@@ -3152,6 +3234,7 @@ export const shiftsRouter = router({
           myProfessionalId != null &&
           myList.some((a) => a.professionalId === myProfessionalId);
         group.shifts.push({
+          ...shiftCapacitySummary(r.requiredCapacity, r.activeCount, r.status),
           id: r.id,
           scheduleContextId: r.scheduleContextId,
           label: r.label,

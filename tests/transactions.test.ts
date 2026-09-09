@@ -393,7 +393,7 @@ describe("integridade transacional", () => {
     const failed = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
     expect(ok).toHaveLength(1);
     expect(failed).toHaveLength(1);
-    expect(String(failed[0].reason?.message)).toMatch(/assumido por outro|não está disponível/);
+    expect(String(failed[0].reason?.message)).toMatch(/assumido por outro|não está disponível|Limite de 1 profissionais/);
 
     const active = await db!
       .select()

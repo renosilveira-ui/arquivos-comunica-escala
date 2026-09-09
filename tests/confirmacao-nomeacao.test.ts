@@ -157,7 +157,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   async function shiftWithTitular(type: "ON_DUTY" | "ON_CALL" = "ON_DUTY") {
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: `CN ${stamp}`, startAt: start, endAt: end, status: "OCUPADO" })
+      // Historical fixtures intentionally overlap with distinct shift records.
+      .values({ institutionId, hospitalId, sectorId, scheduleContextId, requiredCapacity: null, label: `CN ${stamp}`, startAt: start, endAt: end, status: "OCUPADO" })
       .$returningId();
     const [a] = await db
       .insert(shiftAssignmentsV2)

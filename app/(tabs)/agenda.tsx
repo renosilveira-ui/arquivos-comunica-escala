@@ -54,6 +54,7 @@ import {
 } from "@/lib/schedule-context-selection";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
+import { shiftCapacityLabel } from "@/lib/shift-capacity";
 import { AppButton } from "@/components/ui/AppButton";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
@@ -1513,6 +1514,9 @@ function SegButton({
 // de inferido via tRPC porque o type-checker não resolve a inferência
 // circular entre o router e o client num primeiro build limpo.
 type AgendaShift = {
+  requiredCapacity?: number | null;
+  activeCount?: number;
+  remainingCapacity?: number;
   id: number;
   label: string;
   startAt: string | Date;
@@ -1735,6 +1739,20 @@ function DesktopGroupBlock({
             >
               {formatTimeRange(shift.startAt, shift.endAt)}
             </Text>
+            {shift.requiredCapacity != null ? (
+              <Text
+                style={{
+                  fontSize: 10,
+                  color: theme.colors.textMuted,
+                  marginTop: 1,
+                }}
+              >
+                {shiftCapacityLabel(
+                  shift.requiredCapacity,
+                  shift.activeCount ?? shift.professionalNames.length,
+                )}
+              </Text>
+            ) : null}
           </TouchableOpacity>
         );
       })}

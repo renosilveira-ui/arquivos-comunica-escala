@@ -93,8 +93,9 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(notify).toContain("assertManagerScopeAccess");
     expect(notify).toContain("assertManagerScopeAccessForUpdate");
     expect(notify).toContain('locked.status !== "VAGO"');
-    expect(notify).toContain("deriveShiftStatus");
-    expect(notify).toContain("shiftAssignmentsV2.isActive");
+    expect(notify).toContain("hasShiftVacancy");
+    expect(notify).toContain("assertShiftAssignmentCapacityForUpdate");
+    expect(notify).toContain("activeDelta: 1");
     expect(notify).toContain("enqueueVacancyAvailableSignals");
     expect(notify).toContain("recentVacancyBroadcastExists");
     const signal = readFileSync("server/vacancy-broadcast-signal.ts", "utf8");
@@ -150,10 +151,8 @@ describe("aviso de plantão vago — contratos de fonte", () => {
 
   it("UI do gestor só mostra Avisar equipe em plantão vago", () => {
     const details = readFileSync("app/shift-details.tsx", "utf8");
-    expect(details).toContain(
-      'label={notifyVacancy.isPending ? "Enviando aviso..." : "Avisar equipe"}',
-    );
-    expect(details).toContain('shift.status === "VAGO"');
+    expect(details).toMatch(/label=\{\s*notifyVacancy\.isPending\s*\?\s*"Enviando aviso\.\.\."\s*:\s*"Avisar equipe"\s*\}/);
+    expect(details).toMatch(/apiShiftData\?\.remainingCapacity\s*\?\?[\s\S]*?\)\s*>\s*0/);
     expect(details).toContain("trpc.shifts.notifyVacancy");
     expect(details).toContain("vacancyBroadcastFeedbackMessage");
   });
