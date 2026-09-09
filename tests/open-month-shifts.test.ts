@@ -131,6 +131,13 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("openMonthShifts");
     expect(button).toContain("openMonthShiftsModeLabel");
     expect(button).toContain("useActionFeedback");
+    expect(button).toContain("scheduleCapacity.capacityRules");
+    expect(button).toContain("Profissionais necessários por turno");
+    expect(button).toContain("Configurar capacidade");
+    expect(button).toContain('pathname: "/schedule-capacity"');
+    expect(button).toContain("expectedInstitutionId: activeInstitutionId");
+    expect(button).toContain("!capacityReady");
+    expect(button).toContain("capacityRules.refetch");
     expect(button).not.toContain("Alert.alert");
     expect(button).not.toContain("includeAssignments");
     expect(button).not.toContain("PublishedMonthReasonField");

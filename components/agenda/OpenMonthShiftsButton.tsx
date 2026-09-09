@@ -1,9 +1,19 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Platform, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
+import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { useTenantState } from "@/lib/tenant-state";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
@@ -40,6 +50,8 @@ export function OpenMonthShiftsButton({
   selectedContext,
   onChanged,
 }: Props) {
+  const router = useRouter();
+  const { activeInstitutionId } = useTenantState();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<OpenMonthShiftsMode>("all-applicable");
   const [customNames, setCustomNames] = useState<OpenMonthShiftTemplateName[]>([
@@ -50,18 +62,41 @@ export function OpenMonthShiftsButton({
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
   const openMonthShifts = trpc.shifts.openMonthShifts.useMutation();
+  const capacityRules = trpc.scheduleCapacity.capacityRules.useQuery(
+    {
+      scheduleContextId: selectedContext.scheduleContextId,
+      expectedInstitutionId: activeInstitutionId ?? undefined,
+    },
+    {
+      enabled: open && activeInstitutionId != null,
+    },
+  );
 
-  const plannedCount = useMemo(() => {
+  const planned = useMemo(() => {
     try {
       return planOpenMonthShifts({
         yearMonth: monthKey,
         mode,
         templateNames: mode === "custom" ? customNames : undefined,
-      }).length;
+      });
     } catch {
-      return 0;
+      return [];
     }
   }, [monthKey, mode, customNames]);
+  const plannedCount = planned.length;
+  const plannedTemplateNames = useMemo(
+    () => new Set<string>(planned.map((slot) => slot.template.name)),
+    [planned],
+  );
+  const visibleCapacityRules = useMemo(
+    () =>
+      (capacityRules.data ?? []).filter((rule) =>
+        plannedTemplateNames.has(rule.name),
+      ),
+    [capacityRules.data, plannedTemplateNames],
+  );
+  const capacityReady =
+    activeInstitutionId != null && capacityRules.isSuccess;
 
   function close() {
     setOpen(false);
@@ -74,6 +109,16 @@ export function OpenMonthShiftsButton({
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
     setOpen(true);
+  }
+
+  function configureCapacity() {
+    close();
+    router.push({
+      pathname: "/schedule-capacity" as any,
+      params: {
+        scheduleContextId: String(selectedContext.scheduleContextId),
+      },
+    });
   }
 
   function toggleCustomName(name: OpenMonthShiftTemplateName) {
@@ -162,65 +207,30 @@ export function OpenMonthShiftsButton({
               </Pressable>
             </View>
 
-            <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-              {openMonthShiftsModeHint(mode)}
-            </Text>
+            <ScrollView
+              style={{ flexShrink: 1 }}
+              contentContainerStyle={{ gap: theme.space[4] }}
+              showsVerticalScrollIndicator
+            >
+              <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                {openMonthShiftsModeHint(mode)}
+              </Text>
 
-            <View style={{ gap: theme.space[2] }}>
-              {OPEN_MONTH_SHIFT_MODES.map((option) => {
-                const selected = mode === option;
-                return (
-                  <Pressable
-                    key={option}
-                    onPress={() => setMode(option)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    style={{
-                      minHeight: theme.space[10] + theme.space[1],
-                      justifyContent: "center",
-                      paddingHorizontal: theme.space[3],
-                      paddingVertical: theme.space[2],
-                      borderRadius: theme.radius.lg,
-                      borderWidth: 1,
-                      borderColor: selected
-                        ? theme.colors.primary
-                        : theme.colors.border,
-                      backgroundColor: selected
-                        ? theme.colors.primarySoft
-                        : theme.colors.surface,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        ...theme.text.bodyLg,
-                        fontWeight: theme.weight.semibold,
-                        color: selected
-                          ? theme.colors.primary
-                          : theme.colors.textPrimary,
-                      }}
-                    >
-                      {openMonthShiftsModeLabel(option)}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            {mode === "custom" ? (
               <View style={{ gap: theme.space[2] }}>
-                {OPEN_MONTH_SHIFT_TEMPLATE_NAMES.map((name) => {
-                  const selected = customNames.includes(name);
+                {OPEN_MONTH_SHIFT_MODES.map((option) => {
+                  const selected = mode === option;
                   return (
                     <Pressable
-                      key={name}
-                      onPress={() => toggleCustomName(name)}
+                      key={option}
+                      onPress={() => setMode(option)}
                       accessibilityRole="button"
                       accessibilityState={{ selected }}
                       style={{
                         minHeight: theme.space[10] + theme.space[1],
                         justifyContent: "center",
                         paddingHorizontal: theme.space[3],
-                        borderRadius: theme.radius.md,
+                        paddingVertical: theme.space[2],
+                        borderRadius: theme.radius.lg,
                         borderWidth: 1,
                         borderColor: selected
                           ? theme.colors.primary
@@ -232,25 +242,138 @@ export function OpenMonthShiftsButton({
                     >
                       <Text
                         style={{
-                          ...theme.text.body,
+                          ...theme.text.bodyLg,
                           fontWeight: theme.weight.semibold,
                           color: selected
                             ? theme.colors.primary
                             : theme.colors.textPrimary,
                         }}
                       >
-                        {selected ? "✓ " : ""}
-                        {openMonthShiftTemplateChipLabel(name)}
+                        {openMonthShiftsModeLabel(option)}
                       </Text>
                     </Pressable>
                   );
                 })}
               </View>
-            ) : null}
 
-            <Text style={{ ...theme.text.body, color: theme.colors.textPrimary }}>
-              {openMonthShiftsPreviewCount(plannedCount)}
-            </Text>
+              {mode === "custom" ? (
+                <View style={{ gap: theme.space[2] }}>
+                  {OPEN_MONTH_SHIFT_TEMPLATE_NAMES.map((name) => {
+                    const selected = customNames.includes(name);
+                    return (
+                      <Pressable
+                        key={name}
+                        onPress={() => toggleCustomName(name)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        style={{
+                          minHeight: theme.space[10] + theme.space[1],
+                          justifyContent: "center",
+                          paddingHorizontal: theme.space[3],
+                          borderRadius: theme.radius.md,
+                          borderWidth: 1,
+                          borderColor: selected
+                            ? theme.colors.primary
+                            : theme.colors.border,
+                          backgroundColor: selected
+                            ? theme.colors.primarySoft
+                            : theme.colors.surface,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            ...theme.text.body,
+                            fontWeight: theme.weight.semibold,
+                            color: selected
+                              ? theme.colors.primary
+                              : theme.colors.textPrimary,
+                          }}
+                        >
+                          {selected ? "✓ " : ""}
+                          {openMonthShiftTemplateChipLabel(name)}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
+
+              <View
+                style={{
+                  gap: theme.space[2],
+                  padding: theme.space[3],
+                  borderWidth: 1,
+                  borderColor: theme.colors.border,
+                  borderRadius: theme.radius.lg,
+                  backgroundColor: theme.colors.surfaceAlt,
+                }}
+              >
+                <Text
+                  style={{
+                    ...theme.text.bodyLg,
+                    fontWeight: theme.weight.semibold,
+                    color: theme.colors.textPrimary,
+                  }}
+                >
+                  Profissionais necessários por turno
+                </Text>
+                <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                  Confira a capacidade antes de abrir o mês. O padrão é 1 e a
+                  configuração respeita cada dia da semana.
+                </Text>
+                {capacityRules.isLoading || capacityRules.isFetching ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <ActivityIndicator size="small" color={theme.colors.primary} />
+                    <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
+                      Consultando capacidade…
+                    </Text>
+                  </View>
+                ) : null}
+                {capacityRules.error ? (
+                  <View style={{ gap: theme.space[2] }}>
+                    <Text accessibilityRole="alert" style={{ color: theme.colors.danger }}>
+                      Não foi possível conferir a capacidade desta escala.
+                    </Text>
+                    <AppButton
+                      title="Tentar novamente"
+                      variant="secondary"
+                      size="sm"
+                      onPress={() => {
+                        void capacityRules.refetch();
+                      }}
+                    />
+                  </View>
+                ) : null}
+                {capacityRules.isSuccess
+                  ? visibleCapacityRules.map((rule) => {
+                      const min = Math.min(...rule.capacities);
+                      const max = Math.max(...rule.capacities);
+                      const detail =
+                        min === max
+                          ? `${min} ${min === 1 ? "profissional" : "profissionais"}`
+                          : `${min}–${max} profissionais, conforme o dia`;
+                      return (
+                        <Text
+                          key={rule.id}
+                          style={{ ...theme.text.body, color: theme.colors.textPrimary }}
+                        >
+                          {rule.name}: {detail}
+                        </Text>
+                      );
+                    })
+                  : null}
+                <AppButton
+                  title="Configurar capacidade"
+                  variant="secondary"
+                  size="sm"
+                  onPress={configureCapacity}
+                />
+              </View>
+
+              <Text style={{ ...theme.text.body, color: theme.colors.textPrimary }}>
+                {openMonthShiftsPreviewCount(plannedCount)}
+              </Text>
+            </ScrollView>
 
             {openMonthShifts.isPending ? (
               <View
@@ -271,7 +394,11 @@ export function OpenMonthShiftsButton({
                 onPress={() => {
                   void confirm();
                 }}
-                disabled={plannedCount === 0 || openMonthShifts.isPending}
+                disabled={
+                  plannedCount === 0 ||
+                  openMonthShifts.isPending ||
+                  !capacityReady
+                }
                 fullWidth
               />
             )}
