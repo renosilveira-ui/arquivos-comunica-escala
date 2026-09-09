@@ -135,6 +135,8 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("Profissionais necessários por turno");
     expect(button).toContain("Configurar por dia da semana");
     expect(button).toContain('pathname: "/schedule-capacity"');
+    expect(button).not.toContain('pathname: "/schedule-capacity" as any');
+    expect(button).toContain('keyboardShouldPersistTaps="handled"');
     expect(button).toContain("expectedInstitutionId: activeInstitutionId");
     expect(button).toContain("capacityOverrides");
     expect(button).toContain("MAX_SHIFT_CAPACITY");

@@ -178,7 +178,7 @@ export function OpenMonthShiftsButton({
   function configureCapacity() {
     close();
     router.push({
-      pathname: "/schedule-capacity" as any,
+      pathname: "/schedule-capacity",
       params: {
         scheduleContextId: String(selectedContext.scheduleContextId),
       },
@@ -281,6 +281,7 @@ export function OpenMonthShiftsButton({
               style={{ flexShrink: 1 }}
               contentContainerStyle={{ gap: theme.space[4] }}
               showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
             >
               <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
                 {openMonthShiftsModeHint(mode)}
