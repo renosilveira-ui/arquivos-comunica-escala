@@ -1,3 +1,4 @@
+import { drizzle } from "drizzle-orm/mysql2";
 import { and, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
@@ -52,6 +53,88 @@ type InviteDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
   "select" | "insert" | "update"
 >;
+type ScheduleInviteDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+const SCHEDULE_INVITE_LOCK_TIMEOUT_SECONDS = 20;
+
+function namedLockSucceeded(
+  result: unknown,
+  field: "acquired" | "released",
+): boolean {
+  if (!Array.isArray(result) || !Array.isArray(result[0])) return false;
+  const row = result[0][0] as Record<string, unknown> | undefined;
+  return Number(row?.[field]) === 1;
+}
+
+function scheduleInviteLockName(input: {
+  institutionId: number;
+  hospitalId: number;
+  sectorId: number;
+  userId: number;
+}): string {
+  // Todos os ids são INT MySQL positivos. Em base 36, mesmo quatro INTs no
+  // limite permanecem bem abaixo dos 64 caracteres aceitos por GET_LOCK.
+  const scope = [
+    input.institutionId,
+    input.hospitalId,
+    input.sectorId,
+    input.userId,
+  ]
+    .map((id) => id.toString(36))
+    .join(":");
+  return `escala-invite:${scope}`;
+}
+
+/** Mutex lógico fora da ordem de row locks usada por redeem/decline. */
+async function withScheduleInviteIssuanceMutex<T>(
+  db: ScheduleInviteDb,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    userId: number;
+  },
+  callback: (connectionDb: ScheduleInviteDb) => Promise<T>,
+): Promise<T> {
+  const lockName = scheduleInviteLockName(input);
+  const connection = await db.$client.promise().getConnection();
+  const connectionDb = drizzle(connection) as unknown as ScheduleInviteDb;
+  let acquired = false;
+  let releaseSucceeded = true;
+  try {
+    acquired = namedLockSucceeded(
+      await connectionDb.execute(sql`
+        SELECT GET_LOCK(${lockName}, ${SCHEDULE_INVITE_LOCK_TIMEOUT_SECONDS}) AS acquired
+      `),
+      "acquired",
+    );
+    if (!acquired) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "Outro reenvio deste convite está em andamento. Tente novamente.",
+      });
+    }
+    return await callback(connectionDb);
+  } finally {
+    if (acquired) {
+      try {
+        releaseSucceeded = namedLockSucceeded(
+          await connectionDb.execute(
+            sql`SELECT RELEASE_LOCK(${lockName}) AS released`,
+          ),
+          "released",
+        );
+      } catch {
+        releaseSucceeded = false;
+      }
+      if (!releaseSucceeded) {
+        console.error("[schedule-invites] MYSQL_NAMED_LOCK_RELEASE_FAILED");
+      }
+    }
+    if (releaseSucceeded) connection.release();
+    else connection.destroy();
+  }
+}
 
 function updateAffectedRows(result: unknown): number {
   if (result && typeof result === "object" && "affectedRows" in result) {
@@ -506,6 +589,7 @@ async function selectInvitableCandidates(
   institutionId: number,
   hospitalId: number,
   sectorId: number,
+  onlyUserIds?: number[],
 ): Promise<InvitableCandidate[]> {
   const candidateColumns = {
     userId: users.id,
@@ -526,7 +610,13 @@ async function selectInvitableCandidates(
         eq(professionalInstitutions.active, true),
       ),
     )
-    .where(and(eq(users.approvalStatus, "APPROVED"), isNull(users.deletedAt)));
+    .where(
+      and(
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+        onlyUserIds?.length ? inArray(users.id, onlyUserIds) : undefined,
+      ),
+    );
 
   const waitingRoom = await db
     .select(candidateColumns)
@@ -536,6 +626,7 @@ async function selectInvitableCandidates(
       and(
         eq(users.approvalStatus, "APPROVED"),
         isNull(users.deletedAt),
+        onlyUserIds?.length ? inArray(users.id, onlyUserIds) : undefined,
         notExists(
           db
             .select({ id: professionalInstitutions.id })
@@ -833,6 +924,7 @@ export const scheduleInvitesRouter = router({
       // esconde — plantel de hospital irmão da MESMA instituição sem ACL no
       // hospital pedido, ou travado em outra instituição — NÃO pode ser
       // convidado direto por id. Fail-closed, resposta neutra por médico.
+      const uniqueUserIds = [...new Set(input.userIds)];
       const eligibleById = new Map(
         (
           await selectInvitableCandidates(
@@ -840,11 +932,11 @@ export const scheduleInvitesRouter = router({
             actor.institutionId,
             input.hospitalId,
             input.sectorId,
+            uniqueUserIds,
           )
         ).map((row) => [row.userId, row] as const),
       );
 
-      const uniqueUserIds = [...new Set(input.userIds)];
       const sent: { userId: number; name: string | null }[] = [];
       const failed: { userId: number; error: string }[] = [];
       // Ids pedidos que a busca esconde (hospital irmão, outra instituição,
@@ -853,49 +945,89 @@ export const scheduleInvitesRouter = router({
       const ineligibleUserIds: number[] = [];
 
       for (const userId of uniqueUserIds) {
-        const invitee = eligibleById.get(userId);
-        if (!invitee || !invitee.email) {
+        const initialInvitee = eligibleById.get(userId);
+        if (!initialInvitee || !initialInvitee.email) {
           ineligibleUserIds.push(userId);
           failed.push({ userId, error: "Médico não encontrado" });
           continue;
         }
 
-        const plaintext = generateScheduleInviteCode();
-        const normalized = normalizeScheduleInviteCode(plaintext);
-        const codeHash = hashScheduleInviteCode(normalized);
-        const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
-        const formatted = formatScheduleInviteCode(normalized);
-
-        const [inserted] = await db
-          .insert(scheduleInvites)
-          .values({
+        // Serializa reemissões pelo destinatário antes de revogar/inserir. Sem
+        // uma linha estável bloqueada, duas requisições simultâneas conseguiam
+        // inserir e depois revogar uma à outra, deixando zero convites válidos.
+        // A transação também garante rollback da revogação se o INSERT falhar.
+        const issued = await withScheduleInviteIssuanceMutex(
+          db,
+          {
             institutionId: actor.institutionId,
             hospitalId: input.hospitalId,
             sectorId: input.sectorId,
-            codeHash,
-            createdByUserId: actor.userId,
-            invitedUserId: invitee.userId,
-            invitedEmail: invitee.email,
-            maxRedemptions: NAMED_MAX_REDEMPTIONS,
-            expiresAt,
-          })
-          .$returningId();
+            userId,
+          },
+          (connectionDb) =>
+            connectionDb.transaction(async (tx) => {
+              // A lista inicial é apenas uma otimização/neutralização do lote. A
+              // autorização é reavaliada sob o mutex para não emitir convite para
+              // uma identidade que deixou de ser elegível enquanto aguardava.
+              const invitee = (
+                await selectInvitableCandidates(
+                  tx,
+                  actor.institutionId,
+                  input.hospitalId,
+                  input.sectorId,
+                  [userId],
+                )
+              ).find((candidate) => candidate.userId === userId);
+              if (!invitee?.email) return null;
 
-        await db
-          .update(scheduleInvites)
-          .set({ revokedAt: new Date() })
-          .where(
-            and(
-              eq(scheduleInvites.institutionId, actor.institutionId),
-              eq(scheduleInvites.hospitalId, input.hospitalId),
-              eq(scheduleInvites.sectorId, input.sectorId),
-              eq(scheduleInvites.invitedUserId, invitee.userId),
-              isNull(scheduleInvites.revokedAt),
-              isNull(scheduleInvites.declinedAt),
-              sql`${scheduleInvites.id} <> ${inserted.id}`,
-              sql`${scheduleInvites.redeemedCount} = 0`,
-            ),
-          );
+              const plaintext = generateScheduleInviteCode();
+              const normalized = normalizeScheduleInviteCode(plaintext);
+              const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
+
+              await tx
+                .update(scheduleInvites)
+                .set({ revokedAt: new Date() })
+                .where(
+                  and(
+                    eq(scheduleInvites.institutionId, actor.institutionId),
+                    eq(scheduleInvites.hospitalId, input.hospitalId),
+                    eq(scheduleInvites.sectorId, input.sectorId),
+                    eq(scheduleInvites.invitedUserId, invitee.userId),
+                    isNull(scheduleInvites.revokedAt),
+                    isNull(scheduleInvites.declinedAt),
+                    sql`${scheduleInvites.redeemedCount} = 0`,
+                  ),
+                );
+
+              const [inserted] = await tx
+                .insert(scheduleInvites)
+                .values({
+                  institutionId: actor.institutionId,
+                  hospitalId: input.hospitalId,
+                  sectorId: input.sectorId,
+                  codeHash: hashScheduleInviteCode(normalized),
+                  createdByUserId: actor.userId,
+                  invitedUserId: invitee.userId,
+                  invitedEmail: invitee.email,
+                  maxRedemptions: NAMED_MAX_REDEMPTIONS,
+                  expiresAt,
+                })
+                .$returningId();
+
+              return {
+                invitee: { ...invitee, email: invitee.email },
+                inserted,
+                expiresAt,
+                formatted: formatScheduleInviteCode(normalized),
+              };
+            }),
+        );
+        if (!issued) {
+          ineligibleUserIds.push(userId);
+          failed.push({ userId, error: "Médico não encontrado" });
+          continue;
+        }
+        const { invitee, inserted, expiresAt, formatted } = issued;
 
         const mail = buildScheduleInviteMail({
           to: invitee.email,

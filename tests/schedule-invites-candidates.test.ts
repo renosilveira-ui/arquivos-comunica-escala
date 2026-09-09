@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -9,6 +9,7 @@ import {
   professionalInstitutions,
   professionals,
   scheduleContexts,
+  scheduleInvites,
   sectors,
   users,
 } from "../drizzle/schema";
@@ -24,6 +25,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
   let hospitalId: number;
   let otherHospitalId: number;
   let sectorId: number;
+  let anesthesiaId: number;
   let managerUserId: number;
   let waitingUserId: number;
   let houseUserId: number;
@@ -140,7 +142,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       .$returningId();
     sectorId = sector.id;
 
-    const anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
+    anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
     await db
       .insert(medicalSpecialties)
       .values({
@@ -391,6 +393,44 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         // Resposta neutra: não revela o motivo real nem confirma o vínculo.
         expect(failure.error).toBe("Médico não encontrado");
       }
+    });
+
+    it("serializa reemissões concorrentes e preserva exatamente um convite ativo", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `concurrent-${Date.now()}`,
+        name: "Concorrência Convite",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+
+      const attempts = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          caller().scheduleInvites.create({
+            hospitalId,
+            sectorId,
+            userIds: [target.userId],
+          }),
+        ),
+      );
+      expect(attempts).toHaveLength(6);
+      expect(attempts.every((attempt) => attempt.sent.length === 1)).toBe(true);
+
+      const active = await db
+        .select({ id: scheduleInvites.id })
+        .from(scheduleInvites)
+        .where(
+          and(
+            eq(scheduleInvites.institutionId, institutionId),
+            eq(scheduleInvites.hospitalId, hospitalId),
+            eq(scheduleInvites.sectorId, sectorId),
+            eq(scheduleInvites.invitedUserId, target.userId),
+            isNull(scheduleInvites.revokedAt),
+            isNull(scheduleInvites.declinedAt),
+            sql`${scheduleInvites.redeemedCount} = 0`,
+          ),
+        );
+      expect(active).toHaveLength(1);
     });
   });
 });

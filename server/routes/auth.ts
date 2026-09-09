@@ -3701,17 +3701,24 @@ authRouter.post(
 
     try {
       const joined = await db.transaction(async (tx) => {
-        const [professional] = await tx
+        const professionalRows = await tx
           .select({
             id: professionals.id,
           })
           .from(professionals)
           .where(eq(professionals.userId, authUser.id))
-          .limit(1)
+          .limit(2)
           .for("update");
-        if (!professional) {
+        if (professionalRows.length === 0) {
           throw new ScheduleInviteError(409, "Profissional não encontrado");
         }
+        if (professionalRows.length !== 1) {
+          throw new ScheduleInviteError(
+            409,
+            "Identidade profissional inconsistente. Procure o suporte.",
+          );
+        }
+        const professional = professionalRows[0]!;
         return redeemScheduleInviteInTransaction(tx, {
           code: parsedInvite,
           userId: authUser.id,

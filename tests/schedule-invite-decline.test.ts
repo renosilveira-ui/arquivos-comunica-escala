@@ -526,6 +526,51 @@ describe("recusa explícita de convite nominal", () => {
     expect(access).toBeUndefined();
   });
 
+  it("falha fechado quando a conta aponta para mais de um professional", async () => {
+    const ambiguous = await createIdentity("ambiguous-professional", institutionA, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+      withAccess: false,
+    });
+    const [duplicateProfessional] = await db
+      .insert(professionals)
+      .values({
+        userId: ambiguous.userId,
+        name: ambiguous.name,
+        role: "Médico",
+        specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaId,
+        userRole: "USER",
+      })
+      .$returningId();
+    professionalIds.push(duplicateProfessional.id);
+
+    const { inviteId, code } = await createInvite(
+      institutionA,
+      hospitalA,
+      sectorA,
+      creator.userId,
+      ambiguous.userId,
+    );
+    const session = await login(ambiguous.email);
+    const redeemed = await redeemInvite(code, cookieOf(session));
+
+    expect(redeemed.status).toBe(409);
+    expect(redeemed.body.error).toContain("Identidade profissional inconsistente");
+    expect((await inviteRow(inviteId))?.redeemedCount).toBe(0);
+    const access = await db
+      .select({ id: professionalAccess.id })
+      .from(professionalAccess)
+      .where(
+        inArray(professionalAccess.professionalId, [
+          ambiguous.professionalId,
+          duplicateProfessional.id,
+        ]),
+      );
+    expect(access).toHaveLength(0);
+  });
+
   it("outro convite do mesmo usuário não é afetado", async () => {
     const first = await createInvite(
       institutionA,
