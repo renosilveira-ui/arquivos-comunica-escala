@@ -36,6 +36,7 @@ export default defineConfig({
       "tests/schedule-context-router.test.ts",
       "tests/schedule-context-selection.test.ts",
       "tests/agenda-month-navigation.test.ts",
+      "tests/mobile-agenda-day-list.test.ts",
       "tests/agenda-offer-overflow.test.ts",
       "tests/shift-template-options.test.ts",
       "tests/assignment-schedule-context-guards.test.ts",

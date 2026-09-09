@@ -6,12 +6,14 @@ import {
   calendarOpenConfirmTitle,
   calendarOpenOriginFromPreviousMonth,
   calendarOpenPreviewTitle,
+  clampDayKeyToMonth,
   countShiftsInMonth,
   emptyMonthCalendarDescription,
   monthKeyOf,
   nextMonthKey,
   previousMonthKey,
   sourceMonthForCalendarTarget,
+  stepDayKey,
 } from "@/lib/agenda-month-navigation";
 
 describe("navegação mensal da Agenda", () => {
@@ -38,6 +40,17 @@ describe("navegação mensal da Agenda", () => {
     expect(previousMonthKey("2026-01")).toBe("2025-12");
     expect(nextMonthKey("2026-08")).toBe("2026-09");
     expect(monthKeyOf(new Date(2026, 8, 1))).toBe("2026-09");
+  });
+
+  it("preserva o dia ao trocar de mês e limita datas inexistentes", () => {
+    expect(clampDayKeyToMonth("2026-01-31", "2026-02")).toBe("2026-02-28");
+    expect(clampDayKeyToMonth("2028-01-31", "2028-02")).toBe("2028-02-29");
+    expect(clampDayKeyToMonth("2026-09-15", "2026-10")).toBe("2026-10-15");
+  });
+
+  it("avança o censo diário inclusive na virada do mês e do ano", () => {
+    expect(stepDayKey("2026-09-30", 1)).toBe("2026-10-01");
+    expect(stepDayKey("2027-01-01", -1)).toBe("2026-12-31");
   });
 
   it("no primeiro mês a copy não pede a escala anterior", () => {
@@ -111,6 +124,18 @@ describe("wiring do calendário mensal na Agenda", () => {
     expect(agenda).toContain("openMonthShiftsDescription");
     expect(agenda).toContain("selectedContext?.canManage");
     expect(agenda).toContain("EmptyMonthCalendarAction");
+    expect(agenda).toContain(
+      "const usesMonthNavigation = !isDesktop || isMonthSheet",
+    );
+    expect(agenda).toContain('viewMode === "lista"');
+    expect(agenda).toContain('accessibilityLabel="Dia anterior"');
+    expect(agenda).toContain('accessibilityLabel="Próximo dia"');
+    expect(agenda).toContain("selectedDayKey={selectedDayKey}");
+    expect(agenda).toContain(
+      "previousMeta.input.startDate === queryStartDate",
+    );
+    expect(agenda).toContain("previousMeta.input.weeks === queryWeeks");
+    expect(agenda).toContain("{isDesktop ? (");
     expect(agenda.split("<OpenMonthShiftsButton").length - 1).toBe(2);
     expect(menu).toContain("sourceMonthForCalendarTarget");
     expect(menu).toContain("requestedCalendarTargetMonth");
