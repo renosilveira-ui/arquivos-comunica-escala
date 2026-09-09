@@ -46,6 +46,8 @@ interface Props {
   onChanged?: () => void;
 }
 
+const WEEKDAY_SHORT_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+
 function emptyCapacityValues(): Record<OpenMonthShiftTemplateName, string> {
   return { Manhã: "1", Tarde: "1", Noite: "1" };
 }
@@ -392,12 +394,14 @@ export function OpenMonthShiftsButton({
                       const rule = capacityRules.data.find(
                         (item) => item.name === name,
                       );
-                      const min = rule ? Math.min(...rule.capacities) : 1;
-                      const max = rule ? Math.max(...rule.capacities) : 1;
-                      const weeklyDetail =
-                        min === max
-                          ? `Regra semanal atual: ${min}`
-                          : `Regra semanal atual: ${min}–${max}, conforme o dia`;
+                      const weeklyDetail = rule
+                        ? rule.capacities
+                            .map(
+                              (capacity, weekday) =>
+                                `${WEEKDAY_SHORT_LABELS[weekday]} ${capacity}`,
+                            )
+                            .join(" · ")
+                        : "Sem regra anterior · padrão 1";
                       return (
                         <View
                           key={name}

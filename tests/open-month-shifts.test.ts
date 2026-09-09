@@ -138,6 +138,7 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("expectedInstitutionId: activeInstitutionId");
     expect(button).toContain("capacityOverrides");
     expect(button).toContain("MAX_SHIFT_CAPACITY");
+    expect(button).toContain("WEEKDAY_SHORT_LABELS");
     expect(button).toContain("!capacityReady");
     expect(button).toContain("capacityRules.refetch");
     expect(button).not.toContain("Alert.alert");
