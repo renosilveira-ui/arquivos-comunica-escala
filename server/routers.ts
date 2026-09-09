@@ -48,6 +48,7 @@ import { hasShiftVacancy } from "./shift-capacity";
 import { corporateReadinessRouter } from "./corporate-readiness-router";
 import { notificationsRouter } from "./notifications-router";
 import { personalCalendarRouter } from "./personal-calendar-router";
+import { calendarAuxiliaryRouter } from "./calendar-auxiliary-router";
 import {
   actionableVacancyFiltersSchema,
   listActionableVacancyRows,
@@ -1084,6 +1085,7 @@ export const appRouter = router({
   profile: profileRouter,
   notifications: notificationsRouter,
   personalCalendar: personalCalendarRouter,
+  calendarAuxiliary: calendarAuxiliaryRouter,
   corporateReadiness: corporateReadinessRouter,
 });
 
