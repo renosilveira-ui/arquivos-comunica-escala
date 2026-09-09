@@ -11,12 +11,10 @@ function replacementReaderSource(): string {
 }
 
 describe("candidatos a substituição por scheduleContext canônico", () => {
-  it("não decide candidatos por alias, perfil ou especialidade clínica", () => {
+  it("não decide candidatos por alias textual; reusa o matcher clínico canônico", () => {
     const reader = replacementReaderSource();
     expect(reader).not.toContain("specialtiesConflict");
-    expect(reader).not.toContain("medical_specialty_id");
-    expect(reader).not.toContain("operational_profile_code");
-    expect(reader).not.toContain("schedule_context_allowed_qualifications");
+    expect(reader).toContain("plantonistaQualificationMatchesContextSql");
   });
 
   it("preserva tenant, identidade, ACL setorial e conflito de horário", () => {
@@ -39,7 +37,8 @@ describe("candidatos a substituição por scheduleContext canônico", () => {
     );
     expect(reader).toContain("sc.active = true");
     expect(reader).toContain("sc.admission_policy = 'QUALIFICATION_ALLOWLIST'");
-    expect(reader).not.toContain("schedule_context_allowed_qualifications");
+    expect(reader).toContain("plantonistaQualificationMatchesContextSql");
+    expect(reader).not.toContain("specialtiesConflict");
     expect(reader).toContain("u.approval_status = 'APPROVED'");
     expect(reader).toContain("u.deleted_at IS NULL");
     expect(reader).toContain(

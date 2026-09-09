@@ -27,6 +27,7 @@ import {
   assertManagerScopeAccess,
   getTenantActorFromContext,
 } from "./_core/policy";
+import { plantonistaQualificationMatchesContextSql } from "./plantonista-shift-eligibility";
 import { listAuthorizedScheduleContexts } from "./schedule-contexts";
 import { listManageableTopology } from "./sector-scale";
 import {
@@ -201,13 +202,9 @@ export const professionalsRouter = router({
 
       await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
 
-      // Plantonista visível = conta aprovada + profissional + (
-      //   acesso setorial OU manager_scope OU convite nominal pendente
-      // ). E-mail enviado ≠ resgate: o convite ainda não grava
-      // professional_access. Sala de espera (sem vínculo ativo) entra se
-      // o convite foi emitido para ela. Especialidade / allowlist NÃO
-      // filtra alocação — quem tem acesso, scope ou convite aparece,
-      // inclusive GESTOR_MEDICO sem especialidade.
+      // Picker de ocupação: conta aprovada + (ACL OU manager_scope OU
+      // convite pendente) ∩ qualificationMatches. E-mail enviado ≠
+      // resgate. Write (assignDirect) revalida o mesmo predicado clínico.
       const now = new Date();
       const result = await db.execute<{
         id: number;
@@ -287,6 +284,7 @@ export const professionalsRouter = router({
               pi.id IS NOT NULL
               OR pending_invite.id IS NOT NULL
             )
+            AND ${plantonistaQualificationMatchesContextSql("p", "sc")}
             AND NOT EXISTS (
               SELECT 1
               FROM shift_assignments_v2 conflict_assignment

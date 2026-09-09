@@ -915,6 +915,67 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(queuedPushMock).toHaveBeenCalledTimes(1);
   });
 
+  it("indicação: lista omite inelegível clínico e a mutation recusa", async () => {
+    const { shiftId, assignmentId } = await shiftWithTitular();
+    const conf = await declined(assignmentId, shiftId);
+    const [unqualifiedUser] = await db
+      .insert(users)
+      .values({
+        name: `CN unqualified ${stamp}`,
+        email: `cn-unqual-${stamp}@test.local`,
+        passwordHash: "test",
+        role: "doctor",
+      })
+      .$returningId();
+    const [unqualifiedPro] = await db
+      .insert(professionals)
+      .values({
+        userId: unqualifiedUser.id,
+        name: `CN unqualified ${stamp}`,
+        role: "Médico",
+        userRole: "USER",
+        medicalSpecialtyId: null,
+      })
+      .$returningId();
+    await db.insert(professionalInstitutions).values({
+      professionalId: unqualifiedPro.id,
+      userId: unqualifiedUser.id,
+      institutionId,
+      roleInInstitution: "USER",
+      isPrimary: true,
+      active: true,
+    });
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: unqualifiedPro.id,
+      hospitalId,
+      sectorId,
+      canAccess: true,
+    });
+    userIds.push(unqualifiedUser.id);
+    proIds.push(unqualifiedPro.id);
+
+    const candidates = await confirmationRouter
+      .createCaller(ctx(titularUserId))
+      .listReplacementCandidates({
+        confirmationToken: conf.confirmationToken,
+      });
+    const ids = candidates.map((row) => row.id);
+    expect(ids).toContain(subProId);
+    expect(ids).not.toContain(unqualifiedPro.id);
+
+    await expectNominationRejectedWithoutEffects({
+      confirmationId: conf.id,
+      confirmationToken: conf.confirmationToken,
+      assignmentId,
+      shiftInstanceId: shiftId,
+      replacementProfessionalId: unqualifiedPro.id,
+      code: "FORBIDDEN",
+      message:
+        "Profissional sem qualificação compatível com a escala do plantão.",
+    });
+  });
+
   it("acceptNomination: origem já removida → CONFLICT sem criar alocação; mês LOCKED → FORBIDDEN", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await nominated(assignmentId, shiftId);

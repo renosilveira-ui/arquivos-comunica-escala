@@ -1249,6 +1249,8 @@ async function queryListAvailableRows(
     userId,
     expectedSessionVersion: ctx.user.sessionVersion,
   });
+  // Admissão/topologia (ACL ou scope), não occupancy. Receive/accept
+  // revalida professional_access + qualificationMatches.
   const assumableContextIds = await listAssumableScheduleContextIds(
     institutionId,
     actor.professionalId,

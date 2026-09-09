@@ -1,12 +1,14 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { scheduleInvites } from "../drizzle/schema";
+import { professionals, scheduleInvites } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
 import { getDb } from "./db";
 import { dayWindowBrt } from "./local-time";
 import {
   listAssumableScheduleContextIds,
+  qualificationMatches,
   selectActiveScheduleContexts,
+  type ActiveScheduleContext,
 } from "./schedule-contexts";
 
 type VacancyDb = Pick<
@@ -74,12 +76,17 @@ type VacancyActor = {
 };
 
 /**
- * Resolve the exact schedule-context grant used by the Vagas write path.
+ * Contextos em que o ator pode *solicitar* a vaga (actionability).
  *
- * `listAssumableScheduleContextIds` intentionally remains unchanged for
- * swaps. Vagas additionally needs GESTOR_PLUS' tenant-wide write grant and
- * a still-valid named invite. Contexts with ambiguous active topology are
- * omitted: the mutation rejects them, so advertising a card would be false.
+ * Admissão: `listAssumableScheduleContextIds` (ACL/scope) continua sem
+ * qualification — é visibilidade topológica, reusada em swaps.
+ * GESTOR_PLUS tem admissão tenant-wide; convite nominal pendente também
+ * admite. Nenhum desses atalhos é ocupação.
+ *
+ * Occupancy: o mesmo `qualificationMatches` do write. A tela de Vagas
+ * só lista o que o assumeVacancy pode aceitar; a agenda/editor continua
+ * o panorama administrativo. Contextos com topologia ambígua saem: a
+ * mutation recusa, então o card mentiria.
  */
 async function listActionableScheduleContextIds(input: {
   db: VacancyDb;
@@ -106,7 +113,12 @@ async function listActionableScheduleContextIds(input: {
   if (canonicalContexts.length === 0) return new Set();
 
   if (input.actor.roleInInstitution === "GESTOR_PLUS") {
-    return new Set(canonicalContexts.map((context) => context.id));
+    return filterOccupiableScheduleContextIds(
+      input.db,
+      input.actor.professionalId,
+      canonicalContexts,
+      new Set(canonicalContexts.map((context) => context.id)),
+    );
   }
 
   const assumedContextIds = new Set(
@@ -152,7 +164,53 @@ async function listActionableScheduleContextIds(input: {
       contextIds.add(context.id);
     }
   }
-  return contextIds;
+  return filterOccupiableScheduleContextIds(
+    input.db,
+    input.actor.professionalId,
+    canonicalContexts,
+    contextIds,
+  );
+}
+
+/**
+ * Admissão ∩ qualificationMatches. O write revalida o mesmo predicado;
+ * este recorte só impede a UI de oferecer o que o servidor recusará.
+ */
+async function filterOccupiableScheduleContextIds(
+  db: VacancyDb,
+  professionalId: number,
+  canonicalContexts: readonly ActiveScheduleContext[],
+  admittedContextIds: ReadonlySet<number>,
+): Promise<Set<number>> {
+  if (admittedContextIds.size === 0) return new Set();
+  const [professional] = await db
+    .select({
+      medicalSpecialtyId: professionals.medicalSpecialtyId,
+      operationalProfileCode: professionals.operationalProfileCode,
+    })
+    .from(professionals)
+    .where(eq(professionals.id, professionalId))
+    .limit(1);
+  if (!professional) return new Set();
+  const occupiable = new Set<number>();
+  for (const context of canonicalContexts) {
+    if (!admittedContextIds.has(context.id)) continue;
+    if (
+      qualificationMatches(
+        {
+          medicalSpecialtyId: professional.medicalSpecialtyId,
+          operationalProfileCode: professional.operationalProfileCode as
+            | "MEDICO_GENERALISTA"
+            | "RESIDENTE_ANESTESIOLOGIA"
+            | null,
+        },
+        context,
+      )
+    ) {
+      occupiable.add(context.id);
+    }
+  }
+  return occupiable;
 }
 
 /**
@@ -212,9 +270,8 @@ export async function listActionableVacancyRows(input: {
           AND sc.active = true
         WHERE si.status = 'VAGO'
           AND si.institution_id = ${input.institutionId}
-          -- A lista de IDs é resolvida exclusivamente pelo servidor a partir
-          -- do vínculo e da ACL do ator. Restringir aqui evita ler e montar
-          -- em memória vagas de contextos que jamais poderiam ser assumidos.
+          -- IDs = admissão topológica ∩ qualificationMatches do ator.
+          -- assumeVacancy revalida; a lista não substitui o write.
           AND si.schedule_context_id IN (${assumableContextIdList})
           -- Mês trancado não oferece vagas (start_at em UTC → mês do hospital, -03:00)
           AND NOT EXISTS (
