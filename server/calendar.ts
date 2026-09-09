@@ -6,6 +6,7 @@ import { shiftCapacitySummary } from "../lib/shift-capacity";
 import {
   dayKeyBrt,
   dayWindowBrt,
+  isValidDayKeyBrt,
   monthWindowBrt,
   yearMonthFromDayKey,
 } from "./local-time";
@@ -261,7 +262,10 @@ export const calendarRouter = router({
         hospitalId: z.number(),
         sectorId: z.number(),
         scheduleContextId: z.number().int().positive().optional(),
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // YYYY-MM-DD
+        date: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .refine(isValidDayKeyBrt, "data civil inválida"), // YYYY-MM-DD
       }),
     )
     .query(async ({ ctx, input }) => {

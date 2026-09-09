@@ -15,6 +15,7 @@ import {
   addDaysToKey,
   dayKeyBrt,
   dayWindowBrt,
+  isValidDayKeyBrt,
   mondayOfKey,
   monthWindowBrt,
   weekdayOfKey,
@@ -275,15 +276,19 @@ function assertModalityCoherent(
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const civilDateKeyInput = z
+  .string()
+  .regex(DATE_ONLY, "YYYY-MM-DD")
+  .refine(isValidDayKeyBrt, "data civil inválida");
 
 const replicateRangeInput = z.object({
   hospitalId: z.number().int(),
   sectorId: z.number().int().optional(),
   from: z.object({
-    start: z.string().regex(DATE_ONLY, "YYYY-MM-DD"),
+    start: civilDateKeyInput,
     granularity: z.enum(["week", "month"]),
   }),
-  to: z.object({ start: z.string().regex(DATE_ONLY, "YYYY-MM-DD") }),
+  to: z.object({ start: civilDateKeyInput }),
   includeAssignments: z.boolean().optional().default(false),
   dryRun: z.boolean().optional().default(false),
   /** Obrigatório (≥ 5 caracteres) para Gestor+ replicar sobre mês PUBLISHED/LOCKED. */
@@ -1749,9 +1754,7 @@ export const shiftsRouter = router({
     .input(
       z
         .object({
-          date: z
-            .string()
-            .regex(/^\d{4}-\d{2}-\d{2}$/, "date deve ser YYYY-MM-DD"),
+          date: civilDateKeyInput,
           shiftTemplateId: z.number().int(),
           requiredCapacity: requiredCapacityInput.optional(),
           scheduleContextId: z.number().int().positive().optional(),
@@ -2899,7 +2902,7 @@ export const shiftsRouter = router({
   listAgenda: protectedProcedure
     .input(
       z.object({
-        startDate: z.string(), // YYYY-MM-DD (Monday das semanas)
+        startDate: civilDateKeyInput, // YYYY-MM-DD (Monday das semanas)
         weeks: z.number().int().min(1).max(12).default(4),
         scope: z.enum(["geral", "minha"]).default("geral"),
         scheduleContextId: z.number().int().positive().optional(),
@@ -3749,8 +3752,8 @@ export const shiftsRouter = router({
   replicateWeek: protectedProcedure
     .input(
       z.object({
-        fromStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
-        toStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"),
+        fromStartDate: civilDateKeyInput,
+        toStartDate: civilDateKeyInput,
         hospitalId: z.number().int(),
       }),
     )
