@@ -250,6 +250,7 @@ describe("shifts.openMonthShifts", () => {
         startAt: shiftInstances.startAt,
         endAt: shiftInstances.endAt,
         status: shiftInstances.status,
+        requiredCapacity: shiftInstances.requiredCapacity,
       })
       .from(shiftInstances)
       .where(
@@ -350,6 +351,46 @@ describe("shifts.openMonthShifts", () => {
     );
   });
 
+  it("aplica a capacidade escolhida na abertura somente aos turnos selecionados", async () => {
+    const result = await callerFor(managerUserId, "manager").openMonthShifts({
+      hospitalId,
+      sectorId,
+      scheduleContextId,
+      yearMonth: "2027-05",
+      mode: "custom",
+      templateNames: ["Manhã", "Noite"],
+      capacityOverrides: [
+        { templateName: "Manhã", requiredCapacity: 2 },
+        { templateName: "Noite", requiredCapacity: 3 },
+      ],
+    });
+    expect(result.created).toBeGreaterThan(0);
+    const rows = await countMonth("2027-05");
+    expect(rows.every((row) => row.label !== "Tarde")).toBe(true);
+    expect(
+      rows.every((row) =>
+        row.label === "Manhã"
+          ? row.requiredCapacity === 2
+          : row.requiredCapacity === 3,
+      ),
+    ).toBe(true);
+
+    await expect(
+      callerFor(managerUserId, "manager").openMonthShifts({
+        hospitalId,
+        sectorId,
+        scheduleContextId,
+        yearMonth: "2027-06",
+        mode: "custom",
+        templateNames: ["Manhã"],
+        capacityOverrides: [
+          { templateName: "Noite", requiredCapacity: 2 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await countMonth("2027-06")).toHaveLength(0);
+  });
+
   it("mês PUBLISHED vazio não exige motivo de 5 caracteres", async () => {
     await db!.insert(monthlyRosters).values({
       institutionId,
@@ -428,13 +469,17 @@ describe("shifts.openMonthShifts", () => {
     expect(await countMonth("2027-04")).toHaveLength(0);
   });
 
-  it("setor sem modelos recebe o blueprint padrão e abre o mês", async () => {
+  it("setor sem modelos recebe o blueprint e a capacidade escolhida na abertura", async () => {
     const result = await callerFor(managerUserId, "manager").openMonthShifts({
       hospitalId,
       sectorId: emptySectorId,
       scheduleContextId: emptyScheduleContextId,
       yearMonth: "2027-01",
-      mode: "all-applicable",
+      mode: "custom",
+      templateNames: ["Manhã"],
+      capacityOverrides: [
+        { templateName: "Manhã", requiredCapacity: 2 },
+      ],
     });
     expect(result.created).toBeGreaterThan(0);
     const templates = await db!
@@ -452,6 +497,17 @@ describe("shifts.openMonthShifts", () => {
       "Noite",
       "Tarde",
     ]);
+    const opened = await db!
+      .select({ requiredCapacity: shiftInstances.requiredCapacity })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, institutionId),
+          eq(shiftInstances.sectorId, emptySectorId),
+        ),
+      );
+    expect(opened.length).toBeGreaterThan(0);
+    expect(opened.every((row) => row.requiredCapacity === 2)).toBe(true);
   });
 
   it("médico comum não pode abrir os turnos", async () => {

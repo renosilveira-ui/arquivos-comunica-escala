@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -6,6 +6,7 @@ import {
   Pressable,
   ScrollView,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
@@ -14,6 +15,7 @@ import { X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
 import { useTenantState } from "@/lib/tenant-state";
+import { MAX_SHIFT_CAPACITY } from "@/lib/shift-capacity";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
@@ -44,6 +46,10 @@ interface Props {
   onChanged?: () => void;
 }
 
+function emptyCapacityValues(): Record<OpenMonthShiftTemplateName, string> {
+  return { Manhã: "1", Tarde: "1", Noite: "1" };
+}
+
 export function OpenMonthShiftsButton({
   monthKey,
   monthName,
@@ -59,6 +65,8 @@ export function OpenMonthShiftsButton({
     "Tarde",
     "Noite",
   ]);
+  const [capacityValues, setCapacityValues] = useState(emptyCapacityValues);
+  const [capacityHydrated, setCapacityHydrated] = useState(false);
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
   const openMonthShifts = trpc.shifts.openMonthShifts.useMutation();
@@ -88,20 +96,48 @@ export function OpenMonthShiftsButton({
     () => new Set<string>(planned.map((slot) => slot.template.name)),
     [planned],
   );
-  const visibleCapacityRules = useMemo(
+  const visibleCapacityNames = useMemo(
     () =>
-      (capacityRules.data ?? []).filter((rule) =>
-        plannedTemplateNames.has(rule.name),
+      OPEN_MONTH_SHIFT_TEMPLATE_NAMES.filter((name) =>
+        plannedTemplateNames.has(name),
       ),
-    [capacityRules.data, plannedTemplateNames],
+    [plannedTemplateNames],
   );
+  const invalidCapacity = visibleCapacityNames.some((name) => {
+    const raw = capacityValues[name].trim();
+    if (raw === "") return false;
+    const value = Number(raw);
+    return (
+      !Number.isSafeInteger(value) ||
+      value < 1 ||
+      value > MAX_SHIFT_CAPACITY
+    );
+  });
   const capacityReady =
-    activeInstitutionId != null && capacityRules.isSuccess;
+    activeInstitutionId != null &&
+    capacityRules.isSuccess &&
+    capacityHydrated &&
+    !invalidCapacity;
+
+  useEffect(() => {
+    if (!open || !capacityRules.isSuccess || capacityHydrated) return;
+    const next = emptyCapacityValues();
+    for (const name of OPEN_MONTH_SHIFT_TEMPLATE_NAMES) {
+      const rule = capacityRules.data.find((item) => item.name === name);
+      if (!rule) continue;
+      const unique = new Set(rule.capacities);
+      next[name] = unique.size === 1 ? String(rule.capacities[0]) : "";
+    }
+    setCapacityValues(next);
+    setCapacityHydrated(true);
+  }, [capacityHydrated, capacityRules.data, capacityRules.isSuccess, open]);
 
   function close() {
     setOpen(false);
     setMode("all-applicable");
     setCustomNames(["Manhã", "Tarde", "Noite"]);
+    setCapacityValues(emptyCapacityValues());
+    setCapacityHydrated(false);
   }
 
   function openModal() {
@@ -138,6 +174,12 @@ export function OpenMonthShiftsButton({
         yearMonth: monthKey,
         mode,
         templateNames: mode === "custom" ? customNames : undefined,
+        capacityOverrides: visibleCapacityNames.flatMap((templateName) => {
+          const raw = capacityValues[templateName].trim();
+          return raw === ""
+            ? []
+            : [{ templateName, requiredCapacity: Number(raw) }];
+        }),
       });
       await Promise.all([
         invalidateOfficialScaleAndVacancyQueries(utils),
@@ -318,8 +360,9 @@ export function OpenMonthShiftsButton({
                   Profissionais necessários por turno
                 </Text>
                 <Text style={{ ...theme.text.body, color: theme.colors.textSecondary }}>
-                  Confira a capacidade antes de abrir o mês. O padrão é 1 e a
-                  configuração respeita cada dia da semana.
+                  Informe quantos profissionais cada turno deste mês precisa.
+                  O padrão é 1. Deixe vazio para manter uma regra semanal já
+                  configurada.
                 </Text>
                 {capacityRules.isLoading || capacityRules.isFetching ? (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -344,26 +387,81 @@ export function OpenMonthShiftsButton({
                     />
                   </View>
                 ) : null}
-                {capacityRules.isSuccess
-                  ? visibleCapacityRules.map((rule) => {
-                      const min = Math.min(...rule.capacities);
-                      const max = Math.max(...rule.capacities);
-                      const detail =
+                {capacityRules.isSuccess && capacityHydrated
+                  ? visibleCapacityNames.map((name) => {
+                      const rule = capacityRules.data.find(
+                        (item) => item.name === name,
+                      );
+                      const min = rule ? Math.min(...rule.capacities) : 1;
+                      const max = rule ? Math.max(...rule.capacities) : 1;
+                      const weeklyDetail =
                         min === max
-                          ? `${min} ${min === 1 ? "profissional" : "profissionais"}`
-                          : `${min}–${max} profissionais, conforme o dia`;
+                          ? `Regra semanal atual: ${min}`
+                          : `Regra semanal atual: ${min}–${max}, conforme o dia`;
                       return (
-                        <Text
-                          key={rule.id}
-                          style={{ ...theme.text.body, color: theme.colors.textPrimary }}
+                        <View
+                          key={name}
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: theme.space[3],
+                          }}
                         >
-                          {rule.name}: {detail}
-                        </Text>
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={{
+                                ...theme.text.body,
+                                fontWeight: theme.weight.semibold,
+                                color: theme.colors.textPrimary,
+                              }}
+                            >
+                              {name}
+                            </Text>
+                            <Text
+                              style={{
+                                ...theme.text.caption,
+                                color: theme.colors.textSecondary,
+                              }}
+                            >
+                              {weeklyDetail}
+                            </Text>
+                          </View>
+                          <TextInput
+                            accessibilityLabel={`${name}: profissionais necessários neste mês`}
+                            editable={!openMonthShifts.isPending}
+                            keyboardType="number-pad"
+                            value={capacityValues[name]}
+                            placeholder="Regra"
+                            onChangeText={(value) =>
+                              setCapacityValues((current) => ({
+                                ...current,
+                                [name]: value,
+                              }))
+                            }
+                            style={{
+                              width: 72,
+                              minHeight: 44,
+                              paddingHorizontal: theme.space[3],
+                              borderWidth: 1,
+                              borderColor: theme.colors.borderStrong,
+                              borderRadius: theme.radius.md,
+                              backgroundColor: theme.colors.surface,
+                              color: theme.colors.textPrimary,
+                              textAlign: "center",
+                            }}
+                          />
+                        </View>
                       );
                     })
                   : null}
+                {invalidCapacity ? (
+                  <Text accessibilityRole="alert" style={{ color: theme.colors.danger }}>
+                    Informe de 1 a {MAX_SHIFT_CAPACITY} profissionais por turno.
+                  </Text>
+                ) : null}
                 <AppButton
-                  title="Configurar capacidade"
+                  title="Configurar por dia da semana"
                   variant="secondary"
                   size="sm"
                   onPress={configureCapacity}

@@ -321,6 +321,25 @@ const openMonthShiftsInput = z.object({
     .array(z.enum(["Manhã", "Tarde", "Noite"]))
     .max(3)
     .optional(),
+  capacityOverrides: z
+    .array(
+      z.object({
+        templateName: z.enum(["Manhã", "Tarde", "Noite"]),
+        requiredCapacity: requiredCapacityInput,
+      }),
+    )
+    .max(3)
+    .optional()
+    .superRefine((overrides, refinement) => {
+      if (!overrides) return;
+      const names = overrides.map((item) => item.templateName);
+      if (new Set(names).size !== names.length) {
+        refinement.addIssue({
+          code: "custom",
+          message: "Cada turno pode ter somente uma capacidade nesta abertura.",
+        });
+      }
+    }),
   dryRun: z.boolean().optional().default(false),
 });
 
@@ -1552,6 +1571,21 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
           "Não há modelo de horário neste setor. Crie a escala do setor para gerar os turnos padrão.",
       });
     }
+    const capacityOverrides = new Map(
+      (input.capacityOverrides ?? []).map((override) => [
+        override.templateName,
+        override.requiredCapacity,
+      ]),
+    );
+    const unexpectedCapacityNames = [...capacityOverrides.keys()].filter(
+      (name) => !plannedNames.includes(name),
+    );
+    if (unexpectedCapacityNames.length) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "A capacidade informada pertence a um turno não selecionado.",
+      });
+    }
 
     const context = await resolveScheduleContextForShiftCreation({
       institutionId: ctx.institutionId,
@@ -1586,6 +1620,7 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
         sectorId: context.sectorId,
         scheduleContextId: context.id,
         specialty: context.qualificationName,
+        requiredCapacityOverride: capacityOverrides.get(slot.template.name),
       };
     });
     for (const candidate of candidates) {
@@ -1663,7 +1698,9 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
         endAt: candidate.endAt,
         status: "VAGO",
         createdBy: ctx.user.id,
-        requiredCapacity: await capacityForNewShift(tx, candidate),
+        requiredCapacity:
+          candidate.requiredCapacityOverride ??
+          (await capacityForNewShift(tx, candidate)),
       });
       created += 1;
       currentKeys.add(naturalKey(candidate));
@@ -1684,6 +1721,7 @@ async function openMonthShifts(ctx: ReplicateCtx, input: OpenMonthShiftsInput) {
           mode: input.mode,
           yearMonth: input.yearMonth,
           sectorId: input.sectorId,
+          capacityOverrides: input.capacityOverrides ?? [],
         },
         institutionId: ctx.institutionId,
         hospitalId: input.hospitalId,

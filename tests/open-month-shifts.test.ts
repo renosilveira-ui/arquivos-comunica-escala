@@ -133,9 +133,11 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("useActionFeedback");
     expect(button).toContain("scheduleCapacity.capacityRules");
     expect(button).toContain("Profissionais necessários por turno");
-    expect(button).toContain("Configurar capacidade");
+    expect(button).toContain("Configurar por dia da semana");
     expect(button).toContain('pathname: "/schedule-capacity"');
     expect(button).toContain("expectedInstitutionId: activeInstitutionId");
+    expect(button).toContain("capacityOverrides");
+    expect(button).toContain("MAX_SHIFT_CAPACITY");
     expect(button).toContain("!capacityReady");
     expect(button).toContain("capacityRules.refetch");
     expect(button).not.toContain("Alert.alert");
