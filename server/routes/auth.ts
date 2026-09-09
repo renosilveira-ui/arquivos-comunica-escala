@@ -13,6 +13,7 @@ import {
   professionalAccess,
   medicalSpecialties,
   passwordResets,
+  personalCalendarItems,
   shiftAssignmentsV2,
   shiftInstances,
   userContactChannels,
@@ -1827,6 +1828,13 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
               }
             }
 
+            // Agenda pessoal é privada e account-wide. Como a exclusão da conta
+            // é um soft-delete do usuário, a FK não executaria CASCADE sozinha;
+            // remove o agregado inteiro dentro da mesma transação antes de
+            // anonimizar a identidade.
+            await tx
+              .delete(personalCalendarItems)
+              .where(eq(personalCalendarItems.ownerUserId, lockedUser.id));
             const nextSessionVersion = lockedUser.sessionVersion + 1;
             const updateResult = await tx
               .update(users)

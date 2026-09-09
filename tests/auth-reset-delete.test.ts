@@ -21,6 +21,7 @@ import {
   shiftInstances,
   shiftAssignmentsV2,
   passwordResets,
+  personalCalendarItems,
   pushTokens,
   auditTrail,
 } from "../drizzle/schema";
@@ -236,6 +237,26 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       userId: userIds.leaving,
       token: `ExponentPushToken[a3-${STAMP}]`,
       platform: "ios",
+    });
+    await db.insert(personalCalendarItems).values({
+      ownerUserId: userIds.leaving,
+      clientMutationId: `delete-account-${STAMP}`,
+      kind: "REMINDER",
+      title: "Dado privado a purgar",
+      startLocalDate: "2026-09-09",
+      allDay: true,
+      availability: "FREE",
+      timeZone: "America/Fortaleza",
+    });
+    await db.insert(personalCalendarItems).values({
+      ownerUserId: userIds.doctor,
+      clientMutationId: `password-preserves-agenda-${STAMP}`,
+      kind: "REMINDER",
+      title: "Agenda preservada ao trocar senha",
+      startLocalDate: "2026-09-10",
+      allDay: true,
+      availability: "FREE",
+      timeZone: "America/Fortaleza",
     });
   });
 
@@ -737,6 +758,12 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     const relogin = await login(EMAILS.doctor, PASSWORD);
     expect(relogin.status).toBe(200);
     expect(relogin.body.user.mustChangePassword).toBe(false);
+    await expect(
+      db
+        .select({ id: personalCalendarItems.id })
+        .from(personalCalendarItems)
+        .where(eq(personalCalendarItems.ownerUserId, userIds.doctor)),
+    ).resolves.toHaveLength(1);
   });
 
   // -------------------------------------------------------------------------
@@ -841,6 +868,12 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .from(users)
       .where(eq(users.id, userIds.leaving));
     expect(after).toEqual(before);
+    await expect(
+      db
+        .select({ id: personalCalendarItems.id })
+        .from(personalCalendarItems)
+        .where(eq(personalCalendarItems.ownerUserId, userIds.leaving)),
+    ).resolves.toHaveLength(1);
     const stillValid = await request(app)
       .get("/api/auth/me")
       .set("Cookie", sessionCookie)
@@ -1270,6 +1303,12 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .from(pushTokens)
       .where(eq(pushTokens.userId, userIds.leaving));
     expect(tokens).toHaveLength(0);
+    await expect(
+      db
+        .select({ id: personalCalendarItems.id })
+        .from(personalCalendarItems)
+        .where(eq(personalCalendarItems.ownerUserId, userIds.leaving)),
+    ).resolves.toHaveLength(0);
     const [deleteAudit] = await db
       .select({ metadata: auditTrail.metadata })
       .from(auditTrail)
