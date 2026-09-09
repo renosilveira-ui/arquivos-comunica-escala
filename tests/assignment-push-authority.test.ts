@@ -429,6 +429,42 @@ describe("autoridade atual no outbox de alocação", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("suprime retirada quando uma nova alocação ocupada substitui a linha histórica", async () => {
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
+    await enqueueShiftUnassignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+    const [replacement] = await db
+      .insert(shiftAssignmentsV2)
+      .values({
+        institutionId,
+        hospitalId: hospitalAId,
+        sectorId: sectorAId,
+        shiftInstanceId: shiftId,
+        professionalId,
+        assignmentType: "ON_DUTY",
+        status: "OCUPADO",
+        isActive: true,
+        createdBy: userId,
+      })
+      .$returningId();
+
+    try {
+      await processQueued();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.id, replacement.id));
+    }
+  });
+
   it("recusa payload de alocação sem autoridade tipada", async () => {
     await expect(
       enqueueTrackedPushNotification({

@@ -176,6 +176,30 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
     invalid("Alocação não está mais no estado da notificação");
   }
 
+  if (authority.purpose === "UNASSIGNED") {
+    const currentAssignmentQuery = db
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.professionalId, authority.professionalId),
+          eq(shiftAssignmentsV2.institutionId, authority.institutionId),
+          eq(shiftAssignmentsV2.hospitalId, authority.hospitalId),
+          eq(shiftAssignmentsV2.sectorId, authority.sectorId),
+          eq(shiftAssignmentsV2.shiftInstanceId, authority.shiftInstanceId),
+          eq(shiftAssignmentsV2.status, "OCUPADO"),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      )
+      .limit(1);
+    const currentAssignments = lockForShare
+      ? await currentAssignmentQuery.for("share")
+      : await currentAssignmentQuery;
+    if (currentAssignments[0]) {
+      invalid("Profissional voltou a estar alocado no plantão");
+    }
+  }
+
   const membershipQuery = db
     .select({ id: professionalInstitutions.id })
     .from(professionalInstitutions)
