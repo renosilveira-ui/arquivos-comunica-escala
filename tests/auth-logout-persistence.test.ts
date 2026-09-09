@@ -139,6 +139,7 @@ type AuthHarnessOptions = {
   }>;
   persistUser?: (user: { id: number }) => Promise<void>;
   persistReversibleDeleteCleanup?: () => Promise<void>;
+  removeSessionToken?: () => Promise<void>;
   admittedSessionUserId?: number | null;
   admittedSessionToken?: string | null;
   platform?: "web" | "ios";
@@ -294,6 +295,7 @@ async function renderAuthHarness(options: AuthHarnessOptions) {
   );
   const removeSessionToken = vi.fn(async () => {
     sequence.push("remove-session-token");
+    await options.removeSessionToken?.();
     admittedSessionUserId = null;
     admittedSessionToken = null;
     stagedExpectedUserId = null;
@@ -1226,7 +1228,7 @@ describe("persistência local do logout web", () => {
     expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
   });
 
-  it("DELETE 2xx com persistência local falha encerra A e reporta higiene parcial", async () => {
+  it("DELETE 2xx com falha transitória de persistência não alerta após a higiene final reparar a sessão", async () => {
     const persistenceError = new Error(
       "SecureStore indisponível após o DELETE",
     );
@@ -1239,17 +1241,9 @@ describe("persistência local do logout web", () => {
       },
     });
 
-    const error = await harness.auth
-      .deleteAccount("senha-atual")
-      .catch((caught) => caught);
-
-    expect(error).toMatchObject({
-      name: "AccountDeletionLocalCleanupError",
-      reason: {
-        code: "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED",
-        result: { ok: true, status: 200 },
-        cause: persistenceError,
-      },
+    await expect(harness.auth.deleteAccount("senha-atual")).resolves.toEqual({
+      ok: true,
+      status: 200,
     });
     expect(
       harness.deleteAccountWithReversibleSessionCleanup,
@@ -1266,6 +1260,52 @@ describe("persistência local do logout web", () => {
       1,
     );
     expect(harness.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+    expect(harness.logoutApi).not.toHaveBeenCalled();
+    expect(harness.revokeSessionTokenApi).not.toHaveBeenCalled();
+    expect(harness.meDetailedApi).not.toHaveBeenCalled();
+    expect(harness.resumeQueryCachePersistence).not.toHaveBeenCalled();
+  });
+
+  it("DELETE 2xx agrega a falha da prova e da higiene final sem reabrir a sessão", async () => {
+    const persistenceError = new Error(
+      "SecureStore indisponível após o DELETE",
+    );
+    const removalError = new Error("SecureStore ainda indisponível");
+    const harness = await renderAuthHarness({
+      platform: "ios",
+      logoutRequest: async () => undefined,
+      deleteRequest: async () => ({ ok: true, status: 200 }),
+      persistReversibleDeleteCleanup: async () => {
+        throw persistenceError;
+      },
+      removeSessionToken: async () => {
+        throw removalError;
+      },
+    });
+
+    const error = await harness.auth
+      .deleteAccount("senha-atual")
+      .catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      name: "AccountDeletionLocalCleanupError",
+      reason: {
+        name: "AggregateError",
+        errors: [
+          {
+            code: "ACCOUNT_DELETION_CONFIRMED_LOCAL_CLEANUP_FAILED",
+            result: { ok: true, status: 200 },
+            cause: persistenceError,
+          },
+          removalError,
+        ],
+      },
+    });
+    expect(harness.deleteAccountWithReversibleSessionCleanup).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
+    expect(harness.setUser).toHaveBeenCalledWith(null);
     expect(harness.logoutApi).not.toHaveBeenCalled();
     expect(harness.revokeSessionTokenApi).not.toHaveBeenCalled();
     expect(harness.meDetailedApi).not.toHaveBeenCalled();

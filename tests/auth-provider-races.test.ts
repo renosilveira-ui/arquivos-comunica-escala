@@ -828,7 +828,7 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
     );
   });
 
-  it("2xx seguido de falha da prova local mantém a fase confirmada e conclui toda a higiene", async () => {
+  it("2xx seguido de falha transitória da prova local não alerta após a higiene final reparar a sessão", async () => {
     const proofError = new Error("admission revogada sem readback");
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const harness = await renderRealAuthProvider({
@@ -837,15 +837,7 @@ describe("AuthProvider real — CAS temporal da sessão", () => {
       },
     });
 
-    const error = await harness.auth.logout().catch((caught) => caught);
-
-    expect(error).toMatchObject({
-      name: "SessionTerminationLocalCleanupError",
-      reason: {
-        code: "SESSION_REVOCATION_CONFIRMED_LOCAL_CLEANUP_FAILED",
-        cause: proofError,
-      },
-    });
+    await expect(harness.auth.logout()).resolves.toBeUndefined();
     expect(harness.revokeSessionTokenApi).toHaveBeenCalledTimes(1);
     expect(harness.removeSessionToken).toHaveBeenCalledTimes(1);
     expect(harness.setBadgeCountAsync).toHaveBeenCalledWith(0);
