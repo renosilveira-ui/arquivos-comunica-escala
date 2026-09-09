@@ -39,6 +39,8 @@ import {
   personalCalendarAlertOffsetsSchema,
   personalCalendarIntervalsOverlap,
   personalCalendarItemDraftSchema,
+  personalCalendarOccurrenceLocalDates,
+  personalCalendarOccurrenceLocalEnd,
   personalCalendarRecurrenceSchema,
   validatePersonalCalendarSeries,
   type GeneratedPersonalCalendarOccurrence,
@@ -86,6 +88,10 @@ export type PersonalCalendarOccurrenceView =
     availability: "BUSY" | "FREE";
     locationLabel: string | null;
     alertOffsets: number[];
+    localDateKeys: string[];
+    localEndDate: string | null;
+    localEndTime: string | null;
+    localEndExclusive: boolean;
   };
 
 export type PersonalCalendarShiftConflict = {
@@ -819,6 +825,7 @@ function occurrenceView(
   bundle: PersonalCalendarStoredBundle,
   occurrence: GeneratedPersonalCalendarOccurrence,
 ): PersonalCalendarOccurrenceView {
+  const localEnd = personalCalendarOccurrenceLocalEnd(bundle.item, occurrence);
   return {
     ...occurrence,
     itemId: bundle.id,
@@ -828,6 +835,13 @@ function occurrenceView(
     availability: bundle.item.availability,
     locationLabel: bundle.item.locationLabel,
     alertOffsets: bundle.alertOffsets,
+    localDateKeys: personalCalendarOccurrenceLocalDates(
+      bundle.item,
+      occurrence,
+    ),
+    localEndDate: localEnd?.date ?? null,
+    localEndTime: localEnd?.time ?? null,
+    localEndExclusive: localEnd?.exclusive ?? false,
   };
 }
 

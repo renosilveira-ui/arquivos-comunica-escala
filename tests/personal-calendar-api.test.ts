@@ -1057,6 +1057,10 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
       itemId: mine.item.id,
       title: "Meu compromisso",
       alertOffsets: [60],
+      localDateKeys: ["2026-09-10"],
+      localEndDate: "2026-09-10",
+      localEndTime: "10:00:00",
+      localEndExclusive: false,
       conflict: { hasConflict: true },
     });
     expect(JSON.stringify(window)).not.toContain("Segredo alheio");

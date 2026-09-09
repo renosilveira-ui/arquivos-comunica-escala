@@ -54,11 +54,11 @@ const SAMPLE_WEEKS = [
     0: [sh(111, "2026-09-07", "Manhã", "07:00", "13:00", "OCUPADO", ["G. Barreto"])],
     2: [sh(112, "2026-09-09", "Manhã", "07:00", "13:00", "OCUPADO", ["Você"], true), sh(113, "2026-09-09", "Tarde", "13:00", "19:00", "PENDENTE", ["N. Taketomi"]), sh(114, "2026-09-09", "Noite", "19:00", "07:00", "VAGO", []), sh(115, "2026-09-09", "Noite", "19:00", "07:00", "OCUPADO", ["L. Alencar"])],
     3: [sh(116, "2026-09-10", "Dia", "07:00", "19:00", "OCUPADO", ["T. Guedes"]), sh(117, "2026-09-10", "Noite", "19:00", "07:00", "VAGO", [])],
-    5: [sh(118, "2026-09-12", "Noite", "19:00", "07:00", "OCUPADO", ["G. Barreto", "L. Alencar"])],
+    5: [sh(118, "2026-09-12", "Noite", "19:00", "07:00", "OCUPADO", ["Germana Medeiros Mendes", "Viviany Gurgel de Aquino"])],
     6: [sh(119, "2026-09-13", "Manhã", "07:00", "13:00", "OCUPADO", ["Você"], true)],
   }),
 ];
-const SAMPLE_OFFERS = [{ id: 1, fromProfessionalName: "T. Guedes", shiftLabel: "Noite", date: "2026-09-09", timeRange: "19:00–07:00" }];
+const SAMPLE_OFFERS = [{ id: 1, fromProfessionalName: "T. Guedes", shiftLabel: "Noite", date: "2026-09-09", startAt: at("2026-09-09", "19:00"), timeRange: "19:00–07:00" }];
 const noRefresh = <RefreshControl refreshing={false} onRefresh={() => {}} />;
 
 export default function UiPreviewScreen() {
@@ -139,8 +139,25 @@ function Gallery() {
         </View>
 
         <View style={{ gap: theme.space[3] }}>
-          <SectionHeader title="Folha de mês" subtitle="Moldura navy com os dois furos, legenda dentro, hoje circulado, selecionado tingido, traços por plantão (até 3, depois +n)" />
-          <MonthAgenda weeks={SAMPLE_WEEKS} monthKey="2026-09" todayKey="2026-09-09" offers={SAMPLE_OFFERS} refreshControl={noRefresh} embedInPage onShiftPress={(id) => feedback.info(`Plantão ${id}`)} onOfferPress={() => feedback.info("Oferta")} />
+          <SectionHeader title="Folha de mês" subtitle="Moldura navy com os dois furos, legenda dentro, três turnos fixos, oferta em azul-real e compromisso/plantão em preto" />
+          <MonthAgenda
+            weeks={SAMPLE_WEEKS}
+            monthKey="2026-09"
+            todayKey="2026-09-09"
+            selectedDayKey="2026-09-09"
+            offers={SAMPLE_OFFERS}
+            holidays={[{ date: "2026-09-07", name: "Independência do Brasil", scope: "NATIONAL" }]}
+            personalOccurrences={[]}
+            scheduleState="READY"
+            personalState="READY"
+            refreshControl={noRefresh}
+            embedInPage
+            onSelectDay={() => {}}
+            onAddPersonalItem={() => feedback.info("Adicionar item privado")}
+            onPersonalItemPress={() => {}}
+            onShiftPress={(id) => feedback.info(`Plantão ${id}`)}
+            onOfferPress={() => feedback.info("Oferta")}
+          />
         </View>
 
         <View style={{ gap: theme.space[3] }}>

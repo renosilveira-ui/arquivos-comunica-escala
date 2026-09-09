@@ -8,12 +8,7 @@
 //   - carregando = skeleton com a forma do conteúdo, não spinner.
 
 import { useMemo, type ReactElement } from "react";
-import {
-  ScrollView,
-  Text,
-  View,
-  type RefreshControlProps,
-} from "react-native";
+import { ScrollView, Text, View, type RefreshControlProps } from "react-native";
 import { theme } from "@/lib/theme";
 import {
   findMobileAgendaDay,
@@ -27,6 +22,8 @@ interface Props {
   weeks: MobileAgendaWeek[];
   selectedDayKey: string;
   loading?: boolean;
+  /** Evita exibir um falso "sem plantão" quando a consulta falhou. */
+  suppressScheduleContent?: boolean;
   refreshControl: ReactElement<RefreshControlProps>;
   onShiftPress: (id: number) => void;
   /** Conteúdo fixo acima da lista (ex.: faixa "Próximo plantão"). */
@@ -37,6 +34,7 @@ export function MobileDayList({
   weeks,
   selectedDayKey,
   loading = false,
+  suppressScheduleContent = false,
   refreshControl,
   onShiftPress,
   header,
@@ -60,7 +58,7 @@ export function MobileDayList({
     >
       {header}
 
-      {loading ? (
+      {suppressScheduleContent ? null : loading ? (
         <SkeletonList count={3} />
       ) : selectedDay ? (
         <DayBlock day={selectedDay} onShiftPress={onShiftPress} />

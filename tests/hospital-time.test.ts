@@ -5,6 +5,7 @@ import {
   formatHospitalDate,
   formatHospitalTime,
   formatHospitalTimeRange,
+  hospitalDateKey,
 } from "../lib/hospital-time";
 
 const HOSPITAL_TIME_UI = [
@@ -28,6 +29,7 @@ describe("hospital-time", () => {
     expect(formatHospitalDate(new Date("2026-09-02T10:00:00.000-03:00"))).toBe(
       "02/09/2026",
     );
+    expect(hospitalDateKey("2026-09-11T01:30:00.000Z")).toBe("2026-09-10");
   });
 
   it("buildShiftTimestamps grava instante UTC do horário de parede", () => {

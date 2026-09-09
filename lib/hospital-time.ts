@@ -31,6 +31,12 @@ export function formatHospitalDate(date: Date | string): string {
   return `${day}/${month}/${w.getUTCFullYear()}`;
 }
 
+/** YYYY-MM-DD no relógio operacional do hospital. */
+export function hospitalDateKey(date: Date | string): string {
+  const w = asWallClock(toDate(date));
+  return `${w.getUTCFullYear()}-${String(w.getUTCMonth() + 1).padStart(2, "0")}-${String(w.getUTCDate()).padStart(2, "0")}`;
+}
+
 /** Faixa HH:mm–HH:mm no relógio do hospital. */
 export function formatHospitalTimeRange(
   startAt: Date | string,

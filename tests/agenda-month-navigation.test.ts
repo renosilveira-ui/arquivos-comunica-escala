@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
+  agendaHolidayYearsForWindow,
   buildAgendaMonthPickerOptions,
   calendarOpenBaseHint,
   calendarOpenConfirmTitle,
@@ -51,6 +52,23 @@ describe("navegação mensal da Agenda", () => {
   it("avança o censo diário inclusive na virada do mês e do ano", () => {
     expect(stepDayKey("2026-09-30", 1)).toBe("2026-10-01");
     expect(stepDayKey("2027-01-01", -1)).toBe("2026-12-31");
+  });
+
+  it("consulta também o ano adjacente quando a folha cruza dezembro/janeiro", () => {
+    expect(
+      agendaHolidayYearsForWindow(
+        "2026-12",
+        "2026-11-30",
+        "2027-01-10",
+      ),
+    ).toEqual({ primaryYear: 2026, adjacentYear: 2027 });
+    expect(
+      agendaHolidayYearsForWindow(
+        "2026-09",
+        "2026-08-31",
+        "2026-10-11",
+      ),
+    ).toEqual({ primaryYear: 2026, adjacentYear: null });
   });
 
   it("no primeiro mês a copy não pede a escala anterior", () => {

@@ -1,9 +1,10 @@
 # Contrato V1 — Agenda pessoal
 
-Status desta frente: **fundação persistente, motor temporal e API account-wide
-ativos no código**. O servidor oferece CRUD privado, consulta por janela e
-prévia de conflitos; ainda não há componente mobile, worker de lembretes,
-integração externa, deploy ou migration em ambiente real nesta entrega.
+Status desta frente: **fundação persistente, motor temporal, API account-wide e
+interface mobile ativos no código**. O servidor oferece CRUD privado, consulta
+por janela e prévia de conflitos; a tela Agenda permite criar, editar e excluir
+itens. Ainda não há worker de lembretes, integração externa, deploy ou migration
+em ambiente real nesta entrega.
 
 ## Limites do domínio
 
@@ -15,8 +16,8 @@ integração externa, deploy ou migration em ambiente real nesta entrega.
   institucional nunca autorizam leitura de compromisso privado.
 - `CROSS_SCHEDULE_ROSTER_VIEW` governa somente a leitura institucional de
   escalas. Não amplia nem restringe a Agenda pessoal.
-- O cliente nunca envia um `ownerUserId` confiável. Writers futuros precisam
-  derivá-lo de `ctx.user.id` por `sessionProcedure`.
+- O cliente nunca envia um `ownerUserId` confiável. Os writers o derivam de
+  `ctx.user.id` por `sessionProcedure`.
 
 ## Entidades
 
@@ -28,12 +29,12 @@ Registro privado com três formatos mutuamente exclusivos:
 - `REMINDER`: data ou instante pontual; nunca bloqueia horário.
 - `BIRTHDAY`: dia/mês, ano opcional, dia inteiro; nunca bloqueia horário.
 
-Disponibilidade é obrigatória na persistência: writers futuros deverão gravar
+Disponibilidade é obrigatória na persistência: os writers gravam
 `BUSY` ou `FREE` para compromisso e sempre `FREE` para lembrete/aniversário. O
 banco não possui um default ambíguo capaz de transformar silenciosamente um
 tipo no outro.
 
-`client_mutation_id` é único por conta e dará idempotência ao create. Título,
+`client_mutation_id` é único por conta e torna o create idempotente. Título,
 local e anotações são dados pessoais e não podem ir para logs operacionais,
 push de gestor ou cache persistente do React Query.
 
@@ -66,6 +67,10 @@ semana, três dias, um dia, quatro horas, uma hora e trinta minutos) e valores
 customizados. A regra não é uma entrega: outbox, tentativa e recibo serão
 estruturas separadas. O owner é preservado por FK composta.
 
+Avisos da Agenda pessoal serão lembretes simples. Clima, trânsito e tempo de
+deslocamento pertencem exclusivamente ao aviso institucional pré-plantão e não
+podem ser acionados por compromisso, lembrete ou aniversário.
+
 ### `personal_calendar_occurrences`
 
 Projeção UTC materializada para consulta, conflito e alertas. Cada ocorrência
@@ -83,7 +88,7 @@ ocorrência obsoleta ou apagada.
 Uma ocorrência de série pode ser cancelada ou substituída. Uma substituição
 aponta para outro item do mesmo owner; não copia conteúdo privado para JSON.
 
-## Regras temporais futuras
+## Regras temporais
 
 - O item guarda data/hora civil e fuso IANA.
 - Somente o motor do servidor converte a ocorrência para UTC.
@@ -139,8 +144,10 @@ aponta para outro item do mesmo owner; não copia conteúdo privado para JSON.
 5. Concluído: leitor canônico de plantões próprios e testes entre instituições.
 6. Pendente: outbox pessoal sem `institution_id`, worker durável, retry, lease, dedupe e
    revalidação da conta antes de qualquer push.
-7. Pendente: UI e integrações externas resilientes quando agenda, feriados
-   ou clima estão indisponíveis.
+7. Concluído: UI privada e resiliente; falha da escala, da Agenda pessoal ou
+   dos feriados tem estado próprio e não se apresenta como agenda vazia.
+8. Pendente: integrações externas de Google Calendar e Google Maps,
+   condicionadas a consentimento e credenciais próprias.
 
 ## Integrações futuras
 
@@ -148,8 +155,10 @@ aponta para outro item do mesmo owner; não copia conteúdo privado para JSON.
   cursor incremental e idempotência. Nenhuma credencial pertence ao item.
 - Google Maps: Place ID e coordenadas podem preencher os campos já previstos;
   o texto do local continua sendo a apresentação canônica para o usuário.
-- WeatherKit e feriados são dados auxiliares de leitura. Falha desses
-  provedores nunca impede consultar ou editar a Agenda pessoal.
+- Feriados são dados auxiliares de leitura. Falha dessa consulta nunca impede
+  consultar ou editar a Agenda pessoal.
+- Clima, trânsito e deslocamento ficam fora deste domínio. Eles poderão compor
+  exclusivamente o aviso institucional pré-plantão, nunca itens pessoais.
 
 O núcleo da Agenda pessoal é basal. Esta fundação não altera a classificação
 comercial da sincronização Google documentada para uma etapa futura.

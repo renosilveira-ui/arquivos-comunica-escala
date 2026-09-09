@@ -15,6 +15,7 @@
 
 import type { ReactNode } from "react";
 import { Text, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
+import type { LucideIcon } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 
 /** Numeral tabular: hora, duração, contagem, dia do mês. */
@@ -73,6 +74,8 @@ export interface LegendItem {
   color: string;
   /** Contraste externo quando a própria cor coincide com a faixa navy. */
   backdropColor?: string;
+  marker?: "bar" | "dot";
+  Icon?: LucideIcon;
 }
 
 /** Faixa navy com a legenda — vive DENTRO da moldura, no topo. */
@@ -91,25 +94,29 @@ export function CalendarLegend({ items, trailing }: { items: LegendItem[]; trail
     >
       {items.map((item) => (
         <View key={item.label} style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] }}>
-          <View
-            style={{
-              width: item.backdropColor ? 13 : 9,
-              height: item.backdropColor ? 8 : 4,
-              padding: item.backdropColor ? 2 : 0,
-              borderRadius: 4,
-              backgroundColor: item.backdropColor ?? item.color,
-            }}
-          >
-            {item.backdropColor ? (
-              <View
-                style={{
-                  flex: 1,
-                  borderRadius: 2,
-                  backgroundColor: item.color,
-                }}
-              />
-            ) : null}
-          </View>
+          {item.Icon ? (
+            <item.Icon size={13} color={item.color} strokeWidth={2.4} />
+          ) : (
+            <View
+              style={{
+                width: item.marker === "dot" ? 8 : item.backdropColor ? 15 : 13,
+                height: item.marker === "dot" ? 8 : item.backdropColor ? 8 : 4,
+                padding: item.backdropColor ? 2 : 0,
+                borderRadius: item.marker === "dot" ? 4 : 3,
+                backgroundColor: item.backdropColor ?? item.color,
+              }}
+            >
+              {item.backdropColor ? (
+                <View
+                  style={{
+                    flex: 1,
+                    borderRadius: item.marker === "dot" ? 4 : 2,
+                    backgroundColor: item.color,
+                  }}
+                />
+              ) : null}
+            </View>
+          )}
           <Text style={{ ...theme.text.eyebrow, letterSpacing: 0.5, fontWeight: theme.weight.semibold, color: theme.colors.onDark.textSoft }}>
             {item.label}
           </Text>

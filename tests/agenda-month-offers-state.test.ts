@@ -180,7 +180,8 @@ describe("Agenda mensal não colapsa listAvailable em []", () => {
     expect(agenda).toContain('offersSurface.kind === "ERROR"');
     expect(agenda).toContain("QueryErrorState");
     expect(agenda).toContain("offers={dayOffers}");
-    expect(month).toContain("hasOffer");
+    expect(month).toContain("presentation.periods");
+    expect(month).toContain('signal === "OFFER"');
     expect(AGENDA_MONTH_OFFERS_ERROR_TITLE).not.toMatch(/nenhuma oferta/i);
     expect(AGENDA_MONTH_OFFERS_RETRY_LABEL).toBe("Tentar novamente");
   });

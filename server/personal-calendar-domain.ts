@@ -610,6 +610,42 @@ export type GeneratedPersonalCalendarOccurrence = {
   allDay: boolean;
 };
 
+/**
+ * Dias civis em que a ocorrência deve aparecer na interface. O cálculo usa o
+ * fuso e a regra civil do item, nunca o fuso do aparelho que está renderizando.
+ */
+export function personalCalendarOccurrenceLocalDates(
+  item: PersonalCalendarItemDraft,
+  occurrence: Pick<GeneratedPersonalCalendarOccurrence, "originalLocalDate">,
+): string[] {
+  if (item.kind !== "APPOINTMENT") return [occurrence.originalLocalDate];
+
+  const sourceSpan =
+    dateKeyToOrdinal(item.endLocalDate) - dateKeyToOrdinal(item.startLocalDate);
+  const finalOffset =
+    item.allDay || item.endLocalTime === "00:00:00"
+      ? sourceSpan - 1
+      : sourceSpan;
+  return Array.from({ length: finalOffset + 1 }, (_, offset) =>
+    addCivilDays(occurrence.originalLocalDate, offset),
+  );
+}
+
+/** Fim civil correspondente à ocorrência, deslocado junto com a série. */
+export function personalCalendarOccurrenceLocalEnd(
+  item: PersonalCalendarItemDraft,
+  occurrence: Pick<GeneratedPersonalCalendarOccurrence, "originalLocalDate">,
+): { date: string; time: string | null; exclusive: boolean } | null {
+  if (item.kind !== "APPOINTMENT") return null;
+  const sourceSpan =
+    dateKeyToOrdinal(item.endLocalDate) - dateKeyToOrdinal(item.startLocalDate);
+  return {
+    date: addCivilDays(occurrence.originalLocalDate, sourceSpan),
+    time: item.allDay ? null : item.endLocalTime,
+    exclusive: item.allDay,
+  };
+}
+
 export type PersonalCalendarTimeInterval = {
   startsAtUtc: Date;
   endsAtUtc: Date;

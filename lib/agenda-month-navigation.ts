@@ -32,6 +32,27 @@ export function stepDayKey(dayKey: string, delta: number): string {
   ).padStart(2, "0")}`;
 }
 
+/**
+ * A folha mensal tem 42 dias e pode atravessar uma virada de ano. Retorna o
+ * ano do mês e, quando necessário, o único ano adjacente da grade.
+ */
+export function agendaHolidayYearsForWindow(
+  monthKey: string,
+  fromDate: string,
+  toDate: string,
+): { primaryYear: number; adjacentYear: number | null } {
+  const primaryYear = Number(monthKey.slice(0, 4));
+  const boundaryYears = [
+    Number(fromDate.slice(0, 4)),
+    Number(toDate.slice(0, 4)),
+  ];
+  return {
+    primaryYear,
+    adjacentYear:
+      boundaryYears.find((year) => year !== primaryYear) ?? null,
+  };
+}
+
 export function sourceMonthForCalendarTarget(targetMonth: string): string {
   return previousMonthKey(targetMonth);
 }

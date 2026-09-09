@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   findMobileAgendaDay,
   type MobileAgendaWeek,
@@ -46,9 +47,7 @@ describe("Lista diária da Agenda", () => {
 
     expect(day?.date).toBe("2026-09-10");
     expect(
-      day?.groups.map(
-        (group) => `${group.hospitalName} · ${group.sectorName}`,
-      ),
+      day?.groups.map((group) => `${group.hospitalName} · ${group.sectorName}`),
     ).toEqual([
       "Hospital A · Centro Cirúrgico 1",
       "Hospital A · Centro Cirúrgico 2",
@@ -58,5 +57,15 @@ describe("Lista diária da Agenda", () => {
 
   it("não substitui um dia ausente por dados de outra data", () => {
     expect(findMobileAgendaDay(weeks, "2026-09-11")).toBeNull();
+  });
+
+  it("não declara agenda vazia quando a consulta de plantões falhou", () => {
+    const component = readFileSync(
+      "components/agenda/MobileDayList.tsx",
+      "utf8",
+    );
+
+    expect(component).toContain("suppressScheduleContent ? null");
+    expect(component).toContain("Nenhum plantão neste dia.");
   });
 });

@@ -3,13 +3,14 @@
 //
 // Barra de 4 px à esquerda + fundo tinted pelo traje (lib/shift-visual.ts),
 // nome do(s) profissional(is), chip de estado com TEXTO + ícone e a linha
-// de horário em numeral tabular. Alvo de 58 pt: a lista é operada com uma
-// mão, no corredor.
+// de horário em numeral tabular. Cada profissional ocupa sua própria linha;
+// 58 pt é o mínimo, e o cartão cresce sem esconder nomes da equipe.
 
 import { Pressable, Text, View } from "react-native";
 import { theme } from "@/lib/theme";
 import { shiftCapacityLabel } from "@/lib/shift-capacity";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import { shiftProfessionalNameLines } from "@/lib/shift-professional-presentation";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import type { ShiftStatusContext } from "@/lib/shift-status";
 import { numeral } from "./CalendarSheet";
@@ -45,14 +46,12 @@ export function ShiftRowCard({
 }) {
   const v = shiftVisualFor(shift.status, { isMine: shift.isMine, context });
   const Icon = v.Icon;
-  const names =
-    shift.isMine && shift.professionalNames.length <= 1
-      ? "Você"
-      : shift.professionalNames.length > 0
-        ? shift.professionalNames.join(", ")
-        : shift.status.toUpperCase() === "VAGO"
-          ? "Sem profissional"
-          : "— sem plantonista —";
+  const names = shiftProfessionalNameLines(
+    shift,
+    shift.status.toUpperCase() === "VAGO"
+      ? "Sem profissional"
+      : "— sem plantonista —",
+  );
   const meta = `${formatTimeRange(shift.startAt, shift.endAt)} · ${shift.label}${shift.isMine ? " · você" : ""}`;
 
   return (
@@ -60,7 +59,7 @@ export function ShiftRowCard({
       onPress={onPress}
       disabled={!onPress}
       accessibilityRole={onPress ? "button" : undefined}
-      accessibilityLabel={`${shift.label}, ${formatTimeRange(shift.startAt, shift.endAt)}, ${v.label}${shift.isMine ? ", seu plantão" : ""}`}
+      accessibilityLabel={`${shift.label}, ${formatTimeRange(shift.startAt, shift.endAt)}, ${names.join(", ")}, ${v.label}${shift.isMine ? ", seu plantão" : ""}`}
       style={({ pressed }) => ({
         minHeight: 58,
         backgroundColor: v.bg,
@@ -82,19 +81,22 @@ export function ShiftRowCard({
           gap: theme.space[2] + 1,
         }}
       >
-        <Text
-          numberOfLines={1}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            ...theme.text.titleSm,
-            fontSize: 15,
-            fontWeight: v.nameWeight,
-            color: v.nameFg,
-          }}
-        >
-          {names}
-        </Text>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          {names.map((name, index) => (
+            <Text
+              key={`${name}:${index}`}
+              numberOfLines={1}
+              style={{
+                ...theme.text.titleSm,
+                fontSize: 15,
+                fontWeight: v.nameWeight,
+                color: v.nameFg,
+              }}
+            >
+              {name}
+            </Text>
+          ))}
+        </View>
         <View
           style={{
             flexDirection: "row",

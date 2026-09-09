@@ -20,7 +20,14 @@ import {
 } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { MonthAgenda, type DayOffer } from "@/components/agenda/MonthAgenda";
+import {
+  MonthAgenda,
+  PersonalAgendaDaySummary,
+  PersonalAgendaOccurrenceCard,
+  type AgendaHoliday,
+  type DayOffer,
+} from "@/components/agenda/MonthAgenda";
+import { PersonalAgendaEditor } from "@/components/agenda/PersonalAgendaEditor";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { ScreenContainer } from "@/components/ui/ScreenContainer";
 import { useAuth } from "@/hooks/use-auth";
@@ -52,12 +59,14 @@ import {
   agendaScheduleContextId,
   type ScheduleContextOption,
 } from "@/lib/schedule-context-selection";
-import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import { formatHospitalTimeRange, hospitalDateKey } from "@/lib/hospital-time";
 import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
 import { shiftCapacityLabel } from "@/lib/shift-capacity";
+import { shiftProfessionalNameLines } from "@/lib/shift-professional-presentation";
 import { AppButton } from "@/components/ui/AppButton";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
+  agendaHolidayYearsForWindow,
   buildAgendaMonthPickerOptions,
   clampDayKeyToMonth,
   countShiftsInMonth,
@@ -65,6 +74,12 @@ import {
   stepDayKey,
 } from "@/lib/agenda-month-navigation";
 import { openMonthShiftsDescription } from "@/lib/open-month-shifts";
+import { personalOccurrencesOnDay } from "@/lib/personal-agenda-presentation";
+import {
+  closePersonalAgendaEditorSession,
+  createPersonalAgendaEditorTarget,
+  type PersonalAgendaEditorTarget,
+} from "@/lib/personal-agenda-editor-state";
 import {
   canCreateInstitutionHospital,
   createHospitalEmptyDescription,
@@ -270,6 +285,7 @@ export default function AgendaScreen() {
     : viewMode === "panorama";
   // Grade hospital × dia (semanas): só no desktop.
   const isHospitalGrid = isDesktop && viewMode === "panorama";
+  const isMobileDayList = !isDesktop && viewMode === "lista";
   // No celular, Lista e Panorama são duas apresentações da mesma competência
   // mensal. Isso evita trocar de mês ou refazer a consulta ao alternar a vista.
   const usesMonthNavigation = !isDesktop || isMonthSheet;
@@ -279,6 +295,29 @@ export default function AgendaScreen() {
   }, [anchorMonthKey]);
   const queryStartDate = usesMonthNavigation ? panoramaStart : anchorWeekStart;
   const queryWeeks = usesMonthNavigation ? 6 : weeksCount;
+  const visibleMonthKey = usesMonthNavigation
+    ? anchorMonthKey
+    : monthKeyOf(new Date(`${anchorWeekStart}T00:00:00`));
+  const personalWindowStart = useMemo(() => {
+    const [year, month] = visibleMonthKey.split("-").map(Number);
+    return toDateKey(startOfWeekMon(new Date(year, month - 1, 1)));
+  }, [visibleMonthKey]);
+  const personalWindowEnd = useMemo(
+    () => stepDayKey(personalWindowStart, 41),
+    [personalWindowStart],
+  );
+  const { primaryYear: holidayYear, adjacentYear: adjacentHolidayYear } =
+    useMemo(
+      () =>
+        agendaHolidayYearsForWindow(
+          visibleMonthKey,
+          personalWindowStart,
+          personalWindowEnd,
+        ),
+      [personalWindowEnd, personalWindowStart, visibleMonthKey],
+    );
+  const [personalEditorTarget, setPersonalEditorTarget] =
+    useState<PersonalAgendaEditorTarget | null>(null);
   const scheduleContext = useScheduleContext({
     userId: user?.id,
     institutionId: activeInstitutionId,
@@ -370,6 +409,89 @@ export default function AgendaScreen() {
   }, [queryStartDate, data?.weeks, queryWeeks]);
 
   const {
+    data: personalCalendarData,
+    isLoading: personalCalendarLoading,
+    isError: personalCalendarIsError,
+    error: personalCalendarError,
+    refetch: refetchPersonalCalendar,
+  } = trpc.personalCalendar.listWindow.useQuery(
+    { fromDate: personalWindowStart, toDate: personalWindowEnd },
+    {
+      enabled: !!user?.id,
+      retry: 2,
+      staleTime: 30_000,
+    },
+  );
+  const {
+    data: primaryHolidayData,
+    isError: primaryHolidayIsError,
+    error: primaryHolidayError,
+    refetch: refetchPrimaryHolidays,
+  } = trpc.calendarAuxiliary.listHolidays.useQuery(
+    { year: holidayYear, countryCode: "BR", stateCode: "CE" },
+    {
+      enabled: !!user?.id && Number.isInteger(holidayYear),
+      retry: 1,
+      staleTime: 24 * 60 * 60 * 1_000,
+    },
+  );
+  const {
+    data: adjacentHolidayData,
+    isError: adjacentHolidayIsError,
+    error: adjacentHolidayError,
+    refetch: refetchAdjacentHolidays,
+  } = trpc.calendarAuxiliary.listHolidays.useQuery(
+    {
+      year: adjacentHolidayYear ?? holidayYear,
+      countryCode: "BR",
+      stateCode: "CE",
+    },
+    {
+      enabled:
+        !!user?.id &&
+        adjacentHolidayYear !== null &&
+        Number.isInteger(adjacentHolidayYear),
+      retry: 1,
+      staleTime: 24 * 60 * 60 * 1_000,
+    },
+  );
+  const holidays = useMemo(() => {
+    const unique = new Map<string, AgendaHoliday>();
+    for (const holiday of [
+      ...(primaryHolidayData?.holidays ?? []),
+      ...(adjacentHolidayData?.holidays ?? []),
+    ]) {
+      unique.set(`${holiday.date}:${holiday.scope}:${holiday.name}`, holiday);
+    }
+    return [...unique.values()];
+  }, [adjacentHolidayData?.holidays, primaryHolidayData?.holidays]);
+  const holidayIsError = primaryHolidayIsError || adjacentHolidayIsError;
+  const holidayError = primaryHolidayError ?? adjacentHolidayError;
+  const refetchHolidays = () =>
+    Promise.all([
+      refetchPrimaryHolidays(),
+      ...(adjacentHolidayYear === null ? [] : [refetchAdjacentHolidays()]),
+    ]);
+  const selectedPersonalOccurrences = useMemo(
+    () =>
+      personalOccurrencesOnDay(
+        personalCalendarData?.occurrences ?? [],
+        selectedDayKey,
+      ),
+    [personalCalendarData?.occurrences, selectedDayKey],
+  );
+  const selectedHolidays = useMemo(
+    () => holidays.filter((holiday) => holiday.date === selectedDayKey),
+    [holidays, selectedDayKey],
+  );
+  const personalCalendarState = personalCalendarData
+    ? "READY"
+    : personalCalendarIsError
+      ? "ERROR"
+      : "LOADING";
+  const scheduleState = data ? "READY" : isError ? "ERROR" : "LOADING";
+
+  const {
     data: availableSwaps,
     isLoading: availableSwapsLoading,
     isPending: availableSwapsPending,
@@ -404,7 +526,8 @@ export default function AgendaScreen() {
         id: sw.id,
         fromProfessionalName: sw.fromProfessional?.name ?? "Colega",
         shiftLabel: sw.fromShift?.label ?? "Plantão",
-        date: toDateKey(start),
+        date: hospitalDateKey(start),
+        startAt: sw.fromShift?.startAt ?? start,
         timeRange: formatHospitalTimeRange(start, end),
       };
     });
@@ -416,9 +539,6 @@ export default function AgendaScreen() {
     [myInstitutions, activeInstitutionId],
   );
 
-  const visibleMonthKey = usesMonthNavigation
-    ? anchorMonthKey
-    : monthKeyOf(new Date(`${anchorWeekStart}T00:00:00`));
   const selectedMonthShiftCount = useMemo(
     () => countShiftsInMonth(data?.weeks ?? [], visibleMonthKey),
     [data?.weeks, visibleMonthKey],
@@ -462,9 +582,21 @@ export default function AgendaScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([refetch(), scheduleContext.refetch()]);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setRefreshing(false);
+    try {
+      const refreshes: Promise<unknown>[] = [
+        refetch(),
+        scheduleContext.refetch(),
+        refetchPersonalCalendar(),
+        refetchHolidays(),
+      ];
+      if (isMonthSheet) refreshes.push(refetchAvailableSwaps());
+      await Promise.allSettled(refreshes);
+      void Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success,
+      ).catch(() => undefined);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const stepMonth = (delta: number) => {
@@ -499,6 +631,27 @@ export default function AgendaScreen() {
     setAnchorMonthKey(nextDayKey.slice(0, 7));
     setAnchorWeekStart(
       toDateKey(startOfWeekMon(new Date(`${nextDayKey}T12:00:00`))),
+    );
+  };
+
+  const selectCalendarDay = (dateKey: string) => {
+    setSelectedDayKey(dateKey);
+    if (dateKey.slice(0, 7) === anchorMonthKey) return;
+    setAnchorMonthKey(dateKey.slice(0, 7));
+    setAnchorWeekStart(
+      toDateKey(startOfWeekMon(new Date(`${dateKey}T12:00:00`))),
+    );
+  };
+
+  const openPersonalEditor = (dateKey: string, itemId?: number) => {
+    setPersonalEditorTarget(
+      createPersonalAgendaEditorTarget({ dateKey, itemId }),
+    );
+  };
+
+  const closePersonalEditor = (sessionId: string) => {
+    setPersonalEditorTarget((current) =>
+      closePersonalAgendaEditorSession(current, sessionId),
     );
   };
 
@@ -812,47 +965,47 @@ export default function AgendaScreen() {
                   }}
                 />
               ) : (
-              <ManagerMonthActions
-                monthKey={visibleMonthKey}
-                onEdit={() => selectMonth(visibleMonthKey)}
-              >
-                <OpenMonthShiftsButton
+                <ManagerMonthActions
                   monthKey={visibleMonthKey}
-                  monthName={monthNamePt(visibleMonthKey)}
-                  selectedContext={{
-                    hospitalId: selectedManagerContext.hospitalId,
-                    sectorId: selectedManagerContext.sectorId,
-                    scheduleContextId: selectedManagerContext.id,
-                  }}
-                  onChanged={() => {
-                    refetch();
-                  }}
-                />
-                <CreateSectorScaleButton
-                  onCreated={({ scheduleContextId }) => {
-                    scheduleContext.selectContext(scheduleContextId);
-                    void scheduleContext.refetch();
-                    refetch();
-                  }}
-                />
-                {canCreateHospital ? (
-                  <CreateHospitalButton
-                    onCreated={() => {
+                  onEdit={() => selectMonth(visibleMonthKey)}
+                >
+                  <OpenMonthShiftsButton
+                    monthKey={visibleMonthKey}
+                    monthName={monthNamePt(visibleMonthKey)}
+                    selectedContext={{
+                      hospitalId: selectedManagerContext.hospitalId,
+                      sectorId: selectedManagerContext.sectorId,
+                      scheduleContextId: selectedManagerContext.id,
+                    }}
+                    onChanged={() => {
+                      refetch();
+                    }}
+                  />
+                  <CreateSectorScaleButton
+                    onCreated={({ scheduleContextId }) => {
+                      scheduleContext.selectContext(scheduleContextId);
                       void scheduleContext.refetch();
                       refetch();
                     }}
                   />
-                ) : null}
-                <ManagerActionsMenu
-                  variant="strip"
-                  institutionId={activeInstitutionId ?? null}
-                  period={{ kind: "month", monthKey: visibleMonthKey }}
-                  selectedScheduleContext={selectedManagerContext}
-                  onChanged={() => {
-                    refetch();
-                  }}
-                />
-              </ManagerMonthActions>
+                  {canCreateHospital ? (
+                    <CreateHospitalButton
+                      onCreated={() => {
+                        void scheduleContext.refetch();
+                        refetch();
+                      }}
+                    />
+                  ) : null}
+                  <ManagerActionsMenu
+                    variant="strip"
+                    institutionId={activeInstitutionId ?? null}
+                    period={{ kind: "month", monthKey: visibleMonthKey }}
+                    selectedScheduleContext={selectedManagerContext}
+                    onChanged={() => {
+                      refetch();
+                    }}
+                  />
+                </ManagerMonthActions>
               )
             ) : null
           ) : canCreateShift ? (
@@ -898,68 +1051,74 @@ export default function AgendaScreen() {
         {/* Próximo plantão: na Lista. No Panorama do celular a folha de
             mês é a pergunta — o card aqui empurrava a escala para altura 0. */}
         {isMonthSheet && !isDesktop ? null : (
-        <View style={{ marginBottom: theme.space[3] }}>
-          <NextShiftCard
-            queryState={nextShiftState}
-            shift={nextShiftState === "SUCCESS" ? nextShift : null}
-            needsConfirmation={
-              nextShiftState === "SUCCESS" &&
-              !!nextShift &&
-              pendingConfirmation?.shiftInstanceId === nextShift.id
-            }
-            onConfirm={
-              nextShiftState === "SUCCESS" && pendingConfirmation
-                ? () =>
-                    router.push({
-                      pathname: "/confirm-duty" as any,
-                      params: { token: pendingConfirmation.confirmationToken },
-                    })
-                : undefined
-            }
-            onSwap={
-              nextShiftState === "SUCCESS" && nextShift && !nextShift.inProgress
-                ? () =>
-                    router.push({
-                      pathname: "/request-swap" as any,
-                      params: { fromShiftId: String(nextShift.id) },
-                    })
-                : undefined
-            }
-            onOpenComunica={
-              nextShiftState === "SUCCESS" &&
-              nextShift?.inProgress &&
-              activeInstitutionId !== null
-                ? () => {
-                    if (Platform.OS !== "web")
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    ssoLaunch();
-                  }
-                : undefined
-            }
-            onPress={
-              nextShiftState === "SUCCESS" && nextShift
-                ? () =>
-                    router.push({
-                      pathname: "/shift-details",
-                      params: { id: String(nextShift.id) },
-                    })
-                : undefined
-            }
-            onRetry={
-              nextShiftState === "ERROR"
-                ? () => {
-                    void refetchNextShift();
-                  }
-                : undefined
-            }
-          />
-        </View>
+          <View style={{ marginBottom: theme.space[3] }}>
+            <NextShiftCard
+              queryState={nextShiftState}
+              shift={nextShiftState === "SUCCESS" ? nextShift : null}
+              needsConfirmation={
+                nextShiftState === "SUCCESS" &&
+                !!nextShift &&
+                pendingConfirmation?.shiftInstanceId === nextShift.id
+              }
+              onConfirm={
+                nextShiftState === "SUCCESS" && pendingConfirmation
+                  ? () =>
+                      router.push({
+                        pathname: "/confirm-duty" as any,
+                        params: {
+                          token: pendingConfirmation.confirmationToken,
+                        },
+                      })
+                  : undefined
+              }
+              onSwap={
+                nextShiftState === "SUCCESS" &&
+                nextShift &&
+                !nextShift.inProgress
+                  ? () =>
+                      router.push({
+                        pathname: "/request-swap" as any,
+                        params: { fromShiftId: String(nextShift.id) },
+                      })
+                  : undefined
+              }
+              onOpenComunica={
+                nextShiftState === "SUCCESS" &&
+                nextShift?.inProgress &&
+                activeInstitutionId !== null
+                  ? () => {
+                      if (Platform.OS !== "web")
+                        Haptics.impactAsync(
+                          Haptics.ImpactFeedbackStyle.Medium,
+                        );
+                      ssoLaunch();
+                    }
+                  : undefined
+              }
+              onPress={
+                nextShiftState === "SUCCESS" && nextShift
+                  ? () =>
+                      router.push({
+                        pathname: "/shift-details",
+                        params: { id: String(nextShift.id) },
+                      })
+                  : undefined
+              }
+              onRetry={
+                nextShiftState === "ERROR"
+                  ? () => {
+                      void refetchNextShift();
+                    }
+                  : undefined
+              }
+            />
+          </View>
         )}
 
         {/* Conteúdo */}
-        {isLoading && !data ? (
+        {!isMonthSheet && !isMobileDayList && isLoading && !data ? (
           <SkeletonList count={3} />
-        ) : isError && !data ? (
+        ) : !isMonthSheet && !isMobileDayList && isError && !data ? (
           // Falha na consulta NÃO pode renderizar a grade vazia como se
           // não houvesse plantões. QueryErrorState classifica ACCESS /
           // NETWORK / SERVICE — 403 e 500 não podem virar "verifique a
@@ -971,7 +1130,9 @@ export default function AgendaScreen() {
               void refetch();
             }}
           />
-        ) : scope === "geral" &&
+        ) : !isMonthSheet &&
+          !isMobileDayList &&
+          scope === "geral" &&
           !scheduleContext.isSelectionHydrating &&
           !scheduleContext.isError &&
           scheduleContext.contexts.length === 0 ? (
@@ -984,7 +1145,10 @@ export default function AgendaScreen() {
               refetch();
             }}
           />
-        ) : data && selectedMonthShiftCount === 0 && !isMonthSheet ? (
+        ) : data &&
+          selectedMonthShiftCount === 0 &&
+          !isMonthSheet &&
+          !isMobileDayList ? (
           // Período genuinamente sem plantões: dizer com todas as letras
           // (e lembrar QUAL instituição está sendo consultada) em vez de
           // renderizar uma grade vazia muda.
@@ -1039,10 +1203,31 @@ export default function AgendaScreen() {
               paddingBottom: isDesktop ? undefined : theme.space[20],
             }}
           >
+            {isError && !data ? (
+              <QueryErrorState
+                title="Os plantões não puderam ser carregados"
+                error={error}
+                onRetry={() => {
+                  void refetch();
+                }}
+              />
+            ) : null}
+            {isLoading && !data ? (
+              <Text
+                style={{
+                  ...theme.text.caption,
+                  color: theme.colors.textMuted,
+                  textAlign: "center",
+                }}
+              >
+                Carregando plantões… Seus itens privados continuam disponíveis.
+              </Text>
+            ) : null}
             {canCreateShift &&
             selectedManagerContext &&
             selectedMonthShiftCount === 0 &&
-            !isLoading ? (
+            !!data &&
+            !isError ? (
               <EmptyMonthCalendarAction
                 monthKey={visibleMonthKey}
                 selectedContext={selectedManagerContext}
@@ -1060,27 +1245,55 @@ export default function AgendaScreen() {
                 }}
               />
             ) : null}
-          <MonthAgenda
-            weeks={weeksForRender}
-            monthKey={anchorMonthKey}
-            todayKey={todayKey}
-            embedInPage
-            offers={dayOffers}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor={theme.colors.primary}
+            {personalCalendarIsError ? (
+              <QueryErrorState
+                title="Seus compromissos não puderam ser carregados"
+                error={personalCalendarError}
+                onRetry={() => {
+                  void refetchPersonalCalendar();
+                }}
               />
-            }
-            onShiftPress={(id) =>
-              router.push({
-                pathname: "/shift-details",
-                params: { id: String(id) },
-              })
-            }
-            onOfferPress={() => router.push("/(tabs)/pending" as any)}
-          />
+            ) : null}
+            {holidayIsError ? (
+              <QueryErrorState
+                title="Os feriados não puderam ser carregados"
+                error={holidayError}
+                onRetry={() => {
+                  void refetchHolidays();
+                }}
+              />
+            ) : null}
+            <MonthAgenda
+              weeks={weeksForRender}
+              monthKey={anchorMonthKey}
+              todayKey={todayKey}
+              selectedDayKey={selectedDayKey}
+              embedInPage
+              offers={dayOffers}
+              holidays={holidays}
+              personalOccurrences={personalCalendarData?.occurrences ?? []}
+              scheduleState={scheduleState}
+              personalState={personalCalendarState}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={theme.colors.primary}
+                />
+              }
+              onSelectDay={selectCalendarDay}
+              onAddPersonalItem={(dateKey) => openPersonalEditor(dateKey)}
+              onPersonalItemPress={(itemId) =>
+                openPersonalEditor(selectedDayKey, itemId)
+              }
+              onShiftPress={(id) =>
+                router.push({
+                  pathname: "/shift-details",
+                  params: { id: String(id) },
+                })
+              }
+              onOfferPress={() => router.push("/(tabs)/pending" as any)}
+            />
           </View>
         ) : isHospitalGrid ? (
           <PanoramicAgenda
@@ -1117,12 +1330,93 @@ export default function AgendaScreen() {
             key={selectedDayKey}
             weeks={weeksForRender}
             selectedDayKey={selectedDayKey}
+            loading={isLoading && !data}
+            suppressScheduleContent={isError && !data}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
                 onRefresh={onRefresh}
                 tintColor={theme.colors.primary}
               />
+            }
+            header={
+              <View style={{ gap: theme.space[2] }}>
+                {isError && !data ? (
+                  <QueryErrorState
+                    title="Os plantões não puderam ser carregados"
+                    error={error}
+                    onRetry={() => {
+                      void refetch();
+                    }}
+                  />
+                ) : null}
+                {personalCalendarLoading && !personalCalendarData ? (
+                  <SkeletonList count={1} />
+                ) : personalCalendarIsError ? (
+                  <QueryErrorState
+                    title="Seus compromissos não puderam ser carregados"
+                    error={personalCalendarError}
+                    onRetry={() => {
+                      void refetchPersonalCalendar();
+                    }}
+                  />
+                ) : (
+                  <>
+                    <PersonalAgendaDaySummary
+                      dateKey={selectedDayKey}
+                      todayKey={todayKey}
+                      holidays={selectedHolidays}
+                      personalOccurrences={selectedPersonalOccurrences}
+                    />
+                    {selectedPersonalOccurrences.map((occurrence) => (
+                      <PersonalAgendaOccurrenceCard
+                        key={`${occurrence.itemId}:${occurrence.occurrenceKey}`}
+                        occurrence={occurrence}
+                        onPress={() =>
+                          openPersonalEditor(selectedDayKey, occurrence.itemId)
+                        }
+                      />
+                    ))}
+                  </>
+                )}
+                <View
+                  style={{
+                    flexDirection: "row",
+                    justifyContent: "flex-end",
+                  }}
+                >
+                  <TouchableOpacity
+                    onPress={() => openPersonalEditor(selectedDayKey)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Adicionar item privado neste dia"
+                    activeOpacity={0.82}
+                    style={{
+                      width: 46,
+                      height: 46,
+                      borderRadius: theme.radius.md + 2,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: theme.colors.success,
+                      ...theme.shadow.sm,
+                    }}
+                  >
+                    <Plus
+                      size={25}
+                      color={theme.colors.onDark.text}
+                      strokeWidth={3}
+                    />
+                  </TouchableOpacity>
+                </View>
+                {holidayIsError ? (
+                  <QueryErrorState
+                    title="Os feriados não puderam ser carregados"
+                    error={holidayError}
+                    onRetry={() => {
+                      void refetchHolidays();
+                    }}
+                  />
+                ) : null}
+              </View>
             }
             onShiftPress={(id) =>
               router.push({
@@ -1160,6 +1454,10 @@ export default function AgendaScreen() {
           <Plus size={26} color={theme.colors.onDark.text} strokeWidth={3} />
         </TouchableOpacity>
       ) : null}
+      <PersonalAgendaEditor
+        target={personalEditorTarget}
+        onClose={closePersonalEditor}
+      />
     </ScreenGradient>
   );
 }
@@ -1699,15 +1997,14 @@ function DesktopGroupBlock({
 
       {/* Lista de shifts */}
       {group.shifts.map((shift) => {
-        const names =
-          shift.professionalNames.length > 0
-            ? shift.professionalNames.join(", ")
-            : "VAGO";
+        const names = shiftProfessionalNameLines(shift, "VAGO");
         return (
           <TouchableOpacity
             key={shift.id}
             onPress={() => onShiftPress(shift.id)}
             activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={`${shift.label}, ${names.join(", ")}, ${formatTimeRange(shift.startAt, shift.endAt)}`}
             style={{
               borderLeftWidth: 3,
               borderLeftColor: shiftBorderColor(shift.status),
@@ -1720,16 +2017,19 @@ function DesktopGroupBlock({
               borderRadius: theme.radius.sm,
             }}
           >
-            <Text
-              numberOfLines={2}
-              style={{
-                fontSize: 11,
-                fontWeight: "600",
-                color: theme.colors.textPrimary,
-              }}
-            >
-              {names}
-            </Text>
+            {names.map((name, index) => (
+              <Text
+                key={`${name}:${index}`}
+                numberOfLines={1}
+                style={{
+                  fontSize: 11,
+                  fontWeight: "600",
+                  color: theme.colors.textPrimary,
+                }}
+              >
+                {name}
+              </Text>
+            ))}
             <Text
               style={{
                 fontSize: 10,
