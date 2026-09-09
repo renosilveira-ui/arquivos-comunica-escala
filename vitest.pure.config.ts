@@ -175,6 +175,7 @@ export default defineConfig({
       "tests/swap-intent-parser.test.ts",
       "tests/voice-interpret-choices.test.ts",
       "tests/voice-command-disambiguation-source.test.ts",
+      "tests/personal-calendar-domain.test.ts",
     ],
   },
 });
