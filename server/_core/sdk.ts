@@ -3,6 +3,7 @@ import {
   SESSION_MAX_AGE_MS,
   SESSION_FENCE_COOKIE_NAME,
 } from "../../shared/const.js";
+import { resolveSessionTtlMs } from "./cookie-policy";
 import { ForbiddenError } from "../../shared/_core/errors.js";
 import { parse as parseCookieHeader } from "cookie";
 import type { Request } from "express";
@@ -347,7 +348,14 @@ class SDKServer {
       throw new TypeError("Unsupported sessionBindingVersion");
     }
     const issuedAt = Date.now();
-    const expiresInMs = options.expiresInMs ?? SESSION_MAX_AGE_MS;
+    // Cookie e Bearer compartilham o TTL da política. sessionVersion revoga
+    // imediatamente; o exp não pode sobreviver ao maxAge do cookie (teto 90d).
+    const sessionTtlMs = resolveSessionTtlMs();
+    const expiresInMs = Math.min(
+      options.expiresInMs ?? sessionTtlMs,
+      sessionTtlMs,
+      SESSION_MAX_AGE_MS,
+    );
     const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
     const secretKey = this.getSessionSecret();
 

@@ -31,6 +31,13 @@ export interface ResolvedCookiePolicy {
   domain?: string;
 }
 
+/** TTL da sessão (cookie e JWT). Uma autoridade: o mesmo maxAge da política. */
+export function resolveSessionTtlMs(
+  options: CookiePolicyOptions = {},
+): number {
+  return resolveCookiePolicy(options).maxAgeMs;
+}
+
 export function resolveCookiePolicy(
   options: CookiePolicyOptions = {},
 ): ResolvedCookiePolicy {
@@ -75,7 +82,7 @@ export function resolveSetCookieOptions(
     httpOnly: true,
     secure,
     sameSite: policy.sameSite,
-    maxAge: policy.maxAgeMs,
+    maxAge: resolveSessionTtlMs(options),
     path: "/",
     ...(policy.domain ? { domain: policy.domain } : {}),
   };
