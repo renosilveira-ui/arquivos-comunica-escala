@@ -16,6 +16,7 @@ import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
 import { resolveOperationalListState } from "@/lib/operational-screen-state";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 
 export interface AvailableSwap {
   id: number;
@@ -107,7 +108,7 @@ export function AvailableSwapsList({
   const invalidateAcceptedSwapQueries = () =>
     Promise.all([
       invalidateSwapQueries(),
-      utils.shifts.listAgenda.invalidate(),
+      invalidateOfficialScaleAndVacancyQueries(utils),
       utils.shifts.getNextShift.invalidate(),
       utils.shifts.listByPeriod.invalidate(),
       utils.shifts.get.invalidate(),

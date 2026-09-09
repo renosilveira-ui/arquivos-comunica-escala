@@ -191,7 +191,7 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
     expect(offer).toContain("utils.swaps.listAvailable.invalidate()");
   });
 
-  it("aceite local reconcilia a escala; recusa atualiza somente Trocas", () => {
+  it("aceite local reconcilia Agenda e Vagas; recusa atualiza somente Trocas", () => {
     const list = readFileSync(
       "components/swaps/AvailableSwapsList.tsx",
       "utf8",
@@ -205,7 +205,7 @@ describe("badge e destinatários de oferta — contratos de fonte", () => {
       list.indexOf("const busy"),
     );
 
-    expect(list).toContain("utils.shifts.listAgenda.invalidate()");
+    expect(list).toContain("invalidateOfficialScaleAndVacancyQueries(utils)");
     expect(list).toContain("utils.shifts.getNextShift.invalidate()");
     expect(list).toContain("utils.shifts.listByPeriod.invalidate()");
     expect(list).toContain("utils.shifts.get.invalidate()");

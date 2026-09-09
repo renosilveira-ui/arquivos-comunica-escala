@@ -25,6 +25,7 @@ import {
   createSectorScaleNewSectorLabel,
   createSectorScaleToast,
 } from "@/lib/create-sector-scale";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 
 interface Props {
   onCreated?: (result: { scheduleContextId: number }) => void;
@@ -85,6 +86,7 @@ export function CreateSectorScaleButton({ onCreated }: Props) {
         utils.scheduleContexts.listManageableTopology.invalidate(),
         utils.hospitals.list.invalidate(),
         utils.sectors.list.invalidate(),
+        invalidateOfficialScaleAndVacancyQueries(utils),
       ]);
       onCreated?.({ scheduleContextId: result.scheduleContextId });
       feedback.success(createSectorScaleToast(result.sectorName));

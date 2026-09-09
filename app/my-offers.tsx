@@ -4,6 +4,7 @@ import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { useAuth } from "@/hooks/use-auth";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -89,7 +90,7 @@ export default function MyOffersScreen({
         utils.swaps.list.invalidate(),
         utils.swaps.listAvailable.invalidate(),
         utils.swaps.countActionable.invalidate(),
-        utils.shifts.listAgenda.invalidate(),
+        invalidateOfficialScaleAndVacancyQueries(utils),
         utils.shifts.getNextShift.invalidate(),
         utils.shifts.listByPeriod.invalidate(),
         utils.shifts.get.invalidate(),

@@ -159,6 +159,14 @@ async function renderRealConfirmDutyScreen(options: {
   }));
   vi.doMock("@/lib/trpc", () => ({
     trpc: {
+      useUtils: () => ({
+        shifts: { listAgenda: { invalidate: vi.fn() } },
+        shiftInstances: { listVacancies: { invalidate: vi.fn() } },
+        filters: {
+          actionableVacancyCounts: { invalidate: vi.fn() },
+          summaryCounts: { invalidate: vi.fn() },
+        },
+      }),
       confirmations: {
         getPending: { useQuery: getPending },
         getNomination: { useQuery: getNomination },

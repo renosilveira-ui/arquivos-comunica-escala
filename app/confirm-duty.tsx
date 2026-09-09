@@ -19,6 +19,7 @@ import {
   DUTY_CONFIRMED_SUCCESS_COPY,
   DUTY_NOMINATION_PROMPT_COPY,
 } from "@/lib/duty-sync-copy";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -28,6 +29,7 @@ export default function ConfirmDutyScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ token?: string | string[] }>();
   const feedback = useActionFeedback();
+  const utils = trpc.useUtils();
   const hasDirectedToken = params.token !== undefined;
   const directedToken =
     typeof params.token === "string" && UUID_PATTERN.test(params.token)
@@ -48,7 +50,8 @@ export default function ConfirmDutyScreen() {
   const nomination = nominationQuery.data ?? null;
 
   const acceptNominationMutation = trpc.confirmations.acceptNomination.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
+      await invalidateOfficialScaleAndVacancyQueries(utils);
       feedback.success(DUTY_ASSUMED_SUCCESS_COPY);
       router.replace("/(tabs)/agenda" as any);
     },

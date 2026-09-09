@@ -4,6 +4,7 @@ import * as Haptics from "expo-haptics";
 import { X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
 import {
@@ -94,7 +95,7 @@ export function OpenMonthShiftsButton({
         templateNames: mode === "custom" ? customNames : undefined,
       });
       await Promise.all([
-        utils.shifts.listAgenda.invalidate(),
+        invalidateOfficialScaleAndVacancyQueries(utils),
         utils.shifts.hasMonthShifts.invalidate(),
         utils.filters.hasMonthShifts.invalidate(),
         utils.shifts.rosterStatus.invalidate(),

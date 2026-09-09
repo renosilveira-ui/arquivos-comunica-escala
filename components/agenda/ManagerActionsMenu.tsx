@@ -13,6 +13,7 @@ import * as Haptics from "expo-haptics";
 import { CalendarRange, CopyPlus, Lock, Send, Settings2, X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 import { MEDICAL_SPECIALTIES } from "@/lib/medical-specialties";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { AppButton } from "@/components/ui/AppButton";
@@ -514,7 +515,7 @@ export function ManagerActionsMenu({
             includeAssignments,
             dryRun: false,
           });
-      await utils.shifts.listAgenda.invalidate();
+      await invalidateOfficialScaleAndVacancyQueries(utils);
       await utils.shifts.hasMonthShifts.invalidate();
       onChanged?.();
       const parts = [`${r.created} turno${r.created === 1 ? "" : "s"} criado${r.created === 1 ? "" : "s"}`];
@@ -600,7 +601,10 @@ export function ManagerActionsMenu({
     setStep("busy");
     try {
       await lock.mutateAsync({ institutionId, hospitalId: resolvedHospitalId, yearMonth: monthKey });
-      await utils.shifts.rosterStatus.invalidate();
+      await Promise.all([
+        utils.shifts.rosterStatus.invalidate(),
+        invalidateOfficialScaleAndVacancyQueries(utils),
+      ]);
       feedback.success(`Escala de ${monthLabel(monthKey)} bloqueada.`);
       close();
     } catch (err) {
