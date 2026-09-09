@@ -9,6 +9,7 @@ import {
   personalCalendarItemBlocksTime,
   personalCalendarItemDraftSchema,
   personalCalendarRecurrenceSchema,
+  validatePersonalCalendarSeries,
 } from "../server/personal-calendar-domain";
 
 const FORTALEZA = "America/Fortaleza";
@@ -198,6 +199,30 @@ describe("agenda pessoal — validação de entrada", () => {
         }),
       ).success,
     ).toBe(false);
+  });
+
+  it("rejeita combinações item-recorrência impossíveis antes da persistência", () => {
+    expect(() =>
+      validatePersonalCalendarSeries(
+        {
+          kind: "BIRTHDAY",
+          title: "Ana",
+          birthdayMonth: 9,
+          birthdayDay: 10,
+          timeZone: FORTALEZA,
+        },
+        recurrence({ frequency: "YEARLY" }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_RECURRENCE" }));
+    expect(() =>
+      validatePersonalCalendarSeries(
+        allDayReminder({ startLocalDate: "2026-09-10" }),
+        recurrence({
+          termination: "UNTIL",
+          untilLocalDate: "2026-09-09",
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_RECURRENCE" }));
   });
 
   it("aceita no máximo oito avisos únicos e devolve offsets ordenados", () => {

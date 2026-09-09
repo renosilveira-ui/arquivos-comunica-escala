@@ -5,6 +5,7 @@ const MINUTE_MS = 60_000;
 const MAX_QUERY_DAYS = 366;
 const MAX_APPOINTMENT_SPAN_DAYS = 366;
 const MAX_ALERT_RULES = 8;
+const MAX_GENERATED_OCCURRENCES = 10_000;
 const MAX_TIME_ZONE_FORMATTERS = 256;
 const MIN_USER_YEAR = 1800;
 const MAX_USER_YEAR = 2200;
@@ -663,6 +664,37 @@ function startDateFor(item: PersonalCalendarItemDraft): string {
   return item.startLocalDate;
 }
 
+export function validatePersonalCalendarSeries(
+  rawItem: unknown,
+  rawRecurrence: unknown | null,
+): {
+  item: PersonalCalendarItemDraft;
+  recurrence: PersonalCalendarRecurrence | null;
+} {
+  const item = personalCalendarItemDraftSchema.parse(rawItem);
+  const recurrence =
+    rawRecurrence === null
+      ? null
+      : personalCalendarRecurrenceSchema.parse(rawRecurrence);
+  if (item.kind === "BIRTHDAY" && recurrence) {
+    throw new PersonalCalendarValidationError(
+      "INVALID_RECURRENCE",
+      "Aniversário já possui recorrência anual implícita.",
+    );
+  }
+  if (
+    recurrence?.termination === "UNTIL" &&
+    recurrence.untilLocalDate !== null &&
+    compareDateKeys(recurrence.untilLocalDate, startDateFor(item)) < 0
+  ) {
+    throw new PersonalCalendarValidationError(
+      "INVALID_RECURRENCE",
+      "O término da recorrência não pode anteceder o início.",
+    );
+  }
+  return { item, recurrence };
+}
+
 function appointmentDurationDays(item: PersonalCalendarItemDraft): number {
   if (item.kind !== "APPOINTMENT") return item.kind === "BIRTHDAY" ? 1 : 0;
   return (
@@ -1042,11 +1074,10 @@ export function generatePersonalCalendarOccurrences(
   rawRecurrence: unknown | null,
   rawWindow: unknown,
 ): GeneratedPersonalCalendarOccurrence[] {
-  const item = personalCalendarItemDraftSchema.parse(rawItem);
-  const recurrence =
-    rawRecurrence === null
-      ? null
-      : personalCalendarRecurrenceSchema.parse(rawRecurrence);
+  const { item, recurrence } = validatePersonalCalendarSeries(
+    rawItem,
+    rawRecurrence,
+  );
   const window = personalCalendarOccurrenceWindowSchema.parse(rawWindow);
   const fromOrdinal = dateKeyToOrdinal(window.fromDate);
   const toOrdinal = dateKeyToOrdinal(window.toDate);
@@ -1060,12 +1091,6 @@ export function generatePersonalCalendarOccurrences(
     throw new PersonalCalendarValidationError(
       "QUERY_WINDOW_TOO_LARGE",
       `A consulta pode abranger no máximo ${MAX_QUERY_DAYS} dias.`,
-    );
-  }
-  if (item.kind === "BIRTHDAY" && recurrence) {
-    throw new PersonalCalendarValidationError(
-      "INVALID_RECURRENCE",
-      "Aniversário já possui recorrência anual implícita.",
     );
   }
 
@@ -1089,6 +1114,13 @@ export function generatePersonalCalendarOccurrences(
       : recurrence
         ? recurringCandidateDates(item, recurrence, scanFromDate, window.toDate)
         : [startDateFor(item)];
+
+  if (candidateDates.length > MAX_GENERATED_OCCURRENCES) {
+    throw new PersonalCalendarValidationError(
+      "QUERY_WINDOW_TOO_LARGE",
+      "A série gera ocorrências demais para uma consulta segura.",
+    );
+  }
 
   return candidateDates
     .map((date) => buildOccurrence(item, date))
