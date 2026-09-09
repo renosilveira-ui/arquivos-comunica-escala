@@ -135,7 +135,7 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: MAIL_FROM
-        value: "Escala+ <no-reply@escalas-staging.onrender.com>"
+        value: "Escala+ <suportec@comunicamais-escala.com.br>"
       - key: APP_PUBLIC_URL
         value: https://escalas-staging.onrender.com
 

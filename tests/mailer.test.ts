@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAIL_HTTP_TIMEOUT_MS, mailer } from "../server/mailer";
 
@@ -13,6 +14,19 @@ const REDACTED_FALLBACK_RECORD = {
   providerConfigured: false,
   delivered: false,
 };
+
+const renderYaml = readFileSync("render.yaml", "utf8");
+
+describe("mailer no Blueprint", () => {
+  it("usa o remetente do domínio verificado na Resend", () => {
+    expect(renderYaml).toContain(
+      'value: "Escala+ <suportec@comunicamais-escala.com.br>"',
+    );
+    expect(renderYaml).not.toMatch(
+      /key:\s*MAIL_FROM[\s\S]{0,120}@escalas-staging\.onrender\.com/,
+    );
+  });
+});
 
 describe("mailer sem provedor", () => {
   const previousKey = process.env.RESEND_API_KEY;
@@ -135,7 +149,9 @@ describe("mailer via Resend", () => {
 
   it("Resend HTTP 4xx → delivered false", async () => {
     withResendKey();
-    vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("bad request", { status: 422 })),
@@ -161,7 +177,9 @@ describe("mailer via Resend", () => {
 
   it("Resend HTTP 5xx → delivered false", async () => {
     withResendKey();
-    vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("unavailable", { status: 503 })),
@@ -179,7 +197,9 @@ describe("mailer via Resend", () => {
 
   it("fetch abort/timeout → delivered false sem derrubar o processo", async () => {
     withResendKey();
-    vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
