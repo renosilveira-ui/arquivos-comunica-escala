@@ -116,9 +116,22 @@ describe("aviso de plantão vago — contratos de fonte", () => {
       "utf8",
     );
     const swap = readFileSync("server/swap-offer-eligibility.ts", "utf8");
-    const sql = eligibility.slice(
-      eligibility.indexOf("export async function eligibleProfessionalUserIdsForShift"),
+    const queryStart = eligibility.indexOf(
+      "async function queryEligibleProfessionalUserIdsForShift",
     );
+    const wrapperStart = eligibility.indexOf(
+      "export async function eligibleProfessionalUserIdsForShift",
+    );
+    const queryEnd = eligibility.indexOf("\n/**", queryStart);
+    const directedStart = eligibility.indexOf(
+      "export async function isProfessionalUserEligibleForVacantShift",
+    );
+    expect(queryStart).toBeGreaterThanOrEqual(0);
+    expect(queryEnd).toBeGreaterThan(queryStart);
+    expect(wrapperStart).toBeGreaterThan(queryEnd);
+    expect(directedStart).toBeGreaterThan(wrapperStart);
+    const sql = eligibility.slice(queryStart, queryEnd);
+    const wrapper = eligibility.slice(wrapperStart, directedStart);
     expect(eligibility).toContain(
       "export async function eligibleProfessionalUserIdsForShift",
     );
@@ -126,6 +139,9 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(sql).not.toContain("manager_scope");
     expect(sql).not.toContain("role_in_institution");
     expect(sql).toContain("plantonistaQualificationMatchesContextSql");
+    expect(wrapper).toContain(
+      "return queryEligibleProfessionalUserIdsForShift(db, shift)",
+    );
     expect(swap).toContain("actorClinicallyCoversOfferedShiftSql");
     expect(swap).not.toContain("plantonistaXorQualificationSql");
     expect(swap).not.toContain("plantonistaQualificationMatchesSql");
