@@ -32,7 +32,10 @@ import {
   processPendingPushDeliveries,
 } from "../server/push-delivery";
 import { enqueueVacancyAvailableSignals } from "../server/vacancy-broadcast-signal";
-import { openTestScale } from "./helpers/open-test-scale";
+import {
+  ensureTestAnesthesiaSpecialty,
+  openTestScale,
+} from "./helpers/open-test-scale";
 
 function response(status: number, body: unknown): Response {
   return {
@@ -50,6 +53,7 @@ describe("autoridade atual no broadcast de vaga", () => {
   let sectorAId: number;
   let sectorBId: number;
   let scheduleContextId: number;
+  let anesthesiaSpecialtyId: number;
   let userId: number;
   let professionalId: number;
   let accessAId: number;
@@ -116,6 +120,7 @@ describe("autoridade atual no broadcast de vaga", () => {
       hospitalId: hospitalAId,
       sectorId: sectorAId,
     });
+    anesthesiaSpecialtyId = await ensureTestAnesthesiaSpecialty(db);
 
     const [user] = await db
       .insert(users)
@@ -135,6 +140,7 @@ describe("autoridade atual no broadcast de vaga", () => {
         name: `Vacancy authority professional ${stamp}`,
         role: "MEDICO",
         specialty: "Anestesiologia",
+        medicalSpecialtyId: anesthesiaSpecialtyId,
         userRole: "USER",
       })
       .$returningId();
@@ -232,6 +238,13 @@ describe("autoridade atual no broadcast de vaga", () => {
           eq(professionalInstitutions.institutionId, institutionId),
         ),
       );
+    await db
+      .update(professionals)
+      .set({
+        medicalSpecialtyId: anesthesiaSpecialtyId,
+        operationalProfileCode: null,
+      })
+      .where(eq(professionals.id, professionalId));
     await db
       .update(professionalAccess)
       .set({ canAccess: true })
@@ -598,6 +611,30 @@ describe("autoridade atual no broadcast de vaga", () => {
       .update(professionalAccess)
       .set({ canAccess: true })
       .where(eq(professionalAccess.id, accessBId));
+
+    await processQueued();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [row] = await db
+      .select({
+        status: notifications.status,
+        receipt: notifications.providerReceipt,
+      })
+      .from(notifications)
+      .where(eq(notifications.userId, userId));
+    expect(row.status).toBe("FAILED");
+    expect(row.receipt).toMatchObject({
+      phase: "FAILED",
+      evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+    });
+  });
+
+  it("suprime aviso quando a qualificação clínica deixa de cobrir a escala", async () => {
+    await enqueueVacancyAvailableSignals({ db, shift: shiftInput() });
+    await db
+      .update(professionals)
+      .set({ medicalSpecialtyId: null, operationalProfileCode: null })
+      .where(eq(professionals.id, professionalId));
 
     await processQueued();
 
