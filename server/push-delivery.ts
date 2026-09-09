@@ -20,6 +20,8 @@ import {
 import {
   assignmentLifecyclePushPresentation,
   dutyConfirmationPushPresentation,
+  swapOfferPushPresentation,
+  swapTakenPushPresentation,
   vacancyBroadcastPushPresentation,
   vacancyRequestPushPresentation,
   type CanonicalShiftPushContext,
@@ -59,6 +61,15 @@ import {
   vacancyRequestAuthorityMatchesPayload,
   type VacancyRequestPushAuthority,
 } from "./vacancy-request-push-authority";
+import {
+  isSwapPushPayload,
+  parseSwapPushAuthority,
+  requireAuthorizedLegacySwapPushAuthority,
+  requireAuthorizedSwapOfferRecipient,
+  requireAuthorizedSwapTakenRecipient,
+  swapPushAuthorityMatchesPayload,
+  type SwapPushAuthority,
+} from "./swap-push-authority";
 import {
   ACCOUNT_WIDE_BADGE_VERSION,
   isAccountWideBadgeNotificationType,
@@ -222,7 +233,8 @@ export type TrackedPushAuthority =
   | DutyConfirmationPushAuthority
   | VacancyRequestPushAuthority
   | AssignmentLifecyclePushAuthority
-  | VacancyBroadcastPushAuthority;
+  | VacancyBroadcastPushAuthority
+  | SwapPushAuthority;
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type EnqueueDb = Pick<Db, "insert" | "select" | "update">;
@@ -402,6 +414,12 @@ function parseAuthority(
       ? parsed
       : null;
   }
+  if (authority.kind === "SWAP_OFFER" || authority.kind === "SWAP_TAKEN") {
+    const parsed = parseSwapPushAuthority(authority);
+    return parsed && swapPushAuthorityMatchesPayload(parsed, payloadData)
+      ? parsed
+      : null;
+  }
   return parseDutyConfirmationAuthority(authority, payloadData);
 }
 
@@ -421,7 +439,9 @@ function trackedAuthorityMatchesPayload(
     ? vacancyRequestAuthorityMatchesPayload(authority, payloadData)
     : authority.kind === "ASSIGNMENT_LIFECYCLE"
       ? assignmentLifecycleAuthorityMatchesPayload(authority, payloadData)
-      : vacancyBroadcastAuthorityMatchesPayload(authority, payloadData);
+      : authority.kind === "VACANCY_BROADCAST"
+        ? vacancyBroadcastAuthorityMatchesPayload(authority, payloadData)
+        : swapPushAuthorityMatchesPayload(authority, payloadData);
 }
 
 function isCanonicalIsoDate(value: unknown): value is string {
@@ -497,10 +517,43 @@ function isLegacyVacancyBroadcastPayloadForRow(
   );
 }
 
-function parseLegacyVacancySubmissionState(
+function isLegacySwapPushPayloadForRow(
+  payloadData: PayloadData,
+  expected: PendingStateIdentity,
+): boolean {
+  return (
+    Number.isSafeInteger(expected.shiftInstanceId) &&
+    (expected.shiftInstanceId as number) > 0 &&
+    isSwapPushPayload(payloadData) &&
+    Number.isSafeInteger(payloadData.swapRequestId) &&
+    (payloadData.swapRequestId as number) > 0 &&
+    payloadData.institutionId === expected.institutionId &&
+    payloadData.shiftInstanceId === expected.shiftInstanceId &&
+    payloadData.userId === expected.userId &&
+    (!Object.prototype.hasOwnProperty.call(payloadData, "recipientUserId") ||
+      payloadData.recipientUserId === expected.userId)
+  );
+}
+
+function isLegacyContextualPushPayloadForRow(
+  payloadData: PayloadData,
+  expected: PendingStateIdentity,
+): boolean {
+  return (
+    isLegacyVacancyBroadcastPayloadForRow(payloadData, expected) ||
+    isLegacySwapPushPayloadForRow(payloadData, expected)
+  );
+}
+
+type LegacySubmissionState = Readonly<{
+  kind: "VACANCY_BROADCAST" | "SWAP";
+  state: QueuedState | SubmittingState;
+}>;
+
+function parseLegacyContextualSubmissionState(
   value: unknown,
   expected: PendingStateIdentity,
-): QueuedState | SubmittingState | null {
+): LegacySubmissionState | null {
   const row = asRecord(value);
   const payloadData = asRecord(row?.payloadData);
   const accountWideBadgeVersion = row
@@ -516,7 +569,7 @@ function parseLegacyVacancySubmissionState(
     (row.attemptCount as number) < 0 ||
     !payloadData ||
     accountWideBadgeVersion === null ||
-    !isLegacyVacancyBroadcastPayloadForRow(payloadData, expected)
+    !isLegacyContextualPushPayloadForRow(payloadData, expected)
   ) {
     return null;
   }
@@ -526,11 +579,14 @@ function parseLegacyVacancySubmissionState(
       ? {}
       : { accountWideBadgeVersion }),
   };
+  const kind = isLegacyVacancyBroadcastPayloadForRow(payloadData, expected)
+    ? "VACANCY_BROADCAST"
+    : "SWAP";
   if (row.phase === "QUEUED" && isCanonicalIsoDate(row.availableAt)) {
-    return normalized as QueuedState;
+    return { kind, state: normalized as QueuedState };
   }
   if (row.phase === "SUBMITTING" && isCanonicalIsoDate(row.leaseUntil)) {
-    return normalized as SubmittingState;
+    return { kind, state: normalized as SubmittingState };
   }
   return null;
 }
@@ -560,12 +616,13 @@ function parsePendingState(
   const legacyReceiptWithoutAuthority =
     authority === undefined &&
     (row.phase === "TICKET_ACCEPTED" || row.phase === "RECEIPT_CHECKING") &&
-    isLegacyVacancyBroadcastPayloadForRow(payloadData, expected);
+    isLegacyContextualPushPayloadForRow(payloadData, expected);
   if (
     !authority &&
     (isDutyConfirmationPayload(payloadData) ||
       isVacancyRequestPushPayload(payloadData) ||
       isAssignmentLifecyclePushPayload(payloadData) ||
+      (isSwapPushPayload(payloadData) && !legacyReceiptWithoutAuthority) ||
       (isVacancyBroadcastPushPayload(payloadData) &&
         !legacyReceiptWithoutAuthority))
   ) {
@@ -808,6 +865,50 @@ async function upgradeLegacyVacancySubmissionState(
   });
 }
 
+async function upgradeLegacySwapSubmissionState(
+  db: Db,
+  row: NotificationRow,
+  state: QueuedState | SubmittingState,
+): Promise<QueuedState | SubmittingState | null> {
+  return db.transaction(async (tx) => {
+    const authority = await requireAuthorizedLegacySwapPushAuthority(tx, {
+      expectedUserId: row.userId,
+      institutionId: row.institutionId,
+      shiftInstanceId: row.shiftInstanceId as number,
+      payloadData: state.payloadData,
+    });
+    const payloadData = withAuthoritativePushRecipient(
+      {
+        type: authority.kind === "SWAP_OFFER" ? "swap_offer" : "swap_taken",
+        swapRequestId: authority.swapRequestId,
+        institutionId: authority.institutionId,
+        hospitalId: authority.hospitalId,
+        sectorId: authority.sectorId,
+        shiftInstanceId: authority.shiftInstanceId,
+        userId: authority.expectedUserId,
+      },
+      authority.expectedUserId,
+    );
+    const upgraded: QueuedState | SubmittingState = {
+      ...state,
+      revision: state.revision + 1,
+      payloadData,
+      authority,
+    };
+    const [persisted] = await tx
+      .update(notifications)
+      .set({ providerReceipt: upgraded })
+      .where(
+        and(
+          eq(notifications.id, row.id),
+          eq(notifications.status, "PENDING"),
+          revisionPredicate(state),
+        ),
+      );
+    return persisted.affectedRows === 1 ? upgraded : null;
+  });
+}
+
 async function requireCurrentPushAuthority(
   db: Pick<Db, "select" | "execute">,
   row: NotificationRow,
@@ -908,6 +1009,46 @@ async function requireCurrentPushAuthority(
       lockForUpdate,
     );
     return vacancyBroadcastPushPresentation(context);
+  }
+  if (
+    state.authority.kind === "SWAP_OFFER" ||
+    state.authority.kind === "SWAP_TAKEN"
+  ) {
+    if (
+      row.institutionId !== state.authority.institutionId ||
+      row.shiftInstanceId !== state.authority.shiftInstanceId
+    ) {
+      throw new PersistedPushAuthorityBindingError(
+        "Tenant ou plantão do outbox não corresponde à oferta",
+      );
+    }
+    if (state.authority.kind === "SWAP_OFFER") {
+      await requireAuthorizedSwapOfferRecipient(
+        db,
+        state.authority,
+        lockForUpdate,
+      );
+    } else {
+      await requireAuthorizedSwapTakenRecipient(
+        db,
+        state.authority,
+        lockForUpdate,
+      );
+    }
+    if (!lockForUpdate) return;
+    const context = await requireCanonicalShiftPushContext(
+      db,
+      {
+        institutionId: state.authority.institutionId,
+        hospitalId: state.authority.hospitalId,
+        sectorId: state.authority.sectorId,
+        shiftInstanceId: state.authority.shiftInstanceId,
+      },
+      lockForUpdate,
+    );
+    return state.authority.kind === "SWAP_OFFER"
+      ? swapOfferPushPresentation(state.authority.audience, context)
+      : swapTakenPushPresentation(state.authority.swapType, context);
   }
   const valid = await requireAuthorizedDutyConfirmationRecipient(db, {
     confirmationId: state.authority.confirmationId,
@@ -1507,31 +1648,37 @@ async function processTrackedRow(
     institutionId: row.institutionId,
     shiftInstanceId: row.shiftInstanceId,
   };
-  const legacySubmission = parseLegacyVacancySubmissionState(
+  const legacySubmission = parseLegacyContextualSubmissionState(
     row.providerReceipt,
     identity,
   );
   let providerReceipt = row.providerReceipt;
   if (legacySubmission) {
     const legacySubmissionDue =
-      legacySubmission.phase === "QUEUED"
-        ? new Date(legacySubmission.availableAt) <= now
-        : new Date(legacySubmission.leaseUntil) <= now;
+      legacySubmission.state.phase === "QUEUED"
+        ? new Date(legacySubmission.state.availableAt) <= now
+        : new Date(legacySubmission.state.leaseUntil) <= now;
     // Durante uma troca de versão, o worker anterior ainda pode estar entre o
     // claim e o fetch. Avançar a revisão antes do vencimento roubaria o CAS
     // desse owner e poderia provocar uma segunda submissão após o lease.
     if (!legacySubmissionDue) return;
     try {
-      const upgraded = await upgradeLegacyVacancySubmissionState(
-        db,
-        row,
-        legacySubmission,
-      );
+      const upgraded = legacySubmission.kind === "VACANCY_BROADCAST"
+        ? await upgradeLegacyVacancySubmissionState(
+            db,
+            row,
+            legacySubmission.state,
+          )
+        : await upgradeLegacySwapSubmissionState(
+            db,
+            row,
+            legacySubmission.state,
+          );
       if (!upgraded) return;
       providerReceipt = upgraded;
     } catch (error) {
       if (!isCanonicalPushAuthorityRejection(error)) throw error;
-      await failRevokedAuthority(db, row, legacySubmission, now);
+      await failRevokedAuthority(db, row, legacySubmission.state, now);
       return;
     }
   }
@@ -1609,6 +1756,7 @@ async function persistTrackedPushIntent(
     (isDutyConfirmationPayload(payloadData) ||
       isVacancyRequestPushPayload(payloadData) ||
       isAssignmentLifecyclePushPayload(payloadData) ||
+      isSwapPushPayload(payloadData) ||
       isVacancyBroadcastPushPayload(payloadData)) &&
     !input.authority
   ) {
