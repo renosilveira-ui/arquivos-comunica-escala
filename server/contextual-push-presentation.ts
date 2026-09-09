@@ -31,6 +31,10 @@ export type DutyConfirmationPresentationPurpose =
 export type VacancyRequestPresentationPurpose =
   "MANAGER_ACTION_REQUIRED" | "REQUEST_APPROVED" | "REQUEST_REJECTED";
 
+export type AssignmentLifecyclePresentationPurpose =
+  | "ASSIGNED"
+  | "UNASSIGNED";
+
 const MAX_CONTEXT_LABEL_CHARACTERS = 80;
 
 function normalizedLabel(value: string): string {
@@ -142,6 +146,27 @@ export function vacancyRequestPushPresentation(
       return contextualPresentation(
         title,
         `Sua solicitação para o plantão de ${shift} não foi aprovada.`,
+      );
+  }
+}
+
+export function assignmentLifecyclePushPresentation(
+  purpose: AssignmentLifecyclePresentationPurpose,
+  context: CanonicalShiftPushContext,
+): ContextualPushPresentation | null {
+  const title = normalizedContextTitle(context);
+  if (!title) return null;
+  const shift = shiftReference(context);
+  switch (purpose) {
+    case "ASSIGNED":
+      return contextualPresentation(
+        title,
+        `Você foi escalado para o plantão de ${shift}.`,
+      );
+    case "UNASSIGNED":
+      return contextualPresentation(
+        title,
+        `Sua alocação no plantão de ${shift} foi retirada.`,
       );
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assignmentLifecyclePushPresentation,
   dutyConfirmationPushPresentation,
   vacancyRequestPushPresentation,
   type CanonicalShiftPushContext,
@@ -62,6 +63,19 @@ describe("apresentação contextual de push", () => {
     });
   });
 
+  it.each([
+    ["ASSIGNED", "Você foi escalado para o plantão de 12/09/2032, 07:00–13:00."],
+    [
+      "UNASSIGNED",
+      "Sua alocação no plantão de 12/09/2032, 07:00–13:00 foi retirada.",
+    ],
+  ] as const)("renderiza alocação %s com o mesmo contrato", (purpose, body) => {
+    expect(assignmentLifecyclePushPresentation(purpose, context)).toEqual({
+      title: "Hospital São Carlos · Sala de Recuperação",
+      body,
+    });
+  });
+
   it("mantém fallback neutro quando o contexto canônico não tem nome útil", () => {
     expect(
       dutyConfirmationPushPresentation("CONFIRMATION_REQUEST", {
@@ -73,6 +87,12 @@ describe("apresentação contextual de push", () => {
       vacancyRequestPushPresentation("REQUEST_APPROVED", {
         ...context,
         sectorName: "",
+      }),
+    ).toBeNull();
+    expect(
+      assignmentLifecyclePushPresentation("ASSIGNED", {
+        ...context,
+        sectorName: "\u200b",
       }),
     ).toBeNull();
   });
