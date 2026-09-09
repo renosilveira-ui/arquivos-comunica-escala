@@ -153,15 +153,24 @@ export type VacantShiftEligibilityTarget = {
   institutionId: number;
 };
 
-/**
- * Plantonistas que poderiam assumir este plantão vago: vínculo institucional
- * ativo + professional_access + matcher clínico canônico, **sem** atalho
- * gerencial. GESTOR_MEDICO / GESTOR_PLUS só entram se passarem como médico.
- */
-export async function eligibleProfessionalUserIdsForShift(
+type VacantShiftRecipientConstraint = Readonly<{
+  expectedUserId: number;
+  hospitalId: number;
+  sectorId: number;
+  lockForShare?: boolean;
+}>;
+
+async function queryEligibleProfessionalUserIdsForShift(
   db: EligibilityDb,
   shift: VacantShiftEligibilityTarget,
+  constraint?: VacantShiftRecipientConstraint,
 ): Promise<number[]> {
+  const recipientPredicate = constraint
+    ? sql`AND au.id = ${constraint.expectedUserId}
+          AND si.hospital_id = ${constraint.hospitalId}
+          AND si.sector_id = ${constraint.sectorId}`
+    : sql``;
+  const lockClause = constraint?.lockForShare ? sql`FOR SHARE` : sql``;
   const result = await db.execute(sql`
     SELECT DISTINCT au.id AS userId
     FROM shift_instances si
@@ -186,10 +195,17 @@ export async function eligibleProfessionalUserIdsForShift(
      AND au.deleted_at IS NULL
     WHERE si.id = ${shift.id}
       AND si.institution_id = ${shift.institutionId}
+      ${recipientPredicate}
       AND si.status = 'VAGO'
       AND si.start_at > NOW()
       AND ${plantonistaAccessCoversShiftSql("ap", "si", "sc")}
       AND ${plantonistaQualificationMatchesContextSql("ap", "sc")}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM shift_assignments_v2 target_assignment
+        WHERE target_assignment.shift_instance_id = si.id
+          AND target_assignment.is_active = 1
+      )
       AND NOT EXISTS (
         SELECT 1 FROM monthly_rosters mr
         WHERE mr.institution_id = si.institution_id
@@ -207,6 +223,7 @@ export async function eligibleProfessionalUserIdsForShift(
           AND actor_conflict_shift.start_at < si.end_at
           AND actor_conflict_shift.end_at > si.start_at
       )
+    ${lockClause}
   `);
 
   const unique = new Set<number>();
@@ -216,4 +233,44 @@ export async function eligibleProfessionalUserIdsForShift(
     unique.add(userId);
   }
   return [...unique];
+}
+
+/**
+ * Plantonistas que poderiam assumir este plantão vago: vínculo institucional
+ * ativo + professional_access + matcher clínico canônico, **sem** atalho
+ * gerencial.
+ * GESTOR_MEDICO / GESTOR_PLUS só entram se passarem como médico.
+ */
+export async function eligibleProfessionalUserIdsForShift(
+  db: EligibilityDb,
+  shift: VacantShiftEligibilityTarget,
+): Promise<number[]> {
+  return queryEligibleProfessionalUserIdsForShift(db, shift);
+}
+
+/**
+ * Versão direcionada usada no instante da entrega. Evita recalcular a lista
+ * completa para cada push e exige a topologia exata do hospital e setor.
+ */
+export async function isProfessionalUserEligibleForVacantShift(
+  db: EligibilityDb,
+  input: VacantShiftEligibilityTarget & VacantShiftRecipientConstraint,
+): Promise<boolean> {
+  if (
+    !Number.isSafeInteger(input.expectedUserId) ||
+    input.expectedUserId <= 0 ||
+    !Number.isSafeInteger(input.hospitalId) ||
+    input.hospitalId <= 0 ||
+    !Number.isSafeInteger(input.sectorId) ||
+    input.sectorId <= 0
+  ) {
+    return false;
+  }
+  const userIds = await queryEligibleProfessionalUserIdsForShift(db, input, {
+    expectedUserId: input.expectedUserId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    lockForShare: input.lockForShare,
+  });
+  return userIds.length === 1 && userIds[0] === input.expectedUserId;
 }

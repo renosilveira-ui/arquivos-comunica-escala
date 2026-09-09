@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assignmentLifecyclePushPresentation,
   dutyConfirmationPushPresentation,
+  vacancyBroadcastPushPresentation,
   vacancyRequestPushPresentation,
   type CanonicalShiftPushContext,
 } from "../server/contextual-push-presentation";
@@ -76,6 +77,13 @@ describe("apresentação contextual de push", () => {
     });
   });
 
+  it("renderiza aviso coletivo de vaga sem dados pessoais", () => {
+    expect(vacancyBroadcastPushPresentation(context)).toEqual({
+      title: "Hospital São Carlos · Sala de Recuperação",
+      body: "Há um plantão vago em 12/09/2032, 07:00–13:00.",
+    });
+  });
+
   it("mantém fallback neutro quando o contexto canônico não tem nome útil", () => {
     expect(
       dutyConfirmationPushPresentation("CONFIRMATION_REQUEST", {
@@ -93,6 +101,12 @@ describe("apresentação contextual de push", () => {
       assignmentLifecyclePushPresentation("ASSIGNED", {
         ...context,
         sectorName: "\u200b",
+      }),
+    ).toBeNull();
+    expect(
+      vacancyBroadcastPushPresentation({
+        ...context,
+        hospitalName: "\n",
       }),
     ).toBeNull();
   });

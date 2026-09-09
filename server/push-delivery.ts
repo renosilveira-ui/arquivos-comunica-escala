@@ -20,6 +20,7 @@ import {
 import {
   assignmentLifecyclePushPresentation,
   dutyConfirmationPushPresentation,
+  vacancyBroadcastPushPresentation,
   vacancyRequestPushPresentation,
   type CanonicalShiftPushContext,
   type ContextualPushPresentation,
@@ -31,6 +32,14 @@ import {
   requireAuthorizedAssignmentLifecycleRecipient,
   type AssignmentLifecyclePushAuthority,
 } from "./assignment-push-authority";
+import {
+  isVacancyBroadcastPushPayload,
+  parseVacancyBroadcastPushAuthority,
+  requireAuthorizedLegacyVacancyBroadcastAuthority,
+  requireAuthorizedVacancyBroadcastRecipient,
+  vacancyBroadcastAuthorityMatchesPayload,
+  type VacancyBroadcastPushAuthority,
+} from "./vacancy-broadcast-push-authority";
 import {
   isCanonicalDutyConfirmationRejection,
   PersistedDutyConfirmationBindingError,
@@ -212,7 +221,8 @@ export type DutyConfirmationPushAuthority = {
 export type TrackedPushAuthority =
   | DutyConfirmationPushAuthority
   | VacancyRequestPushAuthority
-  | AssignmentLifecyclePushAuthority;
+  | AssignmentLifecyclePushAuthority
+  | VacancyBroadcastPushAuthority;
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type EnqueueDb = Pick<Db, "insert" | "select" | "update">;
@@ -386,6 +396,12 @@ function parseAuthority(
       ? parsed
       : null;
   }
+  if (authority.kind === "VACANCY_BROADCAST") {
+    const parsed = parseVacancyBroadcastPushAuthority(authority);
+    return parsed && vacancyBroadcastAuthorityMatchesPayload(parsed, payloadData)
+      ? parsed
+      : null;
+  }
   return parseDutyConfirmationAuthority(authority, payloadData);
 }
 
@@ -403,7 +419,9 @@ function trackedAuthorityMatchesPayload(
   }
   return authority.kind === "VACANCY_REQUEST"
     ? vacancyRequestAuthorityMatchesPayload(authority, payloadData)
-    : assignmentLifecycleAuthorityMatchesPayload(authority, payloadData);
+    : authority.kind === "ASSIGNMENT_LIFECYCLE"
+      ? assignmentLifecycleAuthorityMatchesPayload(authority, payloadData)
+      : vacancyBroadcastAuthorityMatchesPayload(authority, payloadData);
 }
 
 function isCanonicalIsoDate(value: unknown): value is string {
@@ -458,7 +476,69 @@ function receiptTargetsMatchNotification(
   return true;
 }
 
-function parsePendingState(value: unknown, expectedUserId: number): PendingTrackingState | null {
+type PendingStateIdentity = Pick<
+  NotificationRow,
+  "userId" | "institutionId" | "shiftInstanceId"
+>;
+
+function isLegacyVacancyBroadcastPayloadForRow(
+  payloadData: PayloadData,
+  expected: PendingStateIdentity,
+): boolean {
+  return (
+    Number.isSafeInteger(expected.shiftInstanceId) &&
+    (expected.shiftInstanceId as number) > 0 &&
+    isVacancyBroadcastPushPayload(payloadData) &&
+    payloadData.institutionId === expected.institutionId &&
+    payloadData.shiftInstanceId === expected.shiftInstanceId &&
+    payloadData.userId === expected.userId &&
+    (!Object.prototype.hasOwnProperty.call(payloadData, "recipientUserId") ||
+      payloadData.recipientUserId === expected.userId)
+  );
+}
+
+function parseLegacyVacancySubmissionState(
+  value: unknown,
+  expected: PendingStateIdentity,
+): QueuedState | SubmittingState | null {
+  const row = asRecord(value);
+  const payloadData = asRecord(row?.payloadData);
+  const accountWideBadgeVersion = row
+    ? parseAccountWideBadgeVersion(row)
+    : null;
+  if (
+    !row ||
+    row.authority !== undefined ||
+    row.trackingVersion !== TRACKING_VERSION ||
+    !Number.isInteger(row.revision) ||
+    (row.revision as number) < 0 ||
+    !Number.isInteger(row.attemptCount) ||
+    (row.attemptCount as number) < 0 ||
+    !payloadData ||
+    accountWideBadgeVersion === null ||
+    !isLegacyVacancyBroadcastPayloadForRow(payloadData, expected)
+  ) {
+    return null;
+  }
+  const normalized = {
+    ...row,
+    ...(accountWideBadgeVersion === undefined
+      ? {}
+      : { accountWideBadgeVersion }),
+  };
+  if (row.phase === "QUEUED" && isCanonicalIsoDate(row.availableAt)) {
+    return normalized as QueuedState;
+  }
+  if (row.phase === "SUBMITTING" && isCanonicalIsoDate(row.leaseUntil)) {
+    return normalized as SubmittingState;
+  }
+  return null;
+}
+
+function parsePendingState(
+  value: unknown,
+  expected: PendingStateIdentity,
+): PendingTrackingState | null {
   const row = asRecord(value);
   const payloadData = asRecord(row?.payloadData);
   const authority = parseAuthority(row?.authority, payloadData ?? {});
@@ -477,11 +557,17 @@ function parsePendingState(value: unknown, expectedUserId: number): PendingTrack
   ) {
     return null;
   }
+  const legacyReceiptWithoutAuthority =
+    authority === undefined &&
+    (row.phase === "TICKET_ACCEPTED" || row.phase === "RECEIPT_CHECKING") &&
+    isLegacyVacancyBroadcastPayloadForRow(payloadData, expected);
   if (
+    !authority &&
     (isDutyConfirmationPayload(payloadData) ||
       isVacancyRequestPushPayload(payloadData) ||
-      isAssignmentLifecyclePushPayload(payloadData)) &&
-    !authority
+      isAssignmentLifecyclePushPayload(payloadData) ||
+      (isVacancyBroadcastPushPayload(payloadData) &&
+        !legacyReceiptWithoutAuthority))
   ) {
     return null;
   }
@@ -507,7 +593,10 @@ function parsePendingState(value: unknown, expectedUserId: number): PendingTrack
     Array.isArray(row.tickets) &&
     row.tickets.length > 0 &&
     row.tickets.every(isExpoReceiptTarget) &&
-    receiptTargetsMatchNotification(row.tickets as ExpoReceiptTarget[], expectedUserId) &&
+    receiptTargetsMatchNotification(
+      row.tickets as ExpoReceiptTarget[],
+      expected.userId,
+    ) &&
     (row.phase !== "RECEIPT_CHECKING" || isCanonicalIsoDate(row.leaseUntil))
   ) {
     return normalized as TicketAcceptedState | ReceiptCheckingState;
@@ -674,8 +763,53 @@ async function failRevokedAuthority(
     );
 }
 
+async function upgradeLegacyVacancySubmissionState(
+  db: Db,
+  row: NotificationRow,
+  state: QueuedState | SubmittingState,
+): Promise<QueuedState | SubmittingState | null> {
+  return db.transaction(async (tx) => {
+    const authority =
+      await requireAuthorizedLegacyVacancyBroadcastAuthority(tx, {
+        expectedUserId: row.userId,
+        institutionId: row.institutionId,
+        shiftInstanceId: row.shiftInstanceId as number,
+        payloadData: state.payloadData,
+      });
+    const payloadData = withAuthoritativePushRecipient(
+      {
+        ...state.payloadData,
+        type: "vacancy_available",
+        institutionId: authority.institutionId,
+        hospitalId: authority.hospitalId,
+        sectorId: authority.sectorId,
+        shiftInstanceId: authority.shiftInstanceId,
+        userId: authority.expectedUserId,
+      },
+      authority.expectedUserId,
+    );
+    const upgraded: QueuedState | SubmittingState = {
+      ...state,
+      revision: state.revision + 1,
+      payloadData,
+      authority,
+    };
+    const [persisted] = await tx
+      .update(notifications)
+      .set({ providerReceipt: upgraded })
+      .where(
+        and(
+          eq(notifications.id, row.id),
+          eq(notifications.status, "PENDING"),
+          revisionPredicate(state),
+        ),
+      );
+    return persisted.affectedRows === 1 ? upgraded : null;
+  });
+}
+
 async function requireCurrentPushAuthority(
-  db: Pick<Db, "select">,
+  db: Pick<Db, "select" | "execute">,
   row: NotificationRow,
   state: Pick<TrackingBase, "authority" | "payloadData">,
   lockForUpdate = false,
@@ -747,6 +881,33 @@ async function requireCurrentPushAuthority(
       state.authority.purpose,
       context,
     );
+  }
+  if (state.authority.kind === "VACANCY_BROADCAST") {
+    if (
+      row.institutionId !== state.authority.institutionId ||
+      row.shiftInstanceId !== state.authority.shiftInstanceId
+    ) {
+      throw new PersistedPushAuthorityBindingError(
+        "Tenant ou plantão do outbox não corresponde ao aviso de vaga",
+      );
+    }
+    await requireAuthorizedVacancyBroadcastRecipient(
+      db,
+      state.authority,
+      lockForUpdate,
+    );
+    if (!lockForUpdate) return;
+    const context = await requireCanonicalShiftPushContext(
+      db,
+      {
+        institutionId: state.authority.institutionId,
+        hospitalId: state.authority.hospitalId,
+        sectorId: state.authority.sectorId,
+        shiftInstanceId: state.authority.shiftInstanceId,
+      },
+      lockForUpdate,
+    );
+    return vacancyBroadcastPushPresentation(context);
   }
   const valid = await requireAuthorizedDutyConfirmationRecipient(db, {
     confirmationId: state.authority.confirmationId,
@@ -1341,7 +1502,40 @@ async function processTrackedRow(
   options?: PushDeliveryExecutionOptions,
 ): Promise<void> {
   if (row.status !== "PENDING") return;
-  const state = parsePendingState(row.providerReceipt, row.userId);
+  const identity: PendingStateIdentity = {
+    userId: row.userId,
+    institutionId: row.institutionId,
+    shiftInstanceId: row.shiftInstanceId,
+  };
+  const legacySubmission = parseLegacyVacancySubmissionState(
+    row.providerReceipt,
+    identity,
+  );
+  let providerReceipt = row.providerReceipt;
+  if (legacySubmission) {
+    const legacySubmissionDue =
+      legacySubmission.phase === "QUEUED"
+        ? new Date(legacySubmission.availableAt) <= now
+        : new Date(legacySubmission.leaseUntil) <= now;
+    // Durante uma troca de versão, o worker anterior ainda pode estar entre o
+    // claim e o fetch. Avançar a revisão antes do vencimento roubaria o CAS
+    // desse owner e poderia provocar uma segunda submissão após o lease.
+    if (!legacySubmissionDue) return;
+    try {
+      const upgraded = await upgradeLegacyVacancySubmissionState(
+        db,
+        row,
+        legacySubmission,
+      );
+      if (!upgraded) return;
+      providerReceipt = upgraded;
+    } catch (error) {
+      if (!isCanonicalPushAuthorityRejection(error)) throw error;
+      await failRevokedAuthority(db, row, legacySubmission, now);
+      return;
+    }
+  }
+  const state = parsePendingState(providerReceipt, identity);
   if (!state) {
     await db
       .update(notifications)
@@ -1414,7 +1608,8 @@ async function persistTrackedPushIntent(
   if (
     (isDutyConfirmationPayload(payloadData) ||
       isVacancyRequestPushPayload(payloadData) ||
-      isAssignmentLifecyclePushPayload(payloadData)) &&
+      isAssignmentLifecyclePushPayload(payloadData) ||
+      isVacancyBroadcastPushPayload(payloadData)) &&
     !input.authority
   ) {
     throw new Error("Push rastreado exige autoridade canonica");
