@@ -15,7 +15,10 @@ import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { listedSwapIsActionable } from "@/lib/swap-offer-actions";
-import { resolveOperationalListState } from "@/lib/operational-screen-state";
+import {
+  canDisplayOperationalListCount,
+  resolveOperationalListState,
+} from "@/lib/operational-screen-state";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
 
 export interface AvailableSwap {
@@ -51,8 +54,8 @@ interface Props {
   showEmpty?: boolean;
   title?: string;
   showHeader?: boolean;
-  /** Publica somente contagens confirmadas, nunca cache stale em erro. */
-  onCountChange?: (count: number) => void;
+  /** Publica contagem confirmada ou a retira quando a fila perde autoridade. */
+  onCountChange?: (count: number | null) => void;
 }
 
 const fmtDate = (value: Date | string) =>
@@ -94,9 +97,9 @@ export function AvailableSwapsList({
   });
 
   useEffect(() => {
-    if (contentState === "READY" || contentState === "EMPTY") {
-      onCountChange?.(actionableSwapCount);
-    }
+    onCountChange?.(
+      canDisplayOperationalListCount(contentState) ? actionableSwapCount : null,
+    );
   }, [actionableSwapCount, contentState, onCountChange]);
 
   const invalidateSwapQueries = () =>
