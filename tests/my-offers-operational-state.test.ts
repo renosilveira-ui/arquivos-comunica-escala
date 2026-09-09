@@ -15,10 +15,9 @@ describe("Ofertas próprias: erro, vazio e invalidação", () => {
     expect(offers).not.toMatch(/isLoading \? \(/);
   });
 
-  it("só publica contagem depois de READY ou EMPTY", () => {
-    expect(offers).toContain(
-      'if (contentState === "READY" || contentState === "EMPTY")',
-    );
+  it("publica contagem só com autoridade e a retira nos demais estados", () => {
+    expect(offers).toContain("canDisplayOperationalListCount(contentState)");
+    expect(offers).toMatch(/openOffers\.length\s*:\s*null/);
     expect(offers).not.toContain("if (data !== undefined && !isError)");
   });
 

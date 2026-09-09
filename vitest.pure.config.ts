@@ -92,6 +92,7 @@ export default defineConfig({
       "tests/mobile-resume-navigation.test.ts",
       "tests/mobile-operational-query-recovery-source.test.ts",
       "tests/mobile-ui-conformity.test.ts",
+      "tests/swap-segment-count-fence.test.ts",
       "tests/profile-notification-preferences.test.ts",
       "tests/operational-query-refresh.test.ts",
       "tests/operational-screen-state.test.ts",

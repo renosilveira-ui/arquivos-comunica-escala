@@ -27,7 +27,8 @@ describe("conformidade visual mobile corporativa", () => {
     expect(available).toMatch(/backgroundColor:\s*isPrimary\s*\?\s*theme\.colors\.brand/);
     expect(available).toMatch(/backgroundColor:\s*theme\.colors\.surfaceAlt/);
     expect(available).toMatch(/swaps\.filter\(listedSwapIsActionable\)\.length/);
-    expect(available).toMatch(/onCountChange\?\.\(actionableSwapCount\)/);
+    expect(available).toContain("canDisplayOperationalListCount(contentState)");
+    expect(available).toMatch(/actionableSwapCount\s*:\s*null/);
     expect(buttonNative).toMatch(/case\s+["']brand["']/);
     expect(buttonWeb).toMatch(/case\s+["']brand["']/);
   });

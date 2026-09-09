@@ -9,7 +9,10 @@ import * as Haptics from "expo-haptics";
 import { ChevronLeft, Inbox, Clock, AlertCircle, CalendarClock } from "lucide-react-native";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
-import { resolveMyApplicationsContentState } from "@/lib/operational-screen-state";
+import {
+  canDisplayOperationalListCount,
+  resolveMyApplicationsContentState,
+} from "@/lib/operational-screen-state";
 
 /**
  * Tela "Suas candidaturas" — RECEIVER counterpart de /my-offers.
@@ -74,7 +77,7 @@ export default function MyApplicationsScreen({
   onExploreAvailable,
 }: {
   embedded?: boolean;
-  onCountChange?: (count: number) => void;
+  onCountChange?: (count: number | null) => void;
   onExploreAvailable?: () => void;
 } = {}) {
   const { user, isLoading: authLoading } = useAuth();
@@ -129,9 +132,9 @@ export default function MyApplicationsScreen({
     vacancyRequests.filter((item) => item.status === "PENDENTE").length;
 
   useEffect(() => {
-    if (contentState === "READY" || contentState === "EMPTY") {
-      onCountChange?.(activeCount);
-    }
+    onCountChange?.(
+      canDisplayOperationalListCount(contentState) ? activeCount : null,
+    );
   }, [activeCount, contentState, onCountChange]);
 
   if (authLoading) {

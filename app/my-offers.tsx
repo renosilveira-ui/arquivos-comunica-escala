@@ -2,7 +2,10 @@ import { useEffect } from "react";
 import { Text, View, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import { ScreenGradient } from "@/components/ui/ScreenGradient";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
-import { resolveOperationalListState } from "@/lib/operational-screen-state";
+import {
+  canDisplayOperationalListCount,
+  resolveOperationalListState,
+} from "@/lib/operational-screen-state";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
@@ -60,7 +63,7 @@ export default function MyOffersScreen({
   onCountChange,
 }: {
   embedded?: boolean;
-  onCountChange?: (count: number) => void;
+  onCountChange?: (count: number | null) => void;
 } = {}) {
   const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
@@ -149,9 +152,9 @@ export default function MyOffersScreen({
   });
 
   useEffect(() => {
-    if (contentState === "READY" || contentState === "EMPTY") {
-      onCountChange?.(openOffers.length);
-    }
+    onCountChange?.(
+      canDisplayOperationalListCount(contentState) ? openOffers.length : null,
+    );
   }, [contentState, onCountChange, openOffers.length]);
 
   if (authLoading) {
