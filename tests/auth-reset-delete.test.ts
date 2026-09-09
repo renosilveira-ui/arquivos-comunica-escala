@@ -410,6 +410,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .spyOn(mailer, "sendMail")
       .mockResolvedValue({ delivered: false, transport: "console" });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const compare = vi.spyOn(bcrypt, "compare");
 
     const unknown = await request(app)
       .post("/api/auth/forgot-password")
@@ -424,6 +425,15 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(known.status).toBe(200);
     expect(known.body).toEqual({ ok: true });
     expect(spy).toHaveBeenCalledTimes(1);
+    expect(compare).toHaveBeenCalledTimes(2);
+    expect(
+      compare.mock.calls.every(
+        ([candidate, hash]) =>
+          candidate === "forgot-password-probe" &&
+          typeof hash === "string" &&
+          hash.startsWith("$2b$12$"),
+      ),
+    ).toBe(true);
 
     const [audit] = await db
       .select({
@@ -446,6 +456,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
     spy.mockRestore();
     errors.mockRestore();
+    compare.mockRestore();
   });
 
   it("forgot-password com entrega ok deixa o token utilizável", async () => {
@@ -589,7 +600,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
     const ok = await request(app)
       .post("/api/auth/reset-password")
-      .send({ token, newPassword: NEW_PASSWORD });
+      .send({ token, newPassword: `  ${NEW_PASSWORD}  ` });
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ ok: true });
     expect(
@@ -692,8 +703,8 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     ]);
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      delivered: true,
+      provider: "resend",
     });
 
     const reset = await request(app)
@@ -764,6 +775,60 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
         .from(personalCalendarItems)
         .where(eq(personalCalendarItems.ownerUserId, userIds.doctor)),
     ).resolves.toHaveLength(1);
+  });
+
+  it("admin reset com falha de entrega restaura a senha anterior e não responde sucesso", async () => {
+    const adminLogin = await login(EMAILS.admin, PASSWORD);
+    const adminCookie = cookieOf(adminLogin)!;
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      delivered: false,
+      provider: "resend",
+      error: "HTTP 503",
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const reset = await request(app)
+        .post(`/api/admin/users/${userIds.doctor}/reset-password`)
+        .set("Cookie", adminCookie)
+        .set("x-tenant-id", String(institutionId));
+      expect(reset.status).toBe(503);
+      expect(reset.body).toMatchObject({
+        ok: false,
+        code: "TEMPORARY_PASSWORD_DELIVERY_FAILED",
+      });
+      expect(reset.body.temporaryPassword).toBeUndefined();
+
+      const temporaryPassword = extractTemporaryPasswordFromMail(
+        sendMailSpy.mock.calls,
+        EMAILS.doctor,
+      );
+      expect((await login(EMAILS.doctor, temporaryPassword)).status).toBe(401);
+      expect((await login(EMAILS.doctor, PASSWORD)).status).toBe(200);
+
+      const [compensationAudit] = await db
+        .select({ metadata: auditTrail.metadata })
+        .from(auditTrail)
+        .where(
+          and(
+            eq(auditTrail.entityId, userIds.doctor),
+            eq(
+              auditTrail.description,
+              `Senha temporária do usuário #${userIds.doctor} revogada após falha de entrega`,
+            ),
+          ),
+        );
+      expect(compensationAudit?.metadata).toMatchObject({
+        temporaryCredentialRevoked: true,
+        previousPasswordRestored: true,
+      });
+      expect(errors.mock.calls.flat().join(" ")).not.toContain(
+        temporaryPassword,
+      );
+    } finally {
+      sendMailSpy.mockRestore();
+      errors.mockRestore();
+    }
   });
 
   // -------------------------------------------------------------------------

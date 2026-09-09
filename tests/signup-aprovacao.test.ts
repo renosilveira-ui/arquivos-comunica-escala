@@ -10,7 +10,7 @@
 //      approvalStatus APPROVED, tenant resolvido.
 //   4. Admin recusa: cadastro removido, login volta a 401, segunda recusa 404.
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray, like } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
@@ -489,14 +489,20 @@ describe("auto-cadastro público e aprovação", () => {
     expect(JSON.stringify(audit)).not.toContain(emailA);
     expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
 
-    const dup = await request(app).post("/api/auth/signup").send({
-      name: "Outro",
-      email: emailA,
-      password: PASSWORD,
-      institutionId,
-    });
-    expect(dup.status).toBe(201);
-    expect(dup.body).toMatchObject({ ok: true, pending: true });
+    const duplicateHash = vi.spyOn(bcrypt, "hash");
+    try {
+      const dup = await request(app).post("/api/auth/signup").send({
+        name: "Outro",
+        email: emailA,
+        password: PASSWORD,
+        institutionId,
+      });
+      expect(dup.status).toBe(201);
+      expect(dup.body).toMatchObject({ ok: true, pending: true });
+      expect(duplicateHash).toHaveBeenCalledTimes(1);
+    } finally {
+      duplicateHash.mockRestore();
+    }
     expect(
       await db.select({ id: users.id }).from(users).where(eq(users.email, emailA)),
     ).toHaveLength(1);
