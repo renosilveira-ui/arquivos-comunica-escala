@@ -259,6 +259,26 @@ describe("shifts: create / get / update / listByPeriod", () => {
     expect(dayKeyBrt(created!.startAt)).toBe(day);
   });
 
+  it("create recusa data civil inexistente sem criar turno em outro mês", async () => {
+    await expect(
+      asManager().create({
+        date: "2026-02-31",
+        shiftTemplateId: templateId,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const overflowed = await db
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, institutionId),
+          eq(shiftInstances.startAt, new Date("2026-03-03T19:00:00-03:00")),
+        ),
+      );
+    expect(overflowed).toHaveLength(0);
+  });
+
   it("serializa creates idênticos pela chave natural: 1 sucesso, 1 CONFLICT e 1 auditoria", async () => {
     const raceDay = addDaysToKey(day, 2);
     const startAt = new Date(`${raceDay}T19:00:00-03:00`);

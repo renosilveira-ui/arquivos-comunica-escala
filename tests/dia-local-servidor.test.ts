@@ -29,7 +29,7 @@ import {
 } from "./helpers/open-test-scale";
 import { calendarRouter } from "../server/calendar";
 import { getDb } from "../server/db";
-import { addDaysToKey, addMonthsYearMonth, dayKeyBrt, dayWindowBrt, mondayOfKey, monthWindowBrt, weekdayOfKey, yearMonthBrt, yearMonthFromDayKey } from "../server/local-time";
+import { addDaysToKey, addMonthsYearMonth, dayKeyBrt, dayWindowBrt, isValidDayKeyBrt, mondayOfKey, monthWindowBrt, weekdayOfKey, yearMonthBrt, yearMonthFromDayKey } from "../server/local-time";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
 
@@ -68,6 +68,14 @@ describe("local-time: helpers puros", () => {
     expect(addMonthsYearMonth("2026-08", 1)).toBe("2026-09");
     expect(addMonthsYearMonth("2026-12", 1)).toBe("2027-01");
     expect(addMonthsYearMonth("2026-01", -1)).toBe("2025-12");
+  });
+  it("recusa datas civis inexistentes em vez de normalizar para outro mês", () => {
+    expect(isValidDayKeyBrt("2024-02-29")).toBe(true);
+    expect(isValidDayKeyBrt("2026-02-29")).toBe(false);
+    expect(isValidDayKeyBrt("2026-02-31")).toBe(false);
+    expect(isValidDayKeyBrt("2026-13-01")).toBe(false);
+    expect(() => dayWindowBrt("2026-02-31")).toThrow(RangeError);
+    expect(() => addDaysToKey("2026-13-01", 1)).toThrow(RangeError);
   });
 });
 
