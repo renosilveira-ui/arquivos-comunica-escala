@@ -175,7 +175,12 @@ export function qualificationMatches(
   }
   if (policy === "QUALIFICATION_ALLOWLIST") {
     const allowed = context.allowedQualifications;
-    if (!allowed || allowed.length === 0) return false;
+    // Sem linhas, a credencial clínica ainda não foi configurada: a ACL
+    // setorial exata continua sendo a autoridade. Só uma allowlist não vazia
+    // funciona como restrição clínica explícita do cliente. `undefined` é
+    // hidratação incompleta e permanece fail-closed.
+    if (!allowed) return false;
+    if (allowed.length === 0) return true;
     return allowed.some((entry) =>
       entry.medicalSpecialtyId !== null
         ? professional.medicalSpecialtyId === entry.medicalSpecialtyId

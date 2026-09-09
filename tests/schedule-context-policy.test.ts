@@ -217,6 +217,43 @@ describe("política canônica de contextos de escala", () => {
     ).toBe(false);
   });
 
+  it("allowlist vazia preserva ACL setorial; preenchida filtra pela credencial", () => {
+    const empty: ActiveScheduleContext = {
+      ...context(15, 110, null),
+      medicalSpecialtyId: null,
+      medicalSpecialtyCode: null,
+      medicalSpecialtyName: null,
+      operationalProfileCode: null,
+      admissionPolicy: "QUALIFICATION_ALLOWLIST",
+      allowedQualifications: [],
+    };
+    const restricted: ActiveScheduleContext = {
+      ...empty,
+      allowedQualifications: [
+        { medicalSpecialtyId: 20, operationalProfileCode: null },
+      ],
+    };
+    const professional = {
+      medicalSpecialtyId: 10,
+      operationalProfileCode: null,
+    };
+
+    expect(qualificationMatches(professional, empty)).toBe(true);
+    expect(qualificationMatches(professional, restricted)).toBe(false);
+    expect(
+      qualificationMatches(professional, {
+        ...empty,
+        allowedQualifications: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      qualificationMatches(
+        { medicalSpecialtyId: null, operationalProfileCode: null },
+        empty,
+      ),
+    ).toBe(false);
+  });
+
   it("projeta broad legado e ACL setorial sem confundir TRR com Emergência", () => {
     const contexts = [context(1, 101, null), context(2, 102, null)];
     expect(

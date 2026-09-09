@@ -47,8 +47,9 @@ export function plantonistaAccessCoversShiftSql(
 
 /**
  * Espelha `qualificationMatches` em SQL. Papel gerencial não entra.
- * ALLOWLIST vazia não admite ninguém. Hospital-wide não aparece aqui —
- * isso continua em `plantonistaAccessCoversShiftSql`.
+ * ALLOWLIST vazia não cria restrição clínica implícita; a autoridade segue
+ * sendo a ACL setorial exata. Quando há linhas, elas filtram. Hospital-wide
+ * não aparece aqui — isso continua em `plantonistaAccessCoversShiftSql`.
  */
 export function plantonistaQualificationMatchesContextSql(
   ap = "ap",
@@ -73,20 +74,27 @@ export function plantonistaQualificationMatchesContextSql(
       )
       OR (
         ${col(sc, "admission_policy")} = 'QUALIFICATION_ALLOWLIST'
-        AND EXISTS (
-          SELECT 1
-          FROM schedule_context_allowed_qualifications actor_context_allowlist
-          WHERE actor_context_allowlist.schedule_context_id = ${col(sc, "id")}
-            AND (
-              (
-                actor_context_allowlist.medical_specialty_id IS NOT NULL
-                AND actor_context_allowlist.medical_specialty_id = ${col(ap, "medical_specialty_id")}
+        AND (
+          NOT EXISTS (
+            SELECT 1
+            FROM schedule_context_allowed_qualifications actor_context_allowlist_any
+            WHERE actor_context_allowlist_any.schedule_context_id = ${col(sc, "id")}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM schedule_context_allowed_qualifications actor_context_allowlist
+            WHERE actor_context_allowlist.schedule_context_id = ${col(sc, "id")}
+              AND (
+                (
+                  actor_context_allowlist.medical_specialty_id IS NOT NULL
+                  AND actor_context_allowlist.medical_specialty_id = ${col(ap, "medical_specialty_id")}
+                )
+                OR (
+                  actor_context_allowlist.operational_profile_code IS NOT NULL
+                  AND actor_context_allowlist.operational_profile_code = ${col(ap, "operational_profile_code")}
+                )
               )
-              OR (
-                actor_context_allowlist.operational_profile_code IS NOT NULL
-                AND actor_context_allowlist.operational_profile_code = ${col(ap, "operational_profile_code")}
-              )
-            )
+          )
         )
       )
       OR (
