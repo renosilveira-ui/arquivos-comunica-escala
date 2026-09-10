@@ -9,10 +9,51 @@ import {
   reportShiftsSurface,
   resolveReportShiftsState,
 } from "../lib/report-shifts-state";
+import {
+  reportShiftStatusFromApi,
+  reportShiftStatusMeta,
+} from "../lib/report-shift-status";
 
 const report = readFileSync("app/report.tsx", "utf8");
 
 const SHIFT = { id: 1, status: "OCUPADO" };
+
+describe("status do plantão no relatório", () => {
+  it.each([
+    ["OCUPADO", "confirmada", "Confirmada", "success"],
+    ["PENDENTE", "pendente", "Pendente", "warning"],
+    ["VAGO", "vaga", "Vaga", "neutral"],
+  ] as const)(
+    "mapeia %s sem confundir estados",
+    (apiStatus, expected, label, badgeVariant) => {
+      const status = reportShiftStatusFromApi(apiStatus);
+      expect(status).toBe(expected);
+      expect(reportShiftStatusMeta(status)).toMatchObject({
+        label,
+        badgeVariant,
+      });
+    },
+  );
+
+  it.each(["CANCELADO", "cancelada", "", "NOVO_STATUS"])(
+    "valor desconhecido %j falha de modo conservador",
+    (apiStatus) => {
+      const status = reportShiftStatusFromApi(apiStatus);
+      expect(status).toBe("indisponivel");
+      expect(reportShiftStatusMeta(status)).toEqual({
+        label: "Status indisponível",
+        badgeVariant: "neutral",
+      });
+    },
+  );
+
+  it("preserva cancelada apenas para o conjunto de demonstração legado", () => {
+    expect(reportShiftStatusMeta("cancelada")).toEqual({
+      label: "Cancelada",
+      badgeVariant: "neutral",
+    });
+  });
+});
 
 function queryInput(
   overrides: Partial<Parameters<typeof resolveReportShiftsState>[0]> = {},
@@ -197,6 +238,13 @@ describe("reportShiftsSurface — copy e retry", () => {
 });
 
 describe("Relatório respeita a máquina de estados", () => {
+  it("conta e apresenta VAGO como vaga, nunca como cancelamento", () => {
+    expect(report).toContain('s.status === "vaga"');
+    expect(report).toContain("reportShiftStatusFromApi(item.status)");
+    expect(report).toContain('<Badge variant="neutral">Vagas</Badge>');
+    expect(report).not.toMatch(/item\.status[^\n]+cancelada/);
+  });
+
   it("não colapsa listByPeriod com || [] nem ?? []", () => {
     expect(report).toContain("resolveReportShiftsState");
     expect(report).toContain("reportShiftsSurface");
