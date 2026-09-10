@@ -232,7 +232,19 @@ export const confirmationRouter = router({
         });
       }
       const candidate = candidates[0];
-      if (!candidate) return null;
+      if (!candidate) {
+        // Sem token, null significa "você não tem indicação pendente". Com
+        // token, o cliente perguntou por um ciclo específico: devolver null
+        // faria um ciclo já rotacionado parecer ausência de indicação, e a
+        // tela seguiria mostrando a ação antiga como se ainda valesse.
+        if (input) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Indicação não encontrada",
+          });
+        }
+        return null;
+      }
       const valid = await requireValidDutyConfirmation(db, candidate.id, {
         allowedStatuses: ["NOMINATED"],
         expectedActor: { kind: "REPLACEMENT", userId: ctx.user.id },

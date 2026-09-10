@@ -27,6 +27,7 @@ import {
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
+import { yearMonthBrt } from "../server/local-time";
 import { enqueueShiftAssignedPush, enqueueShiftUnassignedPush } from "../server/assignment-push-signal";
 
 describe("editor.assignDirect", () => {
@@ -265,6 +266,8 @@ describe("editor.assignDirect", () => {
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
+    // Editar mês publicado registra auditoria fora do escopo do turno.
+    await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     if (anesthesiaSpecialtyId) {
       await db
@@ -796,6 +799,32 @@ describe("editor.assignDirect", () => {
       reason: "Teste de alocação direta",
     });
 
+    // A remoção só notifica quando desfaz uma escala oficial, e mês publicado
+    // só Gestor+ edita. Publique e promova o ator para percorrer o caminho
+    // real: montagem no rascunho, publicação, remoção oficial.
+    const [shiftMonth] = await db
+      .select({ startAt: shiftInstances.startAt })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, shiftInstanceId));
+    await db
+      .insert(monthlyRosters)
+      .values({
+        institutionId,
+        hospitalId,
+        yearMonth: yearMonthBrt(shiftMonth.startAt),
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
+    await db
+      .update(professionalInstitutions)
+      .set({ roleInInstitution: "GESTOR_PLUS" })
+      .where(
+        and(
+          eq(professionalInstitutions.userId, managerUserId),
+          eq(professionalInstitutions.institutionId, institutionId),
+        ),
+      );
+
     const result = await caller.unassignDirect({
       assignmentId: assignment.assignmentId,
       reason: "Teste de remoção direta",
@@ -924,6 +953,19 @@ describe("editor.assignDirect", () => {
         return receipt.payloadData?.type === "shift_unassigned";
       }),
     ).toHaveLength(1);
+
+    await db
+      .update(professionalInstitutions)
+      .set({ roleInInstitution: "GESTOR_MEDICO" })
+      .where(
+        and(
+          eq(professionalInstitutions.userId, managerUserId),
+          eq(professionalInstitutions.institutionId, institutionId),
+        ),
+      );
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
   });
 
   it("remove alocação sem push quando o profissional não tem PI ativa no tenant", async () => {

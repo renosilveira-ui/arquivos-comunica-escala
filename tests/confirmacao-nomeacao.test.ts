@@ -1121,6 +1121,13 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
   it("acceptNomination falha fechado se o turno já excedeu o limite operacional", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await nominated(assignmentId, shiftId);
+    // O limite fixo de 20 para turno legado foi aposentado: hoje a capacidade
+    // é explícita no turno. A substituição é neutra em vagas, mas não pode
+    // seguir num turno que já está acima da própria capacidade.
+    await db
+      .update(shiftInstances)
+      .set({ requiredCapacity: 20 })
+      .where(eq(shiftInstances.id, shiftId));
     await db.insert(shiftAssignmentsV2).values(
       Array.from({ length: 20 }, () => ({
         shiftInstanceId: shiftId,
@@ -1981,7 +1988,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
           confirmationToken: secondCycle.confirmationToken,
           nominationEpoch: secondCycle.recheckAt!.toISOString(),
         }),
-      ).resolves.toMatchObject({ confirmation: { status: "NOMINATED" } });
+      ).resolves.toMatchObject({ status: "NOMINATED" });
     } finally {
       nowSpy.mockRestore();
     }
