@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -20,7 +20,11 @@ import {
 } from "../lib/schedule-invite-code";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
-import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
+import {
+  assertManagerScopeAccessForUpdate,
+  getTenantActorFromContext,
+  type TenantActor,
+} from "./_core/policy";
 import {
   listAuthorizedScheduleContexts,
   selectActiveScheduleContexts,
@@ -680,6 +684,7 @@ export const scheduleInvitesRouter = router({
     const actor = await getTenantActorFromContext(ctx);
     const db = await getDb();
     if (!db) throw new Error("Database not available");
+    const now = new Date();
     const authorized = await listAuthorizedScheduleContexts(actor);
     const manageable = new Set(
       authorized
@@ -722,6 +727,8 @@ export const scheduleInvitesRouter = router({
           eq(scheduleInvites.institutionId, actor.institutionId),
           isNull(scheduleInvites.revokedAt),
           isNull(scheduleInvites.declinedAt),
+          gt(scheduleInvites.expiresAt, now),
+          sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
         ),
       );
     return rows.filter((row) =>
@@ -993,27 +1000,91 @@ export const scheduleInvitesRouter = router({
       const actor = await getTenantActorFromContext(ctx);
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-      const [invite] = await db
-        .select()
-        .from(scheduleInvites)
-        .where(
-          and(
-            eq(scheduleInvites.id, input.inviteId),
-            eq(scheduleInvites.institutionId, actor.institutionId),
-          ),
-        )
-        .limit(1);
-      if (!invite) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Convite não encontrado",
-        });
-      }
-      await assertCanManageSector(actor, invite.hospitalId, invite.sectorId);
-      await db
-        .update(scheduleInvites)
-        .set({ revokedAt: new Date() })
-        .where(eq(scheduleInvites.id, invite.id));
-      return { ok: true as const };
+      return db.transaction(async (tx) => {
+        // Esta leitura só descobre o escopo necessário para a revalidação.
+        // Ela não autoriza a escrita: a linha canônica será relida com lock
+        // depois que sessão, vínculo e manager_scope estiverem bloqueados.
+        const [observedInvite] = await tx
+          .select({
+            id: scheduleInvites.id,
+            hospitalId: scheduleInvites.hospitalId,
+            sectorId: scheduleInvites.sectorId,
+          })
+          .from(scheduleInvites)
+          .where(
+            and(
+              eq(scheduleInvites.id, input.inviteId),
+              eq(scheduleInvites.institutionId, actor.institutionId),
+            ),
+          )
+          .limit(1);
+        if (!observedInvite) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Convite não encontrado",
+          });
+        }
+
+        await assertManagerScopeAccessForUpdate(
+          tx,
+          actor,
+          ctx.user.sessionVersion,
+          observedInvite.hospitalId,
+          observedInvite.sectorId,
+        );
+
+        const [lockedInvite] = await tx
+          .select({
+            id: scheduleInvites.id,
+            hospitalId: scheduleInvites.hospitalId,
+            sectorId: scheduleInvites.sectorId,
+            revokedAt: scheduleInvites.revokedAt,
+          })
+          .from(scheduleInvites)
+          .where(
+            and(
+              eq(scheduleInvites.id, observedInvite.id),
+              eq(scheduleInvites.institutionId, actor.institutionId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (
+          !lockedInvite ||
+          lockedInvite.hospitalId !== observedInvite.hospitalId ||
+          lockedInvite.sectorId !== observedInvite.sectorId
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "O convite mudou durante a operação. Atualize e tente novamente.",
+          });
+        }
+
+        // Repetir a revogação não gira o timestamp nem transforma uma
+        // resposta idempotente em nova escrita.
+        if (lockedInvite.revokedAt) return { ok: true as const };
+
+        const result = await tx
+          .update(scheduleInvites)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(scheduleInvites.id, lockedInvite.id),
+              eq(scheduleInvites.institutionId, actor.institutionId),
+              eq(scheduleInvites.hospitalId, lockedInvite.hospitalId),
+              eq(scheduleInvites.sectorId, lockedInvite.sectorId),
+              isNull(scheduleInvites.revokedAt),
+            ),
+          );
+        if (updateAffectedRows(result) !== 1) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "O convite mudou durante a operação. Atualize e tente novamente.",
+          });
+        }
+        return { ok: true as const };
+      });
     }),
 });

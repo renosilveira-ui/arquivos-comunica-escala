@@ -60,6 +60,28 @@ describe("wiring fail-closed dos convites nominais", () => {
     );
   });
 
+  it("listActive limita a população SQL a convites canonicamente ativos", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    const listActive = source.slice(
+      source.indexOf("listActive: protectedProcedure"),
+      source.indexOf("listCandidates: protectedProcedure"),
+    );
+    expect(listActive).toContain("const now = new Date()");
+    expect(listActive).toContain(
+      "eq(scheduleInvites.institutionId, actor.institutionId)",
+    );
+    expect(listActive).toContain("isNull(scheduleInvites.revokedAt)");
+    expect(listActive).toContain("isNull(scheduleInvites.declinedAt)");
+    expect(listActive).toContain("gt(scheduleInvites.expiresAt, now)");
+    expect(listActive).toContain(
+      "sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`",
+    );
+    expect(listActive).toContain(".filter((context) => context.canManage)");
+    expect(listActive).toContain(
+      "manageable.has(`${row.hospitalId}:${row.sectorId}`)",
+    );
+    expect(listActive.match(/new Date\(\)/g)).toHaveLength(1);
+  });
   it("o app não importa o gerador de código com crypto de Node", () => {
     const signup = readFileSync("app/signup.tsx", "utf8");
     const join = readFileSync("app/join-schedule.tsx", "utf8");
@@ -78,5 +100,29 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(invites).not.toContain("schedule-invite-code");
     expect(invites).not.toContain("Share.share");
     expect(invites).not.toContain("Buscar e-mail");
+  });
+
+  it("revoga convite com autoridade corrente, lock canônico e CAS tenant-scoped", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    const revoke = source.slice(source.indexOf("  revoke: protectedProcedure"));
+    const authorityIndex = revoke.indexOf(
+      "await assertManagerScopeAccessForUpdate(",
+    );
+    const lockIndex = revoke.indexOf('.for("update")');
+    const updateIndex = revoke.indexOf(".update(scheduleInvites)");
+
+    expect(revoke).toContain("return db.transaction(async (tx) => {");
+    expect(revoke).not.toContain("assertCanManageSector(");
+    expect(revoke).toContain("ctx.user.sessionVersion");
+    expect(authorityIndex).toBeGreaterThan(0);
+    expect(lockIndex).toBeGreaterThan(authorityIndex);
+    expect(updateIndex).toBeGreaterThan(lockIndex);
+    expect(revoke).toContain("eq(scheduleInvites.id, input.inviteId)");
+    expect(revoke).toContain(
+      "eq(scheduleInvites.institutionId, actor.institutionId)",
+    );
+    expect(revoke).toContain("isNull(scheduleInvites.revokedAt)");
+    expect(revoke).toContain("updateAffectedRows(result) !== 1");
+    expect(revoke).toContain("if (lockedInvite.revokedAt)");
   });
 });
