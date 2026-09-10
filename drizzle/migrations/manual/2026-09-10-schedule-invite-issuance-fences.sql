@@ -5,6 +5,14 @@
 -- rotação. A reaplicação recria apenas os guards append-only depois de provar
 -- o manifesto exato. Nenhuma tabela guarda código em claro, hash do código,
 -- e-mail ou payload do provedor.
+--
+-- As cláusulas CHECK do manifesto são comparadas contra a serialização que o
+-- catálogo do MySQL devolve, não contra o texto escrito aqui: o servidor
+-- reescreve o predicado com parênteses explícitos e pode escapar aspas. A
+-- forma literal abaixo foi lida do próprio INFORMATION_SCHEMA e vale para a
+-- versão fixada na CI; a normalização remove apenas backtick, prefixo de
+-- charset, backslash e espaço em branco, preservando ordem, operadores e
+-- agrupamento semântico. Subir a versão do MySQL exige reler o catálogo.
 
 -- Preflight de ambos os objetos ANTES do primeiro DDL permanente. Uma tabela
 -- homônima só é aceita quando o manifesto final inteiro coincide; drift ou
@@ -80,15 +88,15 @@ SET @siif_fence_fks_ok := (
 );
 SET @siif_fence_checks_ok := (
   SELECT COUNT(*) = 6 AND SUM(check_manifest.ENFORCED = 'YES') = 6
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_generation' AND check_manifest.NORMALIZED_CLAUSE = '((state=''idle''andgeneration=0)or(state<>''idle''andgeneration>0))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_lease_shape' AND check_manifest.NORMALIZED_CLAUSE = '((statein(''preparing'',''provider_unknown'',''provider_accepted'')andlease_tokenisnotnullandlease_expires_atisnotnull)or(statenotin(''preparing'',''provider_unknown'',''provider_accepted'')andlease_tokenisnullandlease_expires_atisnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_material_shape' AND check_manifest.NORMALIZED_CLAUSE = '((state=''idle''andattempt_expires_atisnullandcode_nonceisnullandcode_pepper_key_idisnullandrecipient_binding_hashisnullandprovider_idempotency_keyisnullandprovider_request_fingerprintisnull)or(state<>''idle''andattempt_expires_atisnotnullandcode_nonceisnotnullandcode_pepper_key_idisnotnullandrecipient_binding_hashisnotnullandprovider_idempotency_keyisnotnullandprovider_request_fingerprintisnotnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_accepted_shape' AND check_manifest.NORMALIZED_CLAUSE = '((statein(''provider_accepted'',''active'',''provider_accepted_activation_failed'')andprovider_accepted_atisnotnull)or(statenotin(''provider_accepted'',''active'',''provider_accepted_activation_failed'')andprovider_accepted_atisnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_failure_shape' AND check_manifest.NORMALIZED_CLAUSE = '((statein(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed'')andfailure_codeisnotnull)or(statenotin(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed'')andfailure_codeisnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_activation_shape' AND check_manifest.NORMALIZED_CLAUSE = '((state=''active''andschedule_invite_idisnotnull)or(state<>''active''andschedule_invite_idisnull))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_generation' AND check_manifest.NORMALIZED_CLAUSE = '(((state=''idle'')and(generation=0))or((state<>''idle'')and(generation>0)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_lease_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((statein(''preparing'',''provider_unknown'',''provider_accepted''))and(lease_tokenisnotnull)and(lease_expires_atisnotnull))or((statenotin(''preparing'',''provider_unknown'',''provider_accepted''))and(lease_tokenisnull)and(lease_expires_atisnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_material_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((state=''idle'')and(attempt_expires_atisnull)and(code_nonceisnull)and(code_pepper_key_idisnull)and(recipient_binding_hashisnull)and(provider_idempotency_keyisnull)and(provider_request_fingerprintisnull))or((state<>''idle'')and(attempt_expires_atisnotnull)and(code_nonceisnotnull)and(code_pepper_key_idisnotnull)and(recipient_binding_hashisnotnull)and(provider_idempotency_keyisnotnull)and(provider_request_fingerprintisnotnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_accepted_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((statein(''provider_accepted'',''active'',''provider_accepted_activation_failed''))and(provider_accepted_atisnotnull))or((statenotin(''provider_accepted'',''active'',''provider_accepted_activation_failed''))and(provider_accepted_atisnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_failure_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((statein(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed''))and(failure_codeisnotnull))or((statenotin(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed''))and(failure_codeisnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_activation_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((state=''active'')and(schedule_invite_idisnotnull))or((state<>''active'')and(schedule_invite_idisnull)))') = 1
   FROM (
     SELECT table_constraints.CONSTRAINT_NAME, table_constraints.ENFORCED,
-      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
+      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), CHAR(92), ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS table_constraints
     INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS check_constraints
       ON check_constraints.CONSTRAINT_SCHEMA = table_constraints.CONSTRAINT_SCHEMA
@@ -164,7 +172,7 @@ SET @siij_checks_ok := (
     AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_journal_generation' AND check_manifest.NORMALIZED_CLAUSE = '(generation>0)') = 1
   FROM (
     SELECT table_constraints.CONSTRAINT_NAME, table_constraints.ENFORCED,
-      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
+      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), CHAR(92), ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS table_constraints
     INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS check_constraints
       ON check_constraints.CONSTRAINT_SCHEMA = table_constraints.CONSTRAINT_SCHEMA
@@ -369,15 +377,15 @@ SET @siif_postflight_fks_ok := (
 );
 SET @siif_postflight_checks_ok := (
   SELECT COUNT(*) = 6 AND SUM(check_manifest.ENFORCED = 'YES') = 6
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_generation' AND check_manifest.NORMALIZED_CLAUSE = '((state=''idle''andgeneration=0)or(state<>''idle''andgeneration>0))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_lease_shape' AND check_manifest.NORMALIZED_CLAUSE = '((statein(''preparing'',''provider_unknown'',''provider_accepted'')andlease_tokenisnotnullandlease_expires_atisnotnull)or(statenotin(''preparing'',''provider_unknown'',''provider_accepted'')andlease_tokenisnullandlease_expires_atisnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_material_shape' AND check_manifest.NORMALIZED_CLAUSE = '((state=''idle''andattempt_expires_atisnullandcode_nonceisnullandcode_pepper_key_idisnullandrecipient_binding_hashisnullandprovider_idempotency_keyisnullandprovider_request_fingerprintisnull)or(state<>''idle''andattempt_expires_atisnotnullandcode_nonceisnotnullandcode_pepper_key_idisnotnullandrecipient_binding_hashisnotnullandprovider_idempotency_keyisnotnullandprovider_request_fingerprintisnotnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_accepted_shape' AND check_manifest.NORMALIZED_CLAUSE = '((statein(''provider_accepted'',''active'',''provider_accepted_activation_failed'')andprovider_accepted_atisnotnull)or(statenotin(''provider_accepted'',''active'',''provider_accepted_activation_failed'')andprovider_accepted_atisnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_failure_shape' AND check_manifest.NORMALIZED_CLAUSE = '((statein(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed'')andfailure_codeisnotnull)or(statenotin(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed'')andfailure_codeisnull))') = 1
-    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_activation_shape' AND check_manifest.NORMALIZED_CLAUSE = '((state=''active''andschedule_invite_idisnotnull)or(state<>''active''andschedule_invite_idisnull))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_generation' AND check_manifest.NORMALIZED_CLAUSE = '(((state=''idle'')and(generation=0))or((state<>''idle'')and(generation>0)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_lease_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((statein(''preparing'',''provider_unknown'',''provider_accepted''))and(lease_tokenisnotnull)and(lease_expires_atisnotnull))or((statenotin(''preparing'',''provider_unknown'',''provider_accepted''))and(lease_tokenisnull)and(lease_expires_atisnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_material_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((state=''idle'')and(attempt_expires_atisnull)and(code_nonceisnull)and(code_pepper_key_idisnull)and(recipient_binding_hashisnull)and(provider_idempotency_keyisnull)and(provider_request_fingerprintisnull))or((state<>''idle'')and(attempt_expires_atisnotnull)and(code_nonceisnotnull)and(code_pepper_key_idisnotnull)and(recipient_binding_hashisnotnull)and(provider_idempotency_keyisnotnull)and(provider_request_fingerprintisnotnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_accepted_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((statein(''provider_accepted'',''active'',''provider_accepted_activation_failed''))and(provider_accepted_atisnotnull))or((statenotin(''provider_accepted'',''active'',''provider_accepted_activation_failed''))and(provider_accepted_atisnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_failure_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((statein(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed''))and(failure_codeisnotnull))or((statenotin(''provider_unknown'',''provider_rejected'',''provider_accepted_activation_failed''))and(failure_codeisnull)))') = 1
+    AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_activation_shape' AND check_manifest.NORMALIZED_CLAUSE = '(((state=''active'')and(schedule_invite_idisnotnull))or((state<>''active'')and(schedule_invite_idisnull)))') = 1
   FROM (
     SELECT table_constraints.CONSTRAINT_NAME, table_constraints.ENFORCED,
-      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
+      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), CHAR(92), ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS table_constraints
     INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS check_constraints
       ON check_constraints.CONSTRAINT_SCHEMA = table_constraints.CONSTRAINT_SCHEMA
@@ -392,7 +400,7 @@ SET @siij_postflight_check_ok := (
     AND SUM(check_manifest.CONSTRAINT_NAME = 'chk_schedule_invite_issuance_journal_generation' AND check_manifest.NORMALIZED_CLAUSE = '(generation>0)') = 1
   FROM (
     SELECT table_constraints.CONSTRAINT_NAME, table_constraints.ENFORCED,
-      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
+      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(check_constraints.CHECK_CLAUSE), CHAR(96), ''), '_utf8mb4', ''), CHAR(92), ''), ' ', ''), CHAR(10), ''), CHAR(13), '') AS NORMALIZED_CLAUSE
     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS table_constraints
     INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS check_constraints
       ON check_constraints.CONSTRAINT_SCHEMA = table_constraints.CONSTRAINT_SCHEMA

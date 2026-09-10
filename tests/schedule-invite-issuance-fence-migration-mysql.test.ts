@@ -151,8 +151,14 @@ describe("migration da fence de emissão em MySQL isolado", () => {
     const [version] = await admin.query<RowDataPacket[]>(
       "SELECT VERSION() AS version",
     );
-    if (!/^8\./.test(String(version[0]?.version))) {
-      throw new Error("A prova exige o serviço MySQL 8 efêmero.");
+    // O manifesto compara CHECK_CLAUSE com a serialização literal do
+    // catálogo, que muda entre patches. Falhar aqui, com o patch no texto, é
+    // muito mais legível que o "Invalid JSON text" que o aborto da migration
+    // produziria depois — e diz exatamente o que reler.
+    if (!/^8\.0\.46(?:\D|$)/.test(String(version[0]?.version))) {
+      throw new Error(
+        "A prova exige a serialização de catálogo comprovada no MySQL 8.0.46.",
+      );
     }
   });
 
@@ -391,9 +397,14 @@ describe("migration da fence de emissão em MySQL isolado", () => {
 
   it("preflight recusa drift de ação referencial mesmo com nome e colunas iguais", async () => {
     await database.query(migration);
+    // O MySQL recusa dropar e recriar a mesma FK num único ALTER: o nome
+    // antigo ainda existe quando o novo é validado.
     await database.query(`
       ALTER TABLE schedule_invite_issuance_fences
-        DROP FOREIGN KEY fk_schedule_invite_issuance_invited_user,
+        DROP FOREIGN KEY fk_schedule_invite_issuance_invited_user
+    `);
+    await database.query(`
+      ALTER TABLE schedule_invite_issuance_fences
         ADD CONSTRAINT fk_schedule_invite_issuance_invited_user
           FOREIGN KEY (invited_user_id) REFERENCES users (id)
           ON UPDATE CASCADE ON DELETE CASCADE

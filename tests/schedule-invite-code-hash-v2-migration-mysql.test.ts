@@ -135,8 +135,10 @@ describe("migration da versão de hash do convite em MySQL isolado", () => {
     const [version] = await admin.query<RowDataPacket[]>(
       "SELECT VERSION() AS version",
     );
-    if (!/^8\./.test(String(version[0]?.version))) {
-      throw new Error("A prova exige o serviço MySQL 8 efêmero.");
+    if (!/^8\.0\.46(?:\D|$)/.test(String(version[0]?.version))) {
+      throw new Error(
+        "A prova exige a serialização de catálogo comprovada no MySQL 8.0.46.",
+      );
     }
   });
 

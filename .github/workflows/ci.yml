@@ -25,7 +25,9 @@ jobs:
 
     services:
       mysql:
-        image: mysql:8.0
+        # Patch fixo: o manifesto das migrations compara CHECK_CLAUSE com a
+        # serialização exata do catálogo, que varia entre patches do MySQL.
+        image: mysql:8.0.46
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: escalas_test
