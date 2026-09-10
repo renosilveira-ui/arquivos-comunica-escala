@@ -309,6 +309,7 @@ export async function dispatchConfirmations(now: Date) {
           and(
             eq(dutyConfirmations.status, "PENDING"),
             isNull(dutyConfirmations.recheckAt),
+            eq(dutyConfirmations.managerNotified, false),
           ),
         ),
         plantonistaAccessCoversShiftSql(

@@ -45,6 +45,9 @@ describe("rearme de confirmação após mudança de horário", () => {
   it("materializa novamente somente quando due e cria nova deduplicação", () => {
     expect(dispatcher).toContain("confirmationId: dutyConfirmations.id");
     expect(dispatcher).toContain("isNull(dutyConfirmations.recheckAt)");
+    expect(dispatcher).toContain(
+      "eq(dutyConfirmations.managerNotified, false)",
+    );
     expect(dispatcher).toContain("if (assignment.confirmationId === null)");
     expect(dispatcher).toContain("const [claimedRearm]");
     expect(dispatcher).toContain(".set({ recheckAt, notifiedAt: null })");
