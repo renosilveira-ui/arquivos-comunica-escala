@@ -13,16 +13,23 @@ describe("migration de reprodutibilidade do schema central", () => {
   it("é aditiva, idempotente e falha fechada sobre objetos parciais", () => {
     expect(migration).toContain("core_schema_reproducibility_contract_mismatch");
     expect(migration).toContain("LOWER(COLUMN_TYPE) = 'int'");
+    expect(migration).toContain("CAST(COLUMN_TYPE AS BINARY)");
+    expect(migration).toContain("CAST(COLUMN_DEFAULT AS BINARY)");
     expect(migration).toContain("= 'auto_increment'");
     expect(migration).toContain("COUNT(*) = 1");
     expect(migration).toContain("TABLE_TYPE = 'BASE TABLE'");
     expect(migration).toContain("UPPER(ENGINE) = 'INNODB'");
+    expect(migration).toContain("IS_VISIBLE = 'YES'");
     expect(migration).toContain(
       "COLLATION_NAME = @csr_shift_instances_table_collation",
     );
     expect(migration).toContain(
       "@csr_institution_config_fk_name_available = 1",
     );
+    expect(migration).toContain(
+      "@csr_institution_config_check_contract_matches = 1",
+    );
+    expect(migration).toContain("CONSTRAINT_TYPE = 'CHECK'");
     expect(migration).toContain("POSITION_IN_UNIQUE_CONSTRAINT = 1");
     expect(migration).toContain("UNIQUE_CONSTRAINT_NAME = 'PRIMARY'");
     expect(migration).toContain("@csr_modality_column_count = 0");

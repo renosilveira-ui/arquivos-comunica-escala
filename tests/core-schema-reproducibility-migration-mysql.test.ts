@@ -66,7 +66,7 @@ async function schemaSnapshot(database: Connection): Promise<string> {
   `);
   const [indexes] = await database.query<RowDataPacket[]>(`
     SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME,
-      COLLATION, SUB_PART, INDEX_TYPE
+      COLLATION, SUB_PART, INDEX_TYPE, IS_VISIBLE
     FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE()
     ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
@@ -87,12 +87,24 @@ async function schemaSnapshot(database: Connection): Promise<string> {
     WHERE CONSTRAINT_SCHEMA = DATABASE()
     ORDER BY TABLE_NAME, CONSTRAINT_NAME
   `);
+  const [checks] = await database.query<RowDataPacket[]>(`
+    SELECT constraints.TABLE_NAME, constraints.CONSTRAINT_NAME,
+      checks.CHECK_CLAUSE
+    FROM information_schema.TABLE_CONSTRAINTS AS constraints
+    INNER JOIN information_schema.CHECK_CONSTRAINTS AS checks
+      ON checks.CONSTRAINT_SCHEMA = constraints.CONSTRAINT_SCHEMA
+      AND checks.CONSTRAINT_NAME = constraints.CONSTRAINT_NAME
+    WHERE constraints.CONSTRAINT_SCHEMA = DATABASE()
+      AND constraints.CONSTRAINT_TYPE = 'CHECK'
+    ORDER BY constraints.TABLE_NAME, constraints.CONSTRAINT_NAME
+  `);
   return JSON.stringify([
     tables,
     columns,
     indexes,
     foreignKeyColumns,
     foreignKeys,
+    checks,
   ]);
 }
 
@@ -296,6 +308,23 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
     });
   });
 
+  it("recusa ENUMs com caixa divergente antes do primeiro DDL", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        ALTER TABLE shift_instances
+          ADD COLUMN modality ENUM('plantao','sobreaviso')
+            NOT NULL DEFAULT 'plantao',
+          ADD COLUMN coverage_type ENUM('urgencia_emergencia','eletivas') NULL,
+          ADD COLUMN payment_model ENUM(
+            'fixo','fixo_produtividade_teto',
+            'fixo_produtividade_sem_teto','produtividade_pura'
+          ) NOT NULL DEFAULT 'fixo',
+          ADD COLUMN productivity_cap_brl DECIMAL(12,2) NULL
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
   it("recusa índice de modalidade homônimo com ordem incompatível", async () => {
     await withSchema(async (database) => {
       await database.query(`
@@ -310,6 +339,27 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
           ADD COLUMN productivity_cap_brl DECIMAL(12,2) NULL,
           ADD INDEX idx_shift_instances_modality (modality, institution_id)
       `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa índice de modalidade invisível antes do primeiro DDL", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        ALTER TABLE shift_instances
+          ADD COLUMN modality ENUM('PLANTAO','SOBREAVISO')
+            NOT NULL DEFAULT 'PLANTAO',
+          ADD COLUMN coverage_type ENUM('URGENCIA_EMERGENCIA','ELETIVAS') NULL,
+          ADD COLUMN payment_model ENUM(
+            'FIXO','FIXO_PRODUTIVIDADE_TETO',
+            'FIXO_PRODUTIVIDADE_SEM_TETO','PRODUTIVIDADE_PURA'
+          ) NOT NULL DEFAULT 'FIXO',
+          ADD COLUMN productivity_cap_brl DECIMAL(12,2) NULL,
+          ADD INDEX idx_shift_instances_modality (institution_id, modality)
+      `);
+      await database.query(
+        "ALTER TABLE shift_instances ALTER INDEX idx_shift_instances_modality INVISIBLE",
+      );
       await expectPreflightRejectionWithoutSchemaChange(database);
     });
   });
@@ -346,6 +396,30 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
           CONSTRAINT fk_institution_config_institution
             FOREIGN KEY (institution_id) REFERENCES institutions(id)
             ON DELETE RESTRICT
+        ) ENGINE=InnoDB
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa CHECK extra em institution_config antes de alterar turnos", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        CREATE TABLE institution_config (
+          id INT NOT NULL AUTO_INCREMENT,
+          institution_id INT NOT NULL,
+          edit_window_days INT NOT NULL DEFAULT 3,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          UNIQUE KEY institution_config_institution_id_unique (institution_id),
+          KEY idx_institution_config_institution_id (institution_id, id),
+          CONSTRAINT fk_institution_config_institution
+            FOREIGN KEY (institution_id) REFERENCES institutions(id)
+            ON DELETE CASCADE,
+          CONSTRAINT unexpected_edit_window_check
+            CHECK (edit_window_days >= 0)
         ) ENGINE=InnoDB
       `);
       await expectPreflightRejectionWithoutSchemaChange(database);

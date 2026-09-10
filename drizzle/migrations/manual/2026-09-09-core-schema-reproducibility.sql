@@ -53,7 +53,8 @@ SET @csr_shift_base_contract_matches := (
           AND COLUMN_NAME = 'id'
           AND COLLATION = 'A'
           AND SUB_PART IS NULL
-          AND UPPER(INDEX_TYPE) = 'BTREE' THEN 1
+          AND UPPER(INDEX_TYPE) = 'BTREE'
+          AND IS_VISIBLE = 'YES' THEN 1
         ELSE 0 END) = 1
    FROM information_schema.STATISTICS
    WHERE TABLE_SCHEMA = DATABASE()
@@ -87,7 +88,8 @@ SET @csr_institutions_contract_matches := (
           AND COLUMN_NAME = 'id'
           AND COLLATION = 'A'
           AND SUB_PART IS NULL
-          AND UPPER(INDEX_TYPE) = 'BTREE' THEN 1
+          AND UPPER(INDEX_TYPE) = 'BTREE'
+          AND IS_VISIBLE = 'YES' THEN 1
         ELSE 0 END) = 1
    FROM information_schema.STATISTICS
    WHERE TABLE_SCHEMA = DATABASE()
@@ -114,9 +116,10 @@ SET @csr_modality_columns_contract_matches := (
         AND TABLE_NAME = 'shift_instances'
         AND COLUMN_NAME = 'modality'
         AND DATA_TYPE = 'enum'
-        AND COLUMN_TYPE = 'enum(''PLANTAO'',''SOBREAVISO'')'
+        AND CAST(COLUMN_TYPE AS BINARY) =
+          CAST('enum(''PLANTAO'',''SOBREAVISO'')' AS BINARY)
         AND IS_NULLABLE = 'NO'
-        AND COLUMN_DEFAULT = 'PLANTAO'
+        AND CAST(COLUMN_DEFAULT AS BINARY) = CAST('PLANTAO' AS BINARY)
         AND COALESCE(EXTRA, '') = ''
         AND COALESCE(GENERATION_EXPRESSION, '') = ''
         AND COLLATION_NAME = @csr_shift_instances_table_collation) = 1
@@ -125,7 +128,8 @@ SET @csr_modality_columns_contract_matches := (
         AND TABLE_NAME = 'shift_instances'
         AND COLUMN_NAME = 'coverage_type'
         AND DATA_TYPE = 'enum'
-        AND COLUMN_TYPE = 'enum(''URGENCIA_EMERGENCIA'',''ELETIVAS'')'
+        AND CAST(COLUMN_TYPE AS BINARY) =
+          CAST('enum(''URGENCIA_EMERGENCIA'',''ELETIVAS'')' AS BINARY)
         AND IS_NULLABLE = 'YES'
         AND COLUMN_DEFAULT IS NULL
         AND COALESCE(EXTRA, '') = ''
@@ -136,9 +140,12 @@ SET @csr_modality_columns_contract_matches := (
         AND TABLE_NAME = 'shift_instances'
         AND COLUMN_NAME = 'payment_model'
         AND DATA_TYPE = 'enum'
-        AND COLUMN_TYPE = 'enum(''FIXO'',''FIXO_PRODUTIVIDADE_TETO'',''FIXO_PRODUTIVIDADE_SEM_TETO'',''PRODUTIVIDADE_PURA'')'
+        AND CAST(COLUMN_TYPE AS BINARY) = CAST(
+          'enum(''FIXO'',''FIXO_PRODUTIVIDADE_TETO'',''FIXO_PRODUTIVIDADE_SEM_TETO'',''PRODUTIVIDADE_PURA'')'
+          AS BINARY
+        )
         AND IS_NULLABLE = 'NO'
-        AND COLUMN_DEFAULT = 'FIXO'
+        AND CAST(COLUMN_DEFAULT AS BINARY) = CAST('FIXO' AS BINARY)
         AND COALESCE(EXTRA, '') = ''
         AND COALESCE(GENERATION_EXPRESSION, '') = ''
         AND COLLATION_NAME = @csr_shift_instances_table_collation) = 1
@@ -175,12 +182,14 @@ SET @csr_modality_index_contract_matches := (
         AND COLUMN_NAME = 'institution_id'
         AND COLLATION = 'A'
         AND SUB_PART IS NULL
-        AND UPPER(INDEX_TYPE) = 'BTREE' THEN 1
+        AND UPPER(INDEX_TYPE) = 'BTREE'
+        AND IS_VISIBLE = 'YES' THEN 1
       WHEN NON_UNIQUE = 1 AND SEQ_IN_INDEX = 2
         AND COLUMN_NAME = 'modality'
         AND COLLATION = 'A'
         AND SUB_PART IS NULL
-        AND UPPER(INDEX_TYPE) = 'BTREE' THEN 1
+        AND UPPER(INDEX_TYPE) = 'BTREE'
+        AND IS_VISIBLE = 'YES' THEN 1
       ELSE 0 END)
     FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE()
@@ -287,7 +296,8 @@ SET @csr_institution_config_keys_contract_matches := (
        AND TABLE_NAME = 'institution_config'
        AND COLLATION = 'A'
        AND SUB_PART IS NULL
-       AND UPPER(INDEX_TYPE) = 'BTREE') = 1
+       AND UPPER(INDEX_TYPE) = 'BTREE'
+       AND IS_VISIBLE = 'YES') = 1
   )
 );
 
@@ -329,6 +339,14 @@ SET @csr_institution_config_fk_contract_matches := (
   )
 );
 
+SET @csr_institution_config_check_contract_matches := (
+  @csr_institution_config_exists = 0
+  OR (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+      WHERE CONSTRAINT_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'institution_config'
+        AND CONSTRAINT_TYPE = 'CHECK') = 0
+);
+
 SET @csr_preflight_contract_matches := (
   @csr_shift_base_contract_matches = 1
   AND @csr_institutions_contract_matches = 1
@@ -339,6 +357,7 @@ SET @csr_preflight_contract_matches := (
   AND @csr_institution_config_keys_contract_matches = 1
   AND @csr_institution_config_fk_name_available = 1
   AND @csr_institution_config_fk_contract_matches = 1
+  AND @csr_institution_config_check_contract_matches = 1
 );
 
 SET @csr_guard_sql := IF(
@@ -392,9 +411,10 @@ SET @csr_postflight_contract_matches := (
       AND TABLE_NAME = 'shift_instances'
       AND COLUMN_NAME = 'modality'
       AND DATA_TYPE = 'enum'
-      AND COLUMN_TYPE = 'enum(''PLANTAO'',''SOBREAVISO'')'
+      AND CAST(COLUMN_TYPE AS BINARY) =
+        CAST('enum(''PLANTAO'',''SOBREAVISO'')' AS BINARY)
       AND IS_NULLABLE = 'NO'
-      AND COLUMN_DEFAULT = 'PLANTAO'
+      AND CAST(COLUMN_DEFAULT AS BINARY) = CAST('PLANTAO' AS BINARY)
       AND COALESCE(EXTRA, '') = ''
       AND COALESCE(GENERATION_EXPRESSION, '') = ''
       AND COLLATION_NAME = @csr_shift_instances_table_collation) = 1
@@ -403,7 +423,8 @@ SET @csr_postflight_contract_matches := (
       AND TABLE_NAME = 'shift_instances'
       AND COLUMN_NAME = 'coverage_type'
       AND DATA_TYPE = 'enum'
-      AND COLUMN_TYPE = 'enum(''URGENCIA_EMERGENCIA'',''ELETIVAS'')'
+      AND CAST(COLUMN_TYPE AS BINARY) =
+        CAST('enum(''URGENCIA_EMERGENCIA'',''ELETIVAS'')' AS BINARY)
       AND IS_NULLABLE = 'YES'
       AND COLUMN_DEFAULT IS NULL
       AND COALESCE(EXTRA, '') = ''
@@ -414,9 +435,12 @@ SET @csr_postflight_contract_matches := (
       AND TABLE_NAME = 'shift_instances'
       AND COLUMN_NAME = 'payment_model'
       AND DATA_TYPE = 'enum'
-      AND COLUMN_TYPE = 'enum(''FIXO'',''FIXO_PRODUTIVIDADE_TETO'',''FIXO_PRODUTIVIDADE_SEM_TETO'',''PRODUTIVIDADE_PURA'')'
+      AND CAST(COLUMN_TYPE AS BINARY) = CAST(
+        'enum(''FIXO'',''FIXO_PRODUTIVIDADE_TETO'',''FIXO_PRODUTIVIDADE_SEM_TETO'',''PRODUTIVIDADE_PURA'')'
+        AS BINARY
+      )
       AND IS_NULLABLE = 'NO'
-      AND COLUMN_DEFAULT = 'FIXO'
+      AND CAST(COLUMN_DEFAULT AS BINARY) = CAST('FIXO' AS BINARY)
       AND COALESCE(EXTRA, '') = ''
       AND COALESCE(GENERATION_EXPRESSION, '') = ''
       AND COLLATION_NAME = @csr_shift_instances_table_collation) = 1
@@ -438,11 +462,13 @@ SET @csr_postflight_contract_matches := (
     WHEN NON_UNIQUE = 1 AND SEQ_IN_INDEX = 1
       AND COLUMN_NAME = 'institution_id'
       AND COLLATION = 'A' AND SUB_PART IS NULL
-      AND UPPER(INDEX_TYPE) = 'BTREE' THEN 1
+      AND UPPER(INDEX_TYPE) = 'BTREE'
+      AND IS_VISIBLE = 'YES' THEN 1
     WHEN NON_UNIQUE = 1 AND SEQ_IN_INDEX = 2
       AND COLUMN_NAME = 'modality'
       AND COLLATION = 'A' AND SUB_PART IS NULL
-      AND UPPER(INDEX_TYPE) = 'BTREE' THEN 1
+      AND UPPER(INDEX_TYPE) = 'BTREE'
+      AND IS_VISIBLE = 'YES' THEN 1
     ELSE 0 END) = 2
    FROM information_schema.STATISTICS
    WHERE TABLE_SCHEMA = DATABASE()
@@ -511,7 +537,8 @@ SET @csr_postflight_contract_matches := (
      AND TABLE_NAME = 'institution_config'
      AND COLLATION = 'A'
      AND SUB_PART IS NULL
-     AND UPPER(INDEX_TYPE) = 'BTREE') = 1
+     AND UPPER(INDEX_TYPE) = 'BTREE'
+     AND IS_VISIBLE = 'YES') = 1
   AND
   (SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
    WHERE CONSTRAINT_SCHEMA = DATABASE()
@@ -533,6 +560,11 @@ SET @csr_postflight_contract_matches := (
      AND MATCH_OPTION = 'NONE'
      AND UPDATE_RULE IN ('RESTRICT', 'NO ACTION')
      AND DELETE_RULE = 'CASCADE') = 1
+  AND
+  (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+   WHERE CONSTRAINT_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'institution_config'
+     AND CONSTRAINT_TYPE = 'CHECK') = 0
 );
 
 SET @csr_postflight_sql := IF(
