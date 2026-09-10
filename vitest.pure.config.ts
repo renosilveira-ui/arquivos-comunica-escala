@@ -184,6 +184,7 @@ export default defineConfig({
       "tests/destructive-target-fence.test.ts",
       "tests/core-schema-reproducibility-migration.test.ts",
       "tests/ui-query-error-states.test.ts",
+      "tests/shift-details-paused-query.test.ts",
     ],
   },
 });
