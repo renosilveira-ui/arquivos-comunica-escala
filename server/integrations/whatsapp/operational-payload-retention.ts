@@ -215,57 +215,136 @@ export function runWhatsAppOperationalPayloadRetentionTick(
   return task;
 }
 
-let loopGeneration = 0;
-let loopStarted = false;
+export type WhatsAppPayloadRetentionLoop = {
+  start: () => void;
+  stop: () => Promise<void>;
+  isRunning: () => boolean;
+};
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function runLoop(generation: number): Promise<void> {
-  logSafe({
-    event: "whatsapp_payload_retention_started",
-    minIntervalMs: WHATSAPP_PAYLOAD_RETENTION_MIN_INTERVAL_MS,
-    jitterMs: WHATSAPP_PAYLOAD_RETENTION_JITTER_MS,
-    batchSize: WHATSAPP_INBOUND_RETENTION_BATCH_SIZE,
-    pendingBatchSize: WHATSAPP_PENDING_RETENTION_BATCH_SIZE,
-    maxBatchesPerTick: WHATSAPP_PAYLOAD_RETENTION_MAX_BATCHES_PER_TICK,
-  });
-  while (loopStarted && loopGeneration === generation) {
+export function createWhatsAppPayloadRetentionLoop(input: {
+  runTick?: typeof runWhatsAppOperationalPayloadRetentionTick;
+  delayMs?: () => number;
+  log?: (payload: Record<string, unknown>) => void;
+} = {}): WhatsAppPayloadRetentionLoop {
+  const runTick =
+    input.runTick ?? runWhatsAppOperationalPayloadRetentionTick;
+  const delayMs = input.delayMs ?? whatsappPayloadRetentionDelayMs;
+  const log = input.log ?? logSafe;
+  const emit = (payload: Record<string, unknown>) => {
     try {
-      await runWhatsAppOperationalPayloadRetentionTick({
-        shuttingDown: () => !loopStarted || loopGeneration !== generation,
-      });
+      log(payload);
     } catch {
-      logSafe({
-        event: "whatsapp_payload_retention_loop_failed",
-        code: "INTERNAL_FAILURE",
-      });
+      // Observabilidade não pode derrubar nem reter o loop de minimização.
     }
-    if (!loopStarted || loopGeneration !== generation) return;
-    await sleep(whatsappPayloadRetentionDelayMs());
+  };
+  let loopGeneration = 0;
+  let loopStarted = false;
+  let activeLoop: Promise<void> | null = null;
+  let activeSleep: {
+    generation: number;
+    timer: ReturnType<typeof setTimeout>;
+    resolve: () => void;
+  } | null = null;
+
+  function cancelSleep(): void {
+    const sleeping = activeSleep;
+    if (!sleeping) return;
+    activeSleep = null;
+    clearTimeout(sleeping.timer);
+    sleeping.resolve();
   }
+
+  function sleep(generation: number): Promise<void> {
+    if (!loopStarted || loopGeneration !== generation) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (
+          activeSleep?.generation === generation &&
+          activeSleep.timer === timer
+        ) {
+          activeSleep = null;
+        }
+        resolve();
+      };
+      const timer = setTimeout(finish, delayMs());
+      activeSleep = { generation, timer, resolve: finish };
+    });
+  }
+
+  async function runLoop(generation: number): Promise<void> {
+    emit({
+      event: "whatsapp_payload_retention_started",
+      minIntervalMs: WHATSAPP_PAYLOAD_RETENTION_MIN_INTERVAL_MS,
+      jitterMs: WHATSAPP_PAYLOAD_RETENTION_JITTER_MS,
+      batchSize: WHATSAPP_INBOUND_RETENTION_BATCH_SIZE,
+      pendingBatchSize: WHATSAPP_PENDING_RETENTION_BATCH_SIZE,
+      maxBatchesPerTick: WHATSAPP_PAYLOAD_RETENTION_MAX_BATCHES_PER_TICK,
+    });
+    while (loopStarted && loopGeneration === generation) {
+      try {
+        await runTick({
+          shuttingDown: () =>
+            !loopStarted || loopGeneration !== generation,
+        });
+      } catch {
+        emit({
+          event: "whatsapp_payload_retention_loop_failed",
+          code: "INTERNAL_FAILURE",
+        });
+      }
+      if (!loopStarted || loopGeneration !== generation) return;
+      await sleep(generation);
+    }
+  }
+
+  return {
+    start: () => {
+      if (loopStarted || activeLoop) return;
+      loopStarted = true;
+      const generation = ++loopGeneration;
+      const task = runLoop(generation)
+        .catch(() => {
+          emit({
+            event: "whatsapp_payload_retention_loop_failed",
+            code: "INTERNAL_FAILURE",
+          });
+        })
+        .finally(() => {
+          if (activeLoop === task) activeLoop = null;
+          if (loopGeneration === generation) loopStarted = false;
+        });
+      activeLoop = task;
+    },
+    stop: () => {
+      const drainingLoop = activeLoop;
+      if (loopStarted) {
+        loopStarted = false;
+        loopGeneration += 1;
+        cancelSleep();
+        emit({ event: "whatsapp_payload_retention_stopped" });
+      }
+      return (drainingLoop ?? Promise.resolve()).then(() => undefined);
+    },
+    isRunning: () => loopStarted,
+  };
 }
+
+const runtimeRetentionLoop = createWhatsAppPayloadRetentionLoop();
 
 export function startWhatsAppOperationalPayloadRetention(): void {
   if (ENV.nodeEnv === "test") return;
-  if (loopStarted) return;
-  loopStarted = true;
-  const generation = ++loopGeneration;
-  void runLoop(generation);
+  runtimeRetentionLoop.start();
 }
 
 export function stopWhatsAppOperationalPayloadRetention(): Promise<void> {
-  if (loopStarted) {
-    loopStarted = false;
-    loopGeneration += 1;
-    logSafe({ event: "whatsapp_payload_retention_stopped" });
-  }
-  return (inFlightTick ?? Promise.resolve()).then(() => undefined);
+  return runtimeRetentionLoop.stop();
 }
 
 export function isWhatsAppOperationalPayloadRetentionRunning(): boolean {
-  return loopStarted;
+  return runtimeRetentionLoop.isRunning();
 }

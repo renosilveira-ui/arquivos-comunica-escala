@@ -248,7 +248,8 @@ Não logar: Body, `operational_text`, URL de mídia, telefone, token.
   independente de `WHATSAPP_NL_DRIVER_ENABLED`. Ele roda uma vez no boot e
   depois a cada 5–15 minutos (jitter), sem sobreposição. Cada tick limpa, por
   tabela, no máximo 4 lotes de 500 ids ordenados por expiração/id; os UPDATEs
-  revalidam os predicados de status/expiração/limpeza (CAS).
+  revalidam os predicados de status/expiração/limpeza (CAS). No shutdown, o
+  timer é cancelado e o drain aguarda o tick/loop corrente terminar.
 - `IDENTITY_NOT_FOUND` / `IDENTITY_CONFLICT` / `UNSUPPORTED` limpam o
   payload na hora (não há próximo estágio).
 
