@@ -422,6 +422,11 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     });
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("APP_PUBLIC_URL", "https://confiavel.example/app/");
+    // Em produção o selo do outbox exige chave configurada (fail-closed de
+    // env-validation); sem isso o enfileiramento aborta antes do egress e o
+    // que está sob prova aqui — a origem da URL do link — nem chega a rodar.
+    vi.stubEnv("AUTH_RECOVERY_ENCRYPTION_CURRENT_KID", "test-key");
+    vi.stubEnv("AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET", "k".repeat(48));
 
     try {
       const response = await request(app)
@@ -486,7 +491,12 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       ),
     ).toBe(true);
 
-    const [audit] = await db
+    // Um pedido anônimo não prova quem o enviou: qualquer pessoa pode digitar
+    // o e-mail alheio no formulário. Registrar a fila como ato do titular
+    // poluiria a trilha com autoria falsa, então o ciclo só audita atos
+    // provados (o resgate do link). A neutralidade da resposta continua
+    // valendo em ambos os caminhos.
+    const requestAudits = await db
       .select({
         description: auditTrail.description,
         metadata: auditTrail.metadata,
@@ -501,9 +511,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
           ),
         ),
       );
-    expect(audit).toBeTruthy();
-    expect(JSON.stringify(audit)).not.toContain(EMAILS.doctor);
-    expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
+    expect(requestAudits).toEqual([]);
 
     errors.mockRestore();
     compare.mockRestore();
@@ -695,11 +703,22 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       EMAILS.doctor,
     );
 
-    // Força expiração no banco (não usa o token, só expira).
+    // Força expiração no banco (não usa o token, só expira). O estado ACTIVE
+    // exige expires_at > provider_accepted_at, então a aceitação recua junto;
+    // linhas terminais ficam de fora porque nelas expires_at precisa ser NULL.
+    const expiredAt = new Date(Date.now() - 60 * 1000);
     await db
       .update(authRecoveryRequests)
-      .set({ expiresAt: new Date(Date.now() - 60 * 1000) })
-      .where(eq(authRecoveryRequests.targetUserId, userIds.doctor));
+      .set({
+        providerAcceptedAt: new Date(expiredAt.getTime() - 60 * 1000),
+        expiresAt: expiredAt,
+      })
+      .where(
+        and(
+          eq(authRecoveryRequests.targetUserId, userIds.doctor),
+          eq(authRecoveryRequests.state, "ACTIVE"),
+        ),
+      );
 
     const res = await request(app)
       .post("/api/auth/reset-password")
