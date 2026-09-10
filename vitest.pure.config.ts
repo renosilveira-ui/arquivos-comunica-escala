@@ -60,6 +60,9 @@ export default defineConfig({
       "tests/replacement-candidates-schedule-context.test.ts",
       "tests/edit-shift-context-immutable.test.ts",
       "tests/schedule-invite-code.test.ts",
+      "tests/schedule-invite-delivery-state.test.ts",
+      "tests/schedule-invite-provider-request.test.ts",
+      "tests/schedule-invite-migration-ci-wiring.test.ts",
       "tests/schedule-invites-schema.test.ts",
       "tests/schedule-invites-migration.test.ts",
       "tests/schedule-invites-router.test.ts",
@@ -204,5 +207,10 @@ export default defineConfig({
       "tests/legacy-assignment-writers-source.test.ts",
       "tests/civil-date-contract.test.ts",
     ],
+    env: {
+      NODE_ENV: "test",
+      SCHEDULE_INVITE_CODE_PEPPER:
+        "pure-test-only-schedule-invite-pepper-32-bytes-minimum",
+    },
   },
 });

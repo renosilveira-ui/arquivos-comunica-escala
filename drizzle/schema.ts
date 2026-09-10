@@ -1841,7 +1841,8 @@ export type InsertScheduleContext = typeof scheduleContexts.$inferInsert;
 
 /**
  * Convite nominal de uma escala (instituição + hospital + setor).
- * O código em claro só vai no e-mail do convidado; o banco guarda o hash.
+ * O código em claro só vai no e-mail do convidado; o banco guarda HMAC
+ * versionado (V1 legado existe apenas durante sua expiração natural).
  * Uso único, 24 h, amarrado a um usuário já cadastrado.
  */
 export const scheduleInvites = mysqlTable(
@@ -1858,6 +1859,12 @@ export const scheduleInvites = mysqlTable(
       .notNull()
       .references(() => sectors.id),
     codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    codeHashVersion: mysqlEnum("code_hash_version", [
+      "SHA256_V1",
+      "HMAC_SHA256_V2",
+    ])
+      .notNull()
+      .default("HMAC_SHA256_V2"),
     createdByUserId: int("created_by_user_id")
       .notNull()
       .references(() => users.id),
@@ -1882,6 +1889,15 @@ export const scheduleInvites = mysqlTable(
     uniqScheduleInvitesIdInstitution: unique(
       "uniq_schedule_invites_id_institution",
     ).on(table.id, table.institutionId),
+    uniqScheduleInviteNamedScopeId: unique(
+      "uniq_schedule_invite_named_scope_id",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.invitedUserId,
+      table.id,
+    ),
     idxScheduleInviteInstitution: index("idx_schedule_invite_institution").on(
       table.institutionId,
       table.hospitalId,
@@ -1907,6 +1923,262 @@ export const scheduleInvites = mysqlTable(
 );
 
 export type ScheduleInvite = typeof scheduleInvites.$inferSelect;
+
+/**
+ * Fence durável da emissão de convite nominal.
+ *
+ * A linha é a intenção/outbox durável da preparação/entrega/ativação. Nenhuma
+ * transação nem conexão do pool permanece aberta durante a chamada ao
+ * provedor de e-mail. `generation` + `leaseToken` formam o CAS; nonce,
+ * key-id e idempotency-key são opacos. O fingerprint do request completo
+ * permite repetir a MESMA mensagem depois de timeout/crash sem persistir
+ * código, hash, e-mail ou conteúdo.
+ *
+ * Migração manual (obrigatoriamente antes do runtime):
+ * drizzle/migrations/manual/2026-09-10-schedule-invite-issuance-fences.sql
+ */
+export const scheduleInviteIssuanceFences = mysqlTable(
+  "schedule_invite_issuance_fences",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id").notNull(),
+    sectorId: int("sector_id").notNull(),
+    invitedUserId: int("invited_user_id").notNull(),
+    generation: int("generation", { unsigned: true }).notNull().default(0),
+    state: mysqlEnum("state", [
+      "IDLE",
+      "PREPARING",
+      "PROVIDER_UNKNOWN",
+      "PROVIDER_ACCEPTED",
+      "ACTIVE",
+      "PROVIDER_REJECTED",
+      "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+    ])
+      .notNull()
+      .default("IDLE"),
+    leaseToken: char("lease_token", { length: 64 }),
+    leaseExpiresAt: timestamp("lease_expires_at"),
+    attemptExpiresAt: timestamp("attempt_expires_at"),
+    codeNonce: char("code_nonce", { length: 64 }),
+    codePepperKeyId: char("code_pepper_key_id", { length: 64 }),
+    recipientBindingHash: char("recipient_binding_hash", { length: 64 }),
+    providerIdempotencyKey: char("provider_idempotency_key", { length: 64 }),
+    providerRequestFingerprint: char("provider_request_fingerprint", {
+      length: 64,
+    }),
+    providerCorrelationId: varchar("provider_correlation_id", { length: 128 }),
+    providerAcceptedAt: timestamp("provider_accepted_at"),
+    scheduleInviteId: int("schedule_invite_id"),
+    failureCode: varchar("failure_code", { length: 64 }),
+    attemptCount: int("attempt_count", { unsigned: true }).notNull().default(0),
+    maxAttempts: int("max_attempts", { unsigned: true }).notNull().default(3),
+    terminalFailure: boolean("terminal_failure").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqScheduleInviteIssuanceScope: unique(
+      "uniq_schedule_invite_issuance_scope",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.invitedUserId,
+    ),
+    idxScheduleInviteIssuanceEmailEgress: index(
+      "idx_schedule_invite_issuance_email_egress",
+    ).on(table.invitedUserId, table.state, table.leaseExpiresAt),
+    fkScheduleInviteIssuanceHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_schedule_invite_issuance_hospital_topology",
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    fkScheduleInviteIssuanceSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_schedule_invite_issuance_sector_topology",
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    fkScheduleInviteIssuanceInvitedUser: foreignKey({
+      columns: [table.invitedUserId],
+      foreignColumns: [users.id],
+      name: "fk_schedule_invite_issuance_invited_user",
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    fkScheduleInviteIssuanceActiveInvite: foreignKey({
+      columns: [
+        table.institutionId,
+        table.hospitalId,
+        table.sectorId,
+        table.invitedUserId,
+        table.scheduleInviteId,
+      ],
+      foreignColumns: [
+        scheduleInvites.institutionId,
+        scheduleInvites.hospitalId,
+        scheduleInvites.sectorId,
+        scheduleInvites.invitedUserId,
+        scheduleInvites.id,
+      ],
+      name: "fk_schedule_invite_issuance_active_invite",
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    chkScheduleInviteIssuanceGeneration: check(
+      "chk_schedule_invite_issuance_generation",
+      sql`(
+        (${table.state} = 'IDLE' AND ${table.generation} = 0)
+        OR
+        (${table.state} <> 'IDLE' AND ${table.generation} > 0)
+      )`,
+    ),
+    chkScheduleInviteIssuanceLeaseShape: check(
+      "chk_schedule_invite_issuance_lease_shape",
+      sql`(
+        (${table.state} IN ('PREPARING', 'PROVIDER_UNKNOWN', 'PROVIDER_ACCEPTED') AND ${table.leaseToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL)
+        OR
+        (${table.state} NOT IN ('PREPARING', 'PROVIDER_UNKNOWN', 'PROVIDER_ACCEPTED') AND ${table.leaseToken} IS NULL AND ${table.leaseExpiresAt} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceMaterialShape: check(
+      "chk_schedule_invite_issuance_material_shape",
+      sql`(
+        (${table.state} = 'IDLE' AND ${table.attemptExpiresAt} IS NULL AND ${table.codeNonce} IS NULL AND ${table.codePepperKeyId} IS NULL AND ${table.recipientBindingHash} IS NULL AND ${table.providerIdempotencyKey} IS NULL AND ${table.providerRequestFingerprint} IS NULL AND ${table.attemptCount} = 0)
+        OR
+        (${table.state} <> 'IDLE' AND ${table.attemptExpiresAt} IS NOT NULL AND ${table.codeNonce} IS NOT NULL AND REGEXP_LIKE(CONCAT(${table.codeNonce}, '!'), '^[0-9a-f]{64}!$', 'c') AND ${table.codePepperKeyId} IS NOT NULL AND REGEXP_LIKE(CONCAT(${table.codePepperKeyId}, '!'), '^[0-9a-f]{64}!$', 'c') AND ${table.recipientBindingHash} IS NOT NULL AND REGEXP_LIKE(CONCAT(${table.recipientBindingHash}, '!'), '^[0-9a-f]{64}!$', 'c') AND ${table.providerIdempotencyKey} IS NOT NULL AND REGEXP_LIKE(CONCAT(${table.providerIdempotencyKey}, '!'), '^[0-9a-f]{64}!$', 'c') AND ${table.providerRequestFingerprint} IS NOT NULL AND REGEXP_LIKE(CONCAT(${table.providerRequestFingerprint}, '!'), '^[0-9a-f]{64}!$', 'c') AND ${table.attemptCount} BETWEEN 1 AND ${table.maxAttempts})
+      )`,
+    ),
+    chkScheduleInviteIssuanceAcceptedShape: check(
+      "chk_schedule_invite_issuance_accepted_shape",
+      sql`(
+        (${table.state} IN ('PROVIDER_ACCEPTED', 'ACTIVE', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.providerAcceptedAt} IS NOT NULL)
+        OR
+        (${table.state} NOT IN ('PROVIDER_ACCEPTED', 'ACTIVE', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.providerAcceptedAt} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceFailureShape: check(
+      "chk_schedule_invite_issuance_failure_shape",
+      sql`(
+        (${table.state} IN ('PROVIDER_UNKNOWN', 'PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NOT NULL AND REGEXP_LIKE(CONCAT(${table.failureCode}, '!'), '^[A-Z][A-Z0-9_]{0,63}!$', 'c'))
+        OR
+        (${table.state} NOT IN ('PROVIDER_UNKNOWN', 'PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceActivationShape: check(
+      "chk_schedule_invite_issuance_activation_shape",
+      sql`(
+        (${table.state} = 'ACTIVE' AND ${table.scheduleInviteId} IS NOT NULL)
+        OR
+        (${table.state} <> 'ACTIVE' AND ${table.scheduleInviteId} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceAttempts: check(
+      "chk_schedule_invite_issuance_attempts",
+      sql`${table.maxAttempts} BETWEEN 1 AND 5 AND ${table.attemptCount} <= ${table.maxAttempts}`,
+    ),
+    chkScheduleInviteIssuanceLeaseToken: check(
+      "chk_schedule_invite_issuance_lease_token",
+      sql`${table.leaseToken} IS NULL OR REGEXP_LIKE(CONCAT(${table.leaseToken}, '!'), '^[0-9a-f]{64}!$', 'c')`,
+    ),
+    chkScheduleInviteIssuanceProviderCorrelation: check(
+      "chk_schedule_invite_issuance_provider_correlation",
+      sql`(
+        (${table.state} IN ('PROVIDER_ACCEPTED', 'ACTIVE', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND (${table.providerCorrelationId} IS NULL OR REGEXP_LIKE(CONCAT(${table.providerCorrelationId}, '!'), '^[A-Za-z0-9._:-]{1,128}!$', 'c')))
+        OR
+        (${table.state} NOT IN ('PROVIDER_ACCEPTED', 'ACTIVE', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.providerCorrelationId} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceTerminalFailure: check(
+      "chk_schedule_invite_issuance_terminal_failure",
+      sql`(
+        (${table.terminalFailure} = 1 AND ${table.state} = 'PROVIDER_REJECTED' AND ${table.failureCode} IN ('INVALID_IDEMPOTENCY_KEY', 'UNKNOWN_RETRY_LIMIT_REACHED'))
+        OR
+        (${table.terminalFailure} = 0 AND (${table.failureCode} IS NULL OR ${table.failureCode} NOT IN ('INVALID_IDEMPOTENCY_KEY', 'UNKNOWN_RETRY_LIMIT_REACHED')))
+      )`,
+    ),
+  }),
+);
+
+export type ScheduleInviteIssuanceFence =
+  typeof scheduleInviteIssuanceFences.$inferSelect;
+
+/**
+ * Histórico append-only de cada geração. O runtime somente faz INSERT e a
+ * migration instala guards BEFORE UPDATE/DELETE no banco; nenhuma linha
+ * carrega endereço, conteúdo da mensagem, código ou hash.
+ */
+export const scheduleInviteIssuanceJournal = mysqlTable(
+  "schedule_invite_issuance_journal",
+  {
+    id: bigint("id", { mode: "bigint", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id").notNull(),
+    sectorId: int("sector_id").notNull(),
+    invitedUserId: int("invited_user_id").notNull(),
+    generation: int("generation", { unsigned: true }).notNull(),
+    event: mysqlEnum("event", [
+      "CLAIMED",
+      "ATTEMPT_SUPERSEDED",
+      "DELIVERY_RECLAIMED",
+      "PROVIDER_ACCEPTED",
+      "PROVIDER_REJECTED",
+      "PROVIDER_UNKNOWN",
+      "ACTIVATION_RESUMED",
+      "ACTIVATED",
+      "ACTIVATION_FAILED",
+    ]).notNull(),
+    reasonCode: varchar("reason_code", { length: 64 }),
+    providerCorrelationId: varchar("provider_correlation_id", { length: 128 }),
+    scheduleInviteId: int("schedule_invite_id"),
+    createdAt: timestamp("created_at", { fsp: 6 }).notNull().defaultNow(),
+  },
+  (table) => ({
+    idxScheduleInviteIssuanceJournalGeneration: index(
+      "idx_schedule_invite_issuance_journal_generation",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.invitedUserId,
+      table.generation,
+      table.id,
+    ),
+    chkScheduleInviteIssuanceJournalGeneration: check(
+      "chk_schedule_invite_issuance_journal_generation",
+      sql`${table.generation} > 0`,
+    ),
+    chkScheduleInviteIssuanceJournalReason: check(
+      "chk_schedule_invite_issuance_journal_reason",
+      sql`(
+        (${table.event} IN ('ATTEMPT_SUPERSEDED', 'PROVIDER_REJECTED', 'PROVIDER_UNKNOWN', 'ACTIVATION_FAILED') AND ${table.reasonCode} IS NOT NULL AND REGEXP_LIKE(CONCAT(${table.reasonCode}, '!'), '^[A-Z][A-Z0-9_]{0,63}!$', 'c'))
+        OR
+        (${table.event} NOT IN ('ATTEMPT_SUPERSEDED', 'PROVIDER_REJECTED', 'PROVIDER_UNKNOWN', 'ACTIVATION_FAILED') AND ${table.reasonCode} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceJournalCorrelation: check(
+      "chk_schedule_invite_issuance_journal_correlation",
+      sql`${table.providerCorrelationId} IS NULL OR (${table.event} = 'PROVIDER_ACCEPTED' AND REGEXP_LIKE(CONCAT(${table.providerCorrelationId}, '!'), '^[A-Za-z0-9._:-]{1,128}!$', 'c'))`,
+    ),
+    chkScheduleInviteIssuanceJournalActivation: check(
+      "chk_schedule_invite_issuance_journal_activation",
+      sql`(
+        (${table.event} = 'ACTIVATED' AND ${table.scheduleInviteId} IS NOT NULL)
+        OR
+        (${table.event} <> 'ACTIVATED' AND ${table.scheduleInviteId} IS NULL)
+      )`,
+    ),
+  }),
+);
+
+export type ScheduleInviteIssuanceJournalEntry =
+  typeof scheduleInviteIssuanceJournal.$inferSelect;
 
 // ========================================
 // INSTÂNCIAS DE TURNO E ALOCAÇÕES (V2)

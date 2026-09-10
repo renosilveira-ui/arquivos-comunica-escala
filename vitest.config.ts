@@ -33,6 +33,8 @@ export default defineConfig({
       TEST_DATABASE_EXPECTED_NAME: validatedTestTarget.databaseName,
       TEST_DATABASE_DISPOSABLE_MARKER:
         process.env.TEST_DATABASE_DISPOSABLE_MARKER!,
+      SCHEDULE_INVITE_CODE_PEPPER:
+        "test-only-schedule-invite-code-pepper-v2-2026",
       NODE_ENV: "test",
     },
     exclude: [
@@ -50,6 +52,8 @@ export default defineConfig({
       "tests/whatsapp-inbound-nl-poll-index-mysql.test.ts",
       "tests/professional-identity-migration-mysql.test.ts",
       "tests/institution-feature-entitlements-migration-mysql.test.ts",
+      "tests/schedule-invite-issuance-fence-migration-mysql.test.ts",
+      "tests/schedule-invite-code-hash-v2-migration-mysql.test.ts",
       "tests/whatsapp-continuation-migration-mysql.test.ts",
       "tests/whatsapp-account-ownership-mysql.test.ts",
     ],

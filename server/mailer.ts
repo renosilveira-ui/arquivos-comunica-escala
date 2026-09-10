@@ -22,6 +22,7 @@ export type MailResult =
   | {
       kind: "ACCEPTED";
       transport: "resend";
+      /** Identificador opaco do provedor; nunca contém destinatário/payload. */
       providerCorrelationId?: string;
     }
   | {
@@ -51,6 +52,8 @@ const NO_PROVIDER_OBSERVABILITY = {
   channel: "EMAIL",
   providerConfigured: false,
   accepted: false,
+  outcome: "REJECTED",
+  reason: "NOT_CONFIGURED",
 } as const;
 
 function logMailNotSentWithoutProvider(): void {
@@ -90,15 +93,19 @@ async function sendViaResend(
   options: MailSendOptions,
 ): Promise<MailResult> {
   try {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (options.idempotencyKey) {
+      if (!/^[a-f0-9]{64}$/.test(options.idempotencyKey)) {
+        throw new Error("INVALID_MAIL_IDEMPOTENCY_KEY");
+      }
+      headers["Idempotency-Key"] = options.idempotencyKey;
+    }
     const res = await fetch(RESEND_ENDPOINT, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        ...(isValidIdempotencyKey(options.idempotencyKey)
-          ? { "Idempotency-Key": options.idempotencyKey }
-          : {}),
-      },
+      headers,
       body: JSON.stringify({
         from,
         to: [msg.to],

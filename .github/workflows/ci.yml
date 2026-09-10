@@ -49,6 +49,9 @@ jobs:
       INSTITUTION_FEATURE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       PERSONAL_CALENDAR_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       CORE_SCHEMA_REPRO_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_HASH_V2_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      SCHEDULE_INVITE_MIGRATION_TEST_MARKER: ci-schedule-invite-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
       # A prova da provisão Unimed também recebe somente o servidor local da
       # CI e cria um schema efêmero prefixado. O comando de produto é
       # read-only e a flag --apply é bloqueada.
@@ -126,6 +129,13 @@ jobs:
 
       - name: Validate personal calendar CHECK hardening
         run: pnpm test:personal-calendar-check-hardening
+
+      - name: Validate durable schedule invite migrations
+        # Os testes exigem as duas URLs loopback e o marker acima; ausência,
+        # serviço indisponível ou marker inválido falha a etapa, nunca skipa.
+        # Cada caso cria um schema filho único no MySQL efêmero e não o apaga.
+        # O runner/fence d75f6e7 + 4ad93fc será reconciliado na composição.
+        run: pnpm test:schedule-invite-migrations
 
       - name: Validate prospective shift capacity migration
         env:
