@@ -55,6 +55,7 @@ import {
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
 import { formatTimeRange } from "@/components/agenda/ShiftRowCard";
 import { shiftCapacityLabel } from "@/lib/shift-capacity";
+import { shiftProfessionalNameLines } from "@/lib/shift-professional-presentation";
 import { AppButton } from "@/components/ui/AppButton";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import {
@@ -1699,10 +1700,7 @@ function DesktopGroupBlock({
 
       {/* Lista de shifts */}
       {group.shifts.map((shift) => {
-        const names =
-          shift.professionalNames.length > 0
-            ? shift.professionalNames.join(", ")
-            : "VAGO";
+        const names = shiftProfessionalNameLines(shift, "VAGO");
         return (
           <TouchableOpacity
             key={shift.id}
@@ -1720,16 +1718,21 @@ function DesktopGroupBlock({
               borderRadius: theme.radius.sm,
             }}
           >
-            <Text
-              numberOfLines={2}
-              style={{
-                fontSize: 11,
-                fontWeight: "600",
-                color: theme.colors.textPrimary,
-              }}
-            >
-              {names}
-            </Text>
+            <View>
+              {names.map((name, index) => (
+                <Text
+                  key={`${shift.id}-${index}-${name}`}
+                  numberOfLines={1}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: "600",
+                    color: theme.colors.textPrimary,
+                  }}
+                >
+                  {name}
+                </Text>
+              ))}
+            </View>
             <Text
               style={{
                 fontSize: 10,

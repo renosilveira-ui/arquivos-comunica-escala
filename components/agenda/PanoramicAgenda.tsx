@@ -30,6 +30,7 @@ import {
 } from "lucide-react-native";
 import { theme } from "@/lib/theme";
 import { shiftCapacityLabel } from "@/lib/shift-capacity";
+import { shiftProfessionalNameLines } from "@/lib/shift-professional-presentation";
 import { shiftVisualFor } from "@/lib/shift-visual";
 import { CalendarFrame, DayNumeral, numeral } from "./CalendarSheet";
 import { formatTimeRange } from "./ShiftRowCard";
@@ -530,7 +531,7 @@ export function PanoramicAgenda({
   );
 }
 
-/** Chip de plantão na célula: barra de 4 px + hora tabular + nome. */
+/** Chip de plantão na célula: barra de 4 px + hora tabular + equipe. */
 function GridChip({
   shift,
   onPress,
@@ -544,19 +545,19 @@ function GridChip({
     context: "listing",
   });
   const Icon = v.Icon;
-  const name = shift.isMine
-    ? "Você"
-    : (shift.professionalNames[0] ??
-      (shift.status === "VAGO"
-        ? "Sem escalado"
-        : shift.status === "PENDENTE"
-          ? "Sem confirmar"
-          : v.label));
+  const names = shiftProfessionalNameLines(
+    shift,
+    shift.status === "VAGO"
+      ? "Sem escalado"
+      : shift.status === "PENDENTE"
+        ? "Sem confirmar"
+        : v.label,
+  );
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`${shift.label}, ${formatTimeRange(shift.startAt, shift.endAt)}, ${name}, ${v.label}${shift.requiredCapacity != null ? `, ${shiftCapacityLabel(shift.requiredCapacity, shift.activeCount ?? shift.professionalNames.length)}` : ""}`}
+      accessibilityLabel={`${shift.label}, ${formatTimeRange(shift.startAt, shift.endAt)}, ${names.join(", ")}, ${v.label}${shift.requiredCapacity != null ? `, ${shiftCapacityLabel(shift.requiredCapacity, shift.activeCount ?? shift.professionalNames.length)}` : ""}`}
       style={({ pressed }) => ({
         gap: 1,
         paddingVertical: 5,
@@ -585,17 +586,22 @@ function GridChip({
           {formatHospitalTime(shift.startAt)}-{formatHospitalTime(shift.endAt)}
         </Text>
       </View>
-      <Text
-        numberOfLines={1}
-        style={{
-          fontSize: 11,
-          lineHeight: 14,
-          fontWeight: v.nameWeight,
-          color: v.nameFg,
-        }}
-      >
-        {name}
-      </Text>
+      <View style={{ gap: 1 }}>
+        {names.map((name, index) => (
+          <Text
+            key={`${name}:${index}`}
+            numberOfLines={1}
+            style={{
+              fontSize: 11,
+              lineHeight: 14,
+              fontWeight: v.nameWeight,
+              color: v.nameFg,
+            }}
+          >
+            {name}
+          </Text>
+        ))}
+      </View>
       {shift.requiredCapacity != null ? (
         <Text style={{ fontSize: 10, color: theme.colors.textSecondary }}>
           {shiftCapacityLabel(
