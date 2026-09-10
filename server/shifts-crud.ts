@@ -60,6 +60,7 @@ import {
 } from "../drizzle/schema";
 import { enqueueDutySyncIntervalRewrite } from "./sso/duty-sync-lifecycle";
 import { rearmDutyConfirmationsAfterShiftChange } from "./confirmation-lifecycle";
+import { assertMaterialShiftEditIsFuture } from "./shift-edit-temporal-policy";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import {
@@ -2534,6 +2535,23 @@ export const shiftsRouter = router({
             message: "O fim do turno deve ser posterior ao início.",
           });
         }
+        const windowChanged =
+          effectiveStartAt.getTime() !== locked.startAt.getTime() ||
+          effectiveEndAt.getTime() !== locked.endAt.getTime();
+        const nextDutyType =
+          (patch.modality ?? locked.modality) === "SOBREAVISO"
+            ? "SOBREAVISO"
+            : "PLANTAO";
+        const previousDutyType =
+          locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
+        const confirmationCycleChanged =
+          windowChanged || nextDutyType !== previousDutyType;
+        assertMaterialShiftEditIsFuture({
+          materialChanged: confirmationCycleChanged,
+          originalStartAt: locked.startAt,
+          effectiveStartAt,
+          now: new Date(),
+        });
         const proposedKey = naturalKey({
           institutionId: locked.institutionId,
           hospitalId: locked.hospitalId,
@@ -2582,17 +2600,6 @@ export const shiftsRouter = router({
               "Já existe um turno com o mesmo horário, setor e identificação.",
           });
         }
-        const windowChanged =
-          effectiveStartAt.getTime() !== locked.startAt.getTime() ||
-          effectiveEndAt.getTime() !== locked.endAt.getTime();
-        const nextDutyType =
-          (patch.modality ?? locked.modality) === "SOBREAVISO"
-            ? "SOBREAVISO"
-            : "PLANTAO";
-        const previousDutyType =
-          locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
-        const confirmationCycleChanged =
-          windowChanged || nextDutyType !== previousDutyType;
         const activeAssignments = confirmationCycleChanged
           ? await tx
               .select({
