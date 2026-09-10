@@ -18,7 +18,7 @@ type ConfirmationLifecycleTx = Pick<Db, "select" | "update">;
  * O dispatcher só gera a nova solicitação quando o horário alterado voltar a
  * ficar due. Girar o token revoga deep links e outboxes do intervalo anterior.
  */
-export async function rearmDutyConfirmationsAfterShiftWindowChange(
+export async function rearmDutyConfirmationsAfterShiftChange(
   tx: ConfirmationLifecycleTx,
   input: {
     institutionId: number;

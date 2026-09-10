@@ -40,6 +40,7 @@ type DeclaredStatus = (typeof DUTY_SYNC_DECLARED_STATUSES)[number];
 
 type DeclaredConfirmation = {
   id: number;
+  confirmationToken: string;
   status: DeclaredStatus;
   userId: number;
   professionalId: number;
@@ -81,16 +82,18 @@ export function dutySyncIntervalConfirmDedupKey(
   confirmationId: number,
   targetUserId: number,
   dutyStart: string,
+  confirmationToken: string,
 ): string {
-  return `duty-confirmation:${confirmationId}:duty-sync:confirmed:${targetUserId}:interval:${dutyStart}`;
+  return `duty-confirmation:${confirmationId}:duty-sync:confirmed:${targetUserId}:interval:${dutyStart}:cycle:${confirmationToken}`;
 }
 
 export function dutySyncIntervalWithdrawDedupKey(
   confirmationId: number,
   targetUserId: number,
   dutyStart: string,
+  confirmationToken: string,
 ): string {
-  return `duty-confirmation:${confirmationId}:duty-sync:withdraw:${targetUserId}:interval:${dutyStart}`;
+  return `duty-confirmation:${confirmationId}:duty-sync:withdraw:${targetUserId}:interval:${dutyStart}:cycle:${confirmationToken}`;
 }
 
 function dutyTypeFromModality(
@@ -183,6 +186,7 @@ async function loadDeclaredConfirmations(
   const rows = await tx
     .select({
       id: dutyConfirmations.id,
+      confirmationToken: dutyConfirmations.confirmationToken,
       status: dutyConfirmations.status,
       userId: dutyConfirmations.userId,
       professionalId: dutyConfirmations.professionalId,
@@ -205,6 +209,7 @@ async function loadDeclaredConfirmations(
     if (!isDeclaredStatus(row.status)) continue;
     const item: DeclaredConfirmation = {
       id: row.id,
+      confirmationToken: row.confirmationToken,
       status: row.status,
       userId: row.userId,
       professionalId: row.professionalId,
@@ -420,6 +425,7 @@ export async function enqueueDutySyncIntervalRewrite(
           row.id,
           target.targetUserId,
           input.previousSnapshot.startAt,
+          row.confirmationToken,
         ),
       },
       now,
@@ -443,6 +449,7 @@ export async function enqueueDutySyncIntervalRewrite(
             row.id,
             target.targetUserId,
             input.nextSnapshot.startAt,
+            row.confirmationToken,
           ),
         },
         now,

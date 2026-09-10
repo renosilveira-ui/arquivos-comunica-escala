@@ -13,7 +13,7 @@ const router = readFileSync("server/confirmation-router.ts", "utf8");
 describe("rearme de confirmação após mudança de horário", () => {
   it("revoga o ciclo anterior sob validação e CAS sem apagar histórico", () => {
     expect(lifecycle).toContain(
-      "export async function rearmDutyConfirmationsAfterShiftWindowChange",
+      "export async function rearmDutyConfirmationsAfterShiftChange",
     );
     expect(lifecycle).toContain("await requireValidDutyConfirmation");
     expect(lifecycle).toContain(
@@ -40,16 +40,19 @@ describe("rearme de confirmação após mudança de horário", () => {
   it("persiste a compensação do intervalo antigo antes de rearmar", () => {
     const rewrite = shifts.indexOf("await enqueueDutySyncIntervalRewrite");
     const rearm = shifts.indexOf(
-      "await rearmDutyConfirmationsAfterShiftWindowChange",
+      "await rearmDutyConfirmationsAfterShiftChange",
     );
     expect(rewrite).toBeGreaterThan(-1);
     expect(rearm).toBeGreaterThan(rewrite);
     expect(shifts.slice(rewrite, rearm)).toContain("previousSnapshot");
     expect(shifts.slice(rewrite, rearm)).toContain(
-      "reconfirmRequired: windowChanged",
+      "reconfirmRequired: confirmationCycleChanged",
     );
     expect(shifts).toContain("rearmedConfirmationCount");
-    expect(shifts).toContain("if (windowChanged)");
+    expect(shifts).toContain("if (confirmationCycleChanged)");
+    expect(shifts).toContain(
+      "windowChanged || nextDutyType !== previousDutyType",
+    );
   });
 
   it("não redeclara automaticamente e versiona o duty-sync pela confirmação", () => {
@@ -60,6 +63,15 @@ describe("rearme de confirmação após mudança de horário", () => {
 
     expect(lifecycleSync).toContain("!input.reconfirmRequired");
     expect(lifecycleSync).toContain(":cycle:${confirmationToken}");
+    expect(lifecycleSync).toContain(
+      "confirmationToken: dutyConfirmations.confirmationToken",
+    );
+    expect(lifecycleSync).toContain(
+      "input.previousSnapshot.startAt,\n          row.confirmationToken",
+    );
+    expect(lifecycleSync).toContain(
+      "input.nextSnapshot.startAt,\n            row.confirmationToken",
+    );
     expect(
       router.match(
         /dedupKey: dutySync(?:Confirm|Withdraw|ReplacementConfirm)DedupKey\([\s\S]*?current\.confirmation\.confirmationToken,\n\s*\)/g,
@@ -77,6 +89,9 @@ describe("rearme de confirmação após mudança de horário", () => {
     expect(dispatcher).toContain("const [claimedRearm]");
     expect(dispatcher).toContain(".set({ recheckAt, notifiedAt: null })");
     expect(dispatcher).toContain("claimedRearm.affectedRows !== 1");
+    expect(
+      dispatcher.match(/eq\(dutyConfirmations\.managerNotified, false\)/g),
+    ).toHaveLength(3);
     expect(dispatcher).toContain(
       ":request:${confirmationToken}:${current.original.userId}`",
     );

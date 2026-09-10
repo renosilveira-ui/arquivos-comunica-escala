@@ -232,7 +232,7 @@ Reutiliza `notifications` com `title: "Duty roster sync"`.
 
 - ações humanas: `duty-confirmation:{id}:duty-sync:{ação}:{userId}:cycle:{confirmationToken}`
 - compensações de remoção legadas preservam `duty-confirmation:{id}:duty-sync:withdraw:{userId}`
-- redeclaração de intervalo: `duty-confirmation:{id}:duty-sync:confirmed:{userId}:interval:{dutyStart}` e `...:withdraw:{userId}:interval:{dutyStart}`
+- redeclaração de intervalo: `duty-confirmation:{id}:duty-sync:confirmed:{userId}:interval:{dutyStart}:cycle:{confirmationToken}` e `...:withdraw:{userId}:interval:{dutyStart}:cycle:{confirmationToken}`
 
 Status local `#310`: `pending` \| `outbox_processed` \| `failed` \| `none`, `scope: "escala_outbox"`.  
 `outbox_processed` significa **a outbox local marcou SENT**. Não significa “ativo no Comunica+” nem presença corrente.
