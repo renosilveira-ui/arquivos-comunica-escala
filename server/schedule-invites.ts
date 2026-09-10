@@ -21,7 +21,11 @@ import {
 } from "../lib/schedule-invite-code";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
-import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
+import {
+  assertManagerScopeAccessForUpdate,
+  getTenantActorFromContext,
+  type TenantActor,
+} from "./_core/policy";
 import {
   listAuthorizedScheduleContexts,
   selectActiveScheduleContexts,
@@ -54,6 +58,9 @@ type InviteDb = Pick<
   "select" | "insert" | "update"
 >;
 type ScheduleInviteDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+type ScheduleInviteWriteDb = Parameters<
+  typeof assertManagerScopeAccessForUpdate
+>[0];
 
 const SCHEDULE_INVITE_LOCK_TIMEOUT_SECONDS = 20;
 
@@ -85,7 +92,21 @@ function scheduleInviteLockName(input: {
   return `escala-invite:${scope}`;
 }
 
-/** Mutex lógico fora da ordem de row locks usada por redeem/decline. */
+/**
+ * Mutex lógico fora da ordem de row locks usada por redeem/decline.
+ *
+ * O lock permanece durante a chamada ao correio, mas nenhuma transação SQL
+ * fica aberta na rede. O convite anterior só é revogado depois que o provedor
+ * aceita a nova mensagem, na mesma transação que insere o novo hash e grava a
+ * auditoria. Assim, falha/timeout da nova entrega preserva o convite anterior.
+ *
+ * Limite inevitável sem uma outbox que armazene o segredo de forma reversível:
+ * se o processo cair depois de o provedor aceitar a mensagem e antes do commit,
+ * o novo código recebido será inválido e o convite anterior continuará ativo.
+ * A outbox operacional existente não transporta payload secreto; persistir o
+ * código em claro violaria o contrato hash-only. Nesse limite, a API nunca
+ * confirma `sent` e uma nova emissão segura é necessária.
+ */
 async function withScheduleInviteIssuanceMutex<T>(
   db: ScheduleInviteDb,
   input: {
@@ -111,7 +132,8 @@ async function withScheduleInviteIssuanceMutex<T>(
     if (!acquired) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "Outro reenvio deste convite está em andamento. Tente novamente.",
+        message:
+          "Outro reenvio deste convite está em andamento. Tente novamente.",
       });
     }
     return await callback(connectionDb);
@@ -566,6 +588,7 @@ type CandidateDb = Pick<
 
 type InvitableCandidate = {
   userId: number;
+  professionalId: number;
   name: string | null;
   email: string | null;
   specialtyLabel: string | null;
@@ -593,6 +616,7 @@ async function selectInvitableCandidates(
 ): Promise<InvitableCandidate[]> {
   const candidateColumns = {
     userId: users.id,
+    professionalId: professionals.id,
     name: users.name,
     email: users.email,
     specialtyLabel: professionals.specialty,
@@ -641,8 +665,20 @@ async function selectInvitableCandidates(
       ),
     );
 
+  const candidateRows = [...houseMembers, ...waitingRoom];
+  const professionalIdsByUser = new Map<number, Set<number>>();
+  for (const row of candidateRows) {
+    const ids = professionalIdsByUser.get(row.userId) ?? new Set<number>();
+    ids.add(row.professionalId);
+    professionalIdsByUser.set(row.userId, ids);
+  }
+
   const byId = new Map<number, InvitableCandidate>();
-  for (const row of [...houseMembers, ...waitingRoom]) {
+  for (const row of candidateRows) {
+    // Cadastro profissional 1:1 ainda não é uma constraint física. Não
+    // escolha uma linha arbitrária: convite emitido para identidade ambígua
+    // seria recusado pelo redeem e criaria um fluxo impossível.
+    if (professionalIdsByUser.get(row.userId)?.size !== 1) continue;
     byId.set(row.userId, row);
   }
   const candidates = [...byId.values()];
@@ -736,6 +772,104 @@ async function selectInvitableCandidates(
     if (lockedToOtherHouse.has(row.userId)) return false;
     return true;
   });
+}
+
+type InviteIssuanceSnapshot = {
+  context: Awaited<ReturnType<typeof selectActiveScheduleContexts>>[number];
+  invitee: InvitableCandidate;
+};
+
+async function selectInvitableCandidateForUpdate(
+  tx: ScheduleInviteWriteDb,
+  input: {
+    institutionId: number;
+    hospitalId: number;
+    sectorId: number;
+    userId: number;
+  },
+): Promise<InvitableCandidate | null> {
+  await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .for("update");
+  const professionalRows = await tx
+    .select({ id: professionals.id })
+    .from(professionals)
+    .where(eq(professionals.userId, input.userId))
+    .for("update");
+  if (professionalRows.length !== 1) return null;
+
+  // Bloqueia todas as linhas que compõem a elegibilidade canônica. O segundo
+  // snapshot, após a entrega, permanece estável até o commit de ativação.
+  await tx
+    .select({ id: professionalInstitutions.id })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, input.userId))
+    .for("update");
+  await tx
+    .select({ id: professionalAccess.id })
+    .from(professionalAccess)
+    .where(
+      and(
+        eq(professionalAccess.professionalId, professionalRows[0]!.id),
+        eq(professionalAccess.institutionId, input.institutionId),
+      ),
+    )
+    .for("update");
+
+  return (
+    (
+      await selectInvitableCandidates(
+        tx,
+        input.institutionId,
+        input.hospitalId,
+        input.sectorId,
+        [input.userId],
+      )
+    ).find((candidate) => candidate.userId === input.userId) ?? null
+  );
+}
+
+async function revalidateInviteIssuanceForUpdate(
+  tx: ScheduleInviteWriteDb,
+  input: {
+    actor: TenantActor;
+    expectedActorSessionVersion: number;
+    hospitalId: number;
+    sectorId: number;
+    userId: number;
+  },
+): Promise<InviteIssuanceSnapshot | null> {
+  await assertManagerScopeAccessForUpdate(
+    tx,
+    input.actor,
+    input.expectedActorSessionVersion,
+    input.hospitalId,
+    input.sectorId,
+  );
+  const contexts = await selectActiveScheduleContexts(
+    tx,
+    input.actor.institutionId,
+    { hospitalId: input.hospitalId, sectorId: input.sectorId },
+    true,
+  );
+  if (contexts.length !== 1) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        contexts.length === 0
+          ? "Esta escala ainda não está aberta"
+          : "Este setor possui mais de uma escala ativa; regularize a topologia.",
+    });
+  }
+  const invitee = await selectInvitableCandidateForUpdate(tx, {
+    institutionId: input.actor.institutionId,
+    hospitalId: input.hospitalId,
+    sectorId: input.sectorId,
+    userId: input.userId,
+  });
+  return invitee ? { context: contexts[0]!, invitee } : null;
 }
 
 export const scheduleInvitesRouter = router({
@@ -918,7 +1052,6 @@ export const scheduleInvitesRouter = router({
               : "Este setor possui mais de uma escala ativa; regularize a topologia.",
         });
       }
-      const context = contexts[0]!;
 
       // Mesma fonte de elegibilidade da busca (`listCandidates`): quem a busca
       // esconde — plantel de hospital irmão da MESMA instituição sem ACL no
@@ -939,6 +1072,10 @@ export const scheduleInvitesRouter = router({
 
       const sent: { userId: number; name: string | null }[] = [];
       const failed: { userId: number; error: string }[] = [];
+      let responseContext: {
+        hospitalName: string;
+        sectorName: string;
+      } | null = null;
       // Ids pedidos que a busca esconde (hospital irmão, outra instituição,
       // já na escala, conta inválida): recusados por elegibilidade, não por
       // e-mail. Rastreados à parte para observar tentativa de convite-por-id.
@@ -952,11 +1089,10 @@ export const scheduleInvitesRouter = router({
           continue;
         }
 
-        // Serializa reemissões pelo destinatário antes de revogar/inserir. Sem
-        // uma linha estável bloqueada, duas requisições simultâneas conseguiam
-        // inserir e depois revogar uma à outra, deixando zero convites válidos.
-        // A transação também garante rollback da revogação se o INSERT falhar.
-        const issued = await withScheduleInviteIssuanceMutex(
+        // Todo o ciclo entrega → ativação é serializado por destinatário. A
+        // primeira transação só prova autoridade/elegibilidade e termina antes
+        // da rede. A segunda revalida tudo e troca o convite atomicamente.
+        const outcome = await withScheduleInviteIssuanceMutex(
           db,
           {
             institutionId: actor.institutionId,
@@ -964,128 +1100,180 @@ export const scheduleInvitesRouter = router({
             sectorId: input.sectorId,
             userId,
           },
-          (connectionDb) =>
-            connectionDb.transaction(async (tx) => {
-              // A lista inicial é apenas uma otimização/neutralização do lote. A
-              // autorização é reavaliada sob o mutex para não emitir convite para
-              // uma identidade que deixou de ser elegível enquanto aguardava.
-              const invitee = (
-                await selectInvitableCandidates(
-                  tx,
-                  actor.institutionId,
-                  input.hospitalId,
-                  input.sectorId,
-                  [userId],
-                )
-              ).find((candidate) => candidate.userId === userId);
-              if (!invitee?.email) return null;
+          async (connectionDb) => {
+            const prepared = await connectionDb.transaction((tx) =>
+              revalidateInviteIssuanceForUpdate(tx, {
+                actor,
+                expectedActorSessionVersion: ctx.user.sessionVersion,
+                hospitalId: input.hospitalId,
+                sectorId: input.sectorId,
+                userId,
+              }),
+            );
+            if (!prepared?.invitee.email) {
+              return { kind: "INELIGIBLE" as const };
+            }
 
-              const plaintext = generateScheduleInviteCode();
-              const normalized = normalizeScheduleInviteCode(plaintext);
-              const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
+            const plaintext = generateScheduleInviteCode();
+            const normalized = normalizeScheduleInviteCode(plaintext);
+            const formatted = formatScheduleInviteCode(normalized);
+            const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
+            const mail = buildScheduleInviteMail({
+              to: prepared.invitee.email,
+              hospitalName: prepared.context.hospitalName,
+              sectorName: prepared.context.sectorName,
+              code: formatted,
+              expiresAt,
+            });
+            if (!mail) return { kind: "MAIL_BUILD_FAILED" as const };
 
-              await tx
-                .update(scheduleInvites)
-                .set({ revokedAt: new Date() })
-                .where(
-                  and(
-                    eq(scheduleInvites.institutionId, actor.institutionId),
-                    eq(scheduleInvites.hospitalId, input.hospitalId),
-                    eq(scheduleInvites.sectorId, input.sectorId),
-                    eq(scheduleInvites.invitedUserId, invitee.userId),
-                    isNull(scheduleInvites.revokedAt),
-                    isNull(scheduleInvites.declinedAt),
-                    sql`${scheduleInvites.redeemedCount} = 0`,
-                  ),
-                );
+            let delivery: Awaited<ReturnType<typeof mailer.sendMail>>;
+            try {
+              delivery = await mailer.sendMail(mail);
+            } catch {
+              // O mailer oficial normaliza falhas, mas adapters/test doubles
+              // também permanecem fail-closed. Nunca registre e-mail/código.
+              console.error(
+                "[schedule-invites] INVITE_DELIVERY_TRANSPORT_EXCEPTION",
+              );
+              return { kind: "DELIVERY_FAILED" as const };
+            }
+            if (!delivery.delivered) {
+              return { kind: "DELIVERY_FAILED" as const };
+            }
 
-              const [inserted] = await tx
-                .insert(scheduleInvites)
-                .values({
-                  institutionId: actor.institutionId,
+            let activated: {
+              invitee: InvitableCandidate;
+              context: InviteIssuanceSnapshot["context"];
+            } | null;
+            try {
+              activated = await connectionDb.transaction(async (tx) => {
+                const current = await revalidateInviteIssuanceForUpdate(tx, {
+                  actor,
+                  expectedActorSessionVersion: ctx.user.sessionVersion,
                   hospitalId: input.hospitalId,
                   sectorId: input.sectorId,
-                  codeHash: hashScheduleInviteCode(normalized),
-                  createdByUserId: actor.userId,
-                  invitedUserId: invitee.userId,
-                  invitedEmail: invitee.email,
-                  maxRedemptions: NAMED_MAX_REDEMPTIONS,
-                  expiresAt,
-                })
-                .$returningId();
+                  userId,
+                });
+                // O e-mail entregue precisa continuar pertencendo à mesma
+                // identidade/e-mail no instante da ativação.
+                if (
+                  !current?.invitee.email ||
+                  current.invitee.professionalId !==
+                    prepared.invitee.professionalId ||
+                  current.invitee.email !== prepared.invitee.email
+                ) {
+                  return null;
+                }
 
-              return {
-                invitee: { ...invitee, email: invitee.email },
-                inserted,
-                expiresAt,
-                formatted: formatScheduleInviteCode(normalized),
-              };
-            }),
+                await tx
+                  .update(scheduleInvites)
+                  .set({ revokedAt: new Date() })
+                  .where(
+                    and(
+                      eq(scheduleInvites.institutionId, actor.institutionId),
+                      eq(scheduleInvites.hospitalId, input.hospitalId),
+                      eq(scheduleInvites.sectorId, input.sectorId),
+                      eq(scheduleInvites.invitedUserId, userId),
+                      isNull(scheduleInvites.revokedAt),
+                      isNull(scheduleInvites.declinedAt),
+                      sql`${scheduleInvites.redeemedCount} = 0`,
+                    ),
+                  );
+
+                const [inserted] = await tx
+                  .insert(scheduleInvites)
+                  .values({
+                    institutionId: actor.institutionId,
+                    hospitalId: input.hospitalId,
+                    sectorId: input.sectorId,
+                    codeHash: hashScheduleInviteCode(normalized),
+                    createdByUserId: actor.userId,
+                    invitedUserId: current.invitee.userId,
+                    invitedEmail: current.invitee.email,
+                    maxRedemptions: NAMED_MAX_REDEMPTIONS,
+                    expiresAt,
+                  })
+                  .$returningId();
+
+                await recordAudit(
+                  {
+                    institutionId: actor.institutionId,
+                    action: "USER_UPDATED",
+                    entityType: "USER",
+                    entityId: current.invitee.userId,
+                    actorUserId: actor.userId,
+                    actorRole: actor.roleInInstitution,
+                    description: `Convite nominal enviado para a escala ${current.context.hospitalName} / ${current.context.sectorName}`,
+                    metadata: {
+                      scheduleInviteId: inserted.id,
+                      invitedUserId: current.invitee.userId,
+                      hospitalId: input.hospitalId,
+                      sectorId: input.sectorId,
+                    },
+                    hospitalId: input.hospitalId,
+                    sectorId: input.sectorId,
+                  },
+                  { db: tx, strict: true },
+                );
+
+                return {
+                  invitee: current.invitee,
+                  context: current.context,
+                };
+              });
+            } catch (error) {
+              // O provedor pode já ter aceitado a mensagem. O rollback mantém
+              // o convite anterior; este novo código fica inutilizável e a API
+              // não o confirma como enviado.
+              console.error(
+                "[schedule-invites] DELIVERY_ACCEPTED_ACTIVATION_FAILED",
+              );
+              throw error;
+            }
+            if (!activated) {
+              console.error(
+                "[schedule-invites] DELIVERY_ACCEPTED_IDENTITY_CHANGED",
+              );
+              return { kind: "ACTIVATION_REJECTED" as const };
+            }
+            return { kind: "SENT" as const, ...activated };
+          },
         );
-        if (!issued) {
+
+        if (outcome.kind === "INELIGIBLE") {
           ineligibleUserIds.push(userId);
           failed.push({ userId, error: "Médico não encontrado" });
           continue;
         }
-        const { invitee, inserted, expiresAt, formatted } = issued;
-
-        const mail = buildScheduleInviteMail({
-          to: invitee.email,
-          hospitalName: context.hospitalName,
-          sectorName: context.sectorName,
-          code: formatted,
-          expiresAt,
-        });
-        if (!mail) {
-          await db
-            .update(scheduleInvites)
-            .set({ revokedAt: new Date() })
-            .where(eq(scheduleInvites.id, inserted.id));
+        if (outcome.kind === "MAIL_BUILD_FAILED") {
           failed.push({
             userId,
             error: "Não foi possível montar o e-mail de convite",
           });
           continue;
         }
-
-        const delivery = await mailer.sendMail(mail);
-        // Console (sem RESEND_API_KEY) também vem delivered:false.
-        // Não confirmar envio se o correio não entregou — o gestor via
-        // "saíram por e-mail" e o médico não recebia nada.
-        if (!delivery.delivered) {
-          await db
-            .update(scheduleInvites)
-            .set({ revokedAt: new Date() })
-            .where(eq(scheduleInvites.id, inserted.id));
+        if (outcome.kind === "DELIVERY_FAILED") {
           failed.push({
             userId,
             error: "O e-mail de convite não saiu. Tente novamente.",
           });
           continue;
         }
+        if (outcome.kind === "ACTIVATION_REJECTED") {
+          failed.push({
+            userId,
+            error:
+              "O convite não pôde ser ativado com segurança. Tente novamente.",
+          });
+          continue;
+        }
 
-        await recordAudit(
-          {
-            institutionId: actor.institutionId,
-            action: "USER_UPDATED",
-            entityType: "USER",
-            entityId: invitee.userId,
-            actorUserId: actor.userId,
-            actorRole: actor.roleInInstitution,
-            description: `Convite nominal enviado para a escala ${context.hospitalName} / ${context.sectorName}`,
-            metadata: {
-              scheduleInviteId: inserted.id,
-              invitedUserId: invitee.userId,
-              hospitalId: input.hospitalId,
-              sectorId: input.sectorId,
-            },
-            hospitalId: input.hospitalId,
-            sectorId: input.sectorId,
-          },
-          { strict: true },
-        );
-
-        sent.push({ userId: invitee.userId, name: invitee.name });
+        responseContext = outcome.context;
+        sent.push({
+          userId: outcome.invitee.userId,
+          name: outcome.invitee.name,
+        });
       }
 
       if (ineligibleUserIds.length > 0) {
@@ -1114,8 +1302,8 @@ export const scheduleInvitesRouter = router({
       return {
         sent,
         failed,
-        hospitalName: context.hospitalName,
-        sectorName: context.sectorName,
+        hospitalName: responseContext!.hospitalName,
+        sectorName: responseContext!.sectorName,
       };
     }),
 

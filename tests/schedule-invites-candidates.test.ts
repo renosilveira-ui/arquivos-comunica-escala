@@ -1,4 +1,12 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   hospitals,
@@ -16,6 +24,11 @@ import {
 import { getDb } from "../server/db";
 import { mailer } from "../server/mailer";
 import { appRouter } from "../server/routers";
+import * as auditTrail from "../server/audit-trail";
+import {
+  hashScheduleInviteCode,
+  normalizeScheduleInviteCode,
+} from "../lib/schedule-invite-code";
 import { ensureTestAnesthesiaSpecialty } from "./helpers/open-test-scale";
 
 describe("scheduleInvites.listCandidates — sala de espera e busca por nome", () => {
@@ -27,6 +40,8 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
   let sectorId: number;
   let anesthesiaId: number;
   let managerUserId: number;
+  let managerProfessionalId: number;
+  let managerSessionVersion: number;
   let waitingUserId: number;
   let houseUserId: number;
   let alreadyInScaleUserId: number;
@@ -83,6 +98,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         role: "manager",
         name: "Gestor candidatos",
         email: "gestor-cand@test.local",
+        sessionVersion: managerSessionVersion,
       },
       institutionId,
       allowedInstitutionIds: [institutionId],
@@ -175,6 +191,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         passwordHash: "test",
         role: "manager",
         approvalStatus: "APPROVED",
+        sessionVersion: 1,
       })
       .$returningId();
     managerUserId = managerUser.id;
@@ -189,6 +206,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         specialty: "Anestesiologia",
       })
       .$returningId();
+    managerProfessionalId = managerPro.id;
     await db.insert(professionalInstitutions).values({
       professionalId: managerPro.id,
       userId: managerUserId,
@@ -204,6 +222,11 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       sectorId,
       active: true,
     });
+    const [managerSession] = await db
+      .select({ sessionVersion: users.sessionVersion })
+      .from(users)
+      .where(eq(users.id, managerUserId));
+    managerSessionVersion = managerSession!.sessionVersion;
 
     const waiting = await createDoctor({
       stamp,
@@ -325,6 +348,35 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       mailSpy.mockRestore();
     });
 
+    function inviteCodeFromMailCall(callIndex: number): string {
+      const message = mailSpy.mock.calls[callIndex]?.[0];
+      const match = message?.text.match(
+        /cole o convite: ([A-Z2-9]{4}-[A-Z2-9]{4})/,
+      );
+      if (!match?.[1]) throw new Error("E-mail sem código nominal");
+      return match[1];
+    }
+
+    async function activeInvitesFor(userId: number) {
+      return db
+        .select({
+          id: scheduleInvites.id,
+          codeHash: scheduleInvites.codeHash,
+        })
+        .from(scheduleInvites)
+        .where(
+          and(
+            eq(scheduleInvites.institutionId, institutionId),
+            eq(scheduleInvites.hospitalId, hospitalId),
+            eq(scheduleInvites.sectorId, sectorId),
+            eq(scheduleInvites.invitedUserId, userId),
+            isNull(scheduleInvites.revokedAt),
+            isNull(scheduleInvites.declinedAt),
+            sql`${scheduleInvites.redeemedCount} = 0`,
+          ),
+        );
+    }
+
     it("recusa convidar médico de hospital irmão informado direto por id", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
@@ -392,6 +444,365 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       for (const failure of result.failed) {
         // Resposta neutra: não revela o motivo real nem confirma o vínculo.
         expect(failure.error).toBe("Médico não encontrado");
+      }
+    });
+
+    it("omite identidade profissional ambígua da busca e do convite por id", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `ambiguous-${Date.now()}`,
+        name: "Identidade Profissional Ambígua",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      await db.insert(professionals).values({
+        userId: target.userId,
+        name: "Identidade Profissional Duplicada",
+        role: "Médico",
+        userRole: "USER",
+        medicalSpecialtyId: anesthesiaId,
+        specialty: "Anestesiologia",
+      });
+
+      const listed = await caller().scheduleInvites.listCandidates({
+        hospitalId,
+        sectorId,
+      });
+      expect(listed.map((row) => row.userId)).not.toContain(target.userId);
+      await expect(
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(mailSpy).not.toHaveBeenCalled();
+    });
+
+    it("falha de uma nova entrega preserva o convite ativo anterior", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `preserve-${Date.now()}`,
+        name: "Preserva Convite Anterior",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      const before = await activeInvitesFor(target.userId);
+      expect(before).toHaveLength(1);
+
+      mailSpy.mockResolvedValueOnce({
+        delivered: false,
+        transport: "resend",
+        error: "HTTP 503",
+      });
+      await expect(
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      expect(await activeInvitesFor(target.userId)).toEqual(before);
+    });
+
+    it("A sucesso lento e B falha rápida mantêm A ativo", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `success-failure-${Date.now()}`,
+        name: "Concorrência Sucesso Falha",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      mailSpy
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              setTimeout(
+                () => resolve({ delivered: true, transport: "resend" }),
+                40,
+              );
+            }),
+        )
+        .mockResolvedValueOnce({
+          delivered: false,
+          transport: "resend",
+          error: "HTTP 503",
+        });
+
+      const [attemptA, attemptB] = await Promise.allSettled([
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+      ]);
+      expect(attemptA.status).toBe("fulfilled");
+      expect(attemptB.status).toBe("rejected");
+      const firstCode = inviteCodeFromMailCall(0);
+      expect(await activeInvitesFor(target.userId)).toEqual([
+        expect.objectContaining({
+          codeHash: hashScheduleInviteCode(
+            normalizeScheduleInviteCode(firstCode),
+          ),
+        }),
+      ]);
+    });
+
+    it("duas entregas concorrentes deixam ativo o último código efetivamente entregue", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `both-success-${Date.now()}`,
+        name: "Concorrência Dois Sucessos",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      const deliveredCodes: string[] = [];
+      mailSpy.mockImplementation(async (message) => {
+        const match = message.text.match(
+          /cole o convite: ([A-Z2-9]{4}-[A-Z2-9]{4})/,
+        );
+        if (!match?.[1]) throw new Error("E-mail sem código nominal");
+        if (mailSpy.mock.calls.length === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        deliveredCodes.push(match[1]);
+        return { delivered: true, transport: "resend" };
+      });
+
+      const attempts = await Promise.all([
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+      ]);
+      expect(attempts.every((attempt) => attempt.sent.length === 1)).toBe(true);
+      expect(deliveredCodes).toHaveLength(2);
+      const lastDelivered = deliveredCodes.at(-1)!;
+      expect(await activeInvitesFor(target.userId)).toEqual([
+        expect.objectContaining({
+          codeHash: hashScheduleInviteCode(
+            normalizeScheduleInviteCode(lastDelivered),
+          ),
+        }),
+      ]);
+    });
+
+    it("revogação de autoridade enquanto B aguarda o mutex bloqueia A e B", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `revoked-authority-${Date.now()}`,
+        name: "Autoridade Revogada Durante Convite",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      let releaseFirst!: () => void;
+      const firstCanFinish = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      mailSpy
+        .mockImplementationOnce(async () => {
+          await firstCanFinish;
+          return { delivered: true, transport: "resend" };
+        })
+        .mockResolvedValue({ delivered: true, transport: "resend" });
+
+      const attemptA = caller()
+        .scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        })
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const attemptB = caller()
+        .scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        })
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      try {
+        await db
+          .update(managerScope)
+          .set({ active: false })
+          .where(
+            and(
+              eq(managerScope.institutionId, institutionId),
+              eq(managerScope.managerProfessionalId, managerProfessionalId),
+              eq(managerScope.hospitalId, hospitalId),
+              eq(managerScope.sectorId, sectorId),
+            ),
+          );
+        releaseFirst();
+        const attempts = await Promise.all([attemptA, attemptB]);
+        expect(attempts.map((attempt) => attempt.status)).toEqual([
+          "rejected",
+          "rejected",
+        ]);
+        for (const attempt of attempts) {
+          if (attempt.status === "rejected") {
+            expect(attempt.reason).toMatchObject({
+              code: expect.stringMatching(/^(FORBIDDEN|CONFLICT)$/),
+            });
+          }
+        }
+        expect(await activeInvitesFor(target.userId)).toHaveLength(0);
+      } finally {
+        releaseFirst();
+        await db
+          .update(managerScope)
+          .set({ active: true })
+          .where(
+            and(
+              eq(managerScope.institutionId, institutionId),
+              eq(managerScope.managerProfessionalId, managerProfessionalId),
+              eq(managerScope.hospitalId, hospitalId),
+              eq(managerScope.sectorId, sectorId),
+            ),
+          );
+        const [restoredSession] = await db
+          .select({ sessionVersion: users.sessionVersion })
+          .from(users)
+          .where(eq(users.id, managerUserId));
+        managerSessionVersion = restoredSession!.sessionVersion;
+      }
+    });
+
+    it("mudança de elegibilidade do destinatário durante a rede impede ativação", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `recipient-changed-${Date.now()}`,
+        name: "Destinatário Alterado Durante Entrega",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      let markMailStarted!: () => void;
+      let releaseMail!: () => void;
+      const mailStarted = new Promise<void>((resolve) => {
+        markMailStarted = resolve;
+      });
+      const mailCanFinish = new Promise<void>((resolve) => {
+        releaseMail = resolve;
+      });
+      mailSpy.mockImplementationOnce(async () => {
+        markMailStarted();
+        await mailCanFinish;
+        return { delivered: true, transport: "resend" };
+      });
+
+      const attempt = caller()
+        .scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        })
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+      await mailStarted;
+
+      // Se uma transação SQL estivesse aberta durante a rede, esta escrita
+      // ficaria bloqueada pela leitura FOR UPDATE do destinatário.
+      await db.insert(professionalAccess).values({
+        institutionId,
+        professionalId: target.professionalId,
+        hospitalId,
+        sectorId,
+        canAccess: true,
+      });
+      releaseMail();
+
+      const result = await attempt;
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason).toMatchObject({ code: "BAD_REQUEST" });
+      }
+      expect(await activeInvitesFor(target.userId)).toHaveLength(0);
+    });
+
+    it("exceção de transporte preserva o convite anterior", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `transport-crash-${Date.now()}`,
+        name: "Falha Abrupta do Transporte",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      const before = await activeInvitesFor(target.userId);
+      expect(before).toHaveLength(1);
+
+      mailSpy.mockRejectedValueOnce(new Error("simulated transport crash"));
+      await expect(
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+      ).rejects.toBeTruthy();
+      expect(await activeInvitesFor(target.userId)).toEqual(before);
+    });
+
+    it("falha de ativação após aceite do provedor faz rollback e preserva o convite anterior", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `activation-crash-${Date.now()}`,
+        name: "Falha Após Aceite do Provedor",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      const before = await activeInvitesFor(target.userId);
+      expect(before).toHaveLength(1);
+
+      const auditSpy = vi
+        .spyOn(auditTrail, "recordAudit")
+        .mockRejectedValueOnce(new Error("simulated activation crash"));
+      try {
+        await expect(
+          caller().scheduleInvites.create({
+            hospitalId,
+            sectorId,
+            userIds: [target.userId],
+          }),
+        ).rejects.toThrow("simulated activation crash");
+        expect(await activeInvitesFor(target.userId)).toEqual(before);
+      } finally {
+        auditSpy.mockRestore();
       }
     });
 

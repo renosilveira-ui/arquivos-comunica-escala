@@ -41,9 +41,14 @@ describe("wiring fail-closed dos convites nominais", () => {
 
   it("não confirma o convite se o correio não entregou, inclusive sem chave", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
-    expect(source).toContain("const delivery = await mailer.sendMail(mail)");
+    expect(source).toContain("delivery = await mailer.sendMail(mail)");
     expect(source).toContain("if (!delivery.delivered)");
     expect(source).toContain("O e-mail de convite não saiu. Tente novamente.");
+    expect(source).toContain("DELIVERY_ACCEPTED_ACTIVATION_FAILED");
+    expect(source).toContain("assertManagerScopeAccessForUpdate");
+    expect(source).toContain("{ db: tx, strict: true }");
+    expect(source).toContain("nenhuma transação SQL");
+    expect(source).toContain("contrato hash-only");
     expect(source).not.toContain(
       'delivery.transport === "resend" && !delivery.delivered',
     );
