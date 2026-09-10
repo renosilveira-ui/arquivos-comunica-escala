@@ -517,6 +517,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
       codeHash: hashLegacyScheduleInviteCode(
         normalizeScheduleInviteCode(generateScheduleInviteCode()),
       ),
+      codeHashVersion: "SHA256_V1",
       createdByUserId: plusUserId,
       invitedUserId: inviteeUserId,
       maxRedemptions: 1,

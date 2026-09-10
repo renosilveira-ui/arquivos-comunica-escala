@@ -42,11 +42,16 @@ describe("wiring fail-closed dos convites nominais", () => {
   it("persiste intenção antes do envio e só confirma após aceite + ativação", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
     expect(source.indexOf('event: "CLAIMED"')).toBeLessThan(
-      source.indexOf("providerResult = await mailer.sendMail(mail"),
+      source.indexOf("providerResult = await mailer.sendMail(claim.mail"),
     );
-    expect(source).toContain("providerResult.kind !== \"ACCEPTED\"");
+    expect(source).toContain('providerResult.kind !== "ACCEPTED"');
     expect(source).toContain("outcome: providerResult.kind");
     expect(source).toContain("idempotencyKey:");
+    expect(source).toContain("persistedMaterial.providerRequestFingerprint");
+    expect(source).toContain("fingerprintProviderRequest(claim.mail)");
+    expect(source).toContain("PROVIDER_REQUEST_CHANGED_BEFORE_EGRESS");
+    expect(source).toContain("ATTEMPT_EXPIRED_BEFORE_EGRESS");
+    expect(source).toContain('activationFailureCode = "ACTIVATION_EXPIRED"');
     expect(source).toContain('outcome: "UNKNOWN"');
     expect(source).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
     expect(source).toContain("assertManagerScopeAccessForUpdate");
@@ -93,10 +98,24 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(schema).toContain("uniq_schedule_invite_issuance_scope");
     expect(schema).toContain("PROVIDER_UNKNOWN");
     expect(schema).toContain("provider_idempotency_key");
+    expect(schema).toContain("provider_request_fingerprint");
     expect(schema).toContain("recipient_binding_hash");
     expect(migration).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
     expect(migration).toContain("Aplicar ANTES da migration hash V2");
     expect(source).toContain("appendInviteIssuanceJournal");
+    expect(source).toContain("fingerprintProviderRequest");
+    expect(migration).toContain(
+      "trg_schedule_invite_issuance_journal_no_update",
+    );
+    expect(migration).toContain(
+      "trg_schedule_invite_issuance_journal_no_delete",
+    );
+    expect(migration).toContain("INFORMATION_SCHEMA.CHECK_CONSTRAINTS");
+    expect(migration).toContain("INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS");
+    expect(migration).toContain("POSITION_IN_UNIQUE_CONSTRAINT");
+    expect(migration).toContain("referential_constraints.UPDATE_RULE");
+    expect(migration).toContain("referential_constraints.DELETE_RULE");
+    expect(migration).toContain("check_manifest.NORMALIZED_CLAUSE =");
     expect(source).not.toContain(".update(scheduleInviteIssuanceJournal)");
     expect(migration).not.toMatch(
       /\b(code_hash|invited_email|plaintext_code|provider_payload)\b/i,
@@ -126,7 +145,33 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(migration).toContain("code_hash_version");
     expect(migration).toContain("SHA256_V1");
     expect(migration).toContain("HMAC_SHA256_V2");
+    expect(migration).toContain("DEFAULT ''HMAC_SHA256_V2'' AFTER code_hash");
     expect(migration).not.toContain("SCHEDULE_INVITE_CODE_PEPPER=");
+  });
+
+  it("mantém o remetente do fingerprint alinhado ao fallback real do mailer", () => {
+    const mailerSource = readFileSync("server/mailer.ts", "utf8");
+    const fingerprintSource = readFileSync(
+      "server/schedule-invite-provider-request.ts",
+      "utf8",
+    );
+    const fallback = "Escala+ <no-reply@escalas.app>";
+    expect(mailerSource).toContain(`DEFAULT_FROM = "${fallback}"`);
+    expect(fingerprintSource).toContain(`"${fallback}"`);
+    expect(fingerprintSource).toContain('createHmac("sha256", pepper)');
+    expect(fingerprintSource).not.toContain("createHash");
+  });
+
+  it("documenta o bloqueador de composição do reset administrativo", () => {
+    const contract = readFileSync(
+      "docs/operations/admin-reset-durable-delivery-contract.md",
+      "utf8",
+    );
+    expect(contract).toContain("não pode trocar `password_hash`");
+    expect(contract).toContain("Em `REJECTED`, não alterar a credencial");
+    expect(contract).toContain("Em `UNKNOWN`");
+    expect(contract).toContain("Sem e-mail, rejeitar antes");
+    expect(contract).toContain("Nunca retornar\n   `{ ok: true }`");
   });
 
   it("o app não importa o gerador de código com crypto de Node", () => {

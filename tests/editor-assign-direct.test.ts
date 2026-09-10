@@ -1058,6 +1058,7 @@ describe("editor.assignDirect", () => {
       codeHash: hashLegacyScheduleInviteCode(
         normalizeScheduleInviteCode(generateScheduleInviteCode()),
       ),
+      codeHashVersion: "SHA256_V1",
       createdByUserId: managerUserId,
       invitedUserId: inviteeUser.id,
       maxRedemptions: 1,

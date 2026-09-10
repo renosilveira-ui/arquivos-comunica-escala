@@ -304,6 +304,7 @@ describe("professionals.listAssignableForShift", () => {
       hospitalId,
       sectorId,
       codeHash: hashLegacyScheduleInviteCode(normalizeScheduleInviteCode(inviteCode)),
+      codeHashVersion: "SHA256_V1",
       createdByUserId: managerUserId,
       invitedUserId: invitee.userId,
       maxRedemptions: 1,
@@ -330,6 +331,7 @@ describe("professionals.listAssignableForShift", () => {
         codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
+        codeHashVersion: "SHA256_V1",
         createdByUserId: managerUserId,
         invitedUserId: pendingHouse.userId,
         maxRedemptions: 1,
@@ -342,6 +344,7 @@ describe("professionals.listAssignableForShift", () => {
         codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
+        codeHashVersion: "SHA256_V1",
         createdByUserId: managerUserId,
         invitedUserId: pendingWaiting.userId,
         maxRedemptions: 1,
@@ -354,6 +357,7 @@ describe("professionals.listAssignableForShift", () => {
         codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
+        codeHashVersion: "SHA256_V1",
         createdByUserId: managerUserId,
         invitedUserId: pendingGestor.userId,
         maxRedemptions: 1,
@@ -366,6 +370,7 @@ describe("professionals.listAssignableForShift", () => {
         codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
+        codeHashVersion: "SHA256_V1",
         createdByUserId: managerUserId,
         invitedUserId: revokedInvitee.userId,
         maxRedemptions: 1,

@@ -18,10 +18,13 @@ gate: não antecipar env ou runtime e não executar passos em paralelo.
    `schedule_invite_issuance_journal`.
 2. **Hash V2:** aplicar
    `2026-09-10-schedule-invite-code-hash-v2.sql`. Confirmar que linhas
-   preexistentes ficaram explicitamente `SHA256_V1`.
+   preexistentes ficaram explicitamente `SHA256_V1` e que o default final da
+   coluna é `HMAC_SHA256_V2`. Um INSERT novo que omita a versão deve nascer V2.
 3. **Reruns/manifests:** rerodar, nesta ordem, a migration da fence e a do hash.
-   Ambas devem concluir sem DDL adicional, preservar todas as linhas e repetir
-   os mesmos manifests. Qualquer mismatch é STOP; não corrigir automaticamente.
+   Ambas devem preservar todas as linhas e repetir os mesmos manifests. A
+   fence recria somente os dois guards append-only, ainda com writers fora de
+   rotação; tabelas/colunas não sofrem DDL adicional. Qualquer mismatch é STOP;
+   não corrigir automaticamente.
 4. **Env:** gerar um segredo aleatório exclusivo com pelo menos 32 bytes e só
    então cadastrar `SCHEDULE_INVITE_CODE_PEPPER` em todas as instâncias. Não
    copiar `COOKIE_SECRET`, JWT, credenciais Twilio ou Resend. Durante rotação,
@@ -45,7 +48,7 @@ falham fechado. Inicialização, login e demais módulos continuam disponíveis.
 
 O leitor reconhece `SHA256_V1` explicitamente para convites criados antes do
 rollout. Eles continuam sujeitos ao próprio `expires_at`; como o writer antigo
-é retirado no passo 4, a janela fecha naturalmente em no máximo 24 horas. V1
+é retirado antes do passo 1, a janela fecha naturalmente em no máximo 24 horas. V1
 nunca é usado para novas emissões pelo runtime novo.
 
 ## Rotação
@@ -69,13 +72,19 @@ rejeitada.
 - `ACCEPTED` significa aceite/enfileiramento HTTP, não entrega final.
 - `REJECTED` só é gravado para uma rejeição definitiva antes/na chamada.
 - Timeout, 5xx, 408, 425, 429, erro de rede ou crash pós-envio são `UNKNOWN`.
-  Eles preservam a geração, nonce e idempotency-key.
+  Eles preservam a geração, nonce, idempotency-key e fingerprint HMAC canônico
+  do request completo do provedor. O pepper nunca é persistido.
 - Após vencer a lease, `PREPARING`/`UNKNOWN` reenviam exatamente a mesma
-  mensagem com a mesma chave opaca; nunca criam código concorrente.
+  mensagem com a mesma chave opaca. Antes do replay, o runtime reconstrói
+  `from`, `to`, assunto, texto/HTML e exige igualdade com o fingerprint
+  persistido. Mudança em nome, `APP_PUBLIC_URL`, `MAIL_FROM`, destinatário ou
+  template falha fechado antes da rede; nunca reaproveita a chave antiga com
+  conteúdo novo.
 - `PROVIDER_ACCEPTED` e `PROVIDER_ACCEPTED_ACTIVATION_FAILED` retomam apenas a
   ativação local. Não reenviam e-mail.
-- O journal é append-only e preserva cada resultado, inclusive
-  `PROVIDER_ACCEPTED` seguido de `ACTIVATION_FAILED`.
+- O journal é append-only no runtime e no banco: triggers `BEFORE UPDATE` e
+  `BEFORE DELETE` rejeitam alteração/remoção. O manifesto prova nomes, timing,
+  evento e `ACTION_STATEMENT` dos dois guards.
 
 ## Limites
 

@@ -8,6 +8,8 @@ import {
   type ScheduleInviteCodeScope,
   type ScheduleInviteHashVersion,
 } from "../lib/schedule-invite-code";
+import type { MailMessage } from "./mailer";
+import { fingerprintScheduleInviteProviderRequest } from "./schedule-invite-provider-request";
 
 const MIN_PEPPER_BYTES = 32;
 
@@ -80,6 +82,7 @@ export type ScheduleInviteOutboxKey = {
     input: ScheduleInviteCodeScope & { generation: number; nonce: string },
   ): string;
   bindRecipient(email: string): string;
+  fingerprintProviderRequest(message: MailMessage): string;
   hash(normalized: string): string;
 };
 
@@ -89,6 +92,8 @@ function buildOutboxKey(pepper: string): ScheduleInviteOutboxKey {
     deriveCode: (input) => deriveScheduleInviteCode(input, pepper),
     bindRecipient: (email) =>
       hashScheduleInviteRecipientBinding(email, pepper),
+    fingerprintProviderRequest: (message) =>
+      fingerprintScheduleInviteProviderRequest(message, pepper),
     hash: (normalized) => hashScheduleInviteCodeV2(normalized, pepper),
   });
 }

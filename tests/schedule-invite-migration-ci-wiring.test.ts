@@ -7,6 +7,10 @@ const fenceProof = readFileSync(
   "tests/schedule-invite-issuance-fence-migration-mysql.test.ts",
   "utf8",
 );
+const fenceMigration = readFileSync(
+  "drizzle/migrations/manual/2026-09-10-schedule-invite-issuance-fences.sql",
+  "utf8",
+);
 const hashProof = readFileSync(
   "tests/schedule-invite-code-hash-v2-migration-mysql.test.ts",
   "utf8",
@@ -55,5 +59,29 @@ describe("wiring CI das migrations de convite", () => {
     expect(gates.every((index) => index >= 0)).toBe(true);
     expect(gates).toEqual([...gates].sort((left, right) => left - right));
     expect(runbook).toContain("Não operar writer antigo e novo");
+  });
+
+  it("mantém provas adversariais do manifesto e do journal append-only", () => {
+    expect(fenceProof).toContain(
+      "DROP CHECK chk_schedule_invite_issuance_generation",
+    );
+    expect(fenceProof).toContain("generation >= 0");
+    expect(fenceProof).toContain("ON UPDATE CASCADE ON DELETE CASCADE");
+    expect(fenceProof).toContain(
+      "trg_schedule_invite_issuance_journal_no_update",
+    );
+    expect(fenceMigration).toContain(
+      "trg_schedule_invite_issuance_journal_no_delete",
+    );
+    expect(fenceMigration).toContain(
+      "DROP TRIGGER IF EXISTS trg_schedule_invite_issuance_journal_no_update",
+    );
+    expect(fenceMigration).toContain("SIGNAL SQLSTATE '45000'");
+    expect(fenceProof).toContain("SET reason_code = 'TAMPERED'");
+    expect(fenceProof).toContain(
+      "DELETE FROM schedule_invite_issuance_journal",
+    );
+    expect(hashProof).toContain('code_hash_version: "HMAC_SHA256_V2"');
+    expect(runbook).toContain("default final da");
   });
 });

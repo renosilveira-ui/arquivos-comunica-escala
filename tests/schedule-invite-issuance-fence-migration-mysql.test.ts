@@ -1,12 +1,18 @@
 import { readFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 
-const SERVER_URL =
-  process.env.SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL;
-const DISPOSABLE_MARKER =
-  process.env.SCHEDULE_INVITE_MIGRATION_TEST_MARKER;
+const SERVER_URL = process.env.SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL;
+const DISPOSABLE_MARKER = process.env.SCHEDULE_INVITE_MIGRATION_TEST_MARKER;
 const DATABASE_PREFIX = "escalas_test_invite_fence_";
 
 function parseLocalServer(raw: string | undefined) {
@@ -38,7 +44,12 @@ function parseLocalServer(raw: string | undefined) {
 }
 
 function requireMarker(raw: string | undefined): string {
-  if (!raw || raw.length < 32 || raw.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(raw)) {
+  if (
+    !raw ||
+    raw.length < 32 ||
+    raw.length > 128 ||
+    !/^[A-Za-z0-9._:-]+$/.test(raw)
+  ) {
     throw new Error(
       "SCHEDULE_INVITE_MIGRATION_TEST_MARKER deve ser um marker opaco explícito de 32-128 caracteres.",
     );
@@ -182,6 +193,7 @@ describe("migration da fence de emissão em MySQL isolado", () => {
           code_pepper_key_id = REPEAT('c', 64),
           recipient_binding_hash = REPEAT('d', 64),
           provider_idempotency_key = REPEAT('e', 64),
+          provider_request_fingerprint = REPEAT('f', 64),
           lease_expires_at = DATE_ADD(NOW(), INTERVAL 1 MINUTE)
       WHERE invited_user_id = 10;
       UPDATE schedule_invite_issuance_fences
@@ -225,8 +237,25 @@ describe("migration da fence de emissão em MySQL isolado", () => {
     `);
     expect(journal).toEqual([
       { generation: 1, event: "PROVIDER_UNKNOWN", reason_code: "TIMEOUT" },
-      { generation: 1, event: "ACTIVATION_FAILED", reason_code: "ACTIVATION_EXCEPTION" },
+      {
+        generation: 1,
+        event: "ACTIVATION_FAILED",
+        reason_code: "ACTIVATION_EXCEPTION",
+      },
     ]);
+    await expect(
+      database.query(`
+        UPDATE schedule_invite_issuance_journal
+        SET reason_code = 'TAMPERED'
+        WHERE invited_user_id = 10
+      `),
+    ).rejects.toMatchObject({ sqlState: "45000" });
+    await expect(
+      database.query(`
+        DELETE FROM schedule_invite_issuance_journal
+        WHERE invited_user_id = 10
+      `),
+    ).rejects.toMatchObject({ sqlState: "45000" });
     await expect(
       database.query(`
         INSERT INTO schedule_invite_issuance_fences
@@ -344,6 +373,45 @@ describe("migration da fence de emissão em MySQL isolado", () => {
       LIMIT 1
     `);
     expect(indexes).toEqual([{ IS_VISIBLE: "NO" }]);
+  });
+
+  it("preflight recusa drift adversarial da cláusula CHECK normalizada", async () => {
+    await database.query(migration);
+    await database.query(`
+      ALTER TABLE schedule_invite_issuance_fences
+        DROP CHECK chk_schedule_invite_issuance_generation,
+        ADD CONSTRAINT chk_schedule_invite_issuance_generation CHECK (
+          (state = 'IDLE' AND generation = 0)
+          OR (state <> 'IDLE' AND generation >= 0)
+        )
+    `);
+
+    await expect(database.query(migration)).rejects.toThrow();
+  });
+
+  it("preflight recusa drift de ação referencial mesmo com nome e colunas iguais", async () => {
+    await database.query(migration);
+    await database.query(`
+      ALTER TABLE schedule_invite_issuance_fences
+        DROP FOREIGN KEY fk_schedule_invite_issuance_invited_user,
+        ADD CONSTRAINT fk_schedule_invite_issuance_invited_user
+          FOREIGN KEY (invited_user_id) REFERENCES users (id)
+          ON UPDATE CASCADE ON DELETE CASCADE
+    `);
+
+    await expect(database.query(migration)).rejects.toThrow();
+  });
+
+  it("preflight recusa trigger append-only com ACTION_STATEMENT adulterado", async () => {
+    await database.query(migration);
+    await database.query(`
+      DROP TRIGGER trg_schedule_invite_issuance_journal_no_update;
+      CREATE TRIGGER trg_schedule_invite_issuance_journal_no_update
+        BEFORE UPDATE ON schedule_invite_issuance_journal
+        FOR EACH ROW SET NEW.reason_code = NEW.reason_code
+    `);
+
+    await expect(database.query(migration)).rejects.toThrow();
   });
 
   it("preflight recusa trigger extra sem executá-lo", async () => {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { planScheduleInviteRecovery } from "../server/schedule-invite-delivery-state";
+import {
+  isScheduleInviteAttemptLive,
+  planScheduleInviteRecovery,
+} from "../server/schedule-invite-delivery-state";
 
 const now = new Date("2026-09-10T12:00:00.000Z");
 const future = new Date("2026-09-10T12:05:00.000Z");
@@ -34,7 +37,7 @@ describe("recuperação da outbox de convite", () => {
     });
   });
 
-  it("crash pós-envio em PREPARING repete a mesma geração após a lease", () => {
+  it("crash pós-envio só permite replay após a lease", () => {
     expect(plan("PREPARING", future)).toEqual({ kind: "WAIT" });
     expect(plan("PREPARING", past)).toEqual({
       kind: "REPLAY_DELIVERY",
@@ -57,17 +60,34 @@ describe("recuperação da outbox de convite", () => {
     });
   });
 
-  it("pepper rotacionado ausente falha fechado durante tentativa vigente", () => {
-    expect(
-      planScheduleInviteRecovery({
-        state: "PROVIDER_UNKNOWN",
-        now,
-        leaseExpiresAt: past,
-        attemptExpiresAt: future,
-        recipientMatches: true,
-        pepperKeyAvailable: false,
-      }),
-    ).toEqual({ kind: "FAIL_CLOSED" });
+  it.each([
+    "PREPARING",
+    "PROVIDER_UNKNOWN",
+    "PROVIDER_ACCEPTED",
+    "ACTIVE",
+    "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+  ] as const)(
+    "pepper/key-id ausente em tentativa vigente falha antes do match em %s",
+    (state) => {
+      expect(
+        planScheduleInviteRecovery({
+          state,
+          now,
+          leaseExpiresAt: past,
+          attemptExpiresAt: future,
+          // Sem pepper não há combinação válida capaz de calcular o match.
+          recipientMatches: null,
+          pepperKeyAvailable: false,
+        }),
+      ).toEqual({ kind: "FAIL_CLOSED" });
+    },
+  );
+
+  it("IDLE abre a primeira geração quando a política de escrita está disponível", () => {
+    expect(plan("IDLE", null)).toEqual({
+      kind: "NEW_GENERATION",
+      supersedesUncertainGeneration: false,
+    });
   });
 
   it("expiração invalida a incerteza antes de abrir geração nova", () => {
@@ -77,12 +97,19 @@ describe("recuperação da outbox de convite", () => {
         now,
         leaseExpiresAt: past,
         attemptExpiresAt: past,
-        recipientMatches: true,
-        pepperKeyAvailable: true,
+        // Expirada, a geração antiga pode ser substituída sem resolver a chave.
+        recipientMatches: null,
+        pepperKeyAvailable: false,
       }),
     ).toEqual({
       kind: "NEW_GENERATION",
       supersedesUncertainGeneration: true,
     });
+  });
+
+  it("considera o instante exato de expiração como vencido", () => {
+    expect(isScheduleInviteAttemptLive(future, now)).toBe(true);
+    expect(isScheduleInviteAttemptLive(now, now)).toBe(false);
+    expect(isScheduleInviteAttemptLive(past, now)).toBe(false);
   });
 });

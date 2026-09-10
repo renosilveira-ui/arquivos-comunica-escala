@@ -56,6 +56,7 @@ export default defineConfig({
       "tests/edit-shift-context-immutable.test.ts",
       "tests/schedule-invite-code.test.ts",
       "tests/schedule-invite-delivery-state.test.ts",
+      "tests/schedule-invite-provider-request.test.ts",
       "tests/schedule-invite-migration-ci-wiring.test.ts",
       "tests/schedule-invites-schema.test.ts",
       "tests/schedule-invites-migration.test.ts",

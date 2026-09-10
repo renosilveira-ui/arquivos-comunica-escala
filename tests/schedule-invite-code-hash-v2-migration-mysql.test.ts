@@ -1,12 +1,19 @@
 import { readFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 
 const SERVER_URL =
   process.env.SCHEDULE_INVITE_HASH_V2_MIGRATION_TEST_SERVER_URL;
-const DISPOSABLE_MARKER =
-  process.env.SCHEDULE_INVITE_MIGRATION_TEST_MARKER;
+const DISPOSABLE_MARKER = process.env.SCHEDULE_INVITE_MIGRATION_TEST_MARKER;
 const DATABASE_PREFIX = "escalas_test_invite_hash_";
 
 function parseLocalServer(raw: string | undefined) {
@@ -38,7 +45,12 @@ function parseLocalServer(raw: string | undefined) {
 }
 
 function requireMarker(raw: string | undefined): string {
-  if (!raw || raw.length < 32 || raw.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(raw)) {
+  if (
+    !raw ||
+    raw.length < 32 ||
+    raw.length > 128 ||
+    !/^[A-Za-z0-9._:-]+$/.test(raw)
+  ) {
     throw new Error(
       "SCHEDULE_INVITE_MIGRATION_TEST_MARKER deve ser um marker opaco explícito de 32-128 caracteres.",
     );
@@ -164,6 +176,25 @@ describe("migration da versão de hash do convite em MySQL isolado", () => {
         code_hash_version: "SHA256_V1",
       },
     ]);
+
+    await database.query(
+      "INSERT INTO schedule_invites (code_hash) VALUES (REPEAT('b', 64))",
+    );
+    const [newRows] = await database.query<RowDataPacket[]>(`
+      SELECT code_hash_version
+      FROM schedule_invites
+      WHERE code_hash = REPEAT('b', 64)
+    `);
+    expect(newRows).toEqual([{ code_hash_version: "HMAC_SHA256_V2" }]);
+
+    const [column] = await database.query<RowDataPacket[]>(`
+      SELECT COLUMN_DEFAULT
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'schedule_invites'
+        AND COLUMN_NAME = 'code_hash_version'
+    `);
+    expect(column).toEqual([{ COLUMN_DEFAULT: "HMAC_SHA256_V2" }]);
   });
 
   it("recusa coluna preexistente incompatível antes de alterá-la", async () => {

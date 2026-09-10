@@ -13,7 +13,7 @@ describe("schema de convites de escala", () => {
     expect(scheduleInvites.sectorId.notNull).toBe(true);
     expect(scheduleInvites.codeHash.notNull).toBe(true);
     expect(scheduleInvites.codeHashVersion.notNull).toBe(true);
-    expect(scheduleInvites.codeHashVersion.default).toBe("SHA256_V1");
+    expect(scheduleInvites.codeHashVersion.default).toBe("HMAC_SHA256_V2");
     expect(scheduleInvites.createdByUserId.notNull).toBe(true);
     expect(scheduleInvites.invitedUserId.notNull).toBe(false);
     expect(scheduleInvites.invitedEmail.notNull).toBe(false);
@@ -63,17 +63,22 @@ describe("schema da emissão durável", () => {
     expect(scheduleInviteIssuanceFences.attemptExpiresAt.notNull).toBe(false);
     expect(scheduleInviteIssuanceFences.codeNonce.notNull).toBe(false);
     expect(scheduleInviteIssuanceFences.codePepperKeyId.notNull).toBe(false);
+    expect(scheduleInviteIssuanceFences.recipientBindingHash.notNull).toBe(
+      false,
+    );
+    expect(scheduleInviteIssuanceFences.providerIdempotencyKey.notNull).toBe(
+      false,
+    );
     expect(
-      scheduleInviteIssuanceFences.recipientBindingHash.notNull,
+      scheduleInviteIssuanceFences.providerRequestFingerprint.notNull,
     ).toBe(false);
     expect(
-      scheduleInviteIssuanceFences.providerIdempotencyKey.notNull,
-    ).toBe(false);
-    expect(
-      config.uniqueConstraints.find(
-        (constraint) =>
-          constraint.name === "uniq_schedule_invite_issuance_scope",
-      )?.columns.map(({ name }) => name),
+      config.uniqueConstraints
+        .find(
+          (constraint) =>
+            constraint.name === "uniq_schedule_invite_issuance_scope",
+        )
+        ?.columns.map(({ name }) => name),
     ).toEqual([
       "institution_id",
       "hospital_id",
@@ -87,6 +92,40 @@ describe("schema da emissão durável", () => {
         "chk_schedule_invite_issuance_activation_shape",
       ]),
     );
+    const foreignKeys = Object.fromEntries(
+      config.foreignKeys.map((foreignKey) => {
+        const reference = foreignKey.reference();
+        return [
+          foreignKey.getName(),
+          {
+            columns: reference.columns.map(({ name }) => name),
+            referencedColumns: reference.foreignColumns.map(({ name }) => name),
+            onUpdate: foreignKey.onUpdate,
+            onDelete: foreignKey.onDelete,
+          },
+        ];
+      }),
+    );
+    expect(foreignKeys).toEqual({
+      fk_schedule_invite_issuance_hospital_topology: {
+        columns: ["institution_id", "hospital_id"],
+        referencedColumns: ["institution_id", "id"],
+        onUpdate: "restrict",
+        onDelete: "restrict",
+      },
+      fk_schedule_invite_issuance_sector_topology: {
+        columns: ["institution_id", "hospital_id", "sector_id"],
+        referencedColumns: ["institution_id", "hospital_id", "id"],
+        onUpdate: "restrict",
+        onDelete: "restrict",
+      },
+      fk_schedule_invite_issuance_invited_user: {
+        columns: ["invited_user_id"],
+        referencedColumns: ["id"],
+        onUpdate: "restrict",
+        onDelete: "cascade",
+      },
+    });
   });
 
   it("journal é separado, indexado por geração e sem campos sensíveis", () => {

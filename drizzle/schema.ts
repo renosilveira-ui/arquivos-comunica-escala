@@ -1550,7 +1550,7 @@ export const scheduleInvites = mysqlTable(
       "HMAC_SHA256_V2",
     ])
       .notNull()
-      .default("SHA256_V1"),
+      .default("HMAC_SHA256_V2"),
     createdByUserId: int("created_by_user_id")
       .notNull()
       .references(() => users.id),
@@ -1607,8 +1607,9 @@ export type ScheduleInvite = typeof scheduleInvites.$inferSelect;
  * A linha é a intenção/outbox durável da preparação/entrega/ativação. Nenhuma
  * transação nem conexão do pool permanece aberta durante a chamada ao
  * provedor de e-mail. `generation` + `leaseToken` formam o CAS; nonce,
- * key-id e idempotency-key são opacos e permitem repetir a MESMA mensagem
- * depois de timeout/crash sem persistir código, hash ou e-mail.
+ * key-id e idempotency-key são opacos. O fingerprint do request completo
+ * permite repetir a MESMA mensagem depois de timeout/crash sem persistir
+ * código, hash, e-mail ou conteúdo.
  *
  * Migração manual (obrigatoriamente antes do runtime):
  * drizzle/migrations/manual/2026-09-10-schedule-invite-issuance-fences.sql
@@ -1640,6 +1641,9 @@ export const scheduleInviteIssuanceFences = mysqlTable(
     codePepperKeyId: char("code_pepper_key_id", { length: 64 }),
     recipientBindingHash: char("recipient_binding_hash", { length: 64 }),
     providerIdempotencyKey: char("provider_idempotency_key", { length: 64 }),
+    providerRequestFingerprint: char("provider_request_fingerprint", {
+      length: 64,
+    }),
     providerCorrelationId: varchar("provider_correlation_id", { length: 128 }),
     providerAcceptedAt: timestamp("provider_accepted_at"),
     scheduleInviteId: int("schedule_invite_id"),
@@ -1660,17 +1664,23 @@ export const scheduleInviteIssuanceFences = mysqlTable(
       columns: [table.institutionId, table.hospitalId],
       foreignColumns: [hospitals.institutionId, hospitals.id],
       name: "fk_schedule_invite_issuance_hospital_topology",
-    }),
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
     fkScheduleInviteIssuanceSectorTopology: foreignKey({
       columns: [table.institutionId, table.hospitalId, table.sectorId],
       foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
       name: "fk_schedule_invite_issuance_sector_topology",
-    }),
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
     fkScheduleInviteIssuanceInvitedUser: foreignKey({
       columns: [table.invitedUserId],
       foreignColumns: [users.id],
       name: "fk_schedule_invite_issuance_invited_user",
-    }).onDelete("cascade"),
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
     chkScheduleInviteIssuanceGeneration: check(
       "chk_schedule_invite_issuance_generation",
       sql`(
@@ -1690,9 +1700,9 @@ export const scheduleInviteIssuanceFences = mysqlTable(
     chkScheduleInviteIssuanceMaterialShape: check(
       "chk_schedule_invite_issuance_material_shape",
       sql`(
-        (${table.state} = 'IDLE' AND ${table.attemptExpiresAt} IS NULL AND ${table.codeNonce} IS NULL AND ${table.codePepperKeyId} IS NULL AND ${table.recipientBindingHash} IS NULL AND ${table.providerIdempotencyKey} IS NULL)
+        (${table.state} = 'IDLE' AND ${table.attemptExpiresAt} IS NULL AND ${table.codeNonce} IS NULL AND ${table.codePepperKeyId} IS NULL AND ${table.recipientBindingHash} IS NULL AND ${table.providerIdempotencyKey} IS NULL AND ${table.providerRequestFingerprint} IS NULL)
         OR
-        (${table.state} <> 'IDLE' AND ${table.attemptExpiresAt} IS NOT NULL AND ${table.codeNonce} IS NOT NULL AND ${table.codePepperKeyId} IS NOT NULL AND ${table.recipientBindingHash} IS NOT NULL AND ${table.providerIdempotencyKey} IS NOT NULL)
+        (${table.state} <> 'IDLE' AND ${table.attemptExpiresAt} IS NOT NULL AND ${table.codeNonce} IS NOT NULL AND ${table.codePepperKeyId} IS NOT NULL AND ${table.recipientBindingHash} IS NOT NULL AND ${table.providerIdempotencyKey} IS NOT NULL AND ${table.providerRequestFingerprint} IS NOT NULL)
       )`,
     ),
     chkScheduleInviteIssuanceAcceptedShape: check(
@@ -1726,8 +1736,9 @@ export type ScheduleInviteIssuanceFence =
   typeof scheduleInviteIssuanceFences.$inferSelect;
 
 /**
- * Histórico append-only de cada geração. O runtime somente faz INSERT;
- * nenhuma linha carrega endereço, conteúdo da mensagem, código ou hash.
+ * Histórico append-only de cada geração. O runtime somente faz INSERT e a
+ * migration instala guards BEFORE UPDATE/DELETE no banco; nenhuma linha
+ * carrega endereço, conteúdo da mensagem, código ou hash.
  */
 export const scheduleInviteIssuanceJournal = mysqlTable(
   "schedule_invite_issuance_journal",

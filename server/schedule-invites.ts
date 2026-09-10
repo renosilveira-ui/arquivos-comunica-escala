@@ -24,7 +24,7 @@ import {
   sectors,
   users,
 } from "../drizzle/schema";
-import { mailer } from "./mailer";
+import { mailer, type MailMessage } from "./mailer";
 import { buildScheduleInviteMail } from "./schedule-invite-mail";
 import {
   formatScheduleInviteCode,
@@ -34,8 +34,10 @@ import {
 import {
   getScheduleInviteHashPolicy,
   type ScheduleInviteHashPolicy,
+  type ScheduleInviteOutboxKey,
 } from "./schedule-invite-code-policy";
 import {
+  isScheduleInviteAttemptLive,
   planScheduleInviteRecovery,
   type ScheduleInviteDeliveryState,
 } from "./schedule-invite-delivery-state";
@@ -1050,6 +1052,7 @@ type InviteIssuanceMaterial = {
   codePepperKeyId: string;
   recipientBindingHash: string;
   providerIdempotencyKey: string;
+  providerRequestFingerprint: string;
   providerAcceptedAt: Date | null;
 };
 
@@ -1058,6 +1061,7 @@ type InviteIssuanceClaim =
       kind: "DELIVER";
       material: InviteIssuanceMaterial;
       snapshot: InviteIssuanceSnapshot;
+      mail: MailMessage;
     }
   | {
       kind: "ACTIVATE";
@@ -1067,7 +1071,9 @@ type InviteIssuanceClaim =
   | { kind: "INELIGIBLE" }
   | { kind: "ALREADY_ACTIVE" }
   | { kind: "IN_PROGRESS" }
-  | { kind: "KEY_UNAVAILABLE" };
+  | { kind: "KEY_UNAVAILABLE" }
+  | { kind: "DELIVERY_REQUEST_UNAVAILABLE" }
+  | { kind: "DELIVERY_REQUEST_MISMATCH" };
 
 type InviteIssuanceJournalEvent =
   | "CLAIMED"
@@ -1112,6 +1118,7 @@ function materialFromFence(fence: {
   codePepperKeyId: string | null;
   recipientBindingHash: string | null;
   providerIdempotencyKey: string | null;
+  providerRequestFingerprint: string | null;
   providerAcceptedAt: Date | null;
 }): InviteIssuanceMaterial | null {
   if (
@@ -1121,7 +1128,8 @@ function materialFromFence(fence: {
     !fence.codeNonce ||
     !fence.codePepperKeyId ||
     !fence.recipientBindingHash ||
-    !fence.providerIdempotencyKey
+    !fence.providerIdempotencyKey ||
+    !/^[a-f0-9]{64}$/.test(fence.providerRequestFingerprint ?? "")
   ) {
     return null;
   }
@@ -1133,8 +1141,34 @@ function materialFromFence(fence: {
     codePepperKeyId: fence.codePepperKeyId,
     recipientBindingHash: fence.recipientBindingHash,
     providerIdempotencyKey: fence.providerIdempotencyKey,
+    providerRequestFingerprint: fence.providerRequestFingerprint!,
     providerAcceptedAt: fence.providerAcceptedAt,
   };
+}
+
+function buildInviteProviderMail(input: {
+  scope: InviteIssuanceScope;
+  snapshot: InviteIssuanceSnapshot;
+  generation: number;
+  codeNonce: string;
+  attemptExpiresAt: Date;
+  outboxKey: ScheduleInviteOutboxKey;
+}): MailMessage | null {
+  const formatted = input.outboxKey.deriveCode({
+    institutionId: input.scope.institutionId,
+    hospitalId: input.scope.hospitalId,
+    sectorId: input.scope.sectorId,
+    invitedUserId: input.scope.userId,
+    generation: input.generation,
+    nonce: input.codeNonce,
+  });
+  return buildScheduleInviteMail({
+    to: input.snapshot.invitee.email!,
+    hospitalName: input.snapshot.context.hospitalName,
+    sectorName: input.snapshot.context.sectorName,
+    code: formatScheduleInviteCode(normalizeScheduleInviteCode(formatted)),
+    expiresAt: input.attemptExpiresAt,
+  });
 }
 
 async function lockInviteParticipantsForUpdate(
@@ -1155,9 +1189,9 @@ async function lockInviteParticipantsForUpdate(
 
 /**
  * Reserva uma geração em uma transação curta. A UNIQUE física da fence
- * faz a serialização entre processos/instâncias. O commit acontece antes de
- * montar ou enviar o e-mail; portanto nenhuma conexão do pool acompanha a
- * latência do provedor.
+ * faz a serialização entre processos/instâncias. O request é montado apenas
+ * para persistir seu fingerprint na mesma transação; o commit sempre acontece
+ * antes do egress, portanto nenhuma conexão acompanha a latência do provedor.
  */
 async function claimInviteIssuance(
   db: ScheduleInviteDb,
@@ -1204,6 +1238,8 @@ async function claimInviteIssuance(
           scheduleInviteIssuanceFences.recipientBindingHash,
         providerIdempotencyKey:
           scheduleInviteIssuanceFences.providerIdempotencyKey,
+        providerRequestFingerprint:
+          scheduleInviteIssuanceFences.providerRequestFingerprint,
         providerAcceptedAt: scheduleInviteIssuanceFences.providerAcceptedAt,
       })
       .from(scheduleInviteIssuanceFences)
@@ -1242,12 +1278,23 @@ async function claimInviteIssuance(
     const existingKey = fence.codePepperKeyId
       ? input.hashPolicy.outbox.resolve(fence.codePepperKeyId)
       : null;
-    const recipientMatches = Boolean(
-      existingKey &&
-        fence.recipientBindingHash &&
-        existingKey.bindRecipient(snapshot.invitee.email) ===
-          fence.recipientBindingHash,
+    const attemptIsLive = Boolean(
+      fence.attemptExpiresAt &&
+      isScheduleInviteAttemptLive(fence.attemptExpiresAt, now),
     );
+    // Sem a chave da geração existente não é possível sequer decidir se o
+    // destinatário permaneceu o mesmo. Falhar aqui impede que UNKNOWN seja
+    // convertido acidentalmente em recipient mismatch / nova geração.
+    if (fence.generation > 0 && attemptIsLive && !existingKey) {
+      return { kind: "KEY_UNAVAILABLE" };
+    }
+    const recipientMatches = existingKey
+      ? Boolean(
+          fence.recipientBindingHash &&
+          existingKey.bindRecipient(snapshot.invitee.email) ===
+            fence.recipientBindingHash,
+        )
+      : null;
     const recovery = planScheduleInviteRecovery({
       state: fence.state as ScheduleInviteDeliveryState,
       now,
@@ -1262,6 +1309,27 @@ async function claimInviteIssuance(
     }
 
     if (recovery.kind === "REPLAY_DELIVERY") {
+      const persistedMaterial = materialFromFence(fence);
+      if (!persistedMaterial || !existingKey) {
+        return { kind: "DELIVERY_REQUEST_MISMATCH" };
+      }
+      const mail = buildInviteProviderMail({
+        scope: input.scope,
+        snapshot,
+        generation: persistedMaterial.generation,
+        codeNonce: persistedMaterial.codeNonce,
+        attemptExpiresAt: persistedMaterial.attemptExpiresAt,
+        outboxKey: existingKey,
+      });
+      if (
+        !mail ||
+        existingKey.fingerprintProviderRequest(mail) !==
+          persistedMaterial.providerRequestFingerprint
+      ) {
+        // Nome, destinatário, APP_PUBLIC_URL, MAIL_FROM ou template mudou.
+        // A chave antiga não pode sair com um request reconstruído diferente.
+        return { kind: "DELIVERY_REQUEST_MISMATCH" };
+      }
       const leaseToken = generateScheduleInviteOpaqueToken();
       const leaseExpiresAt = new Date(
         now.getTime() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS,
@@ -1285,9 +1353,12 @@ async function claimInviteIssuance(
         generation: fence.generation,
         event: "DELIVERY_RECLAIMED",
       });
-      const material = materialFromFence({ ...fence, leaseToken });
-      if (!material) throw new Error("SCHEDULE_INVITE_MATERIAL_INVALID");
-      return { kind: "DELIVER", material, snapshot };
+      return {
+        kind: "DELIVER",
+        material: { ...persistedMaterial, leaseToken },
+        snapshot,
+        mail,
+      };
     }
 
     if (recovery.kind === "RESUME_ACTIVATION") {
@@ -1319,17 +1390,15 @@ async function claimInviteIssuance(
       return { kind: "ACTIVATE", material, snapshot };
     }
 
-    if (
-      recovery.supersedesUncertainGeneration &&
-      fence.generation > 0
-    ) {
-      await appendInviteIssuanceJournal(tx, {
-        scope: input.scope,
-        generation: fence.generation,
-        event: "ATTEMPT_SUPERSEDED",
-        reasonCode: recipientMatches ? "ATTEMPT_EXPIRED" : "RECIPIENT_CHANGED",
-      });
-    }
+    const supersededReasonCode =
+      recovery.supersedesUncertainGeneration && fence.generation > 0
+        ? recipientMatches === false
+          ? "RECIPIENT_CHANGED"
+          : fence.attemptExpiresAt &&
+              !isScheduleInviteAttemptLive(fence.attemptExpiresAt, now)
+            ? "ATTEMPT_EXPIRED"
+            : "PROVIDER_OUTCOME_UNCERTAIN"
+        : null;
 
     const generation = fence.generation + 1;
     const leaseToken = generateScheduleInviteOpaqueToken();
@@ -1340,6 +1409,17 @@ async function claimInviteIssuance(
     const recipientBindingHash = currentKey.bindRecipient(
       snapshot.invitee.email,
     );
+    const mail = buildInviteProviderMail({
+      scope: input.scope,
+      snapshot,
+      generation,
+      codeNonce,
+      attemptExpiresAt,
+      outboxKey: currentKey,
+    });
+    if (!mail) return { kind: "DELIVERY_REQUEST_UNAVAILABLE" };
+    const providerRequestFingerprint =
+      currentKey.fingerprintProviderRequest(mail);
     await tx
       .update(scheduleInviteIssuanceFences)
       .set({
@@ -1354,6 +1434,7 @@ async function claimInviteIssuance(
         codePepperKeyId: currentKey.keyId,
         recipientBindingHash,
         providerIdempotencyKey,
+        providerRequestFingerprint,
         providerCorrelationId: null,
         providerAcceptedAt: null,
         scheduleInviteId: null,
@@ -1365,6 +1446,14 @@ async function claimInviteIssuance(
           eq(scheduleInviteIssuanceFences.generation, fence.generation),
         ),
       );
+    if (supersededReasonCode) {
+      await appendInviteIssuanceJournal(tx, {
+        scope: input.scope,
+        generation: fence.generation,
+        event: "ATTEMPT_SUPERSEDED",
+        reasonCode: supersededReasonCode,
+      });
+    }
     await appendInviteIssuanceJournal(tx, {
       scope: input.scope,
       generation,
@@ -1380,9 +1469,11 @@ async function claimInviteIssuance(
         codePepperKeyId: currentKey.keyId,
         recipientBindingHash,
         providerIdempotencyKey,
+        providerRequestFingerprint,
         providerAcceptedAt: null,
       },
       snapshot,
+      mail,
     };
   });
 }
@@ -1484,7 +1575,8 @@ async function markAcceptedActivationFailure(
     scope: InviteIssuanceScope;
     material: InviteIssuanceMaterial;
     acceptedAt: Date;
-    failureCode: "ACTIVATION_REJECTED" | "ACTIVATION_EXCEPTION";
+    failureCode:
+      "ACTIVATION_REJECTED" | "ACTIVATION_EXCEPTION" | "ACTIVATION_EXPIRED";
   },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
@@ -1809,6 +1901,21 @@ export const scheduleInvitesRouter = router({
           });
           continue;
         }
+        if (claim.kind === "DELIVERY_REQUEST_UNAVAILABLE") {
+          failed.push({
+            userId,
+            error: "Não foi possível montar o e-mail de convite",
+          });
+          continue;
+        }
+        if (claim.kind === "DELIVERY_REQUEST_MISMATCH") {
+          failed.push({
+            userId,
+            error:
+              "O conteúdo desta emissão mudou desde a primeira tentativa. Restaure a configuração anterior ou encerre a tentativa com segurança.",
+          });
+          continue;
+        }
 
         const outboxKey = hashPolicy.outbox.resolve(
           claim.material.codePepperKeyId,
@@ -1834,40 +1941,59 @@ export const scheduleInvitesRouter = router({
         let acceptedAt = claim.material.providerAcceptedAt;
 
         if (claim.kind === "DELIVER") {
-          const mail = buildScheduleInviteMail({
-            to: claim.snapshot.invitee.email!,
-            hospitalName: claim.snapshot.context.hospitalName,
-            sectorName: claim.snapshot.context.sectorName,
-            code: formatScheduleInviteCode(normalized),
-            expiresAt,
-          });
-          if (!mail) {
-            try {
-              await markInviteProviderOutcome(db, {
-                scope,
-                material: claim.material,
-                outcome: "REJECTED",
-                reasonCode: "MAIL_BUILD_FAILED",
-              });
-            } catch {
-              logInviteIssuanceFailure(
-                "INVITE_OUTCOME_WRITE_FAILED",
-                scope,
-                claim.material.generation,
-              );
-            }
-            failed.push({
-              userId,
-              error: "Não foi possível montar o e-mail de convite",
-            });
-            continue;
-          }
-
           let providerResult: Awaited<ReturnType<typeof mailer.sendMail>>;
           try {
-            // Efeito externo fora de transação. Timeout/exceção é UNKNOWN:
-            // a geração e a idempotency-key permanecem para retry seguro.
-            providerResult = await mailer.sendMail(mail, {
+            // Última barreira local antes do efeito externo: além do TTL, o
+            // request completo deve continuar igual ao fingerprint persistido
+            // antes do claim. Isso inclui MAIL_FROM; URL, nomes e destinatário
+            // já estão congelados no próprio objeto retornado pela transação.
+            if (!isScheduleInviteAttemptLive(expiresAt, new Date())) {
+              try {
+                await markInviteProviderOutcome(db, {
+                  scope,
+                  material: claim.material,
+                  outcome: "REJECTED",
+                  reasonCode: "ATTEMPT_EXPIRED_BEFORE_EGRESS",
+                });
+              } catch {
+                logInviteIssuanceFailure(
+                  "INVITE_OUTCOME_WRITE_FAILED",
+                  scope,
+                  claim.material.generation,
+                );
+              }
+              failed.push({
+                userId,
+                error: "O convite expirou antes do envio. Tente novamente.",
+              });
+              continue;
+            }
+            if (
+              outboxKey.fingerprintProviderRequest(claim.mail) !==
+              claim.material.providerRequestFingerprint
+            ) {
+              try {
+                await markInviteProviderOutcome(db, {
+                  scope,
+                  material: claim.material,
+                  outcome: "REJECTED",
+                  reasonCode: "PROVIDER_REQUEST_CHANGED_BEFORE_EGRESS",
+                });
+              } catch {
+                logInviteIssuanceFailure(
+                  "INVITE_OUTCOME_WRITE_FAILED",
+                  scope,
+                  claim.material.generation,
+                );
+              }
+              failed.push({
+                userId,
+                error:
+                  "A configuração do e-mail mudou antes do envio. Tente novamente.",
+              });
+              continue;
+            }
+            providerResult = await mailer.sendMail(claim.mail, {
               idempotencyKey: claim.material.providerIdempotencyKey,
             });
           } catch {
@@ -1965,7 +2091,8 @@ export const scheduleInvitesRouter = router({
         let activated: InviteIssuanceSnapshot | null = null;
         let activationFailureCode:
           | "ACTIVATION_REJECTED"
-          | "ACTIVATION_EXCEPTION" = "ACTIVATION_REJECTED";
+          | "ACTIVATION_EXCEPTION"
+          | "ACTIVATION_EXPIRED" = "ACTIVATION_REJECTED";
         try {
           activated = await db.transaction(async (tx) => {
             // A claim concorrente também usa users → fence. Manter a mesma
@@ -2025,6 +2152,13 @@ export const scheduleInvitesRouter = router({
               new Date(),
             );
             if (activeInvites.length > 0) {
+              return null;
+            }
+
+            // Revalidar dentro da transação, junto ao INSERT, impede que uma
+            // aceitação lenta do provedor ative material que já venceu.
+            if (!isScheduleInviteAttemptLive(expiresAt, new Date())) {
+              activationFailureCode = "ACTIVATION_EXPIRED";
               return null;
             }
 

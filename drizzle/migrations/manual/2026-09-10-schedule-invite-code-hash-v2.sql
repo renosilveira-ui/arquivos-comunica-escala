@@ -1,9 +1,9 @@
 -- 2026-09-10 — versão do hash de convite nominal.
 --
 -- Aplicar antes do runtime HMAC. Linhas existentes recebem explicitamente
--- SHA256_V1 e continuam resgatáveis somente até seu expires_at. Depois do
--- deploy, todo writer novo grava HMAC_SHA256_V2. Não mantenha writer legado
--- ativo durante o rollout.
+-- SHA256_V1 e continuam resgatáveis somente até seu expires_at. No mesmo run,
+-- o default final muda para HMAC_SHA256_V2; portanto writer omisso nunca cria
+-- nova linha V1. Não mantenha writer legado ativo durante o rollout.
 --
 -- O pepper NÃO pertence ao banco nem a esta migration. Configure
 -- SCHEDULE_INVITE_CODE_PEPPER separadamente em cada instância antes do deploy;
@@ -67,7 +67,7 @@ SET @sichv2_version_contract_count := (
     AND version_column.ORDINAL_POSITION = hash_column.ORDINAL_POSITION + 1
     AND version_column.COLUMN_TYPE = 'enum(''SHA256_V1'',''HMAC_SHA256_V2'')'
     AND version_column.IS_NULLABLE = 'NO'
-    AND version_column.COLUMN_DEFAULT = 'SHA256_V1'
+    AND version_column.COLUMN_DEFAULT IN ('SHA256_V1', 'HMAC_SHA256_V2')
     AND version_column.EXTRA = ''
     AND version_column.CHARACTER_SET_NAME = 'utf8mb4'
     AND version_column.COLLATION_NAME = target_table.TABLE_COLLATION
@@ -104,6 +104,22 @@ PREPARE sichv2_add_column_stmt FROM @sichv2_add_column_sql;
 EXECUTE sichv2_add_column_stmt;
 DEALLOCATE PREPARE sichv2_add_column_stmt;
 
+-- O DEFAULT V1 existe apenas durante o ADD: ele marca o backfill legado sem
+-- reescrever hashes. Antes de concluir a migration, writer omisso passa a V2.
+SET @sichv2_promote_default_sql := IF(
+  (SELECT COUNT(*)
+   FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'schedule_invites'
+     AND COLUMN_NAME = 'code_hash_version'
+     AND COLUMN_DEFAULT = 'HMAC_SHA256_V2') = 1,
+  'SELECT 1',
+  'ALTER TABLE schedule_invites MODIFY COLUMN code_hash_version ENUM(''SHA256_V1'', ''HMAC_SHA256_V2'') NOT NULL DEFAULT ''HMAC_SHA256_V2'' AFTER code_hash'
+);
+PREPARE sichv2_promote_default_stmt FROM @sichv2_promote_default_sql;
+EXECUTE sichv2_promote_default_stmt;
+DEALLOCATE PREPARE sichv2_promote_default_stmt;
+
 SET @sichv2_post_version_contract_count := (
   SELECT COUNT(*)
   FROM INFORMATION_SCHEMA.COLUMNS version_column
@@ -121,7 +137,7 @@ SET @sichv2_post_version_contract_count := (
     AND version_column.ORDINAL_POSITION = hash_column.ORDINAL_POSITION + 1
     AND version_column.COLUMN_TYPE = 'enum(''SHA256_V1'',''HMAC_SHA256_V2'')'
     AND version_column.IS_NULLABLE = 'NO'
-    AND version_column.COLUMN_DEFAULT = 'SHA256_V1'
+    AND version_column.COLUMN_DEFAULT = 'HMAC_SHA256_V2'
     AND version_column.EXTRA = ''
     AND version_column.CHARACTER_SET_NAME = 'utf8mb4'
     AND version_column.COLLATION_NAME = target_table.TABLE_COLLATION

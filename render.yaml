@@ -138,8 +138,8 @@ services:
         sync: false
 
       # ---- E-mail transacional ("Esqueci minha senha") ----
-      # Sem RESEND_API_KEY o servidor só LOGA o link: a tela diz que o
-      # e-mail foi enviado, mas ninguém recebe.
+      # Sem RESEND_API_KEY o mailer rejeita o envio de forma tipada e não
+      # registra link, token, destinatário ou conteúdo em log.
       - key: RESEND_API_KEY
         sync: false
       - key: MAIL_FROM

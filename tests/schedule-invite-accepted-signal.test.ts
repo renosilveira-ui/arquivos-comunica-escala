@@ -144,6 +144,7 @@ describe("push de convite aceito", () => {
         hospitalId,
         sectorId,
         codeHash: hashLegacyScheduleInviteCode(normalizeScheduleInviteCode(code)),
+        codeHashVersion: "SHA256_V1",
         createdByUserId,
         invitedUserId,
         invitedEmail: `invitee-${stamp}@example.test`,
