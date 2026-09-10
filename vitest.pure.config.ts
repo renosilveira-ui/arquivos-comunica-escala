@@ -189,6 +189,7 @@ export default defineConfig({
       "tests/core-schema-reproducibility-migration.test.ts",
       "tests/ui-query-error-states.test.ts",
       "tests/shift-details-paused-query.test.ts",
+      "tests/personal-calendar-check-hardening.test.ts",
     ],
   },
 });

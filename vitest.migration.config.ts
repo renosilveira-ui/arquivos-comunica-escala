@@ -17,6 +17,7 @@ export default defineConfig({
       "tests/whatsapp-continuation-migration-mysql.test.ts",
       "tests/personal-calendar-foundation-migration-mysql.test.ts",
       "tests/core-schema-reproducibility-migration-mysql.test.ts",
+      "tests/personal-calendar-check-hardening-mysql.test.ts",
     ],
     setupFiles: [],
     fileParallelism: false,

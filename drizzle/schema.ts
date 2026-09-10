@@ -254,6 +254,9 @@ export const personalCalendarItems = mysqlTable(
         (${table.latitude} IS NULL AND ${table.longitude} IS NULL)
         OR
         (
+          ${table.latitude} IS NOT NULL
+          AND ${table.longitude} IS NOT NULL
+          AND
           ${table.latitude} BETWEEN -90 AND 90
           AND ${table.longitude} BETWEEN -180 AND 180
         )
@@ -265,6 +268,9 @@ export const personalCalendarItems = mysqlTable(
         (${table.locationProvider} IS NULL AND ${table.locationExternalId} IS NULL)
         OR
         (
+          ${table.locationProvider} IS NOT NULL
+          AND ${table.locationExternalId} IS NOT NULL
+          AND
           CHAR_LENGTH(TRIM(${table.locationProvider})) BETWEEN 1 AND 32
           AND CHAR_LENGTH(TRIM(${table.locationExternalId})) BETWEEN 1 AND 191
         )
@@ -329,6 +335,8 @@ export const personalCalendarItems = mysqlTable(
           AND ${table.startLocalTime} IS NULL
           AND ${table.endLocalDate} IS NULL
           AND ${table.endLocalTime} IS NULL
+          AND ${table.birthdayMonth} IS NOT NULL
+          AND ${table.birthdayDay} IS NOT NULL
           AND ${table.birthdayMonth} BETWEEN 1 AND 12
           AND ${table.birthdayDay} BETWEEN 1 AND
             CASE ${table.birthdayMonth}
@@ -406,7 +414,11 @@ export const personalCalendarRecurrences = mysqlTable(
     chkPersonalCalendarRecurrenceWeekdays: check(
       "chk_pc_recurrence_weekdays",
       sql`(
-        (${table.frequency} = 'WEEKLY' AND ${table.weekdaysMask} BETWEEN 1 AND 127)
+        (
+          ${table.frequency} = 'WEEKLY'
+          AND ${table.weekdaysMask} IS NOT NULL
+          AND ${table.weekdaysMask} BETWEEN 1 AND 127
+        )
         OR
         (${table.frequency} <> 'WEEKLY' AND ${table.weekdaysMask} IS NULL)
       )`,
@@ -429,6 +441,7 @@ export const personalCalendarRecurrences = mysqlTable(
         (
           ${table.termination} = 'COUNT'
           AND ${table.untilLocalDate} IS NULL
+          AND ${table.occurrenceCount} IS NOT NULL
           AND ${table.occurrenceCount} BETWEEN 1 AND 10000
         )
       )`,
