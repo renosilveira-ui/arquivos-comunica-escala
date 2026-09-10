@@ -9,6 +9,9 @@ import * as Haptics from "expo-haptics";
 import { ChevronLeft, History, AlertCircle, Search } from "lucide-react-native";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { resolveOperationalListState } from "@/lib/operational-screen-state";
+import type { inferRouterOutputs } from "@trpc/server";
+import type { AppRouter } from "@/server/routers";
+import { auditActorLabel } from "@/lib/audit-movement-presentation";
 
 /**
  * Tela "Auditoria de movimentações" — consume `audit.listShiftMovements`
@@ -23,6 +26,7 @@ import { resolveOperationalListState } from "@/lib/operational-screen-state";
  */
 
 type FilterCategory = "ALL" | "CREATION" | "ASSIGNMENT" | "CESSAO";
+type AuditMovement = inferRouterOutputs<AppRouter>["audit"]["listShiftMovements"][number];
 
 const CATEGORY_LABEL: Record<FilterCategory, string> = {
   ALL: "Tudo",
@@ -284,18 +288,18 @@ export default function AuditLogScreen() {
   );
 }
 
-function AuditCard({ row }: { row: any }) {
+function AuditCard({ row }: { row: AuditMovement }) {
   const createdAt = row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt);
   const actionLabel = row.actionLabel ?? row.action ?? "Ação desconhecida";
-  const actorName = row.actor?.name ?? row.actor?.email ?? "Usuário desconhecido";
-  const fromName = row.from?.name as string | undefined;
-  const toName = row.to?.name as string | undefined;
-  const shiftLabel = row.shift?.label as string | undefined;
+  const actorName = auditActorLabel(row.actor);
+  const fromName = row.from?.name;
+  const toName = row.to?.name;
+  const shiftLabel = row.shift?.label;
   const shiftStart = row.shift?.startAt
     ? new Date(row.shift.startAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })
     : null;
-  const hospitalName = row.location?.hospitalName as string | undefined;
-  const sectorName = row.location?.sectorName as string | undefined;
+  const hospitalName = row.location?.hospitalName;
+  const sectorName = row.location?.sectorName;
 
   return (
     <View

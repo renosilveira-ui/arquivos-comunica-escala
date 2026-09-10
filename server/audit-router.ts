@@ -30,6 +30,8 @@ import { getTenantActorFromContext } from "./_core/policy";
  *
  * Output: rows enriquecidas com nomes de profissionais (from/to) e
  * label PT-BR do evento, prontas para renderizar timeline.
+ * O ator expõe somente userId, role e nome/snapshot; e-mail não integra
+ * o contrato de movimentações, inclusive para gestores.
  */
 
 const ACTION_LABEL: Record<string, string> = {
@@ -267,7 +269,6 @@ export const auditRouter = router({
               fp.name               AS fromProfessionalName,
               tp.name               AS toProfessionalName,
               au.name               AS actorUserName,
-              au.email              AS actorUserEmail,
               h.name                AS hospitalName,
               s.name                AS sectorName,
               si.label              AS shiftLabel,
@@ -313,7 +314,6 @@ export const auditRouter = router({
           userId: r.actorUserId as number,
           role: r.actorRole as string,
           name: (r.actorName ?? r.actorUserName ?? null) as string | null,
-          email: (r.actorUserEmail ?? null) as string | null,
         },
         from:
           r.fromProfessionalId != null
