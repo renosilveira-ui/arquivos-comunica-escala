@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import mysql, { type RowDataPacket } from "mysql2/promise";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   assertConnectedDatabaseName,
@@ -114,6 +114,36 @@ describe("disposable MySQL child lifecycle", () => {
         expect.stringContaining("injected admin.end failure"),
       ]),
     );
+    await expect(databaseExists(databaseName)).resolves.toBe(false);
+  });
+
+  it("rejects chained, qualified and comment-based destructive targets before opening a connection", async () => {
+    const databaseName = childDatabaseName();
+    const runner = await DisposableMysqlChildRunner.create({
+      childDatabaseName: databaseName,
+      namespace: CHILD_TARGET_NAMESPACE,
+    });
+    const getConnection = vi.spyOn(runner.pool, "getConnection");
+
+    try {
+      for (const invalidOperation of [
+        () =>
+          runner.deleteAllFrom(
+            "users; DROP DATABASE escalas_test_destructive_fence_v3",
+          ),
+        () => runner.deleteAllFrom("other_schema.users"),
+        () => runner.dropTrigger("reject_account_audit/*bypass*/"),
+        () => runner.dropTrigger("DROP DATABASE production"),
+      ]) {
+        await expect(invalidOperation()).rejects.toThrow(
+          "unqualified MySQL identifier",
+        );
+      }
+      expect(getConnection).not.toHaveBeenCalled();
+    } finally {
+      getConnection.mockRestore();
+      await runner.cleanup();
+    }
     await expect(databaseExists(databaseName)).resolves.toBe(false);
   });
 });

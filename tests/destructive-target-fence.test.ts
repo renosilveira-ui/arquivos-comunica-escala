@@ -439,8 +439,8 @@ describe("standard test destructive target fence", () => {
       new URL("../vitest.whatsapp-account.config.ts", import.meta.url),
       "utf8",
     );
-    expect(whatsappConfig).toContain(
-      "validateStandardTestDestructiveTarget(process.env)",
+    expect(whatsappConfig).toMatch(
+      /validateStandardTestDestructiveTarget\(\s*process\.env,?\s*\)/,
     );
     expect(whatsappConfig).toContain('DATABASE_URL: ""');
 
@@ -461,7 +461,14 @@ describe("standard test destructive target fence", () => {
     expect(whatsappSuite).not.toContain('password: "root"');
     expect(whatsappSuite).not.toContain("DROP DATABASE");
     expect(whatsappSuite).not.toMatch(/pool\.query\([^)]*(?:DELETE|DROP)/s);
+    expect(whatsappSuite).not.toContain("executeVerifiedStatement");
+    expect(whatsappSuite.match(/deleteAllFrom\(tableName\)/g)).toHaveLength(1);
     expect(disposableRunner).not.toContain("DROP DATABASE IF EXISTS");
+    expect(disposableRunner).not.toContain("executeVerifiedStatement");
+    expect(disposableRunner).toContain("quoteUnqualifiedIdentifier");
+    expect(disposableRunner).toContain("executeVerifiedMutation");
+    expect(disposableRunner).toContain('statement.includes(";")');
+    expect(disposableRunner).toContain("/\\bDROP\\s+DATABASE\\b/i");
     expect(disposableRunner).toContain("assertCreationReceipt()");
     expect(disposableRunner).toContain("qualifiedChildMarkerSelect");
 

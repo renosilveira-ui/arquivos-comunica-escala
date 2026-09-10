@@ -108,23 +108,27 @@ async function rejectAudit(condition = "TRUE") {
   );
 }
 async function dropAuditTrigger() {
-  await childRunner.executeVerifiedStatement(
-    "DROP TRIGGER IF EXISTS reject_account_audit",
-  );
+  await childRunner.dropTrigger("reject_account_audit", true);
 }
 
-function containsDestructiveStatement(statement: string): boolean {
-  return /(?:^|;)\s*(?:DELETE\s+FROM|DROP\s+|ALTER\s+TABLE\s+[^;]*\bDROP\b)/is.test(
-    statement,
-  );
-}
+type SchemaTestOperation = () => Promise<unknown>;
 
-async function executeSchemaTestStatement(statement: string): Promise<void> {
-  if (containsDestructiveStatement(statement)) {
-    await childRunner.executeVerifiedStatement(statement);
-    return;
+function nonDestructiveSql(statement: string): SchemaTestOperation {
+  if (
+    statement.includes(";") ||
+    /^(?:DELETE\s+FROM|DROP\s+|ALTER\s+TABLE\s+.+\s+DROP\s+)/is.test(
+      statement.trim(),
+    )
+  ) {
+    throw new Error("Schema setup operation must not contain destructive SQL.");
   }
-  await pool.query(statement);
+  return () => pool.query(statement);
+}
+
+function sequence(...operations: SchemaTestOperation[]): SchemaTestOperation {
+  return async () => {
+    for (const operation of operations) await operation();
+  };
 }
 
 beforeAll(async () => {
@@ -159,9 +163,14 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   await dropAuditTrigger();
-  await childRunner.executeVerifiedStatement(
-    "DELETE FROM whatsapp_verification_challenges; DELETE FROM user_contact_channels; DELETE FROM account_audit_events; DELETE FROM users",
-  );
+  for (const tableName of [
+    "whatsapp_verification_challenges",
+    "user_contact_channels",
+    "account_audit_events",
+    "users",
+  ]) {
+    await childRunner.deleteAllFrom(tableName);
+  }
   resetWhatsAppVerifyRateLimits();
   provider = {
     starts: [],
@@ -189,110 +198,205 @@ afterAll(async () => {
 });
 
 describe("ownership WhatsApp account-wide — MySQL descartável", () => {
-  it.each([
+  const schemaDriftCases: [string, SchemaTestOperation, SchemaTestOperation][] =
     [
-      "index invisível",
-      "ALTER TABLE account_audit_events ALTER INDEX idx_account_audit_parent INVISIBLE",
-      "ALTER TABLE account_audit_events ALTER INDEX idx_account_audit_parent VISIBLE",
-    ],
-    [
-      "tipo unsigned divergente",
-      "ALTER TABLE account_audit_events MODIFY actor_user_id INT UNSIGNED NULL",
-      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL",
-    ],
-    [
-      "collation divergente",
-      "ALTER TABLE account_audit_events MODIFY action VARCHAR(40) COLLATE utf8mb4_bin NOT NULL",
-      "ALTER TABLE account_audit_events MODIFY action VARCHAR(40) COLLATE utf8mb4_0900_ai_ci NOT NULL",
-    ],
-    [
-      "comentário extra",
-      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL COMMENT 'unexpected'",
-      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL",
-    ],
-    [
-      "ordem de coluna divergente",
-      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL AFTER subject_user_id",
-      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL AFTER id",
-    ],
-    [
-      "regra FK divergente",
-      "ALTER TABLE whatsapp_verification_challenges DROP FOREIGN KEY fk_whatsapp_challenge_user; ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT fk_whatsapp_challenge_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE RESTRICT",
-      "ALTER TABLE whatsapp_verification_challenges DROP FOREIGN KEY fk_whatsapp_challenge_user; ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT fk_whatsapp_challenge_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE",
-    ],
-    [
-      "audit phone extra",
-      "ALTER TABLE account_audit_events ADD phone VARCHAR(32) NULL",
-      "ALTER TABLE account_audit_events DROP COLUMN phone",
-    ],
-    [
-      "challenge otp extra",
-      "ALTER TABLE whatsapp_verification_challenges ADD otp VARCHAR(10) NULL",
-      "ALTER TABLE whatsapp_verification_challenges DROP COLUMN otp",
-    ],
-    [
-      "audit payload extra",
-      "ALTER TABLE account_audit_events ADD payload JSON NULL",
-      "ALTER TABLE account_audit_events DROP COLUMN payload",
-    ],
-    [
-      "default divergente",
-      "ALTER TABLE account_audit_events ALTER subject_user_id SET DEFAULT 1",
-      "ALTER TABLE account_audit_events ALTER subject_user_id DROP DEFAULT",
-    ],
-    [
-      "default timestamp ausente",
-      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL",
-      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
-    ],
-    [
-      "ON UPDATE ausente",
-      "ALTER TABLE whatsapp_verification_challenges MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
-      "ALTER TABLE whatsapp_verification_challenges MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
-    ],
-    [
-      "ON UPDATE extra",
-      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
-      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
-    ],
-    [
-      "unique extra",
-      "ALTER TABLE account_audit_events ADD UNIQUE KEY unexpected_unique (actor_user_id)",
-      "ALTER TABLE account_audit_events DROP INDEX unexpected_unique",
-    ],
-    [
-      "index extra",
-      "ALTER TABLE account_audit_events ADD INDEX unexpected_index (actor_user_id)",
-      "ALTER TABLE account_audit_events DROP INDEX unexpected_index",
-    ],
-    [
-      "index muda para unique",
-      "ALTER TABLE account_audit_events DROP INDEX idx_account_audit_parent, ADD UNIQUE KEY idx_account_audit_parent (parent_event_id)",
-      "ALTER TABLE account_audit_events DROP INDEX idx_account_audit_parent, ADD KEY idx_account_audit_parent (parent_event_id)",
-    ],
-    [
-      "FK extra sem novo indice",
-      "ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT unexpected_user_fk FOREIGN KEY(user_id) REFERENCES users(id)",
-      "ALTER TABLE whatsapp_verification_challenges DROP FOREIGN KEY unexpected_user_fk",
-    ],
-    [
-      "check extra",
-      "ALTER TABLE account_audit_events ADD CONSTRAINT unexpected_check CHECK(subject_user_id > 0)",
-      "ALTER TABLE account_audit_events DROP CHECK unexpected_check",
-    ],
-    [
-      "trigger extra",
-      "CREATE TRIGGER unexpected_trigger BEFORE INSERT ON account_audit_events FOR EACH ROW SET NEW.subject_user_id = 1",
-      "DROP TRIGGER unexpected_trigger",
-    ],
-  ])(
+      [
+        "index invisível",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ALTER INDEX idx_account_audit_parent INVISIBLE",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ALTER INDEX idx_account_audit_parent VISIBLE",
+        ),
+      ],
+      [
+        "tipo unsigned divergente",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY actor_user_id INT UNSIGNED NULL",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL",
+        ),
+      ],
+      [
+        "collation divergente",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY action VARCHAR(40) COLLATE utf8mb4_bin NOT NULL",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY action VARCHAR(40) COLLATE utf8mb4_0900_ai_ci NOT NULL",
+        ),
+      ],
+      [
+        "comentário extra",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL COMMENT 'unexpected'",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL",
+        ),
+      ],
+      [
+        "ordem de coluna divergente",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL AFTER subject_user_id",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL AFTER id",
+        ),
+      ],
+      [
+        "regra FK divergente",
+        sequence(
+          () =>
+            childRunner.dropForeignKey(
+              "whatsapp_verification_challenges",
+              "fk_whatsapp_challenge_user",
+            ),
+          nonDestructiveSql(
+            "ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT fk_whatsapp_challenge_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE RESTRICT",
+          ),
+        ),
+        sequence(
+          () =>
+            childRunner.dropForeignKey(
+              "whatsapp_verification_challenges",
+              "fk_whatsapp_challenge_user",
+            ),
+          nonDestructiveSql(
+            "ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT fk_whatsapp_challenge_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE",
+          ),
+        ),
+      ],
+      [
+        "audit phone extra",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ADD phone VARCHAR(32) NULL",
+        ),
+        () => childRunner.dropColumn("account_audit_events", "phone"),
+      ],
+      [
+        "challenge otp extra",
+        nonDestructiveSql(
+          "ALTER TABLE whatsapp_verification_challenges ADD otp VARCHAR(10) NULL",
+        ),
+        () => childRunner.dropColumn("whatsapp_verification_challenges", "otp"),
+      ],
+      [
+        "audit payload extra",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ADD payload JSON NULL",
+        ),
+        () => childRunner.dropColumn("account_audit_events", "payload"),
+      ],
+      [
+        "default divergente",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ALTER subject_user_id SET DEFAULT 1",
+        ),
+        () =>
+          childRunner.dropDefault("account_audit_events", "subject_user_id"),
+      ],
+      [
+        "default timestamp ausente",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        ),
+      ],
+      [
+        "ON UPDATE ausente",
+        nonDestructiveSql(
+          "ALTER TABLE whatsapp_verification_challenges MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE whatsapp_verification_challenges MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+        ),
+      ],
+      [
+        "ON UPDATE extra",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+        ),
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        ),
+      ],
+      [
+        "unique extra",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ADD UNIQUE KEY unexpected_unique (actor_user_id)",
+        ),
+        () =>
+          childRunner.dropIndex("account_audit_events", "unexpected_unique"),
+      ],
+      [
+        "index extra",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ADD INDEX unexpected_index (actor_user_id)",
+        ),
+        () => childRunner.dropIndex("account_audit_events", "unexpected_index"),
+      ],
+      [
+        "index muda para unique",
+        sequence(
+          () =>
+            childRunner.dropIndex(
+              "account_audit_events",
+              "idx_account_audit_parent",
+            ),
+          nonDestructiveSql(
+            "ALTER TABLE account_audit_events ADD UNIQUE KEY idx_account_audit_parent (parent_event_id)",
+          ),
+        ),
+        sequence(
+          () =>
+            childRunner.dropIndex(
+              "account_audit_events",
+              "idx_account_audit_parent",
+            ),
+          nonDestructiveSql(
+            "ALTER TABLE account_audit_events ADD KEY idx_account_audit_parent (parent_event_id)",
+          ),
+        ),
+      ],
+      [
+        "FK extra sem novo indice",
+        nonDestructiveSql(
+          "ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT unexpected_user_fk FOREIGN KEY(user_id) REFERENCES users(id)",
+        ),
+        () =>
+          childRunner.dropForeignKey(
+            "whatsapp_verification_challenges",
+            "unexpected_user_fk",
+          ),
+      ],
+      [
+        "check extra",
+        nonDestructiveSql(
+          "ALTER TABLE account_audit_events ADD CONSTRAINT unexpected_check CHECK(subject_user_id > 0)",
+        ),
+        () => childRunner.dropCheck("account_audit_events", "unexpected_check"),
+      ],
+      [
+        "trigger extra",
+        nonDestructiveSql(
+          "CREATE TRIGGER unexpected_trigger BEFORE INSERT ON account_audit_events FOR EACH ROW SET NEW.subject_user_id = 1",
+        ),
+        () => childRunner.dropTrigger("unexpected_trigger"),
+      ],
+    ];
+
+  it.each(schemaDriftCases)(
     "postflight recusa %s e aceita restauração exata",
     async (_label, change, restore) => {
-      await executeSchemaTestStatement(change);
+      await change();
       try {
         await expect(pool.query(migration)).rejects.toBeDefined();
       } finally {
-        await executeSchemaTestStatement(restore);
+        await restore();
       }
       await pool.query(migration);
     },
@@ -554,8 +658,9 @@ describe("ownership WhatsApp account-wide — MySQL descartável", () => {
     await pool.query(migration);
     expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(1);
     expect((await caller().getWhatsAppContact()).status).toBe("unverified");
-    await childRunner.executeVerifiedStatement(
-      "ALTER TABLE account_audit_events DROP INDEX idx_account_audit_parent",
+    await childRunner.dropIndex(
+      "account_audit_events",
+      "idx_account_audit_parent",
     );
     await expect(pool.query(migration)).rejects.toBeDefined();
     await pool.query(
@@ -566,8 +671,9 @@ describe("ownership WhatsApp account-wide — MySQL descartável", () => {
       "ALTER TABLE account_audit_events ADD CONSTRAINT test_forbidden_audit_cascade FOREIGN KEY (subject_user_id) REFERENCES users(id) ON DELETE CASCADE",
     );
     await expect(pool.query(migration)).rejects.toBeDefined();
-    await childRunner.executeVerifiedStatement(
-      "ALTER TABLE account_audit_events DROP FOREIGN KEY test_forbidden_audit_cascade",
+    await childRunner.dropForeignKey(
+      "account_audit_events",
+      "test_forbidden_audit_cascade",
     );
     await pool.query(migration);
   });
@@ -908,9 +1014,7 @@ describe("ownership WhatsApp account-wide — MySQL descartável", () => {
         )[0],
       ).toMatchObject({ state: "STARTING", provider_verification_sid: null });
     } finally {
-      await childRunner.executeVerifiedStatement(
-        "DROP TRIGGER reject_challenge_update",
-      );
+      await childRunner.dropTrigger("reject_challenge_update");
     }
   });
 
@@ -992,7 +1096,7 @@ describe("ownership WhatsApp account-wide — MySQL descartável", () => {
       } as never),
     ).rejects.toBeDefined();
     await caller().setWhatsAppContact({ phone: A });
-    await childRunner.executeVerifiedStatement("DELETE FROM users WHERE id=1");
+    await childRunner.deleteByIntegerId("users", 1);
     expect(await rows("SELECT * FROM user_contact_channels")).toHaveLength(0);
     expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(1);
   });
