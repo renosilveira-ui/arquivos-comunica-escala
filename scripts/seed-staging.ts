@@ -6,8 +6,12 @@
  *
  * Usage (with env vars provided externally):
  *
+ *   SEED_STAGING_ALLOW_DESTRUCTIVE=1 \
+ *   SEED_STAGING_EXPECTED_HOST='verified-staging-host' \
+ *   SEED_STAGING_EXPECTED_DATABASE='verified_staging_database' \
+ *   SEED_STAGING_EXPECTED_FINGERPRINT_SHA256='verified-lowercase-sha256' \
  *   DATABASE_URL='mysql://...' DATABASE_SSL=insecure \
- *     pnpm exec tsx scripts/seed-staging.ts
+ *   pnpm exec tsx scripts/seed-staging.ts
  *
  * The script:
  *   1. Creates 1 institution: "Cooperativa dos Médicos de Fortaleza - Unimed"
@@ -44,6 +48,11 @@ import {
 import { resolveSslConfig } from "../server/_core/db-ssl";
 import { DEFAULT_SECTOR_SHIFT_TEMPLATES } from "../lib/default-sector-shift-blueprint";
 import { ensureDefaultSectorScale } from "../server/sector-scale";
+import {
+  assertConnectedDatabaseName,
+  validateSeedStagingDestructiveTarget,
+  type ValidatedDestructiveTarget,
+} from "./destructive-target-fence";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -104,17 +113,10 @@ function generatePassword(length: number): string {
   return password;
 }
 
-function buildPool() {
-  const url = process.env.DATABASE_URL;
-  if (!url) {
-    throw new Error(
-      "DATABASE_URL is required. Pass it via env, e.g.\n" +
-        "  DATABASE_URL='mysql://...' DATABASE_SSL=insecure pnpm exec tsx scripts/seed-staging.ts",
-    );
-  }
+function buildPool(target: ValidatedDestructiveTarget) {
   const ssl = resolveSslConfig(process.env);
   if (ssl) {
-    const u = new URL(url);
+    const u = new URL(target.databaseUrl);
     return mysql.createPool({
       host: u.hostname,
       port: u.port ? Number(u.port) : 3306,
@@ -124,7 +126,7 @@ function buildPool() {
       ssl,
     });
   }
-  return mysql.createPool(url);
+  return mysql.createPool(target.databaseUrl);
 }
 
 // ---------------------------------------------------------------------------
@@ -132,10 +134,23 @@ function buildPool() {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const pool = buildPool();
+  // Valida o alvo inteiro antes de criar pool ou executar o seed.
+  const target = validateSeedStagingDestructiveTarget(process.env);
+  const pool = buildPool(target);
   const db = drizzle(pool);
+  const [databaseRows] = await db.execute(
+    "SELECT DATABASE() AS database_name",
+  );
+  assertConnectedDatabaseName(
+    (databaseRows as any)[0]?.database_name,
+    target.databaseName,
+    "Connected staging database",
+  );
 
-  console.log("Seeding staging — Hospital Regional Unimed (Fortaleza)\n");
+  console.log(
+    `Seeding verified staging target ${target.fingerprint} — ` +
+      "Hospital Regional Unimed (Fortaleza)\n",
+  );
 
   // 1. Institution -----------------------------------------------------------
   const existingInst = await db

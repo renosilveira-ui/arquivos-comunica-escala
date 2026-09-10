@@ -23,6 +23,15 @@ import {
   scheduleContexts,
 } from "../drizzle/schema";
 import { and, eq, inArray } from "drizzle-orm";
+import {
+  assertConnectedDatabaseName,
+  assertDisposableTestTargetMarker,
+  assertDisposableTestTargetSchema,
+  DISPOSABLE_TEST_TARGET_MARKER_SELECT,
+  DISPOSABLE_TEST_TARGET_SCHEMA_SELECT,
+  validateStandardTestDestructiveTarget,
+  type DestructiveTargetEnvironment,
+} from "./destructive-target-fence";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -34,9 +43,32 @@ async function first<T>(promise: Promise<T[]>): Promise<T | undefined> {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-export async function seedTestData() {
-  const db = await getDb();
+export type SeedTestDataOptions = {
+  env?: DestructiveTargetEnvironment;
+  openDatabase?: typeof getDb;
+};
+
+export async function seedTestData(options: SeedTestDataOptions = {}) {
+  // A cerca é a primeira operação: ambiente inválido não abre conexão.
+  const validatedTarget = validateStandardTestDestructiveTarget(
+    options.env ?? process.env,
+  );
+  const db = await (options.openDatabase ?? getDb)();
   if (!db) throw new Error("Database not available");
+
+  const [databaseRows] = await db.execute("SELECT DATABASE() AS database_name");
+  assertConnectedDatabaseName(
+    (databaseRows as any)[0]?.database_name,
+    validatedTarget.databaseName,
+    "Connected test database",
+  );
+  assertDisposableTestTargetMarker(
+    await db.execute(DISPOSABLE_TEST_TARGET_MARKER_SELECT),
+    validatedTarget,
+  );
+  assertDisposableTestTargetSchema(
+    await db.execute(DISPOSABLE_TEST_TARGET_SCHEMA_SELECT),
+  );
 
   console.log("🌱 Iniciando seed de dados de teste...");
 

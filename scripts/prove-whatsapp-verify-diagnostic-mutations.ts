@@ -2,7 +2,10 @@
  * Mutation proofs MD1–MD3: diagnóstico seguro do Twilio Verify.
  * Aplica uma mutação cirúrgica, espera falha nos testes-alvo, restaura.
  *
- *   TEST_DATABASE_URL=mysql://root:root@127.0.0.1:3306/escalas_test \
+ *   TEST_DATABASE_ALLOW_DESTRUCTIVE=1 \
+ *   TEST_DATABASE_EXPECTED_NAME=escalas_test_wa_verify \
+ *   TEST_DATABASE_DISPOSABLE_MARKER='<marcador de 32+ caracteres já preparado>' \
+ *   TEST_DATABASE_URL=mysql://root:root@127.0.0.1:3306/escalas_test_wa_verify \
  *     pnpm exec tsx scripts/prove-whatsapp-verify-diagnostic-mutations.ts
  */
 import { readFileSync, writeFileSync } from "node:fs";
@@ -41,9 +44,6 @@ function runVitest(test: string, filter?: string): { ok: boolean; output: string
   delete env.DATABASE_URL;
   delete env.DATABASE_SSL;
   env.NODE_ENV = "test";
-  env.TEST_DATABASE_URL =
-    process.env.TEST_DATABASE_URL ??
-    "mysql://root:root@127.0.0.1:3306/escalas_test";
   const args = ["exec", "vitest", "run", test, "--reporter=dot"];
   if (filter) args.push("-t", filter);
   const result = spawnSync("pnpm", args, {

@@ -82,7 +82,8 @@ Rollback não deve apagar colunas/tabelas nem dados novos. Voltar ao servidor an
 Comandos locais (sempre selecionar um banco de teste descartável, nunca staging):
 
 ```sh
-TEST_DATABASE_URL='mysql://root:root@127.0.0.1:3306/escalas_capacity_v1_test' pnpm exec vitest run
+NODE_ENV=test TEST_DATABASE_ALLOW_DESTRUCTIVE=1 TEST_DATABASE_EXPECTED_NAME=escalas_capacity_v1_test TEST_DATABASE_DISPOSABLE_MARKER='capacity-v1-local-disposable-marker-0001' TEST_DATABASE_URL='mysql://root:root@127.0.0.1:3306/escalas_capacity_v1_test' pnpm test:prepare-database
+NODE_ENV=test TEST_DATABASE_ALLOW_DESTRUCTIVE=1 TEST_DATABASE_EXPECTED_NAME=escalas_capacity_v1_test TEST_DATABASE_DISPOSABLE_MARKER='capacity-v1-local-disposable-marker-0001' TEST_DATABASE_URL='mysql://root:root@127.0.0.1:3306/escalas_capacity_v1_test' pnpm exec vitest run
 CAPACITY_MIGRATION_TEST_URL='mysql://root:root@127.0.0.1:3306/' pnpm exec vitest run --config vitest.capacity-migration.config.ts
 pnpm exec vitest run --config vitest.pure.config.ts
 pnpm typecheck
