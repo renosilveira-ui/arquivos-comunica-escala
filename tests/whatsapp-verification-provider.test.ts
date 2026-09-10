@@ -13,6 +13,8 @@ import {
   type TwilioVerifyClient,
 } from "../server/integrations/whatsapp/twilio-verify-provider";
 
+const VERIFICATION_SID = `VE${"1".repeat(32)}`;
+
 describe("Twilio Verify provider contract", () => {
   it("somente status approved conta como verificado", () => {
     expect(isTwilioVerifyApprovedStatus("approved")).toBe(true);
@@ -77,13 +79,23 @@ describe("Twilio Verify provider contract", () => {
               verifications: {
                 create: async (input) => {
                   creates.push(input);
-                  return { status: "pending" };
+                  return {
+                    status: "pending",
+                    sid: VERIFICATION_SID,
+                    to: input.to,
+                    channel: "whatsapp",
+                  };
                 },
               },
               verificationChecks: {
                 create: async (input) => {
                   checks.push(input);
-                  return { status: "approved" };
+                  return {
+                    status: "approved",
+                    sid: input.verificationSid,
+                    to: "+5585999990001",
+                    channel: "whatsapp",
+                  };
                 },
               },
             };
@@ -103,13 +115,20 @@ describe("Twilio Verify provider contract", () => {
     const checked = await provider.checkVerification(
       "+5585999990001",
       "123456",
+      VERIFICATION_SID,
     );
-    expect(started).toEqual({ ok: true, status: "pending" });
+    expect(started).toEqual({
+      ok: true,
+      status: "pending",
+      verificationSid: VERIFICATION_SID,
+    });
     expect(checked).toEqual({ ok: true, approved: true });
     expect(creates).toEqual([
       { to: "+5585999990001", channel: TWILIO_VERIFY_CHANNEL },
     ]);
-    expect(checks).toEqual([{ to: "+5585999990001", code: "123456" }]);
+    expect(checks).toEqual([
+      { verificationSid: VERIFICATION_SID, code: "123456" },
+    ]);
     expect(TWILIO_VERIFY_CHANNEL).toBe("whatsapp");
   });
 
@@ -119,10 +138,20 @@ describe("Twilio Verify provider contract", () => {
         v2: {
           services: () => ({
             verifications: {
-              create: async () => ({ status: "pending" }),
+              create: async () => ({
+                status: "pending",
+                sid: VERIFICATION_SID,
+                to: "+5585999990002",
+                channel: "whatsapp",
+              }),
             },
             verificationChecks: {
-              create: async () => ({ status: "pending" }),
+              create: async () => ({
+                status: "pending",
+                sid: VERIFICATION_SID,
+                to: "+5585999990002",
+                channel: "whatsapp",
+              }),
             },
           }),
         },
@@ -139,12 +168,77 @@ describe("Twilio Verify provider contract", () => {
     const checked = await provider.checkVerification(
       "+5585999990002",
       "123456",
+      VERIFICATION_SID,
     );
     expect(checked).toEqual({
       ok: true,
       approved: false,
       status: "pending",
     });
+  });
+
+  it("resposta 2xx sem correlação exata nunca inicia nem aprova", async () => {
+    const e164 = "+5585999990001";
+    let calls = 0;
+    let response: Record<string, unknown> = {};
+    const provider = new TwilioWhatsAppVerificationProvider({
+      config: {
+        accountSid: "ACtest",
+        authToken: "token",
+        serviceSid: "VAtest",
+      },
+      client: {
+        verify: {
+          v2: {
+            services: () => ({
+              verifications: {
+                create: async () => {
+                  calls++;
+                  return response;
+                },
+              },
+              verificationChecks: {
+                create: async () => {
+                  calls++;
+                  return response;
+                },
+              },
+            }),
+          },
+        },
+      } as TwilioVerifyClient,
+    });
+    const valid = { sid: VERIFICATION_SID, to: e164, channel: "whatsapp" };
+    for (const poison of [
+      { sid: undefined },
+      { sid: "not-a-sid" },
+      { to: "+5585999990999" },
+      { to: undefined },
+      { channel: "sms" },
+      { channel: undefined },
+    ]) {
+      response = { status: "pending", ...valid, ...poison };
+      expect((await provider.startVerification(e164)).ok).toBe(false);
+      response.status = "approved";
+      expect(
+        await provider.checkVerification(e164, "123456", VERIFICATION_SID),
+      ).not.toMatchObject({ approved: true });
+    }
+    response = { status: "approved", ...valid, sid: `VE${"2".repeat(32)}` };
+    expect(
+      (await provider.checkVerification(e164, "123456", VERIFICATION_SID)).ok,
+    ).toBe(false);
+    const before = calls;
+    for (const sid of [undefined, "", "invalid"]) {
+      expect(
+        (await provider.checkVerification(e164, "123456", sid as string)).ok,
+      ).toBe(false);
+    }
+    expect(calls).toBe(before);
+    response = { status: "approved", ...valid };
+    expect(
+      await provider.checkVerification(e164, "123456", VERIFICATION_SID),
+    ).toEqual({ ok: true, approved: true });
   });
 
   it("mapeia erros Twilio sem vazar internals", () => {
@@ -266,7 +360,10 @@ describe("Twilio Verify provider contract", () => {
 
   it("D4 NaN/Infinity não são diagnóstico", () => {
     expect(
-      extractSafeTwilioVerifyDiagnostics({ status: Number.NaN, code: Number.POSITIVE_INFINITY }),
+      extractSafeTwilioVerifyDiagnostics({
+        status: Number.NaN,
+        code: Number.POSITIVE_INFINITY,
+      }),
     ).toBeUndefined();
   });
 
@@ -305,7 +402,11 @@ describe("Twilio Verify provider contract", () => {
       client,
     });
     const started = await provider.startVerification("+5585988810099");
-    const checked = await provider.checkVerification("+5585988810099", "123456");
+    const checked = await provider.checkVerification(
+      "+5585988810099",
+      "123456",
+      VERIFICATION_SID,
+    );
     expect(started).toEqual({
       ok: false,
       kind: "SERVER_CONFIGURATION_ERROR",
@@ -357,7 +458,11 @@ describe("Twilio Verify provider contract", () => {
       client,
     });
     const started = await provider.startVerification("+5585988810233");
-    const checked = await provider.checkVerification("+5585988810233", "123456");
+    const checked = await provider.checkVerification(
+      "+5585988810233",
+      "123456",
+      VERIFICATION_SID,
+    );
     expect(started).toEqual({
       ok: false,
       kind: "SERVER_CONFIGURATION_ERROR",

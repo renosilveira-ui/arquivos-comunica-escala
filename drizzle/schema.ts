@@ -88,6 +88,35 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
+/** Eventos globais da conta. IDs sobrevivem à exclusão; sem tenant ou payload livre. */
+export const accountAuditEvents = mysqlTable(
+  "account_audit_events",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    actorUserId: int("actor_user_id"),
+    subjectUserId: int("subject_user_id").notNull(),
+    action: varchar("action", { length: 40 }).notNull(),
+    outcome: mysqlEnum("outcome", [
+      "REQUESTED",
+      "SUCCEEDED",
+      "REJECTED",
+      "FAILED",
+    ]).notNull(),
+    contactId: int("contact_id"),
+    sessionVersion: int("session_version"),
+    parentEventId: int("parent_event_id"),
+    verificationCleared: boolean("verification_cleared"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    subjectIndex: index("idx_account_audit_subject").on(
+      table.subjectUserId,
+      table.id,
+    ),
+    parentIndex: index("idx_account_audit_parent").on(table.parentEventId),
+  }),
+);
+
 /**
  * Tokens de "esqueci minha senha". Só o sha256 do token é gravado;
  * o token em claro vai apenas no link do e-mail. Uso único (used_at)
@@ -167,6 +196,46 @@ export const userContactChannels = mysqlTable(
 );
 
 export type UserContactChannel = typeof userContactChannels.$inferSelect;
+
+/** Correlação privada do Verify, não OTP. UUID novo por start; nunca reutilizado. */
+export const whatsappVerificationChallenges = mysqlTable(
+  "whatsapp_verification_challenges",
+  {
+    userId: int("user_id").primaryKey(),
+    challengeId: char("challenge_id", { length: 36 }).notNull(),
+    contactId: int("contact_id").notNull(),
+    sessionVersion: int("session_version").notNull(),
+    state: mysqlEnum("state", [
+      "STARTING",
+      "READY",
+      "INVALIDATED",
+      "CONSUMED",
+      "FAILED",
+    ]).notNull(),
+    providerVerificationSid: varchar("provider_verification_sid", {
+      length: 34,
+    }),
+    requestAuditId: int("request_audit_id").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    challengeUnique: unique("uniq_whatsapp_verification_challenge").on(
+      table.challengeId,
+    ),
+    fkUser: foreignKey({
+      name: "fk_whatsapp_challenge_user",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+    fkContact: foreignKey({
+      name: "fk_whatsapp_challenge_contact",
+      columns: [table.contactId],
+      foreignColumns: [userContactChannels.id],
+    }).onDelete("cascade"),
+  }),
+);
 export type InsertUserContactChannel = typeof userContactChannels.$inferInsert;
 
 /**

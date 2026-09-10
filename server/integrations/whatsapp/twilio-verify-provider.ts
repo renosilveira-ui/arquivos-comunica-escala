@@ -21,7 +21,17 @@ export type TwilioVerifyConfig = {
 };
 
 type VerificationCreateInput = { to: string; channel: string };
-type VerificationCheckCreateInput = { to: string; code: string };
+type VerificationCheckCreateInput = { verificationSid: string; code: string };
+type VerificationResponse = {
+  status?: unknown;
+  sid?: unknown;
+  to?: unknown;
+  channel?: unknown;
+};
+
+export function isTwilioVerificationSid(value: unknown): value is string {
+  return typeof value === "string" && /^VE[0-9a-f]{32}$/i.test(value);
+}
 
 export type TwilioVerifyClient = {
   verify: {
@@ -30,12 +40,12 @@ export type TwilioVerifyClient = {
         verifications: {
           create: (
             input: VerificationCreateInput,
-          ) => Promise<{ status?: unknown }>;
+          ) => Promise<VerificationResponse>;
         };
         verificationChecks: {
           create: (
             input: VerificationCheckCreateInput,
-          ) => Promise<{ status?: unknown }>;
+          ) => Promise<VerificationResponse>;
         };
       };
     };
@@ -72,9 +82,7 @@ export function extractSafeTwilioVerifyDiagnostics(
   };
 }
 
-export function mapTwilioVerifyError(
-  error: unknown,
-): {
+export function mapTwilioVerifyError(error: unknown): {
   kind: WhatsAppVerificationFailureKind;
   code: WhatsAppVerificationFailureCode;
   diagnostics?: SafeProviderDiagnostics;
@@ -180,7 +188,13 @@ export class TwilioWhatsAppVerificationProvider
           channel: TWILIO_VERIFY_CHANNEL,
         });
       const status = verification.status;
-      if (typeof status !== "string" || status.trim() === "") {
+      if (
+        typeof status !== "string" ||
+        status.trim() === "" ||
+        !isTwilioVerificationSid(verification.sid) ||
+        verification.to !== e164 ||
+        verification.channel !== TWILIO_VERIFY_CHANNEL
+      ) {
         return {
           ok: false,
           kind: "RETRYABLE_PROVIDER_ERROR",
@@ -188,7 +202,7 @@ export class TwilioWhatsAppVerificationProvider
         };
       }
       if (status === "pending" || status === "approved") {
-        return { ok: true, status };
+        return { ok: true, status, verificationSid: verification.sid };
       }
       return {
         ok: false,
@@ -203,14 +217,33 @@ export class TwilioWhatsAppVerificationProvider
   async checkVerification(
     e164: string,
     code: string,
+    verificationSid: string,
   ): Promise<WhatsAppVerificationCheckResult> {
+    if (!isTwilioVerificationSid(verificationSid)) {
+      return {
+        ok: false,
+        kind: "RETRYABLE_PROVIDER_ERROR",
+        code: "PROVIDER_MALFORMED",
+      };
+    }
     try {
       const check = await this.client.verify.v2
         .services(this.serviceSid)
         .verificationChecks.create({
-          to: e164,
+          verificationSid,
           code,
         });
+      if (
+        check.sid !== verificationSid ||
+        check.to !== e164 ||
+        check.channel !== TWILIO_VERIFY_CHANNEL
+      ) {
+        return {
+          ok: false,
+          kind: "RETRYABLE_PROVIDER_ERROR",
+          code: "PROVIDER_MALFORMED",
+        };
+      }
       return classifyTwilioVerifyCheckStatus(check.status);
     } catch (error) {
       return asProviderFailure(error);

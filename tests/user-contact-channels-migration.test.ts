@@ -1,5 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { getTableConfig } from "drizzle-orm/mysql-core";
+import {
+  accountAuditEvents,
+  whatsappVerificationChallenges,
+} from "../drizzle/schema";
 
 const migration = readFileSync(
   new URL(
@@ -10,6 +15,24 @@ const migration = readFileSync(
 );
 
 describe("migration manual user_contact_channels", () => {
+  it("Drizzle e migration account-wide usam FKs nomeadas dentro do limite MySQL", () => {
+    const source = readFileSync(
+      new URL(
+        "../drizzle/migrations/manual/2026-09-09-whatsapp-account-ownership.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const keys = getTableConfig(whatsappVerificationChallenges).foreignKeys;
+    expect(keys).toHaveLength(2);
+    for (const key of keys) {
+      expect(key.getName().length).toBeLessThanOrEqual(64);
+      expect(key.onDelete).toBe("cascade");
+      expect(source).toContain(`CONSTRAINT ${key.getName()} FOREIGN KEY`);
+    }
+    expect(getTableConfig(accountAuditEvents).foreignKeys).toHaveLength(0);
+  });
+
   it("é aditiva, rerodável e sem DROP/DELETE", () => {
     expect(migration).toContain(
       "CREATE TABLE IF NOT EXISTS user_contact_channels",
@@ -25,9 +48,7 @@ describe("migration manual user_contact_channels", () => {
     );
     expect(migration).toContain("GENERATED ALWAYS AS");
     expect(migration).toContain("active_normalized_address");
-    expect(migration).toContain(
-      "FOREIGN KEY (user_id) REFERENCES users(id)",
-    );
+    expect(migration).toContain("FOREIGN KEY (user_id) REFERENCES users(id)");
   });
 
   it("não cria tabela de OTP próprio", () => {

@@ -1,4 +1,12 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   institutions,
@@ -9,19 +17,20 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { markWhatsAppContactVerified } from "./helpers/verified-whatsapp-fixture";
 import { logger } from "../server/_core/logger";
 import { appRouter } from "../server/routers";
-import {
-  markWhatsAppContactVerified,
-  upsertUserWhatsAppContact,
-} from "../server/user-contact-channels";
+import { upsertUserWhatsAppContact } from "../server/user-contact-channels";
 import {
   checkWhatsAppVerification,
   resetWhatsAppVerificationRuntime,
   startWhatsAppVerification,
   whatsappVerificationRuntime,
 } from "../server/whatsapp-verification";
-import { resetWhatsAppVerifyRateLimits, WHATSAPP_VERIFY_START_USER_LIMIT } from "../server/whatsapp-verification-rate-limit";
+import {
+  resetWhatsAppVerifyRateLimits,
+  WHATSAPP_VERIFY_START_USER_LIMIT,
+} from "../server/whatsapp-verification-rate-limit";
 import {
   classifyTwilioVerifyCheckStatus,
   type WhatsAppVerificationCheckResult,
@@ -36,14 +45,20 @@ import {
 class FakeWhatsAppVerificationProvider implements WhatsAppVerificationProvider {
   starts: string[] = [];
   checks: { e164: string; code: string }[] = [];
-  startResult: WhatsAppVerificationStartResult = { ok: true, status: "pending" };
+  startResult: WhatsAppVerificationStartResult = {
+    ok: true,
+    status: "pending",
+    verificationSid: `VE${"1".repeat(32)}`,
+  };
   approvePair: { e164: string; code: string } | null = {
     e164: "",
     code: "123456",
   };
   checkOverride: WhatsAppVerificationCheckResult | null = null;
 
-  async startVerification(e164: string): Promise<WhatsAppVerificationStartResult> {
+  async startVerification(
+    e164: string,
+  ): Promise<WhatsAppVerificationStartResult> {
     this.starts.push(e164);
     if (this.approvePair && !this.approvePair.e164) {
       this.approvePair = { ...this.approvePair, e164 };
@@ -198,9 +213,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
     const row = await channelRow(a.userId);
     expect(row?.normalizedAddress).toBe("+5585988810001");
     expect(row?.verifiedAt).toBeNull();
-    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
-      phone: "(85) 98881-0001",
-    });
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification(
+      {
+        phone: "(85) 98881-0001",
+      },
+    );
     expect(started.ok).toBe(true);
     if (started.ok) expect(started.verified).toBe(false);
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
@@ -208,9 +225,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
 
   it("V2 start chama provider com To persistido", async () => {
     const a = await createUser("v2");
-    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
-      phone: "(85) 98881-0002",
-    });
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification(
+      {
+        phone: "(85) 98881-0002",
+      },
+    );
     expect(started.ok).toBe(true);
     if (started.ok) {
       expect(started.verificationStarted).toBe(true);
@@ -226,9 +245,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
     await callerFor(a.userId).profile.startWhatsAppVerification({
       phone: "+5585988810003",
     });
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "123456",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "123456",
+      },
+    );
     expect(checked.ok).toBe(true);
     if (checked.ok) expect(checked.verified).toBe(true);
     const row = await channelRow(a.userId);
@@ -240,9 +261,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
     await callerFor(a.userId).profile.startWhatsAppVerification({
       phone: "+5585988810004",
     });
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "000000",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "000000",
+      },
+    );
     expect(checked.ok).toBe(false);
     if (!checked.ok) expect(checked.code).toBe("INVALID_CODE");
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
@@ -254,9 +277,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
       phone: "+5585988810005",
     });
     fake.checkOverride = { ok: true, approved: false, status: "expired" };
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "123456",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "123456",
+      },
+    );
     expect(checked.ok).toBe(false);
     if (!checked.ok) expect(checked.code).toBe("EXPIRED");
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
@@ -269,12 +294,18 @@ describe("WhatsApp L2 Twilio Verify", () => {
       kind: "RETRYABLE_PROVIDER_ERROR",
       code: "TWILIO_UNAVAILABLE",
     };
-    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
-      phone: "+5585988810006",
-    });
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification(
+      {
+        phone: "+5585988810006",
+      },
+    );
     expect(started.ok).toBe(false);
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
-    fake.startResult = { ok: true, status: "pending" };
+    fake.startResult = {
+      ok: true,
+      status: "pending",
+      verificationSid: `VE${"1".repeat(32)}`,
+    };
     await callerFor(a.userId).profile.startWhatsAppVerification({
       phone: "+5585988810006",
     });
@@ -283,9 +314,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
       kind: "RETRYABLE_PROVIDER_ERROR",
       code: "TWILIO_UNAVAILABLE",
     };
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "123456",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "123456",
+      },
+    );
     expect(checked.ok).toBe(false);
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
   });
@@ -297,18 +330,20 @@ describe("WhatsApp L2 Twilio Verify", () => {
     });
     expect(fake.approvePair?.e164).toBe("+5585988810007");
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585988810097",
-      institutionId,
     });
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "123456",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "123456",
+      },
+    );
     expect(checked.ok).toBe(false);
     const row = await channelRow(a.userId);
     expect(row?.normalizedAddress).toBe("+5585988810097");
     expect(row?.verifiedAt).toBeNull();
-    expect(fake.checks.at(-1)?.e164).toBe("+5585988810097");
+    expect(fake.checks).toHaveLength(0);
     await expect(
       markWhatsAppContactVerified({
         userId: a.userId,
@@ -317,6 +352,7 @@ describe("WhatsApp L2 Twilio Verify", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
     const sneaky = await checkWhatsAppVerification({
       userId: a.userId,
+      sessionVersion: 1,
       code: "123456",
       phone: "+5585988810007",
     } as never);
@@ -383,9 +419,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
   it("V11 sem provider configurado falha fechado", async () => {
     const a = await createUser("v11");
     resetWhatsAppVerificationRuntime();
-    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
-      phone: "+5585988810011",
-    });
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification(
+      {
+        phone: "+5585988810011",
+      },
+    );
     expect(started.ok).toBe(false);
     if (!started.ok) expect(started.code).toBe("VERIFY_NOT_CONFIGURED");
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
@@ -423,8 +461,8 @@ describe("WhatsApp L2 Twilio Verify", () => {
     const pending = await createUser("v14p", "PENDING");
     await expect(
       startWhatsAppVerification({
+        sessionVersion: 1,
         userId: pending.userId,
-        institutionId,
         phone: "+5585988810014",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -436,8 +474,8 @@ describe("WhatsApp L2 Twilio Verify", () => {
       .where(eq(users.id, deleted.userId));
     await expect(
       startWhatsAppVerification({
+        sessionVersion: 1,
         userId: deleted.userId,
-        institutionId,
         phone: "+5585988810114",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -480,6 +518,7 @@ describe("WhatsApp L2 Twilio Verify", () => {
       phone: "+5585988810016",
     });
     const checked = await checkWhatsAppVerification({
+      sessionVersion: 1,
       userId: a.userId,
       code: "123456",
     });
@@ -493,9 +532,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
       phone: "+5585988810017",
     });
     await callerFor(a.userId).profile.deactivateWhatsAppContact();
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "123456",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "123456",
+      },
+    );
     expect(checked.ok).toBe(false);
     const row = await channelRow(a.userId);
     expect(row?.active).toBe(false);
@@ -508,9 +549,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
       phone: "+5585988810018",
     });
     fake.checkOverride = { ok: true, approved: false, status: "pending" };
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "123456",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "123456",
+      },
+    );
     expect(checked.ok).toBe(false);
     expect((await channelRow(a.userId))?.verifiedAt).toBeNull();
   });
@@ -519,15 +562,15 @@ describe("WhatsApp L2 Twilio Verify", () => {
     const a = await createUser("rl-start");
     for (let i = 0; i < WHATSAPP_VERIFY_START_USER_LIMIT; i++) {
       const started = await startWhatsAppVerification({
+        sessionVersion: 1,
         userId: a.userId,
-        institutionId,
         phone: "+5585988810019",
       });
       expect(started.ok).toBe(true);
     }
     const blocked = await startWhatsAppVerification({
+      sessionVersion: 1,
       userId: a.userId,
-      institutionId,
       phone: "+5585988810019",
     });
     expect(blocked.ok).toBe(false);
@@ -561,25 +604,30 @@ describe("WhatsApp L2 Twilio Verify", () => {
         },
       },
     };
-    whatsappVerificationRuntime.provider = new TwilioWhatsAppVerificationProvider({
-      config: {
-        accountSid: "ACtest",
-        authToken: "token",
-        serviceSid: "VAtest",
-      },
-      client,
-    });
+    whatsappVerificationRuntime.provider =
+      new TwilioWhatsAppVerificationProvider({
+        config: {
+          accountSid: "ACtest",
+          authToken: "token",
+          serviceSid: "VAtest",
+        },
+        client,
+      });
     const a = await createUser("d6");
     infoSpy.mockClear();
-    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
-      phone: "+5585988810020",
-    });
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification(
+      {
+        phone: "+5585988810020",
+      },
+    );
     expect(started.ok).toBe(false);
     if (!started.ok) {
       expect(started.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
       expect(started.kind).toBe("SERVER_CONFIGURATION_ERROR");
     }
-    const dumped = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    const dumped = infoSpy.mock.calls
+      .map((call) => JSON.stringify(call))
+      .join("\n");
     expect(dumped).toContain("whatsapp_verify_start_failed");
     expect(dumped).toContain('"providerHttpStatus":400');
     expect(dumped).toContain('"providerErrorCode":68008');
@@ -618,20 +666,25 @@ describe("WhatsApp L2 Twilio Verify", () => {
         },
       },
     };
-    whatsappVerificationRuntime.provider = new TwilioWhatsAppVerificationProvider({
-      config: {
-        accountSid: "ACtest",
-        authToken: "token",
-        serviceSid: "VAtest",
-      },
-      client,
-    });
+    whatsappVerificationRuntime.provider =
+      new TwilioWhatsAppVerificationProvider({
+        config: {
+          accountSid: "ACtest",
+          authToken: "token",
+          serviceSid: "VAtest",
+        },
+        client,
+      });
     infoSpy.mockClear();
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "654321",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "654321",
+      },
+    );
     expect(checked.ok).toBe(false);
-    const dumped = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    const dumped = infoSpy.mock.calls
+      .map((call) => JSON.stringify(call))
+      .join("\n");
     expect(dumped).toContain("whatsapp_verify_check_failed");
     expect(dumped).toContain('"providerHttpStatus":503');
     expect(dumped).toContain('"providerErrorCode":20500');
@@ -665,18 +718,21 @@ describe("WhatsApp L2 Twilio Verify", () => {
         },
       },
     };
-    whatsappVerificationRuntime.provider = new TwilioWhatsAppVerificationProvider({
-      config: {
-        accountSid: "ACtest",
-        authToken: "token",
-        serviceSid: "VAtest",
-      },
-      client,
-    });
+    whatsappVerificationRuntime.provider =
+      new TwilioWhatsAppVerificationProvider({
+        config: {
+          accountSid: "ACtest",
+          authToken: "token",
+          serviceSid: "VAtest",
+        },
+        client,
+      });
     const a = await createUser("d8");
-    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
-      phone: "+5585988810022",
-    });
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification(
+      {
+        phone: "+5585988810022",
+      },
+    );
     expect(started.ok).toBe(false);
     const dumped = JSON.stringify(started);
     expect(dumped).not.toContain("68008");
@@ -728,9 +784,11 @@ describe("WhatsApp L2 Twilio Verify", () => {
     whatsappVerificationRuntime.provider = poisonProvider;
     const a = await createUser("d60242");
     infoSpy.mockClear();
-    const started = await callerFor(a.userId).profile.startWhatsAppVerification({
-      phone: "+5585988810023",
-    });
+    const started = await callerFor(a.userId).profile.startWhatsAppVerification(
+      {
+        phone: "+5585988810023",
+      },
+    );
     expect(started.ok).toBe(false);
     if (!started.ok) {
       expect(started.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");
@@ -749,25 +807,35 @@ describe("WhatsApp L2 Twilio Verify", () => {
     expect(startedDump).not.toContain("123456");
     expect(startedDump).not.toContain("+5585988810023");
     expect(startedDump).not.toContain("template missing");
-    const startLogs = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    const startLogs = infoSpy.mock.calls
+      .map((call) => JSON.stringify(call))
+      .join("\n");
     expect(startLogs).toContain("whatsapp_verify_start_failed");
     expect(startLogs).toContain('"providerHttpStatus":400');
     expect(startLogs).toContain('"providerErrorCode":60242');
     expect(startLogs).not.toContain("123456");
     expect(startLogs).not.toContain("+5585988810023");
 
-    fake.startResult = { ok: true, status: "pending" };
+    fake.startResult = {
+      ok: true,
+      status: "pending",
+      verificationSid: `VE${"1".repeat(32)}`,
+    };
     whatsappVerificationRuntime.provider = fake;
     resetWhatsAppVerifyRateLimits();
-    const restarted = await callerFor(a.userId).profile.startWhatsAppVerification({
+    const restarted = await callerFor(
+      a.userId,
+    ).profile.startWhatsAppVerification({
       phone: "+5585988810023",
     });
     expect(restarted.ok).toBe(true);
     whatsappVerificationRuntime.provider = poisonProvider;
     infoSpy.mockClear();
-    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification({
-      code: "123456",
-    });
+    const checked = await callerFor(a.userId).profile.checkWhatsAppVerification(
+      {
+        code: "123456",
+      },
+    );
     expect(checked.ok).toBe(false);
     if (!checked.ok) {
       expect(checked.code).toBe("PROVIDER_CHANNEL_NOT_CONFIGURED");

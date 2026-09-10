@@ -44,6 +44,7 @@ export default defineConfig({
       "tests/professional-identity-migration-mysql.test.ts",
       "tests/institution-feature-entitlements-migration-mysql.test.ts",
       "tests/whatsapp-continuation-migration-mysql.test.ts",
+      "tests/whatsapp-account-ownership-mysql.test.ts",
     ],
   },
   define: {

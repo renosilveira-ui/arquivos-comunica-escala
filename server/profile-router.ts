@@ -1,9 +1,10 @@
 /**
  * Perfil — canais de contato (WhatsApp).
- * Identidade global do usuário; tenant só entra para auditoria.
+ * Identidade global do titular, sem autorização ou auditoria institucional.
  */
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { TRPCError } from "@trpc/server";
+import { router, sessionProcedure } from "./_core/trpc";
 import {
   deactivateUserWhatsAppContact,
   getWhatsAppContactForUser,
@@ -14,9 +15,28 @@ import {
   startWhatsAppVerification,
 } from "./whatsapp-verification";
 
+const accountProfileProcedure = sessionProcedure.use(({ ctx, next }) => {
+  if (ctx.user.deletedAt || ctx.user.approvalStatus !== "APPROVED") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Conta indisponível para WhatsApp.",
+    });
+  }
+  if (
+    !Number.isSafeInteger(ctx.user.sessionVersion) ||
+    ctx.user.sessionVersion <= 0
+  ) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Sessão inválida." });
+  }
+  return next({ ctx });
+});
+
 export const profileRouter = router({
-  getWhatsAppContact: protectedProcedure.query(async ({ ctx }) => {
-    const contact = await getWhatsAppContactForUser(ctx.user.id);
+  getWhatsAppContact: accountProfileProcedure.query(async ({ ctx }) => {
+    const contact = await getWhatsAppContactForUser(
+      ctx.user.id,
+      ctx.user.sessionVersion,
+    );
     if (!contact) {
       return {
         status: "missing" as const,
@@ -35,7 +55,7 @@ export const profileRouter = router({
     };
   }),
 
-  setWhatsAppContact: protectedProcedure
+  setWhatsAppContact: accountProfileProcedure
     .input(
       z.object({
         phone: z.string().min(1).max(40),
@@ -46,7 +66,7 @@ export const profileRouter = router({
       const contact = await upsertUserWhatsAppContact({
         userId: ctx.user.id,
         rawPhone: input.phone,
-        institutionId: ctx.institutionId!,
+        sessionVersion: ctx.user.sessionVersion,
       });
       return {
         status: contact.verified
@@ -58,20 +78,22 @@ export const profileRouter = router({
       };
     }),
 
-  deactivateWhatsAppContact: protectedProcedure.mutation(async ({ ctx }) => {
-    await deactivateUserWhatsAppContact({
-      userId: ctx.user.id,
-      institutionId: ctx.institutionId!,
-    });
-    return {
-      status: "missing" as const,
-      maskedAddress: null,
-      verified: false,
-      active: false,
-    };
-  }),
+  deactivateWhatsAppContact: accountProfileProcedure.mutation(
+    async ({ ctx }) => {
+      await deactivateUserWhatsAppContact({
+        userId: ctx.user.id,
+        sessionVersion: ctx.user.sessionVersion,
+      });
+      return {
+        status: "missing" as const,
+        maskedAddress: null,
+        verified: false,
+        active: false,
+      };
+    },
+  ),
 
-  startWhatsAppVerification: protectedProcedure
+  startWhatsAppVerification: accountProfileProcedure
     .input(
       z.object({
         phone: z.string().min(1).max(40).optional(),
@@ -80,13 +102,13 @@ export const profileRouter = router({
     .mutation(async ({ ctx, input }) => {
       return startWhatsAppVerification({
         userId: ctx.user.id,
-        institutionId: ctx.institutionId!,
+        sessionVersion: ctx.user.sessionVersion,
         phone: input.phone,
         req: ctx.req,
       });
     }),
 
-  checkWhatsAppVerification: protectedProcedure
+  checkWhatsAppVerification: accountProfileProcedure
     .input(
       z.object({
         code: z.string().min(4).max(10),
@@ -96,6 +118,7 @@ export const profileRouter = router({
       return checkWhatsAppVerification({
         userId: ctx.user.id,
         code: input.code,
+        sessionVersion: ctx.user.sessionVersion,
         req: ctx.req,
       });
     }),

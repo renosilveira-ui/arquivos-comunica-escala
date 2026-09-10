@@ -11,12 +11,12 @@ import {
   users,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { markWhatsAppContactVerified } from "./helpers/verified-whatsapp-fixture";
 import { appRouter } from "../server/routers";
 import {
   deactivateUserWhatsAppContact,
   getVerifiedWhatsAppContactForUser,
   getWhatsAppContactForUser,
-  markWhatsAppContactVerified,
   upsertUserWhatsAppContact,
 } from "../server/user-contact-channels";
 
@@ -157,15 +157,15 @@ describe("user WhatsApp contact identity", () => {
     const a = await createUser("dup-a");
     const b = await createUser("dup-b");
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585977776666",
-      institutionId,
     });
     await expect(
       upsertUserWhatsAppContact({
+        sessionVersion: 1,
         userId: b.userId,
         rawPhone: "(85) 97777-6666",
-        institutionId,
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
@@ -173,9 +173,9 @@ describe("user WhatsApp contact identity", () => {
   it("alterar número limpa verifiedAt", async () => {
     const a = await createUser("chg");
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585966665555",
-      institutionId,
     });
     await markWhatsAppContactVerified({
       userId: a.userId,
@@ -185,9 +185,9 @@ describe("user WhatsApp contact identity", () => {
     expect(verified?.verified).toBe(true);
 
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585955554444",
-      institutionId,
     });
     const after = await getWhatsAppContactForUser(a.userId);
     expect(after?.verified).toBe(false);
@@ -212,14 +212,14 @@ describe("user WhatsApp contact identity", () => {
   it("um user não ganha dois canais WhatsApp ativos", async () => {
     const a = await createUser("one");
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585922221111",
-      institutionId,
     });
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585911110000",
-      institutionId,
     });
     const rows = await db
       .select()
@@ -239,19 +239,19 @@ describe("user WhatsApp contact identity", () => {
     const a = await createUser("free-a");
     const b = await createUser("free-b");
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585900009999",
-      institutionId,
     });
     await deactivateUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
-      institutionId,
     });
     await expect(
       upsertUserWhatsAppContact({
+        sessionVersion: 1,
         userId: b.userId,
         rawPhone: "+5585900009999",
-        institutionId,
       }),
     ).resolves.toMatchObject({ active: true, verified: false });
   });
@@ -259,9 +259,9 @@ describe("user WhatsApp contact identity", () => {
   it("getVerified exige verifiedAt + user aprovado", async () => {
     const a = await createUser("ver");
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585899998888",
-      institutionId,
     });
     expect(await getVerifiedWhatsAppContactForUser(a.userId)).toBeNull();
     await markWhatsAppContactVerified({
@@ -280,9 +280,9 @@ describe("user WhatsApp contact identity", () => {
       .where(eq(users.id, a.userId));
     await expect(
       upsertUserWhatsAppContact({
+        sessionVersion: 1,
         userId: a.userId,
         rawPhone: "+5585888887777",
-        institutionId,
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
@@ -290,15 +290,15 @@ describe("user WhatsApp contact identity", () => {
   it("tenant não altera a identidade global do número", async () => {
     const a = await createUser("tenant");
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585877776666",
-      institutionId,
     });
-    // Mesmo userId, institutionId diferente na chamada — linha permanece única
+    // A identidade é account-wide: a API de domínio não recebe tenant.
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId: a.userId,
       rawPhone: "+5585877776666",
-      institutionId: institutionId,
     });
     const rows = await db
       .select()

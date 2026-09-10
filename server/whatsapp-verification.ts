@@ -10,6 +10,12 @@ import { TRPCError } from "@trpc/server";
 import { logger } from "./_core/logger";
 import { maskE164 } from "../lib/phone-e164";
 import {
+  beginWhatsAppVerification,
+  finishWhatsAppVerificationStart,
+  beginWhatsAppVerificationCheck,
+  recordWhatsAppCheckRejection,
+} from "./whatsapp-verification-store";
+import {
   assertOperableWhatsAppUser,
   e164AuditHash,
   getActiveWhatsAppChannelForUser,
@@ -194,11 +200,11 @@ function clientIp(req: { ip?: string } | undefined): string | null {
 
 export async function startWhatsAppVerification(input: {
   userId: number;
-  institutionId: number;
+  sessionVersion: number;
   phone?: string;
   req?: { ip?: string };
 }): Promise<StartWhatsAppVerificationResult> {
-  await assertOperableWhatsAppUser(input.userId);
+  await assertOperableWhatsAppUser(input.userId, input.sessionVersion);
   const startLimit = consumeWhatsAppVerifyRateLimit({
     key: whatsappVerifyStartUserKey(input.userId),
     limit: WHATSAPP_VERIFY_START_USER_LIMIT,
@@ -221,35 +227,14 @@ export async function startWhatsAppVerification(input: {
     }
   }
 
-  let channel: { e164: string; verified: boolean } | null = null;
   const rawPhone = input.phone?.trim();
   if (rawPhone) {
     try {
-      const saved = await upsertUserWhatsAppContact({
+      await upsertUserWhatsAppContact({
         userId: input.userId,
         rawPhone,
-        institutionId: input.institutionId,
+        sessionVersion: input.sessionVersion,
       });
-      channel = await getActiveWhatsAppChannelForUser(input.userId);
-      if (!channel) {
-        return fail("USER_ERROR", "NO_NUMBER", { status: "missing" });
-      }
-      if (saved.verified && channel.verified) {
-        logSafe({
-          event: "whatsapp_verify_start_already_verified",
-          userId: input.userId,
-          channel: "WHATSAPP",
-          addressHash: e164AuditHash(channel.e164),
-        });
-        return {
-          ok: true,
-          verificationStarted: false,
-          alreadyVerified: true,
-          maskedDestination: maskE164(channel.e164),
-          verified: true,
-          status: "verified",
-        };
-      }
     } catch (error) {
       if (error instanceof TRPCError && error.code === "CONFLICT") {
         return fail("USER_ERROR", "NUMBER_IN_USE");
@@ -259,29 +244,34 @@ export async function startWhatsAppVerification(input: {
       }
       throw error;
     }
-  } else {
-    channel = await getActiveWhatsAppChannelForUser(input.userId);
-    if (!channel) {
-      return fail("USER_ERROR", "NO_NUMBER", { status: "missing" });
-    }
-    if (channel.verified) {
-      return {
-        ok: true,
-        verificationStarted: false,
-        alreadyVerified: true,
-        maskedDestination: maskE164(channel.e164),
-        verified: true,
-        status: "verified",
-      };
-    }
   }
 
-  if (!channel) {
+  const begun = await beginWhatsAppVerification(input);
+  if (begun.state === "MISSING") {
     return fail("USER_ERROR", "NO_NUMBER", { status: "missing" });
   }
+  if (begun.state === "VERIFIED")
+    return {
+      ok: true,
+      verificationStarted: false,
+      alreadyVerified: true,
+      maskedDestination: maskE164(begun.e164),
+      verified: true,
+      status: "verified",
+    };
+  const channel = begun.attempt;
 
   const provider = resolveProvider();
-  const started = await provider.startVerification(channel.e164);
+  let started;
+  try {
+    started = await provider.startVerification(channel.e164);
+  } catch {
+    started = {
+      ok: false as const,
+      kind: "RETRYABLE_PROVIDER_ERROR" as const,
+      code: "TWILIO_UNAVAILABLE" as const,
+    };
+  }
   if (!started.ok) {
     logProviderFailure(
       "whatsapp_verify_start_failed",
@@ -289,8 +279,10 @@ export async function startWhatsAppVerification(input: {
       channel.e164,
       started,
     );
-    return fail(started.kind, started.code);
   }
+  const attached = await finishWhatsAppVerificationStart(channel, started);
+  if (!started.ok) return fail(started.kind, started.code);
+  if (!attached) return fail("USER_ERROR", "CHANNEL_CHANGED");
 
   logSafe({
     event: "whatsapp_verify_start_ok",
@@ -312,10 +304,11 @@ export async function startWhatsAppVerification(input: {
 
 export async function checkWhatsAppVerification(input: {
   userId: number;
+  sessionVersion: number;
   code: string;
   req?: { ip?: string };
 }): Promise<CheckWhatsAppVerificationResult> {
-  await assertOperableWhatsAppUser(input.userId);
+  await assertOperableWhatsAppUser(input.userId, input.sessionVersion);
   const code = input.code.trim();
   if (!OTP_PATTERN.test(code)) {
     return fail("USER_ERROR", "INVALID_CODE");
@@ -343,27 +336,47 @@ export async function checkWhatsAppVerification(input: {
     }
   }
 
-  const channel = await getActiveWhatsAppChannelForUser(input.userId);
-  if (!channel) {
+  const begun = await beginWhatsAppVerificationCheck(input);
+  if (begun.state === "MISSING") {
     return fail("USER_ERROR", "NO_NUMBER", { status: "missing" });
   }
-  if (channel.verified) {
+  if (begun.state === "VERIFIED") {
     return {
       ok: true,
       verified: true,
       status: "verified",
-      maskedAddress: maskE164(channel.e164),
+      maskedAddress: maskE164(begun.e164),
     };
   }
+  if (begun.state === "NO_CHALLENGE")
+    return fail("USER_ERROR", "CHANNEL_CHANGED");
+  const channel = begun.attempt;
 
   const provider = resolveProvider();
-  const checked = await provider.checkVerification(channel.e164, code);
+  let checked;
+  try {
+    checked = await provider.checkVerification(
+      channel.e164,
+      code,
+      channel.verificationSid,
+    );
+  } catch {
+    checked = {
+      ok: false as const,
+      kind: "RETRYABLE_PROVIDER_ERROR" as const,
+      code: "TWILIO_UNAVAILABLE" as const,
+    };
+  }
   if (!checked.ok) {
     logProviderFailure(
       "whatsapp_verify_check_failed",
       input.userId,
       channel.e164,
       checked,
+    );
+    await recordWhatsAppCheckRejection(
+      channel,
+      checked.code === "EXPIRED" || checked.code === "TOO_MANY_ATTEMPTS",
     );
     return fail(checked.kind, checked.code);
   }
@@ -381,23 +394,29 @@ export async function checkWhatsAppVerification(input: {
       addressHash: e164AuditHash(channel.e164),
       providerStatus: checked.status,
     });
+    await recordWhatsAppCheckRejection(channel, mapped !== "INVALID_CODE");
     return fail("USER_ERROR", mapped);
   }
 
   try {
     await markWhatsAppContactVerified({
       userId: input.userId,
+      sessionVersion: channel.sessionVersion,
       expectedE164: channel.e164,
+      expectedChallengeId: channel.challengeId,
+      expectedProviderSid: channel.verificationSid,
+      requestAuditId: channel.requestAuditId,
     });
   } catch (error) {
     if (error instanceof TRPCError && error.code === "CONFLICT") {
+      await recordWhatsAppCheckRejection(channel, false);
       return fail("USER_ERROR", "CHANNEL_CHANGED");
     }
     throw error;
   }
 
   const after = await getActiveWhatsAppChannelForUser(input.userId);
-  if (!after?.verified) {
+  if (!after?.verified || after.e164 !== channel.e164) {
     return fail("USER_ERROR", "CHANNEL_CHANGED");
   }
 
