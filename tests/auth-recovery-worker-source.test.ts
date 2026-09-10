@@ -107,9 +107,10 @@ describe("auth recovery worker: wiring estático", () => {
 
   it("recupera SELF_SERVICE pela conta sem escolher ou criar tenant", () => {
     expect(worker).toContain("hasValidAuthRecoveryMembershipBinding");
-    expect(worker).toContain("hasSelfServiceAccountTopology");
+    expect(worker).not.toContain("hasSelfServiceAccountTopology");
     expect(worker).toContain("targetMembershipId: null");
     expect(worker).not.toContain("lockCanonicalAuditMembership");
+    expect(worker).not.toContain("readCanonicalAuditMembership");
     expect(worker).not.toContain("insert(professionalInstitutions)");
     expect(auth).toContain("hasValidAuthRecoveryMembershipBinding(");
   });
