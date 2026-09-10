@@ -3760,6 +3760,12 @@ export const shiftsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      // O status é hospital+mês e governa publicação/bloqueio de todos os
+      // setores; GESTOR_MEDICO precisa de jurisdição hospital-wide, igual aos
+      // próprios writes de publish/lock.
+      await assertManagerScopeAccess(actor, input.hospitalId);
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       await assertInstitutionHierarchy(

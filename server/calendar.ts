@@ -20,7 +20,7 @@ import { TRPCError } from "@trpc/server";
 import { getTenantActorFromContext, type TenantActor } from "./_core/policy";
 import {
   assertTenantHospitalSector,
-  listAuthorizedScheduleContexts,
+  listReadableScheduleContexts,
   requireSingleLegacyScheduleContext,
   type AuthorizedScheduleContext,
 } from "./schedule-contexts";
@@ -50,7 +50,7 @@ async function resolveCalendarAccess(
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await assertTenantHospitalSector(db, institutionId, hospitalId, sectorId);
-  const candidates = (await listAuthorizedScheduleContexts(actor, db)).filter(
+  const candidates = (await listReadableScheduleContexts(actor, db)).filter(
     (context) =>
       context.institutionId === institutionId &&
       context.hospitalId === hospitalId &&

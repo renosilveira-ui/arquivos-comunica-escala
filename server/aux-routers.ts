@@ -30,7 +30,10 @@ import {
   getTenantActorFromContext,
 } from "./_core/policy";
 import { plantonistaQualificationMatchesContextSql } from "./plantonista-shift-eligibility";
-import { listAuthorizedScheduleContexts } from "./schedule-contexts";
+import {
+  listAuthorizedScheduleContexts,
+  listReadableScheduleContexts,
+} from "./schedule-contexts";
 import {
   canReadRosterMonth,
   loadRosterMonthStatuses,
@@ -533,7 +536,7 @@ export const filtersRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const actor = await getTenantActorFromContext(ctx);
-      const contexts = await listAuthorizedScheduleContexts(actor, db);
+      const contexts = await listReadableScheduleContexts(actor, db);
       const authorizedContexts = new Map(
         contexts.map((context) => [context.id, context] as const),
       );
