@@ -277,6 +277,56 @@ export function validateStandardTestDestructiveTarget(
   };
 }
 
+export function deriveDisposableChildTestTarget(
+  parent: ValidatedStandardTestDestructiveTarget,
+  childDatabaseName: string,
+  namespace: string,
+): ValidatedStandardTestDestructiveTarget {
+  const databaseName = assertExpectedDatabaseName(
+    childDatabaseName,
+    "Disposable child database name",
+  );
+  if (
+    databaseName === parent.databaseName ||
+    !DISPOSABLE_TEST_DATABASE_PATTERN.test(databaseName)
+  ) {
+    throw new Error(
+      "Disposable child database must use a distinct explicit test database name.",
+    );
+  }
+  if (
+    namespace !== namespace.trim() ||
+    namespace.length < 8 ||
+    namespace.length > 64 ||
+    !/^[a-z0-9._:-]+$/.test(namespace)
+  ) {
+    throw new Error(
+      "Disposable child namespace must be an explicit 8-64 character identifier.",
+    );
+  }
+
+  const parsed = new URL(parent.databaseUrl);
+  parsed.pathname = `/${encodeURIComponent(databaseName)}`;
+  const fingerprint = destructiveTargetFingerprint({
+    host: parent.host,
+    port: parent.port,
+    databaseName,
+  });
+  return {
+    databaseUrl: parsed.toString(),
+    databaseName,
+    host: parent.host,
+    port: parent.port,
+    fingerprint,
+    markerHash: disposableTestTargetMarkerHash({
+      host: parent.host,
+      port: parent.port,
+      databaseName,
+      marker: `${namespace}:${parent.markerHash}`,
+    }),
+  };
+}
+
 export function assertDisposableTestTargetMarker(
   result: unknown,
   target: ValidatedStandardTestDestructiveTarget,

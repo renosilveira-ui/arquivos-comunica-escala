@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   assertConnectedDatabaseName,
+  deriveDisposableChildTestTarget,
   destructiveTargetFingerprint,
   DISPOSABLE_TEST_TARGET_MARKER_SELECT,
   DISPOSABLE_TEST_TARGET_MARKER_TABLE,
@@ -57,6 +58,51 @@ describe("standard test destructive target fence", () => {
       TEST_DATABASE_URL: "mysql://root:root@127.0.0.1:3307/escalas_test",
     });
     expect(alternatePort.markerHash).not.toBe(defaultPort.markerHash);
+  });
+
+  it("derives a distinct marked child without changing server authority", () => {
+    const parent = validateStandardTestDestructiveTarget(SAFE_TEST_ENV);
+    const child = deriveDisposableChildTestTarget(
+      parent,
+      "escalas_test_wa_account_123_abcdef123456",
+      "whatsapp-account-ownership-v1",
+    );
+
+    expect(child).toMatchObject({
+      databaseName: "escalas_test_wa_account_123_abcdef123456",
+      host: parent.host,
+      port: parent.port,
+    });
+    expect(child.databaseUrl).toBe(
+      "mysql://root:root@127.0.0.1:3306/escalas_test_wa_account_123_abcdef123456",
+    );
+    expect(child.fingerprint).not.toBe(parent.fingerprint);
+    expect(child.markerHash).not.toBe(parent.markerHash);
+  });
+
+  it("refuses an unsafe, identical or unnamespaced child", () => {
+    const parent = validateStandardTestDestructiveTarget(SAFE_TEST_ENV);
+    expect(() =>
+      deriveDisposableChildTestTarget(
+        parent,
+        parent.databaseName,
+        "whatsapp-account-ownership-v1",
+      ),
+    ).toThrow("distinct explicit test database name");
+    expect(() =>
+      deriveDisposableChildTestTarget(
+        parent,
+        "production",
+        "whatsapp-account-ownership-v1",
+      ),
+    ).toThrow("distinct explicit test database name");
+    expect(() =>
+      deriveDisposableChildTestTarget(
+        parent,
+        "escalas_test_wa_account_123_abcdef123456",
+        "short",
+      ),
+    ).toThrow("8-64 character identifier");
   });
 
   it("allows an isolated local database only when its exact name is declared", () => {
@@ -384,12 +430,41 @@ describe("standard test destructive target fence", () => {
     expect(packageJson.scripts["test:prepare-database"]).toBe(
       "tsx scripts/prepare-standard-test-database.ts",
     );
+    expect(packageJson.scripts["test:whatsapp-account-ownership-mysql"]).toBe(
+      "vitest run --config vitest.whatsapp-account.config.ts tests/whatsapp-account-ownership-mysql.test.ts",
+    );
+
+    const whatsappConfig = readFileSync(
+      new URL("../vitest.whatsapp-account.config.ts", import.meta.url),
+      "utf8",
+    );
+    expect(whatsappConfig).toContain(
+      "validateStandardTestDestructiveTarget(process.env)",
+    );
+    expect(whatsappConfig).toContain('DATABASE_URL: ""');
+
+    const whatsappRunner = readFileSync(
+      new URL(
+        "../tests/whatsapp-account-ownership-mysql.test.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(whatsappRunner).not.toContain('password: "root"');
+    expect(whatsappRunner).not.toContain("DROP DATABASE IF EXISTS");
+    expect(
+      whatsappRunner.match(/assertDisposableTestTargetMarker\(/g),
+    ).toHaveLength(4);
 
     const workflow = readFileSync(
       new URL("../.github/workflows/ci.yml", import.meta.url),
       "utf8",
     );
-    for (const step of ["Prepare disposable standard-test target", "Test"]) {
+    for (const step of [
+      "Prepare disposable standard-test target",
+      "Validate WhatsApp account ownership in a disposable child target",
+      "Test",
+    ]) {
       expect(workflow).toMatch(
         new RegExp(
           `- name: ${step}\\n[\\s\\S]*?NODE_ENV: test[\\s\\S]*?` +

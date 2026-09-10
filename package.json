@@ -30,6 +30,7 @@
     "test:core-schema-repro-migration": "vitest run --config vitest.migration.config.ts tests/core-schema-reproducibility-migration-mysql.test.ts",
     "test:personal-calendar-check-hardening": "vitest run --config vitest.migration.config.ts tests/personal-calendar-check-hardening-mysql.test.ts",
     "test:personal-calendar-domain": "vitest run --config vitest.pure.config.ts tests/personal-calendar-domain.test.ts",
+    "test:whatsapp-account-ownership-mysql": "vitest run --config vitest.whatsapp-account.config.ts tests/whatsapp-account-ownership-mysql.test.ts",
     "test:readiness-fence-v1-mysql": "vitest run --config vitest.readiness-fence-v1-mysql.config.ts",
     "test:e2e": "cross-env NODE_ENV=test vitest run --config vitest.e2e-guard.config.ts",
     "e2e:workflow:destructive": "tsx scripts/run-e2e-workflow.ts",

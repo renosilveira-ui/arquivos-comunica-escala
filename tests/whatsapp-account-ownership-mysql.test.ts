@@ -37,6 +37,15 @@ import type {
   WhatsAppVerificationStartResult,
   WhatsAppVerificationCheckResult,
 } from "../server/whatsapp-verification-provider";
+import {
+  assertConnectedDatabaseName,
+  assertDisposableTestTargetMarker,
+  deriveDisposableChildTestTarget,
+  DISPOSABLE_TEST_TARGET_MARKER_SELECT,
+  DISPOSABLE_TEST_TARGET_MARKER_TABLE,
+  validateStandardTestDestructiveTarget,
+  type ValidatedStandardTestDestructiveTarget,
+} from "../scripts/destructive-target-fence";
 
 const runtime = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("../server/db", async (original) => ({
@@ -51,9 +60,11 @@ const DB_NAME = `escalas_test_wa_account_${process.pid}_${randomBytes(6).toStrin
 const A = "+5585988887777";
 const B = "+5585977776666";
 const SID = `VE${"1".repeat(32)}`;
+const CHILD_TARGET_NAMESPACE = "whatsapp-account-ownership-v1";
 let admin: Connection;
 let pool: Pool;
 let ownsDatabase = false;
+let childTarget: ValidatedStandardTestDestructiveTarget;
 let provider: WhatsAppVerificationProvider & {
   starts: string[];
   checks: { e164: string; code: string; sid: string }[];
@@ -65,6 +76,16 @@ function deferred<T>() {
     resolve = done;
   });
   return { promise, resolve };
+}
+function connectionOptions(target: ValidatedStandardTestDestructiveTarget) {
+  const url = new URL(target.databaseUrl);
+  return {
+    host: url.hostname.replace(/^\[(.*)\]$/, "$1"),
+    port: url.port ? Number(url.port) : 3306,
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: target.databaseName,
+  };
 }
 async function rows(sql: string, values: unknown[] = []) {
   const [result] = await pool.query<RowDataPacket[]>(sql, values);
@@ -116,28 +137,65 @@ async function dropAuditTrigger() {
 
 beforeAll(async () => {
   expect(DB_NAME).toMatch(/^escalas_test_wa_account_[0-9]+_[a-f0-9]{12}$/);
+  const parentTarget = validateStandardTestDestructiveTarget(process.env);
   admin = await mysql.createConnection({
-    host: "127.0.0.1",
-    user: "root",
-    password: "root",
+    ...connectionOptions(parentTarget),
     multipleStatements: true,
   });
+  const [parentDatabase] = await admin.query<RowDataPacket[]>(
+    "SELECT DATABASE() AS database_name",
+  );
+  assertConnectedDatabaseName(
+    parentDatabase[0]?.database_name,
+    parentTarget.databaseName,
+    "Connected WhatsApp test parent database",
+  );
+  assertDisposableTestTargetMarker(
+    await admin.query(DISPOSABLE_TEST_TARGET_MARKER_SELECT),
+    parentTarget,
+  );
   const [version] = await admin.query<RowDataPacket[]>(
     "SELECT VERSION() AS version",
   );
   expect(String(version[0].version)).toMatch(/^8\./);
+  childTarget = deriveDisposableChildTestTarget(
+    parentTarget,
+    DB_NAME,
+    CHILD_TARGET_NAMESPACE,
+  );
   // Sem DROP inicial: só limpamos se esta execução criou o banco exclusivo.
   await admin.query(`CREATE DATABASE \`${DB_NAME}\``);
   ownsDatabase = true;
   pool = mysql.createPool({
-    host: "127.0.0.1",
-    user: "root",
-    password: "root",
-    database: DB_NAME,
+    ...connectionOptions(childTarget),
     multipleStatements: true,
     connectionLimit: 8,
     timezone: "Z",
   });
+  const [childDatabase] = await pool.query<RowDataPacket[]>(
+    "SELECT DATABASE() AS database_name",
+  );
+  assertConnectedDatabaseName(
+    childDatabase[0]?.database_name,
+    childTarget.databaseName,
+    "Connected WhatsApp test child database",
+  );
+  await pool.query(`CREATE TABLE \`${DISPOSABLE_TEST_TARGET_MARKER_TABLE}\` (
+    id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+    database_name VARCHAR(64) NOT NULL,
+    marker_hash CHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_disposable_test_target_singleton CHECK (id = 1)
+  ) ENGINE=InnoDB`);
+  await pool.query(
+    `INSERT INTO \`${DISPOSABLE_TEST_TARGET_MARKER_TABLE}\` ` +
+      "(id, database_name, marker_hash) VALUES (1, ?, ?)",
+    [childTarget.databaseName, childTarget.markerHash],
+  );
+  assertDisposableTestTargetMarker(
+    await pool.query(DISPOSABLE_TEST_TARGET_MARKER_SELECT),
+    childTarget,
+  );
   await pool.query(`CREATE TABLE users (
     id INT NOT NULL PRIMARY KEY, name TEXT NULL,
     role ENUM('admin','manager','doctor','nurse','tech') NOT NULL,
@@ -150,6 +208,10 @@ beforeAll(async () => {
   runtime.db = drizzle(pool);
 });
 beforeEach(async () => {
+  assertDisposableTestTargetMarker(
+    await pool.query(DISPOSABLE_TEST_TARGET_MARKER_SELECT),
+    childTarget,
+  );
   await dropAuditTrigger();
   await pool.query(
     "DELETE FROM whatsapp_verification_challenges; DELETE FROM user_contact_channels; DELETE FROM account_audit_events; DELETE FROM users",
@@ -171,12 +233,25 @@ beforeEach(async () => {
   await account();
 });
 afterAll(async () => {
-  resetWhatsAppVerificationRuntime();
-  resetWhatsAppVerifyRateLimits();
-  runtime.db = null;
-  await pool?.end();
-  if (ownsDatabase) await admin.query(`DROP DATABASE \`${DB_NAME}\``);
-  await admin?.end();
+  let dropAuthorized = false;
+  try {
+    resetWhatsAppVerificationRuntime();
+    resetWhatsAppVerifyRateLimits();
+    runtime.db = null;
+    if (ownsDatabase) {
+      assertDisposableTestTargetMarker(
+        await pool.query(DISPOSABLE_TEST_TARGET_MARKER_SELECT),
+        childTarget,
+      );
+      dropAuthorized = true;
+    }
+  } finally {
+    await pool?.end();
+    if (dropAuthorized) {
+      await admin.query(`DROP DATABASE \`${DB_NAME}\``);
+    }
+    await admin?.end();
+  }
 });
 
 describe("ownership WhatsApp account-wide — MySQL descartável", () => {

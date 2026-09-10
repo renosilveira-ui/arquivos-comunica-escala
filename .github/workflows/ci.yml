@@ -106,6 +106,15 @@ jobs:
           TEST_DATABASE_DISPOSABLE_MARKER: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
         run: pnpm test:prepare-database
 
+      - name: Validate WhatsApp account ownership in a disposable child target
+        env:
+          NODE_ENV: test
+          TEST_DATABASE_ALLOW_DESTRUCTIVE: "1"
+          TEST_DATABASE_URL: mysql://root:root@127.0.0.1:3306/escalas_test
+          TEST_DATABASE_EXPECTED_NAME: escalas_test
+          TEST_DATABASE_DISPOSABLE_MARKER: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+        run: pnpm test:whatsapp-account-ownership-mysql
+
       - name: Validate sector specialties manual migration
         run: pnpm test:sector-service-specialties-migration
 
