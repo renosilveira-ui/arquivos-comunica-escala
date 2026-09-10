@@ -70,6 +70,10 @@ function spies() {
     pendingStore,
     "getWhatsAppPendingIntentBySourceForUser",
   );
+  const open = vi.spyOn(
+    pendingStore,
+    "getOpenWhatsAppPendingIntentForUser",
+  );
   const actor = vi.spyOn(actorMod, "resolveCanonicalOperationalActorForUser");
   const parse = vi.spyOn(parserMod, "parseSwapIntent");
   const resolve = vi.spyOn(resolverMod, "resolveSwapIntent");
@@ -87,6 +91,7 @@ function spies() {
     load,
     create,
     bySource,
+    open,
     actor,
     parse,
     resolve,
@@ -239,12 +244,13 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
   });
 
   it("operational_text null em READY_FOR_NL é inconsistência, não mensagem vazia", async () => {
-    const { load, create, bySource, parse, clear } = spies();
+    const { load, create, bySource, open, parse, clear } = spies();
     load.mockResolvedValue({
       ok: true,
       source: readySource({ operationalText: null }),
     });
     bySource.mockResolvedValue({ ok: true, row: null });
+    open.mockResolvedValue({ ok: true, row: null });
     const result = await processWhatsAppReadyForNlInbound({
       sourceInboundMessageId: SOURCE_ID,
     });
@@ -259,7 +265,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
   });
 
   it("payload inbound expirado não inventa texto vazio", async () => {
-    const { load, create, bySource, parse, clear } = spies();
+    const { load, create, bySource, open, parse, clear } = spies();
     load.mockResolvedValue({
       ok: true,
       source: readySource({
@@ -267,6 +273,7 @@ describe("WhatsApp B2-C — fail-closed e estados de source/pending", () => {
       }),
     });
     bySource.mockResolvedValue({ ok: true, row: null });
+    open.mockResolvedValue({ ok: true, row: null });
     const result = await processWhatsAppReadyForNlInbound({
       sourceInboundMessageId: SOURCE_ID,
     });
