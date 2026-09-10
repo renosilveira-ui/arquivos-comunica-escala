@@ -712,10 +712,6 @@ export function resolveShiftScheduleContextReadGrant(input: {
   ownActiveAssignment: boolean;
   authorizedContexts: readonly AuthorizedScheduleContext[];
 }): ScheduleContextReadGrant | null {
-  if (input.ownActiveAssignment) {
-    return { kind: "OWN_ASSIGNMENT", context: null };
-  }
-  if (input.shift.scheduleContextId === null) return null;
   const context = input.authorizedContexts.find(
     (candidate) =>
       candidate.id === input.shift.scheduleContextId &&
@@ -723,7 +719,12 @@ export function resolveShiftScheduleContextReadGrant(input: {
       candidate.hospitalId === input.shift.hospitalId &&
       candidate.sectorId === input.shift.sectorId,
   );
-  return context ? { kind: "SCHEDULE_CONTEXT", context } : null;
+  // A autoridade do contexto prevalece: estar alocado não pode apagar o
+  // canManage do gestor. OWN_ASSIGNMENT é somente o fallback sem essa leitura.
+  if (context) return { kind: "SCHEDULE_CONTEXT", context };
+  return input.ownActiveAssignment
+    ? { kind: "OWN_ASSIGNMENT", context: null }
+    : null;
 }
 
 /**

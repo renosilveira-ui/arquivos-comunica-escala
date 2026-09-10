@@ -17,6 +17,7 @@ export default defineConfig({
     setupFiles: [],
     include: [
       "tests/shift-capacity.test.ts",
+      "tests/roster-read-visibility.test.ts",
       "tests/onboarding-direction.test.ts",
       "tests/onboarding-ui.test.ts",
       "tests/medical-specialties-catalog.test.ts",

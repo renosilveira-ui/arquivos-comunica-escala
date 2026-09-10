@@ -206,14 +206,23 @@ describe("consultas por dia usam o dia do hospital", () => {
   it("listAgenda coloca o plantão no dia D, com a semana iniciando na segunda", async () => {
     const shifts = shiftsRouter.createCaller(ctx(doctorUserId, "doctor"));
     const monday = mondayOfKey(D);
+    await db.insert(monthlyRosters).values({
+      institutionId, hospitalId, yearMonth: D.slice(0, 7), status: "PUBLISHED",
+    });
     const selectSpy = vi.spyOn(db, "select");
     const res = await (async () => {
       try {
         const result = await shifts.listAgenda({ startDate: monday, weeks: 1, scope: "geral" });
-        expect(selectSpy.mock.calls.length).toBeLessThan(10);
+        // Uma leitura mensal em lote soma uma consulta constante ao reader.
+        expect(selectSpy.mock.calls.length).toBeLessThan(11);
         return result;
       } finally {
         selectSpy.mockRestore();
+        await db.delete(monthlyRosters).where(and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalId),
+          eq(monthlyRosters.yearMonth, D.slice(0, 7)),
+        ));
       }
     })();
     expect(res.weeks).toHaveLength(1);

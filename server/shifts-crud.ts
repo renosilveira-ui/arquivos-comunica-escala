@@ -10,6 +10,11 @@ import {
   shiftSlotKey,
 } from "./shift-capacity";
 import { shiftCapacitySummary } from "../lib/shift-capacity";
+import {
+  canReadRosterMonth,
+  loadRosterMonthStatuses,
+  rosterMonthKey,
+} from "./roster-read-visibility";
 import { requiredCapacityInput } from "./schedule-capacity-router";
 import {
   addDaysToKey,
@@ -2045,11 +2050,28 @@ export const shiftsRouter = router({
         });
       }
 
-      await assertActorCanReadShiftScheduleContext({
+      const readGrant = await assertActorCanReadShiftScheduleContext({
         actor,
         shift: instance,
         db,
       });
+      const yearMonth = yearMonthBrt(instance.startAt);
+      const monthStatuses = await loadRosterMonthStatuses(
+        db,
+        actor.institutionId,
+        [{ hospitalId: instance.hospitalId, yearMonth }],
+      );
+      if (
+        !canReadRosterMonth(
+          readGrant.kind === "SCHEDULE_CONTEXT" && readGrant.context.canManage,
+          monthStatuses.get(rosterMonthKey(instance.hospitalId, yearMonth)),
+        )
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "A escala deste mês ainda não foi publicada.",
+        });
+      }
 
       // Load the template that matches this instance's hospital + sector + label
       const [template] = await db
@@ -2126,7 +2148,14 @@ export const shiftsRouter = router({
           instance.status,
         ),
         template: template ?? null,
-        assignments,
+        assignments:
+          readGrant.kind === "OWN_ASSIGNMENT"
+            ? assignments.filter(
+                (assignment) =>
+                  assignment.professionalId === actor.professionalId &&
+                  assignment.userId === actor.userId,
+              )
+            : assignments,
       };
     }),
 
@@ -2710,6 +2739,11 @@ export const shiftsRouter = router({
       const readableContextIds = new Set(
         readableContexts.map((context) => context.id),
       );
+      const manageableContextIds = new Set(
+        readableContexts
+          .filter((context) => context.canManage)
+          .map((context) => context.id),
+      );
       if (
         input.scheduleContextId !== undefined &&
         !readableContextIds.has(input.scheduleContextId)
@@ -2771,8 +2805,31 @@ export const shiftsRouter = router({
 
       if (instanceRows.length === 0) return [];
 
+      const monthStatuses = await loadRosterMonthStatuses(
+        db,
+        actor.institutionId,
+        instanceRows.map(({ instance }) => ({
+          hospitalId: instance.hospitalId,
+          yearMonth: yearMonthBrt(instance.startAt),
+        })),
+      );
+      const monthVisibleRows = instanceRows.filter(
+        ({ instance, activeScheduleContextId }) =>
+          canReadRosterMonth(
+            activeScheduleContextId !== null &&
+              manageableContextIds.has(activeScheduleContextId),
+            monthStatuses.get(
+              rosterMonthKey(
+                instance.hospitalId,
+                yearMonthBrt(instance.startAt),
+              ),
+            ),
+          ),
+      );
+      if (monthVisibleRows.length === 0) return [];
+
       // Attach active assignments (with professional name) to each instance
-      const instanceIds = instanceRows.map(({ instance }) => instance.id);
+      const instanceIds = monthVisibleRows.map(({ instance }) => instance.id);
       const allAssignments = await db
         .select({
           id: shiftAssignmentsV2.id,
@@ -2850,7 +2907,7 @@ export const shiftsRouter = router({
       }
 
       const capacityCounts = await activeShiftCounts(db, instanceIds);
-      return instanceRows
+      return monthVisibleRows
         .filter(({ instance, activeScheduleContextId }) => {
           if (input.scheduleContextId !== undefined) {
             return activeScheduleContextId === input.scheduleContextId;
@@ -2869,14 +2926,20 @@ export const shiftsRouter = router({
               assignment.userId === actor.userId,
           );
         })
-        .map(({ instance }) => ({
+        .map(({ instance, activeScheduleContextId }) => ({
           ...instance,
           ...shiftCapacitySummary(
             instance.requiredCapacity,
             capacityCounts.get(instance.id) ?? 0,
             instance.status,
           ),
-          assignments: assignmentsByShift.get(instance.id) ?? [],
+          assignments: (assignmentsByShift.get(instance.id) ?? []).filter(
+            (assignment) =>
+              (activeScheduleContextId !== null &&
+                readableContextIds.has(activeScheduleContextId)) ||
+              (assignment.professionalId === actor.professionalId &&
+                assignment.userId === actor.userId),
+          ),
         }));
     }),
 
@@ -3180,8 +3243,31 @@ export const shiftsRouter = router({
         );
       }
 
-      // 3. Filtra por escopo se "minha".
+      const monthStatuses = await loadRosterMonthStatuses(
+        db,
+        actor.institutionId,
+        rows.map((row) => ({
+          hospitalId: row.hospitalId,
+          yearMonth: yearMonthBrt(row.startAt),
+        })),
+      );
+
+      // Publicação é independente de ownership: uma alocação própria não
+      // permite ao USER antecipar a leitura de um rascunho.
       const scoped = rows.filter((r) => {
+        const readableContext =
+          r.scheduleContextId === null
+            ? undefined
+            : readableContextsById.get(r.scheduleContextId);
+        if (
+          !canReadRosterMonth(
+            readableContext?.canManage === true,
+            monthStatuses.get(
+              rosterMonthKey(r.hospitalId, yearMonthBrt(r.startAt)),
+            ),
+          )
+        )
+          return false;
         if (input.scope === "geral") {
           return (
             r.scheduleContextId !== null &&
@@ -3282,6 +3368,12 @@ export const shiftsRouter = router({
           modality: r.modality,
           coverageType: r.coverageType,
           professionalNames: myList
+            .filter(
+              (assignment) =>
+                (r.scheduleContextId !== null &&
+                  readableContextsById.has(r.scheduleContextId)) ||
+                assignment.professionalId === myProfessionalId,
+            )
             .map((a) => a.professionalName ?? "—")
             .filter((n) => n.trim().length > 0),
           isMine,
