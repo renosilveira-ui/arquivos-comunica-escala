@@ -561,6 +561,28 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
     });
   });
 
+  it("rejeita janela inválida mesmo quando a conta ainda não possui itens", async () => {
+    const caller = callerFor(standaloneUserId);
+    await expect(
+      caller.personalCalendar.listWindow({
+        fromDate: "2026-09-11",
+        toDate: "2026-09-10",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "A janela termina antes de começar.",
+    });
+    await expect(
+      caller.personalCalendar.listWindow({
+        fromDate: "2026-01-01",
+        toDate: "2027-01-02",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "A consulta pode abranger no máximo 366 dias.",
+    });
+  });
+
   it("rejeita séries semanticamente impossíveis antes de gravar qualquer linha", async () => {
     const caller = callerFor(ownerUserId);
     const mutationIds = [`invalid-birthday:${stamp}`, `invalid-until:${stamp}`];
@@ -841,6 +863,221 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
         .from(personalCalendarItems)
         .where(eq(personalCalendarItems.clientMutationId, `revoked:${stamp}`)),
     ).resolves.toHaveLength(0);
+  });
+
+  it("mantém a última ocorrência UNTIL visível quando ela termina no dia seguinte", async () => {
+    const caller = callerFor(ownerUserId);
+    const created = await caller.personalCalendar.createItem({
+      clientMutationId: `until-overnight:${stamp}`,
+      item: {
+        ...appointment("2026-10-01", "23:00", "01:00"),
+        endLocalDate: "2026-10-02",
+        title: "Série noturna",
+      },
+      recurrence: {
+        frequency: "DAILY",
+        interval: 1,
+        weekdaysMask: null,
+        invalidDatePolicy: "SKIP",
+        termination: "UNTIL",
+        untilLocalDate: "2026-10-10",
+        occurrenceCount: null,
+      },
+      alertOffsets: noAlerts,
+    });
+
+    const nextDay = await caller.personalCalendar.listWindow({
+      fromDate: "2026-10-11",
+      toDate: "2026-10-11",
+    });
+
+    expect(nextDay.occurrences).toEqual([
+      expect.objectContaining({
+        itemId: created.item.id,
+        originalLocalDate: "2026-10-10",
+        startsAtUtc: new Date("2026-10-11T02:00:00.000Z"),
+        endsAtUtc: new Date("2026-10-11T04:00:00.000Z"),
+      }),
+    ]);
+
+    const longSeries = await caller.personalCalendar.createItem({
+      clientMutationId: `until-long:${stamp}`,
+      item: {
+        ...appointment("2026-10-01", "23:00", "01:00"),
+        endLocalDate: "2026-10-04",
+        title: "Série longa",
+      },
+      recurrence: {
+        frequency: "DAILY",
+        interval: 1,
+        weekdaysMask: null,
+        invalidDatePolicy: "SKIP",
+        termination: "UNTIL",
+        untilLocalDate: "2026-10-10",
+        occurrenceCount: null,
+      },
+      alertOffsets: noAlerts,
+    });
+    const finalTail = await caller.personalCalendar.listWindow({
+      fromDate: "2026-10-13",
+      toDate: "2026-10-13",
+    });
+    expect(finalTail.occurrences).toEqual([
+      expect.objectContaining({
+        itemId: longSeries.item.id,
+        originalLocalDate: "2026-10-10",
+        endsAtUtc: new Date("2026-10-13T04:00:00.000Z"),
+      }),
+    ]);
+  });
+
+  it("detecta no mesmo instante evento e plantão descritos em fusos distintos", async () => {
+    const caller = callerFor(ownerUserId);
+    const existing = await caller.personalCalendar.createItem({
+      clientMutationId: `timezone-existing:${stamp}`,
+      item: appointment("2026-10-11", "01:00", "02:00", {
+        title: "Compromisso em Kiritimati",
+        timeZone: "Pacific/Kiritimati",
+      }),
+      recurrence: noRecurrence,
+      alertOffsets: noAlerts,
+    });
+    const shift = await createShift({
+      institutionId: institutionAId,
+      hospitalId: hospitalA1Id,
+      sectorId: sectorA1Id,
+      professionalId: ownerProfessionalAId,
+      startsAtUtc: "2026-10-10T11:15:00.000Z",
+      endsAtUtc: "2026-10-10T11:45:00.000Z",
+      label: "Plantão simultâneo entre fusos",
+    });
+
+    const check = await caller.personalCalendar.checkConflicts({
+      item: conflictAppointment("2026-10-09", "23:00", "00:00", {
+        endLocalDate: "2026-10-10",
+        timeZone: "Etc/GMT+12",
+      }),
+      recurrence: noRecurrence,
+      window: { fromDate: "2026-10-09", toDate: "2026-10-09" },
+    });
+
+    expect(check.occurrences).toHaveLength(1);
+    expect(check.occurrences[0].conflict.conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "PERSONAL_ITEM",
+          itemId: existing.item.id,
+          title: "Compromisso em Kiritimati",
+        }),
+        expect.objectContaining({
+          kind: "SHIFT",
+          assignmentId: shift.assignmentId,
+          label: "Plantão simultâneo entre fusos",
+        }),
+      ]),
+    );
+
+    const western = await caller.personalCalendar.createItem({
+      clientMutationId: `timezone-western:${stamp}`,
+      item: appointment("2026-10-09", "23:00", "00:00", {
+        endLocalDate: "2026-10-10",
+        title: "Compromisso em UTC-12",
+        timeZone: "Etc/GMT+12",
+      }),
+      recurrence: noRecurrence,
+      alertOffsets: noAlerts,
+    });
+    const listed = await caller.personalCalendar.listWindow({
+      fromDate: "2026-10-09",
+      toDate: "2026-10-09",
+    });
+    expect(listed.sourceItemCount).toBe(1);
+    const westernOccurrence = listed.occurrences.find(
+      (occurrence) => occurrence.itemId === western.item.id,
+    );
+    expect(westernOccurrence?.conflict.conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "PERSONAL_ITEM",
+          itemId: existing.item.id,
+        }),
+        expect.objectContaining({
+          kind: "SHIFT",
+          assignmentId: shift.assignmentId,
+        }),
+      ]),
+    );
+  });
+
+  it("busca conflitos em toda a duração UTC do compromisso-alvo", async () => {
+    const caller = callerFor(ownerUserId);
+    const candidate = await caller.personalCalendar.createItem({
+      clientMutationId: `long-target-candidate:${stamp}`,
+      item: appointment("2026-11-14", "12:00", "13:00", {
+        title: "Compromisso dentro do intervalo longo",
+      }),
+      recurrence: noRecurrence,
+      alertOffsets: noAlerts,
+    });
+    const shift = await createShift({
+      institutionId: institutionAId,
+      hospitalId: hospitalA1Id,
+      sectorId: sectorA1Id,
+      professionalId: ownerProfessionalAId,
+      startsAtUtc: "2026-11-14T15:15:00.000Z",
+      endsAtUtc: "2026-11-14T15:45:00.000Z",
+      label: "Plantão dentro do intervalo longo",
+    });
+    const target = {
+      ...conflictAppointment("2026-11-01", "09:00", "18:00"),
+      endLocalDate: "2026-11-20",
+    };
+
+    const preview = await caller.personalCalendar.checkConflicts({
+      item: target,
+      recurrence: noRecurrence,
+      window: { fromDate: "2026-11-10", toDate: "2026-11-10" },
+    });
+    expect(preview.occurrences).toHaveLength(1);
+    expect(preview.occurrences[0].conflict.conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "PERSONAL_ITEM",
+          itemId: candidate.item.id,
+        }),
+        expect.objectContaining({
+          kind: "SHIFT",
+          assignmentId: shift.assignmentId,
+        }),
+      ]),
+    );
+
+    const storedTarget = await caller.personalCalendar.createItem({
+      clientMutationId: `long-target:${stamp}`,
+      item: { ...target, title: "Compromisso-alvo longo" },
+      recurrence: noRecurrence,
+      alertOffsets: noAlerts,
+    });
+    const listed = await caller.personalCalendar.listWindow({
+      fromDate: "2026-11-10",
+      toDate: "2026-11-10",
+    });
+    expect(listed.sourceItemCount).toBe(1);
+    const targetOccurrence = listed.occurrences.find(
+      (occurrence) => occurrence.itemId === storedTarget.item.id,
+    );
+    expect(targetOccurrence?.conflict.conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "PERSONAL_ITEM",
+          itemId: candidate.item.id,
+        }),
+        expect.objectContaining({
+          kind: "SHIFT",
+          assignmentId: shift.assignmentId,
+        }),
+      ]),
+    );
   });
 
   it("detecta compromisso e plantões próprios em dois hospitais e duas instituições", async () => {
