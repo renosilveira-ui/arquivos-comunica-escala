@@ -5,6 +5,7 @@ import {
   summarizeShiftCapacityStats,
 } from "../lib/shift-capacity";
 import {
+  assertProjectedShiftCapacity,
   assertDistinctShiftSlots,
   hospitalClock,
   shiftSlotKey,
@@ -84,5 +85,77 @@ describe("shift capacity contract", () => {
         { status: "VAGO" },
       ]),
     ).toEqual({ total: 3, vago: 3, pendente: 1, ocupado: 1 });
+  });
+
+  it("treats a legacy shift as one place only while it is truly vacant", () => {
+    expect(
+      assertProjectedShiftCapacity(
+        { requiredCapacity: null, status: "VAGO" },
+        0,
+        1,
+      ),
+    ).toBe(1);
+    expect(() =>
+      assertProjectedShiftCapacity(
+        { requiredCapacity: null, status: "OCUPADO" },
+        0,
+        1,
+      ),
+    ).toThrow(/não está mais vago/);
+    expect(() =>
+      assertProjectedShiftCapacity(
+        { requiredCapacity: null, status: "VAGO" },
+        1,
+        1,
+      ),
+    ).toThrow(/não está mais vago/);
+  });
+
+  it("does not use a hidden fallback to expand legacy capacity", () => {
+    expect(() =>
+      assertProjectedShiftCapacity(
+        { requiredCapacity: null, status: "OCUPADO" },
+        19,
+        1,
+      ),
+    ).toThrow(/não está mais vago/);
+    expect(
+      assertProjectedShiftCapacity(
+        { requiredCapacity: null, status: "OCUPADO" },
+        3,
+        0,
+      ),
+    ).toBe(3);
+    expect(
+      assertProjectedShiftCapacity(
+        { requiredCapacity: null, status: "OCUPADO" },
+        3,
+        -1,
+      ),
+    ).toBe(2);
+  });
+
+  it("enforces explicit capacity for every increasing writer", () => {
+    expect(
+      assertProjectedShiftCapacity(
+        { requiredCapacity: 3, status: "OCUPADO" },
+        2,
+        1,
+      ),
+    ).toBe(3);
+    expect(() =>
+      assertProjectedShiftCapacity(
+        { requiredCapacity: 3, status: "OCUPADO" },
+        3,
+        1,
+      ),
+    ).toThrow(/Limite de 3 profissionais/);
+    expect(() =>
+      assertProjectedShiftCapacity(
+        { requiredCapacity: 3, status: "OCUPADO" },
+        0,
+        -1,
+      ),
+    ).toThrow(/total de profissionais/);
   });
 });
