@@ -61,6 +61,7 @@ describe("autoridade atual no outbox de confirmação", () => {
   let shiftId: number;
   let assignmentId: number;
   let confirmationId: number;
+  const confirmationToken = "33333333-3333-4333-8333-333333333333";
   const stamp = Date.now();
   const now = new Date("2032-03-04T10:00:00.000Z");
   const fetchMock = vi.fn();
@@ -156,7 +157,7 @@ describe("autoridade atual no outbox de confirmação", () => {
       professionalId,
       userId,
       status: "PENDING",
-      confirmationToken: crypto.randomUUID(),
+      confirmationToken,
       recheckAt: new Date("2032-03-04T10:30:00.000Z"),
     }).$returningId();
     confirmationId = confirmation.id;
@@ -223,6 +224,7 @@ describe("autoridade atual no outbox de confirmação", () => {
         startPushSentAt: null,
         managerNotified: false,
         recheckAt: new Date("2032-03-04T10:30:00.000Z"),
+        confirmationToken,
       })
       .where(eq(dutyConfirmations.id, confirmationId));
   });
@@ -310,18 +312,21 @@ describe("autoridade atual no outbox de confirmação", () => {
   }
 
   function managerIntent(suffix: string, managerUserId = userId) {
+    const recheckEpoch = "2032-03-04T10:30:00.000Z";
     return {
       ...intent(suffix),
       userId: managerUserId,
       payload: {
         title: "Confirmação de plantão pendente",
         body: "Verifique a presença do profissional",
-          data: {
-            type: "manager_confirmation_escalation",
-            confirmationId,
-            institutionId,
-            reason: "NO_RESPONSE",
-          },
+        data: {
+          type: "manager_confirmation_escalation",
+          confirmationId,
+          institutionId,
+          reason: "NO_RESPONSE",
+          recheckEpoch,
+          confirmationToken,
+        },
       },
       authority: {
         kind: "DUTY_CONFIRMATION" as const,
@@ -331,6 +336,8 @@ describe("autoridade atual no outbox de confirmação", () => {
         recipientKind: "MANAGER" as const,
         expectedUserId: managerUserId,
         shiftSnapshot: shiftSnapshot(),
+        recheckEpoch,
+        confirmationToken,
       },
     };
   }
@@ -1457,6 +1464,57 @@ describe("autoridade atual no outbox de confirmação", () => {
     expect(after.status).toBe("DECLINED");
     expect(after.managerNotified).toBe(false);
     expect(after.recheckAt?.toISOString()).toBe(renewedRecheckAt.toISOString());
+  });
+
+  it("receipt gerencial antigo não consome outro ciclo com a mesma epoch", async () => {
+    await db
+      .update(professionalInstitutions)
+      .set({ roleInInstitution: "GESTOR_PLUS" })
+      .where(eq(professionalInstitutions.professionalId, professionalId));
+    const ticketId = `manager-stale-token-${stamp}`;
+    fetchMock.mockResolvedValueOnce(
+      response(200, { data: { status: "ok", id: ticketId } }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      response(200, { data: { status: "ok", id: `manager-stale-token-badge-${stamp}` } }),
+    );
+    const tracked = await enqueueTrackedPushNotification(
+      managerIntent("stale-token-receipt"),
+      now,
+    );
+    await processPendingPushDeliveries(now);
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+
+    const nextToken = "44444444-4444-4444-8444-444444444444";
+    await db
+      .update(dutyConfirmations)
+      .set({ confirmationToken: nextToken })
+      .where(eq(dutyConfirmations.id, confirmationId));
+
+    fetchMock.mockResolvedValueOnce(
+      response(200, { data: { [ticketId]: { status: "ok" } } }),
+    );
+    await processPendingPushDeliveries(new Date(now.getTime() + 15 * 60_000));
+
+    const [stored] = await db
+      .select({ status: notifications.status, providerReceipt: notifications.providerReceipt })
+      .from(notifications)
+      .where(eq(notifications.id, tracked.notificationId));
+    expect(stored.status).toBe("SENT");
+    expect(stored.providerReceipt).toMatchObject({ phase: "PROVIDER_ACCEPTED" });
+    const [confirmation] = await db
+      .select({
+        confirmationToken: dutyConfirmations.confirmationToken,
+        managerNotified: dutyConfirmations.managerNotified,
+        recheckAt: dutyConfirmations.recheckAt,
+      })
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, confirmationId));
+    expect(confirmation.confirmationToken).toBe(nextToken);
+    expect(confirmation.managerNotified).toBe(false);
+    expect(confirmation.recheckAt?.toISOString()).toBe(
+      "2032-03-04T10:30:00.000Z",
+    );
   });
 
   it("admin global com PI USER ativa é destinatário gerencial canônico", async () => {

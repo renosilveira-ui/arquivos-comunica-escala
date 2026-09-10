@@ -14,6 +14,7 @@ import type { getDb } from "./db";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import { assertOfficialRoster } from "./month-guards";
 import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
+import { isConfirmationRouteToken } from "../lib/confirmation-route-params";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type ConfirmationReadDb = Pick<Db, "select">;
@@ -163,6 +164,50 @@ function invalid(
   code: "FORBIDDEN" | "BAD_REQUEST" = "FORBIDDEN",
 ): never {
   throw new TRPCError({ code, message });
+}
+
+export function canonicalDutyConfirmationEpoch(value: Date): Date {
+  const canonical = new Date(value);
+  canonical.setUTCMilliseconds(0);
+  return canonical;
+}
+
+export function isCanonicalDutyConfirmationEpoch(
+  value: unknown,
+): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  return (
+    Number.isFinite(parsed.getTime()) &&
+    parsed.getUTCMilliseconds() === 0 &&
+    parsed.toISOString() === value
+  );
+}
+
+export function assertDutyConfirmationRecheckEpoch(
+  recheckAt: Date | null,
+  expectedEpoch?: string,
+): void {
+  if (expectedEpoch === undefined) return;
+  if (
+    !isCanonicalDutyConfirmationEpoch(expectedEpoch) ||
+    recheckAt?.toISOString() !== expectedEpoch
+  ) {
+    invalid("A indicação mudou depois que a intenção foi criada", "BAD_REQUEST");
+  }
+}
+
+export function assertDutyConfirmationCycleToken(
+  currentToken: string,
+  expectedToken?: string,
+): void {
+  if (expectedToken === undefined) return;
+  if (
+    !isConfirmationRouteToken(expectedToken) ||
+    currentToken !== expectedToken
+  ) {
+    invalid("A indicação mudou depois que a intenção foi criada", "BAD_REQUEST");
+  }
 }
 
 /**
@@ -1130,6 +1175,8 @@ export async function requireAuthorizedDutyConfirmationRecipient(
     recipientKind: DutyConfirmationRecipientAuthority;
     expectedUserId: number;
     shiftSnapshot: DutyShiftSnapshot;
+    expectedRecheckEpoch?: string;
+    expectedConfirmationToken?: string;
     allowInactiveOriginalAssignment?: boolean;
     lockForUpdate?: boolean;
   },
@@ -1179,6 +1226,14 @@ export async function requireAuthorizedDutyConfirmationRecipient(
     lockForUpdate: input.lockForUpdate,
   });
   assertDutyShiftSnapshot(valid.shift, input.shiftSnapshot);
+  assertDutyConfirmationRecheckEpoch(
+    valid.confirmation.recheckAt,
+    input.expectedRecheckEpoch,
+  );
+  assertDutyConfirmationCycleToken(
+    valid.confirmation.confirmationToken,
+    input.expectedConfirmationToken,
+  );
 
   if (input.recipientKind === "REPLACEMENT") {
     if (valid.replacement?.userId !== input.expectedUserId) {

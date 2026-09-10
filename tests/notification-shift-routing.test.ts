@@ -24,6 +24,127 @@ beforeAll(async () => {
 });
 
 describe("roteamento de push para o plantão exato", () => {
+  it("recusa do substituto abre diretamente uma nova indicação", async () => {
+    const navigateToNominateReplacement = vi.fn();
+    const confirmationToken = "9a77989a-580e-4af5-b573-743a58ed2dc9";
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "replacement_declined",
+          institutionId: 11,
+          shiftInstanceId: 909,
+          confirmationToken,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => ({ institutionId: 11, revision: 3 }),
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: vi.fn(async () => undefined),
+          invalidateQueries: vi.fn(async () => undefined),
+          navigateToConfirmation: vi.fn(),
+          navigateToNominateReplacement,
+          navigateToAgenda: vi.fn(),
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(navigateToNominateReplacement).toHaveBeenCalledWith(
+      confirmationToken,
+    );
+  });
+
+  it("token de confirmação inválido falha antes de trocar tenant", async () => {
+    const setActiveInstitutionId = vi.fn(async () => undefined);
+    const navigateToNominateReplacement = vi.fn();
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "replacement_declined",
+          institutionId: 22,
+          confirmationToken: "nao-e-uuid",
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => ({ institutionId: 11, revision: 3 }),
+          loadAllowedInstitutionIds: async () => [11, 22],
+          setActiveInstitutionId,
+          invalidateQueries: vi.fn(async () => undefined),
+          navigateToConfirmation: vi.fn(),
+          navigateToNominateReplacement,
+          navigateToAgenda: vi.fn(),
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(false);
+
+    expect(setActiveInstitutionId).not.toHaveBeenCalled();
+    expect(navigateToNominateReplacement).not.toHaveBeenCalled();
+  });
+
+  it("nomeação propaga a epoch canônica depois de alinhar o tenant", async () => {
+    const navigateToConfirmation = vi.fn();
+    const confirmationToken = "9a77989a-580e-4af5-b573-743a58ed2dc9";
+    const nominationEpoch = "2026-09-10T12:30:00.000Z";
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "duty_nomination",
+          institutionId: 11,
+          confirmationToken,
+          nominationEpoch,
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => ({ institutionId: 11, revision: 3 }),
+          loadAllowedInstitutionIds: async () => [11],
+          setActiveInstitutionId: vi.fn(async () => undefined),
+          invalidateQueries: vi.fn(async () => undefined),
+          navigateToConfirmation,
+          navigateToAgenda: vi.fn(),
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(navigateToConfirmation).toHaveBeenCalledWith(
+      confirmationToken,
+      nominationEpoch,
+    );
+  });
+
+  it("epoch inválida da nomeação falha antes de trocar tenant", async () => {
+    const setActiveInstitutionId = vi.fn(async () => undefined);
+    const navigateToConfirmation = vi.fn();
+
+    await expect(
+      routeNotificationData(
+        {
+          type: "duty_nomination",
+          institutionId: 22,
+          confirmationToken: "9a77989a-580e-4af5-b573-743a58ed2dc9",
+          nominationEpoch: "2026-09-10T12:30:00.987Z",
+        },
+        {
+          isSessionAuthorizationCurrent: () => true,
+          getActiveTenantSnapshot: () => ({ institutionId: 11, revision: 3 }),
+          loadAllowedInstitutionIds: async () => [11, 22],
+          setActiveInstitutionId,
+          invalidateQueries: vi.fn(async () => undefined),
+          navigateToConfirmation,
+          navigateToAgenda: vi.fn(),
+          openComunica: vi.fn(async () => ({ ok: true })),
+        },
+      ),
+    ).resolves.toBe(false);
+
+    expect(setActiveInstitutionId).not.toHaveBeenCalled();
+    expect(navigateToConfirmation).not.toHaveBeenCalled();
+  });
+
   it("troca B para A, invalida caches e só então abre o shift A", async () => {
     const calls: string[] = [];
     let activeTenant = { institutionId: 22, revision: 3 };
