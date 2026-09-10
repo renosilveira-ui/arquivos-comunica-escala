@@ -24,7 +24,10 @@ describe("Frente 2.3 - pingDb", () => {
       expect(result.latencyMs).toBeGreaterThanOrEqual(0);
     } else {
       expect(result.status).toBe("timeout");
-      expect(result.detail).toMatch(/timeout/i);
+      expect(result.diagnostic).toEqual({
+        errorCategory: "timeout",
+        errorCode: "DB_PROBE_TIMEOUT",
+      });
     }
   });
 });
@@ -45,10 +48,7 @@ describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
         });
         return;
       }
-      log.warn(
-        { status: db.status, detail: db.detail },
-        "health probe failed",
-      );
+      log.warn({ status: db.status, ...db.diagnostic }, "health probe failed");
       res.status(503).json({
         ok: false,
         db: { ok: false, status: db.status },
@@ -71,7 +71,10 @@ describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
     const app = buildHealthApp(async () => ({
       ok: false,
       status: "timeout",
-      detail: "db ping timeout after 2000ms",
+      diagnostic: {
+        errorCategory: "timeout",
+        errorCode: "DB_PROBE_TIMEOUT",
+      },
     }));
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(503);
@@ -85,7 +88,10 @@ describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
     const app = buildHealthApp(async () => ({
       ok: false,
       status: "auth_failed",
-      detail: "Access denied for user 'app'@'10.0.0.5' (using password: YES)",
+      diagnostic: {
+        errorCategory: "authentication",
+        errorCode: "ER_ACCESS_DENIED_ERROR",
+      },
     }));
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(503);
@@ -101,7 +107,10 @@ describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
     const app = buildHealthApp(async () => ({
       ok: false,
       status: "unreachable",
-      detail: "connect ECONNREFUSED 10.0.0.5:3306",
+      diagnostic: {
+        errorCategory: "network",
+        errorCode: "ECONNREFUSED",
+      },
     }));
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(503);
@@ -116,7 +125,10 @@ describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
     const app = buildHealthApp(async () => ({
       ok: false,
       status: "unknown_database",
-      detail: "ER_BAD_DB_ERROR: Unknown database 'escalas_prod'",
+      diagnostic: {
+        errorCategory: "database",
+        errorCode: "ER_BAD_DB_ERROR",
+      },
     }));
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(503);
@@ -130,20 +142,26 @@ describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
     const app = buildHealthApp(async () => ({
       ok: false,
       status: "uninitialized",
-      detail: "database not initialized",
+      diagnostic: {
+        errorCategory: "configuration",
+        errorCode: "DATABASE_NOT_INITIALIZED",
+      },
     }));
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(503);
     expect(res.body.db).toEqual({ ok: false, status: "uninitialized" });
   });
 
-  it("logs the full detail server-side via logger.warn (operator visibility)", async () => {
+  it("logs only fixed-vocabulary diagnostics via logger.warn", async () => {
     const log = { warn: vi.fn() };
     const app = buildHealthApp(
       async () => ({
         ok: false,
         status: "auth_failed",
-        detail: "Access denied for user 'app'@'10.0.0.5' (using password: YES)",
+        diagnostic: {
+          errorCategory: "authentication",
+          errorCode: "ER_ACCESS_DENIED_ERROR",
+        },
       }),
       log,
     );
@@ -152,7 +170,8 @@ describe("Frente 2.3 / fix - /api/health endpoint security contract", () => {
     expect(log.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "auth_failed",
-        detail: expect.stringContaining("Access denied"),
+        errorCategory: "authentication",
+        errorCode: "ER_ACCESS_DENIED_ERROR",
       }),
       "health probe failed",
     );
@@ -244,7 +263,7 @@ describe("Frente 2.3 - graceful shutdown handler", () => {
     await ctl.trigger("err-close");
 
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ err: "close failed" }),
+      expect.objectContaining({ errorCategory: "application" }),
       "server.close reported error",
     );
     expect(exit).toHaveBeenCalledWith(0);
@@ -290,7 +309,7 @@ describe("Frente 2.3 - graceful shutdown handler", () => {
     await ctl.trigger("with-bad-hook");
 
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ err: "hook blew up" }),
+      expect.objectContaining({ errorCategory: "application" }),
       "onBeforeExit hook failed",
     );
     expect(exit).toHaveBeenCalledWith(0);

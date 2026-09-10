@@ -236,7 +236,6 @@ export async function startWhatsAppVerification(input: {
           event: "whatsapp_verify_start_already_verified",
           userId: input.userId,
           channel: "WHATSAPP",
-          addressHash: e164AuditHash(channel.e164),
         });
         return {
           ok: true,

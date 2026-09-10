@@ -6,6 +6,8 @@ import { parseTenantIdHeader, resolveInstitutionForUser } from "./tenant";
 import { SessionInstanceConstraintError } from "./session-instance";
 import { AuthenticationInfrastructureError } from "./sdk";
 import { ExpectedUserConstraintError } from "./expected-user";
+import { logger } from "./logger";
+import { safeErrorDiagnostic } from "./safe-error";
 
 /** Mensagem de erro que vaza detalhes do driver (SQL, códigos MySQL) não vai para o cliente. */
 export function isDriverErrorMessage(message: string): boolean {
@@ -21,9 +23,9 @@ const t = initTRPC.context<TrpcContext>().create({
       error.code === "INTERNAL_SERVER_ERROR" &&
       isDriverErrorMessage(error.message)
     ) {
-      console.error(
-        "[tRPC] erro interno mascarado:",
-        JSON.stringify(error.message.slice(0, 300)),
+      logger.error(
+        safeErrorDiagnostic(error, "database"),
+        "tRPC internal driver error masked",
       );
       return {
         ...shape,

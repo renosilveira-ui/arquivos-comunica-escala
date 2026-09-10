@@ -267,7 +267,6 @@ export async function upsertUserWhatsAppContact(input: {
         : "WhatsApp reconfirmado sem mudança de número",
       metadata: {
         channel: WHATSAPP_CHANNEL,
-        addressHash: e164AuditHash(normalized.e164),
         verificationCleared: numberChanged,
       },
     },
@@ -278,7 +277,6 @@ export async function upsertUserWhatsAppContact(input: {
     "[whatsapp-contact] upsert",
     JSON.stringify({
       userId: input.userId,
-      addressHash: e164AuditHash(normalized.e164),
       verificationCleared: numberChanged,
     }),
   );
@@ -336,7 +334,6 @@ export async function deactivateUserWhatsAppContact(input: {
       description: "WhatsApp desativado pelo próprio usuário",
       metadata: {
         channel: WHATSAPP_CHANNEL,
-        addressHash: e164AuditHash(existing.normalizedAddress),
       },
     },
     { strict: true },
