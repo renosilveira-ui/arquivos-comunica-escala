@@ -79,4 +79,28 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(invites).not.toContain("Share.share");
     expect(invites).not.toContain("Buscar e-mail");
   });
+
+  it("revoga convite com autoridade corrente, lock canônico e CAS tenant-scoped", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    const revoke = source.slice(source.indexOf("  revoke: protectedProcedure"));
+    const authorityIndex = revoke.indexOf(
+      "await assertManagerScopeAccessForUpdate(",
+    );
+    const lockIndex = revoke.indexOf('.for("update")');
+    const updateIndex = revoke.indexOf(".update(scheduleInvites)");
+
+    expect(revoke).toContain("return db.transaction(async (tx) => {");
+    expect(revoke).not.toContain("assertCanManageSector(");
+    expect(revoke).toContain("ctx.user.sessionVersion");
+    expect(authorityIndex).toBeGreaterThan(0);
+    expect(lockIndex).toBeGreaterThan(authorityIndex);
+    expect(updateIndex).toBeGreaterThan(lockIndex);
+    expect(revoke).toContain("eq(scheduleInvites.id, input.inviteId)");
+    expect(revoke).toContain(
+      "eq(scheduleInvites.institutionId, actor.institutionId)",
+    );
+    expect(revoke).toContain("isNull(scheduleInvites.revokedAt)");
+    expect(revoke).toContain("updateAffectedRows(result) !== 1");
+    expect(revoke).toContain("if (lockedInvite.revokedAt)");
+  });
 });
