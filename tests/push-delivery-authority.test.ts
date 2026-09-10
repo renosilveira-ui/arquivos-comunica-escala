@@ -61,6 +61,7 @@ describe("autoridade atual no outbox de confirmação", () => {
   let shiftId: number;
   let assignmentId: number;
   let confirmationId: number;
+  const confirmationToken = crypto.randomUUID();
   const stamp = Date.now();
   const now = new Date("2032-03-04T10:00:00.000Z");
   const fetchMock = vi.fn();
@@ -156,7 +157,7 @@ describe("autoridade atual no outbox de confirmação", () => {
       professionalId,
       userId,
       status: "PENDING",
-      confirmationToken: crypto.randomUUID(),
+      confirmationToken,
       recheckAt: new Date("2032-03-04T10:30:00.000Z"),
     }).$returningId();
     confirmationId = confirmation.id;
@@ -275,7 +276,12 @@ describe("autoridade atual no outbox de confirmação", () => {
       payload: {
         title: "Confirmação de plantão",
         body: "Confirme sua presença",
-        data: { type: "duty_confirmation", confirmationId, institutionId },
+        data: {
+          type: "duty_confirmation",
+          confirmationId,
+          confirmationToken,
+          institutionId,
+        },
       },
       authority: {
         kind: "DUTY_CONFIRMATION" as const,
@@ -285,6 +291,7 @@ describe("autoridade atual no outbox de confirmação", () => {
         recipientKind: "ORIGINAL" as const,
         expectedUserId: userId,
         shiftSnapshot: shiftSnapshot(),
+        confirmationToken,
       },
     };
   }
