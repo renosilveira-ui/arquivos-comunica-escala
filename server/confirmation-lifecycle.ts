@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { dutyConfirmations } from "../drizzle/schema";
 import type { getDb } from "./db";
 import { requireValidDutyConfirmation } from "./confirmation-integrity";
@@ -44,6 +44,7 @@ export async function rearmDutyConfirmationsAfterShiftChange(
       status: dutyConfirmations.status,
       confirmationToken: dutyConfirmations.confirmationToken,
       replacementProfessionalId: dutyConfirmations.replacementProfessionalId,
+      replacementUserId: dutyConfirmations.replacementUserId,
     })
     .from(dutyConfirmations)
     .where(
@@ -67,16 +68,30 @@ export async function rearmDutyConfirmationsAfterShiftChange(
       snapshot.status === "REPLACEMENT_CONFIRMED" &&
       snapshot.replacementProfessionalId !== null &&
       activeProfessionalIds.has(snapshot.replacementProfessionalId);
-    await requireValidDutyConfirmation(tx, snapshot.id, {
+    const current = await requireValidDutyConfirmation(tx, snapshot.id, {
       allowedStatuses: [snapshot.status],
       expectedInstitutionId: input.institutionId,
       requireOriginalAssignmentActive: !replacementCycle,
       requireEffectiveAssignment: replacementCycle,
       lockForUpdate: true,
     });
+    const effective = current.effective;
+    if (effective.assignmentId === null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "A alocação efetiva da confirmação não foi encontrada.",
+      });
+    }
     const [updated] = await tx
       .update(dutyConfirmations)
       .set({
+        // A linha é o ciclo vivo da alocação, não o registro histórico da
+        // transferência. Ao aceitar um substituto, a auditoria já preserva
+        // titular e substituto; no rearme, a identidade canônica passa a ser
+        // exatamente a assignment ativa que deverá reconfirmar o novo turno.
+        assignmentId: effective.assignmentId,
+        professionalId: effective.professionalId,
+        userId: effective.userId,
         status: "PENDING",
         replacementProfessionalId: null,
         replacementUserId: null,
@@ -98,6 +113,18 @@ export async function rearmDutyConfirmationsAfterShiftChange(
           eq(dutyConfirmations.assignmentId, snapshot.assignmentId),
           eq(dutyConfirmations.status, snapshot.status),
           eq(dutyConfirmations.confirmationToken, snapshot.confirmationToken),
+          snapshot.replacementProfessionalId === null
+            ? isNull(dutyConfirmations.replacementProfessionalId)
+            : eq(
+                dutyConfirmations.replacementProfessionalId,
+                snapshot.replacementProfessionalId,
+              ),
+          snapshot.replacementUserId === null
+            ? isNull(dutyConfirmations.replacementUserId)
+            : eq(
+                dutyConfirmations.replacementUserId,
+                snapshot.replacementUserId,
+              ),
         ),
       );
     if (updated.affectedRows !== 1) {
