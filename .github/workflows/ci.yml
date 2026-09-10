@@ -93,6 +93,18 @@ jobs:
         # via `drizzle-kit push --force` (non-interactive, idempotent).
         run: pnpm exec drizzle-kit push --force
 
+      - name: Prepare disposable standard-test target
+        # A marca só pode nascer quando todas as tabelas do schema recém-criado
+        # ainda estão vazias. Nome local, NODE_ENV ou DATABASE_URL isoladamente
+        # nunca autorizam o seed destrutivo.
+        env:
+          NODE_ENV: test
+          TEST_DATABASE_ALLOW_DESTRUCTIVE: "1"
+          TEST_DATABASE_URL: mysql://root:root@127.0.0.1:3306/escalas_test
+          TEST_DATABASE_EXPECTED_NAME: escalas_test
+          TEST_DATABASE_DISPOSABLE_MARKER: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+        run: pnpm test:prepare-database
+
       - name: Validate sector specialties manual migration
         run: pnpm test:sector-service-specialties-migration
 
@@ -158,6 +170,12 @@ jobs:
         run: pnpm exec vitest run --config vitest.operational-events-mysql.config.ts
 
       - name: Test
+        env:
+          NODE_ENV: test
+          TEST_DATABASE_ALLOW_DESTRUCTIVE: "1"
+          TEST_DATABASE_URL: mysql://root:root@127.0.0.1:3306/escalas_test
+          TEST_DATABASE_EXPECTED_NAME: escalas_test
+          TEST_DATABASE_DISPOSABLE_MARKER: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
         run: pnpm test
 
   dependency-security:

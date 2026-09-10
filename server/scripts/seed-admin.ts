@@ -1,6 +1,9 @@
 /**
  * Seed admin user for development / first-time setup.
- * Usage: npx tsx server/scripts/seed-admin.ts
+ * Usage:
+ *   NODE_ENV=development SEED_ADMIN_ALLOW_DESTRUCTIVE=1 \
+ *   SEED_ADMIN_EXPECTED_DATABASE=escalas_local DATABASE_URL='mysql://...' \
+ *   npx tsx server/scripts/seed-admin.ts
  */
 import "dotenv/config";
 import bcrypt from "bcryptjs";
@@ -12,19 +15,26 @@ import {
   professionals,
   professionalInstitutions,
 } from "../../drizzle/schema";
+import {
+  assertConnectedDatabaseName,
+  validateSeedAdminDestructiveTarget,
+} from "../../scripts/destructive-target-fence";
 
 const DEFAULT_EMAIL = "admin@escalas.local";
 const DEFAULT_PASSWORD = "admin123";
 const DEFAULT_INSTITUTION_ID = 1;
 
 async function main() {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    console.error("ERROR: DATABASE_URL not set");
-    process.exit(1);
-  }
-
-  const db = drizzle(databaseUrl);
+  const target = validateSeedAdminDestructiveTarget(process.env);
+  const db = drizzle(target.databaseUrl);
+  const [databaseRows] = await db.execute(
+    "SELECT DATABASE() AS database_name",
+  );
+  assertConnectedDatabaseName(
+    (databaseRows as any)[0]?.database_name,
+    target.databaseName,
+    "Connected admin seed database",
+  );
   const passwordHash = await bcrypt.hash(DEFAULT_PASSWORD, 12);
 
   // Ensure a default institution exists (id=1)
