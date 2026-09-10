@@ -6,7 +6,7 @@
  * passam por aqui — sem atalho de transporte.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { swapRequests } from "../drizzle/schema";
 import { recordAudit } from "./audit-trail";
@@ -221,6 +221,24 @@ export async function createSwapOffer(
       locked.toShift,
       "A topologia do plantão mudou enquanto a oferta era criada.",
     );
+
+    const expiredAt = new Date();
+    await tx
+      .update(swapRequests)
+      .set({
+        status: "EXPIRED",
+        reviewedAt: expiredAt,
+        reviewNote: "Expirada automaticamente antes de nova oferta",
+        version: sql`${swapRequests.version} + 1`,
+      })
+      .where(
+        and(
+          eq(swapRequests.fromAssignmentId, input.fromAssignmentId),
+          eq(swapRequests.institutionId, institutionId),
+          inArray(swapRequests.status, ["PENDING", "ACCEPTED"]),
+          lt(swapRequests.expiresAt, expiredAt),
+        ),
+      );
 
     const [openOffer] = await tx
       .select({ id: swapRequests.id })
