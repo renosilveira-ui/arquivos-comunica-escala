@@ -9,7 +9,7 @@
 // Behavior:
 //   1. Receives SIGTERM/SIGINT.
 //   2. Stops accepting NEW connections (server.close).
-//   3. Waits up to `drainTimeoutMs` for in-flight to complete.
+//   3. Drains HTTP and background hooks within one global `drainTimeoutMs`.
 //   4. Forces process exit when drain finishes (or times out).
 //
 // The handler is idempotent — repeated signals during shutdown are ignored
@@ -24,7 +24,7 @@ export interface ShutdownOptions {
   logger: Pick<Logger, "info" | "warn" | "error">;
   /** Maximum time to wait for in-flight requests before forcing exit. */
   drainTimeoutMs?: number;
-  /** Hooks invoked AFTER the HTTP server stops accepting connections. */
+  /** Hook invoked after server.close starts, inside the same drain budget. */
   onBeforeExit?: () => Promise<void> | void;
   /** Test seam: replaces process.exit so tests do not kill the runner. */
   exit?: (code: number) => void;
@@ -64,7 +64,12 @@ export function installShutdownHandlers(
     shuttingDown = true;
     logger.info({ reason, drainTimeoutMs }, "shutdown initiated");
 
-    const drainPromise = new Promise<void>((resolve) => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timeoutId = setTimeout(() => resolve("timeout"), drainTimeoutMs);
+    });
+
+    const httpDrainPromise = new Promise<void>((resolve) => {
       server.close((err) => {
         if (err) {
           logger.warn(
@@ -78,19 +83,11 @@ export function installShutdownHandlers(
       });
     });
 
-    const timeoutPromise = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), drainTimeoutMs),
-    );
-
-    const result = await Promise.race([drainPromise, timeoutPromise]);
-    if (result === "timeout") {
-      logger.warn(
-        { drainTimeoutMs },
-        "drain timeout reached; forcing exit with in-flight requests still open",
-      );
-    }
-
-    if (onBeforeExit) {
+    // server.close() above synchronously stops new accepts. Background
+    // producers must stop immediately as well, while their in-flight work and
+    // HTTP requests share the same process-level shutdown budget.
+    const hookDrainPromise = (async () => {
+      if (!onBeforeExit) return;
       try {
         await onBeforeExit();
       } catch (err) {
@@ -99,6 +96,17 @@ export function installShutdownHandlers(
           "onBeforeExit hook failed",
         );
       }
+    })();
+    const drainPromise = Promise.all([httpDrainPromise, hookDrainPromise]);
+
+    const result = await Promise.race([drainPromise, timeoutPromise]);
+    if (result === "timeout") {
+      logger.warn(
+        { drainTimeoutMs },
+        "drain timeout reached; forcing exit with in-flight requests still open",
+      );
+    } else if (timeoutId) {
+      clearTimeout(timeoutId);
     }
 
     exit(0);

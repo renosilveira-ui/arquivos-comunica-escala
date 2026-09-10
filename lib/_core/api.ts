@@ -415,7 +415,7 @@ export type AuthUser = {
   role: "admin" | "manager" | "doctor" | "nurse" | "tech";
   /** PENDING = auto-cadastro aguardando aprovação do gestor (app bloqueado). */
   approvalStatus?: "PENDING" | "APPROVED";
-  /** Senha temporária definida pelo admin: o app força a troca antes de qualquer tela. */
+  /** Compatibilidade com contas legadas que ainda exigem troca no próximo login. */
   mustChangePassword?: boolean;
 };
 

@@ -8,6 +8,8 @@ import {
 const VALID_PRODUCTION_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: "production",
   COOKIE_SECRET: "z".repeat(48),
+  AUTH_RECOVERY_ENCRYPTION_CURRENT_KID: "staging-v1",
+  AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "r".repeat(48),
   DATABASE_URL: "mysql://app:realpass@db.prod.internal:3306/escalas",
   COMUNICA_PLUS_OUTBOUND_ENABLED: "1",
   COMUNICA_PLUS_URL: "https://comunicamais.example.com",
@@ -70,6 +72,8 @@ describe("Frente 2.1 - production boot validation", () => {
           env: {
             NODE_ENV: "production",
             COOKIE_SECRET: "z".repeat(48),
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_KID: "staging-v1",
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "r".repeat(48),
             DATABASE_URL: "mysql://app:realpass@db.prod.internal:3306/escalas",
             COMUNICA_PLUS_URL: "http://localhost:3001",
             COMUNICA_PLUS_SYSTEM_PASSWORD: "system123",
@@ -210,6 +214,114 @@ describe("Frente 2.1 - production boot validation", () => {
         env: { ...VALID_PRODUCTION_ENV, COOKIE_SECRET: "a".repeat(32) },
       });
       expect(issues).toEqual([]);
+    });
+  });
+
+  describe("production environment - auth recovery keyring", () => {
+    it("exige segredo dedicado diferente do cookie", () => {
+      const issues = collectProductionSecretIssues({
+        env: {
+          ...VALID_PRODUCTION_ENV,
+          AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET:
+            VALID_PRODUCTION_ENV.COOKIE_SECRET,
+        },
+      });
+      expect(issues).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET must differ from COOKIE_SECRET",
+      );
+    });
+
+    it("exige par previous completo e KID distinto", () => {
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID: "staging-v0",
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID and SECRET must be set together",
+      );
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID: "staging-v1",
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: "p".repeat(48),
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION previous and current KIDs must differ",
+      );
+    });
+
+    it("recusa segredo previous igual ao cookie ou à chave current", () => {
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID: "staging-v0",
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET:
+              VALID_PRODUCTION_ENV.COOKIE_SECRET,
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET must differ from COOKIE_SECRET",
+      );
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID: "staging-v0",
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET:
+              VALID_PRODUCTION_ENV.AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET,
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION previous and current secrets must differ",
+      );
+    });
+
+    it("alinha current/previous ao teto runtime de 1024 bytes", () => {
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "r".repeat(1024),
+          },
+        }),
+      ).toEqual([]);
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "r".repeat(1025),
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET must be at most 1024 bytes long",
+      );
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID: "staging-v0",
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: "p".repeat(1025),
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET must be at most 1024 bytes long",
+      );
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "á".repeat(513),
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET must be at most 1024 bytes long",
+      );
     });
   });
 

@@ -1,9 +1,9 @@
 // app/forgot-password.tsx — "Esqueci minha senha" (frente A3).
 //
 // Pede só o e-mail e mostra SEMPRE a mesma mensagem neutra — o servidor
-// responde 200 exista ou não a conta (sem enumeração). O link de
-// redefinição chega por e-mail (ou no log do servidor em dev/staging
-// sem RESEND_API_KEY) e abre /reset-password?token=...
+// responde 200 exista ou não a conta (sem enumeração). O pedido é aceito de
+// forma neutra e processado por um outbox. A UI nunca
+// afirma entrega; o link, quando aceito pelo provedor, abre /reset-password.
 
 import { useState } from "react";
 import {
@@ -40,7 +40,10 @@ const INPUT_STYLE = {
   color: theme.palette.neutral[50],
 };
 
-const INPUT_FOCUSED_STYLE = { ...INPUT_STYLE, borderColor: theme.colors.primary };
+const INPUT_FOCUSED_STYLE = {
+  ...INPUT_STYLE,
+  borderColor: theme.colors.primary,
+};
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -63,7 +66,9 @@ export default function ForgotPasswordScreen() {
       if (!result.ok) {
         // Só falha de rede/servidor chega aqui — o servidor nunca revela
         // se a conta existe.
-        setErrorMsg(result.error ?? "Não foi possível enviar o pedido. Tente novamente.");
+        setErrorMsg(
+          result.error ?? "Não foi possível enviar o pedido. Tente novamente.",
+        );
         return;
       }
       setDone(true);
@@ -83,7 +88,13 @@ export default function ForgotPasswordScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <View style={{ flex: 1, justifyContent: "center", paddingHorizontal: theme.space[4] }}>
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            paddingHorizontal: theme.space[4],
+          }}
+        >
           <View
             style={{
               backgroundColor: theme.palette.neutral[900],
@@ -94,7 +105,13 @@ export default function ForgotPasswordScreen() {
               gap: theme.space[4],
             }}
           >
-            <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: theme.space[2],
+              }}
+            >
               <TouchableOpacity
                 onPress={goBack}
                 hitSlop={12}
@@ -115,7 +132,13 @@ export default function ForgotPasswordScreen() {
             </View>
 
             {done ? (
-              <View style={{ alignItems: "center", gap: theme.space[3], paddingVertical: theme.space[2] }}>
+              <View
+                style={{
+                  alignItems: "center",
+                  gap: theme.space[3],
+                  paddingVertical: theme.space[2],
+                }}
+              >
                 <MailCheck size={48} color={theme.colors.success} />
                 <Text
                   style={{
@@ -124,7 +147,8 @@ export default function ForgotPasswordScreen() {
                     textAlign: "center",
                   }}
                 >
-                  Se existir uma conta com esse e-mail, enviamos as instruções.
+                  Se existir uma conta com esse e-mail, o pedido será
+                  processado.
                 </Text>
                 <Text
                   style={{
@@ -133,7 +157,7 @@ export default function ForgotPasswordScreen() {
                     textAlign: "center",
                   }}
                 >
-                  O link vale por 30 minutos. Confira também a caixa de spam.
+                  Se o provedor aceitar o pedido, o link valerá por 30 minutos.
                 </Text>
                 <TouchableOpacity
                   onPress={() => router.replace("/login")}
@@ -162,8 +186,14 @@ export default function ForgotPasswordScreen() {
               </View>
             ) : (
               <>
-                <Text style={{ ...theme.text.body, color: theme.colors.onDark.textMuted }}>
-                  Informe o e-mail da sua conta. Enviaremos um link para você escolher uma nova senha.
+                <Text
+                  style={{
+                    ...theme.text.body,
+                    color: theme.colors.onDark.textMuted,
+                  }}
+                >
+                  Informe o e-mail da sua conta. Registraremos um pedido de
+                  redefinição.
                 </Text>
 
                 <View>
@@ -212,7 +242,7 @@ export default function ForgotPasswordScreen() {
                   activeOpacity={0.85}
                   disabled={submitting}
                   accessibilityRole="button"
-                  accessibilityLabel="Enviar link de redefinição"
+                  accessibilityLabel="Solicitar redefinição de senha"
                   style={{
                     marginTop: theme.space[2],
                     backgroundColor: theme.colors.primary,

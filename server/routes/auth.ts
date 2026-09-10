@@ -3,7 +3,7 @@ import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "node:crypto";
 import { parse as parseCookieHeader } from "cookie";
-import { and, asc, desc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { getDb, getUserByEmail } from "../db";
 import {
   users,
@@ -17,6 +17,7 @@ import {
   shiftAssignmentsV2,
   shiftInstances,
   userContactChannels,
+  authRecoveryRequests,
   type User,
 } from "../../drizzle/schema";
 import {
@@ -28,7 +29,6 @@ import {
 } from "../_core/sdk";
 import { COOKIE_NAME, SESSION_FENCE_COOKIE_NAME } from "../../shared/const.js";
 import { recordAudit } from "../audit-trail";
-import { mailer } from "../mailer";
 import {
   resolveClearCookieOptions,
   resolveSetCookieOptions,
@@ -92,6 +92,40 @@ import {
   professionCodeFromLegacyProfessionalRole,
 } from "../../lib/profession-definitions";
 import { findSafeErrorCode, safeErrorDiagnostic } from "../_core/safe-error";
+import {
+  AuthMutationError,
+  lockCanonicalAuditMembership,
+  readCanonicalAuditMembership,
+} from "../auth-audit-membership";
+import {
+  enqueueForgotPasswordRecovery,
+  hasValidAuthRecoveryMembershipBinding,
+  hashAuthRecoveryValue,
+  revokeOutstandingAuthRecoveryRequests,
+} from "../auth-recovery";
+import {
+  lockAndRevalidateAdminMutationAuthorities,
+  readAdminMutationAuthoritySnapshot,
+  type AdminMutationAuthoritySnapshot,
+} from "./admin";
+import { waitForSignupNeutralResponseFloor } from "../auth-response-timing";
+import {
+  BCRYPT_WRITE_ROUNDS,
+  DUMMY_PASSWORD_HASH,
+  hasPasswordCredentialMaterial,
+  isBcryptInputWithinLimit,
+  isClaimablePasswordShell,
+  isSafeBcryptHash,
+  safeBcryptCompare,
+} from "../password-credential";
+import {
+  InviteProfessionalIdentityError,
+  requireSingleInviteProfessionalId,
+} from "../invite-professional-identity";
+import {
+  FORGOT_PASSWORD_RATE_LIMIT_CAPACITY,
+  ForgotPasswordRateLimitCache,
+} from "../forgot-password-rate-limit";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -123,24 +157,25 @@ function professionalIdentityForLegacyRole(role: ProfessionalRole) {
 
 export const authRouter = Router();
 
-const BCRYPT_ROUNDS = 12;
+const BCRYPT_ROUNDS = BCRYPT_WRITE_ROUNDS;
 const EMAIL_ALREADY_REGISTERED =
   "Este e-mail já tem conta. Entre ou use Esqueci minha senha.";
+function normalizePasswordInput(value: unknown): unknown {
+  return typeof value === "string" ? value.trim() : value;
+}
 
-function sendNeutralSignupAccepted(
+async function sendNeutralSignupAccepted(
   res: Response,
   hasInstitution: boolean,
-): void {
+  startedAtMs: number,
+): Promise<void> {
+  await waitForSignupNeutralResponseFloor(startedAtMs);
   // Anti-enumeração: mesma forma para cadastro novo e e-mail já existente.
   res.status(201).json({
     ok: true,
     pending: hasInstitution,
     awaitingScale: !hasInstitution,
   });
-}
-
-function hasUsablePasswordHash(hash: string | null | undefined): boolean {
-  return typeof hash === "string" && hash.startsWith("$2") && hash.length >= 50;
 }
 
 function sendSessionBindingProtocolError(
@@ -225,15 +260,6 @@ function clearBrowserSession(req: Request, res: Response): void {
   });
 }
 
-class AuthMutationError extends Error {
-  constructor(
-    readonly status: 400 | 401 | 403 | 409,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 /** Signup com e-mail já cadastrado — resposta neutra fora da transação. */
 class SignupDuplicateEmailError extends Error {
   constructor(readonly hasInstitution: boolean) {
@@ -268,14 +294,6 @@ function loginSessionRotationFailureReason(error: unknown): string {
 function auditActorName(name: string | null | undefined): string | undefined {
   const normalized = String(name ?? "").trim();
   return normalized ? normalized.slice(0, 255) : undefined;
-}
-
-function resolveProfessionalName(user: User): string {
-  const explicitName = String(user.name ?? "").trim();
-  if (explicitName) return explicitName;
-  const email = String(user.email ?? "").trim();
-  if (email.includes("@")) return email.split("@")[0]!;
-  return `Usuário ${user.id}`;
 }
 
 async function handleSsoExchange(_req: Request, res: Response): Promise<void> {
@@ -320,30 +338,37 @@ authRouter.post(
       email?: unknown;
       password?: unknown;
     };
-    const password =
-      typeof rawPassword === "string" ? rawPassword.trim() : rawPassword;
+    const password = normalizePasswordInput(rawPassword);
 
     if (
       typeof email !== "string" ||
       typeof password !== "string" ||
       !email ||
-      !password
+      !password ||
+      !isBcryptInputWithinLimit(password)
     ) {
-      res.status(400).json({ error: "email e password são obrigatórios" });
+      res.status(400).json({
+        error:
+          "email e password são obrigatórios; a senha deve ter no máximo 72 bytes",
+      });
       return;
     }
 
     const user = await getUserByEmail(email.toLowerCase().trim());
 
-    // Conta excluída (soft-delete) responde igual a credencial inválida —
-    // não revela que o e-mail já existiu.
-    if (!user || !user.passwordHash || user.deletedAt) {
-      res.status(401).json({ error: "Credenciais inválidas" });
-      return;
-    }
-
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) {
+    // Toda tentativa paga o mesmo custo bcrypt básico. Contas ausentes,
+    // excluídas ou sem senha usam um hash sentinela e continuam respondendo
+    // como credencial inválida, sem um atalho temporal de enumeração.
+    const valid = await safeBcryptCompare(
+      password,
+      user && !user.deletedAt ? user.passwordHash : null,
+    );
+    if (
+      !user ||
+      !isSafeBcryptHash(user.passwordHash) ||
+      user.deletedAt ||
+      !valid
+    ) {
       res.status(401).json({ error: "Credenciais inválidas" });
       return;
     }
@@ -398,7 +423,7 @@ authRouter.post(
               if (
                 !lockedUser ||
                 lockedUser.deletedAt ||
-                !lockedUser.passwordHash ||
+                !isSafeBcryptHash(lockedUser.passwordHash) ||
                 lockedUser.passwordHash !== user.passwordHash
               ) {
                 return null;
@@ -440,7 +465,9 @@ authRouter.post(
       console.error("[login] SESSION_ROTATION_FAILED", {
         reason: loginSessionRotationFailureReason(error),
       });
-      res.status(503).json({ error: "Não foi possível iniciar sessão. Tente novamente." });
+      res
+        .status(503)
+        .json({ error: "Não foi possível iniciar sessão. Tente novamente." });
       return;
     }
     if (!freshUser) {
@@ -536,10 +563,13 @@ authRouter.post(
       throw error;
     }
 
-    const { currentPassword, newPassword } = req.body as {
-      currentPassword?: unknown;
-      newPassword?: unknown;
-    };
+    const { currentPassword: rawCurrentPassword, newPassword: rawNewPassword } =
+      req.body as {
+        currentPassword?: unknown;
+        newPassword?: unknown;
+      };
+    const currentPassword = normalizePasswordInput(rawCurrentPassword);
+    const newPassword = normalizePasswordInput(rawNewPassword);
 
     if (
       typeof currentPassword !== "string" ||
@@ -554,12 +584,15 @@ authRouter.post(
     }
     if (
       currentPassword.length > 128 ||
+      !isBcryptInputWithinLimit(currentPassword) ||
       newPassword.length < 8 ||
-      newPassword.length > 128
+      newPassword.length > 128 ||
+      !isBcryptInputWithinLimit(newPassword)
     ) {
-      res
-        .status(400)
-        .json({ error: "Nova senha precisa ter entre 8 e 128 caracteres" });
+      res.status(400).json({
+        error:
+          "Nova senha precisa ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
 
@@ -576,12 +609,15 @@ authRouter.post(
       return;
     }
 
-    if (!authUser.passwordHash) {
+    if (!isSafeBcryptHash(authUser.passwordHash)) {
       res.status(401).json({ error: "Conta sem senha definida" });
       return;
     }
 
-    const valid = await bcrypt.compare(currentPassword, authUser.passwordHash);
+    const valid = await safeBcryptCompare(
+      currentPassword,
+      authUser.passwordHash,
+    );
     if (!valid) {
       res.status(401).json({ error: "Senha atual incorreta" });
       return;
@@ -614,7 +650,7 @@ authRouter.post(
             if (
               !lockedUser ||
               lockedUser.deletedAt ||
-              !lockedUser.passwordHash
+              !isSafeBcryptHash(lockedUser.passwordHash)
             ) {
               throw new AuthMutationError(401, "Conta sem senha definida");
             }
@@ -665,6 +701,7 @@ authRouter.post(
             const resetInvalidation = await tx
               .delete(passwordResets)
               .where(eq(passwordResets.userId, lockedUser.id));
+            await revokeOutstandingAuthRecoveryRequests(tx, lockedUser.id);
 
             await recordAudit(
               {
@@ -735,194 +772,30 @@ authRouter.post(
 // Esqueci minha senha (frente A3)
 //
 // POST /forgot-password {email} → sempre 200 (sem enumeração de contas).
-// Se o e-mail existir, estiver ativo (não excluído) e tiver senha, gera
-// token aleatório (32 bytes), grava só o sha256 com TTL de 30 min e envia
-// o link por e-mail (server/mailer.ts — loga no console sem RESEND_API_KEY).
+// A rota faz somente custo sentinela + enqueue uniforme. O worker resolve a
+// identidade, gera o token e envia o link; a resposta HTTP nunca aguarda rede.
+// O token só fica ACTIVE depois que o provedor aceita a mensagem.
 //
 // POST /reset-password {token, newPassword} → uso único por CAS, revoga
 // todos os links irmãos e todas as sessões anteriores no mesmo commit.
 // ---------------------------------------------------------------------------
 
-const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
 const FORGOT_RATE_LIMIT_MAX = 3;
 const FORGOT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
-/** Rate-limit em memória: 3 pedidos por e-mail por hora. */
-const forgotAttemptsByEmail = new Map<string, number[]>();
+/** Rate-limit TTL/LRU em memória: 3 pedidos por e-mail por hora. */
+const forgotAttemptsByEmail = new ForgotPasswordRateLimitCache(
+  FORGOT_RATE_LIMIT_MAX,
+  FORGOT_RATE_LIMIT_WINDOW_MS,
+  FORGOT_PASSWORD_RATE_LIMIT_CAPACITY,
+);
 
 function isForgotRateLimited(email: string, now = Date.now()): boolean {
-  const recent = (forgotAttemptsByEmail.get(email) ?? []).filter(
-    (ts) => now - ts < FORGOT_RATE_LIMIT_WINDOW_MS,
-  );
-  if (recent.length >= FORGOT_RATE_LIMIT_MAX) {
-    forgotAttemptsByEmail.set(email, recent);
-    return true;
-  }
-  recent.push(now);
-  forgotAttemptsByEmail.set(email, recent);
-  // Poda oportunista para o Map não crescer indefinidamente.
-  if (forgotAttemptsByEmail.size > 5000) {
-    for (const [key, stamps] of forgotAttemptsByEmail) {
-      if (!stamps.some((ts) => now - ts < FORGOT_RATE_LIMIT_WINDOW_MS)) {
-        forgotAttemptsByEmail.delete(key);
-      }
-    }
-  }
-  return false;
+  return forgotAttemptsByEmail.checkAndRecord(email, now);
 }
 
 function hashResetToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
-}
-
-/**
- * Marca o token recém-emitido como usado quando o correio não entregou.
- * Guarda por hash + usedAt IS NULL: se o reset venceu a corrida, não reabre.
- * Reusa o `db` do caller (não chama getDb de novo) e devolve se o UPDATE
- * chegou a ser executado — o log não pode afirmar revogação sem isso.
- */
-async function revokeFreshPasswordResetToken(
-  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
-  userId: number,
-  tokenHash: string,
-): Promise<boolean> {
-  try {
-    await db
-      .update(passwordResets)
-      .set({ usedAt: new Date() })
-      .where(
-        and(
-          eq(passwordResets.userId, userId),
-          eq(passwordResets.tokenHash, tokenHash),
-          isNull(passwordResets.usedAt),
-        ),
-      );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-type AuditMembershipSnapshot = {
-  membershipId: number;
-  professionalId: number;
-  institutionId: number;
-  isPrimary: boolean;
-};
-
-type AuthAuditQueryDb = Pick<
-  NonNullable<Awaited<ReturnType<typeof getDb>>>,
-  "select"
->;
-
-/**
- * Resolve uma topologia canônica. Mutações ordinárias exigem PI ativa;
- * revogação de sessão pode admitir a PI inativa, ainda vinculada de forma
- * inequívoca a user/pro/instituição, para não tornar um Bearer irrevogável.
- */
-async function readCanonicalAuditMembership(
-  db: AuthAuditQueryDb,
-  userId: number,
-  options: { allowInactive?: boolean } = {},
-): Promise<AuditMembershipSnapshot | null> {
-  const [membership] = await db
-    .select({
-      membershipId: professionalInstitutions.id,
-      professionalId: professionals.id,
-      institutionId: professionalInstitutions.institutionId,
-      isPrimary: professionalInstitutions.isPrimary,
-    })
-    .from(professionalInstitutions)
-    .innerJoin(
-      professionals,
-      and(
-        eq(professionals.id, professionalInstitutions.professionalId),
-        eq(professionals.userId, professionalInstitutions.userId),
-      ),
-    )
-    .innerJoin(
-      institutions,
-      and(
-        eq(institutions.id, professionalInstitutions.institutionId),
-        eq(institutions.isActive, true),
-      ),
-    )
-    .where(
-      and(
-        eq(professionalInstitutions.userId, userId),
-        options.allowInactive
-          ? undefined
-          : eq(professionalInstitutions.active, true),
-      ),
-    )
-    .orderBy(
-      desc(professionalInstitutions.active),
-      desc(professionalInstitutions.isPrimary),
-      asc(professionalInstitutions.id),
-    )
-    .limit(1);
-  return membership ?? null;
-}
-
-/** Ordem global de identidade: users (já travado pelo chamador) → pro → PI → instituição. */
-async function lockCanonicalAuditMembership(
-  db: AuthAuditQueryDb,
-  userId: number,
-  expected: AuditMembershipSnapshot,
-  options: { allowInactive?: boolean } = {},
-): Promise<AuditMembershipSnapshot> {
-  const [professional] = await db
-    .select({ id: professionals.id, userId: professionals.userId })
-    .from(professionals)
-    .where(eq(professionals.id, expected.professionalId))
-    .limit(1)
-    .for("update");
-  const [membership] = professional
-    ? await db
-        .select({
-          membershipId: professionalInstitutions.id,
-          professionalId: professionalInstitutions.professionalId,
-          userId: professionalInstitutions.userId,
-          institutionId: professionalInstitutions.institutionId,
-          isPrimary: professionalInstitutions.isPrimary,
-          active: professionalInstitutions.active,
-        })
-        .from(professionalInstitutions)
-        .where(eq(professionalInstitutions.id, expected.membershipId))
-        .limit(1)
-        .for("update")
-    : [];
-  const [institution] = membership
-    ? await db
-        .select({ id: institutions.id })
-        .from(institutions)
-        .where(
-          and(
-            eq(institutions.id, expected.institutionId),
-            eq(institutions.isActive, true),
-          ),
-        )
-        .limit(1)
-        .for("share")
-    : [];
-
-  if (
-    professional?.userId !== userId ||
-    !membership ||
-    membership.professionalId !== expected.professionalId ||
-    membership.userId !== userId ||
-    membership.institutionId !== expected.institutionId ||
-    membership.isPrimary !== expected.isPrimary ||
-    (!options.allowInactive && !membership.active) ||
-    !institution
-  ) {
-    throw new AuthMutationError(
-      409,
-      "Vínculo institucional canônico mudou durante a operação; tente novamente",
-    );
-  }
-
-  return expected;
 }
 
 authRouter.post(
@@ -934,16 +807,17 @@ authRouter.post(
       return;
     }
     const normalizedEmail = email.toLowerCase().trim();
+    if (normalizedEmail.length > 320) {
+      res.status(400).json({ error: "email excede o tamanho permitido" });
+      return;
+    }
 
     // Resposta neutra em TODOS os caminhos abaixo (inclusive rate-limit):
     // quem pede não descobre se a conta existe.
     const neutral = { ok: true };
 
-    const publicBaseUrl = resolveTrustedPublicBaseUrl();
-    if (!publicBaseUrl) {
-      console.error(
-        "[forgot-password] APP_PUBLIC_URL ausente ou inválida; emissão de token bloqueada",
-      );
+    if (!resolveTrustedPublicBaseUrl()) {
+      console.error("[forgot-password] PUBLIC_URL_UNAVAILABLE");
       res.json(neutral);
       return;
     }
@@ -959,128 +833,15 @@ authRouter.post(
       return;
     }
 
-    const user = await getUserByEmail(normalizedEmail);
-    if (!user || user.deletedAt || !user.email) {
-      res.json(neutral);
-      return;
-    }
-
-    const auditMembership = await readCanonicalAuditMembership(db, user.id);
-    if (!auditMembership) {
-      res.json(neutral);
-      return;
-    }
-
-    const token = randomBytes(32).toString("hex");
-    const tokenHash = hashResetToken(token);
-    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
-
+    // Mesma criptografia e mesma escrita de outbox para conta existente ou
+    // inexistente. A resolução de identidade e todo egress pertencem ao
+    // worker durável; a resposta pública nunca espera rede nem consulta user.
+    await bcrypt.compare("forgot-password-probe", DUMMY_PASSWORD_HASH);
     try {
-      const delivery = await db.transaction(async (tx) => {
-        // Credential mutations use one global order: users → reset tokens.
-        const [lockedUser] = await tx
-          .select()
-          .from(users)
-          .where(eq(users.id, user.id))
-          .limit(1)
-          .for("update");
-        if (
-          !lockedUser ||
-          lockedUser.deletedAt ||
-          !lockedUser.email ||
-          lockedUser.email !== normalizedEmail ||
-          lockedUser.sessionVersion !== user.sessionVersion ||
-          lockedUser.passwordHash !== user.passwordHash ||
-          lockedUser.approvalStatus !== user.approvalStatus
-        ) {
-          return null;
-        }
-
-        const lockedAuditMembership = await lockCanonicalAuditMembership(
-          tx,
-          lockedUser.id,
-          auditMembership,
-        );
-
-        const issuedAt = new Date();
-        await tx
-          .update(passwordResets)
-          .set({ usedAt: issuedAt })
-          .where(
-            and(
-              eq(passwordResets.userId, lockedUser.id),
-              isNull(passwordResets.usedAt),
-            ),
-          );
-        await tx.insert(passwordResets).values({
-          userId: lockedUser.id,
-          tokenHash,
-          expiresAt,
-        });
-        await recordAudit(
-          {
-            actorUserId: lockedUser.id,
-            actorRole: lockedUser.role,
-            actorName: auditActorName(lockedUser.name),
-            action: "USER_UPDATED",
-            entityType: "USER",
-            entityId: lockedUser.id,
-            description: "Pedido de redefinição de senha (esqueci minha senha)",
-            // O entityId já permite correlação; não persiste e-mail bruto no audit trail.
-            metadata: { expiresAt: expiresAt.toISOString() },
-            institutionId: lockedAuditMembership.institutionId,
-          },
-          { db: tx, strict: true },
-        );
-        return {
-          email: lockedUser.email!,
-          firstName: resolveProfessionalName(lockedUser).split(" ")[0],
-        };
-      });
-
-      if (delivery) {
-        const link = `${publicBaseUrl}/reset-password?token=${token}`;
-        let delivered = false;
-        try {
-          const mailResult = await mailer.sendMail({
-            to: delivery.email,
-            subject: "Escala+ — redefinir sua senha",
-            text: [
-              `Olá, ${delivery.firstName}.`,
-              "",
-              "Recebemos um pedido para redefinir a senha da sua conta no Escala+.",
-              "Abra o link abaixo para escolher uma nova senha (válido por 30 minutos):",
-              "",
-              link,
-              "",
-              "Se você não pediu isso, ignore este e-mail — sua senha continua a mesma.",
-            ].join("\n"),
-          });
-          delivered = mailResult.delivered;
-        } catch {
-          // sendMail hoje devolve delivered=false em vez de lançar; se passar
-          // a lançar, o token recém-gravado não pode ficar utilizável.
-        }
-        if (!delivered) {
-          const revoked = await revokeFreshPasswordResetToken(
-            db,
-            user.id,
-            tokenHash,
-          );
-          console.error(
-            revoked
-              ? "[forgot-password] E-mail não entregue; token recém-emitido revogado"
-              : "[forgot-password] E-mail não entregue; revogação do token recém-emitido não confirmada",
-          );
-        }
-      }
-    } catch (error) {
-      // The public response is deliberately indistinguishable for missing
-      // accounts, audit/DB failures and mail transport failures.
-      console.error(
-        "[forgot-password] Falha interna mascarada",
-        safeErrorDiagnostic(error),
-      );
+      await enqueueForgotPasswordRecovery(db, normalizedEmail);
+    } catch {
+      // Nenhuma PII nem mensagem do driver atravessa a fronteira pública/log.
+      console.error("[forgot-password] OUTBOX_ENQUEUE_FAILED");
     }
 
     res.json(neutral);
@@ -1090,10 +851,11 @@ authRouter.post(
 authRouter.post(
   "/reset-password",
   async (req: Request, res: Response): Promise<void> => {
-    const { token, newPassword } = req.body as {
+    const { token, newPassword: rawNewPassword } = req.body as {
       token?: unknown;
       newPassword?: unknown;
     };
+    const newPassword = normalizePasswordInput(rawNewPassword);
 
     if (
       typeof token !== "string" ||
@@ -1104,10 +866,15 @@ authRouter.post(
       res.status(400).json({ error: "token e newPassword são obrigatórios" });
       return;
     }
-    if (newPassword.length < 8 || newPassword.length > 128) {
-      res
-        .status(400)
-        .json({ error: "Nova senha precisa ter entre 8 e 128 caracteres" });
+    if (
+      newPassword.length < 8 ||
+      newPassword.length > 128 ||
+      !isBcryptInputWithinLimit(newPassword)
+    ) {
+      res.status(400).json({
+        error:
+          "Nova senha precisa ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
 
@@ -1121,6 +888,249 @@ authRouter.post(
       "Link inválido ou expirado. Peça uma nova redefinição de senha.";
 
     const tokenHash = hashResetToken(token.trim());
+    const [recoveryCandidate] = await db
+      .select()
+      .from(authRecoveryRequests)
+      .where(eq(authRecoveryRequests.tokenHash, tokenHash))
+      .orderBy(asc(authRecoveryRequests.id))
+      .limit(1);
+
+    if (recoveryCandidate) {
+      if (
+        recoveryCandidate.state !== "ACTIVE" ||
+        !recoveryCandidate.targetUserId ||
+        recoveryCandidate.expectedTargetSessionVersion === null ||
+        !recoveryCandidate.emailHash ||
+        !hasValidAuthRecoveryMembershipBinding(
+          recoveryCandidate.kind,
+          recoveryCandidate.targetMembershipId,
+        ) ||
+        !recoveryCandidate.expiresAt ||
+        !recoveryCandidate.providerAcceptedAt ||
+        (recoveryCandidate.kind === "SELF_SERVICE" &&
+          recoveryCandidate.requestActorKind !== "UNAUTHENTICATED") ||
+        (recoveryCandidate.kind === "ADMIN_INITIATED" &&
+          recoveryCandidate.requestActorKind !== "AUTHENTICATED_ADMIN") ||
+        recoveryCandidate.expiresAt.getTime() <= Date.now()
+      ) {
+        res.status(400).json({ error: INVALID });
+        return;
+      }
+
+      let adminCaller: AdminMutationAuthoritySnapshot | null = null;
+      let adminTarget: AdminMutationAuthoritySnapshot | null = null;
+      if (recoveryCandidate.kind === "ADMIN_INITIATED") {
+        if (
+          !recoveryCandidate.requestedByUserId ||
+          !recoveryCandidate.requestedByMembershipId ||
+          !recoveryCandidate.institutionId ||
+          !recoveryCandidate.expectedActorSessionVersion
+        ) {
+          res.status(400).json({ error: INVALID });
+          return;
+        }
+        [adminCaller, adminTarget] = await Promise.all([
+          readAdminMutationAuthoritySnapshot(db, {
+            userId: recoveryCandidate.requestedByUserId,
+            institutionId: recoveryCandidate.institutionId,
+            requireGlobalAdmin: true,
+          }),
+          readAdminMutationAuthoritySnapshot(db, {
+            userId: recoveryCandidate.targetUserId,
+            institutionId: recoveryCandidate.institutionId,
+            requireGlobalAdmin: false,
+          }),
+        ]);
+        if (
+          !adminCaller ||
+          !adminTarget ||
+          adminCaller.membershipId !==
+            recoveryCandidate.requestedByMembershipId ||
+          adminTarget.membershipId !== recoveryCandidate.targetMembershipId ||
+          adminCaller.sessionVersion !==
+            recoveryCandidate.expectedActorSessionVersion ||
+          adminTarget.sessionVersion !==
+            recoveryCandidate.expectedTargetSessionVersion
+        ) {
+          res.status(400).json({ error: INVALID });
+          return;
+        }
+      }
+
+      const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+      try {
+        await withPushAccountMutex(
+          db,
+          recoveryCandidate.targetUserId,
+          PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+          (connectionDb) =>
+            connectionDb.transaction(async (tx) => {
+              if (
+                recoveryCandidate.kind === "ADMIN_INITIATED" &&
+                adminCaller &&
+                adminTarget &&
+                recoveryCandidate.institutionId
+              ) {
+                await lockAndRevalidateAdminMutationAuthorities(tx, {
+                  institutionId: recoveryCandidate.institutionId,
+                  caller: adminCaller,
+                  target: adminTarget,
+                  expectedCallerSessionVersion:
+                    recoveryCandidate.expectedActorSessionVersion!,
+                });
+              }
+
+              const [lockedUser] = await tx
+                .select()
+                .from(users)
+                .where(eq(users.id, recoveryCandidate.targetUserId!))
+                .limit(1)
+                .for("update");
+              if (
+                !lockedUser ||
+                lockedUser.deletedAt ||
+                lockedUser.approvalStatus !== "APPROVED" ||
+                !isSafeBcryptHash(lockedUser.passwordHash) ||
+                lockedUser.sessionVersion !==
+                  recoveryCandidate.expectedTargetSessionVersion ||
+                hashAuthRecoveryValue(
+                  lockedUser.email?.toLowerCase().trim() ?? "",
+                ) !== recoveryCandidate.emailHash
+              ) {
+                throw new AuthMutationError(400, INVALID);
+              }
+              const [lockedRecovery] = await tx
+                .select()
+                .from(authRecoveryRequests)
+                .where(
+                  and(
+                    eq(authRecoveryRequests.id, recoveryCandidate.id),
+                    eq(authRecoveryRequests.tokenHash, tokenHash),
+                  ),
+                )
+                .limit(1)
+                .for("update");
+              const usedAt = new Date();
+              if (
+                !lockedRecovery ||
+                lockedRecovery.state !== "ACTIVE" ||
+                lockedRecovery.kind !== recoveryCandidate.kind ||
+                lockedRecovery.requestActorKind !==
+                  recoveryCandidate.requestActorKind ||
+                lockedRecovery.targetUserId !==
+                  recoveryCandidate.targetUserId ||
+                lockedRecovery.targetMembershipId !==
+                  recoveryCandidate.targetMembershipId ||
+                lockedRecovery.requestedByUserId !==
+                  recoveryCandidate.requestedByUserId ||
+                lockedRecovery.requestedByMembershipId !==
+                  recoveryCandidate.requestedByMembershipId ||
+                lockedRecovery.institutionId !==
+                  recoveryCandidate.institutionId ||
+                lockedRecovery.expectedTargetSessionVersion !==
+                  recoveryCandidate.expectedTargetSessionVersion ||
+                lockedRecovery.expectedActorSessionVersion !==
+                  recoveryCandidate.expectedActorSessionVersion ||
+                lockedRecovery.emailHash !== recoveryCandidate.emailHash ||
+                !lockedRecovery.providerAcceptedAt ||
+                !lockedRecovery.expiresAt ||
+                lockedRecovery.expiresAt.getTime() <= usedAt.getTime()
+              ) {
+                throw new AuthMutationError(400, INVALID);
+              }
+              const consumeResult = await tx
+                .update(authRecoveryRequests)
+                .set({
+                  state: "USED",
+                  activeSlot: null,
+                  usedAt,
+                  finishedAt: usedAt,
+                })
+                .where(
+                  and(
+                    eq(authRecoveryRequests.id, lockedRecovery.id),
+                    eq(authRecoveryRequests.state, "ACTIVE"),
+                    gt(authRecoveryRequests.expiresAt, usedAt),
+                  ),
+                );
+              if (affectedRows(consumeResult) !== 1) {
+                throw new AuthMutationError(400, INVALID);
+              }
+
+              const nextSessionVersion = lockedUser.sessionVersion + 1;
+              const userUpdate = await tx
+                .update(users)
+                .set({
+                  passwordHash: newHash,
+                  mustChangePassword: false,
+                  sessionVersion: nextSessionVersion,
+                })
+                .where(
+                  and(
+                    eq(users.id, lockedUser.id),
+                    eq(users.sessionVersion, lockedUser.sessionVersion),
+                    eq(users.passwordHash, lockedUser.passwordHash),
+                    isNull(users.deletedAt),
+                  ),
+                );
+              if (affectedRows(userUpdate) !== 1) {
+                throw new AuthMutationError(
+                  409,
+                  "A credencial mudou durante a redefinição",
+                );
+              }
+              const revokedPushTokenCount = await revokeUserPushRegistrations(
+                tx,
+                lockedUser.id,
+              );
+              // Mesmo desfecho da troca de senha autenticada: o ciclo legado
+              // sai inteiro do banco. Marcar como usado deixaria hash de token
+              // órfão sobrevivendo à credencial que ele destravava.
+              await tx
+                .delete(passwordResets)
+                .where(eq(passwordResets.userId, lockedUser.id));
+              await revokeOutstandingAuthRecoveryRequests(
+                tx,
+                lockedUser.id,
+                usedAt,
+                lockedRecovery.id,
+              );
+              if (recoveryCandidate.kind === "ADMIN_INITIATED") {
+                await recordAudit(
+                  {
+                    actorUserId: lockedUser.id,
+                    actorRole: lockedUser.role,
+                    actorName: auditActorName(lockedUser.name),
+                    action: "USER_UPDATED",
+                    entityType: "USER",
+                    entityId: lockedUser.id,
+                    description: "Senha redefinida via link administrativo",
+                    institutionId: recoveryCandidate.institutionId!,
+                    metadata: {
+                      recoveryRequestId: lockedRecovery.id,
+                      recoveryKind: recoveryCandidate.kind,
+                      sessionVersionBefore: lockedUser.sessionVersion,
+                      sessionVersionAfter: nextSessionVersion,
+                      revokedPushTokenCount,
+                    },
+                  },
+                  { db: tx, strict: true },
+                );
+              }
+            }),
+        );
+        res.json({ ok: true });
+      } catch (error) {
+        if (error instanceof AuthMutationError) {
+          res.status(error.status).json({ error: error.message });
+          return;
+        }
+        console.error("[reset-password] AUTH_RECOVERY_CONSUME_FAILED");
+        res.status(400).json({ error: INVALID });
+      }
+      return;
+    }
+
     const [resetCandidate] = await db
       .select({
         id: passwordResets.id,
@@ -1167,7 +1177,11 @@ authRouter.post(
               .where(eq(users.id, resetCandidate.userId))
               .limit(1)
               .for("update");
-            if (!lockedUser || lockedUser.deletedAt) {
+            if (
+              !lockedUser ||
+              lockedUser.deletedAt ||
+              !isSafeBcryptHash(lockedUser.passwordHash)
+            ) {
               throw new AuthMutationError(400, INVALID);
             }
 
@@ -1224,6 +1238,7 @@ authRouter.post(
                 and(
                   eq(users.id, lockedUser.id),
                   eq(users.sessionVersion, lockedUser.sessionVersion),
+                  eq(users.passwordHash, lockedUser.passwordHash),
                   isNull(users.deletedAt),
                 ),
               );
@@ -1249,6 +1264,11 @@ authRouter.post(
                   isNull(passwordResets.usedAt),
                 ),
               );
+            await revokeOutstandingAuthRecoveryRequests(
+              tx,
+              lockedUser.id,
+              usedAt,
+            );
             await recordAudit(
               {
                 actorUserId: lockedUser.id,
@@ -1317,9 +1337,16 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { password } = req.body as { password?: unknown };
-  if (typeof password !== "string" || !password) {
-    res.status(400).json({ error: "password é obrigatório" });
+  const { password: rawPassword } = req.body as { password?: unknown };
+  const password = normalizePasswordInput(rawPassword);
+  if (
+    typeof password !== "string" ||
+    !password ||
+    !isBcryptInputWithinLimit(password)
+  ) {
+    res.status(400).json({
+      error: "password é obrigatório e deve ter no máximo 72 bytes",
+    });
     return;
   }
 
@@ -1329,12 +1356,12 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  if (!authUser.passwordHash) {
+  if (!isSafeBcryptHash(authUser.passwordHash)) {
     res.status(400).json({ error: "Conta sem senha definida" });
     return;
   }
 
-  const valid = await bcrypt.compare(password, authUser.passwordHash);
+  const valid = await safeBcryptCompare(password, authUser.passwordHash);
   if (!valid) {
     res.status(401).json({ error: "Senha incorreta" });
     return;
@@ -1509,7 +1536,7 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
             if (
               !lockedUser ||
               lockedUser.deletedAt ||
-              !lockedUser.passwordHash
+              !isSafeBcryptHash(lockedUser.passwordHash)
             ) {
               throw new AuthMutationError(401, "Não autenticado");
             }
@@ -1891,6 +1918,7 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
             await tx
               .delete(passwordResets)
               .where(eq(passwordResets.userId, lockedUser.id));
+            await revokeOutstandingAuthRecoveryRequests(tx, lockedUser.id);
             await recordAudit(
               {
                 actorUserId: lockedUser.id,
@@ -2566,10 +2594,7 @@ async function proveRegisterableShellIdentity(
           )
           .for("update");
 
-  const membershipById = new Map<
-    number,
-    (typeof membershipsByUser)[number]
-  >();
+  const membershipById = new Map<number, (typeof membershipsByUser)[number]>();
   for (const row of [...membershipsByUser, ...membershipsByProfessional]) {
     membershipById.set(row.id, row);
   }
@@ -2793,8 +2818,7 @@ authRouter.post(
       scheduleContextIds?: unknown;
       managerScopes?: unknown;
     };
-    const password =
-      typeof rawPassword === "string" ? rawPassword.trim() : rawPassword;
+    const password = normalizePasswordInput(rawPassword);
 
     if (
       typeof name !== "string" ||
@@ -2809,10 +2833,15 @@ authRouter.post(
         .json({ error: "name, email e password são obrigatórios" });
       return;
     }
-    if (password.length < 8 || password.length > 128) {
-      res
-        .status(400)
-        .json({ error: "password deve ter entre 8 e 128 caracteres" });
+    if (
+      password.length < 8 ||
+      password.length > 128 ||
+      !isBcryptInputWithinLimit(password)
+    ) {
+      res.status(400).json({
+        error:
+          "password deve ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
     if (name.trim().length > 255 || email.trim().length > 320) {
@@ -2909,13 +2938,13 @@ authRouter.post(
     const existing = await getUserByEmail(normalizedEmail);
     if (
       existing?.deletedAt ||
-      (existing && hasUsablePasswordHash(existing.passwordHash))
+      (existing && hasPasswordCredentialMaterial(existing.passwordHash))
     ) {
       res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
       return;
     }
     const existingShellId =
-      existing && !hasUsablePasswordHash(existing.passwordHash)
+      existing && isClaimablePasswordShell(existing.passwordHash)
         ? existing.id
         : null;
 
@@ -2982,7 +3011,7 @@ authRouter.post(
           if (
             !locked ||
             locked.deletedAt ||
-            hasUsablePasswordHash(locked.passwordHash)
+            !isClaimablePasswordShell(locked.passwordHash)
           ) {
             throw new RegisterValidationError(409, EMAIL_ALREADY_REGISTERED);
           }
@@ -2999,7 +3028,7 @@ authRouter.post(
           provenProfessionalId = proof.professionalId;
           existingMembershipId = proof.existingMembershipId;
 
-          await tx
+          const shellActivation = await tx
             .update(users)
             .set({
               name: normalizedName,
@@ -3008,7 +3037,16 @@ authRouter.post(
               loginMethod: "email",
               role: requestedRoles.professionalRole,
             })
-            .where(and(eq(users.id, locked.id), isNull(users.deletedAt)));
+            .where(
+              and(
+                eq(users.id, locked.id),
+                isNull(users.passwordHash),
+                isNull(users.deletedAt),
+              ),
+            );
+          if (affectedRows(shellActivation) !== 1) {
+            throw new RegisterValidationError(409, EMAIL_ALREADY_REGISTERED);
+          }
           newUserId = locked.id;
         } else {
           const [inserted] = await tx
@@ -3030,7 +3068,7 @@ authRouter.post(
           .from(users)
           .where(eq(users.id, newUserId))
           .limit(1);
-        if (!hasUsablePasswordHash(persistedSecret?.passwordHash)) {
+        if (!isSafeBcryptHash(persistedSecret?.passwordHash)) {
           throw new Error("password-hash-not-persisted");
         }
 
@@ -3274,6 +3312,7 @@ authRouter.get(
 authRouter.post(
   "/signup",
   async (req: Request, res: Response): Promise<void> => {
+    const neutralResponseStartedAt = Date.now();
     const {
       name,
       email,
@@ -3297,10 +3336,7 @@ authRouter.post(
       professionCode?: unknown;
       customProfessionName?: unknown;
     };
-    const password =
-      typeof rawSignupPassword === "string"
-        ? rawSignupPassword.trim()
-        : rawSignupPassword;
+    const password = normalizePasswordInput(rawSignupPassword);
 
     if (
       typeof name !== "string" ||
@@ -3316,10 +3352,14 @@ authRouter.post(
       return;
     }
 
-    if (password.length < 8 || password.length > 128) {
-      res
-        .status(400)
-        .json({ error: "A senha deve ter entre 8 e 128 caracteres" });
+    if (
+      password.length < 8 ||
+      password.length > 128 ||
+      !isBcryptInputWithinLimit(password)
+    ) {
+      res.status(400).json({
+        error: "A senha deve ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
     if (name.trim().length > 255 || email.trim().length > 320) {
@@ -3383,19 +3423,25 @@ authRouter.post(
 
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await getUserByEmail(normalizedEmail);
+    // Calcula antes da decisão de duplicidade para que cadastro novo e e-mail
+    // já registrado não exponham um atalho bcrypt mensurável.
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     if (
       existing?.deletedAt ||
-      (existing && hasUsablePasswordHash(existing.passwordHash))
+      (existing && hasPasswordCredentialMaterial(existing.passwordHash))
     ) {
-      sendNeutralSignupAccepted(res, hasInstitution);
+      await sendNeutralSignupAccepted(
+        res,
+        hasInstitution,
+        neutralResponseStartedAt,
+      );
       return;
     }
     const existingShellId =
-      existing && !hasUsablePasswordHash(existing.passwordHash)
+      existing && isClaimablePasswordShell(existing.passwordHash)
         ? existing.id
         : null;
 
-    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const trimmedName = name.trim();
     const qualification = parsedIdentity.qualification;
 
@@ -3490,7 +3536,7 @@ authRouter.post(
           if (
             !locked ||
             locked.deletedAt ||
-            hasUsablePasswordHash(locked.passwordHash)
+            !isClaimablePasswordShell(locked.passwordHash)
           ) {
             throw new SignupDuplicateEmailError(hasInstitution);
           }
@@ -3499,8 +3545,8 @@ authRouter.post(
           // institucional. O cadastro público NÃO pode reivindicá-la —
           // faria qualquer pessoa que conheça o e-mail definir senha e herdar
           // o vínculo/ACL existentes (tomada de conta). A ativação de conta
-          // provisionada é exclusiva da via controlada (senha temporária do
-          // gestor / convite). Fail-closed sob o lock da própria linha; a
+          // provisionada é exclusiva de uma via controlada de ativação.
+          // Fail-closed sob o lock da própria linha; a
           // resposta permanece neutra (anti-enumeração), sem revelar que a
           // conta existe e sem qualquer mutação.
           const [provisionedProfessional] = await tx
@@ -3527,7 +3573,7 @@ authRouter.post(
             );
             throw new SignupDuplicateEmailError(hasInstitution);
           }
-          await tx
+          const shellActivation = await tx
             .update(users)
             .set({
               name: trimmedName,
@@ -3537,7 +3583,16 @@ authRouter.post(
               role: "doctor",
               approvalStatus: nextApproval,
             })
-            .where(and(eq(users.id, locked.id), isNull(users.deletedAt)));
+            .where(
+              and(
+                eq(users.id, locked.id),
+                isNull(users.passwordHash),
+                isNull(users.deletedAt),
+              ),
+            );
+          if (affectedRows(shellActivation) !== 1) {
+            throw new SignupDuplicateEmailError(hasInstitution);
+          }
           newUserId = locked.id;
         } else {
           const [inserted] = await tx
@@ -3559,7 +3614,7 @@ authRouter.post(
           .from(users)
           .where(eq(users.id, newUserId))
           .limit(1);
-        if (!hasUsablePasswordHash(persistedSecret?.passwordHash)) {
+        if (!isSafeBcryptHash(persistedSecret?.passwordHash)) {
           throw new Error("password-hash-not-persisted");
         }
 
@@ -3634,11 +3689,21 @@ authRouter.post(
       });
     } catch (error) {
       if (error instanceof SignupDuplicateEmailError) {
-        return sendNeutralSignupAccepted(res, error.hasInstitution);
+        await sendNeutralSignupAccepted(
+          res,
+          error.hasInstitution,
+          neutralResponseStartedAt,
+        );
+        return;
       }
       if (error instanceof AuthMutationError) {
         if (error.status === 409) {
-          return sendNeutralSignupAccepted(res, hasInstitution);
+          await sendNeutralSignupAccepted(
+            res,
+            hasInstitution,
+            neutralResponseStartedAt,
+          );
+          return;
         }
         res.status(error.status).json({ error: error.message });
         return;
@@ -3649,7 +3714,12 @@ authRouter.post(
       }
       const code = findSafeErrorCode(error);
       if (code === "ER_DUP_ENTRY") {
-        return sendNeutralSignupAccepted(res, hasInstitution);
+        await sendNeutralSignupAccepted(
+          res,
+          hasInstitution,
+          neutralResponseStartedAt,
+        );
+        return;
       }
       console.error(
         "[signup] Falha transacional",
@@ -3661,6 +3731,7 @@ authRouter.post(
       return;
     }
 
+    await waitForSignupNeutralResponseFloor(neutralResponseStartedAt);
     res.status(201).json({
       ok: true,
       pending: awaitingApproval,
@@ -3668,6 +3739,34 @@ authRouter.post(
     });
   },
 );
+
+async function lockCurrentInviteActor(
+  db: RegisterQueryDb,
+  authUser: User,
+): Promise<void> {
+  const [lockedUser] = await db
+    .select({
+      id: users.id,
+      sessionVersion: users.sessionVersion,
+      approvalStatus: users.approvalStatus,
+      deletedAt: users.deletedAt,
+    })
+    .from(users)
+    .where(eq(users.id, authUser.id))
+    .limit(1)
+    .for("update");
+  if (
+    !lockedUser ||
+    lockedUser.deletedAt ||
+    lockedUser.approvalStatus !== "APPROVED" ||
+    lockedUser.sessionVersion !== authUser.sessionVersion
+  ) {
+    throw new ScheduleInviteError(
+      409,
+      "A identidade da conta mudou; entre novamente antes de responder ao convite",
+    );
+  }
+}
 
 // POST /api/auth/redeem-invite — médico autenticado entra em outra escala.
 authRouter.post(
@@ -3702,21 +3801,37 @@ authRouter.post(
 
     try {
       const joined = await db.transaction(async (tx) => {
-        const [professional] = await tx
+        // Ordem global de identidade: user → todos os professionals. Como o
+        // schema ainda não prova 1:1, a cardinalidade é validada sem LIMIT 1.
+        await lockCurrentInviteActor(tx, authUser);
+        const professionalRows = await tx
           .select({
             id: professionals.id,
+            userId: professionals.userId,
           })
           .from(professionals)
           .where(eq(professionals.userId, authUser.id))
-          .limit(1)
+          .orderBy(asc(professionals.id))
           .for("update");
-        if (!professional) {
-          throw new ScheduleInviteError(409, "Profissional não encontrado");
+        let professionalId: number;
+        try {
+          professionalId = requireSingleInviteProfessionalId(
+            professionalRows,
+            authUser.id,
+          );
+        } catch (error) {
+          if (error instanceof InviteProfessionalIdentityError) {
+            throw new ScheduleInviteError(
+              409,
+              "Identidade profissional inconsistente; procure um administrador",
+            );
+          }
+          throw error;
         }
         return redeemScheduleInviteInTransaction(tx, {
           code: parsedInvite,
           userId: authUser.id,
-          professionalId: professional.id,
+          professionalId,
         });
       });
       await enqueueScheduleInviteAcceptedSignal({
@@ -3781,12 +3896,15 @@ authRouter.post(
     }
 
     try {
-      const declined = await db.transaction(async (tx) =>
-        declineScheduleInviteInTransaction(tx, {
+      const declined = await db.transaction(async (tx) => {
+        // Recusa vincula-se diretamente ao userId nominal e não resolve
+        // professional; ainda assim a sessão/conta é refeita sob lock.
+        await lockCurrentInviteActor(tx, authUser);
+        return declineScheduleInviteInTransaction(tx, {
           code: parsedInvite,
           userId: authUser.id,
-        }),
-      );
+        });
+      });
       await enqueueScheduleInviteDeclinedSignal({
         db,
         scheduleInviteId: declined.scheduleInviteId,

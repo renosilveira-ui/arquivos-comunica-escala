@@ -1,7 +1,7 @@
 // tests/sessoes-revogadas.test.ts — auditoria 22/08, achado B3.
 //
 // Trocar a senha (pelo usuário), redefinir via "esqueci minha senha" ou
-// receber senha temporária do admin incrementa users.session_version; o JWT
+// resgatar um link administrativo incrementa users.session_version; o JWT
 // de sessão carrega `sv` e qualquer sessão antiga (outro aparelho/aba) passa
 // a ser rejeitada. No change-password, o aparelho atual recebe sessão nova
 // (cookie + token) e continua logado.
@@ -15,13 +15,14 @@ import {
   it,
   vi,
 } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import { createServer, type Server } from "node:http";
 import express from "express";
 import {
   auditTrail,
+  authRecoveryRequests,
   institutions,
   passwordResets,
   professionalInstitutions,
@@ -31,6 +32,8 @@ import {
 import { sdk } from "../server/_core/sdk";
 import { sessionInstanceProof } from "../server/_core/session-instance";
 import { getDb } from "../server/db";
+import type { MailMessage, MailResult } from "../server/mailer";
+import { processPendingAuthRecoveryEmails } from "../server/auth-recovery";
 import { mailer } from "../server/mailer";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
@@ -142,6 +145,14 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
 
   beforeEach(async () => {
     await db.transaction(async (tx) => {
+      await tx
+        .delete(authRecoveryRequests)
+        .where(
+          or(
+            inArray(authRecoveryRequests.targetUserId, [userId, adminId]),
+            inArray(authRecoveryRequests.requestedByUserId, [userId, adminId]),
+          ),
+        );
       await tx.delete(passwordResets).where(eq(passwordResets.userId, userId));
       await tx
         .update(users)
@@ -156,6 +167,14 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
 
   afterAll(async () => {
     try {
+      await db
+        .delete(authRecoveryRequests)
+        .where(
+          or(
+            inArray(authRecoveryRequests.targetUserId, [userId, adminId]),
+            inArray(authRecoveryRequests.requestedByUserId, [userId, adminId]),
+          ),
+        );
       await db.delete(passwordResets).where(eq(passwordResets.userId, userId));
       await db
         .delete(auditTrail)
@@ -218,9 +237,9 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     const cookie = cookieOf(device);
     expect((await me(cookie)).status).toBe(200);
 
-    const spy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" } as any);
+    const sendMail = vi
+      .fn<(message: MailMessage) => Promise<MailResult>>()
+      .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
     try {
       expect(
         (
@@ -229,8 +248,11 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
             .send({ email })
         ).status,
       ).toBe(200);
+      await processPendingAuthRecoveryEmails(new Date(), { sendMail });
       const text = String(
-        spy.mock.calls[0][0].text ?? spy.mock.calls[0][0].html ?? "",
+        sendMail.mock.calls[0][0].text ??
+          sendMail.mock.calls[0][0].html ??
+          "",
       );
       const token = text.match(/token=([0-9a-f]{64})/)![1];
       const reset = await request(server)
@@ -238,22 +260,41 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
         .send({ token, newPassword: `${NEW_PASSWORD}x` });
       expect(reset.status).toBe(200);
     } finally {
-      spy.mockRestore();
+      sendMail.mockClear();
     }
     expect((await me(cookie)).status).toBe(401);
     expect((await login(email, `${NEW_PASSWORD}x`)).status).toBe(200);
   });
 
-  it("senha temporária do admin revoga as sessões do alvo", async () => {
+  it("link administrativo só revoga as sessões do alvo no resgate", async () => {
     const device = await login(email, PASSWORD);
     const cookie = cookieOf(device);
     expect((await me(cookie)).status).toBe(200);
     const adminCookie = cookieOf(await login(adminEmail, PASSWORD));
-    const reset = await request(server)
-      .post(`/api/admin/users/${userId}/reset-password`)
-      .set("Cookie", adminCookie)
-      .set("x-tenant-id", String(institutionId));
-    expect(reset.status).toBe(200);
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      kind: "ACCEPTED",
+      transport: "resend",
+    });
+    try {
+      const reset = await request(server)
+        .post(`/api/admin/users/${userId}/reset-password`)
+        .set("Cookie", adminCookie)
+        .set("x-tenant-id", String(institutionId));
+      expect(reset.status).toBe(202);
+      expect((await me(cookie)).status).toBe(200);
+      expect(sendMailSpy).not.toHaveBeenCalled();
+      await processPendingAuthRecoveryEmails(new Date());
+      const token = /reset-password\?token=([0-9a-f]{64})/.exec(
+        sendMailSpy.mock.calls[0]![0].text,
+      )?.[1];
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      const consumed = await request(server)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: `${NEW_PASSWORD}admin` });
+      expect(consumed.status).toBe(200);
+    } finally {
+      sendMailSpy.mockRestore();
+    }
     expect((await me(cookie)).status).toBe(401);
     const [row] = await db
       .select({ v: users.sessionVersion })

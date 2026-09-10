@@ -129,15 +129,25 @@ services:
       - key: SSO_PRIVATE_KEY_JWK
         sync: false
 
-      # ---- E-mail transacional ("Esqueci minha senha") ----
-      # Sem RESEND_API_KEY o servidor só LOGA o link: a tela diz que o
-      # e-mail foi enviado, mas ninguém recebe.
+      # ---- E-mail transacional / recuperação de credenciais ----
+      # Sem RESEND_API_KEY o outbox termina fail-closed; a API informa apenas
+      # que o pedido foi recebido, nunca que houve entrega.
       - key: RESEND_API_KEY
         sync: false
       - key: MAIL_FROM
         value: "Escala+ <suportec@comunicamais-escala.com.br>"
       - key: APP_PUBLIC_URL
         value: https://escalas-staging.onrender.com
+      # Chave AES-GCM dedicada. Rotação: mover a atual para PREVIOUS, criar
+      # nova CURRENT/KID e só remover PREVIOUS após a retenção do runbook.
+      - key: AUTH_RECOVERY_ENCRYPTION_CURRENT_KID
+        sync: false
+      - key: AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET
+        sync: false
+      - key: AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID
+        sync: false
+      - key: AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET
+        sync: false
 
       # ---- HospitalAlert integration (optional) ----
       - key: HOSPITAL_ALERT_URL

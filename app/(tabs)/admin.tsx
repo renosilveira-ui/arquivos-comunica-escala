@@ -607,7 +607,7 @@ function EditUserModal({
   const [managerScopes, setManagerScopes] = useState<ManagerScopeDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // Redefinição de senha (frente A3): enviada por e-mail ao usuário.
+  // Redefinição de senha: pedido durável; a API não afirma entrega imediata.
   const [resetting, setResetting] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
 
@@ -636,7 +636,7 @@ function EditUserModal({
   const handleResetPassword = async () => {
     if (!editUser) return;
     const confirmed = await confirmAction(
-      `Redefinir a senha de ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual deixa de valer. Uma senha temporária será enviada por e-mail e o usuário terá que trocá-la no próximo login.`,
+      `Solicitar a redefinição para ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual continuará válida. Se o provedor aceitar o pedido de envio, o link será de uso único e expirará 30 minutos após a aceitação. A aceitação não comprova a entrega na caixa postal.`,
     );
     if (!confirmed) return;
     setResetting(true);
@@ -925,7 +925,7 @@ function EditUserModal({
             )}
           </TouchableOpacity>
 
-          {/* Redefinir senha (senha temporária + troca obrigatória) */}
+          {/* Redefinir senha por link de uso único */}
           <View
             style={{
               marginTop: theme.space[4],
@@ -950,9 +950,9 @@ function EditUserModal({
                     color: theme.colors.textSecondary,
                   }}
                 >
-                  Senha temporária enviada por e-mail para{" "}
-                  {editUser.email ?? "o usuário"}. A senha atual deixou de valer
-                  e será obrigatório trocá-la no próximo login.
+                  Pedido de redefinição registrado para{" "}
+                  {editUser.email ?? "o usuário"}. A senha atual continua válida
+                  até o resgate do link.
                 </Text>
               </View>
             ) : (
@@ -960,7 +960,7 @@ function EditUserModal({
                 onPress={handleResetPassword}
                 disabled={resetting}
                 accessibilityRole="button"
-                accessibilityLabel="Redefinir senha do usuário"
+                accessibilityLabel="Solicitar redefinição de senha"
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
@@ -985,7 +985,7 @@ function EditUserModal({
                         color: theme.colors.warning,
                       }}
                     >
-                      Redefinir senha
+                      Solicitar redefinição
                     </Text>
                   </>
                 )}

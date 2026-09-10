@@ -1,12 +1,13 @@
 // Rotas REST administrativas: toda autoridade e todo alvo são tenant-scoped.
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { and, eq, inArray, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import express, { type Express } from "express";
 import request from "supertest";
 import {
   auditTrail,
+  authRecoveryRequests,
   hospitals,
   institutions,
   professionalAccess,
@@ -23,6 +24,7 @@ import {
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 import { getDb } from "../server/db";
+import { mailer } from "../server/mailer";
 
 import { sessionAuthCookies } from "./helpers/session-cookies";
 
@@ -209,6 +211,14 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
   });
 
   afterAll(async () => {
+    await db
+      .delete(authRecoveryRequests)
+      .where(
+        or(
+          inArray(authRecoveryRequests.targetUserId, userIds),
+          inArray(authRecoveryRequests.requestedByUserId, userIds),
+        ),
+      );
     await db.delete(auditTrail).where(inArray(auditTrail.entityId, userIds));
     await db.delete(professionalAccess).where(inArray(professionalAccess.institutionId, [institutionAId, institutionBId]));
     await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.userId, userIds));
@@ -248,14 +258,24 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
       ).status,
     ).toBe(403);
 
-    const allowed = await request(app)
-      .post(`/api/admin/users/${activeAId}/reset-password`)
-      .set("Cookie", cookie)
-      .set("x-tenant-id", String(institutionAId));
-    expect(allowed.status).toBe(200);
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      kind: "ACCEPTED",
+      transport: "resend",
+    });
+    try {
+      const allowed = await request(app)
+        .post(`/api/admin/users/${activeAId}/reset-password`)
+        .set("Cookie", cookie)
+        .set("x-tenant-id", String(institutionAId));
+      expect(allowed.status).toBe(202);
+      expect(allowed.body).toMatchObject({ ok: true, queued: true });
+      expect(sendMailSpy).not.toHaveBeenCalled();
+    } finally {
+      sendMailSpy.mockRestore();
+    }
     const [afterA] = await db.select({ version: users.sessionVersion }).from(users).where(eq(users.id, activeAId));
     const [afterB] = await db.select({ version: users.sessionVersion }).from(users).where(eq(users.id, activeBId));
-    expect(afterA.version).toBe(beforeA.version + 1);
+    expect(afterA.version).toBe(beforeA.version);
     expect(afterB.version).toBe(beforeB.version);
   });
 

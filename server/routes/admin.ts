@@ -1,6 +1,4 @@
 import { Router, type Request, type Response } from "express";
-import bcrypt from "bcryptjs";
-import { randomInt } from "node:crypto";
 import {
   eq,
   asc,
@@ -37,7 +35,10 @@ import {
   INSTITUTION_FEATURE_DEFAULTS,
 } from "../../lib/institution-features";
 import { readInstitutionFeatureEntitlement } from "../institution-features";
-import { mailer } from "../mailer";
+import {
+  enqueueAdminPasswordRecovery,
+  revokeOutstandingAuthRecoveryRequests,
+} from "../auth-recovery";
 import type { OperationalProfileCode } from "../../lib/medical-specialties";
 import { parseTenantIdHeader } from "../_core/tenant";
 import {
@@ -66,6 +67,7 @@ import {
   replaceManagerScopesForProfessional,
   resolveManagerScopesForRole,
 } from "../manager-scope-write";
+import { isSafeBcryptHash } from "../password-credential";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type InstitutionRole = "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
@@ -109,7 +111,7 @@ function projectInstitutionRoleToLegacyRole(
     : "doctor";
 }
 
-class AdminTenantError extends Error {
+export class AdminTenantError extends Error {
   constructor(
     readonly status: 400 | 403 | 404 | 409,
     message: string,
@@ -123,7 +125,7 @@ type AdminQueryDb = Pick<
   "select"
 >;
 
-type AdminMutationAuthoritySnapshot = {
+export type AdminMutationAuthoritySnapshot = {
   membershipId: number;
   professionalId: number;
   userId: number;
@@ -179,7 +181,7 @@ async function requireExplicitAdminTenant(
   return institutionId;
 }
 
-async function readAdminMutationAuthoritySnapshot(
+export async function readAdminMutationAuthoritySnapshot(
   db: AdminQueryDb,
   input: { userId: number; institutionId: number; requireGlobalAdmin: boolean },
 ): Promise<AdminMutationAuthoritySnapshot | null> {
@@ -737,7 +739,7 @@ function rebuildApprovedAdminAuthoritySnapshot(
   };
 }
 
-async function lockAndRevalidateAdminMutationAuthorities(
+export async function lockAndRevalidateAdminMutationAuthorities(
   db: AdminQueryDb,
   input: {
     institutionId: number;
@@ -1847,6 +1849,7 @@ adminRouter.put(
                   .delete(passwordResets)
                   .where(eq(passwordResets.userId, userId));
                 invalidatedPasswordResetCount = affectedRows(invalidation);
+                await revokeOutstandingAuthRecoveryRequests(tx, userId);
               }
 
               if (qualificationUpdateRequested && qualification) {
@@ -2013,25 +2016,12 @@ adminRouter.put(
 );
 
 // ---------------------------------------------------------------------------
-// POST /api/admin/users/:id/reset-password — senha temporária (frente A3)
+// POST /api/admin/users/:id/reset-password — link administrativo de uso único.
 //
-// Gera uma senha legível de 12 caracteres (sem 0/O/1/l/I), grava o hash
-// e liga must_change_password: no próximo login o app obriga a troca.
-// A senha em claro é enviada por e-mail ao usuário — não é devolvida
-// na API nem persistida em texto puro.
+// A requisição só persiste intenção selada e não altera senha/sessões. O
+// worker durável revalida ator, alvo, tenant, e-mail e sessionVersion sob lock
+// antes do egress; a senha muda exclusivamente no resgate do link ACTIVE.
 // ---------------------------------------------------------------------------
-
-const TEMP_PASSWORD_ALPHABET =
-  "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-const TEMP_PASSWORD_LENGTH = 12;
-
-function generateTemporaryPassword(): string {
-  let out = "";
-  for (let i = 0; i < TEMP_PASSWORD_LENGTH; i++) {
-    out += TEMP_PASSWORD_ALPHABET[randomInt(TEMP_PASSWORD_ALPHABET.length)];
-  }
-  return out;
-}
 
 adminRouter.post(
   "/users/:id/reset-password",
@@ -2089,12 +2079,21 @@ adminRouter.post(
       throw error;
     }
 
-    // O snapshot antecede o bcrypt deliberadamente: duas solicitações que se
-    // sobrepõem disputam a mesma versão e só uma pode produzir senha válida.
-    const temporaryPassword = generateTemporaryPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 12);
+    const targetEmail = targetSnapshot.email?.trim();
+    if (!isSafeBcryptHash(targetSnapshot.passwordHash)) {
+      res.status(409).json({
+        error:
+          "Usuário não possui credencial de senha válida para redefinição segura",
+      });
+      return;
+    }
+    if (!targetEmail) {
+      res.status(409).json({ error: "Usuário não possui e-mail válido" });
+      return;
+    }
+    let recoveryRequestId: number;
     try {
-      await withPushAccountMutex(
+      recoveryRequestId = await withPushAccountMutex(
         db,
         userId,
         PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
@@ -2106,39 +2105,23 @@ adminRouter.post(
               target: targetSnapshot,
               expectedCallerSessionVersion: caller.sessionVersion,
             });
-            assertAuditSafeActorName(locked.caller.userName);
-
-            const updateResult = await tx
-              .update(users)
-              // Senha temporária revoga todas as sessões anteriores do alvo.
-              .set({
-                passwordHash,
-                mustChangePassword: true,
-                sessionVersion: sql`${users.sessionVersion} + 1`,
-              })
-              .where(
-                and(
-                  eq(users.id, userId),
-                  eq(users.sessionVersion, locked.target.sessionVersion),
-                  eq(users.approvalStatus, "APPROVED"),
-                  isNull(users.deletedAt),
-                ),
-              );
-            if (affectedRows(updateResult) !== 1) {
+            if (!isSafeBcryptHash(locked.target.passwordHash)) {
               throw new AdminTenantError(
                 409,
-                "Usuário mudou durante a redefinição de senha",
+                "Credencial do usuário mudou e não pode ser redefinida por este fluxo",
               );
             }
-
-            const revokedPushTokenCount = await revokeUserPushRegistrations(
-              tx,
-              userId,
-            );
-
-            const resetInvalidation = await tx
-              .delete(passwordResets)
-              .where(eq(passwordResets.userId, userId));
+            assertAuditSafeActorName(locked.caller.userName);
+            const insertedId = await enqueueAdminPasswordRecovery(tx, {
+              targetUserId: userId,
+              targetMembershipId: locked.target.membershipId,
+              targetSessionVersion: locked.target.sessionVersion,
+              targetEmail,
+              requestedByUserId: locked.caller.userId,
+              requestedByMembershipId: locked.caller.membershipId,
+              actorSessionVersion: locked.caller.sessionVersion,
+              institutionId,
+            });
 
             await recordAudit(
               {
@@ -2148,20 +2131,17 @@ adminRouter.post(
                 actorUserId: caller.id,
                 actorRole: locked.caller.globalRole,
                 actorName: locked.caller.userName ?? undefined,
-                description: `Senha do usuário #${userId} redefinida pelo usuário #${locked.caller.userId} (senha temporária, troca obrigatória no próximo login)`,
+                description: `Redefinição de senha enfileirada para o usuário #${userId} pelo usuário #${locked.caller.userId}`,
                 metadata: {
-                  mustChangePassword: true,
+                  recoveryRequestId: insertedId,
                   membershipId: locked.target.membershipId,
-                  sessionVersionBefore: locked.target.sessionVersion,
-                  sessionVersionAfter: locked.target.sessionVersion + 1,
-                  revokedPushTokenCount,
-                  invalidatedPasswordResetCount:
-                    affectedRows(resetInvalidation),
+                  sessionVersion: locked.target.sessionVersion,
                 },
                 institutionId,
               },
               { db: tx, strict: true },
             );
+            return insertedId;
           }),
       );
     } catch (error) {
@@ -2169,28 +2149,7 @@ adminRouter.post(
       throw error;
     }
 
-    const targetEmail = targetSnapshot.email?.trim();
-    if (targetEmail) {
-      const firstName = (targetSnapshot.userName ?? "usuário")
-        .trim()
-        .split(/\s+/)[0];
-      await mailer.sendMail({
-        to: targetEmail,
-        subject: "Escala+ — senha temporária",
-        text: [
-          `Olá, ${firstName}.`,
-          "",
-          "Um administrador redefiniu a senha da sua conta no Escala+.",
-          "Use a senha temporária abaixo no próximo login (será obrigatório escolher uma nova senha):",
-          "",
-          temporaryPassword,
-          "",
-          "Se você não esperava esta alteração, entre em contato com o administrador da sua escala.",
-        ].join("\n"),
-      });
-    }
-
-    res.json({ ok: true });
+    res.status(202).json({ ok: true, queued: true, recoveryRequestId });
   },
 );
 

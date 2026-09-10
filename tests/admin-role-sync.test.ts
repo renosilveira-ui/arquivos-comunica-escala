@@ -10,7 +10,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request, { type Response as SupertestResponse } from "supertest";
 import express, { type Express } from "express";
@@ -21,6 +21,7 @@ import { requireValidDutyConfirmation } from "../server/confirmation-integrity";
 import { getDb } from "../server/db";
 import {
   auditTrail,
+  authRecoveryRequests,
   dutyConfirmations,
   hospitals,
   institutions,
@@ -46,12 +47,24 @@ import {
   registerPushToken,
   sendPushNotification,
 } from "../server/notifications-service";
-import { mailer } from "../server/mailer";
-import { extractTemporaryPasswordFromMail } from "./helpers/temporary-password-mail";
+import { mailer, type MailMessage } from "../server/mailer";
+import { processPendingAuthRecoveryEmails } from "../server/auth-recovery";
 import { sessionAuthCookies } from "./helpers/session-cookies";
 
 const STAMP = Date.now();
 const PASSWORD = "SenhaAdmin123";
+
+function resetTokensFromMail(
+  calls: [MailMessage, ...unknown[]][],
+  to: string,
+): string[] {
+  return calls
+    .filter(([message]) => message.to === to)
+    .map(([message]) =>
+      /reset-password\?token=([0-9a-f]{64})/.exec(message.text)?.[1],
+    )
+    .filter((token): token is string => Boolean(token));
+}
 
 function deferredVoid() {
   let resolve!: () => void;
@@ -616,6 +629,14 @@ describe("admin: papel institucional isolado por tenant", () => {
   });
 
   afterEach(async () => {
+    await db
+      .delete(authRecoveryRequests)
+      .where(
+        or(
+          inArray(authRecoveryRequests.targetUserId, userIds),
+          inArray(authRecoveryRequests.requestedByUserId, userIds),
+        ),
+      );
     if (transientConfirmationIds.length > 0) {
       await db
         .delete(dutyConfirmations)
@@ -637,6 +658,14 @@ describe("admin: papel institucional isolado por tenant", () => {
   });
 
   afterAll(async () => {
+    await db
+      .delete(authRecoveryRequests)
+      .where(
+        or(
+          inArray(authRecoveryRequests.targetUserId, userIds),
+          inArray(authRecoveryRequests.requestedByUserId, userIds),
+        ),
+      );
     await db.delete(pushTokens).where(inArray(pushTokens.userId, userIds));
     await db
       .delete(passwordResets)
@@ -874,7 +903,7 @@ describe("admin: papel institucional isolado por tenant", () => {
     });
   });
 
-  it("reset admin real aguarda fetch Expo em voo e revoga antes de novo envio", async () => {
+  it("reset admin aguarda mutex, mas só revoga push quando o link é resgatado", async () => {
     const [before] = await db
       .select({
         sessionVersion: users.sessionVersion,
@@ -909,8 +938,8 @@ describe("admin: papel institucional isolado por tenant", () => {
       .mockResolvedValue(expoTicketResponse("ticket-unexpected-after-reset"));
     vi.stubGlobal("fetch", fetchMock);
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      kind: "ACCEPTED",
+      transport: "resend",
     });
     let resetSettled = false;
     let resetPromise: Promise<SupertestResponse> | undefined;
@@ -944,13 +973,38 @@ describe("admin: papel institucional isolado por tenant", () => {
         status: "TICKETS_ACCEPTED",
       });
       const reset = await resetPromise;
-      expect(reset.status).toBe(200);
-      expect(reset.body).toMatchObject({ ok: true });
+      expect(reset.status).toBe(202);
+      expect(reset.body).toMatchObject({ ok: true, queued: true });
       expect(reset.body.temporaryPassword).toBeUndefined();
-      expect(
-        extractTemporaryPasswordFromMail(sendMailSpy.mock.calls, targetEmail),
-      ).toHaveLength(12);
-      sendMailSpy.mockRestore();
+      expect(sendMailSpy).not.toHaveBeenCalled();
+      await processPendingAuthRecoveryEmails(new Date());
+      const [resetToken] = resetTokensFromMail(
+        sendMailSpy.mock.calls,
+        targetEmail,
+      );
+      expect(resetToken).toMatch(/^[0-9a-f]{64}$/);
+      await expect(
+        db
+          .select({ id: pushTokens.id })
+          .from(pushTokens)
+          .where(eq(pushTokens.userId, targetId)),
+      ).resolves.toHaveLength(1);
+      await expect(
+        sendPushNotification(
+          targetId,
+          { title: "Link ainda pendente", body: "sessão ainda válida" },
+          institutionAId,
+        ),
+      ).resolves.toMatchObject({ status: "TICKETS_ACCEPTED" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const consumed = await request(app)
+        .post("/api/auth/reset-password")
+        .send({
+          token: resetToken,
+          newPassword: "SenhaEscolhidaNoResgate123",
+        });
+      expect(consumed.status).toBe(200);
       await expect(
         db
           .select({ id: pushTokens.id })
@@ -960,14 +1014,15 @@ describe("admin: papel institucional isolado por tenant", () => {
       await expect(
         sendPushNotification(
           targetId,
-          { title: "Depois do reset", body: "não enviar" },
+          { title: "Depois do resgate", body: "não enviar" },
           institutionAId,
         ),
       ).resolves.toMatchObject({ status: "NO_REGISTERED_TOKENS" });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       releaseFetch.resolve();
       if (resetPromise) await Promise.allSettled([resetPromise]);
+      sendMailSpy.mockRestore();
       vi.unstubAllGlobals();
       await db.delete(pushTokens).where(eq(pushTokens.token, token));
       await db
@@ -1977,9 +2032,13 @@ describe("admin: papel institucional isolado por tenant", () => {
     }
   }, 30_000);
 
-  it("dois admins redefinindo o mesmo alvo geram uma única senha válida", async () => {
+  it("dois admins concorrentes deixam só um link ativo e uma senha resgatável", async () => {
     const [before] = await db
-      .select({ sessionVersion: users.sessionVersion })
+      .select({
+        sessionVersion: users.sessionVersion,
+        passwordHash: users.passwordHash,
+        mustChangePassword: users.mustChangePassword,
+      })
       .from(users)
       .where(eq(users.id, targetId));
     await db.insert(passwordResets).values({
@@ -1989,8 +2048,8 @@ describe("admin: papel institucional isolado por tenant", () => {
     });
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      kind: "ACCEPTED",
+      transport: "resend",
     });
     const responses = await Promise.all([
       request(app)
@@ -2003,19 +2062,47 @@ describe("admin: papel institucional isolado por tenant", () => {
         .set("x-tenant-id", String(institutionAId)),
     ]);
 
-    expect(responses.map((response) => response.status).sort()).toEqual([
-      200, 409,
-    ]);
-    const success = responses.find((response) => response.status === 200)!;
-    const conflict = responses.find((response) => response.status === 409)!;
-    const tempPassword = extractTemporaryPasswordFromMail(
+    expect(responses.every((response) => response.status === 202)).toBe(true);
+    expect(sendMailSpy).not.toHaveBeenCalled();
+    await processPendingAuthRecoveryEmails(new Date());
+    const tokens = resetTokensFromMail(
       sendMailSpy.mock.calls,
       targetEmail,
     );
     sendMailSpy.mockRestore();
-    expect(tempPassword).toHaveLength(12);
-    expect(success.body.temporaryPassword).toBeUndefined();
-    expect(conflict.body.temporaryPassword).toBeUndefined();
+    expect(tokens.length).toBeGreaterThanOrEqual(1);
+    expect(
+      responses.every(
+        (response) => response.body.temporaryPassword === undefined,
+      ),
+    ).toBe(true);
+
+    const [pendingTarget] = await db
+      .select({
+        passwordHash: users.passwordHash,
+        mustChangePassword: users.mustChangePassword,
+        sessionVersion: users.sessionVersion,
+      })
+      .from(users)
+      .where(eq(users.id, targetId));
+    expect(pendingTarget).toEqual(before);
+
+    const candidatePasswords = tokens.map(
+      (_, index) => `SenhaConcorrenteResgatada${index}Abc`,
+    );
+    const redemptionStatuses: number[] = [];
+    for (const [index, token] of tokens.entries()) {
+      const redemption = await request(app)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: candidatePasswords[index] });
+      redemptionStatuses.push(redemption.status);
+    }
+    expect(redemptionStatuses.filter((status) => status === 200)).toHaveLength(
+      1,
+    );
+    expect(redemptionStatuses.filter((status) => status === 400)).toHaveLength(
+      tokens.length - 1,
+    );
 
     const [target] = await db
       .select({
@@ -2025,13 +2112,13 @@ describe("admin: papel institucional isolado por tenant", () => {
       })
       .from(users)
       .where(eq(users.id, targetId));
-    expect(
-      await bcrypt.compare(
-        tempPassword,
-        target.passwordHash!,
+    const validCandidates = await Promise.all(
+      candidatePasswords.map((candidate) =>
+        bcrypt.compare(candidate, target.passwordHash!),
       ),
-    ).toBe(true);
-    expect(target.mustChangePassword).toBe(true);
+    );
+    expect(validCandidates.filter(Boolean)).toHaveLength(1);
+    expect(target.mustChangePassword).toBe(false);
     expect(target.sessionVersion).toBe(before.sessionVersion + 1);
     expect(
       await db
@@ -2043,11 +2130,19 @@ describe("admin: papel institucional isolado por tenant", () => {
       await db
         .select({ id: auditTrail.id })
         .from(auditTrail)
-        .where(eq(auditTrail.entityId, targetId)),
+        .where(
+          and(
+            eq(auditTrail.entityId, targetId),
+            eq(
+              auditTrail.description,
+              "Senha redefinida via link administrativo",
+            ),
+          ),
+        ),
     ).toHaveLength(1);
   }, 30_000);
 
-  it("dois admins redefinindo um ao outro não deadlockam e só um commit vence", async () => {
+  it("dois admins podem emitir links cruzados sem deadlock, mas o primeiro resgate invalida o oposto", async () => {
     await db
       .delete(auditTrail)
       .where(inArray(auditTrail.entityId, [adminId, secondAdminId]));
@@ -2062,8 +2157,8 @@ describe("admin: papel institucional isolado por tenant", () => {
     const before = new Map(beforeRows.map((row) => [row.id, row]));
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      kind: "ACCEPTED",
+      transport: "resend",
     });
     const [first, second] = await Promise.all([
       request(app)
@@ -2076,21 +2171,43 @@ describe("admin: papel institucional isolado por tenant", () => {
         .set("x-tenant-id", String(institutionAId)),
     ]);
 
-    expect([first.status, second.status].sort()).toEqual([200, 409]);
-    const winner =
-      first.status === 200
-        ? { response: first, targetId: secondAdminId }
-        : { response: second, targetId: adminId };
-    const loserTargetId = winner.targetId === adminId ? secondAdminId : adminId;
-    const winnerEmail =
-      winner.targetId === secondAdminId
-        ? `rolesync-admin-2-${STAMP}@test.local`
-        : `rolesync-admin-${STAMP}@test.local`;
-    const winnerTempPassword = extractTemporaryPasswordFromMail(
+    expect([first.status, second.status]).toEqual([202, 202]);
+    expect(sendMailSpy).not.toHaveBeenCalled();
+    await processPendingAuthRecoveryEmails(new Date());
+    const [tokenForSecondAdmin] = resetTokensFromMail(
       sendMailSpy.mock.calls,
-      winnerEmail,
+      `rolesync-admin-2-${STAMP}@test.local`,
+    );
+    const [tokenForAdmin] = resetTokensFromMail(
+      sendMailSpy.mock.calls,
+      `rolesync-admin-${STAMP}@test.local`,
     );
     sendMailSpy.mockRestore();
+    expect(tokenForSecondAdmin).toMatch(/^[0-9a-f]{64}$/);
+    expect(tokenForAdmin).toMatch(/^[0-9a-f]{64}$/);
+
+    const pendingRows = await db
+      .select({
+        id: users.id,
+        passwordHash: users.passwordHash,
+        sessionVersion: users.sessionVersion,
+      })
+      .from(users)
+      .where(inArray(users.id, [adminId, secondAdminId]));
+    expect(new Map(pendingRows.map((row) => [row.id, row]))).toEqual(before);
+
+    const firstRedemption = await request(app)
+      .post("/api/auth/reset-password")
+      .send({
+        token: tokenForSecondAdmin,
+        newPassword: "SenhaCruzadaResgatada123",
+      });
+    expect(firstRedemption.status).toBe(200);
+    const staleOpposite = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token: tokenForAdmin, newPassword: "SenhaCruzadaNegada123" });
+    expect(staleOpposite.status).toBe(400);
+
     const afterRows = await db
       .select({
         id: users.id,
@@ -2100,22 +2217,21 @@ describe("admin: papel institucional isolado por tenant", () => {
       .from(users)
       .where(inArray(users.id, [adminId, secondAdminId]));
     const after = new Map(afterRows.map((row) => [row.id, row]));
-
     expect(
       await bcrypt.compare(
-        winnerTempPassword,
-        after.get(winner.targetId)!.passwordHash!,
+        "SenhaCruzadaResgatada123",
+        after.get(secondAdminId)!.passwordHash!,
       ),
     ).toBe(true);
-    expect(after.get(winner.targetId)!.sessionVersion).toBe(
-      before.get(winner.targetId)!.sessionVersion + 1,
+    expect(after.get(secondAdminId)!.sessionVersion).toBe(
+      before.get(secondAdminId)!.sessionVersion + 1,
     );
-    expect(after.get(loserTargetId)).toEqual(before.get(loserTargetId));
+    expect(after.get(adminId)).toEqual(before.get(adminId));
     expect(
       await db
         .select({ entityId: auditTrail.entityId })
         .from(auditTrail)
         .where(inArray(auditTrail.entityId, [adminId, secondAdminId])),
-    ).toHaveLength(1);
+    ).not.toHaveLength(0);
   }, 30_000);
 });
