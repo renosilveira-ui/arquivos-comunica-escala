@@ -384,10 +384,15 @@ function dutyConfirmationAuthorityMatchesPurpose(
 ): boolean {
   const policy = DUTY_CONFIRMATION_PURPOSE_POLICY[authority.purpose];
   const payloadConfirmationId = payloadData.confirmationId;
-  const cycleTokenMatches =
-    dutyConfirmationPurposeRequiresCycleToken(authority.purpose)
-      ? isConfirmationRouteToken(authority.confirmationToken) &&
-        payloadData.confirmationToken === authority.confirmationToken
+  const cycleTokenMatches = dutyConfirmationPurposeRequiresCycleToken(
+    authority.purpose,
+  )
+    ? isConfirmationRouteToken(authority.confirmationToken) &&
+      payloadData.confirmationToken === authority.confirmationToken
+    : authority.purpose === "CONFIRMATION_REQUEST"
+      ? isConfirmationRouteToken(payloadData.confirmationToken) &&
+        (authority.confirmationToken === undefined ||
+          payloadData.confirmationToken === authority.confirmationToken)
       : authority.confirmationToken === undefined;
   const recheckEpochMatches =
     authority.purpose === "NOMINATION_REQUEST"
@@ -1193,9 +1198,14 @@ async function requireCurrentPushAuthority(
         ? state.authority.recheckEpoch
         : undefined,
     expectedConfirmationToken:
-      dutyConfirmationPurposeRequiresCycleToken(state.authority.purpose)
+      dutyConfirmationPurposeRequiresCycleToken(state.authority.purpose) ||
+      (state.authority.purpose === "CONFIRMATION_REQUEST" &&
+        state.authority.confirmationToken !== undefined)
         ? state.authority.confirmationToken
-        : undefined,
+        : state.authority.purpose === "CONFIRMATION_REQUEST" &&
+            isConfirmationRouteToken(state.payloadData.confirmationToken)
+          ? state.payloadData.confirmationToken
+          : undefined,
     allowInactiveOriginalAssignment:
       state.authority.purpose === "SSO_READY" ||
       state.authority.purpose === "REPLACEMENT_ACCEPTED_NOTICE",
@@ -1629,7 +1639,8 @@ async function processSubmission(
     }
     if (
       persisted.affectedRows === 1 &&
-      claimed.authority?.purpose === "CONFIRMATION_REQUEST"
+      claimed.authority?.purpose === "CONFIRMATION_REQUEST" &&
+      isConfirmationRouteToken(claimed.payloadData.confirmationToken)
     ) {
       await db
         .update(dutyConfirmations)
@@ -1640,6 +1651,10 @@ async function processSubmission(
             inArray(
               dutyConfirmations.status,
               claimed.authority.allowedStatuses,
+            ),
+            eq(
+              dutyConfirmations.confirmationToken,
+              claimed.payloadData.confirmationToken,
             ),
             isNull(dutyConfirmations.notifiedAt),
           ),
@@ -1851,10 +1866,7 @@ async function processReceiptCheck(
                 claimed.authority.allowedStatuses,
               ),
               eq(dutyConfirmations.managerNotified, false),
-              eq(
-                dutyConfirmations.recheckAt,
-                new Date(recheckEpoch),
-              ),
+              eq(dutyConfirmations.recheckAt, new Date(recheckEpoch)),
               eq(dutyConfirmations.confirmationToken, confirmationToken),
             ),
           );
