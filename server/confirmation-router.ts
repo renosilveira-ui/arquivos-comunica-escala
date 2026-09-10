@@ -576,6 +576,7 @@ export const confirmationRouter = router({
             dedupKey: dutySyncConfirmDedupKey(
               current.confirmation.id,
               current.original.userId,
+              current.confirmation.confirmationToken,
             ),
           },
           new Date(),
@@ -698,6 +699,7 @@ export const confirmationRouter = router({
             dedupKey: dutySyncWithdrawDedupKey(
               current.confirmation.id,
               current.original.userId,
+              current.confirmation.confirmationToken,
             ),
           },
           new Date(),
@@ -1184,6 +1186,7 @@ export const confirmationRouter = router({
             dedupKey: dutySyncWithdrawDedupKey(
               current.confirmation.id,
               current.original.userId,
+              current.confirmation.confirmationToken,
             ),
           },
           new Date(),
@@ -1212,6 +1215,7 @@ export const confirmationRouter = router({
             dedupKey: dutySyncReplacementConfirmDedupKey(
               current.confirmation.id,
               replacementPro.userId,
+              current.confirmation.confirmationToken,
             ),
           },
           new Date(),

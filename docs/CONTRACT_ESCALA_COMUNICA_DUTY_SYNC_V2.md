@@ -205,7 +205,7 @@ Semântica: desistência após ter confirmado. O médico permanece alocado até 
 | Convite / `assignDirect` / alocação nova | não | **não** | não até haver confirmação | sim (não gera WITHDRAW) |
 | Oferta de troca ainda não efetivada | possível do titular atual | **não** (oferta ≠ roster) | não | sim |
 | Troca/cessão efetivada (`swap` `APPROVED`) | possível de quem saiu | **sim**, quem deixou o intervalo | **não** automático de quem entrou | **esta frente** (WITHDRAW de quem saiu). Quem entrou fica `OCUPADO` no Escala+ e **não** aparece como plantonista confirmado no Comunica+ até confirmar explicitamente. Regra de produto vigente; esta frente não a altera. |
-| Edição temporal do turno (`startAt`/`endAt`) com declaração vigente | sim, chave Comunica+ = `dutyStart` antigo | **sim**, intervalo antigo | **sim**, intervalo novo (dedup distinta) | **esta frente** |
+| Edição temporal do turno (`startAt`/`endAt`) com declaração vigente | sim, chave Comunica+ = `dutyStart` antigo | **sim**, intervalo antigo | somente após nova confirmação humana | **esta frente** |
 | Mudança de profissional via unassign+assign | sim do antigo | coberto por unassign | só se o novo confirmar | unassign nesta frente |
 | Cancelamento dedicado de shift | não há entidade “cancel”; vago / unassign | coberto por `markVacant` / unassign | não | esta frente |
 | Revogação administrativa de vínculo / exclusão | sim | WITHDRAW já era durável (envelope congelado) | não | sim (boundaries) |
@@ -230,9 +230,8 @@ Reutiliza `notifications` com `title: "Duty roster sync"`.
 
 `dedupKey` canônicos:
 
-- `duty-confirmation:{id}:duty-sync:confirmed:{userId}`
-- `duty-confirmation:{id}:duty-sync:withdraw:{userId}`
-- `duty-confirmation:{id}:duty-sync:replacement-confirmed:{userId}`
+- ações humanas: `duty-confirmation:{id}:duty-sync:{ação}:{userId}:cycle:{confirmationToken}`
+- compensações de remoção legadas preservam `duty-confirmation:{id}:duty-sync:withdraw:{userId}`
 - redeclaração de intervalo: `duty-confirmation:{id}:duty-sync:confirmed:{userId}:interval:{dutyStart}` e `...:withdraw:{userId}:interval:{dutyStart}`
 
 Status local `#310`: `pending` \| `outbox_processed` \| `failed` \| `none`, `scope: "escala_outbox"`.  

@@ -2685,6 +2685,7 @@ export const shiftsRouter = router({
             nextDutyType,
             previousServiceName: locked.specialty,
             nextServiceName: locked.specialty,
+            reconfirmRequired: windowChanged,
           });
         }
         if (windowChanged) {
