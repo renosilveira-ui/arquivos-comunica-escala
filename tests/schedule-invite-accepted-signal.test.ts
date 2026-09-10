@@ -22,7 +22,7 @@ import {
 } from "../drizzle/schema";
 import {
   generateScheduleInviteCode,
-  hashScheduleInviteCode,
+  hashLegacyScheduleInviteCode,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
@@ -143,7 +143,7 @@ describe("push de convite aceito", () => {
         institutionId,
         hospitalId,
         sectorId,
-        codeHash: hashScheduleInviteCode(normalizeScheduleInviteCode(code)),
+        codeHash: hashLegacyScheduleInviteCode(normalizeScheduleInviteCode(code)),
         createdByUserId,
         invitedUserId,
         invitedEmail: `invitee-${stamp}@example.test`,

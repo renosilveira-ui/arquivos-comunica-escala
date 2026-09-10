@@ -17,6 +17,7 @@ export default defineConfig({
       "tests/whatsapp-continuation-migration-mysql.test.ts",
       "tests/personal-calendar-foundation-migration-mysql.test.ts",
       "tests/schedule-invite-issuance-fence-migration-mysql.test.ts",
+      "tests/schedule-invite-code-hash-v2-migration-mysql.test.ts",
     ],
     setupFiles: [],
     fileParallelism: false,

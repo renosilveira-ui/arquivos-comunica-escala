@@ -8,6 +8,8 @@ describe("schema de convites de escala", () => {
     expect(scheduleInvites.hospitalId.notNull).toBe(true);
     expect(scheduleInvites.sectorId.notNull).toBe(true);
     expect(scheduleInvites.codeHash.notNull).toBe(true);
+    expect(scheduleInvites.codeHashVersion.notNull).toBe(true);
+    expect(scheduleInvites.codeHashVersion.default).toBe("SHA256_V1");
     expect(scheduleInvites.createdByUserId.notNull).toBe(true);
     expect(scheduleInvites.invitedUserId.notNull).toBe(false);
     expect(scheduleInvites.invitedEmail.notNull).toBe(false);

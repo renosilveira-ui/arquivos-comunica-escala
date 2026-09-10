@@ -51,6 +51,8 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).toContain("{ db: tx, strict: true }");
     expect(source).toContain("aceite/enfileiramento pelo provedor");
     expect(source).toContain("accepted,");
+    expect(source).toContain("hashPolicy.write.hash(normalized)");
+    expect(source).toContain("codeHashVersion: hashPolicy.write.version");
     expect(source).not.toContain("withScheduleInviteIssuanceMutex");
     expect(source).not.toContain("GET_LOCK");
     expect(source).not.toContain("getConnection()");
@@ -85,6 +87,29 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(migration).not.toMatch(
       /\b(code_hash|invited_email|plaintext_code|provider_payload)\b/i,
     );
+  });
+
+  it("versiona HMAC, exige pepper dedicado e mantém V1 só para compatibilidade", () => {
+    const domain = readFileSync("lib/schedule-invite-code.ts", "utf8");
+    const policy = readFileSync(
+      "server/schedule-invite-code-policy.ts",
+      "utf8",
+    );
+    const migration = readFileSync(
+      "drizzle/migrations/manual/2026-09-10-schedule-invite-code-hash-v2.sql",
+      "utf8",
+    );
+    expect(domain).toContain("createHmac");
+    expect(domain).toContain("HMAC_SHA256_V2");
+    expect(policy).toContain("SCHEDULE_INVITE_CODE_PEPPER");
+    expect(policy).toContain("SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER");
+    expect(policy).toContain("COOKIE_SECRET");
+    expect(policy).toContain("TWILIO_AUTH_TOKEN");
+    expect(policy).not.toMatch(/console\.(log|warn|error)/);
+    expect(migration).toContain("code_hash_version");
+    expect(migration).toContain("SHA256_V1");
+    expect(migration).toContain("HMAC_SHA256_V2");
+    expect(migration).not.toContain("SCHEDULE_INVITE_CODE_PEPPER=");
   });
 
   it("o app não importa o gerador de código com crypto de Node", () => {

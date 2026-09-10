@@ -17,7 +17,7 @@ import {
 } from "../drizzle/schema";
 import {
   generateScheduleInviteCode,
-  hashScheduleInviteCode,
+  hashLegacyScheduleInviteCode,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
@@ -514,7 +514,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
       institutionId,
       hospitalId,
       sectorId: allowlistSectorId,
-      codeHash: hashScheduleInviteCode(
+      codeHash: hashLegacyScheduleInviteCode(
         normalizeScheduleInviteCode(generateScheduleInviteCode()),
       ),
       createdByUserId: plusUserId,

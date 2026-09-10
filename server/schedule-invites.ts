@@ -28,9 +28,12 @@ import { buildScheduleInviteMail } from "./schedule-invite-mail";
 import {
   formatScheduleInviteCode,
   generateScheduleInviteCode,
-  hashScheduleInviteCode,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
+import {
+  getScheduleInviteHashPolicy,
+  type ScheduleInviteHashPolicy,
+} from "./schedule-invite-code-policy";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
 import {
@@ -104,13 +107,27 @@ function updateAffectedRows(result: unknown): number {
   return 0;
 }
 
+function scheduleInviteCodeLookupWhere(
+  normalized: string,
+  policy: ScheduleInviteHashPolicy,
+) {
+  return or(
+    ...policy.lookup(normalized).map((candidate) =>
+      and(
+        eq(scheduleInvites.codeHashVersion, candidate.version),
+        eq(scheduleInvites.codeHash, candidate.hash),
+      ),
+    ),
+  );
+}
+
 export async function peekScheduleInviteInstitution(
   db: InviteDb,
   code: string,
   now = new Date(),
 ): Promise<{ institutionId: number }> {
-  const codeHash = hashScheduleInviteCode(code);
-  const [invite] = await db
+  const hashPolicy = getScheduleInviteHashPolicy();
+  const inviteRows = await db
     .select({
       institutionId: scheduleInvites.institutionId,
       expiresAt: scheduleInvites.expiresAt,
@@ -120,8 +137,9 @@ export async function peekScheduleInviteInstitution(
       maxRedemptions: scheduleInvites.maxRedemptions,
     })
     .from(scheduleInvites)
-    .where(eq(scheduleInvites.codeHash, codeHash))
-    .limit(1);
+    .where(scheduleInviteCodeLookupWhere(code, hashPolicy))
+    .limit(2);
+  const invite = inviteRows.length === 1 ? inviteRows[0] : null;
   if (
     !invite ||
     invite.revokedAt ||
@@ -184,7 +202,7 @@ export async function redeemScheduleInviteInTransaction(
   invitedUserId: number;
 }> {
   const now = input.now ?? new Date();
-  const codeHash = hashScheduleInviteCode(input.code);
+  const hashPolicy = getScheduleInviteHashPolicy();
   // Ordem global de locks dos fluxos de convite: users → identidade → invite.
   // A emissão também começa pelo usuário, evitando ciclo entre um resgate que
   // segura o convite e uma nova emissão que precisa revalidar o destinatário.
@@ -197,12 +215,13 @@ export async function redeemScheduleInviteInTransaction(
   if (!lockedUser) {
     throw new ScheduleInviteError(409, "Profissional não encontrado");
   }
-  const [invite] = await tx
+  const inviteRows = await tx
     .select()
     .from(scheduleInvites)
-    .where(eq(scheduleInvites.codeHash, codeHash))
-    .limit(1)
+    .where(scheduleInviteCodeLookupWhere(input.code, hashPolicy))
+    .limit(2)
     .for("update");
+  const invite = inviteRows.length === 1 ? inviteRows[0] : null;
   if (
     !invite ||
     invite.revokedAt ||
@@ -431,13 +450,14 @@ export async function declineScheduleInviteInTransaction(
   invitedUserId: number;
 }> {
   const now = input.now ?? new Date();
-  const codeHash = hashScheduleInviteCode(input.code);
-  const [invite] = await tx
+  const hashPolicy = getScheduleInviteHashPolicy();
+  const inviteRows = await tx
     .select()
     .from(scheduleInvites)
-    .where(eq(scheduleInvites.codeHash, codeHash))
-    .limit(1)
+    .where(scheduleInviteCodeLookupWhere(input.code, hashPolicy))
+    .limit(2)
     .for("update");
+  const invite = inviteRows.length === 1 ? inviteRows[0] : null;
   if (!invite) {
     throw new ScheduleInviteError(400, "Convite inválido ou expirado");
   }
@@ -1362,6 +1382,9 @@ export const scheduleInvitesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const actor = await getTenantActorFromContext(ctx);
       await assertCanManageSector(actor, input.hospitalId, input.sectorId);
+      // Carregado antes de qualquer claim ou efeito externo. Ausência,
+      // reutilização ou fraqueza do pepper bloqueia só esta operação.
+      const hashPolicy = getScheduleInviteHashPolicy();
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
@@ -1660,7 +1683,8 @@ export const scheduleInvitesRouter = router({
                 institutionId: actor.institutionId,
                 hospitalId: input.hospitalId,
                 sectorId: input.sectorId,
-                codeHash: hashScheduleInviteCode(normalized),
+                codeHash: hashPolicy.write.hash(normalized),
+                codeHashVersion: hashPolicy.write.version,
                 createdByUserId: actor.userId,
                 invitedUserId: current.invitee.userId,
                 invitedEmail: current.invitee.email,

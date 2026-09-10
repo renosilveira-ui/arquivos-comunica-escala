@@ -1527,7 +1527,8 @@ export type InsertScheduleContext = typeof scheduleContexts.$inferInsert;
 
 /**
  * Convite nominal de uma escala (instituição + hospital + setor).
- * O código em claro só vai no e-mail do convidado; o banco guarda o hash.
+ * O código em claro só vai no e-mail do convidado; o banco guarda HMAC
+ * versionado (V1 legado existe apenas durante sua expiração natural).
  * Uso único, 24 h, amarrado a um usuário já cadastrado.
  */
 export const scheduleInvites = mysqlTable(
@@ -1544,6 +1545,12 @@ export const scheduleInvites = mysqlTable(
       .notNull()
       .references(() => sectors.id),
     codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    codeHashVersion: mysqlEnum("code_hash_version", [
+      "SHA256_V1",
+      "HMAC_SHA256_V2",
+    ])
+      .notNull()
+      .default("SHA256_V1"),
     createdByUserId: int("created_by_user_id")
       .notNull()
       .references(() => users.id),

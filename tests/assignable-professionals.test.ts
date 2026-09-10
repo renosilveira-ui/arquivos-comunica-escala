@@ -18,7 +18,7 @@ import {
 } from "../drizzle/schema";
 import {
   generateScheduleInviteCode,
-  hashScheduleInviteCode,
+  hashLegacyScheduleInviteCode,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
@@ -303,7 +303,7 @@ describe("professionals.listAssignableForShift", () => {
       institutionId,
       hospitalId,
       sectorId,
-      codeHash: hashScheduleInviteCode(normalizeScheduleInviteCode(inviteCode)),
+      codeHash: hashLegacyScheduleInviteCode(normalizeScheduleInviteCode(inviteCode)),
       createdByUserId: managerUserId,
       invitedUserId: invitee.userId,
       maxRedemptions: 1,
@@ -327,7 +327,7 @@ describe("professionals.listAssignableForShift", () => {
         institutionId,
         hospitalId,
         sectorId,
-        codeHash: hashScheduleInviteCode(
+        codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
         createdByUserId: managerUserId,
@@ -339,7 +339,7 @@ describe("professionals.listAssignableForShift", () => {
         institutionId,
         hospitalId,
         sectorId,
-        codeHash: hashScheduleInviteCode(
+        codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
         createdByUserId: managerUserId,
@@ -351,7 +351,7 @@ describe("professionals.listAssignableForShift", () => {
         institutionId,
         hospitalId,
         sectorId,
-        codeHash: hashScheduleInviteCode(
+        codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
         createdByUserId: managerUserId,
@@ -363,7 +363,7 @@ describe("professionals.listAssignableForShift", () => {
         institutionId,
         hospitalId,
         sectorId,
-        codeHash: hashScheduleInviteCode(
+        codeHash: hashLegacyScheduleInviteCode(
           normalizeScheduleInviteCode(generateScheduleInviteCode()),
         ),
         createdByUserId: managerUserId,

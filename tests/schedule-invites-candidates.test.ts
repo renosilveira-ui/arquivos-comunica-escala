@@ -28,7 +28,7 @@ import { appRouter } from "../server/routers";
 import * as auditTrail from "../server/audit-trail";
 import { __scheduleInviteTestHooks } from "../server/schedule-invites";
 import {
-  hashScheduleInviteCode,
+  hashScheduleInviteCodeV2,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
 import { ensureTestAnesthesiaSpecialty } from "./helpers/open-test-scale";
@@ -348,6 +348,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
 
     afterEach(() => {
       __scheduleInviteTestHooks.afterActivationFenceLocked = undefined;
+      vi.unstubAllEnvs();
       mailSpy.mockRestore();
     });
 
@@ -365,6 +366,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         .select({
           id: scheduleInvites.id,
           codeHash: scheduleInvites.codeHash,
+          codeHashVersion: scheduleInvites.codeHashVersion,
         })
         .from(scheduleInvites)
         .where(
@@ -530,6 +532,40 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       expect(mailSpy).not.toHaveBeenCalled();
     });
 
+    it("pepper ausente bloqueia somente a emissão antes de enviar ou criar fence", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `missing-pepper-${Date.now()}`,
+        name: "Configuração Criptográfica Ausente",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      vi.stubEnv("SCHEDULE_INVITE_CODE_PEPPER", "");
+
+      await expect(
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        }),
+      ).rejects.toMatchObject({
+        message: "Hash seguro de convite indisponível",
+      });
+      expect(mailSpy).not.toHaveBeenCalled();
+      const fences = await db
+        .select({ id: scheduleInviteIssuanceFences.id })
+        .from(scheduleInviteIssuanceFences)
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.institutionId, institutionId),
+            eq(scheduleInviteIssuanceFences.hospitalId, hospitalId),
+            eq(scheduleInviteIssuanceFences.sectorId, sectorId),
+            eq(scheduleInviteIssuanceFences.invitedUserId, target.userId),
+          ),
+        );
+      expect(fences).toHaveLength(0);
+    });
+
     it("convite ativo impõe cooldown e nunca é substituído silenciosamente", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
@@ -591,13 +627,17 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       ]);
       expect(attemptA.accepted).toHaveLength(1);
       expect(attemptB.accepted).toHaveLength(0);
-      expect(attemptB.failed[0]?.error).toContain("em andamento");
+      expect(attemptB.failed[0]?.error).toMatch(
+        /em andamento|Já existe um convite ativo/,
+      );
       expect(mailSpy).toHaveBeenCalledTimes(1);
       const firstCode = inviteCodeFromMailCall(0);
       expect(await activeInvitesFor(target.userId)).toEqual([
         expect.objectContaining({
-          codeHash: hashScheduleInviteCode(
+          codeHashVersion: "HMAC_SHA256_V2",
+          codeHash: hashScheduleInviteCodeV2(
             normalizeScheduleInviteCode(firstCode),
+            process.env.SCHEDULE_INVITE_CODE_PEPPER!,
           ),
         }),
       ]);
@@ -646,8 +686,10 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       const onlyAcceptedCode = acceptedCodes[0]!;
       expect(await activeInvitesFor(target.userId)).toEqual([
         expect.objectContaining({
-          codeHash: hashScheduleInviteCode(
+          codeHashVersion: "HMAC_SHA256_V2",
+          codeHash: hashScheduleInviteCodeV2(
             normalizeScheduleInviteCode(onlyAcceptedCode),
+            process.env.SCHEDULE_INVITE_CODE_PEPPER!,
           ),
         }),
       ]);

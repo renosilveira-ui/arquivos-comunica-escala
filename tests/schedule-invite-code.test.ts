@@ -1,12 +1,18 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   formatScheduleInviteCode,
   generateScheduleInviteCode,
-  hashScheduleInviteCode,
+  hashLegacyScheduleInviteCode,
+  hashScheduleInviteCodeV2,
   normalizeScheduleInviteCode,
+  SCHEDULE_INVITE_HASH_VERSION,
 } from "../lib/schedule-invite-code";
+import {
+  getScheduleInviteHashPolicy,
+  ScheduleInviteCodeConfigurationError,
+} from "../server/schedule-invite-code-policy";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -27,13 +33,32 @@ describe("código de convite de escala", () => {
     expect(normalizeScheduleInviteCode("ABCD-EFGH-XXXX")).toBe("ABCDEFGH");
   });
 
-  it("hasheia o corpo normalizado em SHA-256 hex e formata de volta", () => {
+  it("mantém SHA-256 somente para linhas legadas explicitamente V1", () => {
     const normalized = "ABCD2345";
-    expect(hashScheduleInviteCode(normalized)).toBe(
+    expect(hashLegacyScheduleInviteCode(normalized)).toBe(
       createHash("sha256").update(normalized).digest("hex"),
     );
     expect(formatScheduleInviteCode(normalized)).toBe("ABCD-2345");
-    expect(() => hashScheduleInviteCode("SHORT")).toThrow(/tamanho inválido/);
+    expect(() => hashLegacyScheduleInviteCode("SHORT")).toThrow(
+      /tamanho inválido/,
+    );
+  });
+
+  it("usa HMAC-SHA-256 com domínio e pepper na versão corrente", () => {
+    const normalized = "ABCD2345";
+    const pepper = "pepper-corrente-de-teste-com-mais-de-32-bytes";
+    expect(hashScheduleInviteCodeV2(normalized, pepper)).toBe(
+      createHmac("sha256", pepper)
+        .update("escala:schedule-invite-code:v2\0")
+        .update(normalized)
+        .digest("hex"),
+    );
+    expect(hashScheduleInviteCodeV2(normalized, pepper)).not.toBe(
+      hashLegacyScheduleInviteCode(normalized),
+    );
+    expect(() => hashScheduleInviteCodeV2("SHORT", pepper)).toThrow(
+      /tamanho inválido/,
+    );
   });
 
   it("o alfabeto do gerador não inclui caracteres ambíguos", () => {
@@ -45,5 +70,88 @@ describe("código de convite de escala", () => {
     const source = readFileSync("lib/schedule-invite-code.ts", "utf8");
     expect(source).toContain("randomInt(INVITE_ALPHABET.length)");
     expect(source).not.toMatch(/randomBytes[\s\S]*%/);
+  });
+
+  it("falha fechado se o pepper corrente estiver ausente, curto ou reutilizado", () => {
+    expect(() => getScheduleInviteHashPolicy({})).toThrow(
+      ScheduleInviteCodeConfigurationError,
+    );
+    expect(() =>
+      getScheduleInviteHashPolicy({
+        SCHEDULE_INVITE_CODE_PEPPER: "curto",
+      }),
+    ).toThrow(ScheduleInviteCodeConfigurationError);
+    expect(() =>
+      getScheduleInviteHashPolicy({
+        SCHEDULE_INVITE_CODE_PEPPER:
+          "changeme_dedicated_min_32_bytes_here",
+      }),
+    ).toThrow(ScheduleInviteCodeConfigurationError);
+    const reused = "segredo-reutilizado-com-mais-de-trinta-e-dois-bytes";
+    expect(() =>
+      getScheduleInviteHashPolicy({
+        SCHEDULE_INVITE_CODE_PEPPER: reused,
+        COOKIE_SECRET: reused,
+      }),
+    ).toThrow(ScheduleInviteCodeConfigurationError);
+    expect(() =>
+      getScheduleInviteHashPolicy({
+        SCHEDULE_INVITE_CODE_PEPPER: reused,
+        TWILIO_AUTH_TOKEN: reused,
+      }),
+    ).toThrow(ScheduleInviteCodeConfigurationError);
+    expect(() =>
+      getScheduleInviteHashPolicy({
+        SCHEDULE_INVITE_CODE_PEPPER: reused,
+        JWT_SECRET: reused,
+      }),
+    ).toThrow(ScheduleInviteCodeConfigurationError);
+  });
+
+  it("rotaciona com pepper anterior e inclui compatibilidade V1 explícita", () => {
+    const current = "pepper-atual-de-teste-com-mais-de-trinta-dois-bytes";
+    const previous = "pepper-anterior-de-teste-com-mais-de-trinta-dois-bytes";
+    const normalized = "ABCD2345";
+    const policy = getScheduleInviteHashPolicy({
+      SCHEDULE_INVITE_CODE_PEPPER: current,
+      SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER: previous,
+    });
+
+    expect(policy.write.version).toBe(
+      SCHEDULE_INVITE_HASH_VERSION.HMAC_SHA256,
+    );
+    expect(policy.write.hash(normalized)).toBe(
+      hashScheduleInviteCodeV2(normalized, current),
+    );
+    expect(policy.lookup(normalized)).toEqual([
+      {
+        version: SCHEDULE_INVITE_HASH_VERSION.HMAC_SHA256,
+        hash: hashScheduleInviteCodeV2(normalized, current),
+      },
+      {
+        version: SCHEDULE_INVITE_HASH_VERSION.HMAC_SHA256,
+        hash: hashScheduleInviteCodeV2(normalized, previous),
+      },
+      {
+        version: SCHEDULE_INVITE_HASH_VERSION.LEGACY_SHA256,
+        hash: hashLegacyScheduleInviteCode(normalized),
+      },
+    ]);
+  });
+
+  it("recusa rotação ambígua ou pepper anterior inválido", () => {
+    const current = "pepper-atual-de-teste-com-mais-de-trinta-dois-bytes";
+    expect(() =>
+      getScheduleInviteHashPolicy({
+        SCHEDULE_INVITE_CODE_PEPPER: current,
+        SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER: current,
+      }),
+    ).toThrow(ScheduleInviteCodeConfigurationError);
+    expect(() =>
+      getScheduleInviteHashPolicy({
+        SCHEDULE_INVITE_CODE_PEPPER: current,
+        SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER: "curto",
+      }),
+    ).toThrow(ScheduleInviteCodeConfigurationError);
   });
 });

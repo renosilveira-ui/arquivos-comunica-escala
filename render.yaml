@@ -59,6 +59,13 @@ services:
       # deploys. No human ever sees or types this secret.
       - key: COOKIE_SECRET
         generateValue: true
+      # Exclusivo dos códigos de convite; preencher antes do runtime HMAC.
+      # Nunca reutilizar COOKIE_SECRET, JWT, Twilio ou RESEND_API_KEY.
+      - key: SCHEDULE_INVITE_CODE_PEPPER
+        sync: false
+      # Opcional: manter o pepper anterior por pelo menos 24 h na rotação.
+      - key: SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER
+        sync: false
       # Same-origin: frontend is now served by the Express server itself
       # (web-build/ static files). Cookies are first-party, so `lax` is
       # both safe and sufficient. No cross-site cookie needed.

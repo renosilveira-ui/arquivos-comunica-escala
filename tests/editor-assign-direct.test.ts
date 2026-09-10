@@ -22,7 +22,7 @@ import {
 } from "../drizzle/schema";
 import {
   generateScheduleInviteCode,
-  hashScheduleInviteCode,
+  hashLegacyScheduleInviteCode,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
 import { getDb } from "../server/db";
@@ -1055,7 +1055,7 @@ describe("editor.assignDirect", () => {
       institutionId,
       hospitalId,
       sectorId,
-      codeHash: hashScheduleInviteCode(
+      codeHash: hashLegacyScheduleInviteCode(
         normalizeScheduleInviteCode(generateScheduleInviteCode()),
       ),
       createdByUserId: managerUserId,
