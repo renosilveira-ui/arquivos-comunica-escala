@@ -16,6 +16,7 @@ export default defineConfig({
       "tests/institution-feature-entitlements-migration-mysql.test.ts",
       "tests/whatsapp-continuation-migration-mysql.test.ts",
       "tests/personal-calendar-foundation-migration-mysql.test.ts",
+      "tests/personal-calendar-check-hardening-mysql.test.ts",
     ],
     setupFiles: [],
     fileParallelism: false,

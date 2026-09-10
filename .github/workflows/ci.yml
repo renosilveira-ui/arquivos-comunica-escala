@@ -102,6 +102,9 @@ jobs:
       - name: Validate personal calendar foundation migration
         run: pnpm test:personal-calendar-migration
 
+      - name: Validate personal calendar CHECK hardening
+        run: pnpm test:personal-calendar-check-hardening
+
       - name: Validate prospective shift capacity migration
         env:
           CAPACITY_MIGRATION_TEST_URL: mysql://root:root@127.0.0.1:3306/
