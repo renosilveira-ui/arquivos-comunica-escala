@@ -122,6 +122,10 @@ import {
   InviteProfessionalIdentityError,
   requireSingleInviteProfessionalId,
 } from "../invite-professional-identity";
+import {
+  FORGOT_PASSWORD_RATE_LIMIT_CAPACITY,
+  ForgotPasswordRateLimitCache,
+} from "../forgot-password-rate-limit";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -779,28 +783,15 @@ authRouter.post(
 const FORGOT_RATE_LIMIT_MAX = 3;
 const FORGOT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
-/** Rate-limit em memória: 3 pedidos por e-mail por hora. */
-const forgotAttemptsByEmail = new Map<string, number[]>();
+/** Rate-limit TTL/LRU em memória: 3 pedidos por e-mail por hora. */
+const forgotAttemptsByEmail = new ForgotPasswordRateLimitCache(
+  FORGOT_RATE_LIMIT_MAX,
+  FORGOT_RATE_LIMIT_WINDOW_MS,
+  FORGOT_PASSWORD_RATE_LIMIT_CAPACITY,
+);
 
 function isForgotRateLimited(email: string, now = Date.now()): boolean {
-  const recent = (forgotAttemptsByEmail.get(email) ?? []).filter(
-    (ts) => now - ts < FORGOT_RATE_LIMIT_WINDOW_MS,
-  );
-  if (recent.length >= FORGOT_RATE_LIMIT_MAX) {
-    forgotAttemptsByEmail.set(email, recent);
-    return true;
-  }
-  recent.push(now);
-  forgotAttemptsByEmail.set(email, recent);
-  // Poda oportunista para o Map não crescer indefinidamente.
-  if (forgotAttemptsByEmail.size > 5000) {
-    for (const [key, stamps] of forgotAttemptsByEmail) {
-      if (!stamps.some((ts) => now - ts < FORGOT_RATE_LIMIT_WINDOW_MS)) {
-        forgotAttemptsByEmail.delete(key);
-      }
-    }
-  }
-  return false;
+  return forgotAttemptsByEmail.checkAndRecord(email, now);
 }
 
 function hashResetToken(token: string): string {
