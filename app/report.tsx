@@ -24,12 +24,17 @@ import {
   reportShiftsSurface,
   resolveReportShiftsState,
 } from "@/lib/report-shifts-state";
+import {
+  reportShiftStatusFromApi,
+  reportShiftStatusMeta,
+  type ReportShiftStatus,
+} from "@/lib/report-shift-status";
 
 type UnifiedShift = {
   id: number;
   startTime: Date;
   endTime: Date;
-  status: "confirmada" | "pendente" | "cancelada";
+  status: ReportShiftStatus;
   turnLabel: string;
   sectorName: string;
 };
@@ -49,13 +54,11 @@ function turnLabelFromStart(start: Date): string {
 
 function mapApiShift(item: ReportApiShift): UnifiedShift {
   const start = new Date(item.startAt);
-  const status: UnifiedShift["status"] =
-    item.status === "OCUPADO" ? "confirmada" : item.status === "PENDENTE" ? "pendente" : "cancelada";
   return {
     id: item.id,
     startTime: start,
     endTime: new Date(item.endAt),
-    status,
+    status: reportShiftStatusFromApi(item.status),
     turnLabel: turnLabelFromStart(start),
     // TODO: acrescentar nome real do setor quando endpoint retornar join/setor no payload de report.
     sectorName: `Setor #${item.sectorId}`,
@@ -141,7 +144,9 @@ export default function ReportScreen() {
   const totalShifts = shifts.length;
   const confirmedShifts = shifts.filter((s) => s.status === "confirmada").length;
   const pendingShifts = shifts.filter((s) => s.status === "pendente").length;
+  const vacantShifts = shifts.filter((s) => s.status === "vaga").length;
   const canceledShifts = shifts.filter((s) => s.status === "cancelada").length;
+  const unavailableStatusShifts = shifts.filter((s) => s.status === "indisponivel").length;
 
   const totalHours = shifts.reduce((acc: number, item) => {
     const start = new Date(item.startTime);
@@ -294,11 +299,31 @@ export default function ReportScreen() {
                 </View>
                 <View className="flex-1">
                   <TintedGlassCard variant="light">
-                    <Badge variant="critical">Canceladas</Badge>
-                    <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{canceledShifts}</Text>
+                    <Badge variant="neutral">Vagas</Badge>
+                    <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{vacantShifts}</Text>
                   </TintedGlassCard>
                 </View>
               </View>
+              {(canceledShifts > 0 || unavailableStatusShifts > 0) && (
+                <View className="flex-row gap-4">
+                  {canceledShifts > 0 && (
+                    <View className="flex-1">
+                      <TintedGlassCard variant="light">
+                        <Badge variant="neutral">Canceladas</Badge>
+                        <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{canceledShifts}</Text>
+                      </TintedGlassCard>
+                    </View>
+                  )}
+                  {unavailableStatusShifts > 0 && (
+                    <View className="flex-1">
+                      <TintedGlassCard variant="light">
+                        <Badge variant="neutral">Status indisponível</Badge>
+                        <Text className="text-3xl font-bold mt-2" style={{ color: theme.colors.textPrimary }}>{unavailableStatusShifts}</Text>
+                      </TintedGlassCard>
+                    </View>
+                  )}
+                </View>
+              )}
             </View>
 
             <View className="gap-4">
@@ -352,6 +377,7 @@ export default function ReportScreen() {
                   {shifts.slice(0, 10).map((shift, index: number) => {
                     const startDate = new Date(shift.startTime);
                     const endDate = new Date(shift.endTime);
+                    const statusMeta = reportShiftStatusMeta(shift.status);
 
                     return (
                       <TintedGlassCard variant="light" key={index}>
@@ -366,20 +392,8 @@ export default function ReportScreen() {
                               {shift.turnLabel || "Turno não definido"}
                             </Text>
                           </View>
-                          <Badge
-                            variant={
-                              shift.status === "confirmada"
-                                ? "success"
-                                : shift.status === "cancelada"
-                                ? "critical"
-                                : "warning"
-                            }
-                          >
-                            {shift.status === "confirmada"
-                              ? "Confirmada"
-                              : shift.status === "cancelada"
-                              ? "Cancelada"
-                              : "Pendente"}
+                          <Badge variant={statusMeta.badgeVariant}>
+                            {statusMeta.label}
                           </Badge>
                         </View>
                         <Text className="text-sm" style={{ color: theme.colors.textMuted }}>
