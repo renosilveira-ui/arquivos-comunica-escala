@@ -20,6 +20,7 @@ import {
 import {
   ASSIGNMENT_WRITE_TRANSACTION_CONFIG,
   assertAssignmentWritesAllowedForUpdate,
+  assertShiftAssignmentCapacityForUpdate,
   lockAssignmentProfessionalsForUpdate,
   type AssignmentWriteCandidate,
 } from "./shift-validations-v2";
@@ -818,6 +819,30 @@ type SwapTransferReviewer = {
   auditRole: string;
 };
 
+async function assertSwapAssignmentCapacityForUpdate(
+  tx: any,
+  topology: SwapTransferTopology,
+): Promise<void> {
+  const shiftsById = new Map(
+    [topology.source.shift, topology.toTuple?.shift]
+      .filter((shift): shift is CanonicalAssignmentTuple["shift"] => !!shift)
+      .map((shift) => [shift.id, shift]),
+  );
+  const shifts = [...shiftsById.values()].sort(
+    (left, right) => left.id - right.id,
+  );
+
+  for (const shift of shifts) {
+    await assertShiftAssignmentCapacityForUpdate(tx, {
+      shiftInstanceId: shift.id,
+      institutionId: shift.institutionId,
+      hospitalId: shift.hospitalId,
+      sectorId: shift.sectorId,
+      activeDelta: 0,
+    });
+  }
+}
+
 async function deactivateActiveAssignment(
   tx: any,
   tuple: CanonicalAssignmentTuple,
@@ -974,6 +999,7 @@ async function applySwapAssignmentTransfer(
   },
 ): Promise<number> {
   const { currentSwap, topology, actor, reviewer } = input;
+  await assertSwapAssignmentCapacityForUpdate(tx, topology);
   await writeTransferredAssignments(tx, currentSwap, topology, actor);
 
   const conflictMessage =
