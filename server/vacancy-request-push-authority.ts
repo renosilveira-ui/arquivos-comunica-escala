@@ -5,6 +5,7 @@ import {
   monthlyRosters,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -12,6 +13,7 @@ import {
 } from "../drizzle/schema";
 import type { getDb } from "./db";
 import { yearMonthBrt } from "./local-time";
+import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
 import {
   DeferredPushAuthorityError,
   ExpiredPushAuthorityError,
@@ -245,6 +247,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
       shiftInstanceId: shiftInstances.id,
+      scheduleContextId: shiftInstances.scheduleContextId,
       startAt: shiftInstances.startAt,
     })
     .from(shiftAssignmentsV2)
@@ -255,6 +258,16 @@ export async function requireAuthorizedVacancyRequestRecipient(
         eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
         eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
         eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+      ),
+    )
+    .innerJoin(
+      scheduleContexts,
+      and(
+        eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+        eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+        eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+        eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+        eq(scheduleContexts.active, true),
       ),
     )
     .innerJoin(
@@ -330,6 +343,36 @@ export async function requireAuthorizedVacancyRequestRecipient(
       ? await membershipQuery.for("share")
       : await membershipQuery;
     if (!membership[0]) invalid("Solicitante perdeu o vínculo institucional");
+
+    // Uma aprovação transforma a candidatura em alocação oficial. Antes de
+    // apresentá-la ao usuário, revalide a ACL clínica no contexto exato; uma
+    // rejeição continua sendo um resultado histórico e não depende de acesso
+    // ainda vigente ao setor.
+    if (authority.purpose === "REQUEST_APPROVED") {
+      const accessId = await findCanonicalConfirmationAccessId(db, {
+        professionalId: assignment.assignmentProfessionalId,
+        institutionId: authority.institutionId,
+        hospitalId: authority.hospitalId,
+        sectorId: authority.sectorId,
+        scheduleContextId: assignment.scheduleContextId,
+      });
+      if (!accessId)
+        invalid("Solicitante perdeu o acesso ao hospital ou setor");
+      if (lockForShare) {
+        const lockedAccessId = await findCanonicalConfirmationAccessId(db, {
+          professionalId: assignment.assignmentProfessionalId,
+          institutionId: authority.institutionId,
+          hospitalId: authority.hospitalId,
+          sectorId: authority.sectorId,
+          scheduleContextId: assignment.scheduleContextId,
+          accessId,
+          lockForUpdate: true,
+        });
+        if (!lockedAccessId) {
+          invalid("Solicitante perdeu o acesso ao hospital ou setor");
+        }
+      }
+    }
 
     if (decisionNow.getTime() >= assignment.startAt.getTime()) {
       throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);

@@ -100,12 +100,12 @@ describe("outbox de alocação direta", () => {
       expect.any(Date),
       db,
     );
-    expect(enqueueTrackedPushNotification.mock.calls[0][0].payload.body).toMatch(
-      /02\/09\/2026/,
-    );
-    expect(enqueueTrackedPushNotification.mock.calls[0][0].payload.body).toMatch(
-      /10:00–16:00/,
-    );
+    expect(
+      enqueueTrackedPushNotification.mock.calls[0][0].payload.body,
+    ).toMatch(/02\/09\/2026/);
+    expect(
+      enqueueTrackedPushNotification.mock.calls[0][0].payload.body,
+    ).toMatch(/10:00–16:00/);
     expect(enqueueTrackedPushNotification.mock.calls[0][0].userId).not.toBe(1);
   });
 
@@ -142,7 +142,9 @@ describe("outbox de alocação direta", () => {
   });
 
   it("propaga falha de persistência para abortar a transação da alocação", async () => {
-    enqueueTrackedPushNotification.mockRejectedValue(new Error("forced outbox failure"));
+    enqueueTrackedPushNotification.mockRejectedValue(
+      new Error("forced outbox failure"),
+    );
     const db = selectDb([
       [{ userId: 77 }],
       [{ name: "Hospital" }],
@@ -171,6 +173,7 @@ describe("outbox de remoção direta", () => {
       phase: "QUEUED",
     });
     const db = selectDb([
+      [{ status: "PUBLISHED" }],
       [{ userId: 77 }],
       [{ name: "Hospital São Carlos" }],
       [{ name: "Centro Cirúrgico" }],
@@ -220,9 +223,9 @@ describe("outbox de remoção direta", () => {
       expect.any(Date),
       db,
     );
-    expect(enqueueTrackedPushNotification.mock.calls[0][0].payload.data).not.toHaveProperty(
-      "userId",
-    );
+    expect(
+      enqueueTrackedPushNotification.mock.calls[0][0].payload.data,
+    ).not.toHaveProperty("userId");
     expect(enqueueTrackedPushNotification.mock.calls[0][0].userId).not.toBe(1);
   });
 
@@ -232,7 +235,12 @@ describe("outbox de remoção direta", () => {
       status: "PENDING",
       phase: "QUEUED",
     });
-    const db = selectDb([[{ userId: 77 }], [], [{ name: "UTI" }]]);
+    const db = selectDb([
+      [{ status: "LOCKED" }],
+      [{ userId: 77 }],
+      [],
+      [{ name: "UTI" }],
+    ]);
 
     await enqueueShiftUnassignedPush({
       db: db as never,
@@ -247,7 +255,7 @@ describe("outbox de remoção direta", () => {
   });
 
   it("não enfileira quando o profissional não tem vínculo ativo no tenant", async () => {
-    const db = selectDb([]);
+    const db = selectDb([[{ status: "PUBLISHED" }], []]);
     const persisted = await enqueueShiftUnassignedPush({
       db: db as never,
       assignmentId: 501,
@@ -259,8 +267,11 @@ describe("outbox de remoção direta", () => {
   });
 
   it("propaga falha de persistência para abortar a transação da remoção", async () => {
-    enqueueTrackedPushNotification.mockRejectedValue(new Error("forced outbox failure"));
+    enqueueTrackedPushNotification.mockRejectedValue(
+      new Error("forced outbox failure"),
+    );
     const db = selectDb([
+      [{ status: "PUBLISHED" }],
       [{ userId: 77 }],
       [{ name: "Hospital" }],
       [{ name: "UTI" }],
@@ -274,4 +285,23 @@ describe("outbox de remoção direta", () => {
       }),
     ).rejects.toThrow(/forced outbox failure/);
   });
+
+  it.each([
+    { label: "ausente", rosterRows: [] },
+    { label: "DRAFT", rosterRows: [{ status: "DRAFT" }] },
+  ])(
+    "não cria UNASSIGNED para atribuição removida antes da publicação ($label)",
+    async ({ rosterRows }) => {
+      const db = selectDb([rosterRows]);
+      const persisted = await enqueueShiftUnassignedPush({
+        db: db as never,
+        assignmentId: 501,
+        professionalId: 12,
+        shift: shiftInput(),
+      });
+
+      expect(persisted).toBe(0);
+      expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
+    },
+  );
 });
