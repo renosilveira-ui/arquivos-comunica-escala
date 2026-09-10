@@ -191,6 +191,7 @@ export default defineConfig({
       "tests/ui-query-error-states.test.ts",
       "tests/shift-details-paused-query.test.ts",
       "tests/personal-calendar-check-hardening.test.ts",
+      "tests/personal-calendar-migration-sequence.test.ts",
       "tests/civil-date-contract.test.ts",
     ],
   },

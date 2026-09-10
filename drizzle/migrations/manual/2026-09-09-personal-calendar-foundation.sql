@@ -18,12 +18,61 @@ CREATE TEMPORARY TABLE _personal_calendar_contract_expected (
   PRIMARY KEY (table_name)
 ) ENGINE=MEMORY;
 
+-- A migration sucessora endurece exatamente estes cinco CHECKs. O fingerprint
+-- integral continua sendo o baseline: somente a serialização sucessora exata,
+-- ENFORCED e vinculada ao mesmo nome/tabela é reduzida à forma baseline antes
+-- do SHA2. Qualquer terceiro hash, CHECK extra ou outro drift permanece visível.
+CREATE TEMPORARY TABLE _personal_calendar_successor_check_contract (
+  table_name VARCHAR(64) NOT NULL,
+  constraint_name VARCHAR(64) NOT NULL,
+  successor_hash CHAR(64) NOT NULL,
+  baseline_fragment_to_restore VARCHAR(255) NOT NULL,
+  PRIMARY KEY (table_name, constraint_name)
+) ENGINE=MEMORY;
+
 INSERT INTO _personal_calendar_contract_expected (table_name, contract_hash) VALUES
   ('personal_calendar_alert_rules', '44d17140775069cad145849f6888e21ef158b981e41e3386f2769f14623eafb8'),
   ('personal_calendar_items', '9ed5c39b35e26d6cbd9253f481c8f85528dfd85fb720663360ec64774a31cd05'),
   ('personal_calendar_occurrence_exceptions', '227d19c08817e2578cd08588121ff344729fbfd643d57cd1a8c45ff2f890a41f'),
   ('personal_calendar_occurrences', '53d7cbc2c2c1ecc66aca3598632a4ec84bd1e77226d22f4b911072da81a36955'),
   ('personal_calendar_recurrences', '378d2d203c9c37dd3c424fcad13d7bbabe063aeb5f1387a4a445b9a22dc11fa5');
+
+INSERT INTO _personal_calendar_successor_check_contract (
+  table_name,
+  constraint_name,
+  successor_hash,
+  baseline_fragment_to_restore
+) VALUES
+  (
+    'personal_calendar_items',
+    'chk_pc_item_location',
+    'a239ce6e4c45bf09f114680b1613f896f4daa47c09d5d87ce699bc7cbff6e035',
+    '(LATITUDEISNOTNULL)AND(LONGITUDEISNOTNULL)AND'
+  ),
+  (
+    'personal_calendar_items',
+    'chk_pc_item_location_binding',
+    '14c5f5c368be2307644859a654b024051d277460fb74daed522d514a6b41e428',
+    '(LOCATION_PROVIDERISNOTNULL)AND(LOCATION_EXTERNAL_IDISNOTNULL)AND'
+  ),
+  (
+    'personal_calendar_items',
+    'chk_pc_item_shape',
+    'c18b09d3ece929f1ba6e2a49f87336f86d92117eea6a33a07226e8e17c4d39c6',
+    '(BIRTHDAY_MONTHISNOTNULL)AND(BIRTHDAY_DAYISNOTNULL)AND'
+  ),
+  (
+    'personal_calendar_recurrences',
+    'chk_pc_recurrence_termination',
+    'a1a1e7eb573714242ae54a0f3d7d1f2843f168a14b32c00b02bec8a5912d506a',
+    '(OCCURRENCE_COUNTISNOTNULL)AND'
+  ),
+  (
+    'personal_calendar_recurrences',
+    'chk_pc_recurrence_weekdays',
+    'ba05bc5c8081dec382148e370c1ae611a0f5edfc18fe152337ee3e53794e1487',
+    '(WEEKDAYS_MASKISNOTNULL)AND'
+  );
 
 SET @pc_expected_table_count := 5;
 SET @pc_existing_table_count := (
@@ -387,23 +436,50 @@ SET @pc_contract_postflight_mismatches := (
               CONCAT_WS(
                 ':',
                 table_constraints.CONSTRAINT_NAME,
-                REPLACE(
-                  REPLACE(
+                CASE
+                  WHEN successor_check.constraint_name IS NOT NULL
+                    AND table_constraints.ENFORCED = 'YES'
+                    AND SHA2(check_constraints.CHECK_CLAUSE, 256) =
+                      successor_check.successor_hash
+                  THEN REPLACE(
                     REPLACE(
                       REPLACE(
-                        REPLACE(UPPER(check_constraints.CHECK_CLAUSE), CHAR(96), ''),
-                        '_UTF8MB4',
+                        REPLACE(
+                          REPLACE(
+                            REPLACE(UPPER(check_constraints.CHECK_CLAUSE), CHAR(96), ''),
+                            '_UTF8MB4',
+                            ''
+                          ),
+                          ' ',
+                          ''
+                        ),
+                        CHAR(10),
                         ''
                       ),
-                      ' ',
+                      CHAR(13),
                       ''
                     ),
-                    CHAR(10),
+                    successor_check.baseline_fragment_to_restore,
                     ''
-                  ),
-                  CHAR(13),
-                  ''
-                )
+                  )
+                  ELSE REPLACE(
+                    REPLACE(
+                      REPLACE(
+                        REPLACE(
+                          REPLACE(UPPER(check_constraints.CHECK_CLAUSE), CHAR(96), ''),
+                          '_UTF8MB4',
+                          ''
+                        ),
+                        ' ',
+                        ''
+                      ),
+                      CHAR(10),
+                      ''
+                    ),
+                    CHAR(13),
+                    ''
+                  )
+                END
               )
               ORDER BY table_constraints.CONSTRAINT_NAME
               SEPARATOR '|'
@@ -412,6 +488,9 @@ SET @pc_contract_postflight_mismatches := (
             INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS check_constraints
               ON check_constraints.CONSTRAINT_SCHEMA = table_constraints.CONSTRAINT_SCHEMA
               AND check_constraints.CONSTRAINT_NAME = table_constraints.CONSTRAINT_NAME
+            LEFT JOIN _personal_calendar_successor_check_contract AS successor_check
+              ON successor_check.table_name = table_constraints.TABLE_NAME
+              AND successor_check.constraint_name = table_constraints.CONSTRAINT_NAME
             WHERE table_constraints.CONSTRAINT_SCHEMA = tables.TABLE_SCHEMA
               AND table_constraints.TABLE_NAME = tables.TABLE_NAME
               AND table_constraints.CONSTRAINT_TYPE = 'CHECK'
@@ -452,3 +531,4 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 DROP TEMPORARY TABLE _personal_calendar_contract_expected;
+DROP TEMPORARY TABLE _personal_calendar_successor_check_contract;

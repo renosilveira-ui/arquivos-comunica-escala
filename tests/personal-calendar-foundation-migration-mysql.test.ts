@@ -73,6 +73,13 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const checkHardeningMigration = readFileSync(
+  new URL(
+    "../drizzle/migrations/manual/2026-09-09-personal-calendar-check-hardening.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 const server = parseMigrationTestServer(TEST_SERVER_URL);
 const describeWithIsolatedMysql = server ? describe : describe.skip;
 
@@ -130,6 +137,17 @@ function runFreshSchemaPush(schemaName: string) {
       `drizzle-kit push falhou no schema descartável da Agenda (status ${String(result.status)}, sinal ${String(result.signal)})${diagnostic ? `\n${diagnostic}` : ""}`,
     );
   }
+}
+
+async function runFoundationHardeningRerunSequence(
+  connection: Connection,
+  afterFoundation: () => Promise<void>,
+): Promise<void> {
+  await connection.query(migration);
+  await afterFoundation();
+  await connection.query(checkHardeningMigration);
+  await connection.query(migration);
+  await connection.query(checkHardeningMigration);
 }
 
 describeWithIsolatedMysql(
@@ -665,6 +683,35 @@ describeWithIsolatedMysql(
           WHERE client_mutation_id = 'sentinel'
         `);
         expect(sentinel).toEqual([{ title: "Não apagar" }]);
+      } finally {
+        await temporary.connection.end();
+        await admin.query(
+          `DROP DATABASE IF EXISTS ${quoteIdentifier(temporary.schemaName)}`,
+        );
+      }
+    });
+
+    it("preserva dados na sequência foundation → hardening → reruns", async () => {
+      const temporary = await createTemporaryDatabase(admin);
+      try {
+        await runFoundationHardeningRerunSequence(
+          temporary.connection,
+          async () => {
+            await temporary.connection.execute(
+              `INSERT INTO personal_calendar_items (
+                owner_user_id, client_mutation_id, kind, title,
+                start_local_date, all_day, availability, time_zone
+              ) VALUES (1, 'sequence-sentinel', 'REMINDER', 'Preservar',
+                '2026-09-12', 1, 'FREE', 'America/Fortaleza')`,
+            );
+          },
+        );
+
+        const [sentinel] = await temporary.connection.query<RowDataPacket[]>(`
+          SELECT title FROM personal_calendar_items
+          WHERE client_mutation_id = 'sequence-sentinel'
+        `);
+        expect(sentinel).toEqual([{ title: "Preservar" }]);
       } finally {
         await temporary.connection.end();
         await admin.query(
