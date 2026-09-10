@@ -1,5 +1,10 @@
 import { defineConfig } from "vitest/config";
 import path from "path";
+import { validateStandardTestDestructiveTarget } from "./scripts/destructive-target-fence";
+
+const validatedTestTarget =
+  validateStandardTestDestructiveTarget(process.env);
+const testDbUrl = validatedTestTarget.databaseUrl;
 
 export default defineConfig({
   resolve: {
@@ -20,12 +25,14 @@ export default defineConfig({
     fileParallelism: false,
     setupFiles: ["./tests/setup.ts"],
     env: {
-      // TEST_DATABASE_URL permite rodar suítes em paralelo em bancos
-      // distintos (um por worktree/agente). Nunca lê DATABASE_URL do
-      // shell: o seed apaga dados e .env.local aponta para o staging.
-      DATABASE_URL:
-        process.env.TEST_DATABASE_URL ??
-        "mysql://root:root@127.0.0.1:3306/escalas_test",
+      // A configuração falha antes de carregar a suíte se o alvo não for o
+      // MySQL local descartável e explicitamente autorizado.
+      DATABASE_URL: testDbUrl,
+      TEST_DATABASE_URL: testDbUrl,
+      TEST_DATABASE_ALLOW_DESTRUCTIVE: "1",
+      TEST_DATABASE_EXPECTED_NAME: validatedTestTarget.databaseName,
+      TEST_DATABASE_DISPOSABLE_MARKER:
+        process.env.TEST_DATABASE_DISPOSABLE_MARKER!,
       NODE_ENV: "test",
     },
     exclude: [

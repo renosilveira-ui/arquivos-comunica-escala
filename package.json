@@ -22,6 +22,7 @@
     "security:audit": "node scripts/security/audit-dependencies.mjs",
     "security:lockfile": "node scripts/security/lockfile-osv-audit.mjs",
     "test": "vitest run",
+    "test:prepare-database": "tsx scripts/prepare-standard-test-database.ts",
     "test:sector-service-specialties-migration": "vitest run --config vitest.migration.config.ts",
     "test:professional-identity-migration": "vitest run --config vitest.migration.config.ts tests/professional-identity-migration-mysql.test.ts",
     "test:institution-feature-migration": "vitest run --config vitest.migration.config.ts tests/institution-feature-entitlements-migration-mysql.test.ts",
