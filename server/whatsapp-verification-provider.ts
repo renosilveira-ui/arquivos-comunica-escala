@@ -15,6 +15,7 @@ export type WhatsAppVerificationFailureCode =
   | "TWILIO_UNAVAILABLE"
   | "INVALID_PHONE"
   | "INVALID_CODE"
+  | "VERIFICATION_ENDED"
   | "EXPIRED"
   | "TOO_MANY_ATTEMPTS"
   | "TOO_MANY_SENDS"
@@ -38,9 +39,25 @@ export type WhatsAppVerificationStartResult =
   | { ok: true; status: string; verificationSid: string }
   | WhatsAppVerificationProviderFailure;
 
+export const TWILIO_VERIFY_CHECK_STATUSES = [
+  "pending",
+  "approved",
+  "canceled",
+  "max_attempts_reached",
+  "deleted",
+  "failed",
+  "expired",
+] as const;
+export type TwilioVerifyCheckStatus =
+  (typeof TWILIO_VERIFY_CHECK_STATUSES)[number];
+
 export type WhatsAppVerificationCheckResult =
   | { ok: true; approved: true }
-  | { ok: true; approved: false; status: string }
+  | {
+      ok: true;
+      approved: false;
+      status: Exclude<TwilioVerifyCheckStatus, "approved">;
+    }
   | WhatsAppVerificationProviderFailure;
 
 export interface WhatsAppVerificationProvider {
@@ -63,9 +80,7 @@ const NOT_CONFIGURED: WhatsAppVerificationStartResult &
  * Fail-closed quando o Verify Service não está configurado.
  * Nunca é um mock silencioso de sucesso.
  */
-export class UnimplementedWhatsAppVerificationProvider
-  implements WhatsAppVerificationProvider
-{
+export class UnimplementedWhatsAppVerificationProvider implements WhatsAppVerificationProvider {
   async startVerification(
     _e164: string,
   ): Promise<WhatsAppVerificationStartResult> {
@@ -95,12 +110,19 @@ export function classifyTwilioVerifyCheckStatus(
   if (isTwilioVerifyApprovedStatus(status)) {
     return { ok: true, approved: true };
   }
-  if (typeof status !== "string" || status.trim() === "") {
+  if (
+    typeof status !== "string" ||
+    !TWILIO_VERIFY_CHECK_STATUSES.includes(status as TwilioVerifyCheckStatus)
+  ) {
     return {
       ok: false,
       kind: "RETRYABLE_PROVIDER_ERROR",
       code: "PROVIDER_MALFORMED",
     };
   }
-  return { ok: true, approved: false, status };
+  return {
+    ok: true,
+    approved: false,
+    status: status as Exclude<TwilioVerifyCheckStatus, "approved">,
+  };
 }

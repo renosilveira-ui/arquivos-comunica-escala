@@ -16,6 +16,27 @@ import {
 const VERIFICATION_SID = `VE${"1".repeat(32)}`;
 
 describe("Twilio Verify provider contract", () => {
+  it.each([
+    "pending",
+    "approved",
+    "canceled",
+    "deleted",
+    "failed",
+    "expired",
+    "max_attempts_reached",
+  ])("aceita apenas status oficial %s", (status) => {
+    expect(classifyTwilioVerifyCheckStatus(status).ok).toBe(true);
+  });
+  it.each(["unrecognized_status", "APPROVED", " pending ", null, {}, true])(
+    "status desconhecido %j é falha técnica",
+    (status) => {
+      expect(classifyTwilioVerifyCheckStatus(status)).toEqual({
+        ok: false,
+        kind: "RETRYABLE_PROVIDER_ERROR",
+        code: "PROVIDER_MALFORMED",
+      });
+    },
+  );
   it("somente status approved conta como verificado", () => {
     expect(isTwilioVerifyApprovedStatus("approved")).toBe(true);
     expect(isTwilioVerifyApprovedStatus("pending")).toBe(false);
@@ -239,6 +260,14 @@ describe("Twilio Verify provider contract", () => {
     expect(
       await provider.checkVerification(e164, "123456", VERIFICATION_SID),
     ).toEqual({ ok: true, approved: true });
+    response = { status: "unrecognized_status", ...valid };
+    expect(
+      await provider.checkVerification(e164, "123456", VERIFICATION_SID),
+    ).toEqual({
+      ok: false,
+      kind: "RETRYABLE_PROVIDER_ERROR",
+      code: "PROVIDER_MALFORMED",
+    });
   });
 
   it("mapeia erros Twilio sem vazar internals", () => {

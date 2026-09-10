@@ -25,6 +25,8 @@ import {
   upsertUserWhatsAppContact,
 } from "../server/user-contact-channels";
 import { recordAccountAudit } from "../server/account-audit";
+import * as contactDomain from "../server/user-contact-channels";
+import { classifyTwilioVerifyCheckStatus } from "../server/whatsapp-verification-provider";
 import {
   resetWhatsAppVerificationRuntime,
   whatsappVerificationRuntime,
@@ -178,6 +180,364 @@ afterAll(async () => {
 });
 
 describe("ownership WhatsApp account-wide — MySQL descartável", () => {
+  it.each([
+    [
+      "index invisível",
+      "ALTER TABLE account_audit_events ALTER INDEX idx_account_audit_parent INVISIBLE",
+      "ALTER TABLE account_audit_events ALTER INDEX idx_account_audit_parent VISIBLE",
+    ],
+    [
+      "tipo unsigned divergente",
+      "ALTER TABLE account_audit_events MODIFY actor_user_id INT UNSIGNED NULL",
+      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL",
+    ],
+    [
+      "collation divergente",
+      "ALTER TABLE account_audit_events MODIFY action VARCHAR(40) COLLATE utf8mb4_bin NOT NULL",
+      "ALTER TABLE account_audit_events MODIFY action VARCHAR(40) COLLATE utf8mb4_0900_ai_ci NOT NULL",
+    ],
+    [
+      "comentário extra",
+      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL COMMENT 'unexpected'",
+      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL",
+    ],
+    [
+      "ordem de coluna divergente",
+      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL AFTER subject_user_id",
+      "ALTER TABLE account_audit_events MODIFY actor_user_id INT NULL AFTER id",
+    ],
+    [
+      "regra FK divergente",
+      "ALTER TABLE whatsapp_verification_challenges DROP FOREIGN KEY fk_whatsapp_challenge_user; ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT fk_whatsapp_challenge_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE RESTRICT",
+      "ALTER TABLE whatsapp_verification_challenges DROP FOREIGN KEY fk_whatsapp_challenge_user; ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT fk_whatsapp_challenge_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE",
+    ],
+    [
+      "audit phone extra",
+      "ALTER TABLE account_audit_events ADD phone VARCHAR(32) NULL",
+      "ALTER TABLE account_audit_events DROP COLUMN phone",
+    ],
+    [
+      "challenge otp extra",
+      "ALTER TABLE whatsapp_verification_challenges ADD otp VARCHAR(10) NULL",
+      "ALTER TABLE whatsapp_verification_challenges DROP COLUMN otp",
+    ],
+    [
+      "audit payload extra",
+      "ALTER TABLE account_audit_events ADD payload JSON NULL",
+      "ALTER TABLE account_audit_events DROP COLUMN payload",
+    ],
+    [
+      "default divergente",
+      "ALTER TABLE account_audit_events ALTER subject_user_id SET DEFAULT 1",
+      "ALTER TABLE account_audit_events ALTER subject_user_id DROP DEFAULT",
+    ],
+    [
+      "default timestamp ausente",
+      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL",
+      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    ],
+    [
+      "ON UPDATE ausente",
+      "ALTER TABLE whatsapp_verification_challenges MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+      "ALTER TABLE whatsapp_verification_challenges MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+    ],
+    [
+      "ON UPDATE extra",
+      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+      "ALTER TABLE account_audit_events MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    ],
+    [
+      "unique extra",
+      "ALTER TABLE account_audit_events ADD UNIQUE KEY unexpected_unique (actor_user_id)",
+      "ALTER TABLE account_audit_events DROP INDEX unexpected_unique",
+    ],
+    [
+      "index extra",
+      "ALTER TABLE account_audit_events ADD INDEX unexpected_index (actor_user_id)",
+      "ALTER TABLE account_audit_events DROP INDEX unexpected_index",
+    ],
+    [
+      "index muda para unique",
+      "ALTER TABLE account_audit_events DROP INDEX idx_account_audit_parent, ADD UNIQUE KEY idx_account_audit_parent (parent_event_id)",
+      "ALTER TABLE account_audit_events DROP INDEX idx_account_audit_parent, ADD KEY idx_account_audit_parent (parent_event_id)",
+    ],
+    [
+      "FK extra sem novo indice",
+      "ALTER TABLE whatsapp_verification_challenges ADD CONSTRAINT unexpected_user_fk FOREIGN KEY(user_id) REFERENCES users(id)",
+      "ALTER TABLE whatsapp_verification_challenges DROP FOREIGN KEY unexpected_user_fk",
+    ],
+    [
+      "check extra",
+      "ALTER TABLE account_audit_events ADD CONSTRAINT unexpected_check CHECK(subject_user_id > 0)",
+      "ALTER TABLE account_audit_events DROP CHECK unexpected_check",
+    ],
+    [
+      "trigger extra",
+      "CREATE TRIGGER unexpected_trigger BEFORE INSERT ON account_audit_events FOR EACH ROW SET NEW.subject_user_id = 1",
+      "DROP TRIGGER unexpected_trigger",
+    ],
+  ])(
+    "postflight recusa %s e aceita restauração exata",
+    async (_label, change, restore) => {
+      await pool.query(change);
+      try {
+        await expect(pool.query(migration)).rejects.toBeDefined();
+      } finally {
+        await pool.query(restore);
+      }
+      await pool.query(migration);
+    },
+  );
+
+  it.each([
+    [
+      "configuração",
+      {
+        ok: false,
+        kind: "SERVER_CONFIGURATION_ERROR",
+        code: "PROVIDER_CHANNEL_NOT_CONFIGURED",
+      },
+      "FAILED",
+      "READY",
+      "PROVIDER_CHANNEL_NOT_CONFIGURED",
+    ],
+    [
+      "transporte",
+      {
+        ok: false,
+        kind: "RETRYABLE_PROVIDER_ERROR",
+        code: "TWILIO_UNAVAILABLE",
+      },
+      "FAILED",
+      "READY",
+      "TWILIO_UNAVAILABLE",
+    ],
+    [
+      "malformed",
+      {
+        ok: false,
+        kind: "RETRYABLE_PROVIDER_ERROR",
+        code: "PROVIDER_MALFORMED",
+      },
+      "FAILED",
+      "READY",
+      "PROVIDER_MALFORMED",
+    ],
+    [
+      "pending",
+      classifyTwilioVerifyCheckStatus("pending"),
+      "REJECTED",
+      "READY",
+      "INVALID_CODE",
+    ],
+    [
+      "canceled",
+      classifyTwilioVerifyCheckStatus("canceled"),
+      "REJECTED",
+      "FAILED",
+      "VERIFICATION_ENDED",
+    ],
+    [
+      "deleted",
+      classifyTwilioVerifyCheckStatus("deleted"),
+      "REJECTED",
+      "FAILED",
+      "VERIFICATION_ENDED",
+    ],
+    [
+      "failed",
+      classifyTwilioVerifyCheckStatus("failed"),
+      "REJECTED",
+      "FAILED",
+      "VERIFICATION_ENDED",
+    ],
+    [
+      "expired",
+      classifyTwilioVerifyCheckStatus("expired"),
+      "REJECTED",
+      "FAILED",
+      "EXPIRED",
+    ],
+    [
+      "max_attempts_reached",
+      classifyTwilioVerifyCheckStatus("max_attempts_reached"),
+      "REJECTED",
+      "FAILED",
+      "TOO_MANY_ATTEMPTS",
+    ],
+    [
+      "unknown",
+      classifyTwilioVerifyCheckStatus("unrecognized_status"),
+      "FAILED",
+      "READY",
+      "PROVIDER_MALFORMED",
+    ],
+  ] as const)(
+    "check %s classifica auditoria e terminalidade",
+    async (_label, result, outcome, state, code) => {
+      await caller().startWhatsAppVerification({ phone: A });
+      provider.checkVerification = async () =>
+        result as WhatsAppVerificationCheckResult;
+      expect(
+        await caller().checkWhatsAppVerification({ code: "123456" }),
+      ).toMatchObject({ ok: false, code });
+      const events = await rows(
+        "SELECT outcome FROM account_audit_events WHERE action='WHATSAPP_VERIFY_CHECK' ORDER BY id",
+      );
+      expect(events.map((event) => event.outcome)).toEqual([
+        "REQUESTED",
+        outcome,
+      ]);
+      const [challenge] = await rows(
+        "SELECT state,provider_verification_sid FROM whatsapp_verification_challenges",
+      );
+      expect(challenge.state).toBe(state);
+      expect(challenge.provider_verification_sid).toBe(
+        state === "FAILED" ? null : SID,
+      );
+      expect((await caller().getWhatsAppContact()).verified).toBe(false);
+    },
+  );
+
+  it("readers account-wide exigem sessão também no domínio", async () => {
+    await caller().setWhatsAppContact({ phone: A });
+    for (const reader of [
+      contactDomain.getWhatsAppContactForUser,
+      contactDomain.getActiveWhatsAppChannelForUser,
+    ]) {
+      await expect(reader(1, undefined as never)).rejects.toMatchObject({
+        code: "UNAUTHORIZED",
+      });
+      await expect(reader(1, 2)).rejects.toMatchObject({
+        code: "UNAUTHORIZED",
+      });
+      expect(await reader(1, 1)).not.toBeNull();
+    }
+  });
+
+  it("leitura pós-consumo revalida sessão antes de responder sucesso", async () => {
+    await caller().startWhatsAppVerification({ phone: A });
+    const original = contactDomain.getActiveWhatsAppChannelForUser;
+    const spy = vi
+      .spyOn(contactDomain, "getActiveWhatsAppChannelForUser")
+      .mockImplementation(async (...args) => {
+        await pool.query("UPDATE users SET session_version=2 WHERE id=1");
+        return original(...args);
+      });
+    try {
+      await expect(
+        caller().checkWhatsAppVerification({ code: "123456" }),
+      ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(
+      (await rows("SELECT state FROM whatsapp_verification_challenges"))[0]
+        .state,
+    ).toBe("CONSUMED");
+  });
+
+  it("leitura do titular limpa SID expirado sem apagar desafio válido", async () => {
+    await caller().startWhatsAppVerification({ phone: A });
+    await caller().getWhatsAppContact();
+    expect(
+      (
+        await rows(
+          "SELECT provider_verification_sid FROM whatsapp_verification_challenges",
+        )
+      )[0].provider_verification_sid,
+    ).toBe(SID);
+    await pool.query(
+      "UPDATE whatsapp_verification_challenges SET expires_at=DATE_SUB(NOW(),INTERVAL 1 SECOND)",
+    );
+    await caller().getWhatsAppContact();
+    expect(
+      (
+        await rows(
+          "SELECT state,provider_verification_sid FROM whatsapp_verification_challenges",
+        )
+      )[0],
+    ).toMatchObject({ state: "FAILED", provider_verification_sid: null });
+  });
+
+  it("nova sessão limpa SID do desafio da sessão revogada", async () => {
+    await caller().startWhatsAppVerification({ phone: A });
+    await pool.query("UPDATE users SET session_version=2 WHERE id=1");
+    const fresh = caller(1, {
+      user: { ...context().user!, sessionVersion: 2 },
+    });
+    await fresh.getWhatsAppContact();
+    expect(
+      (
+        await rows(
+          "SELECT state,provider_verification_sid FROM whatsapp_verification_challenges",
+        )
+      )[0],
+    ).toMatchObject({ state: "INVALIDATED", provider_verification_sid: null });
+  });
+
+  it("SQL de retenção documentado é limitado, idempotente e preserva desafio válido", async () => {
+    const doc = readFileSync("docs/WHATSAPP_ACCOUNT_OWNERSHIP_V1.md", "utf8");
+    const cleanup = doc.match(
+      /```sql\n(-- WHATSAPP_RETENTION_MAINTENANCE[\s\S]+?)```/,
+    )?.[1];
+    expect(cleanup).toBeDefined();
+    const accounts = Array.from({ length: 102 }, (_, i) => [
+      i + 2,
+      "Retention test",
+      "APPROVED",
+      1,
+      "doctor",
+    ]);
+    await pool.query(
+      "INSERT INTO users(id,name,approval_status,session_version,role) VALUES ?",
+      [accounts],
+    );
+    await pool.query(
+      "INSERT INTO user_contact_channels(user_id,channel,address,normalized_address,active) SELECT id,'WHATSAPP',CONCAT('+55859',LPAD(id,8,'0')),CONCAT('+55859',LPAD(id,8,'0')),1 FROM users",
+    );
+    await pool.query(
+      "INSERT INTO whatsapp_verification_challenges(user_id,challenge_id,contact_id,session_version,state,provider_verification_sid,request_audit_id,expires_at) SELECT u.id,UUID(),ch.id,1,'READY',?,1,IF(u.id>=99,DATE_ADD(NOW(),INTERVAL 5 MINUTE),DATE_SUB(NOW(),INTERVAL 1 SECOND)) FROM users u JOIN user_contact_channels ch ON ch.user_id=u.id",
+      [SID],
+    );
+    await pool.query(
+      "UPDATE users SET approval_status='PENDING' WHERE id=99; UPDATE user_contact_channels SET active=0 WHERE user_id=100; UPDATE users SET session_version=2 WHERE id=101; UPDATE users SET deleted_at=NOW() WHERE id=102",
+    );
+    const maintenance = await pool.getConnection();
+    try {
+      await maintenance.query("SET SESSION time_zone='+03:00'");
+      for (const expected of [100, 2, 0]) {
+        const [result] = await maintenance.query<mysql.ResultSetHeader>(cleanup!);
+        expect(result.affectedRows).toBe(expected);
+      }
+    } finally {
+      await maintenance.query("SET SESSION time_zone='+00:00'");
+      maintenance.release();
+    }
+    expect(
+      (
+        await rows(
+          "SELECT state,provider_verification_sid FROM whatsapp_verification_challenges WHERE user_id=103",
+        )
+      )[0],
+    ).toMatchObject({ state: "READY", provider_verification_sid: SID });
+    expect(
+      (
+        await rows(
+          "SELECT state,provider_verification_sid FROM whatsapp_verification_challenges WHERE user_id=102",
+        )
+      )[0],
+    ).toMatchObject({ state: "INVALIDATED", provider_verification_sid: null });
+    expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(0);
+    expect(
+      (
+        await rows(
+          "SELECT COUNT(*) AS count FROM user_contact_channels WHERE verified_at IS NOT NULL",
+        )
+      )[0].count,
+    ).toBe(0);
+  });
+
   it("migration reroda sem perder dados e rejeita schema incompatível", async () => {
     await caller().setWhatsAppContact({ phone: A });
     await pool.query(migration);

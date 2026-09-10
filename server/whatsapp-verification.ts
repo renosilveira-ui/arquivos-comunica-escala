@@ -13,7 +13,7 @@ import {
   beginWhatsAppVerification,
   finishWhatsAppVerificationStart,
   beginWhatsAppVerificationCheck,
-  recordWhatsAppCheckRejection,
+  recordWhatsAppCheckOutcome,
 } from "./whatsapp-verification-store";
 import {
   assertOperableWhatsAppUser,
@@ -77,6 +77,8 @@ function userMessage(code: WhatsAppVerificationFailureCode): string {
       return "Código inválido. Tente novamente.";
     case "EXPIRED":
       return "Código expirado. Solicite um novo.";
+    case "VERIFICATION_ENDED":
+      return "Esta verificação foi encerrada. Solicite um novo código.";
     case "TOO_MANY_ATTEMPTS":
       return "Muitas tentativas. Solicite um novo código.";
     case "TOO_MANY_SENDS":
@@ -374,8 +376,9 @@ export async function checkWhatsAppVerification(input: {
       channel.e164,
       checked,
     );
-    await recordWhatsAppCheckRejection(
+    await recordWhatsAppCheckOutcome(
       channel,
+      checked.kind === "USER_ERROR" ? "REJECTED" : "FAILED",
       checked.code === "EXPIRED" || checked.code === "TOO_MANY_ATTEMPTS",
     );
     return fail(checked.kind, checked.code);
@@ -386,7 +389,9 @@ export async function checkWhatsAppVerification(input: {
         ? "EXPIRED"
         : checked.status === "max_attempts_reached"
           ? "TOO_MANY_ATTEMPTS"
-          : "INVALID_CODE";
+          : checked.status === "pending"
+            ? "INVALID_CODE"
+            : "VERIFICATION_ENDED";
     logSafe({
       event: "whatsapp_verify_check_not_approved",
       userId: input.userId,
@@ -394,7 +399,11 @@ export async function checkWhatsAppVerification(input: {
       addressHash: e164AuditHash(channel.e164),
       providerStatus: checked.status,
     });
-    await recordWhatsAppCheckRejection(channel, mapped !== "INVALID_CODE");
+    await recordWhatsAppCheckOutcome(
+      channel,
+      "REJECTED",
+      mapped !== "INVALID_CODE",
+    );
     return fail("USER_ERROR", mapped);
   }
 
@@ -409,13 +418,16 @@ export async function checkWhatsAppVerification(input: {
     });
   } catch (error) {
     if (error instanceof TRPCError && error.code === "CONFLICT") {
-      await recordWhatsAppCheckRejection(channel, false);
+      await recordWhatsAppCheckOutcome(channel, "REJECTED", false);
       return fail("USER_ERROR", "CHANNEL_CHANGED");
     }
     throw error;
   }
 
-  const after = await getActiveWhatsAppChannelForUser(input.userId);
+  const after = await getActiveWhatsAppChannelForUser(
+    input.userId,
+    input.sessionVersion,
+  );
   if (!after?.verified || after.e164 !== channel.e164) {
     return fail("USER_ERROR", "CHANNEL_CHANGED");
   }
