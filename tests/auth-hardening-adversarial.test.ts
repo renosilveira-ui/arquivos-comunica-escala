@@ -407,8 +407,9 @@ describe("auth hardening adversarial", () => {
       .from(users)
       .where(eq(users.id, orphan.id));
     const transport = recoveryMailTransport({
-      delivered: false,
+      kind: "REJECTED",
       transport: "console",
+      reason: "NOT_CONFIGURED",
     });
 
     const assertNoCredentialWrite = async () => {
@@ -652,7 +653,7 @@ describe("auth hardening adversarial", () => {
       async () => {
         signalDeliveryStarted();
         await deliveryGate;
-        return { delivered: true, transport: "resend" };
+        return { kind: "ACCEPTED", transport: "resend" };
       },
     );
 

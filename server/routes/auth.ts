@@ -107,9 +107,20 @@ import {
   readAdminMutationAuthoritySnapshot,
   type AdminMutationAuthoritySnapshot,
 } from "./admin";
+import { waitForSignupNeutralResponseFloor } from "../auth-response-timing";
 import {
-  waitForSignupNeutralResponseFloor,
-} from "../auth-response-timing";
+  BCRYPT_WRITE_ROUNDS,
+  DUMMY_PASSWORD_HASH,
+  hasPasswordCredentialMaterial,
+  isBcryptInputWithinLimit,
+  isClaimablePasswordShell,
+  isSafeBcryptHash,
+  safeBcryptCompare,
+} from "../password-credential";
+import {
+  InviteProfessionalIdentityError,
+  requireSingleInviteProfessionalId,
+} from "../invite-professional-identity";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -141,9 +152,7 @@ function professionalIdentityForLegacyRole(role: ProfessionalRole) {
 
 export const authRouter = Router();
 
-const BCRYPT_ROUNDS = 12;
-const DUMMY_PASSWORD_HASH =
-  "$2b$12$kbCK0heWrK5N5G57C1OoJeeSGgkmA1E2Nl1qOQOs7fBh.a88y3OES";
+const BCRYPT_ROUNDS = BCRYPT_WRITE_ROUNDS;
 const EMAIL_ALREADY_REGISTERED =
   "Este e-mail já tem conta. Entre ou use Esqueci minha senha.";
 function normalizePasswordInput(value: unknown): unknown {
@@ -162,17 +171,6 @@ async function sendNeutralSignupAccepted(
     pending: hasInstitution,
     awaitingScale: !hasInstitution,
   });
-}
-
-function hasUsablePasswordHash(hash: string | null | undefined): boolean {
-  if (typeof hash !== "string") return false;
-  const parsed = /^\$2[aby]\$(\d{2})\$[./A-Za-z0-9]{53}$/.exec(hash);
-  if (!parsed) return false;
-  const cost = Number(parsed[1]);
-  // Aceitar um custo acima do teto suportado transforma uma linha corrompida
-  // em amplificação de CPU no endpoint público. Custos legados menores seguem
-  // válidos e toda nova escrita usa exatamente BCRYPT_ROUNDS.
-  return Number.isInteger(cost) && cost >= 4 && cost <= BCRYPT_ROUNDS;
 }
 
 function sendSessionBindingProtocolError(
@@ -341,9 +339,13 @@ authRouter.post(
       typeof email !== "string" ||
       typeof password !== "string" ||
       !email ||
-      !password
+      !password ||
+      !isBcryptInputWithinLimit(password)
     ) {
-      res.status(400).json({ error: "email e password são obrigatórios" });
+      res.status(400).json({
+        error:
+          "email e password são obrigatórios; a senha deve ter no máximo 72 bytes",
+      });
       return;
     }
 
@@ -352,14 +354,13 @@ authRouter.post(
     // Toda tentativa paga o mesmo custo bcrypt básico. Contas ausentes,
     // excluídas ou sem senha usam um hash sentinela e continuam respondendo
     // como credencial inválida, sem um atalho temporal de enumeração.
-    const candidateHash =
-      user && !user.deletedAt && hasUsablePasswordHash(user.passwordHash)
-        ? user.passwordHash!
-        : DUMMY_PASSWORD_HASH;
-    const valid = await bcrypt.compare(password, candidateHash);
+    const valid = await safeBcryptCompare(
+      password,
+      user && !user.deletedAt ? user.passwordHash : null,
+    );
     if (
       !user ||
-      !hasUsablePasswordHash(user.passwordHash) ||
+      !isSafeBcryptHash(user.passwordHash) ||
       user.deletedAt ||
       !valid
     ) {
@@ -417,7 +418,7 @@ authRouter.post(
               if (
                 !lockedUser ||
                 lockedUser.deletedAt ||
-                !lockedUser.passwordHash ||
+                !isSafeBcryptHash(lockedUser.passwordHash) ||
                 lockedUser.passwordHash !== user.passwordHash
               ) {
                 return null;
@@ -459,7 +460,9 @@ authRouter.post(
       console.error("[login] SESSION_ROTATION_FAILED", {
         reason: loginSessionRotationFailureReason(error),
       });
-      res.status(503).json({ error: "Não foi possível iniciar sessão. Tente novamente." });
+      res
+        .status(503)
+        .json({ error: "Não foi possível iniciar sessão. Tente novamente." });
       return;
     }
     if (!freshUser) {
@@ -555,13 +558,11 @@ authRouter.post(
       throw error;
     }
 
-    const {
-      currentPassword: rawCurrentPassword,
-      newPassword: rawNewPassword,
-    } = req.body as {
-      currentPassword?: unknown;
-      newPassword?: unknown;
-    };
+    const { currentPassword: rawCurrentPassword, newPassword: rawNewPassword } =
+      req.body as {
+        currentPassword?: unknown;
+        newPassword?: unknown;
+      };
     const currentPassword = normalizePasswordInput(rawCurrentPassword);
     const newPassword = normalizePasswordInput(rawNewPassword);
 
@@ -578,12 +579,15 @@ authRouter.post(
     }
     if (
       currentPassword.length > 128 ||
+      !isBcryptInputWithinLimit(currentPassword) ||
       newPassword.length < 8 ||
-      newPassword.length > 128
+      newPassword.length > 128 ||
+      !isBcryptInputWithinLimit(newPassword)
     ) {
-      res
-        .status(400)
-        .json({ error: "Nova senha precisa ter entre 8 e 128 caracteres" });
+      res.status(400).json({
+        error:
+          "Nova senha precisa ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
 
@@ -600,12 +604,15 @@ authRouter.post(
       return;
     }
 
-    if (!authUser.passwordHash) {
+    if (!isSafeBcryptHash(authUser.passwordHash)) {
       res.status(401).json({ error: "Conta sem senha definida" });
       return;
     }
 
-    const valid = await bcrypt.compare(currentPassword, authUser.passwordHash);
+    const valid = await safeBcryptCompare(
+      currentPassword,
+      authUser.passwordHash,
+    );
     if (!valid) {
       res.status(401).json({ error: "Senha atual incorreta" });
       return;
@@ -638,7 +645,7 @@ authRouter.post(
             if (
               !lockedUser ||
               lockedUser.deletedAt ||
-              !lockedUser.passwordHash
+              !isSafeBcryptHash(lockedUser.passwordHash)
             ) {
               throw new AuthMutationError(401, "Conta sem senha definida");
             }
@@ -864,10 +871,15 @@ authRouter.post(
       res.status(400).json({ error: "token e newPassword são obrigatórios" });
       return;
     }
-    if (newPassword.length < 8 || newPassword.length > 128) {
-      res
-        .status(400)
-        .json({ error: "Nova senha precisa ter entre 8 e 128 caracteres" });
+    if (
+      newPassword.length < 8 ||
+      newPassword.length > 128 ||
+      !isBcryptInputWithinLimit(newPassword)
+    ) {
+      res.status(400).json({
+        error:
+          "Nova senha precisa ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
 
@@ -897,6 +909,10 @@ authRouter.post(
         !recoveryCandidate.emailHash ||
         !recoveryCandidate.expiresAt ||
         !recoveryCandidate.providerAcceptedAt ||
+        (recoveryCandidate.kind === "SELF_SERVICE" &&
+          recoveryCandidate.requestActorKind !== "UNAUTHENTICATED") ||
+        (recoveryCandidate.kind === "ADMIN_INITIATED" &&
+          recoveryCandidate.requestActorKind !== "AUTHENTICATED_ADMIN") ||
         recoveryCandidate.expiresAt.getTime() <= Date.now()
       ) {
         res.status(400).json({ error: INVALID });
@@ -989,6 +1005,7 @@ authRouter.post(
               if (
                 !lockedUser ||
                 lockedUser.deletedAt ||
+                !isSafeBcryptHash(lockedUser.passwordHash) ||
                 lockedUser.sessionVersion !==
                   recoveryCandidate.expectedTargetSessionVersion ||
                 hashAuthRecoveryValue(
@@ -1021,6 +1038,8 @@ authRouter.post(
                 !lockedRecovery ||
                 lockedRecovery.state !== "ACTIVE" ||
                 lockedRecovery.kind !== recoveryCandidate.kind ||
+                lockedRecovery.requestActorKind !==
+                  recoveryCandidate.requestActorKind ||
                 lockedRecovery.targetUserId !==
                   recoveryCandidate.targetUserId ||
                 lockedRecovery.targetMembershipId !==
@@ -1044,7 +1063,12 @@ authRouter.post(
               }
               const consumeResult = await tx
                 .update(authRecoveryRequests)
-                .set({ state: "USED", usedAt })
+                .set({
+                  state: "USED",
+                  activeSlot: null,
+                  usedAt,
+                  finishedAt: usedAt,
+                })
                 .where(
                   and(
                     eq(authRecoveryRequests.id, lockedRecovery.id),
@@ -1068,6 +1092,7 @@ authRouter.post(
                   and(
                     eq(users.id, lockedUser.id),
                     eq(users.sessionVersion, lockedUser.sessionVersion),
+                    eq(users.passwordHash, lockedUser.passwordHash),
                     isNull(users.deletedAt),
                   ),
                 );
@@ -1182,7 +1207,11 @@ authRouter.post(
               .where(eq(users.id, resetCandidate.userId))
               .limit(1)
               .for("update");
-            if (!lockedUser || lockedUser.deletedAt) {
+            if (
+              !lockedUser ||
+              lockedUser.deletedAt ||
+              !isSafeBcryptHash(lockedUser.passwordHash)
+            ) {
               throw new AuthMutationError(400, INVALID);
             }
 
@@ -1239,6 +1268,7 @@ authRouter.post(
                 and(
                   eq(users.id, lockedUser.id),
                   eq(users.sessionVersion, lockedUser.sessionVersion),
+                  eq(users.passwordHash, lockedUser.passwordHash),
                   isNull(users.deletedAt),
                 ),
               );
@@ -1264,7 +1294,11 @@ authRouter.post(
                   isNull(passwordResets.usedAt),
                 ),
               );
-            await revokeOutstandingAuthRecoveryRequests(tx, lockedUser.id, usedAt);
+            await revokeOutstandingAuthRecoveryRequests(
+              tx,
+              lockedUser.id,
+              usedAt,
+            );
             await recordAudit(
               {
                 actorUserId: lockedUser.id,
@@ -1332,8 +1366,14 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
 
   const { password: rawPassword } = req.body as { password?: unknown };
   const password = normalizePasswordInput(rawPassword);
-  if (typeof password !== "string" || !password) {
-    res.status(400).json({ error: "password é obrigatório" });
+  if (
+    typeof password !== "string" ||
+    !password ||
+    !isBcryptInputWithinLimit(password)
+  ) {
+    res.status(400).json({
+      error: "password é obrigatório e deve ter no máximo 72 bytes",
+    });
     return;
   }
 
@@ -1343,12 +1383,12 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  if (!authUser.passwordHash) {
+  if (!isSafeBcryptHash(authUser.passwordHash)) {
     res.status(400).json({ error: "Conta sem senha definida" });
     return;
   }
 
-  const valid = await bcrypt.compare(password, authUser.passwordHash);
+  const valid = await safeBcryptCompare(password, authUser.passwordHash);
   if (!valid) {
     res.status(401).json({ error: "Senha incorreta" });
     return;
@@ -1523,7 +1563,7 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
             if (
               !lockedUser ||
               lockedUser.deletedAt ||
-              !lockedUser.passwordHash
+              !isSafeBcryptHash(lockedUser.passwordHash)
             ) {
               throw new AuthMutationError(401, "Não autenticado");
             }
@@ -2580,10 +2620,7 @@ async function proveRegisterableShellIdentity(
           )
           .for("update");
 
-  const membershipById = new Map<
-    number,
-    (typeof membershipsByUser)[number]
-  >();
+  const membershipById = new Map<number, (typeof membershipsByUser)[number]>();
   for (const row of [...membershipsByUser, ...membershipsByProfessional]) {
     membershipById.set(row.id, row);
   }
@@ -2822,10 +2859,15 @@ authRouter.post(
         .json({ error: "name, email e password são obrigatórios" });
       return;
     }
-    if (password.length < 8 || password.length > 128) {
-      res
-        .status(400)
-        .json({ error: "password deve ter entre 8 e 128 caracteres" });
+    if (
+      password.length < 8 ||
+      password.length > 128 ||
+      !isBcryptInputWithinLimit(password)
+    ) {
+      res.status(400).json({
+        error:
+          "password deve ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
     if (name.trim().length > 255 || email.trim().length > 320) {
@@ -2922,13 +2964,13 @@ authRouter.post(
     const existing = await getUserByEmail(normalizedEmail);
     if (
       existing?.deletedAt ||
-      (existing && hasUsablePasswordHash(existing.passwordHash))
+      (existing && hasPasswordCredentialMaterial(existing.passwordHash))
     ) {
       res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
       return;
     }
     const existingShellId =
-      existing && !hasUsablePasswordHash(existing.passwordHash)
+      existing && isClaimablePasswordShell(existing.passwordHash)
         ? existing.id
         : null;
 
@@ -2995,7 +3037,7 @@ authRouter.post(
           if (
             !locked ||
             locked.deletedAt ||
-            hasUsablePasswordHash(locked.passwordHash)
+            !isClaimablePasswordShell(locked.passwordHash)
           ) {
             throw new RegisterValidationError(409, EMAIL_ALREADY_REGISTERED);
           }
@@ -3012,7 +3054,7 @@ authRouter.post(
           provenProfessionalId = proof.professionalId;
           existingMembershipId = proof.existingMembershipId;
 
-          await tx
+          const shellActivation = await tx
             .update(users)
             .set({
               name: normalizedName,
@@ -3021,7 +3063,16 @@ authRouter.post(
               loginMethod: "email",
               role: requestedRoles.professionalRole,
             })
-            .where(and(eq(users.id, locked.id), isNull(users.deletedAt)));
+            .where(
+              and(
+                eq(users.id, locked.id),
+                isNull(users.passwordHash),
+                isNull(users.deletedAt),
+              ),
+            );
+          if (affectedRows(shellActivation) !== 1) {
+            throw new RegisterValidationError(409, EMAIL_ALREADY_REGISTERED);
+          }
           newUserId = locked.id;
         } else {
           const [inserted] = await tx
@@ -3043,7 +3094,7 @@ authRouter.post(
           .from(users)
           .where(eq(users.id, newUserId))
           .limit(1);
-        if (!hasUsablePasswordHash(persistedSecret?.passwordHash)) {
+        if (!isSafeBcryptHash(persistedSecret?.passwordHash)) {
           throw new Error("password-hash-not-persisted");
         }
 
@@ -3332,10 +3383,14 @@ authRouter.post(
       return;
     }
 
-    if (password.length < 8 || password.length > 128) {
-      res
-        .status(400)
-        .json({ error: "A senha deve ter entre 8 e 128 caracteres" });
+    if (
+      password.length < 8 ||
+      password.length > 128 ||
+      !isBcryptInputWithinLimit(password)
+    ) {
+      res.status(400).json({
+        error: "A senha deve ter entre 8 e 128 caracteres e no máximo 72 bytes",
+      });
       return;
     }
     if (name.trim().length > 255 || email.trim().length > 320) {
@@ -3404,7 +3459,7 @@ authRouter.post(
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     if (
       existing?.deletedAt ||
-      (existing && hasUsablePasswordHash(existing.passwordHash))
+      (existing && hasPasswordCredentialMaterial(existing.passwordHash))
     ) {
       await sendNeutralSignupAccepted(
         res,
@@ -3414,7 +3469,7 @@ authRouter.post(
       return;
     }
     const existingShellId =
-      existing && !hasUsablePasswordHash(existing.passwordHash)
+      existing && isClaimablePasswordShell(existing.passwordHash)
         ? existing.id
         : null;
 
@@ -3512,7 +3567,7 @@ authRouter.post(
           if (
             !locked ||
             locked.deletedAt ||
-            hasUsablePasswordHash(locked.passwordHash)
+            !isClaimablePasswordShell(locked.passwordHash)
           ) {
             throw new SignupDuplicateEmailError(hasInstitution);
           }
@@ -3549,7 +3604,7 @@ authRouter.post(
             );
             throw new SignupDuplicateEmailError(hasInstitution);
           }
-          await tx
+          const shellActivation = await tx
             .update(users)
             .set({
               name: trimmedName,
@@ -3559,7 +3614,16 @@ authRouter.post(
               role: "doctor",
               approvalStatus: nextApproval,
             })
-            .where(and(eq(users.id, locked.id), isNull(users.deletedAt)));
+            .where(
+              and(
+                eq(users.id, locked.id),
+                isNull(users.passwordHash),
+                isNull(users.deletedAt),
+              ),
+            );
+          if (affectedRows(shellActivation) !== 1) {
+            throw new SignupDuplicateEmailError(hasInstitution);
+          }
           newUserId = locked.id;
         } else {
           const [inserted] = await tx
@@ -3581,7 +3645,7 @@ authRouter.post(
           .from(users)
           .where(eq(users.id, newUserId))
           .limit(1);
-        if (!hasUsablePasswordHash(persistedSecret?.passwordHash)) {
+        if (!isSafeBcryptHash(persistedSecret?.passwordHash)) {
           throw new Error("password-hash-not-persisted");
         }
 
@@ -3712,6 +3776,34 @@ authRouter.post(
   },
 );
 
+async function lockCurrentInviteActor(
+  db: RegisterQueryDb,
+  authUser: User,
+): Promise<void> {
+  const [lockedUser] = await db
+    .select({
+      id: users.id,
+      sessionVersion: users.sessionVersion,
+      approvalStatus: users.approvalStatus,
+      deletedAt: users.deletedAt,
+    })
+    .from(users)
+    .where(eq(users.id, authUser.id))
+    .limit(1)
+    .for("update");
+  if (
+    !lockedUser ||
+    lockedUser.deletedAt ||
+    lockedUser.approvalStatus !== "APPROVED" ||
+    lockedUser.sessionVersion !== authUser.sessionVersion
+  ) {
+    throw new ScheduleInviteError(
+      409,
+      "A identidade da conta mudou; entre novamente antes de responder ao convite",
+    );
+  }
+}
+
 // POST /api/auth/redeem-invite — médico autenticado entra em outra escala.
 authRouter.post(
   "/redeem-invite",
@@ -3745,21 +3837,37 @@ authRouter.post(
 
     try {
       const joined = await db.transaction(async (tx) => {
-        const [professional] = await tx
+        // Ordem global de identidade: user → todos os professionals. Como o
+        // schema ainda não prova 1:1, a cardinalidade é validada sem LIMIT 1.
+        await lockCurrentInviteActor(tx, authUser);
+        const professionalRows = await tx
           .select({
             id: professionals.id,
+            userId: professionals.userId,
           })
           .from(professionals)
           .where(eq(professionals.userId, authUser.id))
-          .limit(1)
+          .orderBy(asc(professionals.id))
           .for("update");
-        if (!professional) {
-          throw new ScheduleInviteError(409, "Profissional não encontrado");
+        let professionalId: number;
+        try {
+          professionalId = requireSingleInviteProfessionalId(
+            professionalRows,
+            authUser.id,
+          );
+        } catch (error) {
+          if (error instanceof InviteProfessionalIdentityError) {
+            throw new ScheduleInviteError(
+              409,
+              "Identidade profissional inconsistente; procure um administrador",
+            );
+          }
+          throw error;
         }
         return redeemScheduleInviteInTransaction(tx, {
           code: parsedInvite,
           userId: authUser.id,
-          professionalId: professional.id,
+          professionalId,
         });
       });
       await enqueueScheduleInviteAcceptedSignal({
@@ -3824,12 +3932,15 @@ authRouter.post(
     }
 
     try {
-      const declined = await db.transaction(async (tx) =>
-        declineScheduleInviteInTransaction(tx, {
+      const declined = await db.transaction(async (tx) => {
+        // Recusa vincula-se diretamente ao userId nominal e não resolve
+        // professional; ainda assim a sessão/conta é refeita sob lock.
+        await lockCurrentInviteActor(tx, authUser);
+        return declineScheduleInviteInTransaction(tx, {
           code: parsedInvite,
           userId: authUser.id,
-        }),
-      );
+        });
+      });
       await enqueueScheduleInviteDeclinedSignal({
         db,
         scheduleInviteId: declined.scheduleInviteId,

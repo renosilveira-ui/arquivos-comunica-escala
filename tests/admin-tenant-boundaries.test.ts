@@ -259,7 +259,7 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
     ).toBe(403);
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: true,
+      kind: "ACCEPTED",
       transport: "resend",
     });
     try {
@@ -267,7 +267,9 @@ describe("admin REST: fronteiras canônicas de tenant", () => {
         .post(`/api/admin/users/${activeAId}/reset-password`)
         .set("Cookie", cookie)
         .set("x-tenant-id", String(institutionAId));
-      expect(allowed.status).toBe(200);
+      expect(allowed.status).toBe(202);
+      expect(allowed.body).toMatchObject({ ok: true, queued: true });
+      expect(sendMailSpy).not.toHaveBeenCalled();
     } finally {
       sendMailSpy.mockRestore();
     }

@@ -12,7 +12,7 @@ const REDACTED_FALLBACK_RECORD = {
   eventType: "TRANSACTIONAL_EMAIL_NOT_SENT",
   channel: "EMAIL",
   providerConfigured: false,
-  delivered: false,
+  accepted: false,
 };
 
 const renderYaml = readFileSync("render.yaml", "utf8");
@@ -47,7 +47,11 @@ describe("mailer sem provedor", () => {
 
     const result = await mailer.sendMail(SAMPLE);
 
-    expect(result).toEqual({ delivered: false, transport: "console" });
+    expect(result).toEqual({
+      kind: "REJECTED",
+      transport: "console",
+      reason: "NOT_CONFIGURED",
+    });
     expect(log).toHaveBeenCalledExactlyOnceWith(
       `[mailer] ${JSON.stringify(REDACTED_FALLBACK_RECORD)}`,
     );
@@ -91,7 +95,11 @@ describe("mailer sem provedor", () => {
 
       const result = await mailer.sendMail(message);
 
-      expect(result).toEqual({ delivered: false, transport: "console" });
+      expect(result).toEqual({
+        kind: "REJECTED",
+        transport: "console",
+        reason: "NOT_CONFIGURED",
+      });
       expect(fetchMock).not.toHaveBeenCalled();
       expect(log).toHaveBeenCalledExactlyOnceWith(
         `[mailer] ${JSON.stringify(REDACTED_FALLBACK_RECORD)}`,
@@ -132,7 +140,7 @@ describe("mailer via Resend", () => {
     process.env.MAIL_FROM = "Escala+ <no-reply@test.local>";
   }
 
-  it("Resend HTTP 200 → delivered true", async () => {
+  it("Resend HTTP 200 → ACCEPTED", async () => {
     withResendKey();
     const signal = new AbortController().signal;
     vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
@@ -142,12 +150,12 @@ describe("mailer via Resend", () => {
 
     const result = await mailer.sendMail(SAMPLE);
 
-    expect(result).toEqual({ delivered: true, transport: "resend" });
+    expect(result).toEqual({ kind: "ACCEPTED", transport: "resend" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(errors).not.toHaveBeenCalled();
   });
 
-  it("Resend HTTP 4xx → delivered false", async () => {
+  it("Resend HTTP 4xx → REJECTED", async () => {
     withResendKey();
     vi.spyOn(AbortSignal, "timeout").mockReturnValue(
       new AbortController().signal,
@@ -164,9 +172,9 @@ describe("mailer via Resend", () => {
     });
 
     expect(result).toEqual({
-      delivered: false,
+      kind: "REJECTED",
       transport: "resend",
-      error: "HTTP 422",
+      reason: "HTTP_CLIENT_REJECTION",
     });
     const logged = errors.mock.calls.flat().join(" ");
     expect(logged).toContain("422");
@@ -175,7 +183,7 @@ describe("mailer via Resend", () => {
     expect(logged).not.toContain("re_test_not_a_real_key");
   });
 
-  it("Resend HTTP 5xx → delivered false", async () => {
+  it("Resend HTTP 5xx → UNKNOWN", async () => {
     withResendKey();
     vi.spyOn(AbortSignal, "timeout").mockReturnValue(
       new AbortController().signal,
@@ -189,13 +197,13 @@ describe("mailer via Resend", () => {
     const result = await mailer.sendMail(SAMPLE);
 
     expect(result).toEqual({
-      delivered: false,
+      kind: "UNKNOWN",
       transport: "resend",
-      error: "HTTP 503",
+      reason: "HTTP_TRANSIENT",
     });
   });
 
-  it("fetch abort/timeout → delivered false sem derrubar o processo", async () => {
+  it("fetch abort/timeout → UNKNOWN sem derrubar o processo", async () => {
     withResendKey();
     vi.spyOn(AbortSignal, "timeout").mockReturnValue(
       new AbortController().signal,
@@ -214,9 +222,9 @@ describe("mailer via Resend", () => {
     });
 
     expect(result).toEqual({
-      delivered: false,
+      kind: "UNKNOWN",
       transport: "resend",
-      error: "TIMEOUT",
+      reason: "TIMEOUT",
     });
     const logged = errors.mock.calls.flat().join(" ");
     expect(logged).toContain("Timeout");
@@ -245,5 +253,39 @@ describe("mailer via Resend", () => {
         ?.headers?.Authorization ?? "",
     );
     expect(auth).toMatch(/^Bearer /);
+  });
+
+  it("propaga somente chave de idempotência válida", async () => {
+    withResendKey();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const key = "a".repeat(64);
+
+    await mailer.sendMail(SAMPLE, { idempotencyKey: key });
+
+    expect(
+      (fetchMock.mock.calls[0]?.[1] as { headers: Record<string, string> })
+        .headers["Idempotency-Key"],
+    ).toBe(key);
+  });
+
+  it("recusa chave de idempotência malformada sem chamar o provedor", async () => {
+    withResendKey();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await mailer.sendMail(SAMPLE, {
+      idempotencyKey: "chave-instavel",
+    });
+
+    expect(result).toEqual({
+      kind: "REJECTED",
+      transport: "none",
+      reason: "INVALID_IDEMPOTENCY_KEY",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

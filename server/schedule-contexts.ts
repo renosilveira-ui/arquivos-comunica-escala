@@ -263,8 +263,9 @@ export function managerScopeCoversContext(
 }
 
 /**
- * Convite nominal enviado e ainda não resgatado (e-mail saiu, código
- * válido). Não é professional_access — o resgate é que grava o setor.
+ * Convite nominal emitido e ainda não resgatado (pedido aceito pelo provedor,
+ * código válido; entrega postal não comprovada). Não é professional_access —
+ * o resgate é que grava o setor.
  * O gestor precisa ver e alocar essa pessoa na hora.
  */
 export async function pendingNamedInviteCoversScale(
