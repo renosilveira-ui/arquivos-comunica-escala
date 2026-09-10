@@ -34,6 +34,7 @@ function thenable<T>(result: Promise<T>) {
   const query: {
     from: () => unknown;
     where: () => unknown;
+    orderBy: () => unknown;
     limit: () => unknown;
     set: () => unknown;
     values: () => unknown;
@@ -43,6 +44,7 @@ function thenable<T>(result: Promise<T>) {
   } = {
     from: () => query,
     where: () => query,
+    orderBy: () => query,
     limit: () => query,
     set: () => query,
     values: () => query,
@@ -264,6 +266,7 @@ describe("WhatsApp pending intent — fail-closed de persistência", () => {
 
   it("cleanup: primeiro UPDATE falha → PERSISTENCE_FAILED", async () => {
     vi.mocked(getDb).mockResolvedValue({
+      select: () => thenable(Promise.resolve([{ id: 7, status: "OPEN" }])),
       update: () => thenable(Promise.reject(new Error("expire update"))),
     } as never);
     expectInfra(
@@ -275,6 +278,13 @@ describe("WhatsApp pending intent — fail-closed de persistência", () => {
   it("cleanup: segundo UPDATE falha após o primeiro → PERSISTENCE_FAILED", async () => {
     let updates = 0;
     vi.mocked(getDb).mockResolvedValue({
+      select: () =>
+        thenable(
+          Promise.resolve([
+            { id: 7, status: "OPEN" },
+            { id: 8, status: "CANCELLED" },
+          ]),
+        ),
       update: () => {
         updates += 1;
         if (updates === 1) {

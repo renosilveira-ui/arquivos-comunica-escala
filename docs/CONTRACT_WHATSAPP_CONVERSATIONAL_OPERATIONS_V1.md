@@ -201,8 +201,10 @@ B1 **não** implementa `confirmAndExecute` / `markConsumed`.
   Infra **não** vira `SOURCE_INBOUND_NOT_FOUND`, `NOT_FOUND`,
   `already_open`, `replay`, `not_due`, `already_terminal` nem zero de
   cleanup (`expired: 0` só com `ok: true` após updates concluídos).
-- Cleanup: `{ ok: true, expired, payloadsCleared }` somente se os dois
-  UPDATEs terminam. Falha no segundo após sucesso no primeiro →
+- Cleanup: o loop autônomo seleciona no máximo 500 ids por lote, ordenados por
+  `expires_at, id`, e revalida status/expiração em cada UPDATE. O helper de
+  compatibilidade devolve `{ ok: true, expired, payloadsCleared }` para um
+  único lote. Falha no segundo UPDATE após sucesso no primeiro →
   `PERSISTENCE_FAILED` (sem rollback; a operação é idempotente).
   `payloadsCleared = expired + leftovers` — o primeiro UPDATE já limpa
   payload das rows que expira, então elas não entram no segundo.
@@ -242,7 +244,11 @@ Não logar: Body, `operational_text`, URL de mídia, telefone, token.
 - Consumidor deve checar `isWhatsAppInboundPayloadUsable` (expirado ou
   limpo ≠ material disponível).
 - `media_url` só é persistida se for `https:`.
-- Expiração: `clearExpiredWhatsAppInboundPayloads(now)` (job futuro).
+- Expiração: loop autônomo `startWhatsAppOperationalPayloadRetention`,
+  independente de `WHATSAPP_NL_DRIVER_ENABLED`. Ele roda uma vez no boot e
+  depois a cada 5–15 minutos (jitter), sem sobreposição. Cada tick limpa, por
+  tabela, no máximo 4 lotes de 500 ids ordenados por expiração/id; os UPDATEs
+  revalidam os predicados de status/expiração/limpeza (CAS).
 - `IDENTITY_NOT_FOUND` / `IDENTITY_CONFLICT` / `UNSUPPORTED` limpam o
   payload na hora (não há próximo estágio).
 
@@ -255,7 +261,8 @@ conta Twilio: follow-up **antes de produção**.
 ## Consumidor futuro
 
 Incremento B1: persiste a conversa pendente. Não chama parser, resolver
-nem `createSwapOffer`. Cleanup: `clearExpiredWhatsAppPendingIntents`.
+nem `createSwapOffer`. O mesmo loop autônomo de retenção expira OPEN vencido e
+limpa os JSONs de estados terminais em lotes, independentemente do driver NL.
 
 Incremento B2-A (contratos de estado, esta camada): formatos JSON V1 +
 transição guardada `OPEN/PARSE` → `OPEN/CLARIFICATION|CONFIRMATION`.
@@ -383,11 +390,11 @@ Estado real (eligibility):
 PARK lifecycle (opção B do inbound): `processing_status` permanece
 `READY_FOR_NL`; `operational_text` permanece até o TTL 24h; occupancy
 exclui da discovery; nenhuma mensagem nova altera essa row. Sweep
-`clearExpiredWhatsAppInboundPayloads` alcança PARK (P3 inbound; job
-ainda futuro — a mesma retenção de qualquer inbound uncleared, não um
-TTL extra do driver). Cardinalidade uncleared PARK ≤ volume 24h quando
-o sweep roda. 100 / 1k / 10k msgs/dia → teto ~3k / 30k / 300k rows
-uncleared em 30d **sem** sweep; **com** sweep, teto ~24h de volume.
+O loop de retenção alcança PARK (a mesma retenção de qualquer inbound
+uncleared, não um TTL extra do driver). Cardinalidade uncleared PARK ≤ volume
+24h quando o processo permanece ativo e o sweep acompanha a entrada. 100 / 1k
+/ 10k msgs/dia → teto ~3k / 30k / 300k rows uncleared em 30d **sem** sweep;
+**com** sweep, converge para ~24h de volume dentro do teto de 2.000 rows/tick.
 
 WAIT liveness: backoff 30s evita hot-loop; após o slot OPEN legítimo
 liberar, a row WAIT vencida reentra, chama B2-C e cria pending próprio.
@@ -616,13 +623,19 @@ coluna `sender_address_hash` ficou nullable e sem escrita após a
 minimização. Remover fisicamente (migration aditiva/rerodável) só se
 ainda não houver valor operacional e a higiene de schema for necessária.
 
-**P3 — TTL em estados incompletos:** `clearExpiredWhatsAppInboundPayloads`
+**TTL em estados incompletos:** o loop de retenção chama a limpeza em lotes e
 limpa payload expirado **independentemente** do `processing_status`,
 inclusive `RECEIVED` / `RETRYABLE`. Política vigente: o retry da Twilio
 refresca o material a partir do envelope. Se a Twilio já parou de
 retentar, a row incompleta fica sem payload — aceitável no Incremento A.
-Follow-up operacional: restringir o sweep a `READY_FOR_*` se for preciso
-preservar material de `RETRYABLE` além do TTL.
+Restringir o sweep a `READY_FOR_*` exigiria uma nova decisão explícita de
+retenção, caso seja preciso preservar material de `RETRYABLE` além do TTL.
+
+O job é in-process. Durante sleep/suspensão do Render nenhum timer executa; no
+próximo boot há tick imediato e a limpeza volta a progredir em lotes. Logo, a
+convergência é eventual após o serviço acordar, não uma garantia de descarte no
+instante exato do TTL durante o sleep. Backlog acima de 2.000 rows é drenado nos
+ticks seguintes, desde que a taxa de expiração permaneça abaixo da capacidade.
 
 ## Operação
 
