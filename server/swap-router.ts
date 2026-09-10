@@ -62,6 +62,7 @@ import {
   type SwapType,
 } from "./swap-domain";
 import { createSwapOffer } from "./swap-offer-create";
+import { assertPublishedRoster } from "./month-guards";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -370,7 +371,10 @@ async function requireAcceptedSwapTopology(
 // REJECTED_BY_PEER / REJECTED_BY_MANAGER são históricos e naturalmente têm a
 // alocação de origem inativa — exigir atividade aqui derrubava a leitura de
 // toda a lista de ofertas do usuário (bug de classe, todas as instituições).
-const LIVE_SWAP_STATUSES: readonly SwapRow["status"][] = ["PENDING", "ACCEPTED"];
+const LIVE_SWAP_STATUSES: readonly SwapRow["status"][] = [
+  "PENDING",
+  "ACCEPTED",
+];
 
 function isLiveSwapStatus(status: SwapRow["status"]): boolean {
   return LIVE_SWAP_STATUSES.includes(status);
@@ -502,10 +506,7 @@ async function assertActorCanReadSwap(
   throw topologyDenied("Solicitação não pertence ao profissional autenticado");
 }
 
-function isRecordedSwapParticipant(
-  actor: TenantActor,
-  swap: SwapRow,
-): boolean {
+function isRecordedSwapParticipant(actor: TenantActor, swap: SwapRow): boolean {
   if (!actor.professionalId) return false;
   return (
     (swap.fromUserId === actor.userId &&
@@ -1888,6 +1889,15 @@ export const swapRouter = router({
         expectedSessionVersion: ctx.user!.sessionVersion,
       });
       assertSwapShiftsNotStarted(source.shift, null);
+      // A lista prepara uma intenção de cessão/repasse. Ela segue a mesma
+      // política de write da oferta: DRAFT ainda não é visível para USER e
+      // LOCKED é oficial apenas para leitura, não para criar nova intenção.
+      await assertPublishedRoster(
+        db,
+        source.shift.institutionId,
+        source.shift.hospitalId,
+        source.shift.startAt,
+      );
 
       try {
         return await listClinicallyEligibleOfferRecipients(db, {

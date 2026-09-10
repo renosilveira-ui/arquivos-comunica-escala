@@ -1,10 +1,11 @@
 // server/confirmation-router.ts — Endpoints de confirmação de presença pré-plantão
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { router, protectedProcedure, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { assertMonthNotLockedForUpdate } from "./month-guards";
 import { recomputeShiftStatus } from "./shift-status";
-import { eq, and, asc, isNull, sql } from "drizzle-orm";
+import { eq, and, asc, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   dutyConfirmations,
@@ -28,7 +29,11 @@ import {
 } from "./sso/duty-sync-lifecycle";
 import { getDutySyncLocalStatusForConfirmation } from "./sso/duty-sync-status";
 import {
+  assertDutyConfirmationCycleToken,
+  assertDutyConfirmationRecheckEpoch,
+  canonicalDutyConfirmationEpoch,
   dutyShiftSnapshot,
+  isCanonicalDutyConfirmationEpoch,
   requireValidDutyConfirmation,
 } from "./confirmation-integrity";
 import {
@@ -52,6 +57,15 @@ import {
 } from "./schedule-contexts";
 
 type ConfirmationDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+const dutyConfirmationEpochSchema = z
+  .string()
+  .refine(isCanonicalDutyConfirmationEpoch, "Epoch de confirmação inválida");
+
+const nominationDirectedInputSchema = z.object({
+  confirmationToken: z.string().uuid(),
+  nominationEpoch: dutyConfirmationEpochSchema,
+});
 
 async function assertDutySyncLocalStatusAccess(
   db: ConfirmationDb,
@@ -191,33 +205,76 @@ export const confirmationRouter = router({
    * para a tela de aceite. Só responde se a indicação ainda está aberta.
    */
   getNomination: protectedProcedure
-    .input(z.object({ confirmationToken: z.string().uuid() }))
+    .input(nominationDirectedInputSchema.optional())
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const [candidate] = await db
+      const candidates = await db
         .select({ id: dutyConfirmations.id })
         .from(dutyConfirmations)
         .where(
           and(
-            eq(dutyConfirmations.confirmationToken, input.confirmationToken),
+            input
+              ? eq(dutyConfirmations.confirmationToken, input.confirmationToken)
+              : undefined,
             eq(dutyConfirmations.replacementUserId, ctx.user.id),
             eq(dutyConfirmations.institutionId, ctx.institutionId),
             eq(dutyConfirmations.status, "NOMINATED"),
           ),
         )
-        .limit(1);
-      if (!candidate) return null;
+        .orderBy(asc(dutyConfirmations.id))
+        .limit(2);
+      if (!input && candidates.length > 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Há mais de uma indicação pendente; abra o plantão específico na agenda.",
+        });
+      }
+      const candidate = candidates[0];
+      if (!candidate) {
+        // Sem token, null significa "você não tem indicação pendente". Com
+        // token, o cliente perguntou por um ciclo específico: devolver null
+        // faria um ciclo já rotacionado parecer ausência de indicação, e a
+        // tela seguiria mostrando a ação antiga como se ainda valesse.
+        if (input) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Indicação não encontrada",
+          });
+        }
+        return null;
+      }
       const valid = await requireValidDutyConfirmation(db, candidate.id, {
         allowedStatuses: ["NOMINATED"],
         expectedActor: { kind: "REPLACEMENT", userId: ctx.user.id },
         expectedInstitutionId: ctx.institutionId,
         requireReplacementMembership: true,
       });
+      if (input) {
+        assertDutyConfirmationCycleToken(
+          valid.confirmation.confirmationToken,
+          input.confirmationToken,
+        );
+      }
+      const nominationEpoch = valid.confirmation.recheckAt?.toISOString();
+      if (!nominationEpoch) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Indicação sem época operacional válida.",
+        });
+      }
+      if (input) {
+        assertDutyConfirmationRecheckEpoch(
+          valid.confirmation.recheckAt,
+          input.nominationEpoch,
+        );
+      }
       return {
         id: valid.confirmation.id,
         status: valid.confirmation.status,
         confirmationToken: valid.confirmation.confirmationToken,
+        nominationEpoch,
         shiftInstanceId: valid.shift.id,
         shiftLabel: valid.shift.label,
         shiftStartAt: valid.shift.startAt,
@@ -252,7 +309,10 @@ export const confirmationRouter = router({
               : []),
             eq(dutyConfirmations.userId, ctx.user.id),
             eq(dutyConfirmations.institutionId, ctx.institutionId),
-            eq(dutyConfirmations.status, "DECLINED"),
+            inArray(dutyConfirmations.status, [
+              "DECLINED",
+              "REPLACEMENT_DECLINED",
+            ]),
           ),
         )
         .limit(2);
@@ -275,11 +335,17 @@ export const confirmationRouter = router({
         db,
         candidateConfirmation.id,
         {
-          allowedStatuses: ["DECLINED"],
+          allowedStatuses: ["DECLINED", "REPLACEMENT_DECLINED"],
           expectedActor: { kind: "ORIGINAL", userId: ctx.user.id },
           expectedInstitutionId: ctx.institutionId,
         },
       );
+      if (input?.confirmationToken) {
+        assertDutyConfirmationCycleToken(
+          current.confirmation.confirmationToken,
+          input.confirmationToken,
+        );
+      }
       if (current.shift.scheduleContextId === null) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -396,6 +462,7 @@ export const confirmationRouter = router({
             eq(dutyConfirmations.userId, ctx.user.id),
             eq(dutyConfirmations.institutionId, ctx.institutionId),
             eq(dutyConfirmations.status, "PENDING"),
+            isNotNull(dutyConfirmations.recheckAt),
             input?.confirmationToken
               ? eq(dutyConfirmations.confirmationToken, input.confirmationToken)
               : undefined,
@@ -409,6 +476,12 @@ export const confirmationRouter = router({
             expectedActor: { kind: "ORIGINAL", userId: ctx.user.id },
             expectedInstitutionId: ctx.institutionId,
           });
+          if (input?.confirmationToken) {
+            assertDutyConfirmationCycleToken(
+              valid.confirmation.confirmationToken,
+              input.confirmationToken,
+            );
+          }
           return {
             id: valid.confirmation.id,
             status: valid.confirmation.status,
@@ -468,6 +541,10 @@ export const confirmationRouter = router({
           expectedInstitutionId: ctx.institutionId,
           lockForUpdate: true,
         });
+        assertDutyConfirmationCycleToken(
+          current.confirmation.confirmationToken,
+          input.confirmationToken,
+        );
         await transitionDutyConfirmation(tx, {
           kind: "CONFIRM",
           ...dutyConfirmationCasIdentity(current.confirmation),
@@ -559,7 +636,9 @@ export const confirmationRouter = router({
         });
       }
       // Reset recheck timer: +30min from now for replacement flow
-      const newRecheckAt = new Date(Date.now() + 30 * 60 * 1000);
+      const newRecheckAt = canonicalDutyConfirmationEpoch(
+        new Date(Date.now() + 30 * 60 * 1000),
+      );
 
       await db.transaction(async (tx) => {
         const current = await requireValidDutyConfirmation(tx, conf.id, {
@@ -572,6 +651,10 @@ export const confirmationRouter = router({
           expectedInstitutionId: ctx.institutionId,
           lockForUpdate: true,
         });
+        assertDutyConfirmationCycleToken(
+          current.confirmation.confirmationToken,
+          input.confirmationToken,
+        );
         if (
           current.confirmation.status !== "PENDING" &&
           current.confirmation.status !== "CONFIRMED"
@@ -687,11 +770,14 @@ export const confirmationRouter = router({
         });
       }
       // Reset recheck timer: +30min for replacement to respond
-      const newRecheckAt = new Date(Date.now() + 30 * 60 * 1000);
+      const newRecheckAt = canonicalDutyConfirmationEpoch(
+        new Date(Date.now() + 30 * 60 * 1000),
+      );
+      const nominationToken = randomUUID();
 
       const { replacement, pushIntent } = await db.transaction(async (tx) => {
         const current = await requireValidDutyConfirmation(tx, conf.id, {
-          allowedStatuses: ["DECLINED"],
+          allowedStatuses: ["DECLINED", "REPLACEMENT_DECLINED"],
           expectedActor: {
             kind: "ORIGINAL",
             userId: ctx.user.id,
@@ -707,6 +793,10 @@ export const confirmationRouter = router({
           ],
           lockForUpdate: true,
         });
+        assertDutyConfirmationCycleToken(
+          current.confirmation.confirmationToken,
+          input.confirmationToken,
+        );
         // O vínculo e o acesso do indicado são reavaliados na mesma
         // transação do CAS. Quem perde uma indicação concorrente não pode
         // chegar aos efeitos externos abaixo.
@@ -745,6 +835,16 @@ export const confirmationRouter = router({
             message: "O titular não pode indicar a si próprio como substituto",
           });
         }
+        if (
+          current.confirmation.status !== "DECLINED" &&
+          current.confirmation.status !== "REPLACEMENT_DECLINED"
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Esta confirmação foi alterada por outra ação. Atualize a tela e tente novamente.",
+          });
+        }
 
         if (current.shift.scheduleContextId === null) {
           throw new TRPCError({
@@ -770,10 +870,12 @@ export const confirmationRouter = router({
         await transitionDutyConfirmation(tx, {
           kind: "NOMINATE",
           ...dutyConfirmationCasIdentity(current.confirmation),
-          expectedStatus: "DECLINED",
+          expectedStatus: current.confirmation.status,
           replacementProfessionalId: candidate.id,
           replacementUserId: candidate.userId,
           recheckAt: newRecheckAt,
+          expectedConfirmationToken: current.confirmation.confirmationToken,
+          nextConfirmationToken: nominationToken,
         });
 
         const TZ = "America/Sao_Paulo";
@@ -797,14 +899,15 @@ export const confirmationRouter = router({
           institutionId: current.shift.institutionId,
           userId: candidate.userId,
           shiftInstanceId: current.shift.id,
-          dedupKey: `duty-confirmation:${current.confirmation.id}:nomination:${candidate.userId}`,
+          dedupKey: `duty-confirmation:${current.confirmation.id}:nomination:${nominationToken}:${candidate.userId}`,
           payload: {
             title: "Plantão disponível para você",
             body: `${ctx.user.name ?? "Um colega"} indicou você para o plantão ${current.shift.label} (${startTime}–${endTime}). Aceita?`,
             data: {
               type: "duty_nomination",
               confirmationId: current.confirmation.id,
-              confirmationToken: current.confirmation.confirmationToken,
+              confirmationToken: nominationToken,
+              nominationEpoch: newRecheckAt.toISOString(),
               institutionId: current.shift.institutionId,
               shiftInstanceId: current.shift.id,
             },
@@ -817,6 +920,8 @@ export const confirmationRouter = router({
             recipientKind: "REPLACEMENT",
             expectedUserId: candidate.userId,
             shiftSnapshot: dutyShiftSnapshot(current.shift),
+            recheckEpoch: newRecheckAt.toISOString(),
+            confirmationToken: nominationToken,
           },
         };
         await enqueueTrackedPushNotification(intent, new Date(), tx);
@@ -840,9 +945,10 @@ export const confirmationRouter = router({
       });
 
       await sendTrackedPushNotification(pushIntent).catch(() => {
-        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
-          ? pushIntent.authority.confirmationId
-          : "unknown";
+        const confirmationId =
+          pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+            ? pushIntent.authority.confirmationId
+            : "unknown";
         console.error(
           `[Confirmation] NOMINATION_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
         );
@@ -860,7 +966,7 @@ export const confirmationRouter = router({
    * Reatribui o plantão e dispara auto-SSO.
    */
   acceptNomination: protectedProcedure
-    .input(z.object({ confirmationToken: z.string().uuid() }))
+    .input(nominationDirectedInputSchema)
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -896,6 +1002,14 @@ export const confirmationRouter = router({
         requireOriginalAssignmentActive: false,
         requireReplacementMembership: true,
       });
+      assertDutyConfirmationCycleToken(
+        valid.confirmation.confirmationToken,
+        input.confirmationToken,
+      );
+      assertDutyConfirmationRecheckEpoch(
+        valid.confirmation.recheckAt,
+        input.nominationEpoch,
+      );
       if (!valid.original.isActive) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -925,6 +1039,14 @@ export const confirmationRouter = router({
           requireReplacementMembership: true,
           lockForUpdate: true,
         });
+        assertDutyConfirmationCycleToken(
+          current.confirmation.confirmationToken,
+          input.confirmationToken,
+        );
+        assertDutyConfirmationRecheckEpoch(
+          current.confirmation.recheckAt,
+          input.nominationEpoch,
+        );
         if (
           current.shift.institutionId !== valid.shift.institutionId ||
           current.shift.hospitalId !== valid.shift.hospitalId ||
@@ -972,6 +1094,7 @@ export const confirmationRouter = router({
           kind: "ACCEPT_NOMINATION",
           ...dutyConfirmationCasIdentity(current.confirmation),
           expectedStatus: "NOMINATED",
+          expectedConfirmationToken: input.confirmationToken,
           expectedReplacementProfessionalId: replacementPro.professionalId,
           expectedReplacementUserId: replacementPro.userId,
           respondedAt: new Date(),
@@ -1110,9 +1233,10 @@ export const confirmationRouter = router({
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       await sendTrackedPushNotification(pushIntent).catch(() => {
-        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
-          ? pushIntent.authority.confirmationId
-          : "unknown";
+        const confirmationId =
+          pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+            ? pushIntent.authority.confirmationId
+            : "unknown";
         console.error(
           `[Confirmation] ACCEPTANCE_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
         );
@@ -1136,7 +1260,7 @@ export const confirmationRouter = router({
    * ou recusa nunca confirmam presença nem alteram a escala.
    */
   declineNomination: protectedProcedure
-    .input(z.object({ confirmationToken: z.string().uuid() }))
+    .input(nominationDirectedInputSchema)
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -1157,7 +1281,7 @@ export const confirmationRouter = router({
       }
       // A recusa encerra esta oferta. O cron usa o prazo já vencido apenas
       // para disparar a verificação humana, sem promover presença.
-      const escalateAt = new Date();
+      const escalateAt = canonicalDutyConfirmationEpoch(new Date());
       const pushIntent = await db.transaction(async (tx) => {
         const current = await requireValidDutyConfirmation(tx, conf.id, {
           allowedStatuses: ["NOMINATED"],
@@ -1170,10 +1294,19 @@ export const confirmationRouter = router({
           requireReplacementMembership: true,
           lockForUpdate: true,
         });
+        assertDutyConfirmationCycleToken(
+          current.confirmation.confirmationToken,
+          input.confirmationToken,
+        );
+        assertDutyConfirmationRecheckEpoch(
+          current.confirmation.recheckAt,
+          input.nominationEpoch,
+        );
         await transitionDutyConfirmation(tx, {
           kind: "DECLINE_NOMINATION",
           ...dutyConfirmationCasIdentity(current.confirmation),
           expectedStatus: "NOMINATED",
+          expectedConfirmationToken: input.confirmationToken,
           expectedReplacementProfessionalId:
             current.replacement!.professionalId,
           expectedReplacementUserId: current.replacement!.userId,
@@ -1185,13 +1318,14 @@ export const confirmationRouter = router({
           institutionId: current.shift.institutionId,
           userId: current.original.userId,
           shiftInstanceId: current.shift.id,
-          dedupKey: `duty-confirmation:${current.confirmation.id}:replacement-declined:${current.original.userId}`,
+          dedupKey: `duty-confirmation:${current.confirmation.id}:replacement-declined:${current.confirmation.confirmationToken}:${current.replacement!.userId}:${escalateAt.getTime()}:${current.original.userId}`,
           payload: {
             title: "Substituto recusou",
-            body: "O substituto indicado não aceitou o plantão. A presença não foi confirmada; o gestor deve verificar a cobertura.",
+            body: "O substituto indicado não aceitou o plantão. Indique outro profissional; o gestor também verificará a cobertura.",
             data: {
               type: "replacement_declined",
               confirmationId: current.confirmation.id,
+              confirmationToken: current.confirmation.confirmationToken,
               institutionId: current.shift.institutionId,
               shiftInstanceId: current.shift.id,
             },
@@ -1204,6 +1338,7 @@ export const confirmationRouter = router({
             recipientKind: "ORIGINAL",
             expectedUserId: current.original.userId,
             shiftSnapshot: dutyShiftSnapshot(current.shift),
+            confirmationToken: current.confirmation.confirmationToken,
           },
         };
         await enqueueTrackedPushNotification(intent, escalateAt, tx);
@@ -1229,9 +1364,10 @@ export const confirmationRouter = router({
       });
 
       await sendTrackedPushNotification(pushIntent).catch(() => {
-        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
-          ? pushIntent.authority.confirmationId
-          : "unknown";
+        const confirmationId =
+          pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+            ? pushIntent.authority.confirmationId
+            : "unknown";
         console.error(
           `[Confirmation] DECLINE_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
         );

@@ -121,6 +121,22 @@ describe("duty-sync V2 lifecycle", () => {
     } as never;
   }
 
+  function nominationRouteInput(confirmation: {
+    confirmationToken: string;
+    recheckAt: Date | null;
+  }) {
+    if (!confirmation.recheckAt) {
+      throw new Error("Fixture NOMINATED sem recheckAt canônico");
+    }
+    if (confirmation.recheckAt.getUTCMilliseconds() !== 0) {
+      throw new Error("Fixture NOMINATED com recheckAt fora da precisão MySQL");
+    }
+    return {
+      confirmationToken: confirmation.confirmationToken,
+      nominationEpoch: confirmation.recheckAt.toISOString(),
+    };
+  }
+
   async function person(tag: string, role: "doctor" | "manager" = "doctor") {
     const [u] = await db
       .insert(users)
@@ -568,12 +584,16 @@ describe("duty-sync V2 lifecycle", () => {
         confirmationToken: randomUUID(),
       })
       .$returningId();
+    const [confirmation] = await db
+      .select({
+        confirmationToken: dutyConfirmations.confirmationToken,
+        recheckAt: dutyConfirmations.recheckAt,
+      })
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, inserted.id));
     await confirmationRouter
       .createCaller(doctorCtx(subUserId))
-      .acceptNomination({ confirmationToken: (await db
-        .select({ confirmationToken: dutyConfirmations.confirmationToken })
-        .from(dutyConfirmations)
-        .where(eq(dutyConfirmations.id, inserted.id)))[0].confirmationToken });
+      .acceptNomination(nominationRouteInput(confirmation));
     const rows = await dutySyncRows(inserted.id);
     expect(rows).toHaveLength(2);
     expect(rows[0]?.body).toBe("WITHDRAW");
@@ -607,7 +627,7 @@ describe("duty-sync V2 lifecycle", () => {
       .where(eq(dutyConfirmations.id, inserted.id));
     await confirmationRouter
       .createCaller(doctorCtx(subUserId))
-      .acceptNomination({ confirmationToken: conf.confirmationToken });
+      .acceptNomination(nominationRouteInput(conf));
 
     fetchMock.mockImplementation(async () => ({
       ok: false,

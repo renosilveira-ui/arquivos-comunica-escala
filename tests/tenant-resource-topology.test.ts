@@ -1118,11 +1118,8 @@ describe("hierarquia institution → hospital → sector", () => {
     const myRows = mine.weeks.flatMap((week) =>
       week.days.flatMap((day) => day.groups.flatMap((group) => group.shifts)),
     );
-    expect(myRows.map((row) => row.id)).toEqual([publicationShiftAId]);
-    expect(myRows[0]).toMatchObject({
-      professionalNames: [`Topology recipient-a`],
-      isMine: true,
-    });
+    // Este mês ainda é DRAFT: a própria alocação não antecipa publicação.
+    expect(myRows).toEqual([]);
   });
 
   it("getActiveShift/getNextShift não usam assignment ligado a shift de hierarquia contaminada", async () => {
@@ -1346,6 +1343,8 @@ describe("hierarquia institution → hospital → sector", () => {
       const pendingPair = await db
         .insert(dutyConfirmations)
         .values([
+          // getPending só considera candidata a confirmação dentro de um ciclo
+          // vigente, e o ciclo é identificado pelo recheckAt.
           {
             institutionId: institutionAId,
             shiftInstanceId: publicationShiftAId,
@@ -1355,6 +1354,7 @@ describe("hierarquia institution → hospital → sector", () => {
             status: "PENDING",
             notifiedAt: new Date(),
             confirmationToken: randomUUID(),
+            recheckAt: new Date("2033-01-10T12:00:00.000Z"),
           },
           {
             institutionId: institutionAId,
@@ -1365,6 +1365,7 @@ describe("hierarquia institution → hospital → sector", () => {
             status: "PENDING",
             notifiedAt: new Date(),
             confirmationToken: randomUUID(),
+            recheckAt: new Date("2033-01-10T12:00:00.000Z"),
           },
         ])
         .$returningId();
@@ -1415,6 +1416,29 @@ describe("hierarquia institution → hospital → sector", () => {
     trackedPushMock.mockClear();
     queuedPushMock.mockClear();
     const confirmationIds: number[] = [];
+    // Escalar uma confirmação exige mês oficial: a cerca de rascunho bloqueia
+    // a escalação de um plantão que ainda é rascunho. Os casos envenenados
+    // abaixo precisam falhar pela incoerência que testam, não porque o mês
+    // não foi publicado — então publique e restaure o estado anterior.
+    const [rosterBefore] = await db
+      .select({ status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionAId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+          eq(monthlyRosters.yearMonth, publicationYearMonth),
+        ),
+      );
+    await db
+      .insert(monthlyRosters)
+      .values({
+        institutionId: institutionAId,
+        hospitalId: hospitalAId,
+        yearMonth: publicationYearMonth,
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     try {
       const [validConfirmation] = await db
         .insert(dutyConfirmations)
@@ -1427,6 +1451,10 @@ describe("hierarquia institution → hospital → sector", () => {
           status: "PENDING",
           notifiedAt: new Date(),
           confirmationToken: randomUUID(),
+          // A escalação gerencial é amarrada ao epoch do recheck para que uma
+          // escalação antiga não possa ser reencenada; sem ele o despacho
+          // falha fechado.
+          recheckAt: new Date("2033-01-10T12:00:00.000Z"),
         })
         .$returningId();
       confirmationIds.push(validConfirmation.id);
@@ -1571,6 +1599,7 @@ describe("hierarquia institution → hospital → sector", () => {
             status: "PENDING",
             notifiedAt: new Date(),
             confirmationToken: randomUUID(),
+            recheckAt: new Date("2033-01-10T12:00:00.000Z"),
           })
           .$returningId();
         confirmationIds.push(inserted.id);
@@ -1599,6 +1628,19 @@ describe("hierarquia institution → hospital → sector", () => {
     } finally {
       if (confirmationIds.length > 0) {
         await db.delete(dutyConfirmations).where(inArray(dutyConfirmations.id, confirmationIds));
+      }
+      const rosterScope = and(
+        eq(monthlyRosters.institutionId, institutionAId),
+        eq(monthlyRosters.hospitalId, hospitalAId),
+        eq(monthlyRosters.yearMonth, publicationYearMonth),
+      );
+      if (rosterBefore) {
+        await db
+          .update(monthlyRosters)
+          .set({ status: rosterBefore.status })
+          .where(rosterScope);
+      } else {
+        await db.delete(monthlyRosters).where(rosterScope);
       }
       await db
         .update(professionalInstitutions)

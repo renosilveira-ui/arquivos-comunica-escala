@@ -8,6 +8,7 @@ import {
   VACANCY_AVAILABLE_PUSH_TITLE,
   vacancyBroadcastDedupKey,
 } from "../lib/vacancy-broadcast";
+import { monthlyRosters, sectors } from "../drizzle/schema";
 
 const enqueueTrackedPushNotification = vi.hoisted(() => vi.fn());
 
@@ -16,18 +17,33 @@ vi.mock("../server/push-delivery", () => ({
     enqueueTrackedPushNotification(...args),
 }));
 
-function signalDb(eligibleUserIds: number[], sectorName = "Sala de Recuperação") {
+function signalDb(
+  eligibleUserIds: number[],
+  sectorName = "Sala de Recuperação",
+  rosterStatus: "DRAFT" | "PUBLISHED" | "LOCKED" | null = "PUBLISHED",
+) {
+  let source: unknown;
   return {
     execute: async () => eligibleUserIds.map((userId) => ({ userId })),
     select: () => {
       const chain: {
-        from: () => unknown;
+        from: (table: unknown) => unknown;
         where: () => unknown;
-        limit: () => Promise<{ name: string }[]>;
+        limit: () => Promise<Record<string, unknown>[]>;
       } = {
-        from: () => chain,
+        from: (table) => {
+          source = table;
+          return chain;
+        },
         where: () => chain,
-        limit: async () => [{ name: sectorName }],
+        limit: async () =>
+          source === monthlyRosters
+            ? rosterStatus === null
+              ? []
+              : [{ status: rosterStatus }]
+            : source === sectors
+              ? [{ name: sectorName }]
+              : [],
       };
       return chain;
     },
@@ -123,6 +139,19 @@ describe("outbox de aviso de plantão vago", () => {
     expect(persisted).toBe(0);
     expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
   });
+
+  it.each([null, "DRAFT", "LOCKED"] as const)(
+    "não enfileira em mês %s",
+    async (status) => {
+      await expect(
+        enqueueVacancyAvailableSignals({
+          db: signalDb([], "Sala", status) as never,
+          shift,
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(enqueueTrackedPushNotification).not.toHaveBeenCalled();
+    },
+  );
 
   it("propaga falha de persistência (SIGNAL_TRACKING_FAILED)", async () => {
     enqueueTrackedPushNotification.mockRejectedValue(new Error("outbox down"));

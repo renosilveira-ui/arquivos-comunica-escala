@@ -15,6 +15,9 @@ import {
   routeNotificationData,
 } from "../components/NotificationListener";
 
+const CONFIRMATION_TOKEN_A = "11111111-1111-4111-8111-111111111111";
+const CONFIRMATION_TOKEN_B = "22222222-2222-4222-8222-222222222222";
+
 const clientMocks = vi.hoisted(() => ({
   openURL: vi.fn(async () => undefined),
   captureSessionTransportTicket: vi.fn(() => 7 as number | null),
@@ -1195,7 +1198,7 @@ describe("SSO client tenant boundaries", () => {
         {
           type: "duty_confirmation",
           institutionId: 11,
-          confirmationToken: "confirmation-a",
+          confirmationToken: CONFIRMATION_TOKEN_A,
         },
         {
           isSessionAuthorizationCurrent: () => true,
@@ -1217,9 +1220,9 @@ describe("SSO client tenant boundaries", () => {
       "allowed",
       "set:11",
       "invalidate",
-      "navigate:confirmation-a",
+      `navigate:${CONFIRMATION_TOKEN_A}`,
     ]);
-    expect(navigateToConfirmation).toHaveBeenCalledWith("confirmation-a");
+    expect(navigateToConfirmation).toHaveBeenCalledWith(CONFIRMATION_TOKEN_A);
   });
 
   it("sso_ready usa o tenant normalizado do snapshot alinhado e propaga o signal do item", async () => {
@@ -1277,7 +1280,7 @@ describe("SSO client tenant boundaries", () => {
           {
             type: "duty_nomination",
             institutionId,
-            confirmationToken: "confirmation-a",
+            confirmationToken: CONFIRMATION_TOKEN_A,
           },
           {
             isSessionAuthorizationCurrent: () => true,
@@ -1398,7 +1401,7 @@ describe("SSO client tenant boundaries", () => {
       {
         type: "duty_confirmation",
         institutionId: 11,
-        confirmationToken: "token-a",
+        confirmationToken: CONFIRMATION_TOKEN_A,
       },
       dependencies,
     );
@@ -1408,7 +1411,7 @@ describe("SSO client tenant boundaries", () => {
       {
         type: "duty_confirmation",
         institutionId: 22,
-        confirmationToken: "token-b",
+        confirmationToken: CONFIRMATION_TOKEN_B,
       },
       dependencies,
     );
@@ -1421,11 +1424,11 @@ describe("SSO client tenant boundaries", () => {
       "allowed:22",
       "set:11",
       "invalidate:11",
-      "navigate:token-a:tenant:11",
+      `navigate:${CONFIRMATION_TOKEN_A}:tenant:11`,
       "allowed:11",
       "set:22",
       "invalidate:22",
-      "navigate:token-b:tenant:22",
+      `navigate:${CONFIRMATION_TOKEN_B}:tenant:22`,
     ]);
   });
 
@@ -1439,7 +1442,7 @@ describe("SSO client tenant boundaries", () => {
       {
         type: "duty_confirmation",
         institutionId: 11,
-        confirmationToken: "token-a",
+        confirmationToken: CONFIRMATION_TOKEN_A,
       },
       {
         isSessionAuthorizationCurrent: () => true,
@@ -1481,7 +1484,7 @@ describe("SSO client tenant boundaries", () => {
         {
           type: "duty_confirmation",
           institutionId: 11,
-          confirmationToken: `secret-${failingStep}`,
+          confirmationToken: CONFIRMATION_TOKEN_A,
         },
         {
           isSessionAuthorizationCurrent: () => true,
@@ -1510,7 +1513,7 @@ describe("SSO client tenant boundaries", () => {
         {
           type: "duty_confirmation",
           institutionId: 22,
-          confirmationToken: "next-token",
+          confirmationToken: CONFIRMATION_TOKEN_B,
         },
         {
           isSessionAuthorizationCurrent: () => true,
@@ -1531,7 +1534,7 @@ describe("SSO client tenant boundaries", () => {
 
       await expect(Promise.all([failed, next])).resolves.toEqual([false, true]);
       expect(firstNavigation).not.toHaveBeenCalled();
-      expect(nextNavigation).toHaveBeenCalledWith("next-token");
+      expect(nextNavigation).toHaveBeenCalledWith(CONFIRMATION_TOKEN_B);
     }
 
     expect(warn).toHaveBeenCalledTimes(3);
@@ -1572,7 +1575,7 @@ describe("SSO client tenant boundaries", () => {
                 ? "sso_ready"
                 : "duty_confirmation",
             institutionId: 11,
-            confirmationToken: `secret-${pendingStep}`,
+            confirmationToken: CONFIRMATION_TOKEN_A,
           },
           {
             isSessionAuthorizationCurrent: () => true,
@@ -1613,7 +1616,7 @@ describe("SSO client tenant boundaries", () => {
           {
             type: "duty_confirmation",
             institutionId: 22,
-            confirmationToken: "next-token",
+            confirmationToken: CONFIRMATION_TOKEN_B,
           },
           {
             isSessionAuthorizationCurrent: () => true,
@@ -1635,7 +1638,7 @@ describe("SSO client tenant boundaries", () => {
         await vi.advanceTimersByTimeAsync(NOTIFICATION_ROUTING_ITEM_TIMEOUT_MS);
         await expect(first).resolves.toBe(false);
         await expect(next).resolves.toBe(true);
-        expect(nextNavigation).toHaveBeenCalledWith("next-token");
+        expect(nextNavigation).toHaveBeenCalledWith(CONFIRMATION_TOKEN_B);
         if (pendingStep === "openComunica") {
           expect(openSignal?.aborted).toBe(true);
         }
@@ -2115,7 +2118,7 @@ describe("SSO client tenant boundaries", () => {
             data: {
               type: "duty_confirmation",
               institutionId: 11,
-              confirmationToken: "stale-token",
+              confirmationToken: CONFIRMATION_TOKEN_A,
               recipientUserId: 7,
             },
           },
@@ -2139,7 +2142,7 @@ describe("SSO client tenant boundaries", () => {
     const last = notificationResponse("blocked-receipt", {
       type: "duty_confirmation",
       institutionId: 11,
-      confirmationToken: "blocked-token",
+      confirmationToken: CONFIRMATION_TOKEN_A,
     });
     const harness = await renderRealNotificationListener({
       sessionVerified: false,
@@ -2445,7 +2448,7 @@ describe("SSO client tenant boundaries", () => {
     const last = notificationResponse("cold-a", {
       type: "duty_confirmation",
       institutionId: 11,
-      confirmationToken: "cold-token-a",
+      confirmationToken: CONFIRMATION_TOKEN_A,
     });
     const refetchStarted = deferred();
     const releaseRefetch = deferred<{
@@ -2472,7 +2475,7 @@ describe("SSO client tenant boundaries", () => {
     expect(harness.activeTenant().institutionId).toBe(11);
     expect(harness.routerPush).toHaveBeenCalledWith({
       pathname: "/confirm-duty",
-      params: { token: "cold-token-a" },
+      params: { token: CONFIRMATION_TOKEN_A },
     });
     (cleanup as (() => void) | undefined)?.();
   });
@@ -2481,7 +2484,7 @@ describe("SSO client tenant boundaries", () => {
     const staleResponse = notificationResponse("cold-account-a", {
       type: "duty_confirmation",
       institutionId: 11,
-      confirmationToken: "must-not-open-under-b",
+      confirmationToken: CONFIRMATION_TOKEN_A,
       recipientUserId: 7,
     });
     const refetch = vi.fn(async () => ({
@@ -2521,7 +2524,7 @@ describe("SSO client tenant boundaries", () => {
       notificationResponse("cold-account-a", {
         type: "duty_confirmation",
         institutionId: 11,
-        confirmationToken: "must-not-open",
+        confirmationToken: CONFIRMATION_TOKEN_B,
         recipientUserId: 8,
       }),
     );
@@ -2539,7 +2542,7 @@ describe("SSO client tenant boundaries", () => {
     const legacy = notificationResponse("legacy-without-recipient", {
       type: "duty_confirmation",
       institutionId: 11,
-      confirmationToken: "legacy-must-not-open",
+      confirmationToken: CONFIRMATION_TOKEN_A,
     });
     delete (legacy.notification.request.content.data as Record<string, unknown>)
       .recipientUserId;
@@ -2597,7 +2600,8 @@ describe("SSO client tenant boundaries", () => {
     const response = notificationResponse("cold-live-same", {
       type: "duty_nomination",
       institutionId: 11,
-      confirmationToken: "same-token",
+      confirmationToken: "9a77989a-580e-4af5-b573-743a58ed2dc9",
+      nominationEpoch: "2026-09-10T12:30:00.000Z",
     });
     const refetchStarted = deferred();
     const releaseRefetch = deferred<{
@@ -2635,7 +2639,7 @@ describe("SSO client tenant boundaries", () => {
         {
           type: "duty_confirmation",
           institutionId: 11,
-          confirmationToken: "custom-token",
+          confirmationToken: CONFIRMATION_TOKEN_A,
         },
         "CUSTOM_ACTION",
       ),
@@ -2644,7 +2648,7 @@ describe("SSO client tenant boundaries", () => {
       notificationResponse("foreign", {
         type: "duty_confirmation",
         institutionId: 99,
-        confirmationToken: "foreign-token",
+        confirmationToken: CONFIRMATION_TOKEN_B,
       }),
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2660,7 +2664,7 @@ describe("SSO client tenant boundaries", () => {
     const response = notificationResponse("retry-after-false", {
       type: "duty_confirmation",
       institutionId: 11,
-      confirmationToken: "retry-token",
+      confirmationToken: CONFIRMATION_TOKEN_A,
     });
     const harness = await renderRealNotificationListener({
       refetch: async () => ({
@@ -2684,7 +2688,7 @@ describe("SSO client tenant boundaries", () => {
     const response = notificationResponse("cold-logout", {
       type: "duty_confirmation",
       institutionId: 11,
-      confirmationToken: "logout-token",
+      confirmationToken: CONFIRMATION_TOKEN_A,
     });
     const refetchStarted = deferred();
     const releaseRefetch = deferred<{
@@ -3464,7 +3468,7 @@ describe("SSO client tenant boundaries", () => {
       {
         type: "duty_confirmation",
         institutionId: 11,
-        confirmationToken: "stale-token",
+        confirmationToken: CONFIRMATION_TOKEN_A,
       },
       {
         isSessionAuthorizationCurrent: () => true,
@@ -3494,7 +3498,7 @@ describe("SSO client tenant boundaries", () => {
       {
         type: "duty_confirmation",
         institutionId: 33,
-        confirmationToken: "current-token",
+        confirmationToken: CONFIRMATION_TOKEN_B,
       },
       {
         isSessionAuthorizationCurrent: () => true,
@@ -3519,7 +3523,7 @@ describe("SSO client tenant boundaries", () => {
     expect(calls).toEqual([
       "current:set:33",
       "current:invalidate",
-      "current:navigate:current-token",
+      `current:navigate:${CONFIRMATION_TOKEN_B}`,
     ]);
 
     releaseStaleRefetch.resolve([11]);
@@ -3527,7 +3531,7 @@ describe("SSO client tenant boundaries", () => {
     expect(calls).toEqual([
       "current:set:33",
       "current:invalidate",
-      "current:navigate:current-token",
+      `current:navigate:${CONFIRMATION_TOKEN_B}`,
     ]);
   });
 
@@ -3551,8 +3555,8 @@ describe("SSO client tenant boundaries", () => {
   });
 
   it("ConfirmDutyScreen real consulta, exibe e responde exatamente o token B dirigido", async () => {
-    const tokenA = "11111111-1111-4111-8111-111111111111";
-    const tokenB = "22222222-2222-4222-8222-222222222222";
+    const tokenA = CONFIRMATION_TOKEN_A;
+    const tokenB = CONFIRMATION_TOKEN_B;
     const harness = await renderRealConfirmDutyScreen({
       token: tokenB,
       pending: {
@@ -3570,8 +3574,8 @@ describe("SSO client tenant boundaries", () => {
       expect.objectContaining({ enabled: true }),
     );
     expect(harness.getNomination).toHaveBeenCalledWith(
-      { confirmationToken: tokenB },
-      expect.objectContaining({ enabled: true }),
+      undefined,
+      expect.objectContaining({ enabled: false }),
     );
     expect(harness.text).toContain("Plantão B");
     expect(JSON.stringify(harness.tree)).not.toContain(tokenA);
@@ -3972,7 +3976,7 @@ describe("SSO client tenant boundaries", () => {
         {
           type: "duty_confirmation",
           institutionId: 11,
-          confirmationToken: "token-a",
+          confirmationToken: CONFIRMATION_TOKEN_A,
         },
         dependencies,
       );
@@ -3982,7 +3986,7 @@ describe("SSO client tenant boundaries", () => {
         {
           type: "duty_confirmation",
           institutionId: 22,
-          confirmationToken: "token-b",
+          confirmationToken: CONFIRMATION_TOKEN_B,
         },
         dependencies,
       );
@@ -3991,7 +3995,7 @@ describe("SSO client tenant boundaries", () => {
       await expect(routeA).resolves.toBe(false);
       await expect(routeB).resolves.toBe(true);
       expect(navigate).toHaveBeenCalledTimes(1);
-      expect(navigate).toHaveBeenCalledWith("token-b");
+      expect(navigate).toHaveBeenCalledWith(CONFIRMATION_TOKEN_B);
       expect(harness.reactState()).toBe(22);
       expect(harness.tenantState.getActiveTenantSnapshot().institutionId).toBe(
         22,

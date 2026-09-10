@@ -35,6 +35,7 @@ import {
   captureInstitutionReadinessFenceV1HighWatermark,
   withReadinessFenceV1FinalDecisionTransaction,
 } from "./readiness-fence-v1";
+import { wakeDeferredPushesAfterRosterPublication } from "./roster-publication-push-wakeup";
 
 type MonthLockDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
@@ -44,6 +45,11 @@ type MonthLockDb = Pick<
 type MonthReadDb = Pick<
   NonNullable<Awaited<ReturnType<typeof getDb>>>,
   "select"
+>;
+
+type MonthWakeDb = Pick<
+  NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  "update"
 >;
 
 type MonthTransaction = Parameters<
@@ -101,18 +107,21 @@ function dateInsideYearMonth(yearMonth: string): Date {
 }
 
 function orderedMonthTargets(targets: readonly MonthLockTarget[]) {
-  return [...new Map(
-    targets.map((target) => {
-      const yearMonth = yearMonthBrt(target.date);
-      return [
-        `${target.institutionId}:${target.hospitalId}:${yearMonth}`,
-        { ...target, yearMonth },
-      ] as const;
-    }),
-  ).values()].sort((left, right) =>
-    left.institutionId - right.institutionId ||
-    left.hospitalId - right.hospitalId ||
-    left.yearMonth.localeCompare(right.yearMonth),
+  return [
+    ...new Map(
+      targets.map((target) => {
+        const yearMonth = yearMonthBrt(target.date);
+        return [
+          `${target.institutionId}:${target.hospitalId}:${yearMonth}`,
+          { ...target, yearMonth },
+        ] as const;
+      }),
+    ).values(),
+  ].sort(
+    (left, right) =>
+      left.institutionId - right.institutionId ||
+      left.hospitalId - right.hospitalId ||
+      left.yearMonth.localeCompare(right.yearMonth),
   );
 }
 
@@ -155,6 +164,30 @@ export async function assertOfficialRoster(
     });
   }
   return roster.status;
+}
+
+/**
+ * Confirma publicação editável do mês. LOCKED é oficial para leitura, mas
+ * não autoriza ações que criam novas solicitações ou avisos de vaga.
+ */
+export async function assertPublishedRoster(
+  db: MonthReadDb,
+  institutionId: number,
+  hospitalId: number,
+  date: Date,
+): Promise<void> {
+  const status = await assertOfficialRoster(
+    db,
+    institutionId,
+    hospitalId,
+    date,
+  );
+  if (status !== "PUBLISHED") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala trancada — esta ação não está mais disponível.",
+    });
+  }
 }
 
 async function lockMonthRowsForUpdate(
@@ -232,7 +265,69 @@ export async function assertMonthNotLockedForUpdate(
   hospitalId: number,
   date: Date,
 ): Promise<void> {
-  await assertMonthsNotLockedForUpdate(tx, [{ institutionId, hospitalId, date }]);
+  await assertMonthsNotLockedForUpdate(tx, [
+    { institutionId, hospitalId, date },
+  ]);
+}
+
+/**
+ * Cerca transacional das ações de vaga do plantonista. PUBLISHED é o único
+ * estado ordinário acionável; um gestor com jurisdição atual pode operar o
+ * DRAFT pelo fluxo gerencial. LOCKED nunca aceita nova ação.
+ *
+ * O mês ausente é materializado como DRAFT pelo mutex canônico e, portanto,
+ * permanece fail-closed sem depender de gap locks do MySQL.
+ */
+export async function assertVacancyActionMonthForUpdate(
+  tx: MonthLockDb,
+  institutionId: number,
+  hospitalId: number,
+  date: Date,
+  canManage: boolean,
+): Promise<"DRAFT" | "PUBLISHED"> {
+  const [roster] = await lockMonthRowsForUpdate(tx, [
+    { institutionId, hospitalId, date },
+  ]);
+  if (!roster) {
+    throw new Error("Falha ao travar o mês da solicitação de vaga");
+  }
+  if (roster.status === "LOCKED") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala trancada — não é possível solicitar este plantão.",
+    });
+  }
+  if (roster.status !== "PUBLISHED" && !canManage) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `A escala de ${roster.yearMonth} ainda não foi publicada.`,
+    });
+  }
+  return roster.status;
+}
+
+/**
+ * Avisos de vaga só podem nascer enquanto o mês está PUBLISHED. O lock torna
+ * a decisão atômica com lockMonth e impede emissão nova depois de LOCKED.
+ */
+export async function assertPublishedRosterForUpdate(
+  tx: MonthLockDb,
+  institutionId: number,
+  hospitalId: number,
+  date: Date,
+): Promise<void> {
+  const [roster] = await lockMonthRowsForUpdate(tx, [
+    { institutionId, hospitalId, date },
+  ]);
+  if (roster?.status !== "PUBLISHED") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        roster?.status === "LOCKED"
+          ? "Escala trancada — não é possível avisar uma nova vaga."
+          : `A escala de ${yearMonthBrt(date)} ainda não foi publicada.`,
+    });
+  }
 }
 
 /**
@@ -312,14 +407,22 @@ export async function assertMonthsEditableForUpdate(
     .where(eq(users.id, ctx.user.id))
     .limit(1);
   if (!account) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Usuário não encontrado" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Usuário não encontrado",
+    });
   }
 
-  const memberships = new Map<number, {
-    professionalId: number;
-    roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
-  }>();
-  for (const institutionId of new Set(rosters.map((roster) => roster.institutionId))) {
+  const memberships = new Map<
+    number,
+    {
+      professionalId: number;
+      roleInInstitution: "USER" | "GESTOR_MEDICO" | "GESTOR_PLUS";
+    }
+  >();
+  for (const institutionId of new Set(
+    rosters.map((roster) => roster.institutionId),
+  )) {
     const [membership] = await tx
       .select({
         professionalId: professionalInstitutions.professionalId,
@@ -344,7 +447,8 @@ export async function assertMonthsEditableForUpdate(
     if (!membership) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "Vínculo profissional ativo não encontrado para esta instituição",
+        message:
+          "Vínculo profissional ativo não encontrado para esta instituição",
       });
     }
     memberships.set(institutionId, membership);
@@ -365,9 +469,8 @@ export async function assertMonthsEditableForUpdate(
       ));
     if (emptyPublished) continue;
     const membership = memberships.get(roster.institutionId)!;
-    const role = account.role === "admin"
-      ? "GESTOR_PLUS"
-      : membership.roleInInstitution;
+    const role =
+      account.role === "admin" ? "GESTOR_PLUS" : membership.roleInInstitution;
     if (role !== "GESTOR_PLUS") {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -493,7 +596,10 @@ async function getRosterPublicationRecipients(
         eq(shiftAssignmentsV2.isActive, true),
       ),
     )
-    .innerJoin(professionals, eq(professionals.id, shiftAssignmentsV2.professionalId))
+    .innerJoin(
+      professionals,
+      eq(professionals.id, shiftAssignmentsV2.professionalId),
+    )
     .innerJoin(
       professionalAccess,
       and(
@@ -512,7 +618,10 @@ async function getRosterPublicationRecipients(
       and(
         eq(professionalInstitutions.professionalId, professionals.id),
         eq(professionalInstitutions.userId, professionals.userId),
-        eq(professionalInstitutions.institutionId, shiftInstances.institutionId),
+        eq(
+          professionalInstitutions.institutionId,
+          shiftInstances.institutionId,
+        ),
         eq(professionalInstitutions.active, true),
       ),
     )
@@ -748,8 +857,30 @@ async function completeRosterPublication(
   }
 }
 
+async function wakeDeferredPushesAfterCommittedPublication(
+  db: MonthWakeDb,
+  input: Readonly<{
+    institutionId: number;
+    hospitalId: number;
+    yearMonth: string;
+  }>,
+): Promise<void> {
+  try {
+    await wakeDeferredPushesAfterRosterPublication(db, {
+      ...input,
+      publishedAt: new Date(),
+    });
+  } catch {
+    // Este update roda somente depois do commit da escala: evita inversão de
+    // locks com o worker (notification -> monthly_rosters). Crash/falha aqui
+    // preserva a publicação e o recheck periódico continua sendo o fallback.
+    console.error("[RosterPublication] DEFERRED_PUSH_WAKE_FAILED");
+  }
+}
+
 async function publishMonthWithReadinessAcknowledgement(
   input: Readonly<{
+    wakeDb: MonthWakeDb;
     institutionId: number;
     hospitalId: number;
     yearMonth: string;
@@ -824,6 +955,7 @@ async function publishMonthWithReadinessAcknowledgement(
         });
       },
     );
+    await wakeDeferredPushesAfterCommittedPublication(input.wakeDb, input);
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     const readinessError = readinessFencePublicationError(error);
@@ -858,6 +990,7 @@ export async function publishMonth(
 
   if (readinessAcknowledgement) {
     await publishMonthWithReadinessAcknowledgement({
+      wakeDb: db,
       institutionId,
       hospitalId,
       yearMonth,
@@ -902,6 +1035,11 @@ export async function publishMonth(
       currentRole,
     });
   });
+  await wakeDeferredPushesAfterCommittedPublication(db, {
+    institutionId,
+    hospitalId,
+    yearMonth,
+  });
 }
 
 /**
@@ -931,7 +1069,11 @@ export async function lockMonth(
 
   await db.transaction(async (tx) => {
     const [existing] = await tx
-      .select({ id: monthlyRosters.id, status: monthlyRosters.status, version: monthlyRosters.version })
+      .select({
+        id: monthlyRosters.id,
+        status: monthlyRosters.status,
+        version: monthlyRosters.version,
+      })
       .from(monthlyRosters)
       .where(
         and(

@@ -38,14 +38,17 @@ describe("swaps.listEligibleRecipients — contrato de fonte", () => {
     expect(slice).toContain("fromShiftInstanceId");
     expect(slice).toContain("z.strictObject");
     expect(slice).toContain("requireCanonicalAssignmentTuple");
+    expect(slice).toContain("assertPublishedRoster");
     expect(slice).toContain("listClinicallyEligibleOfferRecipients");
+    expect(slice.indexOf("assertPublishedRoster")).toBeLessThan(
+      slice.indexOf("listClinicallyEligibleOfferRecipients"),
+    );
     expect(slice).toContain("DB unavailable");
     expect(slice).toContain("throw error");
     expect(slice).not.toMatch(/return \[\]/);
-    expect(slice).not.toContain("hospitalId");
-    expect(slice).not.toContain("sectorId");
-    expect(slice).not.toContain("scheduleContextId");
-    expect(slice).not.toMatch(/input\.(institutionId|userId|role)/);
+    expect(slice).not.toMatch(
+      /input\.(institutionId|hospitalId|sectorId|scheduleContextId|userId|role)/,
+    );
     expect(slice).toContain("ctx.institutionId");
     expect(slice).toContain("ctx.user");
   });
@@ -71,7 +74,9 @@ describe("swaps.listEligibleRecipients — contrato de fonte", () => {
     expect(helper).not.toContain("user_id AS userId");
 
     const clinical = read("server/plantonista-shift-eligibility.ts");
-    expect(clinical).toContain("export function plantonistaAccessCoversShiftSql");
+    expect(clinical).toContain(
+      "export function plantonistaAccessCoversShiftSql",
+    );
     expect(clinical).toContain(
       "export function plantonistaQualificationMatchesContextSql",
     );
@@ -293,9 +298,11 @@ describe("desambiguação de destinatários", () => {
     ]);
     expect(listed.unresolvedHomonymGroups).toEqual([]);
     expect(listed.recipients).toHaveLength(3);
-    expect(
-      listed.recipients.map((item) => item.qualification).sort(),
-    ).toEqual(["Anestesiologia", "Clínica Médica", "Médico generalista"]);
+    expect(listed.recipients.map((item) => item.qualification).sort()).toEqual([
+      "Anestesiologia",
+      "Clínica Médica",
+      "Médico generalista",
+    ]);
     for (const recipient of listed.recipients) {
       expect(recipient).toHaveProperty("qualification");
     }
@@ -396,7 +403,9 @@ describe("desambiguação de destinatários", () => {
         "professionalId",
         "qualification",
       ]);
-      expect(recipient.displayName).not.toMatch(String(recipient.professionalId));
+      expect(recipient.displayName).not.toMatch(
+        String(recipient.professionalId),
+      );
     }
   });
 

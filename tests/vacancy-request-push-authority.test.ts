@@ -12,7 +12,9 @@ import {
   hospitals,
   institutions,
   managerScope,
+  monthlyRosters,
   notifications,
+  professionalAccess,
   professionalInstitutions,
   professionals,
   pushTokens,
@@ -25,6 +27,7 @@ import { getDb } from "../server/db";
 import { drainAccountWideNativeBadgeSnapshotDispatches } from "../server/notifications-service";
 import {
   enqueueTrackedPushNotification,
+  processPendingPushDeliveries,
   sendTrackedPushNotification,
   type TrackedPushInput,
 } from "../server/push-delivery";
@@ -192,6 +195,15 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     const requester = await createProfessional("requester", "USER");
     requesterUserId = requester.userId;
     requesterProfessionalId = requester.professionalId;
+    // Aprovar uma vaga transforma a candidatura em alocação oficial, então a
+    // autoridade revalida a ACL clínica do solicitante antes de notificar.
+    // Acesso hospital-wide (sector_id NULL) é o vínculo mínimo realista.
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: requester.professionalId,
+      hospitalId: hospitalAId,
+      canAccess: true,
+    });
     const managerA = await createProfessional("manager-a", "GESTOR_MEDICO");
     managerAUserId = managerA.userId;
     managerAProfessionalId = managerA.professionalId;
@@ -290,6 +302,12 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
       })
       .$returningId();
     shiftId = shift.id;
+    await db.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId: hospitalAId,
+      yearMonth: "2033-09",
+      status: "PUBLISHED",
+    });
     const [assignment] = await db
       .insert(shiftAssignmentsV2)
       .values({
@@ -382,6 +400,16 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
         isActive: true,
       })
       .where(eq(shiftAssignmentsV2.id, assignmentId));
+    await db
+      .update(monthlyRosters)
+      .set({ status: "PUBLISHED" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+          eq(monthlyRosters.yearMonth, "2033-09"),
+        ),
+      );
   });
 
   function intent(
@@ -654,6 +682,143 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("retém decisão ao solicitante em DRAFT e entrega uma vez após publicar", async () => {
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ status: "OCUPADO", isActive: true })
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
+    await db
+      .update(monthlyRosters)
+      .set({ status: "DRAFT" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+          eq(monthlyRosters.yearMonth, "2033-09"),
+        ),
+      );
+    const push = intent(
+      "REQUEST_APPROVED",
+      requesterUserId,
+      "draft-requester",
+    );
+
+    await expect(sendTrackedPushNotification(push, now)).resolves.toMatchObject(
+      {
+        status: "PENDING",
+        phase: "QUEUED",
+        ticketAccepted: false,
+      },
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await db
+      .update(monthlyRosters)
+      .set({ status: "PUBLISHED" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+          eq(monthlyRosters.yearMonth, "2033-09"),
+        ),
+      );
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: `published-${stamp}` } }),
+    );
+    await processPendingPushDeliveries(
+      new Date(now.getTime() + 6 * 60_000),
+    );
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+    const operational = fetchMock.mock.calls.filter(([, options]) => {
+      const body = JSON.parse(String((options as RequestInit).body));
+      return body.data?.type === "vacancy_request_approved";
+    });
+    expect(operational).toHaveLength(1);
+  });
+
+  it("encerra sem retry a decisão ao solicitante se o DRAFT nunca for publicado", async () => {
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ status: "OCUPADO", isActive: true })
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
+    await db
+      .update(monthlyRosters)
+      .set({ status: "DRAFT" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+          eq(monthlyRosters.yearMonth, "2033-09"),
+        ),
+      );
+    const push = intent(
+      "REQUEST_APPROVED",
+      requesterUserId,
+      "draft-never-published",
+    );
+    await expect(sendTrackedPushNotification(push, now)).resolves.toMatchObject(
+      {
+        status: "PENDING",
+        phase: "QUEUED",
+        ticketAccepted: false,
+      },
+    );
+
+    await sendTrackedPushNotification(
+      push,
+      new Date("2033-09-02T13:00:00.000Z"),
+    );
+
+    const [row] = await db
+      .select({
+        status: notifications.status,
+        receipt: notifications.providerReceipt,
+        errorMessage: notifications.errorMessage,
+      })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, push.dedupKey));
+    expect(row.status).toBe("FAILED");
+    expect(row.errorMessage).toBe(
+      "Notificação suprimida após o início do plantão",
+    );
+    expect(row.receipt).toMatchObject({
+      phase: "FAILED",
+      attemptCount: 0,
+      evidence: {
+        reason: "OPERATIONAL_WINDOW_EXPIRED",
+        operationalDeadline: "2033-09-02T13:00:00.000Z",
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("mantém a notificação de ação aos gestores atuais no DRAFT", async () => {
+    await db
+      .update(monthlyRosters)
+      .set({ status: "DRAFT" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+          eq(monthlyRosters.yearMonth, "2033-09"),
+        ),
+      );
+    fetchMock.mockResolvedValue(
+      response(200, { data: { status: "ok", id: `manager-draft-${stamp}` } }),
+    );
+
+    await expect(
+      sendTrackedPushNotification(
+        intent("MANAGER_ACTION_REQUIRED", managerAUserId, "manager-draft"),
+        now,
+      ),
+    ).resolves.toMatchObject({
+      status: "PENDING",
+      phase: "TICKET_ACCEPTED",
+      ticketAccepted: true,
+    });
+  });
+
   it("dedup concorrente preserva uma única intenção", async () => {
     const push = intent("MANAGER_ACTION_REQUIRED", managerAUserId, "dedup");
     const [first, second] = await Promise.all([
@@ -689,10 +854,16 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     await db
       .delete(shiftAssignmentsV2)
       .where(eq(shiftAssignmentsV2.id, assignmentId));
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(shiftInstances).where(eq(shiftInstances.id, shiftId));
     await db
       .delete(managerScope)
       .where(inArray(managerScope.managerProfessionalId, professionalIds));
+    await db
+      .delete(professionalAccess)
+      .where(inArray(professionalAccess.professionalId, professionalIds));
     await db
       .delete(professionalInstitutions)
       .where(inArray(professionalInstitutions.professionalId, professionalIds));

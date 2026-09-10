@@ -10,6 +10,13 @@ import {
   shiftSlotKey,
 } from "./shift-capacity";
 import { shiftCapacitySummary } from "../lib/shift-capacity";
+import {
+  canReadRosterMonth,
+  loadRosterMonthStatuses,
+  managedScheduleContextExistsSql,
+  officialRosterExistsSql,
+  rosterMonthKey,
+} from "./roster-read-visibility";
 import { requiredCapacityInput } from "./schedule-capacity-router";
 import {
   addDaysToKey,
@@ -49,12 +56,13 @@ import {
   users,
 } from "../drizzle/schema";
 import { enqueueDutySyncIntervalRewrite } from "./sso/duty-sync-lifecycle";
+import { rearmDutyConfirmationsAfterShiftWindowChange } from "./confirmation-lifecycle";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import {
   assertMonthEditableForUpdate,
-  assertMonthNotLockedForUpdate,
   assertMonthsEditableForUpdate,
+  assertPublishedRosterForUpdate,
   lockMonthsForUpdate,
   lockMonth,
   publishMonth,
@@ -79,6 +87,7 @@ import { assertInstitutionHierarchy } from "./_core/tenant";
 import {
   assertActorCanReadShiftScheduleContext,
   assertActiveScheduleContextTopology,
+  listAuthorizedScheduleContexts,
   listReadableScheduleContexts,
   resolveScheduleContextForShiftCreation,
 } from "./schedule-contexts";
@@ -2045,11 +2054,28 @@ export const shiftsRouter = router({
         });
       }
 
-      await assertActorCanReadShiftScheduleContext({
+      const readGrant = await assertActorCanReadShiftScheduleContext({
         actor,
         shift: instance,
         db,
       });
+      const yearMonth = yearMonthBrt(instance.startAt);
+      const monthStatuses = await loadRosterMonthStatuses(
+        db,
+        actor.institutionId,
+        [{ hospitalId: instance.hospitalId, yearMonth }],
+      );
+      if (
+        !canReadRosterMonth(
+          readGrant.kind === "SCHEDULE_CONTEXT" && readGrant.context.canManage,
+          monthStatuses.get(rosterMonthKey(instance.hospitalId, yearMonth)),
+        )
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "A escala deste mês ainda não foi publicada.",
+        });
+      }
 
       // Load the template that matches this instance's hospital + sector + label
       const [template] = await db
@@ -2126,7 +2152,14 @@ export const shiftsRouter = router({
           instance.status,
         ),
         template: template ?? null,
-        assignments,
+        assignments:
+          readGrant.kind === "OWN_ASSIGNMENT"
+            ? assignments.filter(
+                (assignment) =>
+                  assignment.professionalId === actor.professionalId &&
+                  assignment.userId === actor.userId,
+              )
+            : assignments,
       };
     }),
 
@@ -2216,7 +2249,7 @@ export const shiftsRouter = router({
       }
 
       return db.transaction(async (tx) => {
-        await assertMonthNotLockedForUpdate(
+        await assertPublishedRosterForUpdate(
           tx,
           shift.institutionId,
           shift.hospitalId,
@@ -2560,6 +2593,7 @@ export const shiftsRouter = router({
                   eq(shiftAssignmentsV2.isActive, true),
                 ),
               )
+              .orderBy(shiftAssignmentsV2.id)
               .for("update")
           : [];
 
@@ -2618,6 +2652,7 @@ export const shiftsRouter = router({
             : "PLANTAO";
         const previousDutyType =
           locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
+        let rearmedConfirmationCount = 0;
         if (windowChanged || nextDutyType !== previousDutyType) {
           await enqueueDutySyncIntervalRewrite(tx, {
             institutionId: locked.institutionId,
@@ -2644,13 +2679,27 @@ export const shiftsRouter = router({
             nextServiceName: locked.specialty,
           });
         }
+        if (windowChanged) {
+          rearmedConfirmationCount =
+            await rearmDutyConfirmationsAfterShiftWindowChange(tx, {
+              institutionId: locked.institutionId,
+              shiftInstanceId: locked.id,
+              assignmentIds: activeAssignments.map(
+                (assignment) => assignment.id,
+              ),
+            });
+        }
         await auditLog(
           {
             event: "SHIFT_UPDATED",
             shiftInstanceId: input.id,
             institutionId: ctx.institutionId,
             professionalId: null,
-            metadata: { updatedBy: ctx.user.id, changes: patch },
+            metadata: {
+              updatedBy: ctx.user.id,
+              changes: patch,
+              rearmedConfirmationCount,
+            },
           },
           { db: tx },
         );
@@ -2667,7 +2716,7 @@ export const shiftsRouter = router({
             shiftInstanceId: input.id,
             hospitalId: existing.hospitalId,
             sectorId: existing.sectorId,
-            metadata: { changes: patch },
+            metadata: { changes: patch, rearmedConfirmationCount },
           },
           { db: tx, strict: true },
         );
@@ -2709,6 +2758,11 @@ export const shiftsRouter = router({
       const readableContexts = await listReadableScheduleContexts(actor, db);
       const readableContextIds = new Set(
         readableContexts.map((context) => context.id),
+      );
+      const manageableContextIds = new Set(
+        readableContexts
+          .filter((context) => context.canManage)
+          .map((context) => context.id),
       );
       if (
         input.scheduleContextId !== undefined &&
@@ -2771,8 +2825,31 @@ export const shiftsRouter = router({
 
       if (instanceRows.length === 0) return [];
 
+      const monthStatuses = await loadRosterMonthStatuses(
+        db,
+        actor.institutionId,
+        instanceRows.map(({ instance }) => ({
+          hospitalId: instance.hospitalId,
+          yearMonth: yearMonthBrt(instance.startAt),
+        })),
+      );
+      const monthVisibleRows = instanceRows.filter(
+        ({ instance, activeScheduleContextId }) =>
+          canReadRosterMonth(
+            activeScheduleContextId !== null &&
+              manageableContextIds.has(activeScheduleContextId),
+            monthStatuses.get(
+              rosterMonthKey(
+                instance.hospitalId,
+                yearMonthBrt(instance.startAt),
+              ),
+            ),
+          ),
+      );
+      if (monthVisibleRows.length === 0) return [];
+
       // Attach active assignments (with professional name) to each instance
-      const instanceIds = instanceRows.map(({ instance }) => instance.id);
+      const instanceIds = monthVisibleRows.map(({ instance }) => instance.id);
       const allAssignments = await db
         .select({
           id: shiftAssignmentsV2.id,
@@ -2850,7 +2927,7 @@ export const shiftsRouter = router({
       }
 
       const capacityCounts = await activeShiftCounts(db, instanceIds);
-      return instanceRows
+      return monthVisibleRows
         .filter(({ instance, activeScheduleContextId }) => {
           if (input.scheduleContextId !== undefined) {
             return activeScheduleContextId === input.scheduleContextId;
@@ -2869,14 +2946,20 @@ export const shiftsRouter = router({
               assignment.userId === actor.userId,
           );
         })
-        .map(({ instance }) => ({
+        .map(({ instance, activeScheduleContextId }) => ({
           ...instance,
           ...shiftCapacitySummary(
             instance.requiredCapacity,
             capacityCounts.get(instance.id) ?? 0,
             instance.status,
           ),
-          assignments: assignmentsByShift.get(instance.id) ?? [],
+          assignments: (assignmentsByShift.get(instance.id) ?? []).filter(
+            (assignment) =>
+              (activeScheduleContextId !== null &&
+                readableContextIds.has(activeScheduleContextId)) ||
+              (assignment.professionalId === actor.professionalId &&
+                assignment.userId === actor.userId),
+          ),
         }));
     }),
 
@@ -3180,8 +3263,31 @@ export const shiftsRouter = router({
         );
       }
 
-      // 3. Filtra por escopo se "minha".
+      const monthStatuses = await loadRosterMonthStatuses(
+        db,
+        actor.institutionId,
+        rows.map((row) => ({
+          hospitalId: row.hospitalId,
+          yearMonth: yearMonthBrt(row.startAt),
+        })),
+      );
+
+      // Publicação é independente de ownership: uma alocação própria não
+      // permite ao USER antecipar a leitura de um rascunho.
       const scoped = rows.filter((r) => {
+        const readableContext =
+          r.scheduleContextId === null
+            ? undefined
+            : readableContextsById.get(r.scheduleContextId);
+        if (
+          !canReadRosterMonth(
+            readableContext?.canManage === true,
+            monthStatuses.get(
+              rosterMonthKey(r.hospitalId, yearMonthBrt(r.startAt)),
+            ),
+          )
+        )
+          return false;
         if (input.scope === "geral") {
           return (
             r.scheduleContextId !== null &&
@@ -3282,6 +3388,12 @@ export const shiftsRouter = router({
           modality: r.modality,
           coverageType: r.coverageType,
           professionalNames: myList
+            .filter(
+              (assignment) =>
+                (r.scheduleContextId !== null &&
+                  readableContextsById.has(r.scheduleContextId)) ||
+                assignment.professionalId === myProfessionalId,
+            )
             .map((a) => a.professionalName ?? "—")
             .filter((n) => n.trim().length > 0),
           isMine,
@@ -3365,6 +3477,11 @@ export const shiftsRouter = router({
 
     const actor = await getTenantActorFromContext(ctx);
     if (!actor.professionalId) return null;
+    const manageableContextIds = (
+      await listAuthorizedScheduleContexts(actor, db)
+    )
+      .filter((context) => context.canManage)
+      .map((context) => context.id);
 
     const now = new Date();
 
@@ -3426,6 +3543,20 @@ export const shiftsRouter = router({
           eq(shiftAssignmentsV2.isActive, true),
           eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
           eq(shiftInstances.institutionId, ctx.institutionId),
+          or(
+            officialRosterExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              startAt: shiftInstances.startAt,
+            }),
+            managedScheduleContextExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              sectorId: shiftInstances.sectorId,
+              scheduleContextId: shiftInstances.scheduleContextId,
+              manageableContextIds,
+            }),
+          ),
           lte(shiftInstances.startAt, now),
           gte(shiftInstances.endAt, now),
         ),
@@ -3446,6 +3577,11 @@ export const shiftsRouter = router({
 
     const actor = await getTenantActorFromContext(ctx);
     if (!actor.professionalId) return null;
+    const manageableContextIds = (
+      await listAuthorizedScheduleContexts(actor, db)
+    )
+      .filter((context) => context.canManage)
+      .map((context) => context.id);
 
     const now = new Date();
     const rows = await db
@@ -3516,6 +3652,20 @@ export const shiftsRouter = router({
           eq(shiftAssignmentsV2.isActive, true),
           eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
           eq(shiftInstances.institutionId, ctx.institutionId),
+          or(
+            officialRosterExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              startAt: shiftInstances.startAt,
+            }),
+            managedScheduleContextExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              sectorId: shiftInstances.sectorId,
+              scheduleContextId: shiftInstances.scheduleContextId,
+              manageableContextIds,
+            }),
+          ),
           // Em andamento (terminou depois de agora) ou futuro.
           gte(shiftInstances.endAt, now),
         ),
@@ -3627,6 +3777,12 @@ export const shiftsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
+      const actor = await getTenantActorFromContext(ctx);
+      assertCanManageInstitutionSchedule(actor);
+      // O status é hospital+mês e governa publicação/bloqueio de todos os
+      // setores; GESTOR_MEDICO precisa de jurisdição hospital-wide, igual aos
+      // próprios writes de publish/lock.
+      await assertManagerScopeAccess(actor, input.hospitalId);
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       await assertInstitutionHierarchy(

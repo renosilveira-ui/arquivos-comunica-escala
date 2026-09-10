@@ -16,6 +16,7 @@ import {
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
+import { yearMonthBrt } from "../server/local-time";
 
 const enqueueTrackedPushNotification = vi.hoisted(() => vi.fn());
 
@@ -89,7 +90,7 @@ describe("unassignDirect e falha do outbox", () => {
         userId: managerUserId,
         name: `Unassign Outbox Manager ${stamp}`,
         role: "Gestor",
-        userRole: "GESTOR_MEDICO",
+        userRole: "GESTOR_PLUS",
       })
       .$returningId();
     managerProfessionalId = managerProfessional.id;
@@ -121,7 +122,9 @@ describe("unassignDirect e falha do outbox", () => {
         professionalId: managerProfessionalId,
         userId: managerUserId,
         institutionId,
-        roleInInstitution: "GESTOR_MEDICO",
+        // Remoção que notifica só acontece em mês publicado, e mês publicado
+        // só Gestor+ edita. GESTOR_MEDICO nunca alcançaria este caminho.
+        roleInInstitution: "GESTOR_PLUS",
         isPrimary: true,
         active: true,
       },
@@ -159,6 +162,14 @@ describe("unassignDirect e falha do outbox", () => {
       })
       .$returningId();
     shiftInstanceId = shift.id;
+    // O outbox de remoção só existe para escala oficial: uma alocação montada
+    // e desfeita dentro do rascunho nunca gera UNASSIGNED.
+    await db.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: yearMonthBrt(startAt),
+      status: "PUBLISHED",
+    });
   });
 
   beforeEach(async () => {
@@ -210,6 +221,8 @@ describe("unassignDirect e falha do outbox", () => {
     await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
+    // Editar mês publicado registra auditoria fora do escopo do turno.
+    await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
     await db.delete(users).where(eq(users.id, managerUserId));
     await db.delete(users).where(eq(users.id, targetUserId));

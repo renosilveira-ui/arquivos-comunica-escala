@@ -502,7 +502,7 @@ describe("shifts: create / get / update / listByPeriod", () => {
     });
   });
 
-  it("update muda horários/modalidade e listByPeriod enxerga o turno no dia", async () => {
+  it("update muda horários/modalidade; gestor lê o rascunho e USER não", async () => {
     const [row] = await db
       .select({ id: shiftInstances.id })
       .from(shiftInstances)
@@ -520,10 +520,12 @@ describe("shifts: create / get / update / listByPeriod", () => {
     expect(updated?.modality).toBe("SOBREAVISO");
     expect(updated?.coverageType).toBeNull(); // invariante: SOBREAVISO ⇒ coverageType NULL
 
-    const list = await asDoctor().listByPeriod({
+    const period = {
       startDate: new Date(`${day}T00:00:00-03:00`).toISOString(),
       endDate: new Date(`${addDaysToKey(day, 1)}T00:00:00-03:00`).toISOString(),
-    });
+    };
+    expect(await asDoctor().listByPeriod(period)).toEqual([]);
+    const list = await asManager().listByPeriod(period);
     expect(list.map((s: any) => s.id)).toContain(row.id);
   });
 

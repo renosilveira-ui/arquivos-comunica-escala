@@ -16,6 +16,7 @@ import { enqueueTrackedPushNotification } from "./push-delivery";
 import {
   eligibleProfessionalUserIdsForShift,
 } from "./plantonista-shift-eligibility";
+import { assertPublishedRoster } from "./month-guards";
 
 type EnqueueDb = NonNullable<Parameters<typeof enqueueTrackedPushNotification>[2]>;
 type SignalDb = EnqueueDb & {
@@ -101,6 +102,14 @@ export async function enqueueVacancyAvailableSignals(input: {
 }): Promise<number> {
   const { db, shift } = input;
   const now = input.now ?? new Date();
+  // Defense in depth: produtores internos e chamadas de teste não podem
+  // contornar a publicação que a mutation também trava atomicamente.
+  await assertPublishedRoster(
+    db,
+    shift.institutionId,
+    shift.hospitalId,
+    shift.startAt,
+  );
   const userIds = await eligibleProfessionalUserIdsForShift(db, {
     id: shift.id,
     institutionId: shift.institutionId,

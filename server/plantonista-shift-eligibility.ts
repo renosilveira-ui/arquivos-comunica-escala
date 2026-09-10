@@ -201,12 +201,12 @@ async function queryEligibleProfessionalUserIdsForShift(
       AND si.start_at > NOW()
       AND ${plantonistaAccessCoversShiftSql("ap", "si", "sc")}
       AND ${plantonistaQualificationMatchesContextSql("ap", "sc")}
-      AND NOT EXISTS (
+      AND EXISTS (
         SELECT 1 FROM monthly_rosters mr
         WHERE mr.institution_id = si.institution_id
           AND mr.hospital_id = si.hospital_id
           AND mr.year_month = DATE_FORMAT(DATE_SUB(si.start_at, INTERVAL 3 HOUR), '%Y-%m')
-          AND mr.status = 'LOCKED'
+          AND mr.status = 'PUBLISHED'
       )
       AND NOT EXISTS (
         SELECT 1
