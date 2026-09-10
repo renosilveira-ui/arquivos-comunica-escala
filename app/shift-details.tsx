@@ -67,6 +67,7 @@ export default function ShiftDetailsScreen() {
   const {
     data: apiShiftData,
     isLoading: apiLoading,
+    isPending: apiShiftIsPending,
     isError: apiShiftIsError,
     error: apiShiftError,
     refetch: refetchApiShift,
@@ -92,6 +93,7 @@ export default function ShiftDetailsScreen() {
   const {
     data: assignableProfessionals,
     isLoading: loadingAssignableProfessionals,
+    isPending: assignableProfessionalsIsPending,
     isError: assignableProfessionalsIsError,
     error: assignableProfessionalsError,
     refetch: refetchAssignableProfessionals,
@@ -151,6 +153,8 @@ export default function ShiftDetailsScreen() {
       professional.name.toLocaleLowerCase("pt-BR").includes(normalized),
     );
   }, [assignableProfessionals, professionalSearch]);
+  const assignableProfessionalsUnresolved =
+    assignableProfessionalsIsPending || assignableProfessionals === undefined;
 
   // Dados demo
   const demoShiftData = isDemo
@@ -182,6 +186,8 @@ export default function ShiftDetailsScreen() {
       : null;
 
   const isLoading = isDemo ? false : apiLoading;
+  const shiftUnresolved =
+    !isDemo && (apiShiftIsPending || apiShiftData === undefined);
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -203,6 +209,10 @@ export default function ShiftDetailsScreen() {
   };
 
   const handleAssignProfessional = () => {
+    if (assignableProfessionalsUnresolved || assignableProfessionalsIsError) {
+      feedback.info("Aguarde a confirmação dos profissionais disponíveis.");
+      return;
+    }
     if (!selectedProfessionalId) {
       feedback.info("Escolha quem ficará alocado neste plantão.");
       return;
@@ -272,6 +282,22 @@ export default function ShiftDetailsScreen() {
           <QueryErrorState
             title="Não foi possível carregar o plantão"
             error={apiShiftError}
+            onRetry={() => {
+              void refetchApiShift();
+            }}
+          />
+        </View>
+      </ScreenGradient>
+    );
+  }
+
+  if (shiftUnresolved) {
+    return (
+      <ScreenGradient scrollable={false}>
+        <View style={{ flex: 1, justifyContent: "center" }}>
+          <QueryErrorState
+            title="Detalhes do plantão ainda não confirmados"
+            description="A consulta está indisponível ou aguardando conexão. Tente novamente quando estiver conectado."
             onRetry={() => {
               void refetchApiShift();
             }}
@@ -536,6 +562,14 @@ export default function ShiftDetailsScreen() {
                       void refetchAssignableProfessionals();
                     }}
                   />
+                ) : assignableProfessionalsUnresolved ? (
+                  <QueryErrorState
+                    title="Profissionais ainda não confirmados"
+                    description="A consulta está indisponível ou aguardando conexão. Tente novamente quando estiver conectado."
+                    onRetry={() => {
+                      void refetchAssignableProfessionals();
+                    }}
+                  />
                 ) : filteredAssignableProfessionals.length > 0 ? (
                   <View style={styles.assignableList}>
                     {filteredAssignableProfessionals.map((professional) => {
@@ -606,6 +640,7 @@ export default function ShiftDetailsScreen() {
                   icon={<UserPlus size={20} color={theme.colors.surface} />}
                   disabled={
                     assignableProfessionalsIsError ||
+                    assignableProfessionalsUnresolved ||
                     !selectedProfessionalId ||
                     assignDirect.isPending ||
                     (apiShiftData?.requiredCapacity != null &&

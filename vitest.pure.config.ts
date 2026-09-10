@@ -180,6 +180,7 @@ export default defineConfig({
       "tests/calendar-holidays.test.ts",
       "tests/calendar-auxiliary-router.test.ts",
       "tests/ui-query-error-states.test.ts",
+      "tests/shift-details-paused-query.test.ts",
     ],
   },
 });
