@@ -30,6 +30,12 @@ describe("rearme de confirmação após mudança de horário", () => {
     expect(lifecycle).toContain("recheckAt: null");
     expect(lifecycle).toContain("notifiedAt: null");
     expect(lifecycle).toContain("replacementProfessionalId: null");
+    expect(lifecycle).toContain("assignmentId: effective.assignmentId");
+    expect(lifecycle).toContain("professionalId: effective.professionalId");
+    expect(lifecycle).toContain("userId: effective.userId");
+    expect(lifecycle).toContain(
+      "replacementUserId: dutyConfirmations.replacementUserId",
+    );
     expect(lifecycle).toContain(
       "eq(dutyConfirmations.status, snapshot.status)",
     );
@@ -102,6 +108,10 @@ describe("rearme de confirmação após mudança de horário", () => {
   });
 
   it("não cria segunda confirmação para o assignment efetivo do substituto", () => {
+    expect(lifecycle).toContain(
+      "const current = await requireValidDutyConfirmation",
+    );
+    expect(lifecycle).toContain("const effective = current.effective");
     expect(dispatcher).toContain(
       'eq(dutyConfirmations.status, "REPLACEMENT_CONFIRMED")',
     );
@@ -113,6 +123,9 @@ describe("rearme de confirmação após mudança de horário", () => {
     );
     expect(dispatcher).toContain(
       "eq(dutyConfirmations.institutionId, shiftAssignmentsV2.institutionId)",
+    );
+    expect(dispatcher).toContain(
+      "eq(dutyConfirmations.assignmentId, shiftAssignmentsV2.id)",
     );
   });
 
