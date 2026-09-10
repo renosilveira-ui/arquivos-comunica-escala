@@ -3,8 +3,10 @@ import { MySqlDialect } from "drizzle-orm/mysql-core";
 import {
   canReadRosterMonth,
   loadRosterMonthStatuses,
+  officialRosterExistsSql,
   rosterMonthKey,
 } from "../server/roster-read-visibility";
+import { shiftInstances } from "../drizzle/schema";
 import { yearMonthBrt } from "../server/local-time";
 import { resolveShiftScheduleContextReadGrant } from "../server/schedule-contexts";
 
@@ -64,6 +66,25 @@ describe("cerca de publicação mensal", () => {
   it("mês da última noite é o civil BRT, não o mês UTC", () => {
     expect(yearMonthBrt(new Date("2026-10-01T02:00:00Z"))).toBe("2026-09");
     expect(yearMonthBrt(new Date("2026-10-01T03:00:00Z"))).toBe("2026-10");
+  });
+
+  it("gera predicado oficial tenant/hospital/mês antes de ORDER/LIMIT", () => {
+    const query = new MySqlDialect().sqlToQuery(
+      officialRosterExistsSql({
+        institutionId: shiftInstances.institutionId,
+        hospitalId: shiftInstances.hospitalId,
+        startAt: shiftInstances.startAt,
+      }),
+    );
+    expect(query.sql).toContain(
+      "roster_visibility.institution_id = `shift_instances`.`institution_id`",
+    );
+    expect(query.sql).toContain(
+      "roster_visibility.hospital_id = `shift_instances`.`hospital_id`",
+    );
+    expect(query.sql).toContain("DATE_SUB(`shift_instances`.`start_at`");
+    expect(query.sql).toContain("IN ('PUBLISHED', 'LOCKED')");
+    expect(query.params).toEqual([]);
   });
 
   it("alocação própria não apaga canManage e fallback próprio não cria gestão", () => {

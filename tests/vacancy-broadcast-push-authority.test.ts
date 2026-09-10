@@ -254,15 +254,14 @@ describe("autoridade atual no broadcast de vaga", () => {
       .set({ canAccess: false })
       .where(eq(professionalAccess.id, accessBId));
     await db
-      .update(monthlyRosters)
-      .set({ status: "PUBLISHED" })
-      .where(
-        and(
-          eq(monthlyRosters.institutionId, institutionId),
-          eq(monthlyRosters.hospitalId, hospitalAId),
-          eq(monthlyRosters.yearMonth, "2032-09"),
-        ),
-      );
+      .insert(monthlyRosters)
+      .values({
+        institutionId,
+        hospitalId: hospitalAId,
+        yearMonth: "2032-09",
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     await db
       .update(shiftInstances)
       .set({ status: "VAGO" })
@@ -448,6 +447,48 @@ describe("autoridade atual no broadcast de vaga", () => {
       },
     });
   });
+
+  it.each(["ABSENT", "DRAFT", "LOCKED"] as const)(
+    "revalida outbox legado e não envia em mês %s",
+    async (status) => {
+      const notificationId = await insertLegacyQueued(
+        `publication-${status.toLowerCase()}`,
+      );
+      await db
+        .delete(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalAId),
+            eq(monthlyRosters.yearMonth, "2032-09"),
+          ),
+        );
+      if (status !== "ABSENT") {
+        await db.insert(monthlyRosters).values({
+          institutionId,
+          hospitalId: hospitalAId,
+          yearMonth: "2032-09",
+          status,
+        });
+      }
+
+      await processQueued();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      const [stored] = await db
+        .select({
+          status: notifications.status,
+          receipt: notifications.providerReceipt,
+        })
+        .from(notifications)
+        .where(eq(notifications.id, notificationId));
+      expect(stored.status).toBe("FAILED");
+      expect(stored.receipt).toMatchObject({
+        phase: "FAILED",
+        evidence: { reason: "RECIPIENT_AUTHORITY_REVOKED" },
+      });
+    },
+  );
 
   it("recupera claim legado somente depois do vencimento do lease", async () => {
     const notificationId = await insertLegacySubmission("expired-lease", {

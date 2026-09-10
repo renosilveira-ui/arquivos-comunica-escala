@@ -160,6 +160,12 @@ describe("capacity: one real shift with multiple places", () => {
         });
       }
     }
+    await db.insert(monthlyRosters).values({
+      institutionId: sites[0].institutionId,
+      hospitalId: sites[0].hospitalId,
+      yearMonth: month,
+      status: "DRAFT",
+    });
   });
 
   afterAll(async () => {
@@ -314,6 +320,16 @@ describe("capacity: one real shift with multiple places", () => {
       professionalId: people[1].professionalId,
       assignmentType: "ON_DUTY",
     });
+    await db
+      .update(monthlyRosters)
+      .set({ status: "PUBLISHED" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, sites[0].institutionId),
+          eq(monthlyRosters.hospitalId, sites[0].hospitalId),
+          eq(monthlyRosters.yearMonth, month),
+        ),
+      );
     const vacancies = await caller(2).shiftInstances.listVacancies({
       date: date(2),
     });
@@ -324,6 +340,16 @@ describe("capacity: one real shift with multiple places", () => {
       caller(2).shiftAssignments.assumeVacancy({ shiftInstanceId: shift.id }),
       caller(3).shiftAssignments.assumeVacancy({ shiftInstanceId: shift.id }),
     ]);
+    await db
+      .update(monthlyRosters)
+      .set({ status: "DRAFT" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, sites[0].institutionId),
+          eq(monthlyRosters.hospitalId, sites[0].hospitalId),
+          eq(monthlyRosters.yearMonth, month),
+        ),
+      );
     expect(race.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(race.filter((r) => r.status === "rejected")).toHaveLength(1);
     const current = await caller().shifts.get({ id: shift.id });

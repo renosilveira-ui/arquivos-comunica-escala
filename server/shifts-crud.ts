@@ -13,6 +13,8 @@ import { shiftCapacitySummary } from "../lib/shift-capacity";
 import {
   canReadRosterMonth,
   loadRosterMonthStatuses,
+  managedScheduleContextExistsSql,
+  officialRosterExistsSql,
   rosterMonthKey,
 } from "./roster-read-visibility";
 import { requiredCapacityInput } from "./schedule-capacity-router";
@@ -58,8 +60,8 @@ import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import {
   assertMonthEditableForUpdate,
-  assertMonthNotLockedForUpdate,
   assertMonthsEditableForUpdate,
+  assertPublishedRosterForUpdate,
   lockMonthsForUpdate,
   lockMonth,
   publishMonth,
@@ -84,6 +86,7 @@ import { assertInstitutionHierarchy } from "./_core/tenant";
 import {
   assertActorCanReadShiftScheduleContext,
   assertActiveScheduleContextTopology,
+  listAuthorizedScheduleContexts,
   listReadableScheduleContexts,
   resolveScheduleContextForShiftCreation,
 } from "./schedule-contexts";
@@ -2245,7 +2248,7 @@ export const shiftsRouter = router({
       }
 
       return db.transaction(async (tx) => {
-        await assertMonthNotLockedForUpdate(
+        await assertPublishedRosterForUpdate(
           tx,
           shift.institutionId,
           shift.hospitalId,
@@ -3457,6 +3460,11 @@ export const shiftsRouter = router({
 
     const actor = await getTenantActorFromContext(ctx);
     if (!actor.professionalId) return null;
+    const manageableContextIds = (
+      await listAuthorizedScheduleContexts(actor, db)
+    )
+      .filter((context) => context.canManage)
+      .map((context) => context.id);
 
     const now = new Date();
 
@@ -3518,6 +3526,20 @@ export const shiftsRouter = router({
           eq(shiftAssignmentsV2.isActive, true),
           eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
           eq(shiftInstances.institutionId, ctx.institutionId),
+          or(
+            officialRosterExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              startAt: shiftInstances.startAt,
+            }),
+            managedScheduleContextExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              sectorId: shiftInstances.sectorId,
+              scheduleContextId: shiftInstances.scheduleContextId,
+              manageableContextIds,
+            }),
+          ),
           lte(shiftInstances.startAt, now),
           gte(shiftInstances.endAt, now),
         ),
@@ -3538,6 +3560,11 @@ export const shiftsRouter = router({
 
     const actor = await getTenantActorFromContext(ctx);
     if (!actor.professionalId) return null;
+    const manageableContextIds = (
+      await listAuthorizedScheduleContexts(actor, db)
+    )
+      .filter((context) => context.canManage)
+      .map((context) => context.id);
 
     const now = new Date();
     const rows = await db
@@ -3608,6 +3635,20 @@ export const shiftsRouter = router({
           eq(shiftAssignmentsV2.isActive, true),
           eq(shiftAssignmentsV2.institutionId, ctx.institutionId),
           eq(shiftInstances.institutionId, ctx.institutionId),
+          or(
+            officialRosterExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              startAt: shiftInstances.startAt,
+            }),
+            managedScheduleContextExistsSql({
+              institutionId: shiftInstances.institutionId,
+              hospitalId: shiftInstances.hospitalId,
+              sectorId: shiftInstances.sectorId,
+              scheduleContextId: shiftInstances.scheduleContextId,
+              manageableContextIds,
+            }),
+          ),
           // Em andamento (terminou depois de agora) ou futuro.
           gte(shiftInstances.endAt, now),
         ),

@@ -51,6 +51,8 @@ import {
   type DutyShiftSnapshot,
 } from "./confirmation-integrity";
 import {
+  isDeferredPushAuthorityError,
+  isExpiredPushAuthorityError,
   isCanonicalPushAuthorityRejection,
   PersistedPushAuthorityBindingError,
 } from "./push-authority-rejection";
@@ -85,6 +87,11 @@ const DELIVERY_BATCH_SIZE = 10;
 const DELIVERY_CONCURRENCY = 5;
 const PUSH_AUTHORITY_RETRY_MESSAGE = "Falha temporária ao validar autoridade do destinatário";
 const PUSH_AUTHORITY_REVOKED_MESSAGE = "Autoridade do destinatário revogada";
+const PUSH_PUBLICATION_DEFERRED_MESSAGE =
+  "Entrega aguardando publicação da escala";
+const PUSH_PUBLICATION_RECHECK_MS = 5 * 60_000;
+const PUSH_OPERATIONAL_WINDOW_EXPIRED_MESSAGE =
+  "Notificação suprimida após o início do plantão";
 const DUTY_CONFIRMATION_STATUSES: readonly DutyConfirmationStatus[] = [
   "PENDING",
   "CONFIRMED",
@@ -243,6 +250,8 @@ type NotificationRow = typeof notifications.$inferSelect;
 export type PushDeliveryExecutionOptions = Readonly<{
   /** Somente testes podem encurtar o claim inicial para exercitar renewal. */
   submissionLeaseMs?: number;
+  /** Test hook: relógio fresco do guard imediatamente anterior ao Expo. */
+  authorityDecisionNow?: () => Date;
   /** Test hook: pausa depois da leitura do estado e antes do CAS de claim. */
   beforeSubmissionClaim?: (point: Readonly<{
     notificationId: number;
@@ -264,6 +273,17 @@ function submissionLeaseMs(options?: PushDeliveryExecutionOptions): number {
     return Math.floor(options!.submissionLeaseMs!);
   }
   return SUBMISSION_LEASE_MS;
+}
+
+function authorityDecisionNow(options?: PushDeliveryExecutionOptions): Date {
+  const observed =
+    process.env.NODE_ENV === "test" && options?.authorityDecisionNow
+      ? options.authorityDecisionNow()
+      : new Date();
+  if (!Number.isFinite(observed.getTime())) {
+    throw new Error("Relógio inválido na decisão de autoridade do push");
+  }
+  return observed;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -820,6 +840,47 @@ async function failRevokedAuthority(
     );
 }
 
+async function failExpiredOperationalWindow(
+  db: Db,
+  row: NotificationRow,
+  state: QueuedState | SubmittingState,
+  decisionAt: Date,
+  operationalDeadline: Date,
+): Promise<void> {
+  const failed: TerminalTrackingState = {
+    ...state,
+    revision: state.revision + 1,
+    // O claim antecede a revalidação, mas nenhuma chamada ao provedor ocorreu.
+    // A supressão temporal não pode reduzir o orçamento de retry de transporte.
+    attemptCount:
+      state.phase === "SUBMITTING"
+        ? Math.max(0, state.attemptCount - 1)
+        : state.attemptCount,
+    phase: "FAILED",
+    terminalAt: decisionAt.toISOString(),
+    evidence: {
+      reason: "OPERATIONAL_WINDOW_EXPIRED",
+      operationalDeadline: operationalDeadline.toISOString(),
+      decisionAt: decisionAt.toISOString(),
+      message: PUSH_OPERATIONAL_WINDOW_EXPIRED_MESSAGE,
+    },
+  };
+  await db
+    .update(notifications)
+    .set({
+      status: "FAILED",
+      providerReceipt: failed,
+      errorMessage: PUSH_OPERATIONAL_WINDOW_EXPIRED_MESSAGE,
+    })
+    .where(
+      and(
+        eq(notifications.id, row.id),
+        eq(notifications.status, "PENDING"),
+        revisionPredicate(state),
+      ),
+    );
+}
+
 async function upgradeLegacyVacancySubmissionState(
   db: Db,
   row: NotificationRow,
@@ -913,6 +974,7 @@ async function requireCurrentPushAuthority(
   db: Pick<Db, "select" | "execute">,
   row: NotificationRow,
   state: Pick<TrackingBase, "authority" | "payloadData">,
+  decisionNow: Date,
   lockForUpdate = false,
 ): Promise<ContextualPushPresentation | null | void> {
   if (!state.authority) return;
@@ -936,6 +998,7 @@ async function requireCurrentPushAuthority(
     await requireAuthorizedVacancyRequestRecipient(
       db,
       state.authority,
+      decisionNow,
       lockForUpdate,
     );
     // O preflight fora do mutex só classifica autoridade/retry. A cópia que
@@ -965,6 +1028,7 @@ async function requireCurrentPushAuthority(
     await requireAuthorizedAssignmentLifecycleRecipient(
       db,
       state.authority,
+      decisionNow,
       lockForUpdate,
     );
     if (!lockForUpdate) return;
@@ -1248,6 +1312,44 @@ async function requeueSubmissionAfterInfrastructureFailure(
     );
 }
 
+async function requeueSubmissionUntilRosterPublication(
+  db: Db,
+  row: NotificationRow,
+  claimed: SubmittingState,
+  now: Date,
+): Promise<void> {
+  const queued: QueuedState = {
+    trackingVersion: TRACKING_VERSION,
+    revision: claimed.revision + 1,
+    payloadData: claimed.payloadData,
+    // A espera por publicação não é uma tentativa contra o provedor e não
+    // consome o orçamento de retry do push.
+    attemptCount: Math.max(0, claimed.attemptCount - 1),
+    ...(claimed.accountWideBadgeVersion
+      ? { accountWideBadgeVersion: claimed.accountWideBadgeVersion }
+      : {}),
+    ...(claimed.authority ? { authority: claimed.authority } : {}),
+    phase: "QUEUED",
+    availableAt: new Date(
+      now.getTime() + PUSH_PUBLICATION_RECHECK_MS,
+    ).toISOString(),
+    lastError: PUSH_PUBLICATION_DEFERRED_MESSAGE,
+  };
+  await db
+    .update(notifications)
+    .set({
+      providerReceipt: queued,
+      errorMessage: PUSH_PUBLICATION_DEFERRED_MESSAGE,
+    })
+    .where(
+      and(
+        eq(notifications.id, row.id),
+        eq(notifications.status, "PENDING"),
+        revisionPredicate(claimed),
+      ),
+    );
+}
+
 async function processSubmission(
   db: Db,
   row: NotificationRow,
@@ -1261,8 +1363,22 @@ async function processSubmission(
   try {
     // Revalida em toda tentativa, inclusive recuperacao de lease. Um push
     // antigo nunca herda a autoridade que existia quando foi enfileirado.
-    await requireCurrentPushAuthority(db, row, claimed);
+    await requireCurrentPushAuthority(db, row, claimed, now);
   } catch (error) {
+    if (isExpiredPushAuthorityError(error)) {
+      await failExpiredOperationalWindow(
+        db,
+        row,
+        claimed,
+        error.decisionAt,
+        error.operationalDeadline,
+      );
+      return;
+    }
+    if (isDeferredPushAuthorityError(error)) {
+      await requeueSubmissionUntilRosterPublication(db, row, claimed, now);
+      return;
+    }
     if (isCanonicalPushAuthorityRejection(error)) {
       await failRevokedAuthority(db, row, claimed, now);
       return;
@@ -1275,29 +1391,65 @@ async function processSubmission(
   }
 
   let submissionClaimLost = false;
-  const submission = await sendPushNotification(
-    row.userId,
-    {
-      title: row.title,
-      body: row.body ?? "",
-      data: claimed.payloadData,
-    },
-    row.institutionId,
-    claimed.authority
-      ? async (tx) => requireCurrentPushAuthority(tx, row, claimed, true)
-      : undefined,
-    async () => {
-      try {
-        const renewed = await renewSubmissionLease(db, row, claimed, now, options);
-        if (!renewed) submissionClaimLost = true;
-        return renewed;
-      } catch {
-        submissionClaimLost = true;
-        console.error(`[PushDelivery] SUBMISSION_LEASE_RENEW_FAILED notification=${row.id}`);
-        return false;
-      }
-    },
-  );
+  let submission: Awaited<ReturnType<typeof sendPushNotification>>;
+  try {
+    submission = await sendPushNotification(
+      row.userId,
+      {
+        title: row.title,
+        body: row.body ?? "",
+        data: claimed.payloadData,
+      },
+      row.institutionId,
+      claimed.authority
+        ? async (tx) =>
+            requireCurrentPushAuthority(
+              tx,
+              row,
+              claimed,
+              authorityDecisionNow(options),
+              true,
+            )
+        : undefined,
+      async () => {
+        try {
+          const renewed = await renewSubmissionLease(
+            db,
+            row,
+            claimed,
+            now,
+            options,
+          );
+          if (!renewed) submissionClaimLost = true;
+          return renewed;
+        } catch {
+          submissionClaimLost = true;
+          console.error(
+            `[PushDelivery] SUBMISSION_LEASE_RENEW_FAILED notification=${row.id}`,
+          );
+          return false;
+        }
+      },
+    );
+  } catch (error) {
+    if (isExpiredPushAuthorityError(error)) {
+      await failExpiredOperationalWindow(
+        db,
+        row,
+        claimed,
+        error.decisionAt,
+        error.operationalDeadline,
+      );
+      return;
+    }
+    if (isDeferredPushAuthorityError(error)) {
+      await requeueSubmissionUntilRosterPublication(db, row, claimed, now);
+      return;
+    }
+    await requeueSubmissionAfterInfrastructureFailure(db, row, claimed, now);
+    console.error(`[PushDelivery] SUBMISSION_AUTHORITY_RETRY notification=${row.id}`);
+    return;
+  }
   if (submissionClaimLost) return;
   const acceptedTickets = submission.tickets
     .filter((ticket) => ticket.state === "TICKET_ACCEPTED")
@@ -1511,13 +1663,14 @@ async function processReceiptCheck(
         );
       if (
         persisted.affectedRows === 1 &&
+        claimed.authority?.kind === "DUTY_CONFIRMATION" &&
         claimed.authority?.purpose === "MANAGER_ESCALATION"
       ) {
         try {
           // O receipt prova somente que o provedor aceitou o ticket histórico.
           // Ele não pode consumir o handoff se o gestor perdeu a autoridade
           // entre a submissão e esta confirmação atrasada.
-          await requireCurrentPushAuthority(tx, row, claimed, true);
+          await requireCurrentPushAuthority(tx, row, claimed, now, true);
         } catch (error) {
           if (!isCanonicalDutyConfirmationRejection(error)) throw error;
           return;

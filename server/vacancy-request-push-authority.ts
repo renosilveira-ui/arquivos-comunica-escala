@@ -2,6 +2,7 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import {
   hospitals,
   managerScope,
+  monthlyRosters,
   professionalInstitutions,
   professionals,
   sectors,
@@ -10,7 +11,12 @@ import {
   users,
 } from "../drizzle/schema";
 import type { getDb } from "./db";
-import { PersistedPushAuthorityBindingError } from "./push-authority-rejection";
+import { yearMonthBrt } from "./local-time";
+import {
+  DeferredPushAuthorityError,
+  ExpiredPushAuthorityError,
+  PersistedPushAuthorityBindingError,
+} from "./push-authority-rejection";
 
 export const VACANCY_REQUEST_PUSH_PURPOSES = [
   "MANAGER_ACTION_REQUIRED",
@@ -225,6 +231,7 @@ export async function listResponsibleVacancyManagerUserIds(
 export async function requireAuthorizedVacancyRequestRecipient(
   db: AuthorityDb,
   authority: VacancyRequestPushAuthority,
+  decisionNow: Date,
   lockForShare = false,
 ): Promise<void> {
   const assignmentQuery = db
@@ -238,6 +245,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
       shiftInstanceId: shiftInstances.id,
+      startAt: shiftInstances.startAt,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -322,6 +330,28 @@ export async function requireAuthorizedVacancyRequestRecipient(
       ? await membershipQuery.for("share")
       : await membershipQuery;
     if (!membership[0]) invalid("Solicitante perdeu o vínculo institucional");
+
+    if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+      throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+    }
+
+    const rosterQuery = db
+      .select({ status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, authority.institutionId),
+          eq(monthlyRosters.hospitalId, authority.hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonthBrt(assignment.startAt)),
+        ),
+      )
+      .limit(1);
+    const roster = lockForShare
+      ? await rosterQuery.for("share")
+      : await rosterQuery;
+    if (roster[0]?.status !== "PUBLISHED" && roster[0]?.status !== "LOCKED") {
+      throw new DeferredPushAuthorityError();
+    }
     return;
   }
 
@@ -364,6 +394,9 @@ export async function requireAuthorizedVacancyRequestRecipient(
     manager.globalRole === "admin" ||
     manager.roleInInstitution === "GESTOR_PLUS"
   ) {
+    if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+      throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+    }
     return;
   }
   if (manager.roleInInstitution !== "GESTOR_MEDICO") {
@@ -388,4 +421,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
     .limit(1);
   const scope = lockForShare ? await scopeQuery.for("share") : await scopeQuery;
   if (!scope[0]) invalid("Gestor perdeu o escopo do hospital ou setor");
+  if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+    throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+  }
 }

@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { getDb } from "../server/db";
 import {
   hospitals,
   institutions,
+  monthlyRosters,
   professionalInstitutions,
   professionals,
   sectors,
@@ -12,6 +13,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { appRouter } from "../server/routers";
+import { yearMonthBrt } from "../server/local-time";
 
 const FIXTURE_PREFIX = "my-vacancy-requests-test-";
 
@@ -186,6 +188,16 @@ describe("shiftAssignments.listMyVacancyRequests", () => {
     });
     const shiftInstanceId = (shiftResult as any).insertId as number;
 
+    await db
+      .insert(monthlyRosters)
+      .values({
+        institutionId,
+        hospitalId,
+        yearMonth: yearMonthBrt(startAt),
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
+
     await db.insert(shiftAssignmentsV2).values({
       shiftInstanceId,
       institutionId,
@@ -210,6 +222,17 @@ describe("shiftAssignments.listMyVacancyRequests", () => {
       const shiftIds = shiftRows.map((row) => row.id);
       await db.delete(shiftAssignmentsV2).where(inArray(shiftAssignmentsV2.shiftInstanceId, shiftIds));
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, shiftIds));
+    }
+
+    if (institutionId && hospitalId) {
+      await db
+        .delete(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+          ),
+        );
     }
 
     await db.delete(sectors).where(like(sectors.name, `${FIXTURE_PREFIX}%`));
