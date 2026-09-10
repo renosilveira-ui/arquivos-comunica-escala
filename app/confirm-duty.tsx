@@ -20,32 +20,51 @@ import {
   DUTY_NOMINATION_PROMPT_COPY,
 } from "@/lib/duty-sync-copy";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import {
+  parseConfirmationRouteEpoch,
+  parseConfirmationRouteToken,
+} from "@/lib/confirmation-route-params";
 
 export default function ConfirmDutyScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const params = useLocalSearchParams<{ token?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    token?: string | string[];
+    nominationEpoch?: string | string[];
+  }>();
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
   const hasDirectedToken = params.token !== undefined;
-  const directedToken =
-    typeof params.token === "string" && UUID_PATTERN.test(params.token)
-      ? params.token
-      : null;
-  const malformedDirectedToken = hasDirectedToken && directedToken === null;
+  const hasDirectedEpoch = params.nominationEpoch !== undefined;
+  const directedToken = parseConfirmationRouteToken(params.token);
+  const directedNominationEpoch = parseConfirmationRouteEpoch(
+    params.nominationEpoch,
+  );
+  const malformedDirectedRoute =
+    (hasDirectedToken && directedToken === null) ||
+    (hasDirectedEpoch &&
+      (directedToken === null || directedNominationEpoch === null));
+  const directedNominationInput =
+    directedToken && directedNominationEpoch
+      ? {
+          confirmationToken: directedToken,
+          nominationEpoch: directedNominationEpoch,
+        }
+      : undefined;
+  const shouldLookupNomination =
+    !!user &&
+    !malformedDirectedRoute &&
+    (!hasDirectedToken || directedNominationInput !== undefined);
 
   const pendingQuery = trpc.confirmations.getPending.useQuery(
     directedToken ? { confirmationToken: directedToken } : undefined,
-    { enabled: !!user && !malformedDirectedToken, retry: 2 },
+    { enabled: !!user && !malformedDirectedRoute, retry: 2 },
   );
   const pending = pendingQuery.data ?? null;
   // Push "duty_nomination": o token é de uma indicação dirigida a MIM.
   const nominationQuery = trpc.confirmations.getNomination.useQuery(
-    { confirmationToken: directedToken ?? "" },
-    { enabled: !!user && directedToken !== null, retry: 1 },
+    directedNominationInput,
+    { enabled: shouldLookupNomination, retry: 1 },
   );
   const nomination = nominationQuery.data ?? null;
 
@@ -122,7 +141,7 @@ export default function ConfirmDutyScreen() {
 
   if (
     pendingQuery.isLoading ||
-    (directedToken !== null && nominationQuery.isLoading)
+    (shouldLookupNomination && nominationQuery.isLoading)
   ) {
     return (
       <ScreenGradient variant="light">
@@ -138,13 +157,13 @@ export default function ConfirmDutyScreen() {
   // seguia pendente e exigia resposta ou verificação humana.
   const directedLookupMiss =
     hasDirectedToken &&
-    !malformedDirectedToken &&
+    !malformedDirectedRoute &&
     !pendingQuery.isError &&
     !nominationQuery.isError &&
     !pending &&
     !nomination;
   if (
-    malformedDirectedToken ||
+    malformedDirectedRoute ||
     pendingQuery.isError ||
     nominationQuery.isError ||
     directedLookupMiss
@@ -154,17 +173,17 @@ export default function ConfirmDutyScreen() {
         <View style={{ flex: 1, justifyContent: "center" }}>
           <QueryErrorState
             title={
-              malformedDirectedToken || directedLookupMiss
+              malformedDirectedRoute || directedLookupMiss
                 ? "Esta confirmação não está disponível ou já foi encerrada"
                 : "Não foi possível verificar suas confirmações"
             }
             onRetry={() => {
-              if (malformedDirectedToken) {
+              if (malformedDirectedRoute) {
                 router.replace("/(tabs)/agenda" as any);
                 return;
               }
               void pendingQuery.refetch();
-              if (directedToken !== null) void nominationQuery.refetch();
+              if (shouldLookupNomination) void nominationQuery.refetch();
             }}
           />
         </View>
@@ -208,7 +227,12 @@ export default function ConfirmDutyScreen() {
             <PrimaryButton
               label={acceptNominationMutation.isPending ? "Assumindo..." : "Aceitar o plantão"}
               icon={<Check size={20} color="#FFFFFF" />}
-              onPress={() => acceptNominationMutation.mutate({ confirmationToken: nomination.confirmationToken })}
+              onPress={() =>
+                acceptNominationMutation.mutate({
+                  confirmationToken: nomination.confirmationToken,
+                  nominationEpoch: nomination.nominationEpoch,
+                })
+              }
               disabled={nBusy}
               loading={acceptNominationMutation.isPending}
             />
@@ -220,7 +244,11 @@ export default function ConfirmDutyScreen() {
                   "Recusar a indicação?",
                   "Quem indicou você e a gestão serão avisados; a presença continuará sem confirmação.",
                   "Sim, recusar",
-                  () => declineNominationMutation.mutate({ confirmationToken: nomination.confirmationToken }),
+                  () =>
+                    declineNominationMutation.mutate({
+                      confirmationToken: nomination.confirmationToken,
+                      nominationEpoch: nomination.nominationEpoch,
+                    }),
                 )
               }
               disabled={nBusy}

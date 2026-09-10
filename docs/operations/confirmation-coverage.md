@@ -126,3 +126,17 @@ Comunica+). Sem elas o tick não quebra a escala, mas o outbox não sai.
   spin-down em `docs/operations/cold-start.md` (“Como medir”).
 - Cron: um run por minuto no dashboard Render; log JSON
   `confirmation tick ok`; assignment due gera `Found N due assignments`.
+
+## Compatibilidade na ativação da rotação de indicação
+
+Cada nova indicação de substituto passa a ter um `confirmationToken` próprio.
+Esse token é revalidado depois do lock transacional e também vincula payload,
+autoridade e chave de idempotência dos pushes de indicação/recusa. Assim uma
+ação ou entrega atrasada de uma indicação anterior não pode operar nem avisar
+como se pertencesse à indicação atual.
+
+Consequência esperada no primeiro deploy desta versão: pushes de nomeação que
+já estavam em aparelhos antes do deploy e não representam o token corrente
+serão recusados ao abrir ou responder. O usuário deve reabrir o plantão pela
+Agenda para carregar a indicação vigente. Não há migração de dados nem aceite
+automático desses links antigos.

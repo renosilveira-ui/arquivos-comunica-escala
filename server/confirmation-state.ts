@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull, lte, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, type SQL } from "drizzle-orm";
 import { dutyConfirmations } from "../drizzle/schema";
+import { isConfirmationRouteToken } from "../lib/confirmation-route-params";
 import type { getDb } from "./db";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -28,6 +29,7 @@ type DeclineCommandBase = DutyConfirmationCasIdentity & {
 
 type NominatedCommandBase = DutyConfirmationCasIdentity & {
   expectedStatus: "NOMINATED";
+  expectedConfirmationToken: string;
   expectedReplacementProfessionalId: number;
   expectedReplacementUserId: number;
 };
@@ -43,10 +45,12 @@ export type DutyConfirmationTransitionCommand =
     })
   | (DutyConfirmationCasIdentity & {
       kind: "NOMINATE";
-      expectedStatus: "DECLINED";
+      expectedStatus: "DECLINED" | "REPLACEMENT_DECLINED";
       replacementProfessionalId: number;
       replacementUserId: number;
       recheckAt: Date;
+      expectedConfirmationToken: string;
+      nextConfirmationToken: string;
     })
   | (NominatedCommandBase & {
       kind: "ACCEPT_NOMINATION";
@@ -65,7 +69,7 @@ export const DUTY_CONFIRMATION_TRANSITIONS = {
   DECLINED: ["NOMINATED"],
   NOMINATED: ["REPLACEMENT_CONFIRMED", "REPLACEMENT_DECLINED"],
   REPLACEMENT_CONFIRMED: [],
-  REPLACEMENT_DECLINED: [],
+  REPLACEMENT_DECLINED: ["NOMINATED"],
   // Legado somente para leitura. Silêncio ou falha de push não têm mais
   // autoridade para produzir este estado.
   AUTO_CONFIRMED: [],
@@ -127,6 +131,16 @@ function planTransition(command: DutyConfirmationTransitionCommand): TransitionP
         extraPredicates: [],
       };
     case "NOMINATE":
+      if (
+        !isConfirmationRouteToken(command.expectedConfirmationToken) ||
+        !isConfirmationRouteToken(command.nextConfirmationToken) ||
+        command.expectedConfirmationToken === command.nextConfirmationToken
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A nova indicação exige um identificador de ciclo único",
+        });
+      }
       return {
         from: command.expectedStatus,
         to: "NOMINATED",
@@ -134,17 +148,39 @@ function planTransition(command: DutyConfirmationTransitionCommand): TransitionP
           status: "NOMINATED",
           replacementProfessionalId: command.replacementProfessionalId,
           replacementUserId: command.replacementUserId,
+          respondedAt: null,
           recheckAt: command.recheckAt,
           managerNotified: false,
+          confirmationToken: command.nextConfirmationToken,
         },
         // DECLINED é a primeira recusa do titular. Metadados de indicação
         // pré-existentes tornam a linha ambígua e devem falhar fechados.
-        extraPredicates: [
-          isNull(dutyConfirmations.replacementProfessionalId),
-          isNull(dutyConfirmations.replacementUserId),
-        ],
+        extraPredicates:
+          command.expectedStatus === "DECLINED"
+            ? [
+                eq(
+                  dutyConfirmations.confirmationToken,
+                  command.expectedConfirmationToken,
+                ),
+                isNull(dutyConfirmations.replacementProfessionalId),
+                isNull(dutyConfirmations.replacementUserId),
+              ]
+            : [
+                eq(
+                  dutyConfirmations.confirmationToken,
+                  command.expectedConfirmationToken,
+                ),
+                isNotNull(dutyConfirmations.replacementProfessionalId),
+                isNotNull(dutyConfirmations.replacementUserId),
+              ],
       };
     case "ACCEPT_NOMINATION":
+      if (!isConfirmationRouteToken(command.expectedConfirmationToken)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A indicação exige um identificador de ciclo válido",
+        });
+      }
       return {
         from: command.expectedStatus,
         to: "REPLACEMENT_CONFIRMED",
@@ -154,6 +190,10 @@ function planTransition(command: DutyConfirmationTransitionCommand): TransitionP
         },
         extraPredicates: [
           eq(
+            dutyConfirmations.confirmationToken,
+            command.expectedConfirmationToken,
+          ),
+          eq(
             dutyConfirmations.replacementProfessionalId,
             command.expectedReplacementProfessionalId,
           ),
@@ -161,6 +201,12 @@ function planTransition(command: DutyConfirmationTransitionCommand): TransitionP
         ],
       };
     case "DECLINE_NOMINATION":
+      if (!isConfirmationRouteToken(command.expectedConfirmationToken)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A indicação exige um identificador de ciclo válido",
+        });
+      }
       return {
         from: command.expectedStatus,
         to: "REPLACEMENT_DECLINED",
@@ -174,6 +220,10 @@ function planTransition(command: DutyConfirmationTransitionCommand): TransitionP
           managerNotified: false,
         },
         extraPredicates: [
+          eq(
+            dutyConfirmations.confirmationToken,
+            command.expectedConfirmationToken,
+          ),
           eq(
             dutyConfirmations.replacementProfessionalId,
             command.expectedReplacementProfessionalId,
