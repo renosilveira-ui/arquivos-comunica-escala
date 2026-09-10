@@ -59,7 +59,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { enqueueDutySyncIntervalRewrite } from "./sso/duty-sync-lifecycle";
-import { rearmDutyConfirmationsAfterShiftWindowChange } from "./confirmation-lifecycle";
+import { rearmDutyConfirmationsAfterShiftChange } from "./confirmation-lifecycle";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import {
@@ -2660,8 +2660,10 @@ export const shiftsRouter = router({
             : "PLANTAO";
         const previousDutyType =
           locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
+        const confirmationCycleChanged =
+          windowChanged || nextDutyType !== previousDutyType;
         let rearmedConfirmationCount = 0;
-        if (windowChanged || nextDutyType !== previousDutyType) {
+        if (confirmationCycleChanged) {
           await enqueueDutySyncIntervalRewrite(tx, {
             institutionId: locked.institutionId,
             shiftInstanceId: locked.id,
@@ -2685,12 +2687,12 @@ export const shiftsRouter = router({
             nextDutyType,
             previousServiceName: locked.specialty,
             nextServiceName: locked.specialty,
-            reconfirmRequired: windowChanged,
+            reconfirmRequired: confirmationCycleChanged,
           });
         }
-        if (windowChanged) {
+        if (confirmationCycleChanged) {
           rearmedConfirmationCount =
-            await rearmDutyConfirmationsAfterShiftWindowChange(tx, {
+            await rearmDutyConfirmationsAfterShiftChange(tx, {
               institutionId: locked.institutionId,
               shiftInstanceId: locked.id,
               activeAssignments: activeAssignments.map((assignment) => ({

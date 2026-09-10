@@ -453,6 +453,7 @@ export async function dispatchConfirmations(now: Date) {
                 eq(dutyConfirmations.userId, assignment.userId),
                 eq(dutyConfirmations.status, "PENDING"),
                 isNull(dutyConfirmations.recheckAt),
+                eq(dutyConfirmations.managerNotified, false),
               ),
             )
             .limit(1)
@@ -476,6 +477,7 @@ export async function dispatchConfirmations(now: Date) {
                   rearmed.confirmationToken,
                 ),
                 isNull(dutyConfirmations.recheckAt),
+                eq(dutyConfirmations.managerNotified, false),
               ),
             );
           if (claimedRearm.affectedRows !== 1) return null;

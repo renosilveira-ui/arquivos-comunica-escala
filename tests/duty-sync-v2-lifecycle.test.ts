@@ -837,6 +837,10 @@ describe("duty-sync V2 lifecycle", () => {
     );
     expect(withdraw).toBeDefined();
     expect(intervalConfirm).toBeDefined();
+    expect(withdraw!.dedupKey).toContain(`:cycle:${conf.confirmationToken}`);
+    expect(intervalConfirm!.dedupKey).toContain(
+      `:cycle:${conf.confirmationToken}`,
+    );
     expect(withdraw!.id).toBeLessThan(intervalConfirm!.id);
   });
 
