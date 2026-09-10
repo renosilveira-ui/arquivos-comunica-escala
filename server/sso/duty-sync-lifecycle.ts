@@ -377,9 +377,9 @@ export async function enqueueDutySyncWithdrawsForRemovedProfessionals(
 }
 
 /**
- * Edição temporal: a chave natural do Comunica+ inclui dutyStart.
- * WITHDRAW o intervalo antigo e, se a declaração local continua vigente,
- * CONFIRM o intervalo novo. Ordenação: WITHDRAW primeiro (mesmo confirmationId).
+ * Reescrita de envelope: a chave natural do Comunica+ inclui dutyStart.
+ * WITHDRAW o intervalo antigo e só CONFIRM o novo quando o chamador não
+ * exigir reconfirmação humana. Ordenação: WITHDRAW primeiro.
  */
 export async function enqueueDutySyncIntervalRewrite(
   tx: DutySyncLifecycleTx,
