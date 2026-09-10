@@ -19,6 +19,7 @@ import {
   professionals,
   scheduleInvites,
   scheduleInviteIssuanceFences,
+  scheduleInviteIssuanceJournal,
   scheduleContexts,
   sectors,
   users,
@@ -27,13 +28,17 @@ import { mailer } from "./mailer";
 import { buildScheduleInviteMail } from "./schedule-invite-mail";
 import {
   formatScheduleInviteCode,
-  generateScheduleInviteCode,
+  generateScheduleInviteOpaqueToken,
   normalizeScheduleInviteCode,
 } from "../lib/schedule-invite-code";
 import {
   getScheduleInviteHashPolicy,
   type ScheduleInviteHashPolicy,
 } from "./schedule-invite-code-policy";
+import {
+  planScheduleInviteRecovery,
+  type ScheduleInviteDeliveryState,
+} from "./schedule-invite-delivery-state";
 import { recordAudit } from "./audit-trail";
 import { getDb } from "./db";
 import {
@@ -85,6 +90,25 @@ type InviteIssuanceScope = {
   sectorId: number;
   userId: number;
 };
+
+function logInviteIssuanceFailure(
+  event: string,
+  scope: InviteIssuanceScope,
+  generation?: number,
+): void {
+  // Allowlist deliberada: somente ids internos de escopo e geração. Nunca
+  // passe destinatário, código, hashes, nonce, idempotency-key ou payload.
+  console.error(
+    `[schedule-invites] ${JSON.stringify({
+      event,
+      institutionId: scope.institutionId,
+      hospitalId: scope.hospitalId,
+      sectorId: scope.sectorId,
+      invitedUserId: scope.userId,
+      ...(generation === undefined ? {} : { generation }),
+    })}`,
+  );
+}
 
 /**
  * Gancho exclusivamente adversarial. Permite provar que uma alteração feita
@@ -1018,11 +1042,100 @@ async function activeNamedInvitesForUpdate(
     .for("update");
 }
 
+type InviteIssuanceMaterial = {
+  generation: number;
+  leaseToken: string;
+  attemptExpiresAt: Date;
+  codeNonce: string;
+  codePepperKeyId: string;
+  recipientBindingHash: string;
+  providerIdempotencyKey: string;
+  providerAcceptedAt: Date | null;
+};
+
 type InviteIssuanceClaim =
-  | { kind: "CLAIMED"; generation: number; snapshot: InviteIssuanceSnapshot }
+  | {
+      kind: "DELIVER";
+      material: InviteIssuanceMaterial;
+      snapshot: InviteIssuanceSnapshot;
+    }
+  | {
+      kind: "ACTIVATE";
+      material: InviteIssuanceMaterial;
+      snapshot: InviteIssuanceSnapshot;
+    }
   | { kind: "INELIGIBLE" }
   | { kind: "ALREADY_ACTIVE" }
-  | { kind: "IN_PROGRESS" };
+  | { kind: "IN_PROGRESS" }
+  | { kind: "KEY_UNAVAILABLE" };
+
+type InviteIssuanceJournalEvent =
+  | "CLAIMED"
+  | "ATTEMPT_SUPERSEDED"
+  | "DELIVERY_RECLAIMED"
+  | "PROVIDER_ACCEPTED"
+  | "PROVIDER_REJECTED"
+  | "PROVIDER_UNKNOWN"
+  | "ACTIVATION_RESUMED"
+  | "ACTIVATED"
+  | "ACTIVATION_FAILED";
+
+async function appendInviteIssuanceJournal(
+  tx: InviteIssuanceDb,
+  input: {
+    scope: InviteIssuanceScope;
+    generation: number;
+    event: InviteIssuanceJournalEvent;
+    reasonCode?: string;
+    providerCorrelationId?: string;
+    scheduleInviteId?: number;
+  },
+): Promise<void> {
+  await tx.insert(scheduleInviteIssuanceJournal).values({
+    institutionId: input.scope.institutionId,
+    hospitalId: input.scope.hospitalId,
+    sectorId: input.scope.sectorId,
+    invitedUserId: input.scope.userId,
+    generation: input.generation,
+    event: input.event,
+    reasonCode: input.reasonCode,
+    providerCorrelationId: input.providerCorrelationId,
+    scheduleInviteId: input.scheduleInviteId,
+  });
+}
+
+function materialFromFence(fence: {
+  generation: number;
+  leaseToken: string | null;
+  attemptExpiresAt: Date | null;
+  codeNonce: string | null;
+  codePepperKeyId: string | null;
+  recipientBindingHash: string | null;
+  providerIdempotencyKey: string | null;
+  providerAcceptedAt: Date | null;
+}): InviteIssuanceMaterial | null {
+  if (
+    fence.generation <= 0 ||
+    !fence.leaseToken ||
+    !fence.attemptExpiresAt ||
+    !fence.codeNonce ||
+    !fence.codePepperKeyId ||
+    !fence.recipientBindingHash ||
+    !fence.providerIdempotencyKey
+  ) {
+    return null;
+  }
+  return {
+    generation: fence.generation,
+    leaseToken: fence.leaseToken,
+    attemptExpiresAt: fence.attemptExpiresAt,
+    codeNonce: fence.codeNonce,
+    codePepperKeyId: fence.codePepperKeyId,
+    recipientBindingHash: fence.recipientBindingHash,
+    providerIdempotencyKey: fence.providerIdempotencyKey,
+    providerAcceptedAt: fence.providerAcceptedAt,
+  };
+}
 
 async function lockInviteParticipantsForUpdate(
   tx: InviteIssuanceDb,
@@ -1052,6 +1165,7 @@ async function claimInviteIssuance(
     scope: InviteIssuanceScope;
     actor: TenantActor;
     expectedActorSessionVersion: number;
+    hashPolicy: ScheduleInviteHashPolicy;
   },
 ): Promise<InviteIssuanceClaim> {
   return db.transaction(async (tx) => {
@@ -1081,7 +1195,16 @@ async function claimInviteIssuance(
         id: scheduleInviteIssuanceFences.id,
         generation: scheduleInviteIssuanceFences.generation,
         state: scheduleInviteIssuanceFences.state,
+        leaseToken: scheduleInviteIssuanceFences.leaseToken,
         leaseExpiresAt: scheduleInviteIssuanceFences.leaseExpiresAt,
+        attemptExpiresAt: scheduleInviteIssuanceFences.attemptExpiresAt,
+        codeNonce: scheduleInviteIssuanceFences.codeNonce,
+        codePepperKeyId: scheduleInviteIssuanceFences.codePepperKeyId,
+        recipientBindingHash:
+          scheduleInviteIssuanceFences.recipientBindingHash,
+        providerIdempotencyKey:
+          scheduleInviteIssuanceFences.providerIdempotencyKey,
+        providerAcceptedAt: scheduleInviteIssuanceFences.providerAcceptedAt,
       })
       .from(scheduleInviteIssuanceFences)
       .where(fenceScopeWhere(input.scope))
@@ -1116,110 +1239,287 @@ async function claimInviteIssuance(
     // anterior e o código que continua ativo.
     if (activeInvites.length > 0) return { kind: "ALREADY_ACTIVE" };
 
+    const existingKey = fence.codePepperKeyId
+      ? input.hashPolicy.outbox.resolve(fence.codePepperKeyId)
+      : null;
+    const recipientMatches = Boolean(
+      existingKey &&
+        fence.recipientBindingHash &&
+        existingKey.bindRecipient(snapshot.invitee.email) ===
+          fence.recipientBindingHash,
+    );
+    const recovery = planScheduleInviteRecovery({
+      state: fence.state as ScheduleInviteDeliveryState,
+      now,
+      leaseExpiresAt: fence.leaseExpiresAt,
+      attemptExpiresAt: fence.attemptExpiresAt,
+      recipientMatches,
+      pepperKeyAvailable: Boolean(existingKey),
+    });
+    if (recovery.kind === "WAIT") return { kind: "IN_PROGRESS" };
+    if (recovery.kind === "FAIL_CLOSED") {
+      return { kind: "KEY_UNAVAILABLE" };
+    }
+
+    if (recovery.kind === "REPLAY_DELIVERY") {
+      const leaseToken = generateScheduleInviteOpaqueToken();
+      const leaseExpiresAt = new Date(
+        now.getTime() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS,
+      );
+      await tx
+        .update(scheduleInviteIssuanceFences)
+        .set({
+          state: "PREPARING",
+          leaseToken,
+          leaseExpiresAt,
+          failureCode: null,
+        })
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.id, fence.id),
+            eq(scheduleInviteIssuanceFences.generation, fence.generation),
+          ),
+        );
+      await appendInviteIssuanceJournal(tx, {
+        scope: input.scope,
+        generation: fence.generation,
+        event: "DELIVERY_RECLAIMED",
+      });
+      const material = materialFromFence({ ...fence, leaseToken });
+      if (!material) throw new Error("SCHEDULE_INVITE_MATERIAL_INVALID");
+      return { kind: "DELIVER", material, snapshot };
+    }
+
+    if (recovery.kind === "RESUME_ACTIVATION") {
+      const leaseToken = generateScheduleInviteOpaqueToken();
+      const leaseExpiresAt = new Date(
+        now.getTime() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS,
+      );
+      await tx
+        .update(scheduleInviteIssuanceFences)
+        .set({
+          state: "PROVIDER_ACCEPTED",
+          leaseToken,
+          leaseExpiresAt,
+          failureCode: null,
+        })
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.id, fence.id),
+            eq(scheduleInviteIssuanceFences.generation, fence.generation),
+          ),
+        );
+      await appendInviteIssuanceJournal(tx, {
+        scope: input.scope,
+        generation: fence.generation,
+        event: "ACTIVATION_RESUMED",
+      });
+      const material = materialFromFence({ ...fence, leaseToken });
+      if (!material) throw new Error("SCHEDULE_INVITE_MATERIAL_INVALID");
+      return { kind: "ACTIVATE", material, snapshot };
+    }
+
     if (
-      (fence.state === "PREPARING" ||
-        fence.state === "PROVIDER_ACCEPTED") &&
-      fence.leaseExpiresAt &&
-      fence.leaseExpiresAt.getTime() > now.getTime()
+      recovery.supersedesUncertainGeneration &&
+      fence.generation > 0
     ) {
-      return { kind: "IN_PROGRESS" };
+      await appendInviteIssuanceJournal(tx, {
+        scope: input.scope,
+        generation: fence.generation,
+        event: "ATTEMPT_SUPERSEDED",
+        reasonCode: recipientMatches ? "ATTEMPT_EXPIRED" : "RECIPIENT_CHANGED",
+      });
     }
 
     const generation = fence.generation + 1;
+    const leaseToken = generateScheduleInviteOpaqueToken();
+    const codeNonce = generateScheduleInviteOpaqueToken();
+    const providerIdempotencyKey = generateScheduleInviteOpaqueToken();
+    const currentKey = input.hashPolicy.outbox.current;
+    const attemptExpiresAt = new Date(now.getTime() + NAMED_TTL_MS);
+    const recipientBindingHash = currentKey.bindRecipient(
+      snapshot.invitee.email,
+    );
     await tx
       .update(scheduleInviteIssuanceFences)
       .set({
         generation,
         state: "PREPARING",
+        leaseToken,
         leaseExpiresAt: new Date(
           now.getTime() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS,
         ),
+        attemptExpiresAt,
+        codeNonce,
+        codePepperKeyId: currentKey.keyId,
+        recipientBindingHash,
+        providerIdempotencyKey,
+        providerCorrelationId: null,
         providerAcceptedAt: null,
+        scheduleInviteId: null,
         failureCode: null,
       })
-      .where(eq(scheduleInviteIssuanceFences.id, fence.id));
-    return { kind: "CLAIMED", generation, snapshot };
+      .where(
+        and(
+          eq(scheduleInviteIssuanceFences.id, fence.id),
+          eq(scheduleInviteIssuanceFences.generation, fence.generation),
+        ),
+      );
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation,
+      event: "CLAIMED",
+    });
+    return {
+      kind: "DELIVER",
+      material: {
+        generation,
+        leaseToken,
+        attemptExpiresAt,
+        codeNonce,
+        codePepperKeyId: currentKey.keyId,
+        recipientBindingHash,
+        providerIdempotencyKey,
+        providerAcceptedAt: null,
+      },
+      snapshot,
+    };
   });
 }
 
 async function markInviteProviderAccepted(
   db: ScheduleInviteDb,
-  scope: InviteIssuanceScope,
-  generation: number,
-  acceptedAt: Date,
+  input: {
+    scope: InviteIssuanceScope;
+    material: InviteIssuanceMaterial;
+    acceptedAt: Date;
+    providerCorrelationId?: string;
+  },
 ): Promise<boolean> {
-  const result = await db
-    .update(scheduleInviteIssuanceFences)
-    .set({
-      state: "PROVIDER_ACCEPTED",
-      providerAcceptedAt: acceptedAt,
-      failureCode: null,
-    })
-    .where(
-      and(
-        fenceScopeWhere(scope),
-        eq(scheduleInviteIssuanceFences.generation, generation),
-        eq(scheduleInviteIssuanceFences.state, "PREPARING"),
-      ),
-    );
-  return updateAffectedRows(result) === 1;
+  return db.transaction(async (tx) => {
+    const result = await tx
+      .update(scheduleInviteIssuanceFences)
+      .set({
+        state: "PROVIDER_ACCEPTED",
+        providerAcceptedAt: input.acceptedAt,
+        providerCorrelationId: input.providerCorrelationId,
+        failureCode: null,
+      })
+      .where(
+        and(
+          fenceScopeWhere(input.scope),
+          eq(
+            scheduleInviteIssuanceFences.generation,
+            input.material.generation,
+          ),
+          eq(
+            scheduleInviteIssuanceFences.leaseToken,
+            input.material.leaseToken,
+          ),
+          eq(scheduleInviteIssuanceFences.state, "PREPARING"),
+        ),
+      );
+    if (updateAffectedRows(result) !== 1) return false;
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation: input.material.generation,
+      event: "PROVIDER_ACCEPTED",
+      providerCorrelationId: input.providerCorrelationId,
+    });
+    return true;
+  });
 }
 
-async function markInviteIssuanceFailure(
+async function markInviteProviderOutcome(
   db: ScheduleInviteDb,
   input: {
     scope: InviteIssuanceScope;
-    generation: number;
-    failureCode:
-      | "MAIL_BUILD_FAILED"
-      | "PROVIDER_REJECTED"
-      | "PROVIDER_EXCEPTION";
+    material: InviteIssuanceMaterial;
+    outcome: "REJECTED" | "UNKNOWN";
+    reasonCode: string;
   },
-): Promise<void> {
-  await db
-    .update(scheduleInviteIssuanceFences)
-    .set({
-      state: "PROVIDER_REJECTED",
-      leaseExpiresAt: null,
-      providerAcceptedAt: null,
-      failureCode: input.failureCode,
-    })
-    .where(
-      and(
-        fenceScopeWhere(input.scope),
-        eq(scheduleInviteIssuanceFences.generation, input.generation),
-        eq(scheduleInviteIssuanceFences.state, "PREPARING"),
-      ),
-    );
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const isUnknown = input.outcome === "UNKNOWN";
+    const result = await tx
+      .update(scheduleInviteIssuanceFences)
+      .set({
+        state: isUnknown ? "PROVIDER_UNKNOWN" : "PROVIDER_REJECTED",
+        leaseToken: isUnknown ? input.material.leaseToken : null,
+        leaseExpiresAt: isUnknown
+          ? new Date(Date.now() + SCHEDULE_INVITE_ISSUANCE_LEASE_MS)
+          : null,
+        providerAcceptedAt: null,
+        providerCorrelationId: null,
+        failureCode: input.reasonCode,
+      })
+      .where(
+        and(
+          fenceScopeWhere(input.scope),
+          eq(
+            scheduleInviteIssuanceFences.generation,
+            input.material.generation,
+          ),
+          eq(
+            scheduleInviteIssuanceFences.leaseToken,
+            input.material.leaseToken,
+          ),
+          eq(scheduleInviteIssuanceFences.state, "PREPARING"),
+        ),
+      );
+    if (updateAffectedRows(result) !== 1) return false;
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation: input.material.generation,
+      event: isUnknown ? "PROVIDER_UNKNOWN" : "PROVIDER_REJECTED",
+      reasonCode: input.reasonCode,
+    });
+    return true;
+  });
 }
 
 async function markAcceptedActivationFailure(
   db: ScheduleInviteDb,
   input: {
     scope: InviteIssuanceScope;
-    generation: number;
+    material: InviteIssuanceMaterial;
     acceptedAt: Date;
     failureCode: "ACTIVATION_REJECTED" | "ACTIVATION_EXCEPTION";
   },
-): Promise<void> {
-  await db
-    .update(scheduleInviteIssuanceFences)
-    .set({
-      state: "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
-      leaseExpiresAt: null,
-      providerAcceptedAt: input.acceptedAt,
-      failureCode: input.failureCode,
-    })
-    .where(
-      and(
-        fenceScopeWhere(input.scope),
-        eq(scheduleInviteIssuanceFences.generation, input.generation),
-        or(
-          eq(scheduleInviteIssuanceFences.state, "PREPARING"),
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const result = await tx
+      .update(scheduleInviteIssuanceFences)
+      .set({
+        state: "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+        leaseToken: null,
+        leaseExpiresAt: null,
+        providerAcceptedAt: input.acceptedAt,
+        failureCode: input.failureCode,
+      })
+      .where(
+        and(
+          fenceScopeWhere(input.scope),
+          eq(
+            scheduleInviteIssuanceFences.generation,
+            input.material.generation,
+          ),
+          eq(
+            scheduleInviteIssuanceFences.leaseToken,
+            input.material.leaseToken,
+          ),
           eq(scheduleInviteIssuanceFences.state, "PROVIDER_ACCEPTED"),
         ),
-      ),
-    );
+      );
+    if (updateAffectedRows(result) !== 1) return false;
+    await appendInviteIssuanceJournal(tx, {
+      scope: input.scope,
+      generation: input.material.generation,
+      event: "ACTIVATION_FAILED",
+      reasonCode: input.failureCode,
+    });
+    return true;
+  });
 }
 
 export const scheduleInvitesRouter = router({
@@ -1466,12 +1766,13 @@ export const scheduleInvitesRouter = router({
             scope,
             actor,
             expectedActorSessionVersion: ctx.user.sessionVersion,
+            hashPolicy,
           });
         } catch {
           // Um lote pode já ter ativado destinatários anteriores. Falha de
           // revalidação/DB deste item não apaga esse resultado parcial nem
           // transforma o lote inteiro em um sucesso sem granularidade.
-          console.error("[schedule-invites] INVITE_CLAIM_FAILED");
+          logInviteIssuanceFailure("INVITE_CLAIM_FAILED", scope);
           preparationUnavailable = true;
           failed.push({
             userId,
@@ -1500,115 +1801,163 @@ export const scheduleInvitesRouter = router({
           });
           continue;
         }
-
-        const plaintext = generateScheduleInviteCode();
-        const normalized = normalizeScheduleInviteCode(plaintext);
-        const formatted = formatScheduleInviteCode(normalized);
-        const expiresAt = new Date(Date.now() + NAMED_TTL_MS);
-        const mail = buildScheduleInviteMail({
-          to: claim.snapshot.invitee.email!,
-          hospitalName: claim.snapshot.context.hospitalName,
-          sectorName: claim.snapshot.context.sectorName,
-          code: formatted,
-          expiresAt,
-        });
-        if (!mail) {
-          try {
-            await markInviteIssuanceFailure(db, {
-              scope,
-              generation: claim.generation,
-              failureCode: "MAIL_BUILD_FAILED",
-            });
-          } catch {
-            console.error(
-              "[schedule-invites] INVITE_FAILURE_STATE_WRITE_FAILED",
-            );
-          }
-          failed.push({
-            userId,
-            error: "Não foi possível montar o e-mail de convite",
-          });
-          continue;
-        }
-
-        let providerResult: Awaited<ReturnType<typeof mailer.sendMail>>;
-        try {
-          // Efeito externo fora de transação e sem conexão reservada.
-          providerResult = await mailer.sendMail(mail);
-        } catch {
-          console.error(
-            "[schedule-invites] INVITE_PROVIDER_TRANSPORT_EXCEPTION",
-          );
-          try {
-            await markInviteIssuanceFailure(db, {
-              scope,
-              generation: claim.generation,
-              failureCode: "PROVIDER_EXCEPTION",
-            });
-          } catch {
-            console.error(
-              "[schedule-invites] INVITE_FAILURE_STATE_WRITE_FAILED",
-            );
-          }
-          failed.push({
-            userId,
-            error: "O provedor de e-mail não aceitou o convite. Tente novamente.",
-          });
-          continue;
-        }
-        // `delivered` é o nome legado do adapter; para HTTP 2xx ele significa
-        // apenas aceite/enfileiramento pelo provedor, nunca entrega final.
-        const providerAccepted = providerResult.delivered;
-        if (!providerAccepted) {
-          try {
-            await markInviteIssuanceFailure(db, {
-              scope,
-              generation: claim.generation,
-              failureCode: "PROVIDER_REJECTED",
-            });
-          } catch {
-            console.error(
-              "[schedule-invites] INVITE_FAILURE_STATE_WRITE_FAILED",
-            );
-          }
-          failed.push({
-            userId,
-            error: "O provedor de e-mail não aceitou o convite. Tente novamente.",
-          });
-          continue;
-        }
-
-        const acceptedAt = new Date();
-        let acceptanceRecorded = false;
-        try {
-          acceptanceRecorded = await markInviteProviderAccepted(
-            db,
-            scope,
-            claim.generation,
-            acceptedAt,
-          );
-        } catch {
-          console.error(
-            "[schedule-invites] PROVIDER_ACCEPTED_STATE_WRITE_FAILED",
-          );
-        }
-        if (!acceptanceRecorded) {
-          try {
-            await markAcceptedActivationFailure(db, {
-              scope,
-              generation: claim.generation,
-              acceptedAt,
-              failureCode: "ACTIVATION_EXCEPTION",
-            });
-          } catch {
-            console.error(
-              "[schedule-invites] ACCEPTED_FAILURE_STATE_WRITE_FAILED",
-            );
-          }
+        if (claim.kind === "KEY_UNAVAILABLE") {
           failed.push({
             userId,
             error:
-              "O provedor aceitou a mensagem, mas o convite não foi ativado. Tente novamente em um minuto.",
+              "A chave desta emissão ainda não está disponível. Preserve o pepper anterior e tente novamente.",
+          });
+          continue;
+        }
+
+        const outboxKey = hashPolicy.outbox.resolve(
+          claim.material.codePepperKeyId,
+        );
+        if (!outboxKey) {
+          failed.push({
+            userId,
+            error:
+              "A chave desta emissão ainda não está disponível. Preserve o pepper anterior e tente novamente.",
+          });
+          continue;
+        }
+        const formatted = outboxKey.deriveCode({
+          institutionId: scope.institutionId,
+          hospitalId: scope.hospitalId,
+          sectorId: scope.sectorId,
+          invitedUserId: scope.userId,
+          generation: claim.material.generation,
+          nonce: claim.material.codeNonce,
+        });
+        const normalized = normalizeScheduleInviteCode(formatted);
+        const expiresAt = claim.material.attemptExpiresAt;
+        let acceptedAt = claim.material.providerAcceptedAt;
+
+        if (claim.kind === "DELIVER") {
+          const mail = buildScheduleInviteMail({
+            to: claim.snapshot.invitee.email!,
+            hospitalName: claim.snapshot.context.hospitalName,
+            sectorName: claim.snapshot.context.sectorName,
+            code: formatScheduleInviteCode(normalized),
+            expiresAt,
+          });
+          if (!mail) {
+            try {
+              await markInviteProviderOutcome(db, {
+                scope,
+                material: claim.material,
+                outcome: "REJECTED",
+                reasonCode: "MAIL_BUILD_FAILED",
+              });
+            } catch {
+              logInviteIssuanceFailure(
+                "INVITE_OUTCOME_WRITE_FAILED",
+                scope,
+                claim.material.generation,
+              );
+            }
+            failed.push({
+              userId,
+              error: "Não foi possível montar o e-mail de convite",
+            });
+            continue;
+          }
+
+          let providerResult: Awaited<ReturnType<typeof mailer.sendMail>>;
+          try {
+            // Efeito externo fora de transação. Timeout/exceção é UNKNOWN:
+            // a geração e a idempotency-key permanecem para retry seguro.
+            providerResult = await mailer.sendMail(mail, {
+              idempotencyKey: claim.material.providerIdempotencyKey,
+            });
+          } catch {
+            logInviteIssuanceFailure(
+              "INVITE_PROVIDER_TRANSPORT_UNKNOWN",
+              scope,
+              claim.material.generation,
+            );
+            try {
+              await markInviteProviderOutcome(db, {
+                scope,
+                material: claim.material,
+                outcome: "UNKNOWN",
+                reasonCode: "TRANSPORT_EXCEPTION",
+              });
+            } catch {
+              logInviteIssuanceFailure(
+                "INVITE_OUTCOME_WRITE_FAILED",
+                scope,
+                claim.material.generation,
+              );
+            }
+            failed.push({
+              userId,
+              error:
+                "O resultado do envio ainda é incerto. Aguarde um minuto antes de tentar novamente.",
+            });
+            continue;
+          }
+          if (providerResult.kind !== "ACCEPTED") {
+            try {
+              await markInviteProviderOutcome(db, {
+                scope,
+                material: claim.material,
+                outcome: providerResult.kind,
+                reasonCode: providerResult.reason,
+              });
+            } catch {
+              logInviteIssuanceFailure(
+                "INVITE_OUTCOME_WRITE_FAILED",
+                scope,
+                claim.material.generation,
+              );
+            }
+            failed.push({
+              userId,
+              error:
+                providerResult.kind === "UNKNOWN"
+                  ? "O resultado do envio ainda é incerto. Aguarde um minuto antes de tentar novamente."
+                  : "O provedor de e-mail rejeitou o convite. Tente novamente.",
+            });
+            continue;
+          }
+
+          acceptedAt = new Date();
+          let acceptanceRecorded = false;
+          try {
+            acceptanceRecorded = await markInviteProviderAccepted(db, {
+              scope,
+              material: claim.material,
+              acceptedAt,
+              providerCorrelationId:
+                providerResult.providerCorrelationId,
+            });
+          } catch {
+            logInviteIssuanceFailure(
+              "PROVIDER_ACCEPTED_STATE_WRITE_UNKNOWN",
+              scope,
+              claim.material.generation,
+            );
+          }
+          if (!acceptanceRecorded) {
+            failed.push({
+              userId,
+              error:
+                "O provedor aceitou a mensagem, mas o registro local ficou incerto. Aguarde um minuto antes de tentar novamente.",
+            });
+            continue;
+          }
+        }
+
+        if (!acceptedAt) {
+          logInviteIssuanceFailure(
+            "ACCEPTED_GENERATION_WITHOUT_TIMESTAMP",
+            scope,
+            claim.material.generation,
+          );
+          failed.push({
+            userId,
+            error: "A emissão não pôde ser retomada com segurança.",
           });
           continue;
         }
@@ -1631,6 +1980,7 @@ export const scheduleInvitesRouter = router({
                 id: scheduleInviteIssuanceFences.id,
                 generation: scheduleInviteIssuanceFences.generation,
                 state: scheduleInviteIssuanceFences.state,
+                leaseToken: scheduleInviteIssuanceFences.leaseToken,
               })
               .from(scheduleInviteIssuanceFences)
               .where(fenceScopeWhere(scope))
@@ -1638,7 +1988,8 @@ export const scheduleInvitesRouter = router({
               .for("update");
             if (
               !fence ||
-              fence.generation !== claim.generation ||
+              fence.generation !== claim.material.generation ||
+              fence.leaseToken !== claim.material.leaseToken ||
               fence.state !== "PROVIDER_ACCEPTED"
             ) {
               return null;
@@ -1683,7 +2034,7 @@ export const scheduleInvitesRouter = router({
                 institutionId: actor.institutionId,
                 hospitalId: input.hospitalId,
                 sectorId: input.sectorId,
-                codeHash: hashPolicy.write.hash(normalized),
+                codeHash: outboxKey.hash(normalized),
                 codeHashVersion: hashPolicy.write.version,
                 createdByUserId: actor.userId,
                 invitedUserId: current.invitee.userId,
@@ -1713,34 +2064,62 @@ export const scheduleInvitesRouter = router({
               },
               { db: tx, strict: true },
             );
-            await tx
+            const activatedFence = await tx
               .update(scheduleInviteIssuanceFences)
               .set({
                 state: "ACTIVE",
+                leaseToken: null,
                 leaseExpiresAt: null,
+                scheduleInviteId: inserted.id,
                 failureCode: null,
               })
-              .where(eq(scheduleInviteIssuanceFences.id, fence.id));
+              .where(
+                and(
+                  eq(scheduleInviteIssuanceFences.id, fence.id),
+                  eq(
+                    scheduleInviteIssuanceFences.generation,
+                    claim.material.generation,
+                  ),
+                  eq(
+                    scheduleInviteIssuanceFences.leaseToken,
+                    claim.material.leaseToken,
+                  ),
+                  eq(scheduleInviteIssuanceFences.state, "PROVIDER_ACCEPTED"),
+                ),
+              );
+            if (updateAffectedRows(activatedFence) !== 1) {
+              throw new Error("SCHEDULE_INVITE_ACTIVATION_CAS_LOST");
+            }
+            await appendInviteIssuanceJournal(tx, {
+              scope,
+              generation: claim.material.generation,
+              event: "ACTIVATED",
+              scheduleInviteId: inserted.id,
+            });
 
             return current;
           });
         } catch {
           activationFailureCode = "ACTIVATION_EXCEPTION";
-          console.error(
-            "[schedule-invites] PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+          logInviteIssuanceFailure(
+            "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+            scope,
+            claim.material.generation,
           );
         }
         if (!activated) {
           try {
             await markAcceptedActivationFailure(db, {
               scope,
-              generation: claim.generation,
+              material: claim.material,
               acceptedAt,
               failureCode: activationFailureCode,
             });
           } catch {
-            console.error(
-              "[schedule-invites] ACCEPTED_FAILURE_STATE_WRITE_FAILED",
+            logInviteIssuanceFailure(
+              "ACCEPTED_FAILURE_STATE_WRITE_FAILED",
+              scope,
+              claim.material.generation,
             );
           }
           failed.push({

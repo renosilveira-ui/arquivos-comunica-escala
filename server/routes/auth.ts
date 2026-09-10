@@ -1036,7 +1036,8 @@ authRouter.post(
 
       if (delivery) {
         const link = `${publicBaseUrl}/reset-password?token=${token}`;
-        let delivered = false;
+        let deliveryOutcome: "ACCEPTED" | "REJECTED" | "UNKNOWN" =
+          "UNKNOWN";
         try {
           const mailResult = await mailer.sendMail({
             to: delivery.email,
@@ -1052,12 +1053,12 @@ authRouter.post(
               "Se você não pediu isso, ignore este e-mail — sua senha continua a mesma.",
             ].join("\n"),
           });
-          delivered = mailResult.delivered;
+          deliveryOutcome = mailResult.kind;
         } catch {
-          // sendMail hoje devolve delivered=false em vez de lançar; se passar
-          // a lançar, o token recém-gravado não pode ficar utilizável.
+          // Exceção após o request pode ser resposta perdida: UNKNOWN não é
+          // rejeição e o link possivelmente aceito não deve ser invalidado.
         }
-        if (!delivered) {
+        if (deliveryOutcome === "REJECTED") {
           const revoked = await revokeFreshPasswordResetToken(
             db,
             user.id,
@@ -1067,6 +1068,10 @@ authRouter.post(
             revoked
               ? "[forgot-password] E-mail não entregue; token recém-emitido revogado"
               : "[forgot-password] E-mail não entregue; revogação do token recém-emitido não confirmada",
+          );
+        } else if (deliveryOutcome === "UNKNOWN") {
+          console.error(
+            "[forgot-password] Resultado do transporte desconhecido; token preservado até expirar",
           );
         }
       }

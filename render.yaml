@@ -63,7 +63,8 @@ services:
       # Nunca reutilizar COOKIE_SECRET, JWT, Twilio ou RESEND_API_KEY.
       - key: SCHEDULE_INVITE_CODE_PEPPER
         sync: false
-      # Opcional: manter o pepper anterior por pelo menos 24 h na rotação.
+      # Opcional: manter o pepper anterior por pelo menos 24 h na rotação;
+      # outboxes vigentes referenciam seu key-id opaco e falham fechado sem ele.
       - key: SCHEDULE_INVITE_CODE_PREVIOUS_PEPPER
         sync: false
       # Same-origin: frontend is now served by the Express server itself

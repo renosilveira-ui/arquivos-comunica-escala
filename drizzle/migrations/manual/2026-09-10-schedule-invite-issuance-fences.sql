@@ -1,151 +1,184 @@
--- 2026-09-10 — fence durável da emissão de convite nominal.
+-- 2026-09-10 — intenção/outbox e journal duráveis da emissão nominal.
 --
--- Migration aditiva e rerodável. Aplicar ANTES do runtime que usa a tabela;
--- o deploy não executa migrations. Não operar duas versões do writer ao
--- mesmo tempo: a versão anterior usa GET_LOCK e não participa desta fence.
---
--- A tabela não guarda código, hash, e-mail ou payload do provedor. Ela
--- serializa transações curtas e registra apenas estado operacional opaco.
--- Nenhuma conexão SQL precisa permanecer aberta durante a chamada de rede.
+-- Migration aditiva e rerodável. Aplicar ANTES da migration hash V2 e antes
+-- de qualquer runtime novo. Não operar writers mistos. Nenhuma tabela guarda
+-- código em claro, hash do código, e-mail ou payload do provedor.
 
-SET @siif_previous_group_concat_max_len := @@SESSION.group_concat_max_len;
-SET SESSION group_concat_max_len = 65535;
-
-SET @siif_expected_columns_hash :=
-  '07102eb4627bff5e3096cc07117394a308fdeacf1923d1897821ba8244f3565c';
-SET @siif_expected_indexes_hash :=
-  '97b012c78f3b2ed99ec4c05a091db827ba7b8a2180279a334d584e07b23eff5c';
-SET @siif_expected_foreign_keys_hash :=
-  '3872a344cafba2749dbd46dc010d43963654eddfcfcc4892154f05e4f81b2323';
-SET @siif_expected_checks_hash :=
-  '284a82c3e0ebc3cf5e78ed8902e93e06234370185d520a2b22ea6b99d8376f4a';
-SET @siif_expected_table_options_hash :=
-  'e26e2991ce3e5ce1cb83afa94491ee06ba31e280a83451d7b5774c653955482f';
-
--- Preflight ANTES do primeiro DDL permanente. Uma tabela homônima só pode
--- ser aceita quando todo o manifesto (incluindo ausência de extras) coincide.
-SET @siif_existing_object_count := (
-  SELECT COUNT(*)
-  FROM INFORMATION_SCHEMA.TABLES
+-- Preflight de ambos os objetos ANTES do primeiro DDL permanente. Uma tabela
+-- homônima só é aceita quando o manifesto final inteiro coincide; drift ou
+-- objeto parcial falha sem tentar consertar estado desconhecido.
+SET @siif_fence_objects := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
   WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'schedule_invite_issuance_fences'
 );
-SET @siif_existing_table_count := (
-  SELECT COUNT(*)
-  FROM INFORMATION_SCHEMA.TABLES
+SET @siif_fence_tables := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
   WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'schedule_invite_issuance_fences'
     AND TABLE_TYPE = 'BASE TABLE'
 );
-SET @siif_columns_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|',
-    ORDINAL_POSITION,
-    COLUMN_NAME,
-    COLUMN_TYPE,
-    IS_NULLABLE,
-    REPLACE(
-      LOWER(COALESCE(CAST(COLUMN_DEFAULT AS CHAR), '<NULL>')),
-      'now()',
-      'current_timestamp'
-    ),
-    LOWER(EXTRA),
-    COALESCE(CHARACTER_SET_NAME, '<NULL>'),
-    COALESCE(COLLATION_NAME, '<NULL>'),
-    COALESCE(GENERATION_EXPRESSION, '<NULL>'),
-    COALESCE(COLUMN_COMMENT, '')
-  ) ORDER BY ORDINAL_POSITION SEPARATOR ';'), 256)
+SET @siif_fence_columns_ok := (
+  SELECT COUNT(*) = 20
+    AND SUM(CASE WHEN COLUMN_NAME = 'id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND EXTRA LIKE '%auto_increment%' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'institution_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'hospital_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'sector_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'invited_user_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'generation' AND COLUMN_TYPE = 'int unsigned' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'state' AND COLUMN_TYPE = 'enum(''IDLE'',''PREPARING'',''PROVIDER_UNKNOWN'',''PROVIDER_ACCEPTED'',''ACTIVE'',''PROVIDER_REJECTED'',''PROVIDER_ACCEPTED_ACTIVATION_FAILED'')' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = 'IDLE' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'lease_token' AND COLUMN_TYPE = 'char(64)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'lease_expires_at' AND COLUMN_TYPE = 'timestamp' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'attempt_expires_at' AND COLUMN_TYPE = 'timestamp' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'code_nonce' AND COLUMN_TYPE = 'char(64)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'code_pepper_key_id' AND COLUMN_TYPE = 'char(64)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'recipient_binding_hash' AND COLUMN_TYPE = 'char(64)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'provider_idempotency_key' AND COLUMN_TYPE = 'char(64)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'provider_correlation_id' AND COLUMN_TYPE = 'varchar(128)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'provider_accepted_at' AND COLUMN_TYPE = 'timestamp' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'schedule_invite_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'failure_code' AND COLUMN_TYPE = 'varchar(64)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'created_at' AND COLUMN_TYPE = 'timestamp' AND IS_NULLABLE = 'NO' AND LOWER(CAST(COLUMN_DEFAULT AS CHAR)) IN ('current_timestamp','now()') THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'updated_at' AND COLUMN_TYPE = 'timestamp' AND IS_NULLABLE = 'NO' AND LOWER(EXTRA) LIKE '%on update current_timestamp%' THEN 1 ELSE 0 END) = 1
   FROM INFORMATION_SCHEMA.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'schedule_invite_issuance_fences'
 );
-SET @siif_indexes_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|',
-    INDEX_NAME,
-    NON_UNIQUE,
-    SEQ_IN_INDEX,
-    COLUMN_NAME,
-    COALESCE(SUB_PART, 0),
-    INDEX_TYPE,
-    COALESCE(COLLATION, '<NULL>'),
-    COALESCE(NULLABLE, '<NULL>'),
-    COALESCE(IS_VISIBLE, '<NULL>'),
-    COALESCE(EXPRESSION, '<NULL>')
-  ) ORDER BY INDEX_NAME, SEQ_IN_INDEX SEPARATOR ';'), 256)
+SET @siif_fence_indexes_ok := (
+  SELECT COUNT(*) = 6
+    AND SUM(CASE WHEN INDEX_NAME = 'PRIMARY' AND NON_UNIQUE = 0 AND SEQ_IN_INDEX = 1 AND COLUMN_NAME = 'id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'uniq_schedule_invite_issuance_scope' AND NON_UNIQUE = 0 AND SEQ_IN_INDEX = 1 AND COLUMN_NAME = 'institution_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'uniq_schedule_invite_issuance_scope' AND NON_UNIQUE = 0 AND SEQ_IN_INDEX = 2 AND COLUMN_NAME = 'hospital_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'uniq_schedule_invite_issuance_scope' AND NON_UNIQUE = 0 AND SEQ_IN_INDEX = 3 AND COLUMN_NAME = 'sector_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'uniq_schedule_invite_issuance_scope' AND NON_UNIQUE = 0 AND SEQ_IN_INDEX = 4 AND COLUMN_NAME = 'invited_user_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'fk_schedule_invite_issuance_invited_user' AND NON_UNIQUE = 1 AND SEQ_IN_INDEX = 1 AND COLUMN_NAME = 'invited_user_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
   FROM INFORMATION_SCHEMA.STATISTICS
   WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'schedule_invite_issuance_fences'
 );
-SET @siif_foreign_keys_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|',
-    k.CONSTRAINT_NAME,
-    k.ORDINAL_POSITION,
-    k.COLUMN_NAME,
-    CASE
-      WHEN k.REFERENCED_TABLE_SCHEMA = DATABASE() THEN '<SELF>'
-      ELSE COALESCE(k.REFERENCED_TABLE_SCHEMA, '<NULL>')
-    END,
-    k.REFERENCED_TABLE_NAME,
-    k.REFERENCED_COLUMN_NAME,
-    r.UNIQUE_CONSTRAINT_NAME,
-    r.MATCH_OPTION,
-    r.UPDATE_RULE,
-    r.DELETE_RULE
-  ) ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION SEPARATOR ';'), 256)
-  FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
-  INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS r
-    ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA
-   AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME
-  WHERE k.TABLE_SCHEMA = DATABASE()
-    AND k.TABLE_NAME = 'schedule_invite_issuance_fences'
-    AND k.REFERENCED_TABLE_NAME IS NOT NULL
+SET @siif_fence_fks_ok := (
+  SELECT COUNT(*) = 6
+    AND COUNT(DISTINCT CONSTRAINT_NAME) = 3
+    AND SUM(CASE WHEN CONSTRAINT_NAME = 'fk_schedule_invite_issuance_hospital_topology' AND COLUMN_NAME IN ('institution_id','hospital_id') AND REFERENCED_TABLE_NAME = 'hospitals' THEN 1 ELSE 0 END) = 2
+    AND SUM(CASE WHEN CONSTRAINT_NAME = 'fk_schedule_invite_issuance_sector_topology' AND COLUMN_NAME IN ('institution_id','hospital_id','sector_id') AND REFERENCED_TABLE_NAME = 'sectors' THEN 1 ELSE 0 END) = 3
+    AND SUM(CASE WHEN CONSTRAINT_NAME = 'fk_schedule_invite_issuance_invited_user' AND COLUMN_NAME = 'invited_user_id' AND REFERENCED_TABLE_NAME = 'users' AND REFERENCED_COLUMN_NAME = 'id' THEN 1 ELSE 0 END) = 1
+  FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_fences'
+    AND REFERENCED_TABLE_NAME IS NOT NULL
 );
-SET @siif_checks_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|',
-    tc.CONSTRAINT_NAME,
-    cc.CHECK_CLAUSE,
-    tc.ENFORCED
-  ) ORDER BY tc.CONSTRAINT_NAME SEPARATOR ';'), 256)
-  FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-  INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc
-    ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
-   AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
-  WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
-    AND tc.TABLE_NAME = 'schedule_invite_issuance_fences'
-    AND tc.CONSTRAINT_TYPE = 'CHECK'
+SET @siif_fence_checks_ok := (
+  SELECT COUNT(*) = 6 AND SUM(ENFORCED = 'YES') = 6
+    AND SUM(CONSTRAINT_NAME = 'chk_schedule_invite_issuance_generation') = 1
+    AND SUM(CONSTRAINT_NAME = 'chk_schedule_invite_issuance_lease_shape') = 1
+    AND SUM(CONSTRAINT_NAME = 'chk_schedule_invite_issuance_material_shape') = 1
+    AND SUM(CONSTRAINT_NAME = 'chk_schedule_invite_issuance_accepted_shape') = 1
+    AND SUM(CONSTRAINT_NAME = 'chk_schedule_invite_issuance_failure_shape') = 1
+    AND SUM(CONSTRAINT_NAME = 'chk_schedule_invite_issuance_activation_shape') = 1
+  FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_fences'
+    AND CONSTRAINT_TYPE = 'CHECK'
 );
-SET @siif_table_options_hash := (
-  SELECT SHA2(CONCAT_WS(
-    '|', ENGINE, TABLE_COLLATION, ROW_FORMAT, CREATE_OPTIONS, TABLE_COMMENT
-  ), 256)
+SET @siif_fence_options_ok := (
+  SELECT COUNT(*) = 1 AND MIN(ENGINE = 'InnoDB') = 1
+    AND MIN(TABLE_COLLATION = 'utf8mb4_0900_ai_ci') = 1
   FROM INFORMATION_SCHEMA.TABLES
   WHERE TABLE_SCHEMA = DATABASE()
     AND TABLE_NAME = 'schedule_invite_issuance_fences'
     AND TABLE_TYPE = 'BASE TABLE'
 );
-SET @siif_trigger_count := (
-  SELECT COUNT(*)
-  FROM INFORMATION_SCHEMA.TRIGGERS
+SET @siif_fence_trigger_count := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TRIGGERS
   WHERE TRIGGER_SCHEMA = DATABASE()
     AND EVENT_OBJECT_TABLE = 'schedule_invite_issuance_fences'
 );
-SET @siif_existing_contract_ok := (
-  @siif_existing_object_count = 1
-  AND @siif_existing_table_count = 1
-  AND BINARY @siif_columns_hash = BINARY @siif_expected_columns_hash
-  AND BINARY @siif_indexes_hash = BINARY @siif_expected_indexes_hash
-  AND BINARY @siif_foreign_keys_hash = BINARY @siif_expected_foreign_keys_hash
-  AND BINARY @siif_checks_hash = BINARY @siif_expected_checks_hash
-  AND BINARY @siif_table_options_hash = BINARY @siif_expected_table_options_hash
-  AND @siif_trigger_count = 0
+SET @siif_fence_contract_ok := (
+  @siif_fence_objects = 1 AND @siif_fence_tables = 1
+  AND @siif_fence_columns_ok AND @siif_fence_indexes_ok
+  AND @siif_fence_fks_ok AND @siif_fence_checks_ok
+  AND @siif_fence_options_ok AND @siif_fence_trigger_count = 0
 );
+
+SET @siij_objects := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_journal'
+);
+SET @siij_tables := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_journal'
+    AND TABLE_TYPE = 'BASE TABLE'
+);
+SET @siij_columns_ok := (
+  SELECT COUNT(*) = 11
+    AND SUM(CASE WHEN COLUMN_NAME = 'id' AND COLUMN_TYPE = 'bigint unsigned' AND IS_NULLABLE = 'NO' AND EXTRA LIKE '%auto_increment%' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'institution_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'hospital_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'sector_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'invited_user_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'generation' AND COLUMN_TYPE = 'int unsigned' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'event' AND COLUMN_TYPE = 'enum(''CLAIMED'',''ATTEMPT_SUPERSEDED'',''DELIVERY_RECLAIMED'',''PROVIDER_ACCEPTED'',''PROVIDER_REJECTED'',''PROVIDER_UNKNOWN'',''ACTIVATION_RESUMED'',''ACTIVATED'',''ACTIVATION_FAILED'')' AND IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'reason_code' AND COLUMN_TYPE = 'varchar(64)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'provider_correlation_id' AND COLUMN_TYPE = 'varchar(128)' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'schedule_invite_id' AND COLUMN_TYPE = 'int' AND IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN COLUMN_NAME = 'created_at' AND COLUMN_TYPE = 'timestamp(6)' AND IS_NULLABLE = 'NO' AND LOWER(CAST(COLUMN_DEFAULT AS CHAR)) IN ('current_timestamp(6)','now(6)') THEN 1 ELSE 0 END) = 1
+  FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_journal'
+);
+SET @siij_indexes_ok := (
+  SELECT COUNT(*) = 7
+    AND SUM(CASE WHEN INDEX_NAME = 'PRIMARY' AND NON_UNIQUE = 0 AND SEQ_IN_INDEX = 1 AND COLUMN_NAME = 'id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'idx_schedule_invite_issuance_journal_generation' AND NON_UNIQUE = 1 AND SEQ_IN_INDEX = 1 AND COLUMN_NAME = 'institution_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'idx_schedule_invite_issuance_journal_generation' AND NON_UNIQUE = 1 AND SEQ_IN_INDEX = 2 AND COLUMN_NAME = 'hospital_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'idx_schedule_invite_issuance_journal_generation' AND NON_UNIQUE = 1 AND SEQ_IN_INDEX = 3 AND COLUMN_NAME = 'sector_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'idx_schedule_invite_issuance_journal_generation' AND NON_UNIQUE = 1 AND SEQ_IN_INDEX = 4 AND COLUMN_NAME = 'invited_user_id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'idx_schedule_invite_issuance_journal_generation' AND NON_UNIQUE = 1 AND SEQ_IN_INDEX = 5 AND COLUMN_NAME = 'generation' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+    AND SUM(CASE WHEN INDEX_NAME = 'idx_schedule_invite_issuance_journal_generation' AND NON_UNIQUE = 1 AND SEQ_IN_INDEX = 6 AND COLUMN_NAME = 'id' AND IS_VISIBLE = 'YES' THEN 1 ELSE 0 END) = 1
+  FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_journal'
+);
+SET @siij_checks_ok := (
+  SELECT COUNT(*) = 1 AND SUM(ENFORCED = 'YES') = 1
+    AND SUM(CONSTRAINT_NAME = 'chk_schedule_invite_issuance_journal_generation') = 1
+  FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_journal'
+    AND CONSTRAINT_TYPE = 'CHECK'
+);
+SET @siij_fk_count := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_journal'
+    AND REFERENCED_TABLE_NAME IS NOT NULL
+);
+SET @siij_trigger_count := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TRIGGERS
+  WHERE TRIGGER_SCHEMA = DATABASE()
+    AND EVENT_OBJECT_TABLE = 'schedule_invite_issuance_journal'
+);
+SET @siij_options_ok := (
+  SELECT COUNT(*) = 1 AND MIN(ENGINE = 'InnoDB') = 1
+    AND MIN(TABLE_COLLATION = 'utf8mb4_0900_ai_ci') = 1
+  FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'schedule_invite_issuance_journal'
+    AND TABLE_TYPE = 'BASE TABLE'
+);
+SET @siij_contract_ok := (
+  @siij_objects = 1 AND @siij_tables = 1
+  AND @siij_columns_ok AND @siij_indexes_ok AND @siij_checks_ok
+  AND @siij_fk_count = 0 AND @siij_trigger_count = 0 AND @siij_options_ok
+);
+
 SET @siif_preflight_sql := IF(
-  @siif_existing_object_count = 0 OR @siif_existing_contract_ok,
+  (@siif_fence_objects = 0 OR @siif_fence_contract_ok)
+  AND (@siij_objects = 0 OR @siij_contract_ok),
   'SELECT 1',
-  'SELECT JSON_EXTRACT(''SCHEDULE_INVITE_ISSUANCE_FENCE_PREFLIGHT_MISMATCH'', ''$'')'
+  'SELECT JSON_EXTRACT(''SCHEDULE_INVITE_DURABLE_DELIVERY_PREFLIGHT_MISMATCH'', ''$'')'
 );
 PREPARE siif_preflight_stmt FROM @siif_preflight_sql;
 EXECUTE siif_preflight_stmt;
@@ -159,24 +192,26 @@ CREATE TABLE IF NOT EXISTS schedule_invite_issuance_fences (
   invited_user_id INT NOT NULL,
   generation INT UNSIGNED NOT NULL DEFAULT 0,
   state ENUM(
-    'IDLE',
-    'PREPARING',
-    'PROVIDER_ACCEPTED',
-    'ACTIVE',
-    'PROVIDER_REJECTED',
+    'IDLE', 'PREPARING', 'PROVIDER_UNKNOWN', 'PROVIDER_ACCEPTED',
+    'ACTIVE', 'PROVIDER_REJECTED',
     'PROVIDER_ACCEPTED_ACTIVATION_FAILED'
   ) NOT NULL DEFAULT 'IDLE',
+  lease_token CHAR(64) NULL DEFAULT NULL,
   lease_expires_at TIMESTAMP NULL DEFAULT NULL,
+  attempt_expires_at TIMESTAMP NULL DEFAULT NULL,
+  code_nonce CHAR(64) NULL DEFAULT NULL,
+  code_pepper_key_id CHAR(64) NULL DEFAULT NULL,
+  recipient_binding_hash CHAR(64) NULL DEFAULT NULL,
+  provider_idempotency_key CHAR(64) NULL DEFAULT NULL,
+  provider_correlation_id VARCHAR(128) NULL DEFAULT NULL,
   provider_accepted_at TIMESTAMP NULL DEFAULT NULL,
+  schedule_invite_id INT NULL DEFAULT NULL,
   failure_code VARCHAR(64) NULL DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uniq_schedule_invite_issuance_scope (
-    institution_id,
-    hospital_id,
-    sector_id,
-    invited_user_id
+    institution_id, hospital_id, sector_id, invited_user_id
   ),
   CONSTRAINT fk_schedule_invite_issuance_hospital_topology
     FOREIGN KEY (institution_id, hospital_id)
@@ -185,157 +220,98 @@ CREATE TABLE IF NOT EXISTS schedule_invite_issuance_fences (
     FOREIGN KEY (institution_id, hospital_id, sector_id)
     REFERENCES sectors (institution_id, hospital_id, id),
   CONSTRAINT fk_schedule_invite_issuance_invited_user
-    FOREIGN KEY (invited_user_id) REFERENCES users (id)
-    ON DELETE CASCADE,
-  CONSTRAINT chk_schedule_invite_issuance_generation
-    CHECK (
-      (state = 'IDLE' AND generation = 0)
-      OR
-      (state <> 'IDLE' AND generation > 0)
-    ),
+    FOREIGN KEY (invited_user_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT chk_schedule_invite_issuance_generation CHECK (
+    (state = 'IDLE' AND generation = 0)
+    OR (state <> 'IDLE' AND generation > 0)
+  ),
   CONSTRAINT chk_schedule_invite_issuance_lease_shape CHECK (
-    (
-      state IN ('PREPARING', 'PROVIDER_ACCEPTED')
-      AND lease_expires_at IS NOT NULL
-    )
+    (state IN ('PREPARING','PROVIDER_UNKNOWN','PROVIDER_ACCEPTED')
+      AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
     OR
-    (
-      state NOT IN ('PREPARING', 'PROVIDER_ACCEPTED')
-      AND lease_expires_at IS NULL
-    )
+    (state NOT IN ('PREPARING','PROVIDER_UNKNOWN','PROVIDER_ACCEPTED')
+      AND lease_token IS NULL AND lease_expires_at IS NULL)
+  ),
+  CONSTRAINT chk_schedule_invite_issuance_material_shape CHECK (
+    (state = 'IDLE' AND attempt_expires_at IS NULL AND code_nonce IS NULL
+      AND code_pepper_key_id IS NULL AND recipient_binding_hash IS NULL
+      AND provider_idempotency_key IS NULL)
+    OR
+    (state <> 'IDLE' AND attempt_expires_at IS NOT NULL AND code_nonce IS NOT NULL
+      AND code_pepper_key_id IS NOT NULL AND recipient_binding_hash IS NOT NULL
+      AND provider_idempotency_key IS NOT NULL)
   ),
   CONSTRAINT chk_schedule_invite_issuance_accepted_shape CHECK (
-    (
-      state IN (
-        'PROVIDER_ACCEPTED',
-        'ACTIVE',
-        'PROVIDER_ACCEPTED_ACTIVATION_FAILED'
-      )
-      AND provider_accepted_at IS NOT NULL
-    )
+    (state IN ('PROVIDER_ACCEPTED','ACTIVE','PROVIDER_ACCEPTED_ACTIVATION_FAILED')
+      AND provider_accepted_at IS NOT NULL)
     OR
-    (
-      state NOT IN (
-        'PROVIDER_ACCEPTED',
-        'ACTIVE',
-        'PROVIDER_ACCEPTED_ACTIVATION_FAILED'
-      )
-      AND provider_accepted_at IS NULL
-    )
+    (state NOT IN ('PROVIDER_ACCEPTED','ACTIVE','PROVIDER_ACCEPTED_ACTIVATION_FAILED')
+      AND provider_accepted_at IS NULL)
   ),
   CONSTRAINT chk_schedule_invite_issuance_failure_shape CHECK (
-    (
-      state IN ('PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED')
-      AND failure_code IS NOT NULL
-    )
+    (state IN ('PROVIDER_UNKNOWN','PROVIDER_REJECTED','PROVIDER_ACCEPTED_ACTIVATION_FAILED')
+      AND failure_code IS NOT NULL)
     OR
-    (
-      state NOT IN ('PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED')
-      AND failure_code IS NULL
-    )
+    (state NOT IN ('PROVIDER_UNKNOWN','PROVIDER_REJECTED','PROVIDER_ACCEPTED_ACTIVATION_FAILED')
+      AND failure_code IS NULL)
+  ),
+  CONSTRAINT chk_schedule_invite_issuance_activation_shape CHECK (
+    (state = 'ACTIVE' AND schedule_invite_id IS NOT NULL)
+    OR (state <> 'ACTIVE' AND schedule_invite_id IS NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Postflight integral. Recalcula o mesmo manifesto após o CREATE e recusa
--- drift, extras ou trigger inesperado. Os blocos são repetidos de propósito:
--- a prova não depende dos valores capturados antes do DDL.
-SET @siif_post_columns_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|', ORDINAL_POSITION, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,
-    REPLACE(
-      LOWER(COALESCE(CAST(COLUMN_DEFAULT AS CHAR), '<NULL>')),
-      'now()',
-      'current_timestamp'
-    ),
-    LOWER(EXTRA),
-    COALESCE(CHARACTER_SET_NAME, '<NULL>'),
-    COALESCE(COLLATION_NAME, '<NULL>'),
-    COALESCE(GENERATION_EXPRESSION, '<NULL>'),
-    COALESCE(COLUMN_COMMENT, '')
-  ) ORDER BY ORDINAL_POSITION SEPARATOR ';'), 256)
-  FROM INFORMATION_SCHEMA.COLUMNS
-  WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME = 'schedule_invite_issuance_fences'
-);
-SET @siif_post_indexes_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|', INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME,
-    COALESCE(SUB_PART, 0), INDEX_TYPE,
-    COALESCE(COLLATION, '<NULL>'), COALESCE(NULLABLE, '<NULL>'),
-    COALESCE(IS_VISIBLE, '<NULL>'), COALESCE(EXPRESSION, '<NULL>')
-  ) ORDER BY INDEX_NAME, SEQ_IN_INDEX SEPARATOR ';'), 256)
-  FROM INFORMATION_SCHEMA.STATISTICS
-  WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME = 'schedule_invite_issuance_fences'
-);
-SET @siif_post_foreign_keys_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|', k.CONSTRAINT_NAME, k.ORDINAL_POSITION, k.COLUMN_NAME,
-    CASE
-      WHEN k.REFERENCED_TABLE_SCHEMA = DATABASE() THEN '<SELF>'
-      ELSE COALESCE(k.REFERENCED_TABLE_SCHEMA, '<NULL>')
-    END,
-    k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME,
-    r.UNIQUE_CONSTRAINT_NAME, r.MATCH_OPTION, r.UPDATE_RULE, r.DELETE_RULE
-  ) ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION SEPARATOR ';'), 256)
-  FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
-  INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS r
-    ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA
-   AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME
-  WHERE k.TABLE_SCHEMA = DATABASE()
-    AND k.TABLE_NAME = 'schedule_invite_issuance_fences'
-    AND k.REFERENCED_TABLE_NAME IS NOT NULL
-);
-SET @siif_post_checks_hash := (
-  SELECT SHA2(GROUP_CONCAT(CONCAT_WS(
-    '|', tc.CONSTRAINT_NAME, cc.CHECK_CLAUSE, tc.ENFORCED
-  ) ORDER BY tc.CONSTRAINT_NAME SEPARATOR ';'), 256)
-  FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-  INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc
-    ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
-   AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
-  WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
-    AND tc.TABLE_NAME = 'schedule_invite_issuance_fences'
-    AND tc.CONSTRAINT_TYPE = 'CHECK'
-);
-SET @siif_post_table_options_hash := (
-  SELECT SHA2(CONCAT_WS(
-    '|', ENGINE, TABLE_COLLATION, ROW_FORMAT, CREATE_OPTIONS, TABLE_COMMENT
-  ), 256)
-  FROM INFORMATION_SCHEMA.TABLES
-  WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME = 'schedule_invite_issuance_fences'
-    AND TABLE_TYPE = 'BASE TABLE'
-);
-SET @siif_post_table_count := (
-  SELECT COUNT(*)
-  FROM INFORMATION_SCHEMA.TABLES
-  WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME = 'schedule_invite_issuance_fences'
-    AND TABLE_TYPE = 'BASE TABLE'
-);
-SET @siif_post_trigger_count := (
-  SELECT COUNT(*)
-  FROM INFORMATION_SCHEMA.TRIGGERS
-  WHERE TRIGGER_SCHEMA = DATABASE()
-    AND EVENT_OBJECT_TABLE = 'schedule_invite_issuance_fences'
-);
-SET @siif_post_contract_ok := (
-  @siif_post_table_count = 1
-  AND BINARY @siif_post_columns_hash = BINARY @siif_expected_columns_hash
-  AND BINARY @siif_post_indexes_hash = BINARY @siif_expected_indexes_hash
-  AND BINARY @siif_post_foreign_keys_hash = BINARY @siif_expected_foreign_keys_hash
-  AND BINARY @siif_post_checks_hash = BINARY @siif_expected_checks_hash
-  AND BINARY @siif_post_table_options_hash = BINARY @siif_expected_table_options_hash
-  AND @siif_post_trigger_count = 0
+CREATE TABLE IF NOT EXISTS schedule_invite_issuance_journal (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  institution_id INT NOT NULL,
+  hospital_id INT NOT NULL,
+  sector_id INT NOT NULL,
+  invited_user_id INT NOT NULL,
+  generation INT UNSIGNED NOT NULL,
+  event ENUM(
+    'CLAIMED', 'ATTEMPT_SUPERSEDED', 'DELIVERY_RECLAIMED',
+    'PROVIDER_ACCEPTED', 'PROVIDER_REJECTED', 'PROVIDER_UNKNOWN',
+    'ACTIVATION_RESUMED', 'ACTIVATED', 'ACTIVATION_FAILED'
+  ) NOT NULL,
+  reason_code VARCHAR(64) NULL DEFAULT NULL,
+  provider_correlation_id VARCHAR(128) NULL DEFAULT NULL,
+  schedule_invite_id INT NULL DEFAULT NULL,
+  created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (id),
+  KEY idx_schedule_invite_issuance_journal_generation (
+    institution_id, hospital_id, sector_id, invited_user_id, generation, id
+  ),
+  CONSTRAINT chk_schedule_invite_issuance_journal_generation
+    CHECK (generation > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- Postflight mínimo no primeiro run; a segunda execução obrigatória faz o
+-- preflight integral acima e prova idempotência/manifests sem alterar linhas.
+SET @siif_postflight_missing := (
+  SELECT
+    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'schedule_invite_issuance_fences') <> 20
+    OR
+    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'schedule_invite_issuance_fences'
+       AND CONSTRAINT_TYPE = 'CHECK') <> 6
+    OR
+    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'schedule_invite_issuance_journal') <> 11
+    OR
+    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'schedule_invite_issuance_journal'
+       AND CONSTRAINT_TYPE = 'CHECK') <> 1
 );
 SET @siif_postflight_sql := IF(
-  @siif_post_contract_ok,
+  @siif_postflight_missing = 0,
   'SELECT 1',
-  'SELECT JSON_EXTRACT(''SCHEDULE_INVITE_ISSUANCE_FENCE_POSTFLIGHT_MISMATCH'', ''$'')'
+  'SELECT JSON_EXTRACT(''SCHEDULE_INVITE_DURABLE_DELIVERY_POSTFLIGHT_MISMATCH'', ''$'')'
 );
 PREPARE siif_postflight_stmt FROM @siif_postflight_sql;
 EXECUTE siif_postflight_stmt;
 DEALLOCATE PREPARE siif_postflight_stmt;
-
-SET SESSION group_concat_max_len = @siif_previous_group_concat_max_len;

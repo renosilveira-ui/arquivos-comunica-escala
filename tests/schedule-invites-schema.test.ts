@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { getTableConfig } from "drizzle-orm/mysql-core";
-import { scheduleInvites } from "../drizzle/schema";
+import {
+  scheduleInviteIssuanceFences,
+  scheduleInviteIssuanceJournal,
+  scheduleInvites,
+} from "../drizzle/schema";
 
 describe("schema de convites de escala", () => {
   it("amarra o convite à topologia instituição + hospital + setor", () => {
@@ -47,6 +51,59 @@ describe("schema de convites de escala", () => {
         ["institution_id", "hospital_id"],
         ["institution_id", "hospital_id", "sector_id"],
       ]),
+    );
+  });
+});
+
+describe("schema da emissão durável", () => {
+  it("amarra outbox a escopo+geração e mantém material opaco", () => {
+    const config = getTableConfig(scheduleInviteIssuanceFences);
+    expect(scheduleInviteIssuanceFences.generation.notNull).toBe(true);
+    expect(scheduleInviteIssuanceFences.leaseToken.notNull).toBe(false);
+    expect(scheduleInviteIssuanceFences.attemptExpiresAt.notNull).toBe(false);
+    expect(scheduleInviteIssuanceFences.codeNonce.notNull).toBe(false);
+    expect(scheduleInviteIssuanceFences.codePepperKeyId.notNull).toBe(false);
+    expect(
+      scheduleInviteIssuanceFences.recipientBindingHash.notNull,
+    ).toBe(false);
+    expect(
+      scheduleInviteIssuanceFences.providerIdempotencyKey.notNull,
+    ).toBe(false);
+    expect(
+      config.uniqueConstraints.find(
+        (constraint) =>
+          constraint.name === "uniq_schedule_invite_issuance_scope",
+      )?.columns.map(({ name }) => name),
+    ).toEqual([
+      "institution_id",
+      "hospital_id",
+      "sector_id",
+      "invited_user_id",
+    ]);
+    expect(config.checks.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        "chk_schedule_invite_issuance_lease_shape",
+        "chk_schedule_invite_issuance_material_shape",
+        "chk_schedule_invite_issuance_activation_shape",
+      ]),
+    );
+  });
+
+  it("journal é separado, indexado por geração e sem campos sensíveis", () => {
+    const config = getTableConfig(scheduleInviteIssuanceJournal);
+    expect(scheduleInviteIssuanceJournal.generation.notNull).toBe(true);
+    expect(scheduleInviteIssuanceJournal.event.notNull).toBe(true);
+    expect(config.foreignKeys).toHaveLength(0);
+    expect(config.indexes[0]?.config.columns.map(({ name }) => name)).toEqual([
+      "institution_id",
+      "hospital_id",
+      "sector_id",
+      "invited_user_id",
+      "generation",
+      "id",
+    ]);
+    expect(Object.keys(scheduleInviteIssuanceJournal)).not.toEqual(
+      expect.arrayContaining(["code", "codeHash", "email", "providerPayload"]),
     );
   });
 });

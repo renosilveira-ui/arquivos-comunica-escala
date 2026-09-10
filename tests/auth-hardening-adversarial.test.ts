@@ -338,7 +338,11 @@ describe("auth hardening adversarial", () => {
       .where(eq(users.id, orphan.id));
     const sendSpy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+      .mockResolvedValue({
+        kind: "REJECTED",
+        transport: "console",
+        reason: "NOT_CONFIGURED",
+      });
 
     const assertNoCredentialWrite = async () => {
       const [current] = await db
@@ -580,7 +584,11 @@ describe("auth hardening adversarial", () => {
       });
     const sendSpy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+      .mockResolvedValue({
+        kind: "REJECTED",
+        transport: "console",
+        reason: "NOT_CONFIGURED",
+      });
 
     try {
       const forgot = request(app)

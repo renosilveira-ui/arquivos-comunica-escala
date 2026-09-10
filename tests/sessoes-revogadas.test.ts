@@ -220,7 +220,7 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
 
     const spy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" } as any);
+      .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" } as any);
     try {
       expect(
         (

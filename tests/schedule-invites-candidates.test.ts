@@ -343,7 +343,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     beforeEach(() => {
       mailSpy = vi
         .spyOn(mailer, "sendMail")
-        .mockResolvedValue({ delivered: true, transport: "resend" });
+        .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
     });
 
     afterEach(() => {
@@ -607,7 +607,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         () =>
           new Promise((resolve) => {
             setTimeout(
-              () => resolve({ delivered: true, transport: "resend" }),
+              () => resolve({ kind: "ACCEPTED", transport: "resend" }),
               40,
             );
           }),
@@ -661,7 +661,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
           await new Promise((resolve) => setTimeout(resolve, 40));
         }
         acceptedCodes.push(match[1]);
-        return { delivered: true, transport: "resend" };
+        return { kind: "ACCEPTED", transport: "resend" };
       });
 
       const attempts = await Promise.all([
@@ -715,9 +715,9 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         .mockImplementationOnce(async () => {
           markMailStarted();
           await firstCanFinish;
-          return { delivered: true, transport: "resend" };
+          return { kind: "ACCEPTED", transport: "resend" };
         })
-        .mockResolvedValue({ delivered: true, transport: "resend" });
+        .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
 
       const attemptA = caller().scheduleInvites.create({
         hospitalId,
@@ -783,7 +783,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       mailSpy.mockImplementationOnce(async () => {
         markMailStarted();
         await mailCanFinish;
-        return { delivered: true, transport: "resend" };
+        return { kind: "ACCEPTED", transport: "resend" };
       });
 
       const attempt = caller().scheduleInvites.create({
@@ -810,7 +810,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       expect(await activeInvitesFor(target.userId)).toHaveLength(0);
     });
 
-    it("exceção de transporte não ativa convite e retorna falha por destinatário", async () => {
+    it("exceção pós-envio mantém geração UNKNOWN e não presume rejeição", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
         label: `transport-crash-${Date.now()}`,
@@ -825,8 +825,72 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         userIds: [target.userId],
       });
       expect(result.accepted).toHaveLength(0);
-      expect(result.failed[0]?.error).toContain("não aceitou");
+      expect(result.failed[0]?.error).toContain("incerto");
       expect(await activeInvitesFor(target.userId)).toHaveLength(0);
+      const [fence] = await db
+        .select({
+          generation: scheduleInviteIssuanceFences.generation,
+          state: scheduleInviteIssuanceFences.state,
+          failureCode: scheduleInviteIssuanceFences.failureCode,
+          leaseToken: scheduleInviteIssuanceFences.leaseToken,
+          providerIdempotencyKey:
+            scheduleInviteIssuanceFences.providerIdempotencyKey,
+        })
+        .from(scheduleInviteIssuanceFences)
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.institutionId, institutionId),
+            eq(scheduleInviteIssuanceFences.hospitalId, hospitalId),
+            eq(scheduleInviteIssuanceFences.sectorId, sectorId),
+            eq(scheduleInviteIssuanceFences.invitedUserId, target.userId),
+          ),
+        );
+      expect(fence).toMatchObject({
+        generation: 1,
+        state: "PROVIDER_UNKNOWN",
+        failureCode: "TRANSPORT_EXCEPTION",
+        leaseToken: expect.stringMatching(/^[a-f0-9]{64}$/),
+        providerIdempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      const firstCode = inviteCodeFromMailCall(0);
+      const firstIdempotencyKey = mailSpy.mock.calls[0]?.[1]?.idempotencyKey;
+      await db
+        .update(scheduleInviteIssuanceFences)
+        .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.institutionId, institutionId),
+            eq(scheduleInviteIssuanceFences.hospitalId, hospitalId),
+            eq(scheduleInviteIssuanceFences.sectorId, sectorId),
+            eq(scheduleInviteIssuanceFences.invitedUserId, target.userId),
+          ),
+        );
+
+      const retry = await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      expect(retry.accepted).toHaveLength(1);
+      expect(inviteCodeFromMailCall(1)).toBe(firstCode);
+      expect(mailSpy.mock.calls[1]?.[1]?.idempotencyKey).toBe(
+        firstIdempotencyKey,
+      );
+      const [recovered] = await db
+        .select({
+          generation: scheduleInviteIssuanceFences.generation,
+          state: scheduleInviteIssuanceFences.state,
+        })
+        .from(scheduleInviteIssuanceFences)
+        .where(
+          and(
+            eq(scheduleInviteIssuanceFences.institutionId, institutionId),
+            eq(scheduleInviteIssuanceFences.hospitalId, hospitalId),
+            eq(scheduleInviteIssuanceFences.sectorId, sectorId),
+            eq(scheduleInviteIssuanceFences.invitedUserId, target.userId),
+          ),
+        );
+      expect(recovered).toEqual({ generation: 1, state: "ACTIVE" });
     });
 
     it("falha de ativação após aceite fica durável e não confirma sucesso", async () => {
@@ -873,6 +937,15 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       } finally {
         auditSpy.mockRestore();
       }
+      const providerCallsBeforeResume = mailSpy.mock.calls.length;
+      const resumed = await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      expect(resumed.accepted).toHaveLength(1);
+      expect(mailSpy).toHaveBeenCalledTimes(providerCallsBeforeResume);
+      expect(await activeInvitesFor(target.userId)).toHaveLength(1);
     });
 
     it("lê revogação corrente feita dentro da segunda transação", async () => {
@@ -947,7 +1020,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         started += 1;
         if (started === targets.length) markAllStarted();
         await providerCanFinish;
-        return { delivered: true, transport: "resend" };
+        return { kind: "ACCEPTED", transport: "resend" };
       });
 
       const requests = Promise.all(
@@ -1051,7 +1124,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         providerCalls += 1;
         if (providerCalls === 2) markBothStarted();
         await providerCanFinish;
-        return { delivered: true, transport: "resend" };
+        return { kind: "ACCEPTED", transport: "resend" };
       });
 
       const requests = [

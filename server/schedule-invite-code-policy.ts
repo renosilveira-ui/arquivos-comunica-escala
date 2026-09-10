@@ -1,7 +1,11 @@
 import {
+  deriveScheduleInviteCode,
+  hashScheduleInviteRecipientBinding,
   hashLegacyScheduleInviteCode,
   hashScheduleInviteCodeV2,
+  scheduleInvitePepperKeyId,
   SCHEDULE_INVITE_HASH_VERSION,
+  type ScheduleInviteCodeScope,
   type ScheduleInviteHashVersion,
 } from "../lib/schedule-invite-code";
 
@@ -64,7 +68,30 @@ export type ScheduleInviteHashPolicy = {
     version: ScheduleInviteHashVersion;
     hash: string;
   }[];
+  outbox: {
+    current: ScheduleInviteOutboxKey;
+    resolve(keyId: string): ScheduleInviteOutboxKey | null;
+  };
 };
+
+export type ScheduleInviteOutboxKey = {
+  keyId: string;
+  deriveCode(
+    input: ScheduleInviteCodeScope & { generation: number; nonce: string },
+  ): string;
+  bindRecipient(email: string): string;
+  hash(normalized: string): string;
+};
+
+function buildOutboxKey(pepper: string): ScheduleInviteOutboxKey {
+  return Object.freeze({
+    keyId: scheduleInvitePepperKeyId(pepper),
+    deriveCode: (input) => deriveScheduleInviteCode(input, pepper),
+    bindRecipient: (email) =>
+      hashScheduleInviteRecipientBinding(email, pepper),
+    hash: (normalized) => hashScheduleInviteCodeV2(normalized, pepper),
+  });
+}
 
 /**
  * Carregamento tardio e fail-closed: segredo ausente/quebrado bloqueia somente
@@ -90,6 +117,9 @@ export function getScheduleInviteHashPolicy(
       throw new ScheduleInviteCodeConfigurationError();
     }
   }
+
+  const currentOutboxKey = buildOutboxKey(current);
+  const previousOutboxKey = previous ? buildOutboxKey(previous) : null;
 
   return {
     write: {
@@ -117,6 +147,14 @@ export function getScheduleInviteHashPolicy(
         hash: hashLegacyScheduleInviteCode(normalized),
       });
       return candidates;
+    },
+    outbox: {
+      current: currentOutboxKey,
+      resolve: (keyId) => {
+        if (keyId === currentOutboxKey.keyId) return currentOutboxKey;
+        if (keyId === previousOutboxKey?.keyId) return previousOutboxKey;
+        return null;
+      },
     },
   };
 }

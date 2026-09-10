@@ -1,13 +1,20 @@
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createHash, randomBytes } from "node:crypto";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 
 const SERVER_URL =
   process.env.SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL;
-const DATABASE_PREFIX = "escala_siif_validation_";
+const DISPOSABLE_MARKER =
+  process.env.SCHEDULE_INVITE_MIGRATION_TEST_MARKER;
+const DATABASE_PREFIX = "escalas_test_invite_fence_";
 
 function parseLocalServer(raw: string | undefined) {
-  if (!raw) return null;
+  if (!raw) {
+    throw new Error(
+      "SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL é obrigatória; a prova não pode ser pulada.",
+    );
+  }
   const url = new URL(raw);
   if (
     url.protocol !== "mysql:" ||
@@ -30,6 +37,15 @@ function parseLocalServer(raw: string | undefined) {
   };
 }
 
+function requireMarker(raw: string | undefined): string {
+  if (!raw || raw.length < 32 || raw.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(raw)) {
+    throw new Error(
+      "SCHEDULE_INVITE_MIGRATION_TEST_MARKER deve ser um marker opaco explícito de 32-128 caracteres.",
+    );
+  }
+  return raw;
+}
+
 function quoteIdentifier(value: string): string {
   if (!/^[a-z0-9_]+$/.test(value)) {
     throw new Error("Identificador SQL de teste inválido");
@@ -45,12 +61,49 @@ const migration = readFileSync(
   "utf8",
 );
 const server = parseLocalServer(SERVER_URL);
-const describeMysql = server ? describe : describe.skip;
+const marker = requireMarker(DISPOSABLE_MARKER);
 
-describeMysql("migration da fence de emissão em MySQL isolado", () => {
+describe("migration da fence de emissão em MySQL isolado", () => {
   let admin: Connection;
   let database: Connection;
-  const databaseName = `${DATABASE_PREFIX}${process.pid}`;
+  let databaseName = "";
+
+  async function installAndVerifyMarker() {
+    const markerHash = createHash("sha256")
+      .update(
+        [
+          "escalas-disposable-test-target-v1",
+          server.host === "localhost" ? "127.0.0.1" : server.host,
+          String(server.port),
+          databaseName,
+          marker,
+        ].join("\0"),
+      )
+      .digest("hex");
+    await database.query(`
+      CREATE TABLE __escalas_disposable_test_target_v1 (
+        id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+        database_name VARCHAR(64) NOT NULL,
+        marker_hash CHAR(64) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT chk_disposable_test_target_singleton CHECK (id = 1)
+      ) ENGINE=InnoDB;
+    `);
+    await database.execute(
+      "INSERT INTO __escalas_disposable_test_target_v1 (id, database_name, marker_hash) VALUES (1, ?, ?)",
+      [databaseName, markerHash],
+    );
+    const [rows] = await database.query<RowDataPacket[]>(
+      "SELECT DATABASE() AS connected_database, database_name, marker_hash FROM __escalas_disposable_test_target_v1 WHERE id = 1 LIMIT 2",
+    );
+    expect(rows).toEqual([
+      {
+        connected_database: databaseName,
+        database_name: databaseName,
+        marker_hash: markerHash,
+      },
+    ]);
+  }
 
   async function createPrerequisites() {
     await database.query(`
@@ -83,57 +136,72 @@ describeMysql("migration da fence de emissão em MySQL isolado", () => {
   }
 
   beforeAll(async () => {
-    if (!server) throw new Error("Servidor MySQL local ausente");
     admin = await mysql.createConnection({ ...server, database: "mysql" });
+    const [version] = await admin.query<RowDataPacket[]>(
+      "SELECT VERSION() AS version",
+    );
+    if (!/^8\./.test(String(version[0]?.version))) {
+      throw new Error("A prova exige o serviço MySQL 8 efêmero.");
+    }
+  });
+
+  beforeEach(async () => {
+    databaseName = `${DATABASE_PREFIX}${process.pid}_${randomBytes(6).toString("hex")}`;
     await admin.query(
-      `CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(databaseName)} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`,
+      `CREATE DATABASE ${quoteIdentifier(databaseName)} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`,
     );
     database = await mysql.createConnection({
       ...server,
       database: databaseName,
       multipleStatements: true,
     });
-  });
-
-  beforeEach(async () => {
-    await database.query(`DROP DATABASE ${quoteIdentifier(databaseName)}`);
-    await database.query(
-      `CREATE DATABASE ${quoteIdentifier(databaseName)} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`,
-    );
-    await database.changeUser({ database: databaseName });
+    await installAndVerifyMarker();
     await createPrerequisites();
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     await database?.end();
-    if (admin) {
-      await admin.query(
-        `DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)}`,
-      );
-      await admin.end();
-    }
+  });
+
+  afterAll(async () => {
+    await admin?.end();
   });
 
   it("aceita todos os estados válidos, recusa shapes impossíveis e reroda preservando linhas", async () => {
     await database.query(migration);
     await database.query(`
       INSERT INTO schedule_invite_issuance_fences
-        (institution_id, hospital_id, sector_id, invited_user_id, generation, state)
-      VALUES (1, 2, 3, 10, 0, 'IDLE');
+        (institution_id, hospital_id, sector_id, invited_user_id)
+      VALUES (1, 2, 3, 10);
       UPDATE schedule_invite_issuance_fences
       SET generation = 1,
           state = 'PREPARING',
+          lease_token = REPEAT('a', 64),
+          attempt_expires_at = DATE_ADD(NOW(), INTERVAL 1 DAY),
+          code_nonce = REPEAT('b', 64),
+          code_pepper_key_id = REPEAT('c', 64),
+          recipient_binding_hash = REPEAT('d', 64),
+          provider_idempotency_key = REPEAT('e', 64),
           lease_expires_at = DATE_ADD(NOW(), INTERVAL 1 MINUTE)
+      WHERE invited_user_id = 10;
+      UPDATE schedule_invite_issuance_fences
+      SET state = 'PROVIDER_UNKNOWN', failure_code = 'TIMEOUT'
+      WHERE invited_user_id = 10;
+      UPDATE schedule_invite_issuance_fences
+      SET state = 'PREPARING', failure_code = NULL
       WHERE invited_user_id = 10;
       UPDATE schedule_invite_issuance_fences
       SET state = 'PROVIDER_ACCEPTED', provider_accepted_at = NOW()
       WHERE invited_user_id = 10;
       UPDATE schedule_invite_issuance_fences
-      SET state = 'ACTIVE', lease_expires_at = NULL
+      SET state = 'PROVIDER_ACCEPTED_ACTIVATION_FAILED', lease_token = NULL,
+          lease_expires_at = NULL, failure_code = 'ACTIVATION_EXCEPTION'
       WHERE invited_user_id = 10;
-      UPDATE schedule_invite_issuance_fences
-      SET state = 'PROVIDER_ACCEPTED_ACTIVATION_FAILED', failure_code = 'ACTIVATION_EXCEPTION'
-      WHERE invited_user_id = 10;
+      INSERT INTO schedule_invite_issuance_journal
+        (institution_id, hospital_id, sector_id, invited_user_id, generation, event, reason_code)
+      VALUES
+        (1, 2, 3, 10, 1, 'PROVIDER_UNKNOWN', 'TIMEOUT'),
+        (1, 2, 3, 10, 1, 'ACTIVATION_FAILED', 'ACTIVATION_EXCEPTION');
     `);
     await database.query(migration);
 
@@ -149,18 +217,28 @@ describeMysql("migration da fence de emissão em MySQL isolado", () => {
         failure_code: "ACTIVATION_EXCEPTION",
       },
     ]);
+    const [journal] = await database.query<RowDataPacket[]>(`
+      SELECT generation, event, reason_code
+      FROM schedule_invite_issuance_journal
+      WHERE invited_user_id = 10
+      ORDER BY id
+    `);
+    expect(journal).toEqual([
+      { generation: 1, event: "PROVIDER_UNKNOWN", reason_code: "TIMEOUT" },
+      { generation: 1, event: "ACTIVATION_FAILED", reason_code: "ACTIVATION_EXCEPTION" },
+    ]);
     await expect(
       database.query(`
         INSERT INTO schedule_invite_issuance_fences
-          (institution_id, hospital_id, sector_id, invited_user_id, state)
-        VALUES (1, 2, 3, 11, 'PREPARING')
+          (institution_id, hospital_id, sector_id, invited_user_id, generation, state)
+        VALUES (1, 2, 3, 11, 1, 'PREPARING')
       `),
     ).rejects.toMatchObject({ code: "ER_CHECK_CONSTRAINT_VIOLATED" });
     await expect(
       database.query(`
         INSERT INTO schedule_invite_issuance_fences
-          (institution_id, hospital_id, sector_id, invited_user_id, state, provider_accepted_at)
-        VALUES (1, 2, 3, 11, 'IDLE', NOW())
+          (institution_id, hospital_id, sector_id, invited_user_id, provider_accepted_at)
+        VALUES (1, 2, 3, 11, NOW())
       `),
     ).rejects.toMatchObject({ code: "ER_CHECK_CONSTRAINT_VIOLATED" });
     await expect(
@@ -172,9 +250,9 @@ describeMysql("migration da fence de emissão em MySQL isolado", () => {
     ).rejects.toMatchObject({ code: "ER_CHECK_CONSTRAINT_VIOLATED" });
     await expect(
       database.query(`
-        INSERT INTO schedule_invite_issuance_fences
-          (institution_id, hospital_id, sector_id, invited_user_id, generation, state, provider_accepted_at, failure_code)
-        VALUES (1, 2, 3, 11, 1, 'ACTIVE', NOW(), 'IMPOSSIBLE_FAILURE')
+        INSERT INTO schedule_invite_issuance_journal
+          (institution_id, hospital_id, sector_id, invited_user_id, generation, event)
+        VALUES (1, 2, 3, 11, 0, 'CLAIMED')
       `),
     ).rejects.toMatchObject({ code: "ER_CHECK_CONSTRAINT_VIOLATED" });
     await expect(
@@ -235,7 +313,7 @@ describeMysql("migration da fence de emissão em MySQL isolado", () => {
     await database.query(migration);
     await database.query(`
       ALTER TABLE schedule_invite_issuance_fences
-        MODIFY failure_code VARCHAR(65) NULL
+        MODIFY provider_correlation_id VARCHAR(129) NULL
     `);
 
     await expect(database.query(migration)).rejects.toThrow();
@@ -244,9 +322,9 @@ describeMysql("migration da fence de emissão em MySQL isolado", () => {
       FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE()
         AND TABLE_NAME = 'schedule_invite_issuance_fences'
-        AND COLUMN_NAME = 'failure_code'
+        AND COLUMN_NAME = 'provider_correlation_id'
     `);
-    expect(columns[0]?.COLUMN_TYPE).toBe("varchar(65)");
+    expect(columns[0]?.COLUMN_TYPE).toBe("varchar(129)");
   });
 
   it("preflight recusa índice invisível e preserva o drift para diagnóstico", async () => {

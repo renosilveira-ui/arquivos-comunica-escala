@@ -1604,10 +1604,11 @@ export type ScheduleInvite = typeof scheduleInvites.$inferSelect;
 /**
  * Fence durável da emissão de convite nominal.
  *
- * A linha serializa somente a preparação/ativação no banco. Nenhuma
+ * A linha é a intenção/outbox durável da preparação/entrega/ativação. Nenhuma
  * transação nem conexão do pool permanece aberta durante a chamada ao
- * provedor de e-mail. `generation` impede que uma resposta atrasada ative um
- * código depois de outra tentativa ter assumido o mesmo destinatário.
+ * provedor de e-mail. `generation` + `leaseToken` formam o CAS; nonce,
+ * key-id e idempotency-key são opacos e permitem repetir a MESMA mensagem
+ * depois de timeout/crash sem persistir código, hash ou e-mail.
  *
  * Migração manual (obrigatoriamente antes do runtime):
  * drizzle/migrations/manual/2026-09-10-schedule-invite-issuance-fences.sql
@@ -1624,6 +1625,7 @@ export const scheduleInviteIssuanceFences = mysqlTable(
     state: mysqlEnum("state", [
       "IDLE",
       "PREPARING",
+      "PROVIDER_UNKNOWN",
       "PROVIDER_ACCEPTED",
       "ACTIVE",
       "PROVIDER_REJECTED",
@@ -1631,8 +1633,16 @@ export const scheduleInviteIssuanceFences = mysqlTable(
     ])
       .notNull()
       .default("IDLE"),
+    leaseToken: char("lease_token", { length: 64 }),
     leaseExpiresAt: timestamp("lease_expires_at"),
+    attemptExpiresAt: timestamp("attempt_expires_at"),
+    codeNonce: char("code_nonce", { length: 64 }),
+    codePepperKeyId: char("code_pepper_key_id", { length: 64 }),
+    recipientBindingHash: char("recipient_binding_hash", { length: 64 }),
+    providerIdempotencyKey: char("provider_idempotency_key", { length: 64 }),
+    providerCorrelationId: varchar("provider_correlation_id", { length: 128 }),
     providerAcceptedAt: timestamp("provider_accepted_at"),
+    scheduleInviteId: int("schedule_invite_id"),
     failureCode: varchar("failure_code", { length: 64 }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
@@ -1672,9 +1682,17 @@ export const scheduleInviteIssuanceFences = mysqlTable(
     chkScheduleInviteIssuanceLeaseShape: check(
       "chk_schedule_invite_issuance_lease_shape",
       sql`(
-        (${table.state} IN ('PREPARING', 'PROVIDER_ACCEPTED') AND ${table.leaseExpiresAt} IS NOT NULL)
+        (${table.state} IN ('PREPARING', 'PROVIDER_UNKNOWN', 'PROVIDER_ACCEPTED') AND ${table.leaseToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL)
         OR
-        (${table.state} NOT IN ('PREPARING', 'PROVIDER_ACCEPTED') AND ${table.leaseExpiresAt} IS NULL)
+        (${table.state} NOT IN ('PREPARING', 'PROVIDER_UNKNOWN', 'PROVIDER_ACCEPTED') AND ${table.leaseToken} IS NULL AND ${table.leaseExpiresAt} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceMaterialShape: check(
+      "chk_schedule_invite_issuance_material_shape",
+      sql`(
+        (${table.state} = 'IDLE' AND ${table.attemptExpiresAt} IS NULL AND ${table.codeNonce} IS NULL AND ${table.codePepperKeyId} IS NULL AND ${table.recipientBindingHash} IS NULL AND ${table.providerIdempotencyKey} IS NULL)
+        OR
+        (${table.state} <> 'IDLE' AND ${table.attemptExpiresAt} IS NOT NULL AND ${table.codeNonce} IS NOT NULL AND ${table.codePepperKeyId} IS NOT NULL AND ${table.recipientBindingHash} IS NOT NULL AND ${table.providerIdempotencyKey} IS NOT NULL)
       )`,
     ),
     chkScheduleInviteIssuanceAcceptedShape: check(
@@ -1688,9 +1706,17 @@ export const scheduleInviteIssuanceFences = mysqlTable(
     chkScheduleInviteIssuanceFailureShape: check(
       "chk_schedule_invite_issuance_failure_shape",
       sql`(
-        (${table.state} IN ('PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NOT NULL)
+        (${table.state} IN ('PROVIDER_UNKNOWN', 'PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NOT NULL)
         OR
-        (${table.state} NOT IN ('PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NULL)
+        (${table.state} NOT IN ('PROVIDER_UNKNOWN', 'PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceActivationShape: check(
+      "chk_schedule_invite_issuance_activation_shape",
+      sql`(
+        (${table.state} = 'ACTIVE' AND ${table.scheduleInviteId} IS NOT NULL)
+        OR
+        (${table.state} <> 'ACTIVE' AND ${table.scheduleInviteId} IS NULL)
       )`,
     ),
   }),
@@ -1698,6 +1724,58 @@ export const scheduleInviteIssuanceFences = mysqlTable(
 
 export type ScheduleInviteIssuanceFence =
   typeof scheduleInviteIssuanceFences.$inferSelect;
+
+/**
+ * Histórico append-only de cada geração. O runtime somente faz INSERT;
+ * nenhuma linha carrega endereço, conteúdo da mensagem, código ou hash.
+ */
+export const scheduleInviteIssuanceJournal = mysqlTable(
+  "schedule_invite_issuance_journal",
+  {
+    id: bigint("id", { mode: "bigint", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id").notNull(),
+    sectorId: int("sector_id").notNull(),
+    invitedUserId: int("invited_user_id").notNull(),
+    generation: int("generation", { unsigned: true }).notNull(),
+    event: mysqlEnum("event", [
+      "CLAIMED",
+      "ATTEMPT_SUPERSEDED",
+      "DELIVERY_RECLAIMED",
+      "PROVIDER_ACCEPTED",
+      "PROVIDER_REJECTED",
+      "PROVIDER_UNKNOWN",
+      "ACTIVATION_RESUMED",
+      "ACTIVATED",
+      "ACTIVATION_FAILED",
+    ]).notNull(),
+    reasonCode: varchar("reason_code", { length: 64 }),
+    providerCorrelationId: varchar("provider_correlation_id", { length: 128 }),
+    scheduleInviteId: int("schedule_invite_id"),
+    createdAt: timestamp("created_at", { fsp: 6 }).notNull().defaultNow(),
+  },
+  (table) => ({
+    idxScheduleInviteIssuanceJournalGeneration: index(
+      "idx_schedule_invite_issuance_journal_generation",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.invitedUserId,
+      table.generation,
+      table.id,
+    ),
+    chkScheduleInviteIssuanceJournalGeneration: check(
+      "chk_schedule_invite_issuance_journal_generation",
+      sql`${table.generation} > 0`,
+    ),
+  }),
+);
+
+export type ScheduleInviteIssuanceJournalEntry =
+  typeof scheduleInviteIssuanceJournal.$inferSelect;
 
 // ========================================
 // INSTÂNCIAS DE TURNO E ALOCAÇÕES (V2)

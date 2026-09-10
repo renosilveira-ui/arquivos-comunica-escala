@@ -909,8 +909,9 @@ describe("admin: papel institucional isolado por tenant", () => {
       .mockResolvedValue(expoTicketResponse("ticket-unexpected-after-reset"));
     vi.stubGlobal("fetch", fetchMock);
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      kind: "REJECTED",
+      transport: "console",
+      reason: "NOT_CONFIGURED",
     });
     let resetSettled = false;
     let resetPromise: Promise<SupertestResponse> | undefined;
@@ -1989,8 +1990,9 @@ describe("admin: papel institucional isolado por tenant", () => {
     });
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      kind: "REJECTED",
+      transport: "console",
+      reason: "NOT_CONFIGURED",
     });
     const responses = await Promise.all([
       request(app)
@@ -2062,8 +2064,9 @@ describe("admin: papel institucional isolado por tenant", () => {
     const before = new Map(beforeRows.map((row) => [row.id, row]));
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      kind: "REJECTED",
+      transport: "console",
+      reason: "NOT_CONFIGURED",
     });
     const [first, second] = await Promise.all([
       request(app)

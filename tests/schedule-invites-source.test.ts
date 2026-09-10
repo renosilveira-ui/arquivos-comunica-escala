@@ -39,20 +39,27 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).not.toContain("node:crypto");
   });
 
-  it("só confirma após aceite do provedor e ativação local", () => {
+  it("persiste intenção antes do envio e só confirma após aceite + ativação", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
-    expect(source).toContain("providerResult = await mailer.sendMail(mail)");
-    expect(source).toContain(
-      "const providerAccepted = providerResult.delivered",
+    expect(source.indexOf('event: "CLAIMED"')).toBeLessThan(
+      source.indexOf("providerResult = await mailer.sendMail(mail"),
     );
-    expect(source).toContain("if (!providerAccepted)");
+    expect(source).toContain("providerResult.kind !== \"ACCEPTED\"");
+    expect(source).toContain("outcome: providerResult.kind");
+    expect(source).toContain("idempotencyKey:");
+    expect(source).toContain('outcome: "UNKNOWN"');
     expect(source).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
     expect(source).toContain("assertManagerScopeAccessForUpdate");
     expect(source).toContain("{ db: tx, strict: true }");
-    expect(source).toContain("aceite/enfileiramento pelo provedor");
     expect(source).toContain("accepted,");
-    expect(source).toContain("hashPolicy.write.hash(normalized)");
+    expect(source).toContain("codeHash: outboxKey.hash(normalized)");
     expect(source).toContain("codeHashVersion: hashPolicy.write.version");
+    expect(source).toContain("scheduleInviteIssuanceFences.leaseToken");
+    expect(source).toContain("claim.material.leaseToken");
+    expect(source).toContain("claim.material.generation");
+    expect(source).toContain(
+      'eq(scheduleInviteIssuanceFences.state, "PROVIDER_ACCEPTED")',
+    );
     expect(source).not.toContain("withScheduleInviteIssuanceMutex");
     expect(source).not.toContain("GET_LOCK");
     expect(source).not.toContain("getConnection()");
@@ -71,7 +78,7 @@ describe("wiring fail-closed dos convites nominais", () => {
     );
   });
 
-  it("documenta e materializa uma fence durável sem persistir segredo", () => {
+  it("materializa outbox e journal append-only sem persistir código/e-mail", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
     const schema = readFileSync("drizzle/schema.ts", "utf8");
     const migration = readFileSync(
@@ -80,12 +87,22 @@ describe("wiring fail-closed dos convites nominais", () => {
     );
     expect(source).toContain("scheduleInviteIssuanceFences");
     expect(schema).toContain("schedule_invite_issuance_fences");
+    expect(schema).toContain("schedule_invite_issuance_journal");
     expect(migration).toContain("schedule_invite_issuance_fences");
+    expect(migration).toContain("schedule_invite_issuance_journal");
     expect(schema).toContain("uniq_schedule_invite_issuance_scope");
+    expect(schema).toContain("PROVIDER_UNKNOWN");
+    expect(schema).toContain("provider_idempotency_key");
+    expect(schema).toContain("recipient_binding_hash");
     expect(migration).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
-    expect(migration).toContain("Aplicar ANTES do runtime");
+    expect(migration).toContain("Aplicar ANTES da migration hash V2");
+    expect(source).toContain("appendInviteIssuanceJournal");
+    expect(source).not.toContain(".update(scheduleInviteIssuanceJournal)");
     expect(migration).not.toMatch(
       /\b(code_hash|invited_email|plaintext_code|provider_payload)\b/i,
+    );
+    expect(source).not.toMatch(
+      /console\.(?:log|warn|error)\([^)]*(?:formatted|normalized|codeHash|invitee\.email|providerIdempotencyKey)/s,
     );
   });
 

@@ -1,13 +1,20 @@
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createHash, randomBytes } from "node:crypto";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 
 const SERVER_URL =
   process.env.SCHEDULE_INVITE_HASH_V2_MIGRATION_TEST_SERVER_URL;
-const DATABASE_PREFIX = "escala_sichv2_validation_";
+const DISPOSABLE_MARKER =
+  process.env.SCHEDULE_INVITE_MIGRATION_TEST_MARKER;
+const DATABASE_PREFIX = "escalas_test_invite_hash_";
 
 function parseLocalServer(raw: string | undefined) {
-  if (!raw) return null;
+  if (!raw) {
+    throw new Error(
+      "SCHEDULE_INVITE_HASH_V2_MIGRATION_TEST_SERVER_URL é obrigatória; a prova não pode ser pulada.",
+    );
+  }
   const url = new URL(raw);
   if (
     url.protocol !== "mysql:" ||
@@ -30,6 +37,15 @@ function parseLocalServer(raw: string | undefined) {
   };
 }
 
+function requireMarker(raw: string | undefined): string {
+  if (!raw || raw.length < 32 || raw.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(raw)) {
+    throw new Error(
+      "SCHEDULE_INVITE_MIGRATION_TEST_MARKER deve ser um marker opaco explícito de 32-128 caracteres.",
+    );
+  }
+  return raw;
+}
+
 function quoteIdentifier(value: string): string {
   if (!/^[a-z0-9_]+$/.test(value)) {
     throw new Error("Identificador SQL de teste inválido");
@@ -45,12 +61,49 @@ const migration = readFileSync(
   "utf8",
 );
 const server = parseLocalServer(SERVER_URL);
-const describeMysql = server ? describe : describe.skip;
+const marker = requireMarker(DISPOSABLE_MARKER);
 
-describeMysql("migration da versão de hash do convite em MySQL isolado", () => {
+describe("migration da versão de hash do convite em MySQL isolado", () => {
   let admin: Connection;
   let database: Connection;
-  const databaseName = `${DATABASE_PREFIX}${process.pid}`;
+  let databaseName = "";
+
+  async function installAndVerifyMarker() {
+    const markerHash = createHash("sha256")
+      .update(
+        [
+          "escalas-disposable-test-target-v1",
+          server.host === "localhost" ? "127.0.0.1" : server.host,
+          String(server.port),
+          databaseName,
+          marker,
+        ].join("\0"),
+      )
+      .digest("hex");
+    await database.query(`
+      CREATE TABLE __escalas_disposable_test_target_v1 (
+        id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+        database_name VARCHAR(64) NOT NULL,
+        marker_hash CHAR(64) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT chk_disposable_test_target_singleton CHECK (id = 1)
+      ) ENGINE=InnoDB;
+    `);
+    await database.execute(
+      "INSERT INTO __escalas_disposable_test_target_v1 (id, database_name, marker_hash) VALUES (1, ?, ?)",
+      [databaseName, markerHash],
+    );
+    const [rows] = await database.query<RowDataPacket[]>(
+      "SELECT DATABASE() AS connected_database, database_name, marker_hash FROM __escalas_disposable_test_target_v1 WHERE id = 1 LIMIT 2",
+    );
+    expect(rows).toEqual([
+      {
+        connected_database: databaseName,
+        database_name: databaseName,
+        marker_hash: markerHash,
+      },
+    ]);
+  }
 
   async function createLegacyTable() {
     await database.query(`
@@ -66,34 +119,34 @@ describeMysql("migration da versão de hash do convite em MySQL isolado", () => 
   }
 
   beforeAll(async () => {
-    if (!server) throw new Error("Servidor MySQL local ausente");
     admin = await mysql.createConnection({ ...server, database: "mysql" });
+    const [version] = await admin.query<RowDataPacket[]>(
+      "SELECT VERSION() AS version",
+    );
+    if (!/^8\./.test(String(version[0]?.version))) {
+      throw new Error("A prova exige o serviço MySQL 8 efêmero.");
+    }
+  });
+
+  beforeEach(async () => {
+    databaseName = `${DATABASE_PREFIX}${process.pid}_${randomBytes(6).toString("hex")}`;
     await admin.query(
-      `CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(databaseName)} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`,
+      `CREATE DATABASE ${quoteIdentifier(databaseName)} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`,
     );
     database = await mysql.createConnection({
       ...server,
       database: databaseName,
       multipleStatements: true,
     });
+    await installAndVerifyMarker();
   });
 
-  beforeEach(async () => {
-    await database.query(`DROP DATABASE ${quoteIdentifier(databaseName)}`);
-    await database.query(
-      `CREATE DATABASE ${quoteIdentifier(databaseName)} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`,
-    );
-    await database.changeUser({ database: databaseName });
+  afterEach(async () => {
+    await database?.end();
   });
 
   afterAll(async () => {
-    await database?.end();
-    if (admin) {
-      await admin.query(
-        `DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)}`,
-      );
-      await admin.end();
-    }
+    await admin?.end();
   });
 
   it("marca linhas existentes como V1, preserva hash e reroda", async () => {

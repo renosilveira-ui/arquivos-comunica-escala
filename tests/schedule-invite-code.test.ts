@@ -3,10 +3,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   formatScheduleInviteCode,
+  deriveScheduleInviteCode,
   generateScheduleInviteCode,
+  generateScheduleInviteOpaqueToken,
+  hashScheduleInviteRecipientBinding,
   hashLegacyScheduleInviteCode,
   hashScheduleInviteCodeV2,
   normalizeScheduleInviteCode,
+  scheduleInvitePepperKeyId,
   SCHEDULE_INVITE_HASH_VERSION,
 } from "../lib/schedule-invite-code";
 import {
@@ -17,6 +21,14 @@ import {
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 describe("código de convite de escala", () => {
+  it("config pure fornece pepper dedicado sem carregar setup de banco", () => {
+    const config = readFileSync("vitest.pure.config.ts", "utf8");
+    expect(config).toContain("SCHEDULE_INVITE_CODE_PEPPER");
+    expect(config).toContain("pure-test-only-schedule-invite-pepper");
+    expect(config).toContain("setupFiles: []");
+    expect(config).not.toContain("setup-tests");
+  });
+
   it("gera XXXX-XXXX só com o alfabeto sem 0/O/1/I", () => {
     const codes = Array.from({ length: 40 }, () => generateScheduleInviteCode());
     for (const code of codes) {
@@ -70,6 +82,30 @@ describe("código de convite de escala", () => {
     const source = readFileSync("lib/schedule-invite-code.ts", "utf8");
     expect(source).toContain("randomInt(INVITE_ALPHABET.length)");
     expect(source).not.toMatch(/randomBytes[\s\S]*%/);
+  });
+
+  it("deriva o mesmo código por geração sem guardar o código no outbox", () => {
+    const pepper = "pepper-corrente-de-teste-com-mais-de-32-bytes";
+    const nonce = "a".repeat(64);
+    const input = {
+      institutionId: 1,
+      hospitalId: 2,
+      sectorId: 3,
+      invitedUserId: 4,
+      generation: 5,
+      nonce,
+    };
+    const first = deriveScheduleInviteCode(input, pepper);
+    expect(first).toMatch(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+    expect(deriveScheduleInviteCode(input, pepper)).toBe(first);
+    expect(
+      deriveScheduleInviteCode({ ...input, generation: 6 }, pepper),
+    ).not.toBe(first);
+    expect(generateScheduleInviteOpaqueToken()).toMatch(/^[a-f0-9]{64}$/);
+    expect(scheduleInvitePepperKeyId(pepper)).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      hashScheduleInviteRecipientBinding(" MEDICO@Test.Local ", pepper),
+    ).toBe(hashScheduleInviteRecipientBinding("medico@test.local", pepper));
   });
 
   it("falha fechado se o pepper corrente estiver ausente, curto ou reutilizado", () => {
@@ -137,6 +173,12 @@ describe("código de convite de escala", () => {
         hash: hashLegacyScheduleInviteCode(normalized),
       },
     ]);
+    expect(policy.outbox.resolve(policy.outbox.current.keyId)).toBe(
+      policy.outbox.current,
+    );
+    const previousKeyId = scheduleInvitePepperKeyId(previous);
+    expect(policy.outbox.resolve(previousKeyId)?.keyId).toBe(previousKeyId);
+    expect(policy.outbox.resolve("f".repeat(64))).toBeNull();
   });
 
   it("recusa rotação ambígua ou pepper anterior inválido", () => {

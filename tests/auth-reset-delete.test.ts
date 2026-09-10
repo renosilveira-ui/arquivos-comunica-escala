@@ -331,7 +331,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       );
     const sendSpy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+      .mockResolvedValue({ kind: "REJECTED", transport: "console", reason: "NOT_CONFIGURED" });
     const errorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
@@ -381,7 +381,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   it("link de produção usa somente APP_PUBLIC_URL confiável, nunca Host/X-Forwarded-Proto", async () => {
     const sendSpy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+      .mockResolvedValue({ kind: "REJECTED", transport: "console", reason: "NOT_CONFIGURED" });
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("APP_PUBLIC_URL", "https://confiavel.example/app/");
 
@@ -408,7 +408,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   it("forgot-password responde 200 neutro sem revelar se o e-mail existe", async () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+      .mockResolvedValue({ kind: "REJECTED", transport: "console", reason: "NOT_CONFIGURED" });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const unknown = await request(app)
@@ -451,7 +451,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   it("forgot-password com entrega ok deixa o token utilizável", async () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" });
+      .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const response = await request(app)
@@ -481,9 +481,9 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
       .mockResolvedValue({
-        delivered: false,
+        kind: "REJECTED",
         transport: "resend",
-        error: "HTTP 503",
+        reason: "HTTP_CLIENT_REJECTION",
       });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -527,14 +527,14 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .send({ email: `nao-existe-indist-${STAMP}@test.local` });
     expect(spy).not.toHaveBeenCalled();
 
-    spy.mockResolvedValueOnce({ delivered: true, transport: "resend" });
+    spy.mockResolvedValueOnce({ kind: "ACCEPTED", transport: "resend" });
     const delivered = await request(app)
       .post("/api/auth/forgot-password")
       .send({ email: EMAILS.admin });
     spy.mockResolvedValueOnce({
-      delivered: false,
+      kind: "UNKNOWN",
       transport: "resend",
-      error: "TIMEOUT",
+      reason: "TIMEOUT",
     });
     const failed = await request(app)
       .post("/api/auth/forgot-password")
@@ -555,7 +555,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   it("token do e-mail → reset-password → login com senha nova; token não pode ser reutilizado", async () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" });
+      .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
 
     await request(app)
       .post("/api/auth/forgot-password")
@@ -633,7 +633,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   it("token expirado é rejeitado", async () => {
     const spy = vi
       .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" });
+      .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
     await request(app)
       .post("/api/auth/forgot-password")
       .send({ email: EMAILS.doctor });
@@ -692,8 +692,9 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     ]);
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: false,
-      provider: "console",
+      kind: "REJECTED",
+      transport: "console",
+      reason: "NOT_CONFIGURED",
     });
 
     const reset = await request(app)
