@@ -425,4 +425,42 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
       await expectPreflightRejectionWithoutSchemaChange(database);
     });
   });
+
+  it.each([
+    [
+      "created_at invisível",
+      "ALTER TABLE institution_config MODIFY COLUMN created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP INVISIBLE",
+    ],
+    [
+      "updated_at invisível",
+      "ALTER TABLE institution_config MODIFY COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP INVISIBLE",
+    ],
+  ])("recusa EXTRA não canônico em %s", async (_label, alteration) => {
+    await withSchema(async (database) => {
+      await database.query(migration);
+      await database.query(alteration);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recalcula os pais no postflight após drift entre as fases", async () => {
+    await withSchema(async (database) => {
+      const ddlStart = migration.indexOf("SET @csr_modality_ddl");
+      expect(ddlStart).toBeGreaterThan(0);
+
+      await database.query(migration.slice(0, ddlStart));
+      await database.query(
+        "ALTER TABLE shift_instances MODIFY COLUMN id INT NOT NULL",
+      );
+
+      await expect(database.query(migration.slice(ddlStart))).rejects.toMatchObject(
+        {
+          code: "ER_NO_SUCH_TABLE",
+          message: expect.stringContaining(
+            "core_schema_reproducibility_postflight_failed",
+          ),
+        },
+      );
+    });
+  });
 });

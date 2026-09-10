@@ -30,6 +30,10 @@ describe("migration de reprodutibilidade do schema central", () => {
       "@csr_institution_config_check_contract_matches = 1",
     );
     expect(migration).toContain("CONSTRAINT_TYPE = 'CHECK'");
+    expect(migration).toContain("'default_generated'");
+    expect(migration).toContain(
+      "'default_generated on update current_timestamp'",
+    );
     expect(migration).toContain("POSITION_IN_UNIQUE_CONSTRAINT = 1");
     expect(migration).toContain("UNIQUE_CONSTRAINT_NAME = 'PRIMARY'");
     expect(migration).toContain("@csr_modality_column_count = 0");
@@ -41,5 +45,30 @@ describe("migration de reprodutibilidade do schema central", () => {
     expect(migration).not.toMatch(/\bDROP\s+(TABLE|COLUMN)\b/i);
     expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
     expect(migration).not.toMatch(/\bUPDATE\s+shift_instances\b/i);
+  });
+
+  it("recalcula o contrato dos pais somente depois dos DDLs", () => {
+    const ddl = migration.indexOf(
+      "CREATE TABLE IF NOT EXISTS institution_config",
+    );
+    const postflightRecalculation = migration.indexOf(
+      "SET @csr_postflight_shift_base_contract_matches",
+    );
+    const finalAssessment = migration.indexOf(
+      "SET @csr_postflight_contract_matches",
+    );
+
+    expect(ddl).toBeGreaterThan(0);
+    expect(postflightRecalculation).toBeGreaterThan(ddl);
+    expect(finalAssessment).toBeGreaterThan(postflightRecalculation);
+    const assessment = migration.slice(finalAssessment);
+    expect(assessment).toContain(
+      "@csr_postflight_shift_base_contract_matches = 1",
+    );
+    expect(assessment).toContain(
+      "@csr_postflight_institutions_contract_matches = 1",
+    );
+    expect(assessment).not.toContain("@csr_shift_base_contract_matches = 1");
+    expect(assessment).not.toContain("@csr_institutions_contract_matches = 1");
   });
 });

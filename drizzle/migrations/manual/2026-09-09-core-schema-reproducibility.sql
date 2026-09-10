@@ -252,7 +252,9 @@ SET @csr_institution_config_columns_contract_matches := (
         AND UPPER(COALESCE(COLUMN_DEFAULT, '')) IN (
           'CURRENT_TIMESTAMP', 'CURRENT_TIMESTAMP()', 'NOW()'
         )
-        AND LOWER(COALESCE(EXTRA, '')) NOT LIKE '%on update%' THEN 1
+        AND LOWER(TRIM(COALESCE(EXTRA, ''))) IN (
+          '', 'default_generated'
+        ) THEN 1
       WHEN COLUMN_NAME = 'updated_at'
         AND ORDINAL_POSITION = 5
         AND LOWER(COLUMN_TYPE) = 'timestamp'
@@ -260,7 +262,10 @@ SET @csr_institution_config_columns_contract_matches := (
         AND UPPER(COALESCE(COLUMN_DEFAULT, '')) IN (
           'CURRENT_TIMESTAMP', 'CURRENT_TIMESTAMP()', 'NOW()'
         )
-        AND LOWER(COALESCE(EXTRA, '')) LIKE '%on update%' THEN 1
+        AND LOWER(TRIM(COALESCE(EXTRA, ''))) IN (
+          'on update current_timestamp',
+          'default_generated on update current_timestamp'
+        ) THEN 1
       ELSE 0 END) = 5
     FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
@@ -403,9 +408,100 @@ CREATE TABLE IF NOT EXISTS institution_config (
     ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- Recalcula as tabelas-pai depois dos DDLs. Evidência de preflight não é
+-- reutilizada como prova posterior: drift concorrente precisa ser detectado.
+SET @csr_postflight_shift_instances_table_collation := (
+  SELECT TABLE_COLLATION
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'shift_instances'
+    AND TABLE_TYPE = 'BASE TABLE'
+);
+
+SET @csr_postflight_shift_base_contract_matches := (
+  (SELECT COUNT(*) FROM information_schema.TABLES
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'shift_instances'
+     AND TABLE_TYPE = 'BASE TABLE'
+     AND UPPER(ENGINE) = 'INNODB'
+     AND TABLE_COLLATION IS NOT NULL) = 1
+  AND
+  (SELECT COUNT(*) = 2
+      AND SUM(CASE
+        WHEN COLUMN_NAME = 'id'
+          AND LOWER(COLUMN_TYPE) = 'int'
+          AND IS_NULLABLE = 'NO'
+          AND COLUMN_DEFAULT IS NULL
+          AND LOWER(COALESCE(EXTRA, '')) = 'auto_increment'
+          AND COALESCE(GENERATION_EXPRESSION, '') = '' THEN 1
+        WHEN COLUMN_NAME = 'institution_id'
+          AND LOWER(COLUMN_TYPE) = 'int'
+          AND IS_NULLABLE = 'NO'
+          AND COLUMN_DEFAULT IS NULL
+          AND COALESCE(EXTRA, '') = ''
+          AND COALESCE(GENERATION_EXPRESSION, '') = '' THEN 1
+        ELSE 0 END) = 2
+   FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'shift_instances'
+     AND COLUMN_NAME IN ('id', 'institution_id')
+     AND CHARACTER_SET_NAME IS NULL
+     AND COLLATION_NAME IS NULL) = 1
+  AND
+  (SELECT COUNT(*) = 1
+      AND SUM(CASE
+        WHEN NON_UNIQUE = 0
+          AND SEQ_IN_INDEX = 1
+          AND COLUMN_NAME = 'id'
+          AND COLLATION = 'A'
+          AND SUB_PART IS NULL
+          AND UPPER(INDEX_TYPE) = 'BTREE'
+          AND IS_VISIBLE = 'YES' THEN 1
+        ELSE 0 END) = 1
+   FROM information_schema.STATISTICS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'shift_instances'
+     AND INDEX_NAME = 'PRIMARY') = 1
+);
+
+SET @csr_postflight_institutions_contract_matches := (
+  (SELECT COUNT(*) FROM information_schema.TABLES
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'institutions'
+     AND TABLE_TYPE = 'BASE TABLE'
+     AND UPPER(ENGINE) = 'INNODB') = 1
+  AND
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'institutions'
+     AND COLUMN_NAME = 'id'
+     AND LOWER(COLUMN_TYPE) = 'int'
+     AND IS_NULLABLE = 'NO'
+     AND COLUMN_DEFAULT IS NULL
+     AND LOWER(COALESCE(EXTRA, '')) = 'auto_increment'
+     AND CHARACTER_SET_NAME IS NULL
+     AND COLLATION_NAME IS NULL
+     AND COALESCE(GENERATION_EXPRESSION, '') = '') = 1
+  AND
+  (SELECT COUNT(*) = 1
+      AND SUM(CASE
+        WHEN NON_UNIQUE = 0
+          AND SEQ_IN_INDEX = 1
+          AND COLUMN_NAME = 'id'
+          AND COLLATION = 'A'
+          AND SUB_PART IS NULL
+          AND UPPER(INDEX_TYPE) = 'BTREE'
+          AND IS_VISIBLE = 'YES' THEN 1
+        ELSE 0 END) = 1
+   FROM information_schema.STATISTICS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'institutions'
+     AND INDEX_NAME = 'PRIMARY') = 1
+);
+
 SET @csr_postflight_contract_matches := (
-  @csr_shift_base_contract_matches = 1
-  AND @csr_institutions_contract_matches = 1
+  @csr_postflight_shift_base_contract_matches = 1
+  AND @csr_postflight_institutions_contract_matches = 1
   AND (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
       AND TABLE_NAME = 'shift_instances'
@@ -417,7 +513,7 @@ SET @csr_postflight_contract_matches := (
       AND CAST(COLUMN_DEFAULT AS BINARY) = CAST('PLANTAO' AS BINARY)
       AND COALESCE(EXTRA, '') = ''
       AND COALESCE(GENERATION_EXPRESSION, '') = ''
-      AND COLLATION_NAME = @csr_shift_instances_table_collation) = 1
+      AND COLLATION_NAME = @csr_postflight_shift_instances_table_collation) = 1
   AND (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
       AND TABLE_NAME = 'shift_instances'
@@ -429,7 +525,7 @@ SET @csr_postflight_contract_matches := (
       AND COLUMN_DEFAULT IS NULL
       AND COALESCE(EXTRA, '') = ''
       AND COALESCE(GENERATION_EXPRESSION, '') = ''
-      AND COLLATION_NAME = @csr_shift_instances_table_collation) = 1
+      AND COLLATION_NAME = @csr_postflight_shift_instances_table_collation) = 1
   AND (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
       AND TABLE_NAME = 'shift_instances'
@@ -443,7 +539,7 @@ SET @csr_postflight_contract_matches := (
       AND CAST(COLUMN_DEFAULT AS BINARY) = CAST('FIXO' AS BINARY)
       AND COALESCE(EXTRA, '') = ''
       AND COALESCE(GENERATION_EXPRESSION, '') = ''
-      AND COLLATION_NAME = @csr_shift_instances_table_collation) = 1
+      AND COLLATION_NAME = @csr_postflight_shift_instances_table_collation) = 1
   AND (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
       AND TABLE_NAME = 'shift_instances'
@@ -500,12 +596,17 @@ SET @csr_postflight_contract_matches := (
       AND LOWER(COLUMN_TYPE) = 'timestamp' AND IS_NULLABLE = 'NO'
       AND UPPER(COALESCE(COLUMN_DEFAULT, '')) IN (
         'CURRENT_TIMESTAMP', 'CURRENT_TIMESTAMP()', 'NOW()'
-      ) AND LOWER(COALESCE(EXTRA, '')) NOT LIKE '%on update%' THEN 1
+      ) AND LOWER(TRIM(COALESCE(EXTRA, ''))) IN (
+        '', 'default_generated'
+      ) THEN 1
     WHEN COLUMN_NAME = 'updated_at' AND ORDINAL_POSITION = 5
       AND LOWER(COLUMN_TYPE) = 'timestamp' AND IS_NULLABLE = 'NO'
       AND UPPER(COALESCE(COLUMN_DEFAULT, '')) IN (
         'CURRENT_TIMESTAMP', 'CURRENT_TIMESTAMP()', 'NOW()'
-      ) AND LOWER(COALESCE(EXTRA, '')) LIKE '%on update%' THEN 1
+      ) AND LOWER(TRIM(COALESCE(EXTRA, ''))) IN (
+        'on update current_timestamp',
+        'default_generated on update current_timestamp'
+      ) THEN 1
     ELSE 0 END) = 5
    FROM information_schema.COLUMNS
    WHERE TABLE_SCHEMA = DATABASE()
