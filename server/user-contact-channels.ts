@@ -7,7 +7,7 @@
  */
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, ne } from "drizzle-orm";
 import { getDb } from "./db";
 import {
   userContactChannels,
@@ -74,10 +74,10 @@ function isDuplicateKeyError(error: unknown): boolean {
   });
 }
 
-export async function requireOperableWhatsAppUser(
+async function requireOperableWhatsAppUser(
   db: WhatsAppContactDb,
   userId: number,
-  sessionVersion?: number,
+  sessionVersion: number,
   lock = false,
 ) {
   if (!Number.isSafeInteger(userId) || userId <= 0)
@@ -108,10 +108,9 @@ export async function requireOperableWhatsAppUser(
     });
   }
   if (
-    sessionVersion !== undefined &&
-    (!Number.isSafeInteger(sessionVersion) ||
-      sessionVersion <= 0 ||
-      user.sessionVersion !== sessionVersion)
+    !Number.isSafeInteger(sessionVersion) ||
+    sessionVersion <= 0 ||
+    user.sessionVersion !== sessionVersion
   )
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Sessão revogada." });
   return user;
@@ -134,17 +133,46 @@ export async function withWhatsAppOwnerTransaction<T>(
       message: "DB unavailable",
     });
   try {
-    return await db.transaction(async (tx) =>
-      run(
+    return await db.transaction(async (tx) => {
+      const user = await requireOperableWhatsAppUser(
         tx,
-        await requireOperableWhatsAppUser(
-          tx,
-          owner.userId,
-          owner.sessionVersion,
-          true,
-        ),
-      ),
-    );
+        owner.userId,
+        owner.sessionVersion,
+        true,
+      );
+      // Retenção oportunista, limitada ao titular já bloqueado. Não concede
+      // autorização; expiração/revogação já impedem o consumo antes da limpeza.
+      await tx
+        .update(whatsappVerificationChallenges)
+        .set({ state: "FAILED", providerVerificationSid: null })
+        .where(
+          and(
+            eq(whatsappVerificationChallenges.userId, user.id),
+            inArray(whatsappVerificationChallenges.state, [
+              "STARTING",
+              "READY",
+            ]),
+            lte(whatsappVerificationChallenges.expiresAt, new Date()),
+          ),
+        );
+      await tx
+        .update(whatsappVerificationChallenges)
+        .set({ state: "INVALIDATED", providerVerificationSid: null })
+        .where(
+          and(
+            eq(whatsappVerificationChallenges.userId, user.id),
+            inArray(whatsappVerificationChallenges.state, [
+              "STARTING",
+              "READY",
+            ]),
+            ne(
+              whatsappVerificationChallenges.sessionVersion,
+              user.sessionVersion,
+            ),
+          ),
+        );
+      return run(tx, user);
+    });
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     // SQL do desafio pode conter o SID privado. Não encaminhar causa/params
@@ -172,36 +200,33 @@ export function normalizeWhatsAppInput(raw: string): NormalizePhoneResult {
 
 export async function getWhatsAppContactForUser(
   userId: number,
-  sessionVersion?: number,
+  sessionVersion: number,
 ): Promise<WhatsAppContactView | null> {
-  const db = await getDb();
-  if (!db) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "DB unavailable",
-    });
-  }
-  await requireOperableWhatsAppUser(db, userId, sessionVersion);
-  const [row] = await db
-    .select({
-      normalizedAddress: userContactChannels.normalizedAddress,
-      verifiedAt: userContactChannels.verifiedAt,
-      active: userContactChannels.active,
-    })
-    .from(userContactChannels)
-    .where(
-      and(
-        eq(userContactChannels.userId, userId),
-        eq(userContactChannels.channel, WHATSAPP_CHANNEL),
-      ),
-    )
-    .limit(1);
-  if (!row || !row.active) return null;
-  return {
-    maskedAddress: maskE164(row.normalizedAddress),
-    verified: row.verifiedAt != null,
-    active: true,
-  };
+  return withWhatsAppOwnerTransaction(
+    { userId, sessionVersion },
+    async (db) => {
+      const [row] = await db
+        .select({
+          normalizedAddress: userContactChannels.normalizedAddress,
+          verifiedAt: userContactChannels.verifiedAt,
+          active: userContactChannels.active,
+        })
+        .from(userContactChannels)
+        .where(
+          and(
+            eq(userContactChannels.userId, userId),
+            eq(userContactChannels.channel, WHATSAPP_CHANNEL),
+          ),
+        )
+        .limit(1);
+      if (!row || !row.active) return null;
+      return {
+        maskedAddress: maskE164(row.normalizedAddress),
+        verified: row.verifiedAt != null,
+        active: true,
+      };
+    },
+  );
 }
 
 /**
@@ -210,33 +235,32 @@ export async function getWhatsAppContactForUser(
  */
 export async function getActiveWhatsAppChannelForUser(
   userId: number,
+  sessionVersion: number,
 ): Promise<{ e164: string; verified: boolean } | null> {
-  const db = await getDb();
-  if (!db) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "DB unavailable",
-    });
-  }
-  const [row] = await db
-    .select({
-      normalizedAddress: userContactChannels.normalizedAddress,
-      verifiedAt: userContactChannels.verifiedAt,
-      active: userContactChannels.active,
-    })
-    .from(userContactChannels)
-    .where(
-      and(
-        eq(userContactChannels.userId, userId),
-        eq(userContactChannels.channel, WHATSAPP_CHANNEL),
-      ),
-    )
-    .limit(1);
-  if (!row || !row.active) return null;
-  return {
-    e164: row.normalizedAddress,
-    verified: row.verifiedAt != null,
-  };
+  return withWhatsAppOwnerTransaction(
+    { userId, sessionVersion },
+    async (db) => {
+      const [row] = await db
+        .select({
+          normalizedAddress: userContactChannels.normalizedAddress,
+          verifiedAt: userContactChannels.verifiedAt,
+          active: userContactChannels.active,
+        })
+        .from(userContactChannels)
+        .where(
+          and(
+            eq(userContactChannels.userId, userId),
+            eq(userContactChannels.channel, WHATSAPP_CHANNEL),
+          ),
+        )
+        .limit(1);
+      if (!row || !row.active) return null;
+      return {
+        e164: row.normalizedAddress,
+        verified: row.verifiedAt != null,
+      };
+    },
+  );
 }
 
 /**

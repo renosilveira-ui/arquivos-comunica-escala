@@ -181,7 +181,7 @@ describe("user WhatsApp contact identity", () => {
       userId: a.userId,
       expectedE164: "+5585966665555",
     });
-    const verified = await getWhatsAppContactForUser(a.userId);
+    const verified = await getWhatsAppContactForUser(a.userId, 1);
     expect(verified?.verified).toBe(true);
 
     await upsertUserWhatsAppContact({
@@ -189,7 +189,7 @@ describe("user WhatsApp contact identity", () => {
       userId: a.userId,
       rawPhone: "+5585955554444",
     });
-    const after = await getWhatsAppContactForUser(a.userId);
+    const after = await getWhatsAppContactForUser(a.userId, 1);
     expect(after?.verified).toBe(false);
     expect(after?.maskedAddress).toBe("+55 85 *****-4444");
   });
@@ -203,8 +203,8 @@ describe("user WhatsApp contact identity", () => {
     await callerFor(other.userId).profile.setWhatsAppContact({
       phone: "+5585933332222",
     });
-    const ownerView = await getWhatsAppContactForUser(owner.userId);
-    const otherView = await getWhatsAppContactForUser(other.userId);
+    const ownerView = await getWhatsAppContactForUser(owner.userId, 1);
+    const otherView = await getWhatsAppContactForUser(other.userId, 1);
     expect(ownerView?.maskedAddress).toBe("+55 85 *****-3333");
     expect(otherView?.maskedAddress).toBe("+55 85 *****-2222");
   });

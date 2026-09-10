@@ -196,8 +196,9 @@ export async function beginWhatsAppVerificationCheck(owner: WhatsAppOwner) {
   });
 }
 
-export async function recordWhatsAppCheckRejection(
+export async function recordWhatsAppCheckOutcome(
   attempt: WhatsAppCheckAttempt,
+  outcome: "REJECTED" | "FAILED",
   terminal: boolean,
 ): Promise<void> {
   await withWhatsAppOwnerTransaction(attempt, async (tx, user) => {
@@ -217,7 +218,7 @@ export async function recordWhatsAppCheckRejection(
       subjectUserId: user.id,
       sessionVersion: user.sessionVersion,
       action: "WHATSAPP_VERIFY_CHECK",
-      outcome: "REJECTED",
+      outcome,
       contactId: attempt.contactId,
       parentEventId: attempt.requestAuditId,
     });
