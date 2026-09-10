@@ -53,7 +53,7 @@ O helper de importação não concede autorização nem ignora as guardas de mê
 
 ## Histórico e compatibilidade
 
-`required_capacity = NULL` identifica registros anteriores à migração. Eles não são consolidados, recalculados ou preenchidos automaticamente. A semântica histórica de vaga pública exige turno vazio com status `VAGO`; a guarda gerencial histórica mantém o limite anterior de 20.
+`required_capacity = NULL` identifica registros anteriores à migração. Eles não são consolidados, recalculados ou preenchidos automaticamente. Um incremento só é aceito quando o turno legado está `VAGO`, tem `activeCount = 0` e a projeção é exatamente 1. Registros históricos com mais de uma alocação ativa podem ser preservados ou reduzidos, mas nunca ampliados. Turnos com capacidade explícita continuam sujeitos estritamente ao valor registrado em `required_capacity`.
 
 A API permanece compatível enquanto toda capacidade nova continuar em 1, mas o cliente móvel anterior a esta frente não representa corretamente um turno parcialmente preenchido (`OCUPADO` com `remainingCapacity > 0`). Portanto, não configurar capacidade maior que 1 antes de disponibilizar e homologar o cliente compatível.
 
