@@ -40,7 +40,7 @@ describe("auth recovery worker: wiring estático", () => {
   });
 
   it("retries usam token/idempotência estável e exceção libera o lease", () => {
-    expect(worker).toContain("idempotencyKey: currentRow.tokenHash!");
+    expect(worker).toContain("idempotencyKey: reserved.row.tokenHash!");
     expect(worker).toContain('delivery.kind === "UNKNOWN"');
     expect(worker).toContain('delivery.kind === "REJECTED"');
     expect(worker).toContain('"UNEXPECTED_ATTEMPT_FAILURE"');
@@ -51,20 +51,38 @@ describe("auth recovery worker: wiring estático", () => {
     expect(worker).toContain('"CLAIM_READ_MISSING"');
   });
 
-  it("mantém o mutex do alvo da prova pré-egress até a ativação", () => {
-    const mutex = worker.indexOf("await withPushAccountMutex(");
-    const selfProof = worker.indexOf("await bindSelfServiceRequest(", mutex);
+  it("libera o mutex no egress e o readquire antes da ativação", () => {
+    const reservationMutex = worker.indexOf(
+      "const reserved = await withPushAccountMutex(",
+    );
+    const selfProof = worker.indexOf(
+      "await bindSelfServiceRequest(",
+      reservationMutex,
+    );
     const adminProof = worker.indexOf(
       "await lockAndValidateAdminRequest(",
-      mutex,
+      reservationMutex,
     );
-    const egress = worker.indexOf("await mailTransport.sendMail(", mutex);
-    const activation = worker.indexOf("await activateAcceptedRequest(", egress);
-    expect(selfProof).toBeGreaterThan(mutex);
-    expect(adminProof).toBeGreaterThan(mutex);
+    const egress = worker.indexOf(
+      "await mailTransport.sendMail(",
+      reservationMutex,
+    );
+    const activationMutex = worker.indexOf("await withPushAccountMutex(", egress);
+    const activation = worker.indexOf(
+      "await activateAcceptedRequest(",
+      activationMutex,
+    );
+    expect(reservationMutex).toBeGreaterThan(-1);
+    expect(egress).toBeGreaterThan(-1);
+    expect(selfProof).toBeGreaterThan(reservationMutex);
+    expect(adminProof).toBeGreaterThan(reservationMutex);
     expect(egress).toBeGreaterThan(selfProof);
     expect(egress).toBeGreaterThan(adminProof);
-    expect(activation).toBeGreaterThan(egress);
+    expect(
+      worker.slice(reservationMutex, egress),
+    ).not.toContain("mailTransport.sendMail");
+    expect(activationMutex).toBeGreaterThan(egress);
+    expect(activation).toBeGreaterThan(activationMutex);
   });
 
   it("não revoga link anterior no enqueue e troca ACTIVE atomicamente após aceite", () => {
@@ -105,12 +123,13 @@ describe("auth recovery worker: wiring estático", () => {
     expect(worker).toContain('requestActorKind: "AUTHENTICATED_ADMIN"');
   });
 
-  it("recupera SELF_SERVICE pela conta sem escolher ou criar tenant", () => {
+  it("recupera SELF_SERVICE pela conta sem escolher tenant e fecha PI corrompida", () => {
     expect(worker).toContain("hasValidAuthRecoveryMembershipBinding");
-    expect(worker).not.toContain("hasSelfServiceAccountTopology");
+    expect(worker).toContain("hasSelfServiceAccountTopology");
     expect(worker).toContain("targetMembershipId: null");
     expect(worker).not.toContain("lockCanonicalAuditMembership");
-    expect(worker).not.toContain("readCanonicalAuditMembership");
+    expect(worker).toContain("memberships.every(");
+    expect(worker).toContain("professional?.userId === userId");
     expect(worker).not.toContain("insert(professionalInstitutions)");
     expect(auth).toContain("hasValidAuthRecoveryMembershipBinding(");
   });

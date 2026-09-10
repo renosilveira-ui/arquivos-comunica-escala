@@ -8,8 +8,10 @@ import {
 import { and, eq, gt, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   authRecoveryRequests,
+  institutions,
   passwordResets,
   professionalInstitutions,
+  professionals,
   users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
@@ -65,6 +67,7 @@ export type AuthRecoveryMailTransport = {
 };
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type RecoveryWriteDb = Pick<Db, "insert" | "update">;
+type RecoveryQueryDb = Pick<Db, "select">;
 
 function affectedRows(result: unknown): number {
   if (Array.isArray(result)) {
@@ -394,6 +397,104 @@ async function resolveSingleActiveUser(db: Db, normalizedEmail: string) {
   return rows[0]!;
 }
 
+/**
+ * Recuperação self-service não seleciona um tenant. Ainda assim, uma PI
+ * existente precisa ser canônica e ativa: ausência de PI é válida; PI
+ * corrompida fecha o fluxo antes do egress de e-mail.
+ */
+async function hasSelfServiceAccountTopology(
+  db: RecoveryQueryDb,
+  userId: number,
+): Promise<boolean> {
+  const memberships = await db
+    .select({
+      id: professionalInstitutions.id,
+      professionalId: professionalInstitutions.professionalId,
+      userId: professionalInstitutions.userId,
+      institutionId: professionalInstitutions.institutionId,
+    })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, userId))
+    .orderBy(professionalInstitutions.id);
+  if (memberships.length === 0) return true;
+
+  // O chamador já travou o usuário. Mantemos a ordem global para impedir que
+  // uma mudança concorrente de credencial/vínculo inverta os mesmos locks.
+  const professionalsById = new Map<
+    number,
+    Pick<typeof professionals.$inferSelect, "id" | "userId">
+  >();
+  for (const professionalId of [
+    ...new Set(memberships.map((membership) => membership.professionalId)),
+  ].sort((left, right) => left - right)) {
+    const [professional] = await db
+      .select({ id: professionals.id, userId: professionals.userId })
+      .from(professionals)
+      .where(eq(professionals.id, professionalId))
+      .limit(1)
+      .for("update");
+    if (!professional) return false;
+    professionalsById.set(professionalId, professional);
+  }
+
+  const membershipsById = new Map<
+    number,
+    Pick<
+      typeof professionalInstitutions.$inferSelect,
+      "id" | "professionalId" | "userId" | "institutionId" | "active"
+    >
+  >();
+  for (const membershipId of memberships.map((membership) => membership.id)) {
+    const [membership] = await db
+      .select({
+        id: professionalInstitutions.id,
+        professionalId: professionalInstitutions.professionalId,
+        userId: professionalInstitutions.userId,
+        institutionId: professionalInstitutions.institutionId,
+        active: professionalInstitutions.active,
+      })
+      .from(professionalInstitutions)
+      .where(eq(professionalInstitutions.id, membershipId))
+      .limit(1)
+      .for("update");
+    if (!membership) return false;
+    membershipsById.set(membershipId, membership);
+  }
+
+  const institutionsById = new Map<
+    number,
+    Pick<typeof institutions.$inferSelect, "id" | "isActive">
+  >();
+  for (const institutionId of [
+    ...new Set(memberships.map((membership) => membership.institutionId)),
+  ].sort((left, right) => left - right)) {
+    const [institution] = await db
+      .select({ id: institutions.id, isActive: institutions.isActive })
+      .from(institutions)
+      .where(eq(institutions.id, institutionId))
+      .limit(1)
+      .for("share");
+    if (!institution) return false;
+    institutionsById.set(institutionId, institution);
+  }
+
+  return memberships.every(
+    (expected) => {
+      const membership = membershipsById.get(expected.id);
+      const professional = professionalsById.get(expected.professionalId);
+      const institution = institutionsById.get(expected.institutionId);
+      return (
+        membership?.userId === userId &&
+        membership.professionalId === expected.professionalId &&
+        membership.institutionId === expected.institutionId &&
+        membership.active &&
+        professional?.userId === userId &&
+        institution?.isActive === true
+      );
+    },
+  );
+}
+
 async function bindSelfServiceRequest(
   db: Db,
   row: typeof authRecoveryRequests.$inferSelect,
@@ -418,6 +519,9 @@ async function bindSelfServiceRequest(
       lockedUser.sessionVersion !== user.sessionVersion ||
       lockedUser.email?.toLowerCase().trim() !== payload.email
     ) {
+      return false;
+    }
+    if (!(await hasSelfServiceAccountTopology(tx, lockedUser.id))) {
       return false;
     }
     const [lockedRequest] = await tx
@@ -464,18 +568,22 @@ async function bindSelfServiceRequest(
           eq(authRecoveryRequests.tokenHash, tokenHash),
         ),
       );
-    return affectedRows(update) === 1;
+    if (affectedRows(update) !== 1) return null;
+    return {
+      ...lockedRequest,
+      targetUserId: lockedUser.id,
+      targetMembershipId: null,
+      expectedTargetSessionVersion: lockedUser.sessionVersion,
+      emailHash,
+    };
   });
-  if (!bound) return null;
-  const [updated] = await db
-    .select()
-    .from(authRecoveryRequests)
-    .where(eq(authRecoveryRequests.id, row.id))
-    .limit(1);
-  return updated ?? null;
+  return bound || null;
 }
 
-type AdminDeliveryProof = { targetName: string | null };
+type AdminDeliveryProof = {
+  targetName: string | null;
+  row: typeof authRecoveryRequests.$inferSelect;
+};
 class AuthRecoveryActivationCasError extends Error {}
 
 async function lockAndValidateAdminRequest(
@@ -583,7 +691,7 @@ async function lockAndValidateAdminRequest(
     ) {
       return null;
     }
-    return { targetName: target.name };
+    return { targetName: target.name, row: lockedRequest };
   });
 }
 
@@ -634,6 +742,12 @@ async function activateAcceptedRequest(
         lockedUser.sessionVersion !== row.expectedTargetSessionVersion ||
         lockedUser.email?.toLowerCase().trim() !== payload.email ||
         hashAuthRecoveryValue(payload.email) !== row.emailHash
+      ) {
+        return false;
+      }
+      if (
+        row.kind === "SELF_SERVICE" &&
+        !(await hasSelfServiceAccountTopology(tx, lockedUser.id))
       ) {
         return false;
       }
@@ -847,7 +961,7 @@ async function processClaimedRequest(
     return;
   }
 
-  await withPushAccountMutex(
+  const reserved = await withPushAccountMutex(
     db,
     targetUserId,
     PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
@@ -870,9 +984,10 @@ async function processClaimedRequest(
             "REVOKED",
             "IDENTITY_CHANGED",
           );
-          return;
+          return null;
         }
         currentRow = bound;
+        targetName = selfUser?.name ?? null;
       } else {
         const proof = await lockAndValidateAdminRequest(
           connectionDb,
@@ -888,9 +1003,10 @@ async function processClaimedRequest(
             "REVOKED",
             "IDENTITY_OR_AUTHORITY_CHANGED",
           );
-          return;
+          return null;
         }
         targetName = proof.targetName;
+        currentRow = proof.row;
       }
 
       if (currentRow.deliveryDeadlineAt.getTime() <= Date.now()) {
@@ -901,43 +1017,60 @@ async function processClaimedRequest(
           "DEAD",
           "DELIVERY_WINDOW_EXPIRED",
         );
-        return;
+        return null;
       }
+      return { row: currentRow, targetName };
+    },
+  );
+  if (!reserved) return;
 
-      const delivery = await mailTransport.sendMail(
-        recoveryMail(currentRow.kind, payload, publicBaseUrl, targetName),
-        { idempotencyKey: currentRow.tokenHash! },
-      );
-      if (delivery.kind === "UNKNOWN") {
-        await requeueOrDead(
-          connectionDb,
-          currentRow,
-          leaseToken,
-          now,
-          `PROVIDER_${delivery.reason}`,
-        );
-        return;
-      }
-      if (delivery.kind === "REJECTED") {
-        await markTerminal(
-          connectionDb,
-          currentRow.id,
-          leaseToken,
-          "DEAD",
-          `PROVIDER_${delivery.reason}`,
-        );
-        return;
-      }
+  // Egress externo não pode reter o mutex da conta: uma troca de senha ou
+  // revogação concorrente precisa concluir enquanto o provedor responde.
+  const delivery = await mailTransport.sendMail(
+    recoveryMail(
+      reserved.row.kind,
+      payload,
+      publicBaseUrl,
+      reserved.targetName,
+    ),
+    { idempotencyKey: reserved.row.tokenHash! },
+  );
+  if (delivery.kind === "UNKNOWN") {
+    await requeueOrDead(
+      db,
+      reserved.row,
+      leaseToken,
+      now,
+      `PROVIDER_${delivery.reason}`,
+    );
+    return;
+  }
+  if (delivery.kind === "REJECTED") {
+    await markTerminal(
+      db,
+      reserved.row.id,
+      leaseToken,
+      "DEAD",
+      `PROVIDER_${delivery.reason}`,
+    );
+    return;
+  }
+
+  await withPushAccountMutex(
+    db,
+    targetUserId,
+    PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
+    async (connectionDb) => {
       const activated = await activateAcceptedRequest(
         connectionDb,
-        currentRow,
+        reserved.row,
         leaseToken,
         payload,
       );
       if (!activated) {
         await markTerminal(
           connectionDb,
-          currentRow.id,
+          reserved.row.id,
           leaseToken,
           "REVOKED",
           "IDENTITY_OR_AUTHORITY_CHANGED",
