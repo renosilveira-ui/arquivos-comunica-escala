@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
@@ -6,8 +6,15 @@ import express, { type Express } from "express";
 import { authRouter } from "../server/routes/auth";
 import { adminRouter } from "../server/routes/admin";
 import * as auditService from "../server/audit-trail";
-import { mailer } from "../server/mailer";
-import { extractTemporaryPasswordFromMail } from "./helpers/temporary-password-mail";
+import {
+  mailer,
+  type MailMessage,
+  type MailResult,
+} from "../server/mailer";
+import {
+  hashAuthRecoveryValue,
+  processPendingAuthRecoveryEmails,
+} from "../server/auth-recovery";
 import { sessionAuthCookies } from "./helpers/session-cookies";
 import { getDb } from "../server/db";
 import { sessionInstanceProof } from "../server/_core/session-instance";
@@ -24,6 +31,7 @@ import {
   personalCalendarItems,
   pushTokens,
   auditTrail,
+  authRecoveryRequests,
 } from "../drizzle/schema";
 
 /**
@@ -33,7 +41,7 @@ import {
  *   1. forgot-password responde 200 neutro para e-mail inexistente e existente
  *   2. token do e-mail → reset-password → login com a senha nova funciona
  *   3. token já usado e token expirado são rejeitados
- *   4. admin reset → login devolve mustChangePassword → change-password limpa
+ *   4. admin reset → link pendente → resgate troca senha e revoga sessões
  *   5. DELETE /me bloqueado (409) com plantão futuro alocado
  *   6. DELETE /me ok: anonimiza, desativa vínculo, apaga push token, login falha
  */
@@ -41,6 +49,31 @@ import {
 const STAMP = Date.now();
 const PASSWORD = "SenhaOriginal123";
 const NEW_PASSWORD = "SenhaNovaForte456";
+
+function resetTokenFromMail(
+  calls: [MailMessage, ...unknown[]][],
+  to: string,
+): string {
+  const text = calls.find(([message]) => message.to === to)?.[0].text ?? "";
+  const token = /reset-password\?token=([0-9a-f]{64})/.exec(text)?.[1];
+  expect(token).toMatch(/^[0-9a-f]{64}$/);
+  return token!;
+}
+
+function recoveryMailTransport(result: MailResult) {
+  const sendMail = vi
+    .fn<(message: MailMessage) => Promise<MailResult>>()
+    .mockResolvedValue(result);
+  return { sendMail };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 const EMAILS = {
   doctor: `a3-doctor-${STAMP}@test.local`,
@@ -260,6 +293,10 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     });
   });
 
+  beforeEach(async () => {
+    await db.delete(authRecoveryRequests);
+  });
+
   afterAll(async () => {
     vi.restoreAllMocks();
     const ids = [...Object.values(userIds), ...extraUserIds].filter(
@@ -284,6 +321,9 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
         ),
       );
     await db.delete(pushTokens).where(inArray(pushTokens.userId, ids));
+    await db
+      .delete(authRecoveryRequests)
+      .where(inArray(authRecoveryRequests.targetUserId, ids));
     await db.delete(passwordResets).where(inArray(passwordResets.userId, ids));
     if (professionalIds.length > 0) {
       await db
@@ -325,7 +365,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
           eq(auditTrail.entityId, userIds.leaving),
           eq(
             auditTrail.description,
-            "Pedido de redefinição de senha (esqueci minha senha)",
+            "Pedido de redefinição de senha enfileirado",
           ),
         ),
       );
@@ -366,7 +406,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
               eq(auditTrail.entityId, userIds.leaving),
               eq(
                 auditTrail.description,
-                "Pedido de redefinição de senha (esqueci minha senha)",
+                "Pedido de redefinição de senha enfileirado",
               ),
             ),
           ),
@@ -379,9 +419,10 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   });
 
   it("link de produção usa somente APP_PUBLIC_URL confiável, nunca Host/X-Forwarded-Proto", async () => {
-    const sendSpy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+    const transport = recoveryMailTransport({
+      delivered: false,
+      transport: "console",
+    });
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("APP_PUBLIC_URL", "https://confiavel.example/app/");
 
@@ -393,22 +434,25 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
         .send({ email: EMAILS.busy });
       expect(response.status).toBe(200);
       expect(response.body).toEqual({ ok: true });
-      expect(sendSpy).toHaveBeenCalledTimes(1);
-      const text = sendSpy.mock.calls[0][0].text;
+      await processPendingAuthRecoveryEmails(new Date(), {
+        sendMail: transport.sendMail,
+      });
+      expect(transport.sendMail).toHaveBeenCalledTimes(1);
+      const text = transport.sendMail.mock.calls[0][0].text;
       expect(text).toContain(
         "https://confiavel.example/app/reset-password?token=",
       );
       expect(text).not.toContain("atacante.example");
     } finally {
       vi.unstubAllEnvs();
-      sendSpy.mockRestore();
     }
   });
 
   it("forgot-password responde 200 neutro sem revelar se o e-mail existe", async () => {
-    const spy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+    const unknownTransport = recoveryMailTransport({
+      delivered: false,
+      transport: "console",
+    });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const compare = vi.spyOn(bcrypt, "compare");
 
@@ -417,14 +461,22 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .send({ email: `nao-existe-${STAMP}@test.local` });
     expect(unknown.status).toBe(200);
     expect(unknown.body).toEqual({ ok: true });
-    expect(spy).not.toHaveBeenCalled();
+    await processPendingAuthRecoveryEmails(new Date(), unknownTransport);
+    expect(unknownTransport.sendMail).not.toHaveBeenCalled();
+
+    const knownTransport = recoveryMailTransport({
+      delivered: false,
+      transport: "console",
+    });
 
     const known = await request(app)
       .post("/api/auth/forgot-password")
       .send({ email: EMAILS.doctor });
     expect(known.status).toBe(200);
     expect(known.body).toEqual({ ok: true });
-    expect(spy).toHaveBeenCalledTimes(1);
+    await processPendingAuthRecoveryEmails(new Date(), knownTransport);
+    expect(errors.mock.calls).toEqual([]);
+    expect(knownTransport.sendMail).toHaveBeenCalledTimes(1);
     expect(compare).toHaveBeenCalledTimes(2);
     expect(
       compare.mock.calls.every(
@@ -446,7 +498,7 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
           eq(auditTrail.entityId, userIds.doctor),
           eq(
             auditTrail.description,
-            "Pedido de redefinição de senha (esqueci minha senha)",
+            "Pedido de redefinição de senha enfileirado",
           ),
         ),
       );
@@ -454,15 +506,15 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(JSON.stringify(audit)).not.toContain(EMAILS.doctor);
     expect((audit.metadata as Record<string, unknown>).email).toBeUndefined();
 
-    spy.mockRestore();
     errors.mockRestore();
     compare.mockRestore();
   });
 
   it("forgot-password com entrega ok deixa o token utilizável", async () => {
-    const spy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" });
+    const transport = recoveryMailTransport({
+      delivered: true,
+      transport: "resend",
+    });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const response = await request(app)
@@ -470,32 +522,30 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .send({ email: EMAILS.busy });
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ ok: true });
+    await processPendingAuthRecoveryEmails(new Date(), transport);
 
     const [row] = await db
-      .select({ usedAt: passwordResets.usedAt })
-      .from(passwordResets)
+      .select({ state: authRecoveryRequests.state })
+      .from(authRecoveryRequests)
       .where(
         and(
-          eq(passwordResets.userId, userIds.busy),
-          isNull(passwordResets.usedAt),
+          eq(authRecoveryRequests.targetUserId, userIds.busy),
+          eq(authRecoveryRequests.state, "ACTIVE"),
         ),
       );
     expect(row).toBeTruthy();
     expect(errors.mock.calls.flat().join(" ")).not.toMatch(
       /token=|reset-password/,
     );
-    spy.mockRestore();
     errors.mockRestore();
   });
 
   it("forgot-password com falha de entrega não deixa token utilizável", async () => {
-    const spy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({
-        delivered: false,
-        transport: "resend",
-        error: "HTTP 503",
-      });
+    const transport = recoveryMailTransport({
+      delivered: false,
+      transport: "resend",
+      error: "HTTP 503",
+    });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const response = await request(app)
@@ -503,16 +553,17 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       .send({ email: EMAILS.leaving });
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ ok: true });
-    expect(spy).toHaveBeenCalledTimes(1);
-    const token = spy.mock.calls[0][0].text.match(
+    await processPendingAuthRecoveryEmails(new Date(), transport);
+    expect(transport.sendMail).toHaveBeenCalledTimes(1);
+    const token = transport.sendMail.mock.calls[0][0].text.match(
       /reset-password\?token=([0-9a-f]{64})/,
     )![1];
 
     const [row] = await db
-      .select({ usedAt: passwordResets.usedAt })
-      .from(passwordResets)
-      .where(eq(passwordResets.userId, userIds.leaving));
-    expect(row?.usedAt).toBeTruthy();
+      .select({ state: authRecoveryRequests.state })
+      .from(authRecoveryRequests)
+      .where(eq(authRecoveryRequests.targetUserId, userIds.leaving));
+    expect(row?.state).toBe("QUEUED");
 
     const reset = await request(app)
       .post("/api/auth/reset-password")
@@ -521,11 +572,8 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(reset.body.error).toMatch(/inválido ou expirado/i);
 
     const logged = errors.mock.calls.flat().join(" ");
-    expect(logged).toContain("token recém-emitido revogado");
-    expect(logged).not.toContain("não confirmada");
     expect(logged).not.toContain(token);
     expect(logged).not.toContain("reset-password?token=");
-    spy.mockRestore();
     errors.mockRestore();
   });
 
@@ -564,19 +612,20 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   });
 
   it("token do e-mail → reset-password → login com senha nova; token não pode ser reutilizado", async () => {
-    const spy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" });
+    const transport = recoveryMailTransport({
+      delivered: true,
+      transport: "resend",
+    });
 
     await request(app)
       .post("/api/auth/forgot-password")
       .send({ email: EMAILS.doctor });
-    expect(spy).toHaveBeenCalledTimes(1);
-    const text = spy.mock.calls[0][0].text;
-    const match = text.match(/reset-password\?token=([0-9a-f]{64})/);
-    expect(match).toBeTruthy();
-    const token = match![1];
-    spy.mockRestore();
+    await processPendingAuthRecoveryEmails(new Date(), transport);
+    expect(transport.sendMail).toHaveBeenCalledTimes(1);
+    const token = resetTokenFromMail(
+      transport.sendMail.mock.calls,
+      EMAILS.doctor,
+    );
     await db.insert(pushTokens).values([
       {
         institutionId,
@@ -625,8 +674,8 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
     const [reset] = await db
       .select()
-      .from(passwordResets)
-      .where(eq(passwordResets.userId, userIds.doctor));
+      .from(authRecoveryRequests)
+      .where(eq(authRecoveryRequests.targetUserId, userIds.doctor));
     expect(reset).toBeTruthy();
 
     // Login com a nova senha funciona; a antiga não.
@@ -642,20 +691,24 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   });
 
   it("token expirado é rejeitado", async () => {
-    const spy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: true, transport: "resend" });
+    const transport = recoveryMailTransport({
+      delivered: true,
+      transport: "resend",
+    });
     await request(app)
       .post("/api/auth/forgot-password")
       .send({ email: EMAILS.doctor });
-    const token = spy.mock.calls[0][0].text.match(/token=([0-9a-f]{64})/)![1];
-    spy.mockRestore();
+    await processPendingAuthRecoveryEmails(new Date(), transport);
+    const token = resetTokenFromMail(
+      transport.sendMail.mock.calls,
+      EMAILS.doctor,
+    );
 
     // Força expiração no banco (não usa o token, só expira).
     await db
-      .update(passwordResets)
+      .update(authRecoveryRequests)
       .set({ expiresAt: new Date(Date.now() - 60 * 1000) })
-      .where(eq(passwordResets.userId, userIds.doctor));
+      .where(eq(authRecoveryRequests.targetUserId, userIds.doctor));
 
     const res = await request(app)
       .post("/api/auth/reset-password")
@@ -671,10 +724,10 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Admin: senha temporária + troca obrigatória
+  // Admin: link pendente, uso único e senha ativada somente no resgate
   // -------------------------------------------------------------------------
 
-  it("admin reset → login devolve mustChangePassword → change-password limpa a flag", async () => {
+  it("admin reset envia link sem alterar credencial; resgate troca senha e revoga sessões", async () => {
     const adminLogin = await login(EMAILS.admin, PASSWORD);
     expect(adminLogin.status).toBe(200);
     const adminCookie = cookieOf(adminLogin)!;
@@ -704,8 +757,17 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
       delivered: true,
-      provider: "resend",
+      transport: "resend",
     });
+
+    const [beforeReset] = await db
+      .select({
+        passwordHash: users.passwordHash,
+        mustChangePassword: users.mustChangePassword,
+        sessionVersion: users.sessionVersion,
+      })
+      .from(users)
+      .where(eq(users.id, userIds.doctor));
 
     const reset = await request(app)
       .post(`/api/admin/users/${userIds.doctor}/reset-password`)
@@ -714,61 +776,55 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     expect(reset.status).toBe(200);
     expect(reset.body.temporaryPassword).toBeUndefined();
     expect(reset.body.ok).toBe(true);
+    const [pendingCredential] = await db
+      .select({
+        passwordHash: users.passwordHash,
+        mustChangePassword: users.mustChangePassword,
+        sessionVersion: users.sessionVersion,
+      })
+      .from(users)
+      .where(eq(users.id, userIds.doctor));
+    expect(pendingCredential).toEqual(beforeReset);
+    expect(
+      await db
+        .select({ id: pushTokens.id })
+        .from(pushTokens)
+        .where(eq(pushTokens.userId, userIds.doctor)),
+    ).toHaveLength(2);
+    const token = resetTokenFromMail(
+      sendMailSpy.mock.calls,
+      EMAILS.doctor,
+    );
+    sendMailSpy.mockRestore();
+
+    const adminChosenPassword = "SenhaEscolhidaViaAdmin789";
+    const consumed = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token, newPassword: adminChosenPassword });
+    expect(consumed.status).toBe(200);
     expect(
       await db
         .select({ id: pushTokens.id })
         .from(pushTokens)
         .where(eq(pushTokens.userId, userIds.doctor)),
     ).toHaveLength(0);
+    expect((await login(EMAILS.doctor, NEW_PASSWORD)).status).toBe(401);
+    const relogin = await login(EMAILS.doctor, adminChosenPassword);
+    expect(relogin.status).toBe(200);
+    expect(relogin.body.user.mustChangePassword).toBe(false);
     const [adminResetAudit] = await db
       .select({ metadata: auditTrail.metadata })
       .from(auditTrail)
       .where(
         and(
           eq(auditTrail.entityId, userIds.doctor),
-          eq(
-            auditTrail.description,
-            `Senha do usuário #${userIds.doctor} redefinida pelo usuário #${userIds.admin} (senha temporária, troca obrigatória no próximo login)`,
-          ),
+          eq(auditTrail.description, "Senha redefinida via link administrativo"),
         ),
       );
     expect(adminResetAudit?.metadata).toMatchObject({
+      recoveryKind: "ADMIN_INITIATED",
       revokedPushTokenCount: 2,
     });
-    const temp = extractTemporaryPasswordFromMail(
-      sendMailSpy.mock.calls,
-      EMAILS.doctor,
-    );
-    sendMailSpy.mockRestore();
-
-    // Senha antiga morreu; temporária entra e exige troca.
-    expect((await login(EMAILS.doctor, NEW_PASSWORD)).status).toBe(401);
-    const tempLogin = await login(EMAILS.doctor, temp);
-    expect(tempLogin.status).toBe(200);
-    expect(tempLogin.body.user.mustChangePassword).toBe(true);
-    const cookie = cookieOf(tempLogin)!;
-
-    const me = await request(app).get("/api/auth/me").set("Cookie", cookie);
-    expect(me.body.user.mustChangePassword).toBe(true);
-
-    const change = await request(app)
-      .post("/api/auth/change-password")
-      .set("Cookie", cookie)
-      .set("x-client-session-instance", proofForCookie(cookie))
-      .send({ currentPassword: temp, newPassword: PASSWORD });
-    expect(change.status).toBe(200);
-
-    // A troca revoga a sessão antiga (B3) e devolve a nova no Set-Cookie.
-    expect(
-      (await request(app).get("/api/auth/me").set("Cookie", cookie)).status,
-    ).toBe(401);
-    const meAfter = await request(app)
-      .get("/api/auth/me")
-      .set("Cookie", cookieOf(change, cookie)!);
-    expect(meAfter.body.user.mustChangePassword).toBe(false);
-    const relogin = await login(EMAILS.doctor, PASSWORD);
-    expect(relogin.status).toBe(200);
-    expect(relogin.body.user.mustChangePassword).toBe(false);
     await expect(
       db
         .select({ id: personalCalendarItems.id })
@@ -777,15 +833,23 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
     ).resolves.toHaveLength(1);
   });
 
-  it("admin reset com falha de entrega restaura a senha anterior e não responde sucesso", async () => {
+  it("admin reset com falha de entrega revoga o link e preserva a credencial", async () => {
     const adminLogin = await login(EMAILS.admin, PASSWORD);
     const adminCookie = cookieOf(adminLogin)!;
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
       delivered: false,
-      provider: "resend",
+      transport: "resend",
       error: "HTTP 503",
     });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const [before] = await db
+      .select({
+        passwordHash: users.passwordHash,
+        mustChangePassword: users.mustChangePassword,
+        sessionVersion: users.sessionVersion,
+      })
+      .from(users)
+      .where(eq(users.id, userIds.doctor));
 
     try {
       const reset = await request(app)
@@ -795,39 +859,93 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
       expect(reset.status).toBe(503);
       expect(reset.body).toMatchObject({
         ok: false,
-        code: "TEMPORARY_PASSWORD_DELIVERY_FAILED",
+        code: "RESET_LINK_DELIVERY_FAILED",
       });
       expect(reset.body.temporaryPassword).toBeUndefined();
 
-      const temporaryPassword = extractTemporaryPasswordFromMail(
+      const token = resetTokenFromMail(
         sendMailSpy.mock.calls,
         EMAILS.doctor,
       );
-      expect((await login(EMAILS.doctor, temporaryPassword)).status).toBe(401);
-      expect((await login(EMAILS.doctor, PASSWORD)).status).toBe(200);
-
-      const [compensationAudit] = await db
-        .select({ metadata: auditTrail.metadata })
-        .from(auditTrail)
-        .where(
-          and(
-            eq(auditTrail.entityId, userIds.doctor),
-            eq(
-              auditTrail.description,
-              `Senha temporária do usuário #${userIds.doctor} revogada após falha de entrega`,
-            ),
-          ),
-        );
-      expect(compensationAudit?.metadata).toMatchObject({
-        temporaryCredentialRevoked: true,
-        previousPasswordRestored: true,
-      });
-      expect(errors.mock.calls.flat().join(" ")).not.toContain(
-        temporaryPassword,
-      );
+      const rejected = await request(app)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: "SenhaNaoAtiva999" });
+      expect(rejected.status).toBe(400);
+      const [after] = await db
+        .select({
+          passwordHash: users.passwordHash,
+          mustChangePassword: users.mustChangePassword,
+          sessionVersion: users.sessionVersion,
+        })
+        .from(users)
+        .where(eq(users.id, userIds.doctor));
+      expect(after).toEqual(before);
+      const [requestState] = await db
+        .select({ state: authRecoveryRequests.state })
+        .from(authRecoveryRequests)
+        .where(eq(authRecoveryRequests.tokenHash, hashAuthRecoveryValue(token)));
+      expect(requestState?.state).toBe("REVOKED");
+      expect(errors.mock.calls.flat().join(" ")).not.toContain(token);
     } finally {
       sendMailSpy.mockRestore();
       errors.mockRestore();
+    }
+  });
+
+  it("mudança de e-mail durante o egress revoga o link administrativo antes da ativação", async () => {
+    const adminLogin = await login(EMAILS.admin, PASSWORD);
+    const adminCookie = cookieOf(adminLogin)!;
+    const delivery = deferred<MailResult>();
+    const deliveryStarted = deferred<void>();
+    const sendMailSpy = vi
+      .spyOn(mailer, "sendMail")
+      .mockImplementation(async () => {
+        deliveryStarted.resolve();
+        return delivery.promise;
+      });
+    const replacementEmail = `a3-doctor-replaced-${STAMP}@test.local`;
+    let resetPromise: Promise<request.Response> | null = null;
+
+    try {
+      resetPromise = request(app)
+        .post(`/api/admin/users/${userIds.doctor}/reset-password`)
+        .set("Cookie", adminCookie)
+        .set("x-tenant-id", String(institutionId))
+        .then((response) => response);
+      await deliveryStarted.promise;
+      const token = resetTokenFromMail(
+        sendMailSpy.mock.calls,
+        EMAILS.doctor,
+      );
+
+      const emailChange = await request(app)
+        .put(`/api/admin/users/${userIds.doctor}`)
+        .set("Cookie", adminCookie)
+        .set("x-tenant-id", String(institutionId))
+        .send({ email: replacementEmail });
+      expect(emailChange.status).toBe(200);
+      delivery.resolve({ delivered: true, transport: "resend" });
+
+      const reset = await resetPromise;
+      expect(reset.status).toBe(409);
+      const rejected = await request(app)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: "SenhaNaoPodeAtivar123" });
+      expect(rejected.status).toBe(400);
+      const [requestState] = await db
+        .select({ state: authRecoveryRequests.state })
+        .from(authRecoveryRequests)
+        .where(eq(authRecoveryRequests.tokenHash, hashAuthRecoveryValue(token)));
+      expect(requestState?.state).toBe("REVOKED");
+    } finally {
+      delivery.resolve({ delivered: false, transport: "console" });
+      if (resetPromise) await Promise.allSettled([resetPromise]);
+      sendMailSpy.mockRestore();
+      await request(app)
+        .put(`/api/admin/users/${userIds.doctor}`)
+        .set("Cookie", adminCookie)
+        .set("x-tenant-id", String(institutionId))
+        .send({ email: EMAILS.doctor });
     }
   });
 
