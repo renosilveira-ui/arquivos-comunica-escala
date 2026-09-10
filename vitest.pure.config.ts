@@ -38,6 +38,8 @@ export default defineConfig({
       "tests/schedule-context-selection.test.ts",
       "tests/agenda-month-navigation.test.ts",
       "tests/mobile-agenda-day-list.test.ts",
+      "tests/shift-professional-presentation.test.ts",
+      "tests/shift-row-card-layout.test.ts",
       "tests/agenda-offer-overflow.test.ts",
       "tests/shift-template-options.test.ts",
       "tests/assignment-schedule-context-guards.test.ts",
