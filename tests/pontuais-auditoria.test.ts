@@ -9,6 +9,7 @@
 //     tenant-bound permanecem FORBIDDEN.
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   hospitals,
@@ -337,6 +338,7 @@ describe("pontuais da auditoria: escopo de tenant, jurisdição e contexto", () 
   });
 
   it("allowlist usa só a sessão quando o header aponta para tenant revogado ou malformado", async () => {
+    const recoveryToken = randomUUID();
     await db.insert(professionalInstitutions).values({
       professionalId: plusProId,
       userId: plusUserId,
@@ -427,7 +429,9 @@ describe("pontuais da auditoria: escopo de tenant, jurisdição e contexto", () 
           {
             type: "duty_confirmation",
             institutionId: instA,
-            confirmationToken: "recovery-token-a",
+            // O roteamento só aceita token de rota canônico (UUID); um
+            // rótulo qualquer nunca deve virar navegação.
+            confirmationToken: recoveryToken,
           },
           {
             isSessionAuthorizationCurrent: () => true,
@@ -457,7 +461,7 @@ describe("pontuais da auditoria: escopo de tenant, jurisdição e contexto", () 
       expect(calls).toEqual([
         `set:${instA}`,
         "invalidate",
-        `navigate:recovery-token-a:tenant:${instA}`,
+        `navigate:${recoveryToken}:tenant:${instA}`,
       ]);
 
       const malformedTenantContext =
