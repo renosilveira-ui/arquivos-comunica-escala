@@ -14,6 +14,7 @@ import type { getDb } from "./db";
 import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
 import { yearMonthBrt } from "./local-time";
 import {
+  assertCanonicalScheduleContextBinding,
   DeferredPushAuthorityError,
   ExpiredPushAuthorityError,
   PersistedPushAuthorityBindingError,
@@ -133,6 +134,7 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
       assignmentActive: shiftAssignmentsV2.isActive,
       shiftStatus: shiftInstances.status,
       scheduleContextId: shiftInstances.scheduleContextId,
+      canonicalScheduleContextId: scheduleContexts.id,
       startAt: shiftInstances.startAt,
     })
     .from(shiftAssignmentsV2)
@@ -145,7 +147,7 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
         eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
       ),
     )
-    .innerJoin(
+    .leftJoin(
       scheduleContexts,
       and(
         eq(scheduleContexts.id, shiftInstances.scheduleContextId),
@@ -186,6 +188,7 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
     : await assignmentQuery;
   const assignment = assignmentRows[0];
   if (!assignment) invalid("Alocação ausente ou fora da topologia persistida");
+  assertCanonicalScheduleContextBinding(assignment);
 
   const policy = ASSIGNMENT_LIFECYCLE_PUSH_POLICY[authority.purpose];
   if (

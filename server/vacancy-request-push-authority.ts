@@ -15,6 +15,7 @@ import type { getDb } from "./db";
 import { yearMonthBrt } from "./local-time";
 import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
 import {
+  assertCanonicalScheduleContextBinding,
   DeferredPushAuthorityError,
   ExpiredPushAuthorityError,
   PersistedPushAuthorityBindingError,
@@ -248,6 +249,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
       sectorId: shiftInstances.sectorId,
       shiftInstanceId: shiftInstances.id,
       scheduleContextId: shiftInstances.scheduleContextId,
+      canonicalScheduleContextId: scheduleContexts.id,
       startAt: shiftInstances.startAt,
     })
     .from(shiftAssignmentsV2)
@@ -260,7 +262,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
         eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
       ),
     )
-    .innerJoin(
+    .leftJoin(
       scheduleContexts,
       and(
         eq(scheduleContexts.id, shiftInstances.scheduleContextId),
@@ -303,6 +305,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
     ? await assignmentQuery.for("share")
     : await assignmentQuery;
   if (!assignment) invalid("Solicitação de vaga ausente ou fora da topologia");
+  assertCanonicalScheduleContextBinding(assignment);
 
   const policy = VACANCY_REQUEST_PUSH_POLICY[authority.purpose];
   if (

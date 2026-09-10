@@ -54,6 +54,7 @@ import {
 } from "./confirmation-integrity";
 import { isConfirmationRouteToken } from "../lib/confirmation-route-params";
 import {
+  assertCanonicalScheduleContextBinding,
   isDeferredPushAuthorityError,
   isExpiredPushAuthorityError,
   isCanonicalPushAuthorityRejection,
@@ -1249,9 +1250,11 @@ async function requireCanonicalShiftPushContext(
       sectorName: sectors.name,
       startAt: shiftInstances.startAt,
       endAt: shiftInstances.endAt,
+      scheduleContextId: shiftInstances.scheduleContextId,
+      canonicalScheduleContextId: scheduleContexts.id,
     })
     .from(shiftInstances)
-    .innerJoin(
+    .leftJoin(
       scheduleContexts,
       and(
         eq(scheduleContexts.id, shiftInstances.scheduleContextId),
@@ -1292,7 +1295,16 @@ async function requireCanonicalShiftPushContext(
       "Contexto do plantão não corresponde à topologia persistida",
     );
   }
-  return context;
+  assertCanonicalScheduleContextBinding(
+    context,
+    "Contexto do plantão não corresponde à topologia persistida",
+  );
+  return {
+    hospitalName: context.hospitalName,
+    sectorName: context.sectorName,
+    startAt: context.startAt,
+    endAt: context.endAt,
+  };
 }
 
 async function claimSubmission(

@@ -10,6 +10,33 @@ export class PersistedPushAuthorityBindingError extends TRPCError {
 }
 
 /**
+ * Fecha a cerca de escala inativa sem matar o turno legado.
+ *
+ * `shift_instances.schedule_context_id` é opcional: turno anterior à
+ * classificação de escalas não tem contexto e segue a política legado, como
+ * `findCanonicalConfirmationAccessId` já faz. Exigir o vínculo com um join
+ * obrigatório transformaria esse turno em autoridade revogada — terminal — e
+ * mataria em definitivo uma notificação legítima. Quando o vínculo existe,
+ * porém, ele precisa apontar para um contexto exato e ativo: contexto inativo
+ * é escala aposentada (`active_sector_slot` garante um ativo por setor), e
+ * notificar sobre ela é vazar rascunho.
+ */
+export function assertCanonicalScheduleContextBinding(
+  row: {
+    scheduleContextId: number | null;
+    canonicalScheduleContextId: number | null;
+  },
+  message = "Escala do plantão não está mais ativa nesta topologia",
+): void {
+  if (
+    row.scheduleContextId != null &&
+    row.canonicalScheduleContextId == null
+  ) {
+    throw new PersistedPushAuthorityBindingError(message);
+  }
+}
+
+/**
  * A autoridade existe, mas o dado operacional ainda não foi publicado.
  * Diferente de uma revogação, esta condição pode se tornar válida sem que o
  * produtor duplique o evento: o outbox deve permanecer pendente e sem envio.
