@@ -277,7 +277,12 @@ describe("autoridade atual no outbox de confirmação", () => {
       payload: {
         title: "Confirmação de plantão",
         body: "Confirme sua presença",
-        data: { type: "duty_confirmation", confirmationId, institutionId },
+        data: {
+          type: "duty_confirmation",
+          confirmationId,
+          confirmationToken,
+          institutionId,
+        },
       },
       authority: {
         kind: "DUTY_CONFIRMATION" as const,
@@ -287,6 +292,7 @@ describe("autoridade atual no outbox de confirmação", () => {
         recipientKind: "ORIGINAL" as const,
         expectedUserId: userId,
         shiftSnapshot: shiftSnapshot(),
+        confirmationToken,
       },
     };
   }
