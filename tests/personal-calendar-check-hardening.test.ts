@@ -30,4 +30,17 @@ describe("hardening dos CHECKs do calendário pessoal", () => {
     expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
     expect(migration).not.toMatch(/\bUPDATE\s+personal_calendar_/i);
   });
+
+  it("valida a expressão completa e enforcement sem correspondência permissiva", () => {
+    const sql = migration.replace(/^--.*$/gm, "");
+    expect(migration.match(/SHA2\(cc\.CHECK_CLAUSE, 256\)/g)).toHaveLength(5);
+    expect(migration.match(/tc\.ENFORCED = ''YES''/g)).toHaveLength(5);
+    expect(migration).toContain("cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA");
+    expect(migration).toContain("cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME");
+    expect(migration).toContain("WHERE tc.CONSTRAINT_SCHEMA = DATABASE()");
+    expect(sql).not.toMatch(/CHECK_CLAUSE[^;]*\bLIKE\b/i);
+    expect(sql).not.toMatch(/(?:LOWER|UPPER|REPLACE)\([^;]*CHECK_CLAUSE/i);
+    expect(migration.match(/IS NOT TRUE/g)).toHaveLength(2);
+    expect(migration.match(/EXECUTE pc_catalog_stmt/g)).toHaveLength(2);
+  });
 });
