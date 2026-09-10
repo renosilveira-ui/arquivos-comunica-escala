@@ -30,6 +30,7 @@ import {
 import {
   eq,
   and,
+  exists,
   gte,
   lte,
   lt,
@@ -3006,6 +3007,10 @@ export const shiftsRouter = router({
         "agenda_assigned_memberships",
       );
       const assignedUsers = alias(users, "agenda_assigned_users");
+      const ownAssignments = alias(
+        shiftAssignmentsV2,
+        "agenda_own_assignments",
+      );
 
       // Uma única query revalida o ator e traz shifts + assignments. O ator
       // é a tabela raiz para ainda haver uma linha sentinela quando o período
@@ -3068,6 +3073,37 @@ export const shiftsRouter = router({
             lt(shiftInstances.startAt, end),
             ...(input.scheduleContextId !== undefined
               ? [eq(shiftInstances.scheduleContextId, input.scheduleContextId)]
+              : []),
+            // EXISTS não multiplica as linhas quando há mais de uma alocação
+            // própria. Fica no ON, não no WHERE, para preservar a sentinela
+            // do vínculo canônico quando a Minha agenda está vazia.
+            ...(input.scope === "minha"
+              ? [
+                  exists(
+                    db
+                      .select({ one: sql`1` })
+                      .from(ownAssignments)
+                      .where(
+                        and(
+                          eq(ownAssignments.shiftInstanceId, shiftInstances.id),
+                          eq(
+                            ownAssignments.institutionId,
+                            shiftInstances.institutionId,
+                          ),
+                          eq(
+                            ownAssignments.hospitalId,
+                            shiftInstances.hospitalId,
+                          ),
+                          eq(ownAssignments.sectorId, shiftInstances.sectorId),
+                          eq(
+                            ownAssignments.professionalId,
+                            professionalInstitutions.professionalId,
+                          ),
+                          eq(ownAssignments.isActive, true),
+                        ),
+                      ),
+                  ),
+                ]
               : []),
           ),
         )
