@@ -8,7 +8,11 @@ import {
   users,
 } from "../drizzle/schema";
 import { eq, and, asc, inArray, isNull, sql } from "drizzle-orm";
-import { isCanonicalPushAuthorityRejection } from "./push-authority-rejection";
+import {
+  isCanonicalPushAuthorityRejection,
+  isDeferredPushAuthorityError,
+  isExpiredPushAuthorityError,
+} from "./push-authority-rejection";
 import {
   PUSH_ACCOUNT_MUTATION_LOCK_TIMEOUT_SEC,
   PushOwnershipLockTimeoutError,
@@ -740,6 +744,12 @@ async function submitOwnedExpoPushTicket(
       ),
     );
   } catch (error) {
+    if (
+      isDeferredPushAuthorityError(error) ||
+      isExpiredPushAuthorityError(error)
+    ) {
+      throw error;
+    }
     if (error instanceof PushOwnershipLockTimeoutError) {
       if (isAccountWideBadgeSnapshotPayload(payload)) {
         return {
@@ -1160,7 +1170,13 @@ async function sendOutboundPushNotification(
       acceptedCount,
       rejectedCount,
     };
-  } catch {
+  } catch (error) {
+    if (
+      isDeferredPushAuthorityError(error) ||
+      isExpiredPushAuthorityError(error)
+    ) {
+      throw error;
+    }
     console.error("[Notifications] PUSH_SERVICE_FAILED");
     return {
       status: "SERVICE_ERROR",

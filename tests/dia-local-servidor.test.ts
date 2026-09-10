@@ -134,6 +134,12 @@ describe("consultas por dia usam o dia do hospital", () => {
       .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: "Cinderela", startAt: lateStart, endAt: lateEnd, status: "VAGO" })
       .$returningId();
     lateShiftId = s.id;
+    await db.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: yearMonthFromDayKey(D),
+      status: "PUBLISHED",
+    });
   });
 
   afterAll(async () => {
@@ -144,6 +150,7 @@ describe("consultas por dia usam o dia do hospital", () => {
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, ids));
     }
     const pros = [managerProId, doctorProId];
+    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(professionalAccess).where(inArray(professionalAccess.professionalId, pros));
     await db.delete(managerScope).where(inArray(managerScope.managerProfessionalId, pros));
     await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.professionalId, pros));
@@ -206,9 +213,10 @@ describe("consultas por dia usam o dia do hospital", () => {
   it("listAgenda coloca o plantão no dia D, com a semana iniciando na segunda", async () => {
     const shifts = shiftsRouter.createCaller(ctx(doctorUserId, "doctor"));
     const monday = mondayOfKey(D);
-    await db.insert(monthlyRosters).values({
-      institutionId, hospitalId, yearMonth: D.slice(0, 7), status: "PUBLISHED",
-    });
+    await db
+      .insert(monthlyRosters)
+      .values({ institutionId, hospitalId, yearMonth: D.slice(0, 7), status: "PUBLISHED" })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     const selectSpy = vi.spyOn(db, "select");
     const res = await (async () => {
       try {

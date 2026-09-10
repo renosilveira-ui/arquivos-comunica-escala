@@ -5,11 +5,14 @@ import {
   auditTrail,
   hospitals,
   institutions,
+  monthlyRosters,
+  professionalInstitutions,
   professionals,
   sectors,
+  shiftInstances,
 } from "../drizzle/schema";
 import { appRouter } from "../server/routers";
-import { addDaysToKey, dayKeyBrt } from "../server/local-time";
+import { addDaysToKey, dayKeyBrt, yearMonthBrt } from "../server/local-time";
 
 /**
  * `audit.listShiftMovements` — backend que alimenta a tela de
@@ -32,6 +35,7 @@ describe("audit.listShiftMovements", () => {
   let hospitalId: number;
   let sectorId: number;
   let joaoUserId: number;
+  let joaoProId: number;
   let pedroUserId: number;
   let pedroProId: number;
   let anaUserId: number;
@@ -77,8 +81,10 @@ describe("audit.listShiftMovements", () => {
       .from(professionals)
       .where(eq(professionals.name, "Dra. Maria Santos"))
       .limit(1);
-    if (!joao || !pedro || !ana || !maria) throw new Error("Profissionais do seed não encontrados");
+    if (!joao || !pedro || !ana || !maria)
+      throw new Error("Profissionais do seed não encontrados");
     joaoUserId = joao.userId!;
+    joaoProId = joao.id;
     pedroUserId = pedro.userId!;
     pedroProId = pedro.id;
     anaUserId = ana.userId!;
@@ -179,7 +185,12 @@ describe("audit.listShiftMovements", () => {
 
   function caller(userId: number) {
     return appRouter.createCaller({
-      user: { id: userId, role: "doctor", name: "Tester", email: `${userId}@test.local` },
+      user: {
+        id: userId,
+        role: "doctor",
+        name: "Tester",
+        email: `${userId}@test.local`,
+      },
       institutionId,
       allowedInstitutionIds: [institutionId],
     } as any);
@@ -187,21 +198,35 @@ describe("audit.listShiftMovements", () => {
 
   it("GESTOR_PLUS (João) vê os 4 eventos da fixture", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
-      actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      actions: [
+        "CESSAO_OFFERED",
+        "CESSAO_ACCEPTED",
+        "CESSAO_APPROVED_BY_OWNER",
+        "SHIFT_CREATED",
+      ],
       fromDate: fixtureDay,
       toDate: fixtureDay,
     });
-    const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
+    const testRows = rows.filter((r) =>
+      r.description.startsWith("audit-test:"),
+    );
     expect(testRows).toHaveLength(4);
   });
 
   it("USER (Pedro) vê apenas eventos onde participou (3 dos 4)", async () => {
     const rows = await caller(pedroUserId).audit.listShiftMovements({
-      actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      actions: [
+        "CESSAO_OFFERED",
+        "CESSAO_ACCEPTED",
+        "CESSAO_APPROVED_BY_OWNER",
+        "SHIFT_CREATED",
+      ],
       fromDate: fixtureDay,
       toDate: fixtureDay,
     });
-    const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
+    const testRows = rows.filter((r) =>
+      r.description.startsWith("audit-test:"),
+    );
     // Os 3 eventos de cessão envolvem Pedro (ofereceu, aprovou, ou foi
     // o "from" do aceite). O SHIFT_CREATED por João não envolve Pedro.
     expect(testRows).toHaveLength(3);
@@ -214,11 +239,18 @@ describe("audit.listShiftMovements", () => {
 
   it("USER (Ana) vê apenas eventos onde participou (2 dos 4)", async () => {
     const rows = await caller(anaUserId).audit.listShiftMovements({
-      actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      actions: [
+        "CESSAO_OFFERED",
+        "CESSAO_ACCEPTED",
+        "CESSAO_APPROVED_BY_OWNER",
+        "SHIFT_CREATED",
+      ],
       fromDate: fixtureDay,
       toDate: fixtureDay,
     });
-    const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
+    const testRows = rows.filter((r) =>
+      r.description.startsWith("audit-test:"),
+    );
     // Ana foi actor no ACCEPTED, e to_user no APPROVED_BY_OWNER.
     expect(testRows).toHaveLength(2);
     const actions = testRows.map((r) => r.action);
@@ -232,7 +264,9 @@ describe("audit.listShiftMovements", () => {
       fromDate: fixtureDay,
       toDate: fixtureDay,
     });
-    const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
+    const testRows = rows.filter((r) =>
+      r.description.startsWith("audit-test:"),
+    );
     expect(testRows).toHaveLength(1);
     expect(testRows[0].action).toBe("CESSAO_APPROVED_BY_OWNER");
     expect(testRows[0].actor.userId).toBe(pedroUserId);
@@ -257,11 +291,18 @@ describe("audit.listShiftMovements", () => {
 
   it("ordena DESC por createdAt (mais recente primeiro)", async () => {
     const rows = await caller(joaoUserId).audit.listShiftMovements({
-      actions: ["CESSAO_OFFERED", "CESSAO_ACCEPTED", "CESSAO_APPROVED_BY_OWNER", "SHIFT_CREATED"],
+      actions: [
+        "CESSAO_OFFERED",
+        "CESSAO_ACCEPTED",
+        "CESSAO_APPROVED_BY_OWNER",
+        "SHIFT_CREATED",
+      ],
       fromDate: fixtureDay,
       toDate: fixtureDay,
     });
-    const testRows = rows.filter((r) => r.description.startsWith("audit-test:"));
+    const testRows = rows.filter((r) =>
+      r.description.startsWith("audit-test:"),
+    );
     // SHIFT_CREATED foi inserido por último → deve aparecer primeiro
     expect(testRows[0].action).toBe("SHIFT_CREATED");
     // CESSAO_OFFERED foi o primeiro → último
@@ -291,5 +332,101 @@ describe("audit.listShiftMovements", () => {
     });
     const found = explicit.filter((r) => r.entityId === noiseId);
     expect(found).toHaveLength(1);
+  });
+
+  it("revalida publicação e papel atual após downgrade do gestor", async () => {
+    const [testHospital] = await db!
+      .insert(hospitals)
+      .values({ institutionId, name: `Audit fence ${Date.now()}` })
+      .$returningId();
+    const [testSector] = await db!
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId: testHospital.id,
+        name: `Audit fence ${Date.now()}`,
+        category: "servico",
+        color: "#2563EB",
+      })
+      .$returningId();
+    const startAt = new Date(`${fixtureDay}T07:00:00-03:00`);
+    const endAt = new Date(`${fixtureDay}T13:00:00-03:00`);
+    const [shift] = await db!
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId: testHospital.id,
+        sectorId: testSector.id,
+        label: "audit publication fence",
+        startAt,
+        endAt,
+        status: "OCUPADO",
+      })
+      .$returningId();
+    await db!.insert(auditTrail).values({
+      actorUserId: joaoUserId,
+      actorRole: "manager",
+      action: "SHIFT_UPDATED",
+      entityType: "SHIFT_INSTANCE",
+      entityId: shift.id,
+      description: "audit-test: evento de rascunho",
+      institutionId,
+      hospitalId: testHospital.id,
+      sectorId: testSector.id,
+      shiftInstanceId: shift.id,
+      createdAt: new Date(`${fixtureDay}T12:10:00-03:00`),
+    });
+    const rosterWhere = and(
+      eq(monthlyRosters.institutionId, institutionId),
+      eq(monthlyRosters.hospitalId, testHospital.id),
+      eq(monthlyRosters.yearMonth, yearMonthBrt(startAt)),
+    );
+    const membershipWhere = and(
+      eq(professionalInstitutions.professionalId, joaoProId),
+      eq(professionalInstitutions.institutionId, institutionId),
+    );
+    const read = async () =>
+      (
+        await caller(joaoUserId).audit.listShiftMovements({
+          actions: ["SHIFT_UPDATED"],
+          fromDate: fixtureDay,
+          toDate: fixtureDay,
+        })
+      ).some((row) => row.shift?.id === shift.id);
+
+    try {
+      await db!.delete(monthlyRosters).where(rosterWhere);
+      expect(await read()).toBe(true);
+      await db!
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "USER" })
+        .where(membershipWhere);
+      expect(await read()).toBe(false);
+
+      await db!.insert(monthlyRosters).values({
+        institutionId,
+        hospitalId: testHospital.id,
+        yearMonth: yearMonthBrt(startAt),
+        status: "PUBLISHED",
+      });
+      expect(await read()).toBe(true);
+      await db!
+        .update(monthlyRosters)
+        .set({ status: "LOCKED" })
+        .where(rosterWhere);
+      expect(await read()).toBe(true);
+    } finally {
+      await db!
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "GESTOR_PLUS" })
+        .where(membershipWhere);
+      await db!
+        .delete(auditTrail)
+        .where(eq(auditTrail.shiftInstanceId, shift.id));
+      await db!.delete(shiftInstances).where(eq(shiftInstances.id, shift.id));
+      await db!.delete(monthlyRosters).where(rosterWhere);
+      await db!.delete(sectors).where(eq(sectors.id, testSector.id));
+      await db!.delete(hospitals).where(eq(hospitals.id, testHospital.id));
+    }
   });
 });

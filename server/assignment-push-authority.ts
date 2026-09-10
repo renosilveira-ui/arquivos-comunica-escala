@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import {
   hospitals,
+  monthlyRosters,
   professionalInstitutions,
   professionals,
   sectors,
@@ -10,7 +11,12 @@ import {
 } from "../drizzle/schema";
 import type { getDb } from "./db";
 import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
-import { PersistedPushAuthorityBindingError } from "./push-authority-rejection";
+import { yearMonthBrt } from "./local-time";
+import {
+  DeferredPushAuthorityError,
+  ExpiredPushAuthorityError,
+  PersistedPushAuthorityBindingError,
+} from "./push-authority-rejection";
 
 export const ASSIGNMENT_LIFECYCLE_PUSH_PURPOSES = [
   "ASSIGNED",
@@ -117,6 +123,7 @@ export function isAssignmentLifecyclePushPayload(
 export async function requireAuthorizedAssignmentLifecycleRecipient(
   db: AuthorityDb,
   authority: AssignmentLifecyclePushAuthority,
+  decisionNow: Date,
   lockForShare = false,
 ): Promise<void> {
   const assignmentQuery = db
@@ -125,6 +132,7 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
       assignmentActive: shiftAssignmentsV2.isActive,
       shiftStatus: shiftInstances.status,
       scheduleContextId: shiftInstances.scheduleContextId,
+      startAt: shiftInstances.startAt,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -288,5 +296,28 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
     if (!lockedAccessId) {
       invalid("Profissional perdeu o acesso ao hospital ou setor");
     }
+  }
+
+  if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+    throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+  }
+
+  const rosterQuery = db
+    .select({ status: monthlyRosters.status })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, authority.institutionId),
+        eq(monthlyRosters.hospitalId, authority.hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonthBrt(assignment.startAt)),
+      ),
+    )
+    .limit(1);
+  const rosterRows = lockForShare
+    ? await rosterQuery.for("share")
+    : await rosterQuery;
+  const rosterStatus = rosterRows[0]?.status;
+  if (rosterStatus !== "PUBLISHED" && rosterStatus !== "LOCKED") {
+    throw new DeferredPushAuthorityError();
   }
 }
