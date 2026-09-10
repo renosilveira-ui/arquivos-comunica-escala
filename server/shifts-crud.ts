@@ -2692,9 +2692,10 @@ export const shiftsRouter = router({
             await rearmDutyConfirmationsAfterShiftWindowChange(tx, {
               institutionId: locked.institutionId,
               shiftInstanceId: locked.id,
-              assignmentIds: activeAssignments.map(
-                (assignment) => assignment.id,
-              ),
+              activeAssignments: activeAssignments.map((assignment) => ({
+                id: assignment.id,
+                professionalId: assignment.professionalId,
+              })),
             });
         }
         await auditLog(

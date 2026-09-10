@@ -16,7 +16,14 @@ describe("rearme de confirmação após mudança de horário", () => {
       "export async function rearmDutyConfirmationsAfterShiftWindowChange",
     );
     expect(lifecycle).toContain("await requireValidDutyConfirmation");
-    expect(lifecycle).toContain("requireOriginalAssignmentActive: true");
+    expect(lifecycle).toContain(
+      "requireOriginalAssignmentActive: !replacementCycle",
+    );
+    expect(lifecycle).toContain("requireEffectiveAssignment: replacementCycle");
+    expect(lifecycle).toContain('snapshot.status === "REPLACEMENT_CONFIRMED"');
+    expect(lifecycle).toContain(
+      "activeProfessionalIds.has(snapshot.replacementProfessionalId)",
+    );
     expect(lifecycle).toContain("lockForUpdate: true");
     expect(lifecycle).toContain('status: "PENDING"');
     expect(lifecycle).toContain("confirmationToken: randomUUID()");
@@ -56,6 +63,21 @@ describe("rearme de confirmação após mudança de horário", () => {
       ":request:${confirmationToken}:${current.original.userId}`",
     );
     expect(dispatcher).toContain("confirmationToken,");
+  });
+
+  it("não cria segunda confirmação para o assignment efetivo do substituto", () => {
+    expect(dispatcher).toContain(
+      'eq(dutyConfirmations.status, "REPLACEMENT_CONFIRMED")',
+    );
+    expect(dispatcher).toContain(
+      "dutyConfirmations.replacementProfessionalId,\n              shiftAssignmentsV2.professionalId",
+    );
+    expect(dispatcher).toContain(
+      "eq(dutyConfirmations.replacementUserId, professionals.userId)",
+    );
+    expect(dispatcher).toContain(
+      "eq(dutyConfirmations.institutionId, shiftAssignmentsV2.institutionId)",
+    );
   });
 
   it("prende novos pushes ao token e oculta ciclo ainda não materializado", () => {
