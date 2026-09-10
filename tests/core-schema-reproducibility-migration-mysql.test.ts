@@ -49,6 +49,53 @@ function quoteIdentifier(identifier: string): string {
   return `\`${identifier}\``;
 }
 
+async function schemaSnapshot(database: Connection): Promise<string> {
+  const [tables] = await database.query<RowDataPacket[]>(`
+    SELECT TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_COLLATION
+    FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE()
+    ORDER BY TABLE_NAME
+  `);
+  const [columns] = await database.query<RowDataPacket[]>(`
+    SELECT TABLE_NAME, ORDINAL_POSITION, COLUMN_NAME, COLUMN_TYPE,
+      IS_NULLABLE, COLUMN_DEFAULT, EXTRA, CHARACTER_SET_NAME,
+      COLLATION_NAME, GENERATION_EXPRESSION
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+    ORDER BY TABLE_NAME, ORDINAL_POSITION
+  `);
+  const [indexes] = await database.query<RowDataPacket[]>(`
+    SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME,
+      COLLATION, SUB_PART, INDEX_TYPE
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+    ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
+  `);
+  const [foreignKeyColumns] = await database.query<RowDataPacket[]>(`
+    SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION,
+      POSITION_IN_UNIQUE_CONSTRAINT, REFERENCED_TABLE_SCHEMA,
+      REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+    FROM information_schema.KEY_COLUMN_USAGE
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND REFERENCED_TABLE_NAME IS NOT NULL
+    ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION
+  `);
+  const [foreignKeys] = await database.query<RowDataPacket[]>(`
+    SELECT TABLE_NAME, CONSTRAINT_NAME, UNIQUE_CONSTRAINT_SCHEMA,
+      UNIQUE_CONSTRAINT_NAME, MATCH_OPTION, UPDATE_RULE, DELETE_RULE
+    FROM information_schema.REFERENTIAL_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+    ORDER BY TABLE_NAME, CONSTRAINT_NAME
+  `);
+  return JSON.stringify([
+    tables,
+    columns,
+    indexes,
+    foreignKeyColumns,
+    foreignKeys,
+  ]);
+}
+
 const migration = readFileSync(
   new URL(
     "../drizzle/migrations/manual/2026-09-09-core-schema-reproducibility.sql",
@@ -93,7 +140,7 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
     try {
       await database.query(`
         CREATE TABLE institutions (
-          id INT NOT NULL,
+          id INT NOT NULL AUTO_INCREMENT,
           PRIMARY KEY (id)
         ) ENGINE=InnoDB;
         CREATE TABLE shift_instances (
@@ -109,6 +156,19 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
     }
   }
 
+  async function expectPreflightRejectionWithoutSchemaChange(
+    database: Connection,
+  ): Promise<void> {
+    const before = await schemaSnapshot(database);
+    await expect(database.query(migration)).rejects.toMatchObject({
+      code: "ER_NO_SUCH_TABLE",
+      message: expect.stringContaining(
+        "core_schema_reproducibility_contract_mismatch",
+      ),
+    });
+    expect(await schemaSnapshot(database)).toBe(before);
+  }
+
   it("instala os contratos ausentes e reaplica sem alterar dados", async () => {
     await withSchema(async (database) => {
       await database.query("INSERT INTO institutions (id) VALUES (1)");
@@ -117,7 +177,9 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
       );
 
       await database.query(migration);
+      const afterFirstRun = await schemaSnapshot(database);
       await database.query(migration);
+      expect(await schemaSnapshot(database)).toBe(afterFirstRun);
 
       const [shiftRows] = await database.query<RowDataPacket[]>(`
         SELECT label, modality, coverage_type, payment_model,
@@ -169,31 +231,7 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
       await database.query(
         "ALTER TABLE shift_instances ADD COLUMN modality VARCHAR(20) NULL",
       );
-
-      await expect(database.query(migration)).rejects.toMatchObject({
-        code: "ER_NO_SUCH_TABLE",
-        message: expect.stringContaining(
-          "core_schema_reproducibility_contract_mismatch",
-        ),
-      });
-
-      const [newColumns] = await database.query<RowDataPacket[]>(`
-        SELECT COLUMN_NAME
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'shift_instances'
-          AND COLUMN_NAME IN (
-            'coverage_type', 'payment_model', 'productivity_cap_brl'
-          )
-      `);
-      expect(newColumns).toEqual([]);
-      const [configTable] = await database.query<RowDataPacket[]>(`
-        SELECT TABLE_NAME
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'institution_config'
-      `);
-      expect(configTable).toEqual([]);
+      await expectPreflightRejectionWithoutSchemaChange(database);
     });
   });
 
@@ -207,23 +245,110 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
         ) ENGINE=InnoDB
       `);
 
-      await expect(database.query(migration)).rejects.toMatchObject({
-        code: "ER_NO_SUCH_TABLE",
-        message: expect.stringContaining(
-          "core_schema_reproducibility_contract_mismatch",
-        ),
-      });
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
 
-      const [modalityColumns] = await database.query<RowDataPacket[]>(`
-        SELECT COLUMN_NAME
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'shift_instances'
-          AND COLUMN_NAME IN (
-            'modality', 'coverage_type', 'payment_model', 'productivity_cap_brl'
-          )
+  it("recusa institutions.id unsigned antes do primeiro DDL", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        ALTER TABLE institutions
+        MODIFY COLUMN id INT UNSIGNED NOT NULL AUTO_INCREMENT
       `);
-      expect(modalityColumns).toEqual([]);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa PRIMARY composta mesmo quando id é a primeira coluna", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        ALTER TABLE institutions
+        ADD COLUMN shard_id INT NOT NULL DEFAULT 1,
+        DROP PRIMARY KEY,
+        ADD PRIMARY KEY (id, shard_id)
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa engine incompatível antes do primeiro DDL", async () => {
+    await withSchema(async (database) => {
+      await database.query("ALTER TABLE shift_instances ENGINE=MyISAM");
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa collation divergente nas colunas de modalidade", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        ALTER TABLE shift_instances
+          ADD COLUMN modality ENUM('PLANTAO','SOBREAVISO')
+            CHARACTER SET latin1 COLLATE latin1_swedish_ci
+            NOT NULL DEFAULT 'PLANTAO',
+          ADD COLUMN coverage_type ENUM('URGENCIA_EMERGENCIA','ELETIVAS') NULL,
+          ADD COLUMN payment_model ENUM(
+            'FIXO','FIXO_PRODUTIVIDADE_TETO',
+            'FIXO_PRODUTIVIDADE_SEM_TETO','PRODUTIVIDADE_PURA'
+          ) NOT NULL DEFAULT 'FIXO',
+          ADD COLUMN productivity_cap_brl DECIMAL(12,2) NULL
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa índice de modalidade homônimo com ordem incompatível", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        ALTER TABLE shift_instances
+          ADD COLUMN modality ENUM('PLANTAO','SOBREAVISO')
+            NOT NULL DEFAULT 'PLANTAO',
+          ADD COLUMN coverage_type ENUM('URGENCIA_EMERGENCIA','ELETIVAS') NULL,
+          ADD COLUMN payment_model ENUM(
+            'FIXO','FIXO_PRODUTIVIDADE_TETO',
+            'FIXO_PRODUTIVIDADE_SEM_TETO','PRODUTIVIDADE_PURA'
+          ) NOT NULL DEFAULT 'FIXO',
+          ADD COLUMN productivity_cap_brl DECIMAL(12,2) NULL,
+          ADD INDEX idx_shift_instances_modality (modality, institution_id)
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa FK homônima em outra tabela antes do primeiro DDL", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        CREATE TABLE conflicting_fk_owner (
+          id INT NOT NULL AUTO_INCREMENT,
+          institution_id INT NOT NULL,
+          PRIMARY KEY (id),
+          CONSTRAINT fk_institution_config_institution
+            FOREIGN KEY (institution_id) REFERENCES institutions(id)
+            ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
+  it("recusa FK existente com ação incompatível antes de alterar turnos", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        CREATE TABLE institution_config (
+          id INT NOT NULL AUTO_INCREMENT,
+          institution_id INT NOT NULL,
+          edit_window_days INT NOT NULL DEFAULT 3,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          UNIQUE KEY institution_config_institution_id_unique (institution_id),
+          KEY idx_institution_config_institution_id (institution_id, id),
+          CONSTRAINT fk_institution_config_institution
+            FOREIGN KEY (institution_id) REFERENCES institutions(id)
+            ON DELETE RESTRICT
+        ) ENGINE=InnoDB
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
     });
   });
 });
