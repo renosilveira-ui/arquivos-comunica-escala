@@ -222,6 +222,17 @@ export function hashAuthRecoveryValue(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+/**
+ * `available_at` é DATETIME sem fração de segundo e o MySQL ARREDONDA meio
+ * segundo para cima. Sem truncar, um pedido enfileirado em T.6 é persistido
+ * como T+1 e o worker que roda em seguida não o enxerga como pronto: a
+ * entrega só sai no tick seguinte. Truncar antecipa a disponibilidade em
+ * menos de 1 s, o que é sempre seguro; arredondar para frente não é.
+ */
+function truncateToStoredSecond(instant: Date): Date {
+  return new Date(Math.floor(instant.getTime() / 1000) * 1000);
+}
+
 export async function enqueueForgotPasswordRecovery(
   db: RecoveryWriteDb,
   normalizedEmail: string,
@@ -234,7 +245,7 @@ export async function enqueueForgotPasswordRecovery(
     state: "QUEUED",
     tokenHash: hashAuthRecoveryValue(token),
     sealedPayload: sealAuthRecoveryPayload({ email: normalizedEmail, token }),
-    availableAt: now,
+    availableAt: truncateToStoredSecond(now),
     deliveryDeadlineAt: new Date(
       now.getTime() + AUTH_RECOVERY_DELIVERY_WINDOW_MS,
     ),
@@ -280,7 +291,7 @@ export async function enqueueAdminPasswordRecovery(
         email: normalizedEmail,
         token,
       }),
-      availableAt: now,
+      availableAt: truncateToStoredSecond(now),
       deliveryDeadlineAt: new Date(
         now.getTime() + AUTH_RECOVERY_DELIVERY_WINDOW_MS,
       ),
@@ -372,7 +383,7 @@ async function requeueOrDead(
     .update(authRecoveryRequests)
     .set({
       state: "QUEUED",
-      availableAt: retryAt,
+      availableAt: truncateToStoredSecond(retryAt),
       leaseToken: null,
       leaseUntil: null,
       lastErrorCode: errorCode,
