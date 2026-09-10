@@ -19,6 +19,7 @@ import { sessionInstanceConstraintHttpStatus } from "./trpc";
 import { setStaticCacheHeaders } from "./static-cache";
 import { assertProductionSecrets } from "./env-validation";
 import { logger } from "./logger";
+import { safeErrorDiagnostic } from "./safe-error";
 import {
   PAYLOAD_LIMIT,
   createAuthRateLimit,
@@ -121,7 +122,7 @@ async function startServer() {
   // mysql2 errors embed internal hostnames, IPs, usernames and database
   // names; exposing them on an unauthenticated endpoint is CWE-209
   // information disclosure. Only a fixed-vocabulary `status` label is
-  // returned; the full driver detail is logged server-side.
+  // returned; logs receive only fixed-vocabulary diagnostics.
   app.get("/api/health", async (_req, res) => {
     const db = await pingDb();
     if (db.ok) {
@@ -132,17 +133,12 @@ async function startServer() {
       });
       return;
     }
-    logger.warn(
-      { status: db.status, detail: db.detail },
-      "health probe failed",
-    );
-    res
-      .status(503)
-      .json({
-        ok: false,
-        db: { ok: false, status: db.status },
-        timestamp: Date.now(),
-      });
+    logger.warn({ status: db.status, ...db.diagnostic }, "health probe failed");
+    res.status(503).json({
+      ok: false,
+      db: { ok: false, status: db.status },
+      timestamp: Date.now(),
+    });
   });
 
   app.use(createGlobalRateLimit());
@@ -240,7 +236,7 @@ async function startServer() {
     logger.info({ latencyMs: warm.latencyMs }, "db pool warm");
   } else {
     logger.warn(
-      { status: warm.status, detail: warm.detail },
+      { status: warm.status, ...warm.diagnostic },
       "db warm-up failed; listening anyway",
     );
   }
@@ -262,7 +258,7 @@ async function startServer() {
         stopConfirmationCron();
       } catch (err) {
         logger.error(
-          { err: err instanceof Error ? err.message : String(err) },
+          safeErrorDiagnostic(err, "application"),
           "stopConfirmationCron failed",
         );
       }
@@ -270,7 +266,7 @@ async function startServer() {
         stopWhatsAppNlDriver();
       } catch (err) {
         logger.error(
-          { err: err instanceof Error ? err.message : String(err) },
+          safeErrorDiagnostic(err, "application"),
           "stopWhatsAppNlDriver failed",
         );
       }
@@ -280,7 +276,7 @@ async function startServer() {
 
 startServer().catch((err) => {
   logger.fatal(
-    { err: err instanceof Error ? err.message : String(err) },
+    safeErrorDiagnostic(err, "application"),
     "server failed to start",
   );
   process.exit(1);

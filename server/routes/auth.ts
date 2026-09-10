@@ -91,6 +91,7 @@ import {
   professionalIdentityWriteFields,
   professionCodeFromLegacyProfessionalRole,
 } from "../../lib/profession-definitions";
+import { findSafeErrorCode, safeErrorDiagnostic } from "../_core/safe-error";
 
 type UserRole = "admin" | "manager" | "doctor" | "nurse" | "tech";
 type ProfessionalRole = "doctor" | "nurse" | "tech";
@@ -721,7 +722,10 @@ authRouter.post(
         res.status(error.status).json({ error: error.message });
         return;
       }
-      console.error("[change-password] Falha transacional", String(error));
+      console.error(
+        "[change-password] Falha transacional",
+        safeErrorDiagnostic(error, "database"),
+      );
       res.status(500).json({ error: "Falha ao alterar senha" });
     }
   },
@@ -1073,7 +1077,10 @@ authRouter.post(
     } catch (error) {
       // The public response is deliberately indistinguishable for missing
       // accounts, audit/DB failures and mail transport failures.
-      console.error("[forgot-password] Falha interna mascarada", String(error));
+      console.error(
+        "[forgot-password] Falha interna mascarada",
+        safeErrorDiagnostic(error),
+      );
     }
 
     res.json(neutral);
@@ -1269,7 +1276,10 @@ authRouter.post(
         res.status(error.status).json({ error: error.message });
         return;
       }
-      console.error("[reset-password] Falha transacional", String(error));
+      console.error(
+        "[reset-password] Falha transacional",
+        safeErrorDiagnostic(error, "database"),
+      );
       res.status(500).json({ error: "Falha ao redefinir senha" });
     }
   },
@@ -1913,7 +1923,10 @@ authRouter.delete("/me", async (req: Request, res: Response): Promise<void> => {
       res.status(error.status).json({ error: error.message });
       return;
     }
-    console.error("[delete-account] Falha transacional", String(error));
+    console.error(
+      "[delete-account] Falha transacional",
+      safeErrorDiagnostic(error, "database"),
+    );
     res.status(500).json({ error: "Falha ao excluir conta" });
     return;
   }
@@ -2054,7 +2067,7 @@ authRouter.post(
       if (sendAuthenticationInfrastructureError(res, error)) return;
       console.error(
         "[logout] Falha ao validar autoridade da sessão exact",
-        JSON.stringify(error instanceof Error ? error.message : String(error)),
+        safeErrorDiagnostic(error, "authentication"),
       );
       res.status(500).json({ error: "Falha ao validar sessão para logout" });
       return;
@@ -2094,9 +2107,7 @@ authRouter.post(
         if (sendAuthenticationInfrastructureError(res, error)) return;
         console.error(
           "[logout] Falha ao validar autoridade da sessão exact",
-          JSON.stringify(
-            error instanceof Error ? error.message : String(error),
-          ),
+          safeErrorDiagnostic(error, "authentication"),
         );
         res.status(500).json({ error: "Falha ao validar sessão para logout" });
         return;
@@ -2279,7 +2290,7 @@ authRouter.post(
       if (sendAuthenticationInfrastructureError(res, error)) return;
       console.error(
         "[logout] Falha transacional",
-        JSON.stringify(error instanceof Error ? error.message : String(error)),
+        safeErrorDiagnostic(error, "database"),
       );
       res.status(500).json({ error: "Falha ao encerrar sessão" });
     }
@@ -3213,19 +3224,14 @@ authRouter.post(
         res.status(error.status).json({ error: error.message });
         return;
       }
-      const code =
-        error && typeof error === "object" && "cause" in error
-          ? (error as { cause?: { code?: unknown } }).cause?.code
-          : error && typeof error === "object" && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined;
+      const code = findSafeErrorCode(error);
       if (code === "ER_DUP_ENTRY") {
         res.status(409).json({ error: EMAIL_ALREADY_REGISTERED });
         return;
       }
       console.error(
         "[register] Falha transacional ao criar usuário",
-        code ? String(code) : "unknown",
+        safeErrorDiagnostic(error, "database"),
       );
       res.status(500).json({ error: "Falha ao cadastrar usuário" });
     }
@@ -3641,18 +3647,13 @@ authRouter.post(
         res.status(error.status).json({ error: error.message });
         return;
       }
-      const code =
-        error && typeof error === "object" && "cause" in error
-          ? (error as { cause?: { code?: unknown } }).cause?.code
-          : error && typeof error === "object" && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined;
+      const code = findSafeErrorCode(error);
       if (code === "ER_DUP_ENTRY") {
         return sendNeutralSignupAccepted(res, hasInstitution);
       }
       console.error(
         "[signup] Falha transacional",
-        code ? String(code) : "unknown",
+        safeErrorDiagnostic(error, "database"),
       );
       res
         .status(500)

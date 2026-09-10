@@ -5,7 +5,6 @@
  * (após Twilio Verify status=approved) pode preenchê-lo.
  * Mutations de perfil NUNCA marcam verificado.
  */
-import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "./db";
@@ -38,10 +37,6 @@ export async function assertOperableWhatsAppUser(userId: number): Promise<void> 
     });
   }
   await requireOperableWhatsAppUser(db, userId);
-}
-
-export function e164AuditHash(e164: string): string {
-  return createHash("sha256").update(e164).digest("hex").slice(0, 16);
 }
 
 function isDuplicateKeyError(error: unknown): boolean {
@@ -272,7 +267,6 @@ export async function upsertUserWhatsAppContact(input: {
         : "WhatsApp reconfirmado sem mudança de número",
       metadata: {
         channel: WHATSAPP_CHANNEL,
-        addressHash: e164AuditHash(normalized.e164),
         verificationCleared: numberChanged,
       },
     },
@@ -283,7 +277,6 @@ export async function upsertUserWhatsAppContact(input: {
     "[whatsapp-contact] upsert",
     JSON.stringify({
       userId: input.userId,
-      addressHash: e164AuditHash(normalized.e164),
       verificationCleared: numberChanged,
     }),
   );
@@ -341,7 +334,6 @@ export async function deactivateUserWhatsAppContact(input: {
       description: "WhatsApp desativado pelo próprio usuário",
       metadata: {
         channel: WHATSAPP_CHANNEL,
-        addressHash: e164AuditHash(existing.normalizedAddress),
       },
     },
     { strict: true },

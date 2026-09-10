@@ -78,6 +78,7 @@ export default defineConfig({
       "tests/open-month-capacity-state.test.ts",
       "tests/schedule-invite-mail.test.ts",
       "tests/mailer.test.ts",
+      "tests/safe-error-logging.test.ts",
       "tests/request-deadline.test.ts",
       "tests/trpc-batch-limit.test.ts",
       "tests/trpc-web-session-gate.test.ts",

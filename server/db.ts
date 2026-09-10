@@ -3,6 +3,13 @@ import mysql from "mysql2";
 import { eq, sql } from "drizzle-orm";
 import { users, type User } from "../drizzle/schema";
 import { resolveSslConfig } from "./_core/db-ssl";
+import { logger } from "./_core/logger";
+import {
+  findSafeErrorCode,
+  safeDiagnosticForCode,
+  safeErrorDiagnostic,
+  type SafeErrorDiagnostic,
+} from "./_core/safe-error";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -69,7 +76,10 @@ export async function getDb() {
       });
       _db = drizzle(pool);
     } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
+      logger.warn(
+        safeErrorDiagnostic(error, "configuration"),
+        "database initialization failed",
+      );
       _db = null;
     }
   }
@@ -91,54 +101,27 @@ export type DbProbeResult =
       ok: false;
       /** Sanitized status label safe for public response bodies. */
       status: DbProbeStatus;
-      /** Full driver error message — internal use only (logs, server-side). */
-      detail: string;
+      /** Fixed-vocabulary metadata safe for logs and public projections. */
+      diagnostic: SafeErrorDiagnostic;
     };
 
-const TIMEOUT_MARKER = "__db_ping_timeout__";
-
 function readErrorCode(err: unknown): string {
-  if (!err || typeof err !== "object") return "";
-  if ("code" in err && (err as { code: unknown }).code) {
-    return String((err as { code: unknown }).code);
-  }
-  // Drizzle wraps the underlying mysql2 error in `cause`; reach in so a
-  // wrapped ECONNREFUSED / ER_ACCESS_DENIED_ERROR / etc. is still classified
-  // correctly instead of falling into the "unknown" bucket.
-  if ("cause" in err && (err as { cause: unknown }).cause) {
-    return readErrorCode((err as { cause: unknown }).cause);
-  }
-  return "";
-}
-
-function readErrorDetail(err: unknown): string {
-  const top = err instanceof Error ? err.message : String(err);
-  if (
-    err &&
-    typeof err === "object" &&
-    "cause" in err &&
-    (err as { cause: unknown }).cause
-  ) {
-    const cause = (err as { cause: unknown }).cause;
-    const causeMsg = cause instanceof Error ? cause.message : String(cause);
-    if (causeMsg && causeMsg !== top) return `${top} | cause: ${causeMsg}`;
-  }
-  return top;
+  return findSafeErrorCode(err) ?? "";
 }
 
 /**
  * Maps an arbitrary driver error into one of a small fixed set of opaque
  * labels. Callers that respond to unauthenticated traffic (e.g. /api/health)
- * MUST expose only the `status` label and never the raw `detail` — driver
- * messages routinely embed internal hostnames, IPs, usernames and DB names
- * (CWE-209).
+ * MUST expose only fixed-vocabulary fields. Driver messages routinely embed
+ * internal hostnames, IPs, usernames and DB names (CWE-209).
  */
 function classifyDbError(err: unknown): DbProbeStatus {
-  if (err instanceof Error && err.message === TIMEOUT_MARKER) return "timeout";
-
   const code = readErrorCode(err);
 
   switch (code) {
+    case "DB_PROBE_TIMEOUT":
+    case "ER_LOCK_WAIT_TIMEOUT":
+      return "timeout";
     case "ECONNREFUSED":
     case "ENOTFOUND":
     case "ETIMEDOUT":
@@ -162,11 +145,10 @@ function classifyDbError(err: unknown): DbProbeStatus {
  * /api/health endpoint and by orchestration layers (Render readiness probes).
  *
  * Returns `{ ok: true, latencyMs }` on success.
- * Returns `{ ok: false, status, detail }` on failure — never throws.
+ * Returns `{ ok: false, status, diagnostic }` on failure — never throws.
  *
- * `status` is a fixed-vocabulary label safe for public exposure; `detail` is
- * the raw driver message intended for server-side logs only and MUST NOT be
- * propagated to unauthenticated responses.
+ * Both failure fields use fixed vocabularies. No driver message, query,
+ * params or nested cause leaves this boundary.
  */
 // 5 s (era 2 s): a PRIMEIRA conexão ao MySQL gerenciado de outra região,
 // com TLS, numa instância free do Render (0,1 CPU) passava de 2 s — o
@@ -177,13 +159,25 @@ function classifyDbError(err: unknown): DbProbeStatus {
 export async function pingDb(timeoutMs = 5000): Promise<DbProbeResult> {
   const db = await getDb();
   if (!db) {
-    return { ok: false, status: "uninitialized", detail: "database not initialized" };
+    return {
+      ok: false,
+      status: "uninitialized",
+      diagnostic: safeDiagnosticForCode("DATABASE_NOT_INITIALIZED"),
+    };
   }
 
   const started = Date.now();
   const probe = db.execute(sql`SELECT 1`);
   const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(TIMEOUT_MARKER)), timeoutMs),
+    setTimeout(
+      () =>
+        reject(
+          Object.assign(new Error("database probe timed out"), {
+            code: "DB_PROBE_TIMEOUT",
+          }),
+        ),
+      timeoutMs,
+    ),
   );
 
   try {
@@ -191,11 +185,11 @@ export async function pingDb(timeoutMs = 5000): Promise<DbProbeResult> {
     return { ok: true, latencyMs: Date.now() - started };
   } catch (err) {
     const status = classifyDbError(err);
-    const detail =
-      status === "timeout"
-        ? `db ping timeout after ${timeoutMs}ms`
-        : readErrorDetail(err);
-    return { ok: false, status, detail };
+    return {
+      ok: false,
+      status,
+      diagnostic: safeErrorDiagnostic(err, "database"),
+    };
   }
 }
 
