@@ -25,7 +25,8 @@ jobs:
 
     services:
       mysql:
-        image: mysql:8.0
+        # CHECK_CLAUSE é validado contra a serialização comprovada abaixo.
+        image: mysql:8.0.45
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: escalas_test
@@ -49,9 +50,11 @@ jobs:
       INSTITUTION_FEATURE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       PERSONAL_CALENDAR_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       CORE_SCHEMA_REPRO_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
+      AUTH_RECOVERY_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       SCHEDULE_INVITE_FENCE_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       SCHEDULE_INVITE_HASH_V2_MIGRATION_TEST_SERVER_URL: mysql://root:root@127.0.0.1:3306/mysql
       SCHEDULE_INVITE_MIGRATION_TEST_MARKER: ci-schedule-invite-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+      AUTH_RECOVERY_MIGRATION_TEST_MARKER: ci-auth-recovery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
       # A prova da provisão Unimed também recebe somente o servidor local da
       # CI e cria um schema efêmero prefixado. O comando de produto é
       # read-only e a flag --apply é bloqueada.

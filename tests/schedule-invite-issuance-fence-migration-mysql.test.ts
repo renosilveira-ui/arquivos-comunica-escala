@@ -166,8 +166,10 @@ describe("migration da fence de emissão em MySQL isolado", () => {
     const [version] = await admin.query<RowDataPacket[]>(
       "SELECT VERSION() AS version",
     );
-    if (!/^8\./.test(String(version[0]?.version))) {
-      throw new Error("A prova exige o serviço MySQL 8 efêmero.");
+    if (!/^8\.0\.45(?:\D|$)/.test(String(version[0]?.version))) {
+      throw new Error(
+        "A prova exige a serialização de catálogo comprovada no MySQL 8.0.45.",
+      );
     }
   });
 
@@ -454,7 +456,10 @@ describe("migration da fence de emissão em MySQL isolado", () => {
     await database.query(migration);
     await database.query(`
       ALTER TABLE schedule_invite_issuance_fences
-        DROP FOREIGN KEY fk_schedule_invite_issuance_invited_user,
+        DROP FOREIGN KEY fk_schedule_invite_issuance_invited_user
+    `);
+    await database.query(`
+      ALTER TABLE schedule_invite_issuance_fences
         ADD CONSTRAINT fk_schedule_invite_issuance_invited_user
           FOREIGN KEY (invited_user_id) REFERENCES users (id)
           ON UPDATE CASCADE ON DELETE CASCADE
