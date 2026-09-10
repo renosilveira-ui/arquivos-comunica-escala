@@ -707,7 +707,12 @@ export async function notifyManagersConfirmationEscalation(
     .update(JSON.stringify(dutyShiftSnapshot(valid.shift)))
     .digest("hex")
     .slice(0, 12);
-  const recheckRevision = valid.confirmation.recheckAt?.getTime() ?? 0;
+  const recheckEpoch = valid.confirmation.recheckAt?.toISOString();
+  if (!recheckEpoch || valid.confirmation.recheckAt?.getUTCMilliseconds() !== 0) {
+    throw new Error("CONFIRMATION_RECHECK_EPOCH_UNAVAILABLE");
+  }
+  const recheckRevision = valid.confirmation.recheckAt.getTime();
+  const confirmationToken = valid.confirmation.confirmationToken;
 
   let intentCount = 0;
   for (const managerUserId of managerUserIds) {
@@ -726,7 +731,7 @@ export async function notifyManagersConfirmationEscalation(
         institutionId: valid.shift.institutionId,
         userId: managerUserId,
         shiftInstanceId: valid.shift.id,
-        dedupKey: `duty-confirmation:${confirmationId}:manager:${reason}:${snapshot.status}:${recheckRevision}:${shiftRevision}:${managerUserId}`,
+        dedupKey: `duty-confirmation:${confirmationId}:manager:${reason}:${snapshot.status}:${recheckRevision}:${confirmationToken}:${shiftRevision}:${managerUserId}`,
         payload: {
           ...push,
           data: {
@@ -736,6 +741,8 @@ export async function notifyManagersConfirmationEscalation(
             institutionId: valid.shift.institutionId,
             shiftInstanceId: valid.shift.id,
             userId: valid.original.userId,
+            recheckEpoch,
+            confirmationToken,
           },
         },
         authority: {
@@ -746,6 +753,8 @@ export async function notifyManagersConfirmationEscalation(
           recipientKind: "MANAGER",
           expectedUserId: managerUserId,
           shiftSnapshot: dutyShiftSnapshot(valid.shift),
+          recheckEpoch,
+          confirmationToken,
         },
       });
       intentCount += 1;

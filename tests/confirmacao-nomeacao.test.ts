@@ -188,6 +188,23 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     return row;
   }
 
+  function nominationRouteInput(confirmation: {
+    confirmationToken: string;
+    recheckAt: Date | null;
+  }) {
+    if (!confirmation.recheckAt) {
+      throw new Error("Fixture NOMINATED sem recheckAt canônico");
+    }
+    const nominationEpoch = confirmation.recheckAt.toISOString();
+    if (confirmation.recheckAt.getUTCMilliseconds() !== 0) {
+      throw new Error("Fixture NOMINATED com recheckAt fora da precisão MySQL");
+    }
+    return {
+      confirmationToken: confirmation.confirmationToken,
+      nominationEpoch,
+    };
+  }
+
   async function pending(assignmentId: number, shiftId: number) {
     const [c] = await db
       .insert(dutyConfirmations)
@@ -493,10 +510,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular("ON_CALL");
     const conf = await nominated(assignmentId, shiftId);
     const sub = confirmationRouter.createCaller(ctx(subUserId));
-    const nom = await sub.getNomination({ confirmationToken: conf.confirmationToken });
+    const nominationInput = nominationRouteInput(conf);
+    const nom = await sub.getNomination(nominationInput);
     expect(nom?.shiftInstanceId).toBe(shiftId);
 
-    const r = await sub.acceptNomination({ confirmationToken: conf.confirmationToken });
+    const r = await sub.acceptNomination(nominationInput);
     expect(r.status).toBe("REPLACEMENT_CONFIRMED");
     expect(vi.mocked(enqueueAutoSsoPush)).not.toHaveBeenCalled();
     expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(2);
@@ -529,7 +547,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(active).toEqual([{ professionalId: subProId, assignmentType: "ON_CALL" }]);
     const [shift] = await db.select({ status: shiftInstances.status }).from(shiftInstances).where(eq(shiftInstances.id, shiftId));
     expect(shift.status).toBe("OCUPADO");
-    await expect(sub.acceptNomination({ confirmationToken: conf.confirmationToken })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(sub.acceptNomination(nominationInput)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("confirm preserva verdade local e auditoria quando o tenant não tem organização Comunica+", async () => {
@@ -632,7 +650,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       await expect(
         confirmationRouter
           .createCaller(ctx(subUserId))
-          .acceptNomination({ confirmationToken: conf.confirmationToken }),
+          .acceptNomination(nominationRouteInput(conf)),
       ).resolves.toMatchObject({
         ok: true,
         status: "REPLACEMENT_CONFIRMED",
@@ -793,7 +811,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       await expect(
         confirmationRouter
           .createCaller(ctx(subUserId))
-          .acceptNomination({ confirmationToken: conf.confirmationToken }),
+          .acceptNomination(nominationRouteInput(conf)),
       ).resolves.toMatchObject({
         ok: true,
         status: "REPLACEMENT_CONFIRMED",
@@ -982,7 +1000,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const conf = await nominated(assignmentId, shiftId);
     await db.update(shiftAssignmentsV2).set({ isActive: false }).where(eq(shiftAssignmentsV2.id, assignmentId));
     const sub = confirmationRouter.createCaller(ctx(subUserId));
-    await expect(sub.acceptNomination({ confirmationToken: conf.confirmationToken })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(sub.acceptNomination(nominationRouteInput(conf))).rejects.toMatchObject({ code: "CONFLICT" });
     const rows = await db.select({ id: shiftAssignmentsV2.id }).from(shiftAssignmentsV2).where(and(eq(shiftAssignmentsV2.shiftInstanceId, shiftId), eq(shiftAssignmentsV2.isActive, true)));
     expect(rows).toHaveLength(0);
     const [rolledBack] = await db
@@ -997,7 +1015,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const s2 = await shiftWithTitular();
     const conf2 = await nominated(s2.assignmentId, s2.shiftId);
     await setRosterStatus(start, "LOCKED");
-    await expect(sub.acceptNomination({ confirmationToken: conf2.confirmationToken })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(sub.acceptNomination(nominationRouteInput(conf2))).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("acceptNomination não transforma escala DRAFT em troca operacional", async () => {
@@ -1008,7 +1026,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await expect(
       confirmationRouter
         .createCaller(ctx(subUserId))
-        .acceptNomination({ confirmationToken: conf.confirmationToken }),
+        .acceptNomination(nominationRouteInput(conf)),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const [after] = await db
@@ -1048,7 +1066,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await expect(
       confirmationRouter
         .createCaller(ctx(subUserId))
-        .acceptNomination({ confirmationToken: conf.confirmationToken }),
+        .acceptNomination(nominationRouteInput(conf)),
     ).rejects.toMatchObject({ code: "CONFLICT" });
     const [after] = await db
       .select({ status: dutyConfirmations.status })
@@ -1090,7 +1108,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await expect(
       confirmationRouter
         .createCaller(ctx(subUserId))
-        .acceptNomination({ confirmationToken: conf.confirmationToken }),
+        .acceptNomination(nominationRouteInput(conf)),
     ).rejects.toMatchObject({ code: "CONFLICT" });
     const [after] = await db
       .select({ status: dutyConfirmations.status })
@@ -1120,7 +1138,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await expect(
       confirmationRouter
         .createCaller(ctx(subUserId))
-        .acceptNomination({ confirmationToken: conf.confirmationToken }),
+        .acceptNomination(nominationRouteInput(conf)),
     ).rejects.toMatchObject({ code: "CONFLICT" });
     const [after] = await db
       .select({ status: dutyConfirmations.status })
@@ -1138,8 +1156,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const sub = confirmationRouter.createCaller(ctx(subUserId));
 
     const results = await Promise.allSettled([
-      sub.acceptNomination({ confirmationToken: firstConf.confirmationToken }),
-      sub.acceptNomination({ confirmationToken: secondConf.confirmationToken }),
+      sub.acceptNomination(nominationRouteInput(firstConf)),
+      sub.acceptNomination(nominationRouteInput(secondConf)),
     ]);
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -1196,8 +1214,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const sub = confirmationRouter.createCaller(ctx(subUserId));
 
     const results = await Promise.allSettled([
-      sub.acceptNomination({ confirmationToken: january.confirmationToken }),
-      sub.acceptNomination({ confirmationToken: february.confirmationToken }),
+      sub.acceptNomination(nominationRouteInput(january)),
+      sub.acceptNomination(nominationRouteInput(february)),
     ]);
 
     expect(results).toEqual([
@@ -1258,12 +1276,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const sub = confirmationRouter.createCaller(ctx(subUserId));
 
     const results = await Promise.allSettled([
-      sub.acceptNomination({
-        confirmationToken: january.confirmation.confirmationToken,
-      }),
-      sub.acceptNomination({
-        confirmationToken: february.confirmation.confirmationToken,
-      }),
+      sub.acceptNomination(nominationRouteInput(january.confirmation)),
+      sub.acceptNomination(nominationRouteInput(february.confirmation)),
     ]);
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -1309,7 +1323,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     let settled = false;
     const decision = confirmationRouter
       .createCaller(ctx(subUserId))
-      .acceptNomination({ confirmationToken: conf.confirmationToken })
+      .acceptNomination(nominationRouteInput(conf))
       .then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -1374,7 +1388,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     await locked;
     const decision = confirmationRouter
       .createCaller(ctx(subUserId))
-      .acceptNomination({ confirmationToken: conf.confirmationToken });
+      .acceptNomination(nominationRouteInput(conf));
     // A validação externa já ocorreu; a mutação de vínculo acontece enquanto
     // a decisão espera o roster. Sem revalidação dentro da tx, ela venceria.
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1447,6 +1461,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
     const identity = dutyConfirmationCasIdentity(conf);
+    const nominationToken = "33333333-3333-4333-8333-333333333333";
     const rechecks = [
       new Date("2032-03-04T10:30:00.000Z"),
       new Date("2032-03-04T11:00:00.000Z"),
@@ -1467,18 +1482,21 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const expectReopenedWindow = async (
       status: "DECLINED" | "NOMINATED" | "REPLACEMENT_DECLINED",
       recheckAt: Date,
+      expectedToken = conf.confirmationToken,
     ) => {
       const [after] = await db
         .select({
           status: dutyConfirmations.status,
           managerNotified: dutyConfirmations.managerNotified,
           recheckAt: dutyConfirmations.recheckAt,
+          confirmationToken: dutyConfirmations.confirmationToken,
         })
         .from(dutyConfirmations)
         .where(eq(dutyConfirmations.id, conf.id));
       expect(after.status).toBe(status);
       expect(after.managerNotified).toBe(false);
       expect(after.recheckAt?.toISOString()).toBe(recheckAt.toISOString());
+      expect(after.confirmationToken).toBe(expectedToken);
     };
 
     await markPreviousWindowAsNotified();
@@ -1503,9 +1521,11 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         replacementProfessionalId: subProId,
         replacementUserId: subUserId,
         recheckAt: rechecks[1],
+        expectedConfirmationToken: conf.confirmationToken,
+        nextConfirmationToken: nominationToken,
       }),
     );
-    await expectReopenedWindow("NOMINATED", rechecks[1]);
+    await expectReopenedWindow("NOMINATED", rechecks[1], nominationToken);
 
     await markPreviousWindowAsNotified();
     await db.transaction((tx) =>
@@ -1513,13 +1533,18 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         kind: "DECLINE_NOMINATION",
         ...identity,
         expectedStatus: "NOMINATED",
+        expectedConfirmationToken: nominationToken,
         expectedReplacementProfessionalId: subProId,
         expectedReplacementUserId: subUserId,
         respondedAt: new Date("2032-03-04T11:05:00.000Z"),
         recheckAt: rechecks[2],
       }),
     );
-    await expectReopenedWindow("REPLACEMENT_DECLINED", rechecks[2]);
+    await expectReopenedWindow(
+      "REPLACEMENT_DECLINED",
+      rechecks[2],
+      nominationToken,
+    );
   });
 
   it.each([
@@ -1572,8 +1597,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
                 replacementProfessionalId: subProId,
               })
             : operation === "acceptNomination"
-              ? caller.acceptNomination({ confirmationToken: conf.confirmationToken })
-              : caller.declineNomination({ confirmationToken: conf.confirmationToken });
+              ? caller.acceptNomination(nominationRouteInput(conf))
+              : caller.declineNomination(nominationRouteInput(conf));
       let settled = false;
       const outcome = decision.then(
         (value) => ({ ok: true as const, value }),
@@ -1717,8 +1742,8 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const sub = confirmationRouter.createCaller(ctx(subUserId));
 
     const results = await Promise.allSettled([
-      sub.acceptNomination({ confirmationToken: conf.confirmationToken }),
-      sub.declineNomination({ confirmationToken: conf.confirmationToken }),
+      sub.acceptNomination(nominationRouteInput(conf)),
+      sub.declineNomination(nominationRouteInput(conf)),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
@@ -1775,7 +1800,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
 
     await confirmationRouter
       .createCaller(ctx(subUserId))
-      .declineNomination({ confirmationToken: conf.confirmationToken });
+      .declineNomination(nominationRouteInput(conf));
 
     const [after] = await db
       .select({
@@ -1828,6 +1853,138 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       expect.any(Date),
       expect.anything(),
     );
+
+    const titular = confirmationRouter.createCaller(ctx(titularUserId));
+    await expect(
+      titular.listReplacementCandidates({
+        confirmationToken: conf.confirmationToken,
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: subProId })]),
+    );
+    await expect(
+      titular.nominateReplacement({
+        confirmationToken: conf.confirmationToken,
+        replacementProfessionalId: subProId,
+      }),
+    ).resolves.toMatchObject({ status: "NOMINATED" });
+
+    const [renominated] = await db
+      .select({
+        status: dutyConfirmations.status,
+        replacementProfessionalId: dutyConfirmations.replacementProfessionalId,
+        replacementUserId: dutyConfirmations.replacementUserId,
+        respondedAt: dutyConfirmations.respondedAt,
+        confirmationToken: dutyConfirmations.confirmationToken,
+      })
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, conf.id));
+    expect(renominated).toMatchObject({
+      status: "NOMINATED",
+      replacementProfessionalId: subProId,
+      replacementUserId: subUserId,
+      respondedAt: null,
+    });
+    expect(renominated.confirmationToken).not.toBe(conf.confirmationToken);
+    expect(queuedPushMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dedupKey: expect.stringContaining(
+          `duty-confirmation:${conf.id}:nomination:${renominated.confirmationToken}:`,
+        ),
+        userId: subUserId,
+        payload: expect.objectContaining({
+          data: expect.objectContaining({
+            confirmationToken: renominated.confirmationToken,
+          }),
+        }),
+        authority: expect.objectContaining({
+          confirmationToken: renominated.confirmationToken,
+        }),
+      }),
+      expect.any(Date),
+      expect.anything(),
+    );
+  });
+
+  it("nova indicação no mesmo segundo invalida a ação anterior e cria outro outbox", async () => {
+    const fixedNow = new Date("2032-03-04T10:00:00.000Z").getTime();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNow);
+    try {
+      const { shiftId, assignmentId } = await shiftWithTitular();
+      const initial = await pending(assignmentId, shiftId);
+      const titular = confirmationRouter.createCaller(ctx(titularUserId));
+      const replacement = confirmationRouter.createCaller(ctx(subUserId));
+
+      await titular.decline({
+        confirmationToken: initial.confirmationToken,
+        reason: "Indisponível",
+      });
+      await titular.nominateReplacement({
+        confirmationToken: initial.confirmationToken,
+        replacementProfessionalId: subProId,
+      });
+      const [firstCycle] = await db
+        .select({
+          confirmationToken: dutyConfirmations.confirmationToken,
+          recheckAt: dutyConfirmations.recheckAt,
+        })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, initial.id));
+      const firstIntent = queuedPushMock.mock.calls
+        .map(([intent]) => intent)
+        .find(
+          (intent) =>
+            intent.authority?.kind === "DUTY_CONFIRMATION" &&
+            intent.authority.purpose === "NOMINATION_REQUEST" &&
+            intent.authority.confirmationToken === firstCycle.confirmationToken,
+        );
+      expect(firstIntent).toBeDefined();
+
+      await replacement.declineNomination({
+        confirmationToken: firstCycle.confirmationToken,
+        nominationEpoch: firstCycle.recheckAt!.toISOString(),
+      });
+      await titular.nominateReplacement({
+        confirmationToken: firstCycle.confirmationToken,
+        replacementProfessionalId: subProId,
+      });
+      const [secondCycle] = await db
+        .select({
+          confirmationToken: dutyConfirmations.confirmationToken,
+          recheckAt: dutyConfirmations.recheckAt,
+        })
+        .from(dutyConfirmations)
+        .where(eq(dutyConfirmations.id, initial.id));
+      const secondIntent = queuedPushMock.mock.calls
+        .map(([intent]) => intent)
+        .find(
+          (intent) =>
+            intent.authority?.kind === "DUTY_CONFIRMATION" &&
+            intent.authority.purpose === "NOMINATION_REQUEST" &&
+            intent.authority.confirmationToken === secondCycle.confirmationToken,
+        );
+
+      expect(secondCycle.recheckAt?.toISOString()).toBe(
+        firstCycle.recheckAt?.toISOString(),
+      );
+      expect(secondCycle.confirmationToken).not.toBe(firstCycle.confirmationToken);
+      expect(secondIntent).toBeDefined();
+      expect(secondIntent?.dedupKey).not.toBe(firstIntent?.dedupKey);
+      await expect(
+        replacement.getNomination({
+          confirmationToken: firstCycle.confirmationToken,
+          nominationEpoch: firstCycle.recheckAt!.toISOString(),
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        replacement.getNomination({
+          confirmationToken: secondCycle.confirmationToken,
+          nominationEpoch: secondCycle.recheckAt!.toISOString(),
+        }),
+      ).resolves.toMatchObject({ confirmation: { status: "NOMINATED" } });
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("indicação com vínculo revogado falha antes de leitura, mutação ou push", async () => {
@@ -1845,13 +2002,13 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const sub = confirmationRouter.createCaller(ctx(subUserId));
     try {
       await expect(
-        sub.getNomination({ confirmationToken: conf.confirmationToken }),
+        sub.getNomination(nominationRouteInput(conf)),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(
-        sub.acceptNomination({ confirmationToken: conf.confirmationToken }),
+        sub.acceptNomination(nominationRouteInput(conf)),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(
-        sub.declineNomination({ confirmationToken: conf.confirmationToken }),
+        sub.declineNomination(nominationRouteInput(conf)),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       const [after] = await db
         .select({ status: dutyConfirmations.status })
@@ -1997,15 +2154,24 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
         replacementProfessionalId: subProId,
       }),
     ).resolves.toMatchObject({ status: "NOMINATED" });
+    const [nominatedRow] = await db
+      .select({ confirmationToken: dutyConfirmations.confirmationToken })
+      .from(dutyConfirmations)
+      .where(eq(dutyConfirmations.id, inserted.id));
+    expect(nominatedRow.confirmationToken).not.toBe(token);
     expect(queuedPushMock).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: subUserId,
+        dedupKey: expect.stringContaining(nominatedRow.confirmationToken),
         payload: expect.objectContaining({
           data: expect.objectContaining({
-            confirmationToken: token,
+            confirmationToken: nominatedRow.confirmationToken,
             institutionId,
             type: "duty_nomination",
           }),
+        }),
+        authority: expect.objectContaining({
+          confirmationToken: nominatedRow.confirmationToken,
         }),
       }),
       expect.any(Date),

@@ -52,6 +52,7 @@ import {
   type DutyConfirmationStatus,
   type DutyShiftSnapshot,
 } from "./confirmation-integrity";
+import { isConfirmationRouteToken } from "../lib/confirmation-route-params";
 import {
   isDeferredPushAuthorityError,
   isExpiredPushAuthorityError,
@@ -165,6 +166,16 @@ const DUTY_CONFIRMATION_PURPOSE_POLICY: Record<
   },
 };
 
+function dutyConfirmationPurposeRequiresCycleToken(
+  purpose: DutyConfirmationPushPurpose,
+): boolean {
+  return (
+    purpose === "NOMINATION_REQUEST" ||
+    purpose === "REPLACEMENT_DECLINED_NOTICE" ||
+    purpose === "MANAGER_ESCALATION"
+  );
+}
+
 type PayloadData = Record<string, unknown>;
 
 type TrackingBase = {
@@ -238,6 +249,10 @@ export type DutyConfirmationPushAuthority = {
   recipientKind: DutyConfirmationRecipientAuthority;
   expectedUserId: number;
   shiftSnapshot: DutyShiftSnapshot;
+  /** Epoch canônica do recheck; impede reautorizar um outbox de ciclo antigo. */
+  recheckEpoch?: string;
+  /** UUID corrente do ciclo; muda atomicamente a cada nova nomeação. */
+  confirmationToken?: string;
 };
 
 export type TrackedPushAuthority =
@@ -369,6 +384,25 @@ function dutyConfirmationAuthorityMatchesPurpose(
 ): boolean {
   const policy = DUTY_CONFIRMATION_PURPOSE_POLICY[authority.purpose];
   const payloadConfirmationId = payloadData.confirmationId;
+  const cycleTokenMatches =
+    dutyConfirmationPurposeRequiresCycleToken(authority.purpose)
+      ? isConfirmationRouteToken(authority.confirmationToken) &&
+        payloadData.confirmationToken === authority.confirmationToken
+      : authority.confirmationToken === undefined;
+  const recheckEpochMatches =
+    authority.purpose === "NOMINATION_REQUEST"
+      ? isCanonicalIsoDate(authority.recheckEpoch) &&
+        new Date(authority.recheckEpoch).getUTCMilliseconds() === 0 &&
+        payloadData.nominationEpoch === authority.recheckEpoch &&
+        payloadData.recheckEpoch === undefined
+      : authority.purpose === "MANAGER_ESCALATION"
+        ? isCanonicalIsoDate(authority.recheckEpoch) &&
+          new Date(authority.recheckEpoch).getUTCMilliseconds() === 0 &&
+          payloadData.recheckEpoch === authority.recheckEpoch &&
+          payloadData.nominationEpoch === undefined
+        : authority.recheckEpoch === undefined &&
+          payloadData.nominationEpoch === undefined &&
+          payloadData.recheckEpoch === undefined;
   return (
     policy.payloadType === payloadData.type &&
     policy.recipientKind === authority.recipientKind &&
@@ -380,7 +414,9 @@ function dutyConfirmationAuthorityMatchesPurpose(
     (!requirePayloadConfirmationId ||
       payloadConfirmationId === authority.confirmationId) &&
     (payloadConfirmationId === undefined ||
-      payloadConfirmationId === authority.confirmationId)
+      payloadConfirmationId === authority.confirmationId) &&
+    recheckEpochMatches &&
+    cycleTokenMatches
   );
 }
 
@@ -1151,6 +1187,15 @@ async function requireCurrentPushAuthority(
     recipientKind: state.authority.recipientKind,
     expectedUserId: state.authority.expectedUserId,
     shiftSnapshot: state.authority.shiftSnapshot,
+    expectedRecheckEpoch:
+      state.authority.purpose === "NOMINATION_REQUEST" ||
+      state.authority.purpose === "MANAGER_ESCALATION"
+        ? state.authority.recheckEpoch
+        : undefined,
+    expectedConfirmationToken:
+      dutyConfirmationPurposeRequiresCycleToken(state.authority.purpose)
+        ? state.authority.confirmationToken
+        : undefined,
     allowInactiveOriginalAssignment:
       state.authority.purpose === "SSO_READY" ||
       state.authority.purpose === "REPLACEMENT_ACCEPTED_NOTICE",
@@ -1777,6 +1822,15 @@ async function processReceiptCheck(
         claimed.authority?.kind === "DUTY_CONFIRMATION" &&
         claimed.authority?.purpose === "MANAGER_ESCALATION"
       ) {
+        const recheckEpoch = claimed.authority.recheckEpoch;
+        const confirmationToken = claimed.authority.confirmationToken;
+        if (
+          !isCanonicalIsoDate(recheckEpoch) ||
+          new Date(recheckEpoch).getUTCMilliseconds() !== 0 ||
+          !isConfirmationRouteToken(confirmationToken)
+        ) {
+          return;
+        }
         try {
           // O receipt prova somente que o provedor aceitou o ticket histórico.
           // Ele não pode consumir o handoff se o gestor perdeu a autoridade
@@ -1786,7 +1840,7 @@ async function processReceiptCheck(
           if (!isCanonicalDutyConfirmationRejection(error)) throw error;
           return;
         }
-        await tx
+        const [consumedCurrentCycle] = await tx
           .update(dutyConfirmations)
           .set({ managerNotified: true, recheckAt: null })
           .where(
@@ -1797,8 +1851,14 @@ async function processReceiptCheck(
                 claimed.authority.allowedStatuses,
               ),
               eq(dutyConfirmations.managerNotified, false),
+              eq(
+                dutyConfirmations.recheckAt,
+                new Date(recheckEpoch),
+              ),
+              eq(dutyConfirmations.confirmationToken, confirmationToken),
             ),
           );
+        if (consumedCurrentCycle.affectedRows !== 1) return;
       }
     });
     return;

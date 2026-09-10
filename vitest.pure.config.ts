@@ -53,6 +53,8 @@ export default defineConfig({
       "tests/admin-schedule-context-selection.test.ts",
       "tests/schedule-context-readers-source.test.ts",
       "tests/notification-shift-routing.test.ts",
+      "tests/confirmation-nomination-epoch.test.ts",
+      "tests/confirmation-recheck-epoch-source.test.ts",
       "tests/assignment-push-signal.test.ts",
       "tests/draft-notification-fence-rework-source.test.ts",
       "tests/schedule-invite-response-signal.test.ts",
