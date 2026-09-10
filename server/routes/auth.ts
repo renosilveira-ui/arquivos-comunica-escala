@@ -1077,7 +1077,10 @@ authRouter.post(
     } catch (error) {
       // The public response is deliberately indistinguishable for missing
       // accounts, audit/DB failures and mail transport failures.
-      console.error("[forgot-password] Falha interna mascarada", String(error));
+      console.error(
+        "[forgot-password] Falha interna mascarada",
+        safeErrorDiagnostic(error),
+      );
     }
 
     res.json(neutral);
