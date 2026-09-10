@@ -12,7 +12,6 @@ import {
   professionalInstitutions,
   users,
 } from "../drizzle/schema";
-import { readCanonicalAuditMembership } from "./auth-audit-membership";
 import { getDb } from "./db";
 import { resolveTrustedPublicBaseUrl } from "./_core/public-url";
 import {
@@ -66,7 +65,6 @@ export type AuthRecoveryMailTransport = {
 };
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type RecoveryWriteDb = Pick<Db, "insert" | "update">;
-type RecoveryQueryDb = Pick<Db, "select">;
 
 function affectedRows(result: unknown): number {
   if (Array.isArray(result)) {
@@ -396,25 +394,6 @@ async function resolveSingleActiveUser(db: Db, normalizedEmail: string) {
   return rows[0]!;
 }
 
-/**
- * Preserva o fail-closed para topologia corrompida, mas admite a conta que
- * ainda não recebeu nenhum vínculo institucional. O resultado nunca elege uma
- * PI para a recuperação: ele apenas distingue "sem escala" de "PI inválida".
- */
-async function hasSelfServiceAccountTopology(
-  db: RecoveryQueryDb,
-  userId: number,
-) {
-  if (await readCanonicalAuditMembership(db, userId)) return true;
-  const [nonCanonicalMembership] = await db
-    .select({ id: professionalInstitutions.id })
-    .from(professionalInstitutions)
-    .where(eq(professionalInstitutions.userId, userId))
-    .limit(1)
-    .for("update");
-  return !nonCanonicalMembership;
-}
-
 async function bindSelfServiceRequest(
   db: Db,
   row: typeof authRecoveryRequests.$inferSelect,
@@ -439,9 +418,6 @@ async function bindSelfServiceRequest(
       lockedUser.sessionVersion !== user.sessionVersion ||
       lockedUser.email?.toLowerCase().trim() !== payload.email
     ) {
-      return false;
-    }
-    if (!(await hasSelfServiceAccountTopology(tx, lockedUser.id))) {
       return false;
     }
     const [lockedRequest] = await tx
@@ -658,12 +634,6 @@ async function activateAcceptedRequest(
         lockedUser.sessionVersion !== row.expectedTargetSessionVersion ||
         lockedUser.email?.toLowerCase().trim() !== payload.email ||
         hashAuthRecoveryValue(payload.email) !== row.emailHash
-      ) {
-        return false;
-      }
-      if (
-        row.kind === "SELF_SERVICE" &&
-        !(await hasSelfServiceAccountTopology(tx, lockedUser.id))
       ) {
         return false;
       }
