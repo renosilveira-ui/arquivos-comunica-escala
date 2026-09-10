@@ -205,8 +205,9 @@ export const professionalsRouter = router({
       await assertManagerScopeAccess(actor, shift.hospitalId, shift.sectorId);
 
       // Picker de ocupação: conta aprovada + (ACL OU manager_scope OU
-      // convite pendente) ∩ qualificationMatches. E-mail enviado ≠
-      // resgate. Write (assignDirect) revalida o mesmo predicado clínico.
+      // convite pendente) ∩ qualificationMatches. Aceitação pelo provedor não
+      // comprova entrega nem resgate. Write (assignDirect) revalida o mesmo
+      // predicado clínico.
       const now = new Date();
       const result = await db.execute<{
         id: number;

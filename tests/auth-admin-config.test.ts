@@ -32,6 +32,7 @@ import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 import * as auditService from "../server/audit-trail";
 import { mailer } from "../server/mailer";
+import { processPendingAuthRecoveryEmails } from "../server/auth-recovery";
 import { sessionAuthCookies } from "./helpers/session-cookies";
 
 const STAMP = Date.now();
@@ -1003,7 +1004,7 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .from(auditTrail)
       .where(eq(auditTrail.actorUserId, adminId));
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: true,
+      kind: "ACCEPTED",
       transport: "resend",
     });
 
@@ -1025,7 +1026,9 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         .post(`/api/admin/users/${adminId}/reset-password`)
         .set("Cookie", cookie)
         .set("x-tenant-id", String(instA));
-      expect(reset.status).toBe(200);
+      expect(reset.status).toBe(202);
+      expect(sendMailSpy).not.toHaveBeenCalled();
+      await processPendingAuthRecoveryEmails(new Date());
       const resetToken = /reset-password\?token=([0-9a-f]{64})/.exec(
         sendMailSpy.mock.calls[0]![0].text,
       )?.[1];

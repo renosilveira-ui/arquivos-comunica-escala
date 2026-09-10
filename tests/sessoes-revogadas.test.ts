@@ -239,7 +239,7 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
 
     const sendMail = vi
       .fn<(message: MailMessage) => Promise<MailResult>>()
-      .mockResolvedValue({ delivered: true, transport: "resend" });
+      .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
     try {
       expect(
         (
@@ -272,7 +272,7 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
     expect((await me(cookie)).status).toBe(200);
     const adminCookie = cookieOf(await login(adminEmail, PASSWORD));
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: true,
+      kind: "ACCEPTED",
       transport: "resend",
     });
     try {
@@ -280,8 +280,10 @@ describe("sessões revogadas ao trocar/redefinir senha", () => {
         .post(`/api/admin/users/${userId}/reset-password`)
         .set("Cookie", adminCookie)
         .set("x-tenant-id", String(institutionId));
-      expect(reset.status).toBe(200);
+      expect(reset.status).toBe(202);
       expect((await me(cookie)).status).toBe(200);
+      expect(sendMailSpy).not.toHaveBeenCalled();
+      await processPendingAuthRecoveryEmails(new Date());
       const token = /reset-password\?token=([0-9a-f]{64})/.exec(
         sendMailSpy.mock.calls[0]![0].text,
       )?.[1];

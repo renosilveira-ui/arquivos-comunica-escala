@@ -607,7 +607,7 @@ function EditUserModal({
   const [managerScopes, setManagerScopes] = useState<ManagerScopeDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // Redefinição de senha: link de uso único enviado ao usuário.
+  // Redefinição de senha: pedido durável; a API não afirma entrega imediata.
   const [resetting, setResetting] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
 
@@ -636,7 +636,7 @@ function EditUserModal({
   const handleResetPassword = async () => {
     if (!editUser) return;
     const confirmed = await confirmAction(
-      `Enviar um link de redefinição para ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual continuará válida até que o usuário abra o link e escolha uma nova senha. O link é de uso único e expira em 30 minutos.`,
+      `Solicitar a redefinição para ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual continuará válida. Se o provedor aceitar o pedido de envio, o link será de uso único e expirará 30 minutos após a aceitação. A aceitação não comprova a entrega na caixa postal.`,
     );
     if (!confirmed) return;
     setResetting(true);
@@ -950,7 +950,7 @@ function EditUserModal({
                     color: theme.colors.textSecondary,
                   }}
                 >
-                  Link de redefinição enviado por e-mail para{" "}
+                  Pedido de redefinição registrado para{" "}
                   {editUser.email ?? "o usuário"}. A senha atual continua válida
                   até o resgate do link.
                 </Text>
@@ -960,7 +960,7 @@ function EditUserModal({
                 onPress={handleResetPassword}
                 disabled={resetting}
                 accessibilityRole="button"
-                accessibilityLabel="Enviar link de redefinição de senha"
+                accessibilityLabel="Solicitar redefinição de senha"
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
@@ -985,7 +985,7 @@ function EditUserModal({
                         color: theme.colors.warning,
                       }}
                     >
-                      Enviar link de redefinição
+                      Solicitar redefinição
                     </Text>
                   </>
                 )}

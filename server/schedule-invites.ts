@@ -916,18 +916,34 @@ export const scheduleInvitesRouter = router({
           continue;
         }
 
-        const delivery = await mailer.sendMail(mail);
-        // Console (sem RESEND_API_KEY) também vem delivered:false.
-        // Não confirmar envio se o correio não entregou — o gestor via
-        // "saíram por e-mail" e o médico não recebia nada.
-        if (!delivery.delivered) {
+        const delivery = await mailer.sendMail(mail, {
+          idempotencyKey: codeHash,
+        });
+        // ACCEPTED confirma somente que o provedor aceitou a solicitação;
+        // entrega na caixa postal não é comprovada nesta integração.
+        if (delivery.kind === "REJECTED") {
           await db
             .update(scheduleInvites)
             .set({ revokedAt: new Date() })
             .where(eq(scheduleInvites.id, inserted.id));
           failed.push({
             userId,
-            error: "O e-mail de convite não saiu. Tente novamente.",
+            error: "O provedor não aceitou o pedido de envio. Tente novamente.",
+          });
+          continue;
+        }
+        if (delivery.kind === "UNKNOWN") {
+          // O provedor pode ter aceitado antes do timeout. Sem outbox durável
+          // nesta frente de convite, revoga-se preventivamente o código para
+          // que uma mensagem tardia não carregue autoridade utilizável.
+          await db
+            .update(scheduleInvites)
+            .set({ revokedAt: new Date() })
+            .where(eq(scheduleInvites.id, inserted.id));
+          failed.push({
+            userId,
+            error:
+              "O resultado do pedido de envio foi inconclusivo; o convite foi revogado. Tente novamente.",
           });
           continue;
         }
@@ -940,7 +956,7 @@ export const scheduleInvitesRouter = router({
             entityId: invitee.userId,
             actorUserId: actor.userId,
             actorRole: actor.roleInInstitution,
-            description: `Convite nominal enviado para a escala ${context.hospitalName} / ${context.sectorName}`,
+            description: `Pedido de convite nominal aceito pelo provedor para a escala ${context.hospitalName} / ${context.sectorName}`,
             metadata: {
               scheduleInviteId: inserted.id,
               invitedUserId: invitee.userId,
@@ -975,7 +991,7 @@ export const scheduleInvitesRouter = router({
           code: "BAD_REQUEST",
           message:
             failed[0]?.error ??
-            "Nenhum convite foi enviado. Verifique os médicos selecionados.",
+            "Nenhum pedido de convite foi aceito pelo provedor. Verifique os médicos selecionados.",
         });
       }
 

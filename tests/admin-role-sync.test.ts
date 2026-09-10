@@ -48,6 +48,7 @@ import {
   sendPushNotification,
 } from "../server/notifications-service";
 import { mailer, type MailMessage } from "../server/mailer";
+import { processPendingAuthRecoveryEmails } from "../server/auth-recovery";
 import { sessionAuthCookies } from "./helpers/session-cookies";
 
 const STAMP = Date.now();
@@ -937,7 +938,7 @@ describe("admin: papel institucional isolado por tenant", () => {
       .mockResolvedValue(expoTicketResponse("ticket-unexpected-after-reset"));
     vi.stubGlobal("fetch", fetchMock);
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: true,
+      kind: "ACCEPTED",
       transport: "resend",
     });
     let resetSettled = false;
@@ -972,9 +973,11 @@ describe("admin: papel institucional isolado por tenant", () => {
         status: "TICKETS_ACCEPTED",
       });
       const reset = await resetPromise;
-      expect(reset.status).toBe(200);
-      expect(reset.body).toMatchObject({ ok: true });
+      expect(reset.status).toBe(202);
+      expect(reset.body).toMatchObject({ ok: true, queued: true });
       expect(reset.body.temporaryPassword).toBeUndefined();
+      expect(sendMailSpy).not.toHaveBeenCalled();
+      await processPendingAuthRecoveryEmails(new Date());
       const [resetToken] = resetTokensFromMail(
         sendMailSpy.mock.calls,
         targetEmail,
@@ -2045,7 +2048,7 @@ describe("admin: papel institucional isolado por tenant", () => {
     });
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: true,
+      kind: "ACCEPTED",
       transport: "resend",
     });
     const responses = await Promise.all([
@@ -2059,14 +2062,9 @@ describe("admin: papel institucional isolado por tenant", () => {
         .set("x-tenant-id", String(institutionAId)),
     ]);
 
-    expect(
-      responses.every((response) =>
-        response.status === 200 || response.status === 409,
-      ),
-    ).toBe(true);
-    expect(
-      responses.filter((response) => response.status === 200),
-    ).not.toHaveLength(0);
+    expect(responses.every((response) => response.status === 202)).toBe(true);
+    expect(sendMailSpy).not.toHaveBeenCalled();
+    await processPendingAuthRecoveryEmails(new Date());
     const tokens = resetTokensFromMail(
       sendMailSpy.mock.calls,
       targetEmail,
@@ -2159,7 +2157,7 @@ describe("admin: papel institucional isolado por tenant", () => {
     const before = new Map(beforeRows.map((row) => [row.id, row]));
 
     const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
-      delivered: true,
+      kind: "ACCEPTED",
       transport: "resend",
     });
     const [first, second] = await Promise.all([
@@ -2173,7 +2171,9 @@ describe("admin: papel institucional isolado por tenant", () => {
         .set("x-tenant-id", String(institutionAId)),
     ]);
 
-    expect([first.status, second.status]).toEqual([200, 200]);
+    expect([first.status, second.status]).toEqual([202, 202]);
+    expect(sendMailSpy).not.toHaveBeenCalled();
+    await processPendingAuthRecoveryEmails(new Date());
     const [tokenForSecondAdmin] = resetTokensFromMail(
       sendMailSpy.mock.calls,
       `rolesync-admin-2-${STAMP}@test.local`,
