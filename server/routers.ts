@@ -54,7 +54,7 @@ import { notificationsRouter } from "./notifications-router";
 import { personalCalendarRouter } from "./personal-calendar-router";
 import { calendarAuxiliaryRouter } from "./calendar-auxiliary-router";
 import {
-  actionableVacancyFiltersSchema,
+  actionableVacancyListInputSchema,
   listActionableVacancyRows,
 } from "./vacancy-actionability";
 import {
@@ -1028,7 +1028,7 @@ const shiftInstancesRouter = router({
   // on shift_instances; this endpoint surfaces them for the Plantões em
   // aberto screen (and any radar filtering by modality).
   listVacancies: protectedProcedure
-    .input(actionableVacancyFiltersSchema.optional())
+    .input(actionableVacancyListInputSchema)
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");

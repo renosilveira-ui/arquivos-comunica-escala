@@ -420,14 +420,16 @@ describe("aviso deliberado de plantão vago", () => {
     expect(rows[0]?.body).not.toMatch(/saiu|motivo|telefone|\+55/i);
     expect(rows[0]?.title).not.toMatch(manager.name);
     const visible = await vacanciesCaller(doctor).shiftInstances.listVacancies(
-      {},
+      { date: addDaysToKey(`${fixtureMonth}-01`, 1) },
     );
     expect(visible.map((row) => Number(row.shiftInstanceId))).toContain(
       shiftId,
     );
     const visibleWithDifferentClinicalMetadata = await vacanciesCaller(
       ineligible,
-    ).shiftInstances.listVacancies({});
+    ).shiftInstances.listVacancies({
+      date: addDaysToKey(`${fixtureMonth}-01`, 1),
+    });
     expect(
       visibleWithDifferentClinicalMetadata.map((row) =>
         Number(row.shiftInstanceId),
@@ -448,7 +450,9 @@ describe("aviso deliberado de plantão vago", () => {
       const shiftId = await createVacantShift(21);
       const visible = await vacanciesCaller(
         ineligible,
-      ).shiftInstances.listVacancies({});
+      ).shiftInstances.listVacancies({
+        date: addDaysToKey(`${fixtureMonth}-01`, 21),
+      });
       expect(visible.map((row) => Number(row.shiftInstanceId))).toContain(
         shiftId,
       );

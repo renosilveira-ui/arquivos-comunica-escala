@@ -296,7 +296,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
     await setRoster(currentYm, "PUBLISHED");
     await setRoster(nextYm, "LOCKED");
 
-    const list = await asDoctor().shiftInstances.listVacancies({});
+    const list = await asDoctor().shiftInstances.listVacancies({ date: dayKeyBrt(currentStart) });
     const ids = list.map((v: any) => v.id ?? v.shiftInstanceId);
     expect(ids).toContain(open);
     expect(ids).not.toContain(locked);

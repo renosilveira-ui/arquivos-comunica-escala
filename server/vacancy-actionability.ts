@@ -34,6 +34,11 @@ export const actionableVacancyFiltersSchema = z.object({
   coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
 });
 
+export const actionableVacancyListInputSchema =
+  actionableVacancyFiltersSchema.extend({
+    date: z.string().refine(isValidDayKeyBrt, "data civil inválida"),
+  });
+
 export type ActionableVacancyFilters = z.infer<
   typeof actionableVacancyFiltersSchema
 > & {
@@ -287,7 +292,11 @@ export async function listActionableVacancyRows(input: {
   if (input.filters?.date) {
     ({ start: startOfDay, end: endOfDay } = dayWindowBrt(input.filters.date));
   }
-
+  const exactTarget = input.filters?.shiftInstanceId !== undefined;
+  if (!exactTarget && !startOfDay) {
+    throw new Error("ACTIONABLE_VACANCY_QUERY_REQUIRES_BOUND");
+  }
+  const pageClause = exactTarget ? sql`LIMIT 1` : sql``;
   const { actionableContextIds, manageableContextIds } =
     await listActionableScheduleContextIds({
       db: input.db,
@@ -425,7 +434,8 @@ export async function listActionableVacancyRows(input: {
           ${input.filters?.modality ? sql`AND si.modality    = ${input.filters.modality}` : sql``}
           ${input.filters?.coverageType ? sql`AND si.coverage_type = ${input.filters.coverageType}` : sql``}
           ${startOfDay && endOfDay ? sql`AND si.start_at >= ${startOfDay} AND si.start_at < ${endOfDay}` : sql``}
-        ORDER BY si.start_at ASC`,
+        ORDER BY si.start_at ASC, si.id ASC
+        ${pageClause}`,
   );
 
   return rowsFromExecute<ActionableVacancyRow>(rows);

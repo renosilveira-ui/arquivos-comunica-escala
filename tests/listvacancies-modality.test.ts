@@ -3,7 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../server/db";
 import { monthlyRosters, professionals, shiftInstances } from "../drizzle/schema";
 import { appRouter } from "../server/routers";
-import { yearMonthBrt } from "../server/local-time";
+import { dayKeyBrt, yearMonthBrt } from "../server/local-time";
 
 /**
  * `shiftInstances.listVacancies` agora:
@@ -19,6 +19,7 @@ import { yearMonthBrt } from "../server/local-time";
 describe("shiftInstances.listVacancies — modality output + filter", () => {
   let db: Awaited<ReturnType<typeof getDb>>;
   let userId: number;
+  let seedVacancyDates: string[];
 
   beforeAll(async () => {
     db = await getDb();
@@ -43,10 +44,10 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
       .where(
         and(
           eq(shiftInstances.institutionId, 1),
-          eq(shiftInstances.status, "VAGO"),
           inArray(shiftInstances.label, [
             "Plantão Manhã (VAGO)",
             "Plantão Retroativo (5 dias atrás)",
+            "Plantão Noite (PENDENTE)",
           ]),
         ),
       );
@@ -70,6 +71,7 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
         .values([...rosterKeys.values()])
         .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     }
+    seedVacancyDates = [...new Set(visibleSeedShifts.map((shift) => dayKeyBrt(shift.startAt)))];
   });
 
   function caller() {
@@ -80,8 +82,18 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
     } as any);
   }
 
+  async function listSeedVacancies(filters: {
+    modality?: "PLANTAO" | "SOBREAVISO";
+    coverageType?: "URGENCIA_EMERGENCIA" | "ELETIVAS";
+  } = {}) {
+    const pages = await Promise.all(seedVacancyDates.map((date) =>
+      caller().shiftInstances.listVacancies({ date, ...filters }),
+    ));
+    return pages.flat();
+  }
+
   it("retorna modality / coverageType / paymentModel / productivityCapBrl no payload", async () => {
-    const rows = await caller().shiftInstances.listVacancies({});
+    const rows = await listSeedVacancies();
 
     // Pelo menos o "Plantão Manhã (VAGO)" deve aparecer (status VAGO).
     const manha = rows.find((r) => r.label === "Plantão Manhã (VAGO)");
@@ -93,7 +105,7 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
   });
 
   it("o shift retroativo carrega productivityCapBrl como string '2500.00'", async () => {
-    const rows = await caller().shiftInstances.listVacancies({});
+    const rows = await listSeedVacancies();
     const retro = rows.find((r) => r.label === "Plantão Retroativo (5 dias atrás)");
     expect(retro).toBeDefined();
     expect(retro!.paymentModel).toBe("FIXO_PRODUTIVIDADE_TETO");
@@ -101,13 +113,13 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
   });
 
   it("não retorna plantões pendentes como vagas em aberto", async () => {
-    const rows = await caller().shiftInstances.listVacancies({});
+    const rows = await listSeedVacancies();
     expect(rows.every((r) => r.status === "VAGO")).toBe(true);
     expect(rows.find((r) => r.label === "Plantão Noite (PENDENTE)")).toBeUndefined();
   });
 
   it("filtro modality=SOBREAVISO retorna apenas sobreavisos", async () => {
-    const rows = await caller().shiftInstances.listVacancies({ modality: "SOBREAVISO" });
+    const rows = await listSeedVacancies({ modality: "SOBREAVISO" });
     for (const r of rows) {
       expect(r.modality).toBe("SOBREAVISO");
       expect(r.status).toBe("VAGO");
@@ -115,7 +127,7 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
   });
 
   it("filtro coverageType=ELETIVAS exclui urgência/emergência e sobreavisos", async () => {
-    const rows = await caller().shiftInstances.listVacancies({ coverageType: "ELETIVAS" });
+    const rows = await listSeedVacancies({ coverageType: "ELETIVAS" });
     for (const r of rows) {
       expect(r.coverageType).toBe("ELETIVAS");
       expect(r.modality).toBe("PLANTAO");
@@ -123,7 +135,7 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
   });
 
   it("filtros são compostos (modality=PLANTAO + coverageType=URGENCIA_EMERGENCIA)", async () => {
-    const rows = await caller().shiftInstances.listVacancies({
+    const rows = await listSeedVacancies({
       modality: "PLANTAO",
       coverageType: "URGENCIA_EMERGENCIA",
     });
