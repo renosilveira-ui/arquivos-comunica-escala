@@ -10,7 +10,7 @@
  * depois de obter a mídia.
  */
 
-import { and, eq, inArray, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 import { getDb } from "../../db";
 import { whatsappInboundMessages } from "../../../drizzle/schema";
 import type { WhatsAppInboundEnvelope } from "./types";
@@ -20,6 +20,7 @@ import {
 } from "./types";
 
 export const WHATSAPP_INBOUND_PAYLOAD_TTL_MS = 24 * 60 * 60 * 1000;
+export const WHATSAPP_INBOUND_RETENTION_BATCH_SIZE = 500;
 
 export type WhatsAppInboundOperationalMaterial = {
   processingStatus: string;
@@ -189,15 +190,40 @@ export async function clearWhatsAppInboundOperationalPayload(
   return affectedRows(result) > 0;
 }
 
-/** Varredura de expiração (job futuro / Incremento B). */
-export async function clearExpiredWhatsAppInboundPayloads(
-  now: Date = new Date(),
-): Promise<number> {
+export type WhatsAppInboundPayloadRetentionBatch = {
+  available: boolean;
+  selected: number;
+  cleared: number;
+  batchSize: number;
+};
+
+/**
+ * Limpa no máximo 500 payloads por chamada.
+ *
+ * O SELECT estável evita um UPDATE sem limite sobre todo o índice. O UPDATE
+ * repete os predicados de expiração (CAS): se outro consumidor limpou ou
+ * renovou o payload entre as duas operações, esta chamada não o sobrescreve.
+ */
+export async function clearExpiredWhatsAppInboundPayloadBatch(input: {
+  now?: Date;
+  batchSize?: number;
+} = {}): Promise<WhatsAppInboundPayloadRetentionBatch> {
+  const now = input.now ?? new Date();
+  const requestedBatchSize = Math.trunc(
+    input.batchSize ?? WHATSAPP_INBOUND_RETENTION_BATCH_SIZE,
+  );
+  const batchSize = Math.min(
+    WHATSAPP_INBOUND_RETENTION_BATCH_SIZE,
+    Math.max(1, Number.isFinite(requestedBatchSize) ? requestedBatchSize : 1),
+  );
   const db = await getDb();
-  if (!db) return 0;
-  const result = await db
-    .update(whatsappInboundMessages)
-    .set(clearedOperationalPayload(now))
+  if (!db) {
+    return { available: false, selected: 0, cleared: 0, batchSize };
+  }
+
+  const candidates = await db
+    .select({ id: whatsappInboundMessages.id })
+    .from(whatsappInboundMessages)
     .where(
       and(
         eq(whatsappInboundMessages.provider, WHATSAPP_INBOUND_PROVIDER),
@@ -205,6 +231,43 @@ export async function clearExpiredWhatsAppInboundPayloads(
         isNotNull(whatsappInboundMessages.payloadExpiresAt),
         lte(whatsappInboundMessages.payloadExpiresAt, now),
       ),
+    )
+    .orderBy(
+      asc(whatsappInboundMessages.payloadExpiresAt),
+      asc(whatsappInboundMessages.id),
+    )
+    .limit(batchSize);
+
+  const ids = candidates.map((row) => row.id);
+  if (ids.length === 0) {
+    return { available: true, selected: 0, cleared: 0, batchSize };
+  }
+
+  const result = await db
+    .update(whatsappInboundMessages)
+    .set(clearedOperationalPayload(now))
+    .where(
+      and(
+        inArray(whatsappInboundMessages.id, ids),
+        eq(whatsappInboundMessages.provider, WHATSAPP_INBOUND_PROVIDER),
+        isNull(whatsappInboundMessages.payloadClearedAt),
+        isNotNull(whatsappInboundMessages.payloadExpiresAt),
+        lte(whatsappInboundMessages.payloadExpiresAt, now),
+      ),
     );
-  return affectedRows(result);
+
+  return {
+    available: true,
+    selected: ids.length,
+    cleared: affectedRows(result),
+    batchSize,
+  };
+}
+
+/** Compatibilidade: uma chamada continua limitada a um lote determinístico. */
+export async function clearExpiredWhatsAppInboundPayloads(
+  now: Date = new Date(),
+): Promise<number> {
+  const result = await clearExpiredWhatsAppInboundPayloadBatch({ now });
+  return result.cleared;
 }

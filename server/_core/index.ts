@@ -46,6 +46,10 @@ import {
   startWhatsAppNlDriver,
   stopWhatsAppNlDriver,
 } from "../integrations/whatsapp/ready-for-nl-driver";
+import {
+  startWhatsAppOperationalPayloadRetention,
+  stopWhatsAppOperationalPayloadRetention,
+} from "../integrations/whatsapp/operational-payload-retention";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -256,6 +260,7 @@ async function startServer() {
     );
     startConfirmationCron();
     startAuthRecoveryCron();
+    startWhatsAppOperationalPayloadRetention();
     startWhatsAppNlDriver();
   });
 
@@ -272,12 +277,21 @@ async function startServer() {
         );
       }
       let authRecoveryDrain = Promise.resolve();
+      let whatsappRetentionDrain = Promise.resolve();
       try {
         authRecoveryDrain = stopAuthRecoveryCron();
       } catch (err) {
         logger.error(
           { err: err instanceof Error ? err.message : String(err) },
           "stopAuthRecoveryCron failed",
+        );
+      }
+      try {
+        whatsappRetentionDrain = stopWhatsAppOperationalPayloadRetention();
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopWhatsAppOperationalPayloadRetention failed",
         );
       }
       try {
@@ -294,6 +308,14 @@ async function startServer() {
         logger.error(
           { err: err instanceof Error ? err.message : String(err) },
           "stopAuthRecoveryCron failed",
+        );
+      }
+      try {
+        await whatsappRetentionDrain;
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopWhatsAppOperationalPayloadRetention failed",
         );
       }
     },

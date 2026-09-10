@@ -9,7 +9,7 @@
  * não chama parser, resolver, createSwapOffer nem inbound consume.
  */
 
-import { and, eq, gt, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import {
   whatsappInboundMessages,
   whatsappPendingIntents,
@@ -53,6 +53,7 @@ type PendingOp =
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
 const READY_FOR_NL = "READY_FOR_NL";
+export const WHATSAPP_PENDING_RETENTION_BATCH_SIZE = 500;
 
 function affectedRows(result: unknown): number {
   if (Array.isArray(result)) {
@@ -735,52 +736,140 @@ export async function cancelWhatsAppPendingOpenParse(
   }
 }
 
-export async function clearExpiredWhatsAppPendingIntents(
-  now: Date = new Date(),
-): Promise<WhatsAppPendingCleanupResult> {
+export type WhatsAppPendingRetentionBatchResult =
+  | {
+      ok: true;
+      selected: number;
+      expired: number;
+      payloadsCleared: number;
+      batchSize: number;
+    }
+  | { ok: false; code: "DB_UNAVAILABLE" | "PERSISTENCE_FAILED" };
+
+/**
+ * Expira/limpa no máximo 500 conversas por chamada, em ordem estável.
+ * Os UPDATEs repetem status, expiração e payloadClearedAt para não aplicar
+ * uma decisão tomada sobre uma versão que mudou depois do SELECT.
+ */
+export async function clearExpiredWhatsAppPendingIntentBatch(input: {
+  now?: Date;
+  batchSize?: number;
+} = {}): Promise<WhatsAppPendingRetentionBatchResult> {
+  const now = input.now ?? new Date();
+  const requestedBatchSize = Math.trunc(
+    input.batchSize ?? WHATSAPP_PENDING_RETENTION_BATCH_SIZE,
+  );
+  const batchSize = Math.min(
+    WHATSAPP_PENDING_RETENTION_BATCH_SIZE,
+    Math.max(1, Number.isFinite(requestedBatchSize) ? requestedBatchSize : 1),
+  );
   const acquired = await acquireDb("cleanup");
   if (!acquired.ok) return acquired;
 
   try {
-    const expiredResult = await acquired.db
-      .update(whatsappPendingIntents)
-      .set({
-        status: WhatsAppPendingStatuses.EXPIRED,
-        ...clearedConversationPayload(now),
+    const candidates = await acquired.db
+      .select({
+        id: whatsappPendingIntents.id,
+        status: whatsappPendingIntents.status,
       })
+      .from(whatsappPendingIntents)
       .where(
-        and(
-          eq(whatsappPendingIntents.status, WhatsAppPendingStatuses.OPEN),
-          lte(whatsappPendingIntents.expiresAt, now),
+        or(
+          and(
+            eq(whatsappPendingIntents.status, WhatsAppPendingStatuses.OPEN),
+            lte(whatsappPendingIntents.expiresAt, now),
+          ),
+          and(
+            inArray(whatsappPendingIntents.status, [
+              WhatsAppPendingStatuses.CANCELLED,
+              WhatsAppPendingStatuses.EXPIRED,
+              WhatsAppPendingStatuses.CONSUMED,
+            ]),
+            isNull(whatsappPendingIntents.payloadClearedAt),
+          ),
         ),
-      );
-    const expired = affectedRows(expiredResult);
+      )
+      .orderBy(
+        asc(whatsappPendingIntents.expiresAt),
+        asc(whatsappPendingIntents.id),
+      )
+      .limit(batchSize);
 
-    const leftoverResult = await acquired.db
-      .update(whatsappPendingIntents)
-      .set(clearedConversationPayload(now))
-      .where(
-        and(
-          inArray(whatsappPendingIntents.status, [
-            WhatsAppPendingStatuses.CANCELLED,
-            WhatsAppPendingStatuses.EXPIRED,
-            WhatsAppPendingStatuses.CONSUMED,
-          ]),
-          isNull(whatsappPendingIntents.payloadClearedAt),
-        ),
-      );
-    const leftover = affectedRows(leftoverResult);
+    const expirableIds = candidates
+      .filter((row) => row.status === WhatsAppPendingStatuses.OPEN)
+      .map((row) => row.id);
+    const terminalIds = candidates
+      .filter((row) => row.status !== WhatsAppPendingStatuses.OPEN)
+      .map((row) => row.id);
+
+    let expired = 0;
+    if (expirableIds.length > 0) {
+      const expiredResult = await acquired.db
+        .update(whatsappPendingIntents)
+        .set({
+          status: WhatsAppPendingStatuses.EXPIRED,
+          ...clearedConversationPayload(now),
+        })
+        .where(
+          and(
+            inArray(whatsappPendingIntents.id, expirableIds),
+            eq(whatsappPendingIntents.status, WhatsAppPendingStatuses.OPEN),
+            lte(whatsappPendingIntents.expiresAt, now),
+          ),
+        );
+      expired = affectedRows(expiredResult);
+    }
+
+    let leftover = 0;
+    if (terminalIds.length > 0) {
+      const leftoverResult = await acquired.db
+        .update(whatsappPendingIntents)
+        .set(clearedConversationPayload(now))
+        .where(
+          and(
+            inArray(whatsappPendingIntents.id, terminalIds),
+            inArray(whatsappPendingIntents.status, [
+              WhatsAppPendingStatuses.CANCELLED,
+              WhatsAppPendingStatuses.EXPIRED,
+              WhatsAppPendingStatuses.CONSUMED,
+            ]),
+            isNull(whatsappPendingIntents.payloadClearedAt),
+          ),
+        );
+      leftover = affectedRows(leftoverResult);
+    }
     const payloadsCleared = expired + leftover;
 
     logSafe({
-      event: "whatsapp_pending_cleanup",
+      event: "whatsapp_pending_cleanup_batch",
+      selected: candidates.length,
       expired,
       payloadsCleared,
+      batchSize,
     });
-    return { ok: true, expired, payloadsCleared };
+    return {
+      ok: true,
+      selected: candidates.length,
+      expired,
+      payloadsCleared,
+      batchSize,
+    };
   } catch {
     return persistenceFailed("cleanup");
   }
+}
+
+/** Compatibilidade: uma chamada continua limitada a um lote determinístico. */
+export async function clearExpiredWhatsAppPendingIntents(
+  now: Date = new Date(),
+): Promise<WhatsAppPendingCleanupResult> {
+  const result = await clearExpiredWhatsAppPendingIntentBatch({ now });
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    expired: result.expired,
+    payloadsCleared: result.payloadsCleared,
+  };
 }
 
 type IntendedAdvanceFields = {
