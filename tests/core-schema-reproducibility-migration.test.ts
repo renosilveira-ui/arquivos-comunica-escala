@@ -11,9 +11,14 @@ const migration = readFileSync(
 
 describe("migration de reprodutibilidade do schema central", () => {
   it("é aditiva, idempotente e falha fechada sobre objetos parciais", () => {
-    expect(migration).toContain("core_schema_reproducibility_contract_mismatch");
+    expect(migration).toContain(
+      "core_schema_reproducibility_contract_mismatch",
+    );
     expect(migration).toContain("LOWER(COLUMN_TYPE) = 'int'");
     expect(migration).toContain("CAST(COLUMN_TYPE AS BINARY)");
+    expect(
+      migration.match(/CAST\('decimal\(12,2\)' AS BINARY\)/g),
+    ).toHaveLength(2);
     expect(migration).toContain("CAST(COLUMN_DEFAULT AS BINARY)");
     expect(migration).toContain("= 'auto_increment'");
     expect(migration).toContain("COUNT(*) = 1");
@@ -30,6 +35,9 @@ describe("migration de reprodutibilidade do schema central", () => {
       "@csr_institution_config_check_contract_matches = 1",
     );
     expect(migration).toContain("CONSTRAINT_TYPE = 'CHECK'");
+    expect(
+      migration.match(/CONSTRAINT_TYPE = 'FOREIGN KEY'/g)?.length,
+    ).toBeGreaterThanOrEqual(2);
     expect(migration).toContain("'default_generated'");
     expect(migration).toContain(
       "'default_generated on update current_timestamp'",
@@ -37,11 +45,15 @@ describe("migration de reprodutibilidade do schema central", () => {
     expect(migration).toContain("POSITION_IN_UNIQUE_CONSTRAINT = 1");
     expect(migration).toContain("UNIQUE_CONSTRAINT_NAME = 'PRIMARY'");
     expect(migration).toContain("@csr_modality_column_count = 0");
-    expect(migration).toContain("CREATE TABLE IF NOT EXISTS institution_config");
+    expect(migration).toContain(
+      "CREATE TABLE IF NOT EXISTS institution_config",
+    );
     expect(migration).toContain("idx_shift_instances_modality");
     expect(migration).toContain("fk_institution_config_institution");
     expect(migration).toContain("ON DELETE CASCADE");
-    expect(migration).toContain("core_schema_reproducibility_postflight_failed");
+    expect(migration).toContain(
+      "core_schema_reproducibility_postflight_failed",
+    );
     expect(migration).not.toMatch(/\bDROP\s+(TABLE|COLUMN)\b/i);
     expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
     expect(migration).not.toMatch(/\bUPDATE\s+shift_instances\b/i);
