@@ -7,6 +7,9 @@ import { useAuth } from "@/hooks/use-auth";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { ChevronLeft, History, AlertCircle, Search } from "lucide-react-native";
+import type { inferRouterOutputs } from "@trpc/server";
+import type { AppRouter } from "@/server/routers";
+import { auditActorLabel } from "@/lib/audit-movement-presentation";
 
 /**
  * Tela "Auditoria de movimentações" — consume `audit.listShiftMovements`
@@ -21,6 +24,7 @@ import { ChevronLeft, History, AlertCircle, Search } from "lucide-react-native";
  */
 
 type FilterCategory = "ALL" | "CREATION" | "ASSIGNMENT" | "CESSAO";
+type AuditMovement = inferRouterOutputs<AppRouter>["audit"]["listShiftMovements"][number];
 
 const CATEGORY_LABEL: Record<FilterCategory, string> = {
   ALL: "Tudo",
@@ -88,20 +92,16 @@ export default function AuditLogScreen() {
   const [category, setCategory] = useState<FilterCategory>("ALL");
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Defensive cast — o tipo `trpc.audit` chega via PR #77 (ainda em
-  // review nesse momento). O padrão de defensive cast é igual ao usado
-  // em PRs #65/#67/#69/#70.
-  const trpcAny = trpc as any;
-  const auditQuery = trpcAny.audit?.listShiftMovements?.useQuery?.(
+  const auditQuery = trpc.audit.listShiftMovements.useQuery(
     {
       actions: category === "ALL" ? undefined : CATEGORY_ACTIONS[category],
       limit: 200,
     },
     { enabled: !!user?.id },
-  ) ?? { data: undefined, isLoading: false, refetch: () => {} };
+  );
 
-  const data = useMemo(() => (auditQuery.data ?? []) as any[], [auditQuery.data]);
-  const isLoading = auditQuery.isLoading as boolean;
+  const data = useMemo(() => auditQuery.data ?? [], [auditQuery.data]);
+  const isLoading = auditQuery.isLoading;
 
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -271,18 +271,18 @@ export default function AuditLogScreen() {
   );
 }
 
-function AuditCard({ row }: { row: any }) {
+function AuditCard({ row }: { row: AuditMovement }) {
   const createdAt = row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt);
   const actionLabel = row.actionLabel ?? row.action ?? "Ação desconhecida";
-  const actorName = row.actor?.name ?? row.actor?.email ?? "Usuário desconhecido";
-  const fromName = row.from?.name as string | undefined;
-  const toName = row.to?.name as string | undefined;
-  const shiftLabel = row.shift?.label as string | undefined;
+  const actorName = auditActorLabel(row.actor);
+  const fromName = row.from?.name;
+  const toName = row.to?.name;
+  const shiftLabel = row.shift?.label;
   const shiftStart = row.shift?.startAt
     ? new Date(row.shift.startAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })
     : null;
-  const hospitalName = row.location?.hospitalName as string | undefined;
-  const sectorName = row.location?.sectorName as string | undefined;
+  const hospitalName = row.location?.hospitalName;
+  const sectorName = row.location?.sectorName;
 
   return (
     <View
