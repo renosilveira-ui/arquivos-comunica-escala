@@ -8,7 +8,7 @@ import { getDb } from "./db";
 import { activeShiftCounts } from "./shift-capacity";
 import { shiftCapacitySummary } from "../lib/shift-capacity";
 import { rowsFromExecute } from "./_core/db-results";
-import { dayWindowBrt, monthWindowBrt } from "./local-time";
+import { dayWindowBrt, monthWindowBrt, yearMonthBrt } from "./local-time";
 import { eq, and, gte, isNull, sql, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
@@ -30,7 +30,15 @@ import {
   getTenantActorFromContext,
 } from "./_core/policy";
 import { plantonistaQualificationMatchesContextSql } from "./plantonista-shift-eligibility";
-import { listAuthorizedScheduleContexts } from "./schedule-contexts";
+import {
+  listAuthorizedScheduleContexts,
+  listReadableScheduleContexts,
+} from "./schedule-contexts";
+import {
+  canReadRosterMonth,
+  loadRosterMonthStatuses,
+  rosterMonthKey,
+} from "./roster-read-visibility";
 import { listManageableTopology } from "./sector-scale";
 import {
   actionableVacancyFiltersSchema,
@@ -529,10 +537,11 @@ export const filtersRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const actor = await getTenantActorFromContext(ctx);
-      const contexts = await listAuthorizedScheduleContexts(actor, db);
-      const authorizedContextIds = new Set(
-        contexts.map((context) => context.id),
+      const contexts = await listReadableScheduleContexts(actor, db);
+      const authorizedContexts = new Map(
+        contexts.map((context) => [context.id, context] as const),
       );
+      const authorizedContextIds = new Set(authorizedContexts.keys());
       if (
         input.scheduleContextId !== undefined &&
         !authorizedContextIds.has(input.scheduleContextId)
@@ -597,8 +606,27 @@ export const filtersRouter = router({
         db,
         instances.map(({ instance }) => instance.id),
       );
+      const monthStatuses = await loadRosterMonthStatuses(
+        db,
+        ctx.institutionId,
+        instances.map(({ instance }) => ({
+          hospitalId: instance.hospitalId,
+          yearMonth: yearMonthBrt(instance.startAt),
+        })),
+      );
       for (const { instance: inst, scheduleContextId } of instances) {
-        if (!authorizedContextIds.has(scheduleContextId)) continue;
+        const authorizedContext = authorizedContexts.get(scheduleContextId);
+        if (
+          !authorizedContext ||
+          !canReadRosterMonth(
+            authorizedContext.canManage,
+            monthStatuses.get(
+              rosterMonthKey(inst.hospitalId, yearMonthBrt(inst.startAt)),
+            ),
+          )
+        ) {
+          continue;
+        }
         const remaining = shiftCapacitySummary(
           inst.requiredCapacity,
           activeCounts.get(inst.id) ?? 0,
@@ -657,6 +685,7 @@ export const filtersRouter = router({
             userId: actor.userId,
             professionalId: actor.professionalId,
             roleInInstitution: actor.roleInInstitution,
+            isGlobalAdmin: actor.isGlobalAdmin,
           },
           filters: input,
         }),

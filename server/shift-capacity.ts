@@ -162,15 +162,71 @@ export async function hasShiftVacancy(
   );
 }
 
+export type ShiftCapacityState = {
+  requiredCapacity: number | null;
+  status: string;
+};
+
+/**
+ * Legacy rows predate explicit capacity. They represent exactly one place, but
+ * only while the persisted shift is still VAGO. Existing inconsistent rows
+ * may be reduced or otherwise repaired; no writer may use that history to add
+ * another active assignment.
+ */
+export function assertProjectedShiftCapacity(
+  shift: ShiftCapacityState,
+  currentActiveCount: number,
+  activeDelta = 0,
+): number {
+  const projected = currentActiveCount + activeDelta;
+  if (projected < 0) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "O total de profissionais do turno ficou inválido.",
+    });
+  }
+
+  if (shift.requiredCapacity == null) {
+    if (
+      activeDelta > 0 &&
+      (shift.status !== "VAGO" || currentActiveCount !== 0 || projected > 1)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "Este plantão legado não está mais vago.",
+      });
+    }
+    return projected;
+  }
+
+  if (projected > shift.requiredCapacity) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `Limite de ${shift.requiredCapacity} profissionais por turno excedido (${projected}/${shift.requiredCapacity}).`,
+    });
+  }
+  return projected;
+}
+
 // The locked writer additionally validates assignment topology.
-export async function readShiftCapacity(db: Conn, id: number) {
+export async function readShiftCapacityState(
+  db: Conn,
+  id: number,
+): Promise<ShiftCapacityState> {
   const [shift] = await db
-    .select({ requiredCapacity: shiftInstances.requiredCapacity })
+    .select({
+      requiredCapacity: shiftInstances.requiredCapacity,
+      status: shiftInstances.status,
+    })
     .from(shiftInstances)
     .where(eq(shiftInstances.id, id))
     .limit(1)
     .for("share");
   if (!shift)
     throw new TRPCError({ code: "CONFLICT", message: "Turno inexistente." });
-  return shift.requiredCapacity;
+  return shift;
+}
+
+export async function readShiftCapacity(db: Conn, id: number) {
+  return (await readShiftCapacityState(db, id)).requiredCapacity;
 }

@@ -2,15 +2,24 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import {
   hospitals,
   managerScope,
+  monthlyRosters,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
   users,
 } from "../drizzle/schema";
 import type { getDb } from "./db";
-import { PersistedPushAuthorityBindingError } from "./push-authority-rejection";
+import { yearMonthBrt } from "./local-time";
+import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
+import {
+  assertCanonicalScheduleContextBinding,
+  DeferredPushAuthorityError,
+  ExpiredPushAuthorityError,
+  PersistedPushAuthorityBindingError,
+} from "./push-authority-rejection";
 
 export const VACANCY_REQUEST_PUSH_PURPOSES = [
   "MANAGER_ACTION_REQUIRED",
@@ -225,6 +234,7 @@ export async function listResponsibleVacancyManagerUserIds(
 export async function requireAuthorizedVacancyRequestRecipient(
   db: AuthorityDb,
   authority: VacancyRequestPushAuthority,
+  decisionNow: Date,
   lockForShare = false,
 ): Promise<void> {
   const assignmentQuery = db
@@ -238,6 +248,9 @@ export async function requireAuthorizedVacancyRequestRecipient(
       hospitalId: shiftInstances.hospitalId,
       sectorId: shiftInstances.sectorId,
       shiftInstanceId: shiftInstances.id,
+      scheduleContextId: shiftInstances.scheduleContextId,
+      canonicalScheduleContextId: scheduleContexts.id,
+      startAt: shiftInstances.startAt,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -247,6 +260,16 @@ export async function requireAuthorizedVacancyRequestRecipient(
         eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
         eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
         eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+      ),
+    )
+    .leftJoin(
+      scheduleContexts,
+      and(
+        eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+        eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+        eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+        eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+        eq(scheduleContexts.active, true),
       ),
     )
     .innerJoin(
@@ -282,6 +305,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
     ? await assignmentQuery.for("share")
     : await assignmentQuery;
   if (!assignment) invalid("Solicitação de vaga ausente ou fora da topologia");
+  assertCanonicalScheduleContextBinding(assignment);
 
   const policy = VACANCY_REQUEST_PUSH_POLICY[authority.purpose];
   if (
@@ -322,6 +346,58 @@ export async function requireAuthorizedVacancyRequestRecipient(
       ? await membershipQuery.for("share")
       : await membershipQuery;
     if (!membership[0]) invalid("Solicitante perdeu o vínculo institucional");
+
+    // Uma aprovação transforma a candidatura em alocação oficial. Antes de
+    // apresentá-la ao usuário, revalide a ACL clínica no contexto exato; uma
+    // rejeição continua sendo um resultado histórico e não depende de acesso
+    // ainda vigente ao setor.
+    if (authority.purpose === "REQUEST_APPROVED") {
+      const accessId = await findCanonicalConfirmationAccessId(db, {
+        professionalId: assignment.assignmentProfessionalId,
+        institutionId: authority.institutionId,
+        hospitalId: authority.hospitalId,
+        sectorId: authority.sectorId,
+        scheduleContextId: assignment.scheduleContextId,
+      });
+      if (!accessId)
+        invalid("Solicitante perdeu o acesso ao hospital ou setor");
+      if (lockForShare) {
+        const lockedAccessId = await findCanonicalConfirmationAccessId(db, {
+          professionalId: assignment.assignmentProfessionalId,
+          institutionId: authority.institutionId,
+          hospitalId: authority.hospitalId,
+          sectorId: authority.sectorId,
+          scheduleContextId: assignment.scheduleContextId,
+          accessId,
+          lockForUpdate: true,
+        });
+        if (!lockedAccessId) {
+          invalid("Solicitante perdeu o acesso ao hospital ou setor");
+        }
+      }
+    }
+
+    if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+      throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+    }
+
+    const rosterQuery = db
+      .select({ status: monthlyRosters.status })
+      .from(monthlyRosters)
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, authority.institutionId),
+          eq(monthlyRosters.hospitalId, authority.hospitalId),
+          eq(monthlyRosters.yearMonth, yearMonthBrt(assignment.startAt)),
+        ),
+      )
+      .limit(1);
+    const roster = lockForShare
+      ? await rosterQuery.for("share")
+      : await rosterQuery;
+    if (roster[0]?.status !== "PUBLISHED" && roster[0]?.status !== "LOCKED") {
+      throw new DeferredPushAuthorityError();
+    }
     return;
   }
 
@@ -364,6 +440,9 @@ export async function requireAuthorizedVacancyRequestRecipient(
     manager.globalRole === "admin" ||
     manager.roleInInstitution === "GESTOR_PLUS"
   ) {
+    if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+      throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+    }
     return;
   }
   if (manager.roleInInstitution !== "GESTOR_MEDICO") {
@@ -388,4 +467,7 @@ export async function requireAuthorizedVacancyRequestRecipient(
     .limit(1);
   const scope = lockForShare ? await scopeQuery.for("share") : await scopeQuery;
   if (!scope[0]) invalid("Gestor perdeu o escopo do hospital ou setor");
+  if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+    throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+  }
 }

@@ -14,6 +14,7 @@ import {
   lte,
   ne,
   or,
+  sql,
 } from "drizzle-orm";
 
 import {
@@ -46,6 +47,7 @@ import {
   type PersonalCalendarOccurrenceWindow,
   type PersonalCalendarRecurrence,
 } from "./personal-calendar-domain";
+import { officialRosterExistsSql } from "./roster-read-visibility";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -909,6 +911,14 @@ async function loadOwnShifts(
       ),
     )
     .innerJoin(
+      users,
+      and(
+        eq(users.id, ownerUserId),
+        eq(users.approvalStatus, "APPROVED"),
+        isNull(users.deletedAt),
+      ),
+    )
+    .innerJoin(
       institutions,
       and(
         eq(institutions.id, shiftInstances.institutionId),
@@ -933,6 +943,42 @@ async function loadOwnShifts(
     .where(
       and(
         eq(shiftAssignmentsV2.isActive, true),
+        or(
+          officialRosterExistsSql({
+            institutionId: shiftInstances.institutionId,
+            hospitalId: shiftInstances.hospitalId,
+            startAt: shiftInstances.startAt,
+          }),
+          sql`(
+            ${shiftInstances.scheduleContextId} IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM schedule_contexts personal_calendar_context
+              WHERE personal_calendar_context.id = ${shiftInstances.scheduleContextId}
+                AND personal_calendar_context.institution_id = ${shiftInstances.institutionId}
+                AND personal_calendar_context.hospital_id = ${shiftInstances.hospitalId}
+                AND personal_calendar_context.sector_id = ${shiftInstances.sectorId}
+                AND personal_calendar_context.active = 1
+            )
+            AND (
+              ${users.role} = 'admin'
+              OR ${professionalInstitutions.roleInInstitution} = 'GESTOR_PLUS'
+              OR (
+                ${professionalInstitutions.roleInInstitution} = 'GESTOR_MEDICO'
+                AND EXISTS (
+                  SELECT 1 FROM manager_scope personal_calendar_scope
+                  WHERE personal_calendar_scope.institution_id = ${shiftInstances.institutionId}
+                    AND personal_calendar_scope.manager_professional_id = ${professionals.id}
+                    AND personal_calendar_scope.hospital_id = ${shiftInstances.hospitalId}
+                    AND (
+                      personal_calendar_scope.sector_id IS NULL
+                      OR personal_calendar_scope.sector_id = ${shiftInstances.sectorId}
+                    )
+                    AND personal_calendar_scope.active = 1
+                )
+              )
+            )
+          )`,
+        ),
         lt(shiftInstances.startAt, toUtc),
         gt(shiftInstances.endAt, fromUtc),
       ),

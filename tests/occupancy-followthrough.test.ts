@@ -4,6 +4,7 @@ import {
   hospitals,
   institutions,
   managerScope,
+  monthlyRosters,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -23,6 +24,7 @@ import {
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
+import { yearMonthBrt } from "../server/local-time";
 import {
   ensureTestAnesthesiaSpecialty,
   openTestScale,
@@ -549,6 +551,17 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
       sectorId: profileSectorId,
       scheduleContextId: profileContextId,
       label: `FT profile ${stamp}`,
+    });
+    const [localShift] = await db
+      .select({ startAt: shiftInstances.startAt })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.id, allowlistShiftId))
+      .limit(1);
+    await db.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: yearMonthBrt(localShift.startAt),
+      status: "PUBLISHED",
     });
   });
 

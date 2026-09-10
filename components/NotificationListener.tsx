@@ -30,13 +30,16 @@ import {
   vacancyPushIntentNotificationFence,
   vacancyPushRouteParams,
 } from "@/lib/vacancy-push-route";
+import {
+  parseConfirmationRouteEpoch,
+  parseConfirmationRouteToken,
+} from "@/lib/confirmation-route-params";
 
 type NotificationData = Readonly<Record<string, unknown>>;
 
 const MAX_CONSUMED_NOTIFICATION_RESPONSES = 128;
 const handledNotificationResponses = new Set<string>();
 const inFlightNotificationResponses = new Set<string>();
-
 function notificationResponseKey(
   response: Notifications.NotificationResponse,
 ): string | null {
@@ -84,7 +87,11 @@ export type NotificationRoutingDependencies = Readonly<{
   loadAllowedInstitutionIds: () => Promise<readonly number[] | null>;
   setActiveInstitutionId: (institutionId: number) => Promise<void>;
   invalidateQueries: () => Promise<void>;
-  navigateToConfirmation: (confirmationToken: string) => void;
+  navigateToConfirmation: (
+    confirmationToken: string,
+    nominationEpoch?: string,
+  ) => void;
+  navigateToNominateReplacement?: (confirmationToken: string) => void;
   navigateToAgenda: () => void;
   navigateToTrocas?: () => void;
   navigateToVacancies?: (shiftInstanceId: number) => void;
@@ -287,11 +294,15 @@ export async function routeNotificationData(
   switch (data.type) {
     case "duty_confirmation":
     case "duty_nomination": {
-      if (
-        typeof data.confirmationToken !== "string" ||
-        !data.confirmationToken
-      ) {
-        return false;
+      const confirmationToken = parseConfirmationRouteToken(
+        data.confirmationToken,
+      );
+      if (!confirmationToken) return false;
+      let nominationEpoch: string | undefined;
+      if (data.type === "duty_nomination") {
+        const parsedEpoch = parseConfirmationRouteEpoch(data.nominationEpoch);
+        if (!parsedEpoch) return false;
+        nominationEpoch = parsedEpoch;
       }
       const alignedSnapshot = await alignNotificationTenant(
         data,
@@ -305,7 +316,11 @@ export async function routeNotificationData(
         return false;
       }
       // Sem await entre o último snapshot/fence e o efeito de navegação.
-      dependencies.navigateToConfirmation(data.confirmationToken);
+      if (nominationEpoch) {
+        dependencies.navigateToConfirmation(confirmationToken, nominationEpoch);
+      } else {
+        dependencies.navigateToConfirmation(confirmationToken);
+      }
       return true;
     }
 
@@ -434,10 +449,33 @@ export async function routeNotificationData(
       return true;
     }
 
+    case "replacement_declined": {
+      const confirmationToken = parseConfirmationRouteToken(
+        data.confirmationToken,
+      );
+      if (!confirmationToken) return false;
+      const alignedSnapshot = await alignNotificationTenant(
+        data,
+        dependencies,
+        isCurrent,
+      );
+      if (
+        !alignedSnapshot ||
+        !isRouteStillCurrent(alignedSnapshot, dependencies, isCurrent)
+      ) {
+        return false;
+      }
+      if (dependencies.navigateToNominateReplacement) {
+        dependencies.navigateToNominateReplacement(confirmationToken);
+      } else {
+        dependencies.navigateToConfirmation(confirmationToken);
+      }
+      return true;
+    }
+
     case "duty_auto_confirmed":
     case "manager_confirmation_escalation":
     case "replacement_accepted":
-    case "replacement_declined":
     case "shift_assigned":
     case "shift_unassigned":
     case "vacancy_request_approved":
@@ -585,9 +623,18 @@ export function NotificationListener() {
       invalidateQueries: async () => {
         await utils.invalidate();
       },
-      navigateToConfirmation: (confirmationToken) => {
+      navigateToConfirmation: (confirmationToken, nominationEpoch) => {
         router.push({
           pathname: "/confirm-duty" as any,
+          params: {
+            token: confirmationToken,
+            ...(nominationEpoch ? { nominationEpoch } : {}),
+          },
+        });
+      },
+      navigateToNominateReplacement: (confirmationToken) => {
+        router.push({
+          pathname: "/nominate-replacement" as any,
           params: { token: confirmationToken },
         });
       },

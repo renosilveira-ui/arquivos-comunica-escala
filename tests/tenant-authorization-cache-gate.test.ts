@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   canStartTenantAuthorizationHandshake,
@@ -327,6 +328,7 @@ describe("gate fresco de autorização antes do cache tenant-bound", () => {
     const { routeNotificationData } =
       await import("../components/NotificationListener");
     const coordinator = new TenantAuthorizationCoordinator();
+    const pushToken = randomUUID();
     let activeTenant = { institutionId: 22, revision: 4 };
     let childrenReleased = true;
     let gateAttempt: Promise<unknown> | undefined;
@@ -339,7 +341,8 @@ describe("gate fresco de autorização antes do cache tenant-bound", () => {
       {
         type: "duty_confirmation",
         institutionId: 11,
-        confirmationToken: "push-a",
+        // O roteamento só aceita token de rota canônico (UUID).
+        confirmationToken: pushToken,
       },
       {
         isSessionAuthorizationCurrent: () => true,
@@ -370,7 +373,7 @@ describe("gate fresco de autorização antes do cache tenant-bound", () => {
     );
 
     await expect(routed).resolves.toBe(true);
-    expect(navigate).toHaveBeenCalledWith("push-a");
+    expect(navigate).toHaveBeenCalledWith(pushToken);
     expect(childrenReleased).toBe(false);
     allowHandshakeA.resolve([institution(11), institution(22)]);
     await gateAttempt;

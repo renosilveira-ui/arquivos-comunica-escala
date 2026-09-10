@@ -10,7 +10,17 @@
 
 import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq, getTableName, gt, gte, lte, inArray, isNull, or } from "drizzle-orm";
+import {
+  and,
+  eq,
+  getTableName,
+  gt,
+  gte,
+  lte,
+  inArray,
+  isNull,
+  or,
+} from "drizzle-orm";
 import { getDb } from "../db";
 import {
   shiftInstances,
@@ -47,13 +57,17 @@ import {
 import { processPendingDutySyncs } from "../sso/duty-sync";
 import { resolveTrustedSsoTargetUrl } from "../sso/url-policy";
 import { processPendingComunicaPlusOutbox } from "../integrations/comunica-plus";
+import { isConfirmationRouteToken } from "../../lib/confirmation-route-params";
 
 const RECHECK_DELAY_MS = 30 * 60 * 1000; // 30 minutes
 
 function isDuplicateEntry(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  if ("code" in error && (error as { code?: unknown }).code === "ER_DUP_ENTRY") return true;
-  return "cause" in error && isDuplicateEntry((error as { cause?: unknown }).cause);
+  if ("code" in error && (error as { code?: unknown }).code === "ER_DUP_ENTRY")
+    return true;
+  return (
+    "cause" in error && isDuplicateEntry((error as { cause?: unknown }).cause)
+  );
 }
 
 // ── Main tick (called every ~60s) ───────────────────────────────────────────
@@ -140,7 +154,9 @@ export async function processShiftStartPushes(now: Date) {
         requireEffectiveAssignment: true,
       });
     } catch {
-      console.warn(`[ConfirmationCron] START_PUSH_VALIDATION_FAILED confirmation=${conf.id}`);
+      console.warn(
+        `[ConfirmationCron] START_PUSH_VALIDATION_FAILED confirmation=${conf.id}`,
+      );
       continue;
     }
     const targetUserId = valid.effective.userId;
@@ -183,7 +199,9 @@ export async function processShiftStartPushes(now: Date) {
       );
       ticketAccepted = tracked.ticketAccepted;
     } catch {
-      console.error(`[ConfirmationCron] START_PUSH_TRACKING_FAILED confirmation=${conf.id}`);
+      console.error(
+        `[ConfirmationCron] START_PUSH_TRACKING_FAILED confirmation=${conf.id}`,
+      );
       continue;
     }
 
@@ -215,6 +233,7 @@ export async function dispatchConfirmations(now: Date) {
       label: shiftInstances.label,
       sectorId: shiftInstances.sectorId,
       userId: professionals.userId,
+      confirmationId: dutyConfirmations.id,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -241,7 +260,10 @@ export async function dispatchConfirmations(now: Date) {
         eq(sectors.hospitalId, shiftInstances.hospitalId),
       ),
     )
-    .innerJoin(professionals, eq(shiftAssignmentsV2.professionalId, professionals.id))
+    .innerJoin(
+      professionals,
+      eq(shiftAssignmentsV2.professionalId, professionals.id),
+    )
     .innerJoin(
       users,
       and(
@@ -255,7 +277,10 @@ export async function dispatchConfirmations(now: Date) {
       and(
         eq(professionalInstitutions.professionalId, professionals.id),
         eq(professionalInstitutions.userId, professionals.userId),
-        eq(professionalInstitutions.institutionId, shiftInstances.institutionId),
+        eq(
+          professionalInstitutions.institutionId,
+          shiftInstances.institutionId,
+        ),
         eq(professionalInstitutions.active, true),
       ),
     )
@@ -279,7 +304,13 @@ export async function dispatchConfirmations(now: Date) {
         eq(shiftAssignmentsV2.status, "OCUPADO"),
         gt(shiftInstances.startAt, after),
         lte(shiftInstances.startAt, until),
-        isNull(dutyConfirmations.id),
+        or(
+          isNull(dutyConfirmations.id),
+          and(
+            eq(dutyConfirmations.status, "PENDING"),
+            isNull(dutyConfirmations.recheckAt),
+          ),
+        ),
         plantonistaAccessCoversShiftSql(
           getTableName(professionals),
           getTableName(shiftInstances),
@@ -306,7 +337,7 @@ export async function dispatchConfirmations(now: Date) {
   }[] = [];
 
   for (const assignment of dueAssignments) {
-    const confirmationToken = randomUUID();
+    const nextConfirmationToken = randomUUID();
     const recheckAt = new Date(now.getTime() + RECHECK_DELAY_MS);
 
     // Confirmação e intenção de transporte nascem na mesma transação. A
@@ -315,7 +346,7 @@ export async function dispatchConfirmations(now: Date) {
     // reconstruídos sob lock antes de qualquer INSERT. Papel, scope e
     // convite não substituem professional_access. unique(assignment_id)
     // fecha o segundo worker.
-    let created: typeof createdIntents[number] | null;
+    let created: (typeof createdIntents)[number] | null;
     try {
       created = await db.transaction(async (tx) => {
         const [lockedShift] = await tx
@@ -365,21 +396,75 @@ export async function dispatchConfirmations(now: Date) {
             message: "A alocação mudou durante a criação da confirmação",
           });
         }
-        const [inserted] = await tx
-          .insert(dutyConfirmations)
-          .values({
-            institutionId: assignment.institutionId,
-            shiftInstanceId: assignment.shiftInstanceId,
-            assignmentId: assignment.assignmentId,
-            professionalId: assignment.professionalId,
-            userId: assignment.userId,
-            status: "PENDING",
-            notifiedAt: null,
-            recheckAt,
-            confirmationToken,
-          })
-          .$returningId();
-        const current = await requireValidDutyConfirmation(tx, inserted.id, {
+        let confirmationId: number;
+        let confirmationToken: string;
+        if (assignment.confirmationId === null) {
+          const [inserted] = await tx
+            .insert(dutyConfirmations)
+            .values({
+              institutionId: assignment.institutionId,
+              shiftInstanceId: assignment.shiftInstanceId,
+              assignmentId: assignment.assignmentId,
+              professionalId: assignment.professionalId,
+              userId: assignment.userId,
+              status: "PENDING",
+              notifiedAt: null,
+              recheckAt,
+              confirmationToken: nextConfirmationToken,
+            })
+            .$returningId();
+          confirmationId = inserted.id;
+          confirmationToken = nextConfirmationToken;
+        } else {
+          const [rearmed] = await tx
+            .select({
+              id: dutyConfirmations.id,
+              confirmationToken: dutyConfirmations.confirmationToken,
+            })
+            .from(dutyConfirmations)
+            .where(
+              and(
+                eq(dutyConfirmations.id, assignment.confirmationId),
+                eq(dutyConfirmations.institutionId, assignment.institutionId),
+                eq(
+                  dutyConfirmations.shiftInstanceId,
+                  assignment.shiftInstanceId,
+                ),
+                eq(dutyConfirmations.assignmentId, assignment.assignmentId),
+                eq(dutyConfirmations.professionalId, assignment.professionalId),
+                eq(dutyConfirmations.userId, assignment.userId),
+                eq(dutyConfirmations.status, "PENDING"),
+                isNull(dutyConfirmations.recheckAt),
+              ),
+            )
+            .limit(1)
+            .for("update");
+          if (!rearmed) return null;
+          if (!isConfirmationRouteToken(rearmed.confirmationToken)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Ciclo de confirmação inválido",
+            });
+          }
+          const [claimedRearm] = await tx
+            .update(dutyConfirmations)
+            .set({ recheckAt, notifiedAt: null })
+            .where(
+              and(
+                eq(dutyConfirmations.id, rearmed.id),
+                eq(dutyConfirmations.status, "PENDING"),
+                eq(
+                  dutyConfirmations.confirmationToken,
+                  rearmed.confirmationToken,
+                ),
+                isNull(dutyConfirmations.recheckAt),
+              ),
+            );
+          if (claimedRearm.affectedRows !== 1) return null;
+          confirmationId = rearmed.id;
+          confirmationToken = rearmed.confirmationToken;
+        }
+        const current = await requireValidDutyConfirmation(tx, confirmationId, {
           allowedStatuses: ["PENDING"],
           expectedInstitutionId: lockedShift.institutionId,
           lockForUpdate: true,
@@ -398,13 +483,13 @@ export async function dispatchConfirmations(now: Date) {
           institutionId: current.shift.institutionId,
           userId: current.original.userId,
           shiftInstanceId: current.shift.id,
-          dedupKey: `duty-confirmation:${inserted.id}:request:${current.original.userId}`,
+          dedupKey: `duty-confirmation:${confirmationId}:request:${confirmationToken}:${current.original.userId}`,
           payload: {
             title: "Confirmação de plantão",
             body: `Você confirma seu plantão ${current.shift.label} (${startTime}–${endTime})?`,
             data: {
               type: "duty_confirmation",
-              confirmationId: inserted.id,
+              confirmationId,
               confirmationToken,
               institutionId: current.shift.institutionId,
               shiftInstanceId: current.shift.id,
@@ -414,16 +499,17 @@ export async function dispatchConfirmations(now: Date) {
           authority: {
             kind: "DUTY_CONFIRMATION",
             purpose: "CONFIRMATION_REQUEST",
-            confirmationId: inserted.id,
+            confirmationId,
             allowedStatuses: ["PENDING"],
             recipientKind: "ORIGINAL",
             expectedUserId: current.original.userId,
             shiftSnapshot: dutyShiftSnapshot(current.shift),
+            confirmationToken,
           },
         };
         await enqueueTrackedPushNotification(intent, now, tx);
         return {
-          confirmationId: inserted.id,
+          confirmationId,
           intent,
         };
       });
@@ -445,37 +531,34 @@ export async function dispatchConfirmations(now: Date) {
   // o Expo quando um gatilho contém muitos profissionais.
   let cursor = 0;
   await Promise.all(
-    Array.from(
-      { length: Math.min(5, createdIntents.length) },
-      async () => {
-        while (cursor < createdIntents.length) {
-          const created = createdIntents[cursor++];
-          if (!created) return;
-          const { confirmationId, intent } = created;
-          try {
-            const tracked = await sendTrackedPushNotification(intent, now);
-            if (tracked.ticketAccepted) {
-              console.log(
-                `[ConfirmationCron] Expo ticket accepted for confirmation=${confirmationId} userId=${intent.userId}`,
-              );
-              continue;
-            }
-          } catch {
-            console.error(
-              `[ConfirmationCron] CONFIRMATION_PUSH_SUBMISSION_FAILED confirmation=${confirmationId}`,
+    Array.from({ length: Math.min(5, createdIntents.length) }, async () => {
+      while (cursor < createdIntents.length) {
+        const created = createdIntents[cursor++];
+        if (!created) return;
+        const { confirmationId, intent } = created;
+        try {
+          const tracked = await sendTrackedPushNotification(intent, now);
+          if (tracked.ticketAccepted) {
+            console.log(
+              `[ConfirmationCron] Expo ticket accepted for confirmation=${confirmationId} userId=${intent.userId}`,
             );
+            continue;
           }
-          await notifyManagersConfirmationEscalation(
-            confirmationId,
-            "PUSH_UNCONFIRMED",
-          ).catch(() =>
-            console.error(
-              `[ConfirmationCron] MANAGER_ESCALATION_FAILED confirmation=${confirmationId}`,
-            ),
+        } catch {
+          console.error(
+            `[ConfirmationCron] CONFIRMATION_PUSH_SUBMISSION_FAILED confirmation=${confirmationId}`,
           );
         }
-      },
-    ),
+        await notifyManagersConfirmationEscalation(
+          confirmationId,
+          "PUSH_UNCONFIRMED",
+        ).catch(() =>
+          console.error(
+            `[ConfirmationCron] MANAGER_ESCALATION_FAILED confirmation=${confirmationId}`,
+          ),
+        );
+      }
+    }),
   );
 }
 
@@ -515,7 +598,12 @@ export async function processRechecks(now: Date) {
     );
 
   for (const conf of expired) {
-    if (!conf.recheckAt || !OPEN_CONFIRMATION_STATUSES.includes(conf.status as OpenConfirmationStatus)) {
+    if (
+      !conf.recheckAt ||
+      !OPEN_CONFIRMATION_STATUSES.includes(
+        conf.status as OpenConfirmationStatus,
+      )
+    ) {
       continue;
     }
 
@@ -546,11 +634,15 @@ export async function processRechecks(now: Date) {
         }
       });
     } catch {
-      console.error(`[ConfirmationCron] RECHECK_VALIDATION_RETRY confirmation=${conf.id}`);
+      console.error(
+        `[ConfirmationCron] RECHECK_VALIDATION_RETRY confirmation=${conf.id}`,
+      );
       continue;
     }
     if (canonicallyRejected) {
-      console.log(`[ConfirmationCron] RECHECK_CANONICALLY_REJECTED confirmation=${conf.id}`);
+      console.log(
+        `[ConfirmationCron] RECHECK_CANONICALLY_REJECTED confirmation=${conf.id}`,
+      );
       continue;
     }
 
@@ -559,12 +651,20 @@ export async function processRechecks(now: Date) {
     // proximo tick tenta de novo.
     let escalation;
     try {
-      escalation = await notifyManagersConfirmationEscalation(conf.id, "NO_RESPONSE");
+      escalation = await notifyManagersConfirmationEscalation(
+        conf.id,
+        "NO_RESPONSE",
+      );
     } catch {
-      console.error(`[ConfirmationCron] MANAGER_ESCALATION_ENQUEUE_FAILED confirmation=${conf.id}`);
+      console.error(
+        `[ConfirmationCron] MANAGER_ESCALATION_ENQUEUE_FAILED confirmation=${conf.id}`,
+      );
       continue;
     }
-    if (escalation.managerCount === 0 || escalation.intentCount !== escalation.managerCount) {
+    if (
+      escalation.managerCount === 0 ||
+      escalation.intentCount !== escalation.managerCount
+    ) {
       console.error(
         `[ConfirmationCron] Confirmação ${conf.id} mantém recheck: ${escalation.intentCount}/${escalation.managerCount} alertas persistidos`,
       );
@@ -591,7 +691,12 @@ export async function notifyManagersConfirmationEscalation(
     .from(dutyConfirmations)
     .where(eq(dutyConfirmations.id, confirmationId))
     .limit(1);
-  if (!snapshot || !OPEN_CONFIRMATION_STATUSES.includes(snapshot.status as OpenConfirmationStatus)) {
+  if (
+    !snapshot ||
+    !OPEN_CONFIRMATION_STATUSES.includes(
+      snapshot.status as OpenConfirmationStatus,
+    )
+  ) {
     return { managerCount: 0, intentCount: 0 };
   }
   const valid = await requireValidDutyConfirmation(db, confirmationId, {
@@ -635,7 +740,10 @@ export async function notifyManagersConfirmationEscalation(
       and(
         eq(managerScopeTable.institutionId, valid.shift.institutionId),
         eq(managerScopeTable.hospitalId, shift.hospitalId),
-        or(isNull(managerScopeTable.sectorId), eq(managerScopeTable.sectorId, shift.sectorId)),
+        or(
+          isNull(managerScopeTable.sectorId),
+          eq(managerScopeTable.sectorId, shift.sectorId),
+        ),
         eq(managerScopeTable.active, true),
       ),
     );
@@ -707,7 +815,15 @@ export async function notifyManagersConfirmationEscalation(
     .update(JSON.stringify(dutyShiftSnapshot(valid.shift)))
     .digest("hex")
     .slice(0, 12);
-  const recheckRevision = valid.confirmation.recheckAt?.getTime() ?? 0;
+  const recheckEpoch = valid.confirmation.recheckAt?.toISOString();
+  if (
+    !recheckEpoch ||
+    valid.confirmation.recheckAt?.getUTCMilliseconds() !== 0
+  ) {
+    throw new Error("CONFIRMATION_RECHECK_EPOCH_UNAVAILABLE");
+  }
+  const recheckRevision = valid.confirmation.recheckAt.getTime();
+  const confirmationToken = valid.confirmation.confirmationToken;
 
   let intentCount = 0;
   for (const managerUserId of managerUserIds) {
@@ -726,7 +842,7 @@ export async function notifyManagersConfirmationEscalation(
         institutionId: valid.shift.institutionId,
         userId: managerUserId,
         shiftInstanceId: valid.shift.id,
-        dedupKey: `duty-confirmation:${confirmationId}:manager:${reason}:${snapshot.status}:${recheckRevision}:${shiftRevision}:${managerUserId}`,
+        dedupKey: `duty-confirmation:${confirmationId}:manager:${reason}:${snapshot.status}:${recheckRevision}:${confirmationToken}:${shiftRevision}:${managerUserId}`,
         payload: {
           ...push,
           data: {
@@ -736,6 +852,8 @@ export async function notifyManagersConfirmationEscalation(
             institutionId: valid.shift.institutionId,
             shiftInstanceId: valid.shift.id,
             userId: valid.original.userId,
+            recheckEpoch,
+            confirmationToken,
           },
         },
         authority: {
@@ -746,6 +864,8 @@ export async function notifyManagersConfirmationEscalation(
           recipientKind: "MANAGER",
           expectedUserId: managerUserId,
           shiftSnapshot: dutyShiftSnapshot(valid.shift),
+          recheckEpoch,
+          confirmationToken,
         },
       });
       intentCount += 1;

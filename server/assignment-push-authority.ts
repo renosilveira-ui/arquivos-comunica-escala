@@ -1,8 +1,10 @@
 import { and, eq, isNull } from "drizzle-orm";
 import {
   hospitals,
+  monthlyRosters,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -10,7 +12,13 @@ import {
 } from "../drizzle/schema";
 import type { getDb } from "./db";
 import { findCanonicalConfirmationAccessId } from "./confirmation-canonical-access";
-import { PersistedPushAuthorityBindingError } from "./push-authority-rejection";
+import { yearMonthBrt } from "./local-time";
+import {
+  assertCanonicalScheduleContextBinding,
+  DeferredPushAuthorityError,
+  ExpiredPushAuthorityError,
+  PersistedPushAuthorityBindingError,
+} from "./push-authority-rejection";
 
 export const ASSIGNMENT_LIFECYCLE_PUSH_PURPOSES = [
   "ASSIGNED",
@@ -117,6 +125,7 @@ export function isAssignmentLifecyclePushPayload(
 export async function requireAuthorizedAssignmentLifecycleRecipient(
   db: AuthorityDb,
   authority: AssignmentLifecyclePushAuthority,
+  decisionNow: Date,
   lockForShare = false,
 ): Promise<void> {
   const assignmentQuery = db
@@ -125,6 +134,8 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
       assignmentActive: shiftAssignmentsV2.isActive,
       shiftStatus: shiftInstances.status,
       scheduleContextId: shiftInstances.scheduleContextId,
+      canonicalScheduleContextId: scheduleContexts.id,
+      startAt: shiftInstances.startAt,
     })
     .from(shiftAssignmentsV2)
     .innerJoin(
@@ -134,6 +145,16 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
         eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
         eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
         eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+      ),
+    )
+    .leftJoin(
+      scheduleContexts,
+      and(
+        eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+        eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+        eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+        eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+        eq(scheduleContexts.active, true),
       ),
     )
     .innerJoin(
@@ -167,6 +188,7 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
     : await assignmentQuery;
   const assignment = assignmentRows[0];
   if (!assignment) invalid("Alocação ausente ou fora da topologia persistida");
+  assertCanonicalScheduleContextBinding(assignment);
 
   const policy = ASSIGNMENT_LIFECYCLE_PUSH_POLICY[authority.purpose];
   if (
@@ -288,5 +310,28 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
     if (!lockedAccessId) {
       invalid("Profissional perdeu o acesso ao hospital ou setor");
     }
+  }
+
+  if (decisionNow.getTime() >= assignment.startAt.getTime()) {
+    throw new ExpiredPushAuthorityError(assignment.startAt, decisionNow);
+  }
+
+  const rosterQuery = db
+    .select({ status: monthlyRosters.status })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, authority.institutionId),
+        eq(monthlyRosters.hospitalId, authority.hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonthBrt(assignment.startAt)),
+      ),
+    )
+    .limit(1);
+  const rosterRows = lockForShare
+    ? await rosterQuery.for("share")
+    : await rosterQuery;
+  const rosterStatus = rosterRows[0]?.status;
+  if (rosterStatus !== "PUBLISHED" && rosterStatus !== "LOCKED") {
+    throw new DeferredPushAuthorityError();
   }
 }

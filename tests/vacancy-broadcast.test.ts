@@ -85,8 +85,7 @@ describe("aviso deliberado de plantão vago", () => {
     },
   ): Promise<Identity> {
     const name = `vacancy-bc-${stamp}-${label}`;
-    const role =
-      input.roleInInstitution === "USER" ? "doctor" : "manager";
+    const role = input.roleInInstitution === "USER" ? "doctor" : "manager";
     const [user] = await db
       .insert(users)
       .values({
@@ -281,9 +280,9 @@ describe("aviso deliberado de plantão vago", () => {
         operationalProfileCode: null,
       })
       .where(eq(scheduleContexts.id, scheduleContextId));
-    await db.insert(scheduleContextAllowedQualifications).values([
-      { scheduleContextId, medicalSpecialtyId: anesthesiaId },
-    ]);
+    await db
+      .insert(scheduleContextAllowedQualifications)
+      .values([{ scheduleContextId, medicalSpecialtyId: anesthesiaId }]);
 
     manager = await createIdentity("gestor", {
       roleInInstitution: "GESTOR_MEDICO",
@@ -329,55 +328,87 @@ describe("aviso deliberado de plantão vago", () => {
   });
 
   beforeEach(async () => {
-    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+    await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
     await db
       .delete(shiftAuditLog)
       .where(eq(shiftAuditLog.institutionId, institutionId));
-    await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.institutionId, institutionId));
-    await db.delete(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
-    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
+    await db
+      .delete(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.institutionId, institutionId));
+    await db
+      .delete(shiftInstances)
+      .where(eq(shiftInstances.institutionId, institutionId));
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
   });
 
   afterAll(async () => {
     if (!db) return;
-    await db.delete(auditTrail).where(eq(auditTrail.institutionId, institutionId));
-    await db.delete(notifications).where(eq(notifications.institutionId, institutionId));
+    await db
+      .delete(auditTrail)
+      .where(eq(auditTrail.institutionId, institutionId));
+    await db
+      .delete(notifications)
+      .where(eq(notifications.institutionId, institutionId));
     await db
       .delete(shiftAuditLog)
       .where(eq(shiftAuditLog.institutionId, institutionId));
-    await db.delete(shiftAssignmentsV2).where(eq(shiftAssignmentsV2.institutionId, institutionId));
-    await db.delete(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
-    await db.delete(monthlyRosters).where(eq(monthlyRosters.institutionId, institutionId));
+    await db
+      .delete(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.institutionId, institutionId));
+    await db
+      .delete(shiftInstances)
+      .where(eq(shiftInstances.institutionId, institutionId));
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
     await db
       .delete(scheduleContextAllowedQualifications)
-      .where(eq(scheduleContextAllowedQualifications.scheduleContextId, scheduleContextId));
-    await db.delete(managerScope).where(eq(managerScope.institutionId, institutionId));
+      .where(
+        eq(
+          scheduleContextAllowedQualifications.scheduleContextId,
+          scheduleContextId,
+        ),
+      );
+    await db
+      .delete(managerScope)
+      .where(eq(managerScope.institutionId, institutionId));
     await db
       .delete(professionalAccess)
       .where(eq(professionalAccess.institutionId, institutionId));
     await db
       .delete(professionalInstitutions)
       .where(eq(professionalInstitutions.institutionId, institutionId));
-    await db.delete(professionals).where(inArray(professionals.id, professionalIds));
+    await db
+      .delete(professionals)
+      .where(inArray(professionals.id, professionalIds));
     await db.delete(users).where(inArray(users.id, userIds));
-    await db.delete(scheduleContexts).where(eq(scheduleContexts.institutionId, institutionId));
+    await db
+      .delete(scheduleContexts)
+      .where(eq(scheduleContexts.institutionId, institutionId));
     await db.delete(sectors).where(eq(sectors.institutionId, institutionId));
-    await db.delete(hospitals).where(eq(hospitals.institutionId, institutionId));
+    await db
+      .delete(hospitals)
+      .where(eq(hospitals.institutionId, institutionId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
-    await db.delete(medicalSpecialties).where(eq(medicalSpecialties.id, clinicaId));
+    await db
+      .delete(medicalSpecialties)
+      .where(eq(medicalSpecialties.id, clinicaId));
   });
 
   it("gestor autorizado envia e médicos elegíveis recebem", async () => {
     const shiftId = await createVacantShift(1);
-    const result = await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId });
+    const result = await callerFor(manager).notifyVacancy({
+      shiftInstanceId: shiftId,
+    });
     expect(result.notifiedCount).toBe(2);
     const rows = await listBroadcasts(shiftId);
     const userIdsSignaled = rows.map((row) => row.userId);
     expect(userIdsSignaled).toEqual(
-      expect.arrayContaining([
-        doctor.userId,
-        doctorGestor.userId,
-      ]),
+      expect.arrayContaining([doctor.userId, doctorGestor.userId]),
     );
     expect(userIdsSignaled).not.toContain(manager.userId);
     expect(userIdsSignaled).not.toContain(plus.userId);
@@ -391,19 +422,17 @@ describe("aviso deliberado de plantão vago", () => {
     const visible = await vacanciesCaller(doctor).shiftInstances.listVacancies(
       {},
     );
-    expect(visible.map((row) => Number(row.shiftInstanceId))).toContain(shiftId);
+    expect(visible.map((row) => Number(row.shiftInstanceId))).toContain(
+      shiftId,
+    );
     const visibleWithDifferentClinicalMetadata = await vacanciesCaller(
       ineligible,
-    ).shiftInstances.listVacancies(
-      {},
-    );
+    ).shiftInstances.listVacancies({});
     expect(
       visibleWithDifferentClinicalMetadata.map((row) =>
         Number(row.shiftInstanceId),
       ),
-    ).not.toContain(
-      shiftId,
-    );
+    ).not.toContain(shiftId);
   });
 
   it("allowlist vazia não desliga vaga e broadcast para ACL setorial", async () => {
@@ -445,7 +474,9 @@ describe("aviso deliberado de plantão vago", () => {
 
   it("GESTOR_PLUS autorizado envia", async () => {
     const shiftId = await createVacantShift(2);
-    const result = await callerFor(plus).notifyVacancy({ shiftInstanceId: shiftId });
+    const result = await callerFor(plus).notifyVacancy({
+      shiftInstanceId: shiftId,
+    });
     expect(result.notifiedCount).toBe(2);
   });
 
@@ -471,12 +502,41 @@ describe("aviso deliberado de plantão vago", () => {
     expect(await listBroadcasts(shiftId)).toEqual([]);
   });
 
+  it.each(["ABSENT", "DRAFT", "LOCKED"] as const)(
+    "bypass direto por id não cria broadcast em mês %s",
+    async (status) => {
+      const shiftId = await createVacantShift(4);
+      const startAt = at(4, 22);
+      await db
+        .delete(monthlyRosters)
+        .where(eq(monthlyRosters.institutionId, institutionId));
+      if (status !== "ABSENT") {
+        await db.insert(monthlyRosters).values({
+          institutionId,
+          hospitalId,
+          yearMonth: yearMonthBrt(startAt),
+          status,
+        });
+      }
+
+      await expect(
+        callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(await listBroadcasts(shiftId)).toEqual([]);
+    },
+  );
+
   it("shift ocupado não envia; vago envia", async () => {
     const shiftId = await createVacantShift(5);
     await db.insert(shiftAssignmentsV2).values({
-      institutionId, hospitalId, sectorId, shiftInstanceId: shiftId,
-      professionalId: doctor.professionalId, assignmentType: "ON_DUTY",
-      status: "OCUPADO", isActive: true,
+      institutionId,
+      hospitalId,
+      sectorId,
+      shiftInstanceId: shiftId,
+      professionalId: doctor.professionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
     });
     await db
       .update(shiftInstances)
@@ -490,22 +550,31 @@ describe("aviso deliberado de plantão vago", () => {
     ).rejects.toMatchObject({
       message: "Este plantão não está mais vago.",
     });
-    await db.update(shiftAssignmentsV2).set({ isActive: false })
+    await db
+      .update(shiftAssignmentsV2)
+      .set({ isActive: false })
       .where(eq(shiftAssignmentsV2.shiftInstanceId, shiftId));
     await db
       .update(shiftInstances)
       .set({ status: "VAGO" })
       .where(eq(shiftInstances.id, shiftId));
-    const result = await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId });
+    const result = await callerFor(manager).notifyVacancy({
+      shiftInstanceId: shiftId,
+    });
     expect(result.notifiedCount).toBe(2);
   });
 
   it("concorrência vaga→ocupada falha fechado", async () => {
     const shiftId = await createVacantShift(6);
     await db.insert(shiftAssignmentsV2).values({
-      institutionId, hospitalId, sectorId, shiftInstanceId: shiftId,
-      professionalId: doctor.professionalId, assignmentType: "ON_DUTY",
-      status: "PENDENTE", isActive: true,
+      institutionId,
+      hospitalId,
+      sectorId,
+      shiftInstanceId: shiftId,
+      professionalId: doctor.professionalId,
+      assignmentType: "ON_DUTY",
+      status: "PENDENTE",
+      isActive: true,
     });
     await db
       .update(shiftInstances)
@@ -521,15 +590,23 @@ describe("aviso deliberado de plantão vago", () => {
 
   it("capacidade parcial permite avisar somente os profissionais ainda elegíveis", async () => {
     const shiftId = await createVacantShift(16);
-    await db.update(shiftInstances).set({ requiredCapacity: 2, status: "OCUPADO" })
+    await db
+      .update(shiftInstances)
+      .set({ requiredCapacity: 2, status: "OCUPADO" })
       .where(eq(shiftInstances.id, shiftId));
     await db.insert(shiftAssignmentsV2).values({
-      institutionId, hospitalId, sectorId, shiftInstanceId: shiftId,
-      professionalId: doctor.professionalId, assignmentType: "ON_DUTY",
-      status: "OCUPADO", isActive: true,
+      institutionId,
+      hospitalId,
+      sectorId,
+      shiftInstanceId: shiftId,
+      professionalId: doctor.professionalId,
+      assignmentType: "ON_DUTY",
+      status: "OCUPADO",
+      isActive: true,
     });
-    expect(await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }))
-      .toMatchObject({ notifiedCount: 1 });
+    expect(
+      await callerFor(manager).notifyVacancy({ shiftInstanceId: shiftId }),
+    ).toMatchObject({ notifiedCount: 1 });
   });
 
   it("zero elegíveis devolve count 0 sem outbox", async () => {
@@ -690,7 +767,9 @@ describe("aviso deliberado de plantão vago", () => {
       .insert(institutions)
       .values({
         name: `Vacancy BC Other ${stamp}`,
-        cnpj: String(stamp + 2).slice(-14).padStart(14, "5"),
+        cnpj: String(stamp + 2)
+          .slice(-14)
+          .padStart(14, "5"),
         legalName: `Vacancy BC Other ${stamp}`,
         tradeName: `VO${stamp}`.slice(0, 20),
         isActive: true,
@@ -766,7 +845,9 @@ describe("aviso deliberado de plantão vago", () => {
         .where(eq(professionalInstitutions.institutionId, otherInstitution.id));
       await db.delete(sectors).where(eq(sectors.id, otherSector.id));
       await db.delete(hospitals).where(eq(hospitals.id, otherHospital.id));
-      await db.delete(institutions).where(eq(institutions.id, otherInstitution.id));
+      await db
+        .delete(institutions)
+        .where(eq(institutions.id, otherInstitution.id));
     }
   });
 
@@ -819,7 +900,9 @@ describe("aviso deliberado de plantão vago", () => {
         scheduleContextId: legacyContextId,
       });
       await callerFor(plus).notifyVacancy({ shiftInstanceId: legacyShiftId });
-      const legacy = (await listBroadcasts(legacyShiftId)).map((row) => row.userId);
+      const legacy = (await listBroadcasts(legacyShiftId)).map(
+        (row) => row.userId,
+      );
       expect(legacy).toContain(widePeer.userId);
       expect(legacy).not.toContain(doctor.userId);
     } finally {
@@ -832,20 +915,27 @@ describe("aviso deliberado de plantão vago", () => {
       await db
         .delete(shiftAuditLog)
         .where(eq(shiftAuditLog.institutionId, institutionId));
-      await db.delete(shiftInstances).where(eq(shiftInstances.sectorId, legacySector.id));
-      await db.delete(scheduleContexts).where(eq(scheduleContexts.id, legacyContextId));
+      await db
+        .delete(shiftInstances)
+        .where(eq(shiftInstances.sectorId, legacySector.id));
+      await db
+        .delete(scheduleContexts)
+        .where(eq(scheduleContexts.id, legacyContextId));
       await db.delete(sectors).where(eq(sectors.id, legacySector.id));
     }
   });
 
   it("markVacant não cria aviso automático de equipe", async () => {
     const startAt = at(12, 22);
-    await db.insert(monthlyRosters).values({
-      institutionId,
-      hospitalId,
-      yearMonth: yearMonthBrt(startAt),
-      status: "PUBLISHED",
-    }).onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
+    await db
+      .insert(monthlyRosters)
+      .values({
+        institutionId,
+        hospitalId,
+        yearMonth: yearMonthBrt(startAt),
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
     const [shift] = await db
       .insert(shiftInstances)
       .values({

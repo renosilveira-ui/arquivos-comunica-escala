@@ -3,7 +3,10 @@ import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { rowsFromExecute } from "./_core/db-results";
 import { dayKeyBrt, dayWindowBrt } from "./local-time";
-import { assertMonthNotLockedForUpdate } from "./month-guards";
+import {
+  assertMonthNotLockedForUpdate,
+  assertVacancyActionMonthForUpdate,
+} from "./month-guards";
 import { eq, and, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { shiftInstances, shiftAssignmentsV2 } from "../drizzle/schema";
@@ -40,6 +43,7 @@ import { voiceRouter } from "./voice-router";
 import { assertInstitutionHierarchy } from "./_core/tenant";
 import {
   assertActiveScheduleContextTopology,
+  listAuthorizedScheduleContexts,
   scheduleContextsRouter,
 } from "./schedule-contexts";
 import { scheduleInvitesRouter } from "./schedule-invites";
@@ -363,6 +367,14 @@ const shiftAssignmentsRouter = router({
         input.shiftInstanceId,
         ctx.institutionId,
       );
+      const authorizedContexts = await listAuthorizedScheduleContexts(
+        actor,
+        db,
+      );
+      const canManageTarget = authorizedContexts.some(
+        (context) =>
+          context.id === shift.scheduleContextId && context.canManage,
+      );
 
       if (!(await hasShiftVacancy(db, shift))) {
         throw new TRPCError({
@@ -376,11 +388,12 @@ const shiftAssignmentsRouter = router({
         // A leitura com FOR UPDATE e as escritas compartilham a mesma
         // transação. Um lockMonth concorrente conclui antes e bloqueia esta
         // candidatura, ou espera toda a candidatura (inclusive auditoria).
-        await assertMonthNotLockedForUpdate(
+        const rosterStatus = await assertVacancyActionMonthForUpdate(
           tx,
           shift.institutionId,
           shift.hospitalId,
           shift.startAt,
+          canManageTarget,
         );
         const lockedShift = await requireCanonicalVacancyShiftTarget(
           tx,
@@ -389,6 +402,17 @@ const shiftAssignmentsRouter = router({
           true,
         );
         assertSameVacancyShiftTarget(shift, lockedShift);
+
+        if (rosterStatus === "DRAFT") {
+          await assertManagerScopeAccessForUpdate(
+            tx,
+            actor,
+            ctx.user.sessionVersion,
+            lockedShift.hospitalId,
+            lockedShift.sectorId,
+            [lockedShift.startAt],
+          );
+        }
 
         await assertAssignmentWritesAllowedForUpdate(tx, [
           {
@@ -464,6 +488,26 @@ const shiftAssignmentsRouter = router({
     if (!userId) throw new Error("Autenticação necessária");
     const actor = await getTenantActorFromContext(ctx);
     if (!actor.professionalId) return [];
+    const manageableContextIds = (
+      await listAuthorizedScheduleContexts(actor, db)
+    )
+      .filter((context) => context.canManage)
+      .map((context) => context.id);
+    const managerDraftVisibility =
+      manageableContextIds.length > 0
+        ? sql`OR EXISTS (
+            SELECT 1 FROM schedule_contexts request_context
+            WHERE request_context.id = si.schedule_context_id
+              AND request_context.institution_id = si.institution_id
+              AND request_context.hospital_id = si.hospital_id
+              AND request_context.sector_id = si.sector_id
+              AND request_context.active = 1
+              AND request_context.id IN (${sql.join(
+                manageableContextIds.map((contextId) => sql`${contextId}`),
+                sql`, `,
+              )})
+          )`
+        : sql``;
 
     const rows = await db.execute<any>(
       sql`SELECT
@@ -508,6 +552,16 @@ const shiftAssignmentsRouter = router({
             AND p.user_id = ${userId}
             AND sa.created_by = ${userId}
             AND sa.status IN ('PENDENTE', 'OCUPADO', 'REJEITADO')
+            AND (
+              EXISTS (
+                SELECT 1 FROM monthly_rosters mr
+                WHERE mr.institution_id = si.institution_id
+                  AND mr.hospital_id = si.hospital_id
+                  AND mr.year_month = DATE_FORMAT(DATE_SUB(si.start_at, INTERVAL 3 HOUR), '%Y-%m')
+                  AND mr.status IN ('PUBLISHED', 'LOCKED')
+              )
+              ${managerDraftVisibility}
+            )
           ORDER BY sa.created_at DESC, si.start_at ASC`,
     );
 
@@ -984,6 +1038,7 @@ const shiftInstancesRouter = router({
           userId: actor.userId,
           professionalId: actor.professionalId,
           roleInInstitution: actor.roleInInstitution,
+          isGlobalAdmin: actor.isGlobalAdmin,
         },
         filters: input,
       });
@@ -1050,6 +1105,7 @@ const shiftInstancesRouter = router({
           userId: actor.userId,
           professionalId: actor.professionalId,
           roleInInstitution: actor.roleInInstitution,
+          isGlobalAdmin: actor.isGlobalAdmin,
         },
         filters: { shiftInstanceId: input.shiftInstanceId },
       });

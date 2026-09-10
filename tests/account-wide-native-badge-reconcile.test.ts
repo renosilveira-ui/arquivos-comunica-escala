@@ -403,7 +403,9 @@ describe("badge nativo account-wide — reconciliação local", () => {
 
   it("reconhece somente o marcador estático de snapshot sem identidade", () => {
     expect(
-      isAccountWideBadgeSnapshotNotificationData(ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA),
+      isAccountWideBadgeSnapshotNotificationData(
+        ACCOUNT_WIDE_BADGE_SNAPSHOT_DATA,
+      ),
     ).toBe(true);
     expect(
       isAccountWideBadgeSnapshotNotificationData({
@@ -481,7 +483,7 @@ describe("badge nativo account-wide — reconciliação local", () => {
   it("mantém o marker interno fora do envelope enviado ao provedor", () => {
     const delivery = readFileSync("server/push-delivery.ts", "utf8");
     const submissionStart = delivery.indexOf(
-      "const submission = await sendPushNotification(",
+      "submission = await sendPushNotification(",
     );
     const submissionEnd = delivery.indexOf(
       "if (submissionClaimLost) return;",

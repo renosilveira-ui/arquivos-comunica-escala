@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import {
   hospitals,
+  monthlyRosters,
   professionalInstitutions,
   professionals,
   sectors,
@@ -11,6 +12,7 @@ import {
   formatHospitalTimeRange,
 } from "../lib/hospital-time";
 import { enqueueTrackedPushNotification } from "./push-delivery";
+import { yearMonthBrt } from "./local-time";
 
 export const SHIFT_ASSIGNED_PUSH_TYPE = "shift_assigned";
 export const SHIFT_UNASSIGNED_PUSH_TYPE = "shift_unassigned";
@@ -98,6 +100,24 @@ async function loadPlaceNames(
   };
 }
 
+async function rosterWasOfficialAtUnassignment(
+  db: SignalDb,
+  shift: AssignmentLifecyclePushInput["shift"],
+): Promise<boolean> {
+  const [roster] = await db
+    .select({ status: monthlyRosters.status })
+    .from(monthlyRosters)
+    .where(
+      and(
+        eq(monthlyRosters.institutionId, shift.institutionId),
+        eq(monthlyRosters.hospitalId, shift.hospitalId),
+        eq(monthlyRosters.yearMonth, yearMonthBrt(shift.startAt)),
+      ),
+    )
+    .limit(1);
+  return roster?.status === "PUBLISHED" || roster?.status === "LOCKED";
+}
+
 function assignmentCopy(
   kind: AssignmentLifecycleKind,
   place: { hospitalName: string | null; sectorName: string | null },
@@ -135,6 +155,15 @@ async function enqueueAssignmentLifecyclePush(
   input: AssignmentLifecyclePushInput,
 ): Promise<number> {
   const { db, shift, professionalId, assignmentId } = input;
+  if (
+    kind === "unassigned" &&
+    !(await rosterWasOfficialAtUnassignment(db, shift))
+  ) {
+    // Atribuições montadas e removidas no rascunho nunca fizeram parte da
+    // escala oficial. O ASSIGNED deferido será invalidado pela linha inativa;
+    // não crie um UNASSIGNED que poderia acordar após a publicação.
+    return 0;
+  }
   const userId = await resolveAssignedUserId(
     db,
     professionalId,

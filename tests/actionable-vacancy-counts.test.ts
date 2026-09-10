@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   hospitals,
   institutions,
@@ -381,12 +381,32 @@ describe("Vagas acionáveis — lista e contadores", () => {
       })
       .$returningId();
     namedInviteId = invite.id;
-    await db.insert(monthlyRosters).values({
-      institutionId: institutionAId,
-      hospitalId: hospitalLockedId,
-      yearMonth,
-      status: "LOCKED",
-    });
+    await db.insert(monthlyRosters).values([
+      {
+        institutionId: institutionAId,
+        hospitalId: hospitalAId,
+        yearMonth,
+        status: "PUBLISHED",
+      },
+      {
+        institutionId: institutionAId,
+        hospitalId: hospitalSiblingId,
+        yearMonth,
+        status: "PUBLISHED",
+      },
+      {
+        institutionId: institutionAId,
+        hospitalId: hospitalLockedId,
+        yearMonth,
+        status: "LOCKED",
+      },
+      {
+        institutionId: institutionBId,
+        hospitalId: hospitalBId,
+        yearMonth,
+        status: "PUBLISHED",
+      },
+    ]);
   });
 
   afterAll(async () => {
@@ -660,7 +680,9 @@ describe("Vagas acionáveis — lista e contadores", () => {
         requestTenantRevision: 1,
       });
       await expect(
-        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(routeShiftId)),
+        doctor.shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(routeShiftId),
+        ),
       ).resolves.toEqual({
         available: true,
         shiftInstanceId: routeShiftId,
@@ -672,7 +694,9 @@ describe("Vagas acionáveis — lista e contadores", () => {
       // USER e GESTOR_MEDICO não ganham o hospital irmão; GESTOR_PLUS e o
       // convite nominal usam as mesmas grants acionáveis da lista/escrita.
       await expect(
-        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(siblingShiftId)),
+        doctor.shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(siblingShiftId),
+        ),
       ).resolves.toEqual({ available: false });
       await expect(
         callerFor(managerUserId, "manager").shiftInstances.resolveVacancyIntent(
@@ -702,7 +726,9 @@ describe("Vagas acionáveis — lista e contadores", () => {
         date,
       });
       await expect(
-        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(foreignShiftId)),
+        doctor.shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(foreignShiftId),
+        ),
       ).resolves.toEqual({ available: false });
       await expect(
         doctor.shiftInstances.resolveVacancyIntent(
@@ -720,7 +746,9 @@ describe("Vagas acionáveis — lista e contadores", () => {
       // Ocupação/revogação e alvo de outro tenant colapsam na mesma resposta
       // negativa, sem nome, data, hospital, setor ou motivo enumerável.
       await expect(
-        doctor.shiftInstances.resolveVacancyIntent(resolveIntentInput(routeShiftId)),
+        doctor.shiftInstances.resolveVacancyIntent(
+          resolveIntentInput(routeShiftId),
+        ),
       ).resolves.toEqual({ available: false });
     } finally {
       await db
@@ -789,7 +817,165 @@ describe("Vagas acionáveis — lista e contadores", () => {
       await db
         .delete(shiftAssignmentsV2)
         .where(eq(shiftAssignmentsV2.shiftInstanceId, mutationShiftId));
-      await db.delete(shiftInstances).where(eq(shiftInstances.id, mutationShiftId));
+      await db
+        .delete(shiftInstances)
+        .where(eq(shiftInstances.id, mutationShiftId));
+    }
+  });
+
+  it("fecha lista, contagem e bypass direto para USER até a publicação", async () => {
+    const guardedShiftId = await createShift({
+      institutionId: institutionAId,
+      hospitalId: hospitalAId,
+      sectorId: sectorAId,
+      scheduleContextId: contextAId,
+      label: `VAC ${stamp} publication-fence`,
+      startAt: `${date} 16:30:00`,
+      endAt: `${date} 17:30:00`,
+    });
+    const doctor = callerFor(doctorUserId, "doctor");
+    const manager = callerFor(plusUserId, "manager");
+    try {
+      for (const status of [null, "DRAFT", "LOCKED"] as const) {
+        await db
+          .delete(monthlyRosters)
+          .where(
+            and(
+              eq(monthlyRosters.institutionId, institutionAId),
+              eq(monthlyRosters.hospitalId, hospitalAId),
+              eq(monthlyRosters.yearMonth, yearMonth),
+            ),
+          );
+        if (status !== null) {
+          await db.insert(monthlyRosters).values({
+            institutionId: institutionAId,
+            hospitalId: hospitalAId,
+            yearMonth,
+            status,
+          });
+        }
+
+        const rows = await doctor.shiftInstances.listVacancies({ date });
+        expect(rows.map((row) => row.shiftInstanceId)).not.toContain(
+          guardedShiftId,
+        );
+        const doctorSummary = await doctor.filters.summaryCounts({ date });
+        const ownRequests =
+          await doctor.shiftAssignments.listMyVacancyRequests();
+        expect(
+          ownRequests.some(
+            (request) => request.shiftInstanceId === doctorOwnRequestId,
+          ),
+        ).toBe(status === "LOCKED");
+        if (status === "LOCKED") {
+          expect(
+            doctorSummary.vacanciesByHospital[hospitalAId] ?? 0,
+          ).toBeGreaterThan(0);
+        } else {
+          expect(doctorSummary.vacanciesByHospital[hospitalAId] ?? 0).toBe(0);
+        }
+        await expect(
+          doctor.shiftAssignments.assumeVacancy({
+            shiftInstanceId: guardedShiftId,
+            assignmentType: "ON_DUTY",
+          }),
+        ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+        const managerRows = await manager.shiftInstances.listVacancies({
+          date,
+        });
+        const managerSummary = await manager.filters.summaryCounts({ date });
+        expect(
+          managerSummary.vacanciesByHospital[hospitalAId] ?? 0,
+        ).toBeGreaterThan(0);
+        const managerIds = managerRows.map((row) => row.shiftInstanceId);
+        if (status === "LOCKED") {
+          expect(managerIds).not.toContain(guardedShiftId);
+        } else {
+          expect(managerIds).toContain(guardedShiftId);
+        }
+
+        if (status === "DRAFT") {
+          const created = await manager.shiftAssignments.assumeVacancy({
+            shiftInstanceId: guardedShiftId,
+            assignmentType: "ON_DUTY",
+          });
+          expect(created).toMatchObject({ ok: true, status: "PENDENTE" });
+          expect(
+            (await manager.shiftAssignments.listMyVacancyRequests()).map(
+              (request) => request.shiftInstanceId,
+            ),
+          ).toContain(guardedShiftId);
+
+          await db
+            .update(professionalInstitutions)
+            .set({ roleInInstitution: "USER" })
+            .where(
+              and(
+                eq(professionalInstitutions.professionalId, plusProfessionalId),
+                eq(professionalInstitutions.institutionId, institutionAId),
+              ),
+            );
+          expect(
+            (await manager.shiftAssignments.listMyVacancyRequests()).map(
+              (request) => request.shiftInstanceId,
+            ),
+          ).not.toContain(guardedShiftId);
+          await db
+            .update(professionalInstitutions)
+            .set({ roleInInstitution: "GESTOR_PLUS" })
+            .where(
+              and(
+                eq(professionalInstitutions.professionalId, plusProfessionalId),
+                eq(professionalInstitutions.institutionId, institutionAId),
+              ),
+            );
+          await db
+            .delete(shiftAssignmentsV2)
+            .where(eq(shiftAssignmentsV2.id, created.assignmentId));
+          await db
+            .update(shiftInstances)
+            .set({ status: "VAGO" })
+            .where(eq(shiftInstances.id, guardedShiftId));
+        }
+      }
+    } finally {
+      await db
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "GESTOR_PLUS" })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, plusProfessionalId),
+            eq(professionalInstitutions.institutionId, institutionAId),
+          ),
+        );
+      await db
+        .delete(notifications)
+        .where(eq(notifications.shiftInstanceId, guardedShiftId));
+      await db
+        .delete(shiftAuditLog)
+        .where(eq(shiftAuditLog.shiftInstanceId, guardedShiftId));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(eq(shiftAssignmentsV2.shiftInstanceId, guardedShiftId));
+      await db
+        .delete(shiftInstances)
+        .where(eq(shiftInstances.id, guardedShiftId));
+      await db
+        .delete(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionAId),
+            eq(monthlyRosters.hospitalId, hospitalAId),
+            eq(monthlyRosters.yearMonth, yearMonth),
+          ),
+        );
+      await db.insert(monthlyRosters).values({
+        institutionId: institutionAId,
+        hospitalId: hospitalAId,
+        yearMonth,
+        status: "PUBLISHED",
+      });
     }
   });
 

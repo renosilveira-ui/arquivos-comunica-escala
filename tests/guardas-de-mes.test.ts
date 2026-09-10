@@ -293,6 +293,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
   it("M10: mês LOCKED — vaga some da lista e assumir é barrado", async () => {
     const locked = await insertShift(nextMonthStart, "locked");
     const open = await insertShift(currentStart, "open");
+    await setRoster(currentYm, "PUBLISHED");
     await setRoster(nextYm, "LOCKED");
 
     const list = await asDoctor().shiftInstances.listVacancies({});
@@ -349,7 +350,7 @@ describe("guardas de mês em todos os pontos de escrita", () => {
 
   it("assumeVacancy vincula expectedSessionVersion ao expectedUserId sem escrever", async () => {
     const shiftId = await insertShift(currentStart, "stale-vacancy");
-    await setRoster(currentYm, "DRAFT");
+    await setRoster(currentYm, "PUBLISHED");
     await expectStaleMutationNoWrite(doctorUserId, "assumeVacancy", () =>
       asDoctor().shiftAssignments.assumeVacancy({
         shiftInstanceId: shiftId,
