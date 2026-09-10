@@ -83,6 +83,7 @@ export default defineConfig({
       "tests/auth-recovery-worker-source.test.ts",
       "tests/auth-recovery-dispatcher.test.ts",
       "tests/graceful-shutdown-pure.test.ts",
+      "tests/forgot-password-rate-limit.test.ts",
       "tests/security-boot-validation.test.ts",
       "tests/request-deadline.test.ts",
       "tests/trpc-batch-limit.test.ts",
