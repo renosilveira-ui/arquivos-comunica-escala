@@ -59,6 +59,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { enqueueDutySyncIntervalRewrite } from "./sso/duty-sync-lifecycle";
+import { rearmDutyConfirmationsAfterShiftWindowChange } from "./confirmation-lifecycle";
 import { auditLog } from "./audit-log";
 import { recordAudit } from "./audit-trail";
 import {
@@ -2600,6 +2601,7 @@ export const shiftsRouter = router({
                   eq(shiftAssignmentsV2.isActive, true),
                 ),
               )
+              .orderBy(shiftAssignmentsV2.id)
               .for("update")
           : [];
 
@@ -2658,6 +2660,7 @@ export const shiftsRouter = router({
             : "PLANTAO";
         const previousDutyType =
           locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
+        let rearmedConfirmationCount = 0;
         if (windowChanged || nextDutyType !== previousDutyType) {
           await enqueueDutySyncIntervalRewrite(tx, {
             institutionId: locked.institutionId,
@@ -2684,13 +2687,27 @@ export const shiftsRouter = router({
             nextServiceName: locked.specialty,
           });
         }
+        if (windowChanged) {
+          rearmedConfirmationCount =
+            await rearmDutyConfirmationsAfterShiftWindowChange(tx, {
+              institutionId: locked.institutionId,
+              shiftInstanceId: locked.id,
+              assignmentIds: activeAssignments.map(
+                (assignment) => assignment.id,
+              ),
+            });
+        }
         await auditLog(
           {
             event: "SHIFT_UPDATED",
             shiftInstanceId: input.id,
             institutionId: ctx.institutionId,
             professionalId: null,
-            metadata: { updatedBy: ctx.user.id, changes: patch },
+            metadata: {
+              updatedBy: ctx.user.id,
+              changes: patch,
+              rearmedConfirmationCount,
+            },
           },
           { db: tx },
         );
@@ -2707,7 +2724,7 @@ export const shiftsRouter = router({
             shiftInstanceId: input.id,
             hospitalId: existing.hospitalId,
             sectorId: existing.sectorId,
-            metadata: { changes: patch },
+            metadata: { changes: patch, rearmedConfirmationCount },
           },
           { db: tx, strict: true },
         );

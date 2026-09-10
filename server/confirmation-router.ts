@@ -5,7 +5,7 @@ import { router, protectedProcedure, sessionProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { assertMonthNotLockedForUpdate } from "./month-guards";
 import { recomputeShiftStatus } from "./shift-status";
-import { eq, and, asc, inArray, isNull, sql } from "drizzle-orm";
+import { eq, and, asc, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   dutyConfirmations,
@@ -58,10 +58,9 @@ import {
 
 type ConfirmationDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
-const dutyConfirmationEpochSchema = z.string().refine(
-  isCanonicalDutyConfirmationEpoch,
-  "Epoch de confirmação inválida",
-);
+const dutyConfirmationEpochSchema = z
+  .string()
+  .refine(isCanonicalDutyConfirmationEpoch, "Epoch de confirmação inválida");
 
 const nominationDirectedInputSchema = z.object({
   confirmationToken: z.string().uuid(),
@@ -216,10 +215,7 @@ export const confirmationRouter = router({
         .where(
           and(
             input
-              ? eq(
-                  dutyConfirmations.confirmationToken,
-                  input.confirmationToken,
-                )
+              ? eq(dutyConfirmations.confirmationToken, input.confirmationToken)
               : undefined,
             eq(dutyConfirmations.replacementUserId, ctx.user.id),
             eq(dutyConfirmations.institutionId, ctx.institutionId),
@@ -454,6 +450,7 @@ export const confirmationRouter = router({
             eq(dutyConfirmations.userId, ctx.user.id),
             eq(dutyConfirmations.institutionId, ctx.institutionId),
             eq(dutyConfirmations.status, "PENDING"),
+            isNotNull(dutyConfirmations.recheckAt),
             input?.confirmationToken
               ? eq(dutyConfirmations.confirmationToken, input.confirmationToken)
               : undefined,
@@ -936,9 +933,10 @@ export const confirmationRouter = router({
       });
 
       await sendTrackedPushNotification(pushIntent).catch(() => {
-        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
-          ? pushIntent.authority.confirmationId
-          : "unknown";
+        const confirmationId =
+          pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+            ? pushIntent.authority.confirmationId
+            : "unknown";
         console.error(
           `[Confirmation] NOMINATION_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
         );
@@ -1223,9 +1221,10 @@ export const confirmationRouter = router({
       }, ASSIGNMENT_WRITE_TRANSACTION_CONFIG);
 
       await sendTrackedPushNotification(pushIntent).catch(() => {
-        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
-          ? pushIntent.authority.confirmationId
-          : "unknown";
+        const confirmationId =
+          pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+            ? pushIntent.authority.confirmationId
+            : "unknown";
         console.error(
           `[Confirmation] ACCEPTANCE_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
         );
@@ -1353,9 +1352,10 @@ export const confirmationRouter = router({
       });
 
       await sendTrackedPushNotification(pushIntent).catch(() => {
-        const confirmationId = pushIntent.authority?.kind === "DUTY_CONFIRMATION"
-          ? pushIntent.authority.confirmationId
-          : "unknown";
+        const confirmationId =
+          pushIntent.authority?.kind === "DUTY_CONFIRMATION"
+            ? pushIntent.authority.confirmationId
+            : "unknown";
         console.error(
           `[Confirmation] DECLINE_PUSH_IMMEDIATE_FAILED confirmation=${confirmationId}`,
         );
