@@ -7,18 +7,15 @@ import {
   whatsappInboundMessages,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { markWhatsAppContactVerified } from "./helpers/verified-whatsapp-fixture";
 import { logger } from "../server/_core/logger";
 import { processWhatsAppInbound } from "../server/integrations/whatsapp/inbound-store";
-import {
-  markWhatsAppContactVerified,
-  upsertUserWhatsAppContact,
-} from "../server/user-contact-channels";
+import { upsertUserWhatsAppContact } from "../server/user-contact-channels";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
 describe("WhatsApp inbound privacy", () => {
   let db: Db;
-  let institutionId: number;
   let userId: number;
   const stamp = Date.now();
   const e164 = "+5585999200001";
@@ -31,7 +28,6 @@ describe("WhatsApp inbound privacy", () => {
     db = maybe;
     const [institution] = await db.select().from(institutions).limit(1);
     if (!institution) throw new Error("seed institution missing");
-    institutionId = institution.id;
     const name = `wa-priv-${stamp}`;
     const [user] = await db
       .insert(users)
@@ -45,7 +41,11 @@ describe("WhatsApp inbound privacy", () => {
       })
       .$returningId();
     userId = user.id;
-    await upsertUserWhatsAppContact({ userId, rawPhone: e164, institutionId });
+    await upsertUserWhatsAppContact({
+      sessionVersion: 1,
+      userId,
+      rawPhone: e164,
+    });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
   });
 

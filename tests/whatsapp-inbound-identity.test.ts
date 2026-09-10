@@ -7,21 +7,18 @@ import {
   whatsappInboundMessages,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { markWhatsAppContactVerified } from "./helpers/verified-whatsapp-fixture";
 import { processWhatsAppInbound } from "../server/integrations/whatsapp/inbound-store";
 import {
   decideVerifiedWhatsAppIdentity,
   resolveVerifiedWhatsAppUser,
 } from "../server/integrations/whatsapp/resolve-identity";
-import {
-  markWhatsAppContactVerified,
-  upsertUserWhatsAppContact,
-} from "../server/user-contact-channels";
+import { upsertUserWhatsAppContact } from "../server/user-contact-channels";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
 describe("WhatsApp inbound identity", () => {
   let db: Db;
-  let institutionId: number;
   const stamp = Date.now();
   const userIds: number[] = [];
 
@@ -51,7 +48,6 @@ describe("WhatsApp inbound identity", () => {
     db = maybe;
     const [institution] = await db.select().from(institutions).limit(1);
     if (!institution) throw new Error("seed institution missing");
-    institutionId = institution.id;
   });
 
   afterAll(async () => {
@@ -82,9 +78,9 @@ describe("WhatsApp inbound identity", () => {
     const userId = await createUser("ok");
     const e164 = "+5585999000001";
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId,
       rawPhone: e164,
-      institutionId,
     });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
     await expect(resolveVerifiedWhatsAppUser(e164)).resolves.toEqual({
@@ -130,11 +126,15 @@ describe("WhatsApp inbound identity", () => {
     const [textRow] = await db
       .select()
       .from(whatsappInboundMessages)
-      .where(eq(whatsappInboundMessages.providerMessageId, `SMunk-text-${stamp}`));
+      .where(
+        eq(whatsappInboundMessages.providerMessageId, `SMunk-text-${stamp}`),
+      );
     const [audioRow] = await db
       .select()
       .from(whatsappInboundMessages)
-      .where(eq(whatsappInboundMessages.providerMessageId, `SMunk-audio-${stamp}`));
+      .where(
+        eq(whatsappInboundMessages.providerMessageId, `SMunk-audio-${stamp}`),
+      );
     expect(textRow?.operationalText).toBeNull();
     expect(textRow?.payloadClearedAt).toBeTruthy();
     expect(audioRow?.mediaUrl).toBeNull();
@@ -145,9 +145,9 @@ describe("WhatsApp inbound identity", () => {
     const userId = await createUser("unverified");
     const e164 = "+5585999000002";
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId,
       rawPhone: e164,
-      institutionId,
     });
     await expect(resolveVerifiedWhatsAppUser(e164)).resolves.toEqual({
       ok: false,
@@ -159,9 +159,9 @@ describe("WhatsApp inbound identity", () => {
     const userId = await createUser("inactive");
     const e164 = "+5585999000003";
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId,
       rawPhone: e164,
-      institutionId,
     });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
     await db
@@ -178,9 +178,9 @@ describe("WhatsApp inbound identity", () => {
     const userId = await createUser("deleted");
     const e164 = "+5585999000004";
     await upsertUserWhatsAppContact({
+      sessionVersion: 1,
       userId,
       rawPhone: e164,
-      institutionId,
     });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
     await db
@@ -211,7 +211,11 @@ describe("WhatsApp inbound identity", () => {
   it("áudio identificado termina READY_FOR_TRANSCRIPTION sem baixar mídia", async () => {
     const userId = await createUser("audio");
     const e164 = "+5585999000006";
-    await upsertUserWhatsAppContact({ userId, rawPhone: e164, institutionId });
+    await upsertUserWhatsAppContact({
+      sessionVersion: 1,
+      userId,
+      rawPhone: e164,
+    });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
     const result = await processWhatsAppInbound({
       provider: "TWILIO",
@@ -242,7 +246,11 @@ describe("WhatsApp inbound identity", () => {
   it("mídia não suportada identificada termina UNSUPPORTED", async () => {
     const userId = await createUser("img");
     const e164 = "+5585999000007";
-    await upsertUserWhatsAppContact({ userId, rawPhone: e164, institutionId });
+    await upsertUserWhatsAppContact({
+      sessionVersion: 1,
+      userId,
+      rawPhone: e164,
+    });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
     const result = await processWhatsAppInbound({
       provider: "TWILIO",

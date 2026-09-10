@@ -5,9 +5,7 @@
  * Sucesso de check é somente status `approved` do provider — nunca HTTP 2xx.
  */
 export type WhatsAppVerificationFailureKind =
-  | "USER_ERROR"
-  | "RETRYABLE_PROVIDER_ERROR"
-  | "SERVER_CONFIGURATION_ERROR";
+  "USER_ERROR" | "RETRYABLE_PROVIDER_ERROR" | "SERVER_CONFIGURATION_ERROR";
 
 export type WhatsAppVerificationFailureCode =
   | "VERIFY_NOT_CONFIGURED"
@@ -37,7 +35,7 @@ export type WhatsAppVerificationProviderFailure = {
 };
 
 export type WhatsAppVerificationStartResult =
-  | { ok: true; status: string }
+  | { ok: true; status: string; verificationSid: string }
   | WhatsAppVerificationProviderFailure;
 
 export type WhatsAppVerificationCheckResult =
@@ -50,6 +48,7 @@ export interface WhatsAppVerificationProvider {
   checkVerification(
     e164: string,
     code: string,
+    verificationSid: string,
   ): Promise<WhatsAppVerificationCheckResult>;
 }
 
@@ -76,6 +75,7 @@ export class UnimplementedWhatsAppVerificationProvider
   async checkVerification(
     _e164: string,
     _code: string,
+    _verificationSid?: string,
   ): Promise<WhatsAppVerificationCheckResult> {
     return NOT_CONFIGURED;
   }

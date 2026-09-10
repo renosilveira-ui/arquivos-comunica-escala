@@ -1,0 +1,626 @@
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import mysql, {
+  type Connection,
+  type Pool,
+  type RowDataPacket,
+} from "mysql2/promise";
+import { drizzle } from "drizzle-orm/mysql2";
+import {
+  beforeAll,
+  beforeEach,
+  afterAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { profileRouter } from "../server/profile-router";
+import { router, protectedProcedure } from "../server/_core/trpc";
+import type { TrpcContext } from "../server/_core/context";
+import { ExpectedUserConstraintError } from "../server/_core/expected-user";
+import { SessionInstanceConstraintError } from "../server/_core/session-instance";
+import {
+  getVerifiedWhatsAppContactForUser,
+  upsertUserWhatsAppContact,
+} from "../server/user-contact-channels";
+import { recordAccountAudit } from "../server/account-audit";
+import {
+  resetWhatsAppVerificationRuntime,
+  whatsappVerificationRuntime,
+} from "../server/whatsapp-verification";
+import { resetWhatsAppVerifyRateLimits } from "../server/whatsapp-verification-rate-limit";
+import type {
+  WhatsAppVerificationProvider,
+  WhatsAppVerificationStartResult,
+  WhatsAppVerificationCheckResult,
+} from "../server/whatsapp-verification-provider";
+
+const runtime = vi.hoisted(() => ({ db: null as unknown }));
+vi.mock("../server/db", async (original) => ({
+  ...(await original<typeof import("../server/db")>()),
+  getDb: async () => runtime.db,
+}));
+
+const sqlFile = (name: string) =>
+  readFileSync(`drizzle/migrations/manual/${name}`, "utf8");
+const migration = sqlFile("2026-09-09-whatsapp-account-ownership.sql");
+const DB_NAME = `escalas_test_wa_account_${process.pid}_${randomBytes(6).toString("hex")}`;
+const A = "+5585988887777";
+const B = "+5585977776666";
+const SID = `VE${"1".repeat(32)}`;
+let admin: Connection;
+let pool: Pool;
+let ownsDatabase = false;
+let provider: WhatsAppVerificationProvider & {
+  starts: string[];
+  checks: { e164: string; code: string; sid: string }[];
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+async function rows(sql: string, values: unknown[] = []) {
+  const [result] = await pool.query<RowDataPacket[]>(sql, values);
+  return result;
+}
+async function account(id = 1) {
+  await pool.query(
+    "INSERT INTO users (id,name,approval_status,session_version,role) VALUES (?, 'Test', 'APPROVED', 1, 'doctor')",
+    [id],
+  );
+}
+function context(id = 1, extra: Partial<TrpcContext> = {}): TrpcContext {
+  return {
+    user: {
+      id,
+      sessionVersion: 1,
+      approvalStatus: "APPROVED",
+      deletedAt: null,
+      role: "doctor",
+    },
+    institutionId: null,
+    allowedInstitutionIds: [],
+    tenantResolutionError: "NO_ACTIVE_MEMBERSHIP",
+    req: { ip: "127.0.0.1", headers: {} },
+    res: undefined,
+    ...extra,
+  } as TrpcContext;
+}
+function caller(id = 1, extra: Partial<TrpcContext> = {}) {
+  return profileRouter.createCaller(context(id, extra));
+}
+function operations(c = caller()) {
+  return [
+    () => c.getWhatsAppContact(),
+    () => c.setWhatsAppContact({ phone: A }),
+    () => c.deactivateWhatsAppContact(),
+    () => c.startWhatsAppVerification({ phone: A }),
+    () => c.checkWhatsAppVerification({ code: "123456" }),
+  ];
+}
+async function rejectAudit(condition = "TRUE") {
+  await pool.query(
+    `CREATE TRIGGER reject_account_audit BEFORE INSERT ON account_audit_events FOR EACH ROW BEGIN IF ${condition} THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test audit failure'; END IF; END`,
+  );
+}
+async function dropAuditTrigger() {
+  await pool.query("DROP TRIGGER IF EXISTS reject_account_audit");
+}
+
+beforeAll(async () => {
+  expect(DB_NAME).toMatch(/^escalas_test_wa_account_[0-9]+_[a-f0-9]{12}$/);
+  admin = await mysql.createConnection({
+    host: "127.0.0.1",
+    user: "root",
+    password: "root",
+    multipleStatements: true,
+  });
+  const [version] = await admin.query<RowDataPacket[]>(
+    "SELECT VERSION() AS version",
+  );
+  expect(String(version[0].version)).toMatch(/^8\./);
+  // Sem DROP inicial: só limpamos se esta execução criou o banco exclusivo.
+  await admin.query(`CREATE DATABASE \`${DB_NAME}\``);
+  ownsDatabase = true;
+  pool = mysql.createPool({
+    host: "127.0.0.1",
+    user: "root",
+    password: "root",
+    database: DB_NAME,
+    multipleStatements: true,
+    connectionLimit: 8,
+    timezone: "Z",
+  });
+  await pool.query(`CREATE TABLE users (
+    id INT NOT NULL PRIMARY KEY, name TEXT NULL,
+    role ENUM('admin','manager','doctor','nurse','tech') NOT NULL,
+    approval_status ENUM('PENDING','APPROVED') NOT NULL, session_version INT NOT NULL,
+    deleted_at TIMESTAMP NULL
+  ) ENGINE=InnoDB`);
+  await pool.query(sqlFile("2026-08-31-user-contact-channels.sql"));
+  await pool.query(migration);
+  await pool.query(migration);
+  runtime.db = drizzle(pool);
+});
+beforeEach(async () => {
+  await dropAuditTrigger();
+  await pool.query(
+    "DELETE FROM whatsapp_verification_challenges; DELETE FROM user_contact_channels; DELETE FROM account_audit_events; DELETE FROM users",
+  );
+  resetWhatsAppVerifyRateLimits();
+  provider = {
+    starts: [],
+    checks: [],
+    async startVerification(e164) {
+      this.starts.push(e164);
+      return { ok: true, status: "pending", verificationSid: SID };
+    },
+    async checkVerification(e164, code, sid) {
+      this.checks.push({ e164, code, sid });
+      return { ok: true, approved: true };
+    },
+  };
+  whatsappVerificationRuntime.provider = provider;
+  await account();
+});
+afterAll(async () => {
+  resetWhatsAppVerificationRuntime();
+  resetWhatsAppVerifyRateLimits();
+  runtime.db = null;
+  await pool?.end();
+  if (ownsDatabase) await admin.query(`DROP DATABASE \`${DB_NAME}\``);
+  await admin?.end();
+});
+
+describe("ownership WhatsApp account-wide — MySQL descartável", () => {
+  it("migration reroda sem perder dados e rejeita schema incompatível", async () => {
+    await caller().setWhatsAppContact({ phone: A });
+    await pool.query(migration);
+    expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(1);
+    expect((await caller().getWhatsAppContact()).status).toBe("unverified");
+    await pool.query(
+      "ALTER TABLE account_audit_events DROP INDEX idx_account_audit_parent",
+    );
+    await expect(pool.query(migration)).rejects.toBeDefined();
+    await pool.query(
+      "ALTER TABLE account_audit_events ADD INDEX idx_account_audit_parent (parent_event_id)",
+    );
+    await pool.query(migration);
+    await pool.query(
+      "ALTER TABLE account_audit_events ADD CONSTRAINT test_forbidden_audit_cascade FOREIGN KEY (subject_user_id) REFERENCES users(id) ON DELETE CASCADE",
+    );
+    await expect(pool.query(migration)).rejects.toBeDefined();
+    await pool.query(
+      "ALTER TABLE account_audit_events DROP FOREIGN KEY test_forbidden_audit_cascade",
+    );
+    await pool.query(migration);
+  });
+
+  it.each([0, 1, 3])(
+    "os cinco endpoints pertencem à conta com %i vínculos",
+    async (count) => {
+      const ids = Array.from({ length: count }, (_, i) => i + 10);
+      const c = caller(1, {
+        institutionId: ids[0] ?? null,
+        allowedInstitutionIds: ids,
+        tenantResolutionError: count ? null : "NO_ACTIVE_MEMBERSHIP",
+      });
+      expect((await c.getWhatsAppContact()).status).toBe("missing");
+      expect((await c.setWhatsAppContact({ phone: A })).status).toBe(
+        "unverified",
+      );
+      expect((await c.startWhatsAppVerification({})).ok).toBe(true);
+      expect(
+        (await c.checkWhatsAppVerification({ code: "123456" })).verified,
+      ).toBe(true);
+      expect((await c.deactivateWhatsAppContact()).active).toBe(false);
+      const audit = await rows("SELECT * FROM account_audit_events");
+      expect(audit.length).toBeGreaterThanOrEqual(6);
+      for (const entry of audit) {
+        expect(entry.subject_user_id).toBe(1);
+        expect(entry).not.toHaveProperty("institution_id");
+      }
+      expect(JSON.stringify(audit)).not.toMatch(
+        /\+5585|123456|VE111|challenge_id|token|phone|payload/,
+      );
+    },
+  );
+
+  it("troca de tenant e vínculo revogado não revogam ownership nem concedem escala", async () => {
+    const ctx = context(1, {
+      institutionId: null,
+      tenantResolutionError: "TENANT_NOT_ALLOWED",
+    });
+    await caller(1, {
+      institutionId: 10,
+      allowedInstitutionIds: [10, 20],
+      tenantResolutionError: null,
+    }).startWhatsAppVerification({ phone: A });
+    expect(
+      (
+        await profileRouter
+          .createCaller(ctx)
+          .checkWhatsAppVerification({ code: "123456" })
+      ).ok,
+    ).toBe(true);
+    const institutional = router({
+      read: protectedProcedure.query(() => "SHOULD_NOT_RUN"),
+    });
+    await expect(institutional.createCaller(ctx).read()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    expect((await rows("SELECT role FROM users WHERE id=1"))[0].role).toBe(
+      "doctor",
+    );
+  });
+
+  it("input cliente não muda o titular, destino ou SID do check", async () => {
+    await account(2);
+    await caller().startWhatsAppVerification({ phone: A, userId: 2 } as never);
+    await caller().checkWhatsAppVerification({
+      code: "123456",
+      phone: B,
+      verificationSid: `VE${"2".repeat(32)}`,
+      userId: 2,
+    } as never);
+    expect(provider.checks).toEqual([{ e164: A, code: "123456", sid: SID }]);
+    expect((await caller(2).getWhatsAppContact()).status).toBe("missing");
+  });
+
+  it("pending/deleted/sessão revogada no DB bloqueiam todos os endpoints", async () => {
+    for (const update of [
+      "approval_status='PENDING'",
+      "deleted_at=NOW()",
+      "session_version=2",
+    ]) {
+      await pool.query(
+        `UPDATE users SET approval_status='APPROVED',deleted_at=NULL,session_version=1, ${update} WHERE id=1`,
+      );
+      for (const operation of operations())
+        await expect(operation()).rejects.toBeDefined();
+    }
+    expect(provider.starts).toHaveLength(0);
+    expect(provider.checks).toHaveLength(0);
+    expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(0);
+  });
+
+  it("identidade e instância de sessão exatas continuam fail-closed", async () => {
+    for (const extra of [
+      { user: null },
+      {
+        expectedUserConstraintError: new ExpectedUserConstraintError(
+          "EXPECTED_USER_MISMATCH",
+          409,
+        ),
+      },
+      {
+        sessionInstanceConstraintError: new SessionInstanceConstraintError(
+          "SESSION_INSTANCE_MISMATCH",
+          409,
+        ),
+      },
+    ])
+      for (const operation of operations(caller(1, extra)))
+        await expect(operation()).rejects.toBeDefined();
+    expect(provider.starts).toHaveLength(0);
+  });
+
+  it("falha da auditoria reverte set/deactivate e impede start antes da rede", async () => {
+    await caller().setWhatsAppContact({ phone: A });
+    await rejectAudit();
+    await expect(caller().setWhatsAppContact({ phone: B })).rejects.toThrow(
+      "Operação WhatsApp indisponível no momento.",
+    );
+    await expect(caller().deactivateWhatsAppContact()).rejects.toThrow(
+      "Operação WhatsApp indisponível no momento.",
+    );
+    await expect(caller().startWhatsAppVerification({})).rejects.toThrow(
+      "Operação WhatsApp indisponível no momento.",
+    );
+    const contact = (await rows("SELECT * FROM user_contact_channels"))[0];
+    expect(contact.normalized_address).toBe(A);
+    expect(contact.active).toBe(1);
+    expect(provider.starts).toHaveLength(0);
+    expect(
+      await rows("SELECT * FROM whatsapp_verification_challenges"),
+    ).toHaveLength(0);
+  });
+
+  it("audit failure após approved reverte verifiedAt e consumo do desafio", async () => {
+    await caller().startWhatsAppVerification({ phone: A });
+    await rejectAudit(
+      "NEW.action='WHATSAPP_VERIFY_CHECK' AND NEW.outcome='SUCCEEDED'",
+    );
+    await expect(
+      caller().checkWhatsAppVerification({ code: "123456" }),
+    ).rejects.toThrow("Operação WhatsApp indisponível no momento.");
+    expect(
+      (await rows("SELECT verified_at FROM user_contact_channels"))[0]
+        .verified_at,
+    ).toBeNull();
+    expect(
+      (await rows("SELECT state FROM whatsapp_verification_challenges"))[0]
+        .state,
+    ).toBe("READY");
+    expect(await getVerifiedWhatsAppContactForUser(1)).toBeNull();
+  });
+
+  it("audit failure ao anexar SID deixa STARTING indisponível; expiração fecha o órfão", async () => {
+    await caller().setWhatsAppContact({ phone: A });
+    await rejectAudit(
+      "NEW.action='WHATSAPP_VERIFY_START' AND NEW.outcome='SUCCEEDED'",
+    );
+    await expect(caller().startWhatsAppVerification({})).rejects.toThrow(
+      "Operação WhatsApp indisponível no momento.",
+    );
+    expect(
+      (
+        await rows(
+          "SELECT state,provider_verification_sid FROM whatsapp_verification_challenges",
+        )
+      )[0],
+    ).toMatchObject({ state: "STARTING", provider_verification_sid: null });
+    await dropAuditTrigger();
+    expect(
+      (await caller().checkWhatsAppVerification({ code: "123456" })).ok,
+    ).toBe(false);
+    expect(provider.checks).toHaveLength(0);
+    await pool.query(
+      "UPDATE whatsapp_verification_challenges SET expires_at=DATE_SUB(NOW(),INTERVAL 1 SECOND)",
+    );
+    expect(
+      (await caller().checkWhatsAppVerification({ code: "123456" })).ok,
+    ).toBe(false);
+    expect(
+      (await rows("SELECT state FROM whatsapp_verification_challenges"))[0]
+        .state,
+    ).toBe("FAILED");
+  });
+
+  it("provider rejeitado ou exceção deixa desafio FAILED sem verificação", async () => {
+    provider.startVerification = async () => {
+      throw new Error("secret provider payload");
+    };
+    const result = await caller().startWhatsAppVerification({ phone: A });
+    expect(result).toMatchObject({ ok: false, code: "TWILIO_UNAVAILABLE" });
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(
+      (await rows("SELECT state FROM whatsapp_verification_challenges"))[0]
+        .state,
+    ).toBe("FAILED");
+  });
+
+  it("start pendente → A→B→A não anexa resposta antiga; controle sem mudança passa", async () => {
+    for (const aba of [false, true]) {
+      const reached = deferred<void>();
+      const response = deferred<WhatsAppVerificationStartResult>();
+      provider.startVerification = async () => {
+        reached.resolve();
+        return response.promise;
+      };
+      const pending = caller().startWhatsAppVerification({ phone: A });
+      await reached.promise;
+      if (aba) {
+        await caller().setWhatsAppContact({ phone: B });
+        await caller().setWhatsAppContact({ phone: A });
+      }
+      response.resolve({ ok: true, status: "pending", verificationSid: SID });
+      const result = await pending;
+      expect(result.ok).toBe(!aba);
+      expect(
+        (await rows("SELECT state FROM whatsapp_verification_challenges"))[0]
+          .state,
+      ).toBe(aba ? "INVALIDATED" : "READY");
+    }
+  });
+
+  it("check pendente → A→B→A + novo start não valida o novo desafio mesmo com SID igual", async () => {
+    await caller().startWhatsAppVerification({ phone: A });
+    const oldId = (
+      await rows("SELECT challenge_id FROM whatsapp_verification_challenges")
+    )[0].challenge_id;
+    const reached = deferred<void>();
+    const response = deferred<WhatsAppVerificationCheckResult>();
+    provider.checkVerification = async () => {
+      reached.resolve();
+      return response.promise;
+    };
+    const pending = caller().checkWhatsAppVerification({ code: "123456" });
+    await reached.promise;
+    await caller().setWhatsAppContact({ phone: B });
+    await caller().setWhatsAppContact({ phone: A });
+    await caller().startWhatsAppVerification({});
+    expect(
+      (
+        await rows("SELECT challenge_id FROM whatsapp_verification_challenges")
+      )[0].challenge_id,
+    ).not.toBe(oldId);
+    response.resolve({ ok: true, approved: true });
+    expect(await pending).toMatchObject({ ok: false, code: "CHANNEL_CHANGED" });
+    expect((await caller().getWhatsAppContact()).verified).toBe(false);
+  });
+
+  it("revogação da sessão durante Verify bloqueia conclusão", async () => {
+    await caller().startWhatsAppVerification({ phone: A });
+    const reached = deferred<void>();
+    const response = deferred<WhatsAppVerificationCheckResult>();
+    provider.checkVerification = async () => {
+      reached.resolve();
+      return response.promise;
+    };
+    const pending = caller().checkWhatsAppVerification({ code: "123456" });
+    const assertion = expect(pending).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    await reached.promise;
+    await pool.query("UPDATE users SET session_version=2 WHERE id=1");
+    response.resolve({ ok: true, approved: true });
+    await assertion;
+    expect(
+      (await rows("SELECT verified_at FROM user_contact_channels"))[0]
+        .verified_at,
+    ).toBeNull();
+  });
+
+  it("dois starts com respostas invertidas mantêm só o UUID mais recente", async () => {
+    const firstReached = deferred<void>();
+    const secondReached = deferred<void>();
+    const firstResponse = deferred<WhatsAppVerificationStartResult>();
+    const secondResponse = deferred<WhatsAppVerificationStartResult>();
+    let count = 0;
+    provider.startVerification = async () => {
+      if (++count === 1) {
+        firstReached.resolve();
+        return firstResponse.promise;
+      }
+      secondReached.resolve();
+      return secondResponse.promise;
+    };
+    const first = caller().startWhatsAppVerification({ phone: A });
+    await firstReached.promise;
+    const firstId = (
+      await rows("SELECT challenge_id FROM whatsapp_verification_challenges")
+    )[0].challenge_id;
+    const second = caller().startWhatsAppVerification({});
+    await secondReached.promise;
+    const secondId = (
+      await rows("SELECT challenge_id FROM whatsapp_verification_challenges")
+    )[0].challenge_id;
+    expect(secondId).not.toBe(firstId);
+    secondResponse.resolve({
+      ok: true,
+      status: "pending",
+      verificationSid: `VE${"2".repeat(32)}`,
+    });
+    expect((await second).ok).toBe(true);
+    firstResponse.resolve({
+      ok: true,
+      status: "pending",
+      verificationSid: SID,
+    });
+    expect(await first).toMatchObject({ ok: false, code: "CHANNEL_CHANGED" });
+    expect(
+      (await rows("SELECT * FROM whatsapp_verification_challenges"))[0],
+    ).toMatchObject({
+      challenge_id: secondId,
+      state: "READY",
+      provider_verification_sid: `VE${"2".repeat(32)}`,
+    });
+  });
+
+  it("falha SQL ao anexar SID não vaza causa nem parâmetros privados", async () => {
+    await pool.query(
+      "CREATE TRIGGER reject_challenge_update BEFORE UPDATE ON whatsapp_verification_challenges FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='test private challenge'",
+    );
+    try {
+      const failure = await caller()
+        .startWhatsAppVerification({ phone: A })
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Operação WhatsApp indisponível no momento.",
+      });
+      expect(failure).toHaveProperty("cause", undefined);
+      expect(JSON.stringify(failure)).not.toMatch(
+        /VE111|\+5585|challenge_id|test private challenge|params|Failed query/,
+      );
+      expect(
+        (
+          await rows(
+            "SELECT state,provider_verification_sid FROM whatsapp_verification_challenges",
+          )
+        )[0],
+      ).toMatchObject({ state: "STARTING", provider_verification_sid: null });
+    } finally {
+      await pool.query("DROP TRIGGER reject_challenge_update");
+    }
+  });
+
+  it("domínio mutante sem sessionVersion falha antes de persistir", async () => {
+    await expect(
+      upsertUserWhatsAppContact({ userId: 1, rawPhone: A } as never),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(await rows("SELECT * FROM user_contact_channels")).toHaveLength(0);
+    expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(0);
+  });
+
+  it("dois checks aprovados concorrentes consomem uma só vez", async () => {
+    await caller().startWhatsAppVerification({ phone: A });
+    const reached = deferred<void>();
+    const response = deferred<WhatsAppVerificationCheckResult>();
+    let count = 0;
+    provider.checkVerification = async () => {
+      if (++count === 2) reached.resolve();
+      return response.promise;
+    };
+    const first = caller().checkWhatsAppVerification({ code: "123456" });
+    const second = caller().checkWhatsAppVerification({ code: "123456" });
+    await reached.promise;
+    response.resolve({ ok: true, approved: true });
+    const results = await Promise.all([first, second]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(
+      await rows(
+        "SELECT * FROM account_audit_events WHERE action='WHATSAPP_VERIFY_CHECK' AND outcome='SUCCEEDED'",
+      ),
+    ).toHaveLength(1);
+    expect(
+      (await rows("SELECT state FROM whatsapp_verification_challenges"))[0]
+        .state,
+    ).toBe("CONSUMED");
+  });
+
+  it("unicidade global e concorrência de cadastro não produzem duas identidades", async () => {
+    await account(2);
+    const attempts = await Promise.allSettled([
+      caller().setWhatsAppContact({ phone: A }),
+      caller(2).setWhatsAppContact({ phone: A }),
+    ]);
+    expect(
+      attempts.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(await rows("SELECT * FROM user_contact_channels")).toHaveLength(1);
+    expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(1);
+  });
+
+  it("rate limit preservado e sucesso não contorna elegibilidade do inbound", async () => {
+    for (let i = 0; i < 5; i++)
+      expect((await caller().startWhatsAppVerification({ phone: A })).ok).toBe(
+        true,
+      );
+    expect(await caller().startWhatsAppVerification({})).toMatchObject({
+      ok: false,
+      code: "RATE_LIMITED",
+    });
+    expect(provider.starts).toHaveLength(5);
+    expect(await getVerifiedWhatsAppContactForUser(1)).toBeNull();
+    expect(
+      (await caller().checkWhatsAppVerification({ code: "123456" })).ok,
+    ).toBe(true);
+    expect(await getVerifiedWhatsAppContactForUser(1)).not.toBeNull();
+    await pool.query("UPDATE users SET approval_status='PENDING' WHERE id=1");
+    expect(await getVerifiedWhatsAppContactForUser(1)).toBeNull();
+  });
+
+  it("writer account-wide rejeita payload arbitrário e auditoria sobrevive ao hard-delete", async () => {
+    await expect(
+      recordAccountAudit(drizzle(pool), {
+        actorUserId: 1,
+        subjectUserId: 1,
+        sessionVersion: 1,
+        action: "WHATSAPP_CONTACT_SET",
+        outcome: "SUCCEEDED",
+        phone: A,
+      } as never),
+    ).rejects.toBeDefined();
+    await caller().setWhatsAppContact({ phone: A });
+    await pool.query("DELETE FROM users WHERE id=1");
+    expect(await rows("SELECT * FROM user_contact_channels")).toHaveLength(0);
+    expect(await rows("SELECT * FROM account_audit_events")).toHaveLength(1);
+  });
+});

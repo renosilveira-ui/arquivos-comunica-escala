@@ -10,6 +10,7 @@ import {
   whatsappInboundMessages,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { markWhatsAppContactVerified } from "./helpers/verified-whatsapp-fixture";
 import { logger } from "../server/_core/logger";
 import { processWhatsAppInbound } from "../server/integrations/whatsapp/inbound-store";
 import {
@@ -22,10 +23,7 @@ import {
 import { twilioWhatsAppRouter } from "../server/routes/twilio-whatsapp";
 import { WHATSAPP_INBOUND_PATH } from "../server/integrations/whatsapp/types";
 import * as identity from "../server/integrations/whatsapp/resolve-identity";
-import {
-  markWhatsAppContactVerified,
-  upsertUserWhatsAppContact,
-} from "../server/user-contact-channels";
+import { upsertUserWhatsAppContact } from "../server/user-contact-channels";
 
 const AUTH = "test_twilio_auth_token_not_real";
 const PUBLIC = "https://escalas-staging.onrender.com" + WHATSAPP_INBOUND_PATH;
@@ -54,7 +52,6 @@ function audioEnvelope(sid: string, fromE164: string, mediaUrl: string) {
 
 describe("WhatsApp inbound — payload operacional e retomada", () => {
   let db: Db;
-  let institutionId: number;
   let userId: number;
   const stamp = Date.now();
   const e164 = "+5585999400001";
@@ -69,7 +66,6 @@ describe("WhatsApp inbound — payload operacional e retomada", () => {
     db = maybe;
     const [institution] = await db.select().from(institutions).limit(1);
     if (!institution) throw new Error("seed institution missing");
-    institutionId = institution.id;
     const name = `wa-payload-${stamp}`;
     const [user] = await db
       .insert(users)
@@ -83,7 +79,11 @@ describe("WhatsApp inbound — payload operacional e retomada", () => {
       })
       .$returningId();
     userId = user.id;
-    await upsertUserWhatsAppContact({ userId, rawPhone: e164, institutionId });
+    await upsertUserWhatsAppContact({
+      sessionVersion: 1,
+      userId,
+      rawPhone: e164,
+    });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
   });
 
@@ -196,7 +196,10 @@ describe("WhatsApp inbound — payload operacional e retomada", () => {
     const result = await processWhatsAppInbound(
       textEnvelope(sid, e164, "trocar plantão amanhã"),
     );
-    expect(result).toMatchObject({ outcome: "accepted", status: "READY_FOR_NL" });
+    expect(result).toMatchObject({
+      outcome: "accepted",
+      status: "READY_FOR_NL",
+    });
     const material = await readWhatsAppInboundOperationalMaterial(result.id!);
     expect(material).toMatchObject({
       processingStatus: "READY_FOR_NL",
@@ -206,9 +209,10 @@ describe("WhatsApp inbound — payload operacional e retomada", () => {
     });
     expect(material?.payloadExpiresAt).toBeTruthy();
     expect(isWhatsAppInboundPayloadUsable(material!)).toBe(true);
-    const remainingMs =
-      material!.payloadExpiresAt!.getTime() - Date.now();
-    expect(remainingMs).toBeGreaterThan(WHATSAPP_INBOUND_PAYLOAD_TTL_MS - 5_000);
+    const remainingMs = material!.payloadExpiresAt!.getTime() - Date.now();
+    expect(remainingMs).toBeGreaterThan(
+      WHATSAPP_INBOUND_PAYLOAD_TTL_MS - 5_000,
+    );
     expect(remainingMs).toBeLessThanOrEqual(
       WHATSAPP_INBOUND_PAYLOAD_TTL_MS + 5_000,
     );

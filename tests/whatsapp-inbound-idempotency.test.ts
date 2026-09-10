@@ -7,12 +7,10 @@ import {
   whatsappInboundMessages,
 } from "../drizzle/schema";
 import { getDb } from "../server/db";
+import { markWhatsAppContactVerified } from "./helpers/verified-whatsapp-fixture";
 import { processWhatsAppInbound } from "../server/integrations/whatsapp/inbound-store";
 import type { WhatsAppInboundEnvelope } from "../server/integrations/whatsapp/types";
-import {
-  markWhatsAppContactVerified,
-  upsertUserWhatsAppContact,
-} from "../server/user-contact-channels";
+import { upsertUserWhatsAppContact } from "../server/user-contact-channels";
 import * as identity from "../server/integrations/whatsapp/resolve-identity";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -33,7 +31,6 @@ function envelope(
 
 describe("WhatsApp inbound idempotency", () => {
   let db: Db;
-  let institutionId: number;
   let userId: number;
   const stamp = Date.now();
   const e164 = "+5585999100001";
@@ -45,7 +42,6 @@ describe("WhatsApp inbound idempotency", () => {
     db = maybe;
     const [institution] = await db.select().from(institutions).limit(1);
     if (!institution) throw new Error("seed institution missing");
-    institutionId = institution.id;
     const name = `wa-idemp-${stamp}`;
     const [user] = await db
       .insert(users)
@@ -59,7 +55,11 @@ describe("WhatsApp inbound idempotency", () => {
       })
       .$returningId();
     userId = user.id;
-    await upsertUserWhatsAppContact({ userId, rawPhone: e164, institutionId });
+    await upsertUserWhatsAppContact({
+      sessionVersion: 1,
+      userId,
+      rawPhone: e164,
+    });
     await markWhatsAppContactVerified({ userId, expectedE164: e164 });
   });
 
@@ -163,7 +163,9 @@ describe("WhatsApp inbound idempotency", () => {
     expect(stuck?.processingStatus).toBe("RETRYABLE");
     expect(stuck?.operationalText).toBe("retomar");
 
-    const resumed = await processWhatsAppInbound(envelope(sid, e164, "retomar"));
+    const resumed = await processWhatsAppInbound(
+      envelope(sid, e164, "retomar"),
+    );
     expect(resumed).toMatchObject({
       outcome: "accepted",
       status: "READY_FOR_NL",

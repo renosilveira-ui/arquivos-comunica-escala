@@ -63,7 +63,7 @@ describe("WhatsApp Verify — source contracts", () => {
   });
 
   it("check usa só code — sem telefone no input", () => {
-    const marker = "checkWhatsAppVerification: protectedProcedure";
+    const marker = "checkWhatsAppVerification: accountProfileProcedure";
     expect(router).toContain(marker);
     const checkBlock = router.slice(router.indexOf(marker));
     const inputBlock = checkBlock.slice(
@@ -75,7 +75,9 @@ describe("WhatsApp Verify — source contracts", () => {
   });
 
   it("único writer positivo de verifiedAt é markWhatsAppContactVerified", () => {
-    expect(domain).toContain("export async function markWhatsAppContactVerified");
+    expect(domain).toContain(
+      "export async function markWhatsAppContactVerified",
+    );
     expect(service).toContain("markWhatsAppContactVerified");
     expect(service).toContain("expectedE164: channel.e164");
     expect(router).not.toMatch(/verifiedAt\s*:/);
@@ -97,7 +99,9 @@ describe("WhatsApp Verify — source contracts", () => {
     expect(service).not.toMatch(/logSafe\([\s\S]{0,200}input\.code/);
     expect(service).not.toMatch(/logger\.[a-z]+\([^)]*code[^)]*OTP/i);
     expect(twilioAdapter).not.toMatch(/logger\.(info|warn|error)/);
-    expect(service).not.toMatch(/TWILIO_AUTH_TOKEN|TWILIO_ACCOUNT_SID|TWILIO_VERIFY_SERVICE_SID/);
+    expect(service).not.toMatch(
+      /TWILIO_AUTH_TOKEN|TWILIO_ACCOUNT_SID|TWILIO_VERIFY_SERVICE_SID/,
+    );
     expect(twilioAdapter).not.toContain("JSON.stringify(error");
     expect(twilioAdapter).not.toMatch(/diagnostics:[\s\S]{0,80}message/);
   });
@@ -119,7 +123,9 @@ describe("WhatsApp Verify — source contracts", () => {
   });
 
   it("Verify não liga o driver nem chama createSwapOffer", () => {
-    expect(service).not.toMatch(/startWhatsAppNlDriver|WHATSAPP_NL_DRIVER_ENABLED/);
+    expect(service).not.toMatch(
+      /startWhatsAppNlDriver|WHATSAPP_NL_DRIVER_ENABLED/,
+    );
     expect(service).not.toMatch(/createSwapOffer/);
     expect(twilioAdapter).not.toMatch(/createSwapOffer|startWhatsAppNlDriver/);
     expect(env).toContain(
@@ -129,7 +135,9 @@ describe("WhatsApp Verify — source contracts", () => {
   });
 
   it("domínio não persiste OTP local", () => {
-    expect(domain).not.toMatch(/codeHash|otpCode|whatsapp_channel_verifications/);
+    expect(domain).not.toMatch(
+      /codeHash|otpCode|whatsapp_channel_verifications/,
+    );
     expect(service).not.toMatch(/whatsapp_channel_verifications/);
   });
 

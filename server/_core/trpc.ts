@@ -104,8 +104,9 @@ function throwExpectedUserConstraint(
  * A sessão já foi validada pelo SDK (inclusive sessionVersion), mas este
  * middleware deliberadamente não lê, resolve nem aceita tenant. Usá-lo em
  * recursos tenant-bound criaria bypass. Seus únicos usos são a allowlist de
- * recuperação e o ownership conta/dispositivo do token push; nenhum deles
- * lê ou muta recurso institucional.
+ * recuperação, ownership conta/dispositivo do token push e contato WhatsApp
+ * do titular; nenhum deles lê ou muta recurso institucional. O perfil também
+ * exige conta APPROVED/não deletada e audita sem atribuir um tenant.
  */
 const requireSession = t.middleware(async ({ ctx, next }) => {
   throwAuthenticationInfrastructure(ctx.authenticationInfrastructureError);
