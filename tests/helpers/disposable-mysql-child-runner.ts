@@ -58,6 +58,19 @@ function quoteDatabaseName(databaseName: string): string {
   return `\`${databaseName}\``;
 }
 
+function quoteUnqualifiedIdentifier(identifier: string): string {
+  if (
+    identifier.length === 0 ||
+    identifier.length > 64 ||
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)
+  ) {
+    throw new Error(
+      "Destructive target must be an unqualified MySQL identifier.",
+    );
+  }
+  return `\`${identifier}\``;
+}
+
 function qualifiedChildMarkerSelect(databaseName: string): string {
   return (
     "SELECT database_name, marker_hash FROM " +
@@ -144,17 +157,74 @@ export class DisposableMysqlChildRunner {
     return this.childPool;
   }
 
-  async executeVerifiedStatement(
+  async deleteAllFrom(tableName: string): Promise<void> {
+    const table = quoteUnqualifiedIdentifier(tableName);
+    await this.executeVerifiedMutation(`DELETE FROM ${table}`);
+  }
+
+  async deleteByIntegerId(tableName: string, id: number): Promise<void> {
+    const table = quoteUnqualifiedIdentifier(tableName);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new Error("Destructive row id must be a positive safe integer.");
+    }
+    await this.executeVerifiedMutation(`DELETE FROM ${table} WHERE id = ?`, [
+      id,
+    ]);
+  }
+
+  async dropTrigger(triggerName: string, ifExists = false): Promise<void> {
+    const trigger = quoteUnqualifiedIdentifier(triggerName);
+    await this.executeVerifiedMutation(
+      `DROP TRIGGER ${ifExists ? "IF EXISTS " : ""}${trigger}`,
+    );
+  }
+
+  async dropColumn(tableName: string, columnName: string): Promise<void> {
+    await this.dropTableObject(tableName, "COLUMN", columnName);
+  }
+
+  async dropIndex(tableName: string, indexName: string): Promise<void> {
+    await this.dropTableObject(tableName, "INDEX", indexName);
+  }
+
+  async dropForeignKey(
+    tableName: string,
+    constraintName: string,
+  ): Promise<void> {
+    await this.dropTableObject(tableName, "FOREIGN KEY", constraintName);
+  }
+
+  async dropCheck(tableName: string, constraintName: string): Promise<void> {
+    await this.dropTableObject(tableName, "CHECK", constraintName);
+  }
+
+  async dropDefault(tableName: string, columnName: string): Promise<void> {
+    const table = quoteUnqualifiedIdentifier(tableName);
+    const column = quoteUnqualifiedIdentifier(columnName);
+    await this.executeVerifiedMutation(
+      `ALTER TABLE ${table} ALTER ${column} DROP DEFAULT`,
+    );
+  }
+
+  private async dropTableObject(
+    tableName: string,
+    objectType: "CHECK" | "COLUMN" | "FOREIGN KEY" | "INDEX",
+    objectName: string,
+  ): Promise<void> {
+    const table = quoteUnqualifiedIdentifier(tableName);
+    const object = quoteUnqualifiedIdentifier(objectName);
+    await this.executeVerifiedMutation(
+      `ALTER TABLE ${table} DROP ${objectType} ${object}`,
+    );
+  }
+
+  private async executeVerifiedMutation(
     statement: string,
     values: unknown[] = [],
   ): Promise<void> {
-    if (
-      !/^(?:DELETE\s+FROM|DROP\s+|ALTER\s+TABLE\s+.+\s+DROP\s+)/is.test(
-        statement.trim(),
-      )
-    ) {
+    if (statement.includes(";") || /\bDROP\s+DATABASE\b/i.test(statement)) {
       throw new Error(
-        "Verified destructive execution accepts only DELETE or DROP statements.",
+        "Verified mutation must contain exactly one child operation.",
       );
     }
     const connection = await this.pool.getConnection();
