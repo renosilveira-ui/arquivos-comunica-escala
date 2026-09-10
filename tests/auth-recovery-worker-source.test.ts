@@ -12,6 +12,7 @@ const dedicated = readFileSync(
 );
 const admin = readFileSync("server/routes/admin.ts", "utf8");
 const auth = readFileSync("server/routes/auth.ts", "utf8");
+const bootstrap = readFileSync("server/_core/index.ts", "utf8");
 
 describe("auth recovery worker: wiring estático", () => {
   it("isola correio do tick clínico e limita lote/orçamento", () => {
@@ -20,6 +21,14 @@ describe("auth recovery worker: wiring estático", () => {
     expect(worker).toContain("AUTH_RECOVERY_DELIVERY_BATCH_SIZE = 3");
     expect(worker).toContain("AUTH_RECOVERY_TICK_BUDGET_MS = 45_000");
     expect(worker).toContain("if (Date.now() >= deadline) break");
+  });
+
+  it("interrompe novos ticks e drena o tick auth no shutdown", () => {
+    expect(dedicated).toContain("let activeTick: Promise<void> | null = null");
+    expect(dedicated).toContain("if (!acceptingTicks) return");
+    expect(dedicated).toContain("return activeTick ?? Promise.resolve()");
+    expect(bootstrap).toContain("authRecoveryDrain = stopAuthRecoveryCron()");
+    expect(bootstrap).toContain("await authRecoveryDrain");
   });
 
   it("admin apenas enfileira e o worker trata ambos os tipos", () => {
@@ -94,6 +103,15 @@ describe("auth recovery worker: wiring estático", () => {
     expect(worker).not.toContain("actorUserId: lockedUser.id");
     expect(worker).toContain('requestActorKind: "UNAUTHENTICATED"');
     expect(worker).toContain('requestActorKind: "AUTHENTICATED_ADMIN"');
+  });
+
+  it("recupera SELF_SERVICE pela conta sem escolher ou criar tenant", () => {
+    expect(worker).toContain("hasValidAuthRecoveryMembershipBinding");
+    expect(worker).toContain("hasSelfServiceAccountTopology");
+    expect(worker).toContain("targetMembershipId: null");
+    expect(worker).not.toContain("lockCanonicalAuditMembership");
+    expect(worker).not.toContain("insert(professionalInstitutions)");
+    expect(auth).toContain("hasValidAuthRecoveryMembershipBinding(");
   });
 
   it("recusa hash não-policy no egress e no resgate", () => {

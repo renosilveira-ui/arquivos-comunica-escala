@@ -5,6 +5,7 @@ import {
 } from "../server/auth-response-timing";
 import {
   authRecoveryEncryptionKeyRing,
+  hasValidAuthRecoveryMembershipBinding,
   openAuthRecoveryPayload,
   sealAuthRecoveryPayload,
 } from "../server/auth-recovery";
@@ -43,6 +44,21 @@ describe("auth lifecycle: contratos puros", () => {
     expect(sealed).not.toContain(payload.email);
     expect(sealed).not.toContain(payload.token);
     expect(openAuthRecoveryPayload(sealed)).toEqual(payload);
+  });
+
+  it("separa recuperação account-wide da autoridade institucional admin", () => {
+    expect(hasValidAuthRecoveryMembershipBinding("SELF_SERVICE", null)).toBe(
+      true,
+    );
+    expect(hasValidAuthRecoveryMembershipBinding("SELF_SERVICE", 17)).toBe(
+      false,
+    );
+    expect(hasValidAuthRecoveryMembershipBinding("ADMIN_INITIATED", 17)).toBe(
+      true,
+    );
+    expect(hasValidAuthRecoveryMembershipBinding("ADMIN_INITIATED", null)).toBe(
+      false,
+    );
   });
 
   it("rejeita adulteração autenticada do payload", () => {
@@ -98,6 +114,31 @@ describe("auth lifecycle: contratos puros", () => {
         "AUTH_RECOVERY_PAYLOAD_KEY_UNAVAILABLE",
       );
       expect(authRecoveryEncryptionKeyRing().current.kid).toBe("new-key");
+    } finally {
+      process.env = saved;
+    }
+  });
+
+  it("runtime aceita 1024 bytes e recusa current/previous acima do teto", () => {
+    const saved = { ...process.env };
+    try {
+      process.env.AUTH_RECOVERY_ENCRYPTION_CURRENT_KID = "current";
+      process.env.AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET = "c".repeat(1024);
+      delete process.env.AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID;
+      delete process.env.AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET;
+      expect(authRecoveryEncryptionKeyRing().current.secret).toHaveLength(1024);
+
+      process.env.AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET = "c".repeat(1025);
+      expect(() => authRecoveryEncryptionKeyRing()).toThrow(
+        "AUTH_RECOVERY_ENCRYPTION_CONFIG_INVALID",
+      );
+
+      process.env.AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET = "c".repeat(48);
+      process.env.AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID = "previous";
+      process.env.AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET = "p".repeat(1025);
+      expect(() => authRecoveryEncryptionKeyRing()).toThrow(
+        "AUTH_RECOVERY_ENCRYPTION_CONFIG_INVALID",
+      );
     } finally {
       process.env = saved;
     }

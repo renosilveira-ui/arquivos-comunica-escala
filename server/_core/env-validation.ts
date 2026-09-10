@@ -36,6 +36,11 @@ const MIN_LENGTHS: Record<string, number> = {
   AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: 32,
 };
 
+const MAX_BYTE_LENGTHS: Record<string, number> = {
+  AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: 1024,
+  AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: 1024,
+};
+
 const NO_LOCALHOST_URLS: readonly string[] = [
   "DATABASE_URL",
   "COMUNICA_PLUS_URL",
@@ -142,6 +147,13 @@ export function collectProductionSecretIssues(
       issues.push(
         `${key} must be at least ${min} ${byteMeasured ? "bytes" : "characters"} long`,
       );
+    }
+  }
+
+  for (const [key, max] of Object.entries(MAX_BYTE_LENGTHS)) {
+    const value = (env[key] ?? "").trim();
+    if (value && Buffer.byteLength(value, "utf8") > max) {
+      issues.push(`${key} must be at most ${max} bytes long`);
     }
   }
 

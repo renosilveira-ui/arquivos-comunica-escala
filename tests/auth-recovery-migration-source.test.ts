@@ -71,4 +71,16 @@ describe("auth recovery migration: contrato estático", () => {
     expect(migration).toContain("finished_at IS NOT NULL");
     expect(migration).toContain("sealed_payload IS NULL");
   });
+
+  it("modela SELF_SERVICE como trilha account-wide sem PI implícita", () => {
+    expect(migration).toContain(
+      "kind = 'SELF_SERVICE' AND target_membership_id IS NULL",
+    );
+    expect(migration).toContain(
+      "kind = 'ADMIN_INITIATED' AND target_membership_id IS NOT NULL",
+    );
+    expect(migration).toMatch(
+      /expected_actor_session_version IS NULL\s+AND target_membership_id IS NULL/,
+    );
+  });
 });

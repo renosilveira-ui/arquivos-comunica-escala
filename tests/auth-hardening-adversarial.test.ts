@@ -392,7 +392,7 @@ describe("auth hardening adversarial", () => {
     }
   });
 
-  it("credenciais de conta órfã ou PI adulterada falham sem write nem audit no tenant 1", async () => {
+  it("conta APPROVED sem PI recupera credencial account-wide; PI adulterada segue fail-closed", async () => {
     const orphan = usersByKind.get("orphan")!;
     let poisonedProfessionalId: number | null = null;
     const session = await login(orphan.email);
@@ -407,9 +407,8 @@ describe("auth hardening adversarial", () => {
       .from(users)
       .where(eq(users.id, orphan.id));
     const transport = recoveryMailTransport({
-      kind: "REJECTED",
-      transport: "console",
-      reason: "NOT_CONFIGURED",
+      kind: "ACCEPTED",
+      transport: "resend",
     });
 
     const assertNoCredentialWrite = async () => {
@@ -461,27 +460,6 @@ describe("auth hardening adversarial", () => {
         .set("x-client-session-instance", sessionInstance)
         .send({ password: PASSWORD });
       expect(deletion.status).toBe(409);
-      expect(
-        (
-          await request(app)
-            .post("/api/auth/forgot-password")
-            .send({ email: orphan.email })
-        ).body,
-      ).toEqual({ ok: true });
-      await processPendingAuthRecoveryEmails(new Date(), transport);
-      expect(transport.sendMail).not.toHaveBeenCalled();
-      expect(
-        await db
-          .select({
-            state: authRecoveryRequests.state,
-            errorCode: authRecoveryRequests.lastErrorCode,
-          })
-          .from(authRecoveryRequests),
-      ).toContainEqual({
-        state: "SKIPPED",
-        errorCode: "RECIPIENT_NOT_ELIGIBLE",
-      });
-
       const orphanResetToken = `orphan-reset-${STAMP}`;
       await db.insert(passwordResets).values({
         userId: orphan.id,
@@ -543,6 +521,62 @@ describe("auth hardening adversarial", () => {
       await processPendingAuthRecoveryEmails(new Date(), transport);
       expect(transport.sendMail).not.toHaveBeenCalled();
       await assertNoCredentialWrite();
+
+      await db
+        .delete(professionalInstitutions)
+        .where(eq(professionalInstitutions.userId, orphan.id));
+      await db
+        .delete(professionals)
+        .where(eq(professionals.id, poisonedProfessionalId));
+      poisonedProfessionalId = null;
+
+      expect(
+        (
+          await request(app)
+            .post("/api/auth/forgot-password")
+            .send({ email: orphan.email })
+        ).body,
+      ).toEqual({ ok: true });
+      await processPendingAuthRecoveryEmails(new Date(), transport);
+      expect(transport.sendMail).toHaveBeenCalledTimes(1);
+      const token = transport.sendMail.mock.calls[0]![0].text.match(
+        /reset-password\?token=([0-9a-f]{64})/,
+      )![1];
+      const newPassword = "SenhaOrfaRecuperada123";
+      const recovered = await request(app)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword });
+      expect(recovered.status).toBe(200);
+      expect(recovered.body).toEqual({ ok: true });
+      expect(
+        await db
+          .select({
+            state: authRecoveryRequests.state,
+            targetMembershipId: authRecoveryRequests.targetMembershipId,
+          })
+          .from(authRecoveryRequests)
+          .where(eq(authRecoveryRequests.targetUserId, orphan.id)),
+      ).toContainEqual({ state: "USED", targetMembershipId: null });
+      expect(
+        await db
+          .select({ id: professionalInstitutions.id })
+          .from(professionalInstitutions)
+          .where(eq(professionalInstitutions.userId, orphan.id)),
+      ).toHaveLength(0);
+      expect(
+        await db
+          .select({ id: professionals.id })
+          .from(professionals)
+          .where(eq(professionals.userId, orphan.id)),
+      ).toHaveLength(0);
+      expect(
+        await db
+          .select({ id: auditTrail.id })
+          .from(auditTrail)
+          .where(eq(auditTrail.entityId, orphan.id)),
+      ).toHaveLength(0);
+      expect((await login(orphan.email, newPassword)).status).toBe(200);
+      expect((await login(orphan.email, PASSWORD)).status).toBe(401);
     } finally {
       await db
         .delete(professionalInstitutions)

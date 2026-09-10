@@ -96,10 +96,10 @@ import {
   AuthMutationError,
   lockCanonicalAuditMembership,
   readCanonicalAuditMembership,
-  type AuditMembershipSnapshot,
 } from "../auth-audit-membership";
 import {
   enqueueForgotPasswordRecovery,
+  hasValidAuthRecoveryMembershipBinding,
   hashAuthRecoveryValue,
   revokeOutstandingAuthRecoveryRequests,
 } from "../auth-recovery";
@@ -908,9 +908,12 @@ authRouter.post(
       if (
         recoveryCandidate.state !== "ACTIVE" ||
         !recoveryCandidate.targetUserId ||
-        !recoveryCandidate.targetMembershipId ||
-        !recoveryCandidate.expectedTargetSessionVersion ||
+        recoveryCandidate.expectedTargetSessionVersion === null ||
         !recoveryCandidate.emailHash ||
+        !hasValidAuthRecoveryMembershipBinding(
+          recoveryCandidate.kind,
+          recoveryCandidate.targetMembershipId,
+        ) ||
         !recoveryCandidate.expiresAt ||
         !recoveryCandidate.providerAcceptedAt ||
         (recoveryCandidate.kind === "SELF_SERVICE" &&
@@ -923,23 +926,9 @@ authRouter.post(
         return;
       }
 
-      let targetAuditMembership: AuditMembershipSnapshot | null = null;
       let adminCaller: AdminMutationAuthoritySnapshot | null = null;
       let adminTarget: AdminMutationAuthoritySnapshot | null = null;
-      if (recoveryCandidate.kind === "SELF_SERVICE") {
-        targetAuditMembership = await readCanonicalAuditMembership(
-          db,
-          recoveryCandidate.targetUserId,
-        );
-        if (
-          !targetAuditMembership ||
-          targetAuditMembership.membershipId !==
-            recoveryCandidate.targetMembershipId
-        ) {
-          res.status(400).json({ error: INVALID });
-          return;
-        }
-      } else {
+      if (recoveryCandidate.kind === "ADMIN_INITIATED") {
         if (
           !recoveryCandidate.requestedByUserId ||
           !recoveryCandidate.requestedByMembershipId ||
@@ -1009,6 +998,7 @@ authRouter.post(
               if (
                 !lockedUser ||
                 lockedUser.deletedAt ||
+                lockedUser.approvalStatus !== "APPROVED" ||
                 !isSafeBcryptHash(lockedUser.passwordHash) ||
                 lockedUser.sessionVersion !==
                   recoveryCandidate.expectedTargetSessionVersion ||
@@ -1018,14 +1008,6 @@ authRouter.post(
               ) {
                 throw new AuthMutationError(400, INVALID);
               }
-              if (recoveryCandidate.kind === "SELF_SERVICE") {
-                await lockCanonicalAuditMembership(
-                  tx,
-                  lockedUser.id,
-                  targetAuditMembership!,
-                );
-              }
-
               const [lockedRecovery] = await tx
                 .select()
                 .from(authRecoveryRequests)
@@ -1125,32 +1107,28 @@ authRouter.post(
                 usedAt,
                 lockedRecovery.id,
               );
-              await recordAudit(
-                {
-                  actorUserId: lockedUser.id,
-                  actorRole: lockedUser.role,
-                  actorName: auditActorName(lockedUser.name),
-                  action: "USER_UPDATED",
-                  entityType: "USER",
-                  entityId: lockedUser.id,
-                  description:
-                    recoveryCandidate.kind === "ADMIN_INITIATED"
-                      ? "Senha redefinida via link administrativo"
-                      : "Senha redefinida via link de 'esqueci minha senha'",
-                  institutionId:
-                    recoveryCandidate.kind === "ADMIN_INITIATED"
-                      ? recoveryCandidate.institutionId!
-                      : targetAuditMembership!.institutionId,
-                  metadata: {
-                    recoveryRequestId: lockedRecovery.id,
-                    recoveryKind: recoveryCandidate.kind,
-                    sessionVersionBefore: lockedUser.sessionVersion,
-                    sessionVersionAfter: nextSessionVersion,
-                    revokedPushTokenCount,
+              if (recoveryCandidate.kind === "ADMIN_INITIATED") {
+                await recordAudit(
+                  {
+                    actorUserId: lockedUser.id,
+                    actorRole: lockedUser.role,
+                    actorName: auditActorName(lockedUser.name),
+                    action: "USER_UPDATED",
+                    entityType: "USER",
+                    entityId: lockedUser.id,
+                    description: "Senha redefinida via link administrativo",
+                    institutionId: recoveryCandidate.institutionId!,
+                    metadata: {
+                      recoveryRequestId: lockedRecovery.id,
+                      recoveryKind: recoveryCandidate.kind,
+                      sessionVersionBefore: lockedUser.sessionVersion,
+                      sessionVersionAfter: nextSessionVersion,
+                      revokedPushTokenCount,
+                    },
                   },
-                },
-                { db: tx, strict: true },
-              );
+                  { db: tx, strict: true },
+                );
+              }
             }),
         );
         res.json({ ok: true });

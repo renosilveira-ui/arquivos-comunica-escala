@@ -71,6 +71,18 @@ function isValidIdempotencyKey(value: string | undefined): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
+/**
+ * Identificador opaco devolvido pelo provedor de e-mail.
+ *
+ * O contrato é compartilhado por todos os outboxes: somente ASCII seguro e o
+ * mesmo teto das colunas VARCHAR(128). O valor não é normalizado; qualquer
+ * caractere fora da allowlist torna todo o identificador não confiável.
+ */
+export function parseProviderCorrelationId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return /^[A-Za-z0-9._:-]{1,128}(?![\s\S])/.test(value) ? value : undefined;
+}
+
 async function sendViaResend(
   apiKey: string,
   from: string,
@@ -115,9 +127,7 @@ async function sendViaResend(
     let providerCorrelationId: string | undefined;
     try {
       const decoded = (await res.json()) as { id?: unknown };
-      if (typeof decoded.id === "string" && decoded.id.length <= 200) {
-        providerCorrelationId = decoded.id;
-      }
+      providerCorrelationId = parseProviderCorrelationId(decoded.id);
     } catch {
       // O status 2xx é a aceitação autoritativa; o corpo é opcional.
     }

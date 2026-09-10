@@ -272,6 +272,7 @@ async function startServer() {
           "stopConfirmationCron failed",
         );
       }
+      let authRecoveryDrain = Promise.resolve();
       let whatsappRetentionDrain = Promise.resolve();
       try {
         whatsappRetentionDrain = stopWhatsAppOperationalPayloadRetention();
@@ -282,7 +283,7 @@ async function startServer() {
         );
       }
       try {
-        stopAuthRecoveryCron();
+        authRecoveryDrain = stopAuthRecoveryCron();
       } catch (err) {
         logger.error(
           { err: err instanceof Error ? err.message : String(err) },
@@ -295,6 +296,14 @@ async function startServer() {
         logger.error(
           safeErrorDiagnostic(err, "application"),
           "stopWhatsAppNlDriver failed",
+        );
+      }
+      try {
+        await authRecoveryDrain;
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopAuthRecoveryCron failed",
         );
       }
       try {

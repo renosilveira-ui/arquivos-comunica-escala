@@ -657,25 +657,17 @@ describe("auth: forgot/reset password, admin reset, account deletion", () => {
         .from(pushTokens)
         .where(eq(pushTokens.userId, userIds.doctor)),
     ).toHaveLength(0);
-    const [resetAudit] = await db
-      .select({ metadata: auditTrail.metadata })
-      .from(auditTrail)
-      .where(
-        and(
-          eq(auditTrail.entityId, userIds.doctor),
-          eq(
-            auditTrail.description,
-            "Senha redefinida via link de 'esqueci minha senha'",
-          ),
-        ),
-      );
-    expect(resetAudit?.metadata).toMatchObject({ revokedPushTokenCount: 2 });
-
     const [reset] = await db
       .select()
       .from(authRecoveryRequests)
       .where(eq(authRecoveryRequests.targetUserId, userIds.doctor));
     expect(reset).toBeTruthy();
+    expect(reset).toMatchObject({
+      state: "USED",
+      targetMembershipId: null,
+      usedAt: expect.any(Date),
+      finishedAt: expect.any(Date),
+    });
 
     // Login com a nova senha funciona; a antiga não.
     expect((await login(EMAILS.doctor, NEW_PASSWORD)).status).toBe(200);

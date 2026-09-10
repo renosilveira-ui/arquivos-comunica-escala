@@ -1302,6 +1302,7 @@ export const authRecoveryRequests = mysqlTable(
           AND ${table.requestedByMembershipId} IS NULL
           AND ${table.institutionId} IS NULL
           AND ${table.expectedActorSessionVersion} IS NULL
+          AND ${table.targetMembershipId} IS NULL
         )
         OR (
           ${table.kind} = 'ADMIN_INITIATED'
@@ -1324,7 +1325,10 @@ export const authRecoveryRequests = mysqlTable(
         ${table.state} NOT IN ('ACTIVE', 'USED')
         OR (
           ${table.targetUserId} IS NOT NULL
-          AND ${table.targetMembershipId} IS NOT NULL
+          AND (
+            (${table.kind} = 'SELF_SERVICE' AND ${table.targetMembershipId} IS NULL)
+            OR (${table.kind} = 'ADMIN_INITIATED' AND ${table.targetMembershipId} IS NOT NULL)
+          )
           AND ${table.expectedTargetSessionVersion} IS NOT NULL
           AND ${table.emailHash} IS NOT NULL
           AND ${table.tokenHash} IS NOT NULL
