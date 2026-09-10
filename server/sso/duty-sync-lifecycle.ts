@@ -47,29 +47,34 @@ type DeclaredConfirmation = {
   replacementProfessionalId: number | null;
 };
 
-function isDeclaredStatus(status: ConfirmationStatus): status is DeclaredStatus {
+function isDeclaredStatus(
+  status: ConfirmationStatus,
+): status is DeclaredStatus {
   return (DUTY_SYNC_DECLARED_STATUSES as readonly string[]).includes(status);
 }
 
 export function dutySyncWithdrawDedupKey(
   confirmationId: number,
   targetUserId: number,
+  confirmationToken?: string,
 ): string {
-  return `duty-confirmation:${confirmationId}:duty-sync:withdraw:${targetUserId}`;
+  return `duty-confirmation:${confirmationId}:duty-sync:withdraw:${targetUserId}${confirmationToken ? `:cycle:${confirmationToken}` : ""}`;
 }
 
 export function dutySyncConfirmDedupKey(
   confirmationId: number,
   targetUserId: number,
+  confirmationToken?: string,
 ): string {
-  return `duty-confirmation:${confirmationId}:duty-sync:confirmed:${targetUserId}`;
+  return `duty-confirmation:${confirmationId}:duty-sync:confirmed:${targetUserId}${confirmationToken ? `:cycle:${confirmationToken}` : ""}`;
 }
 
 export function dutySyncReplacementConfirmDedupKey(
   confirmationId: number,
   targetUserId: number,
+  confirmationToken?: string,
 ): string {
-  return `duty-confirmation:${confirmationId}:duty-sync:replacement-confirmed:${targetUserId}`;
+  return `duty-confirmation:${confirmationId}:duty-sync:replacement-confirmed:${targetUserId}${confirmationToken ? `:cycle:${confirmationToken}` : ""}`;
 }
 
 export function dutySyncIntervalConfirmDedupKey(
@@ -387,6 +392,8 @@ export async function enqueueDutySyncIntervalRewrite(
     nextDutyType: "PLANTAO" | "SOBREAVISO";
     previousServiceName?: string | null;
     nextServiceName?: string | null;
+    /** Mudança material exige nova confirmação humana antes do novo CONFIRM. */
+    reconfirmRequired?: boolean;
   },
   now = new Date(),
 ): Promise<number> {
@@ -418,8 +425,8 @@ export async function enqueueDutySyncIntervalRewrite(
       now,
     );
     if (
-      row.status === "CONFIRMED" ||
-      row.status === "REPLACEMENT_CONFIRMED"
+      !input.reconfirmRequired &&
+      (row.status === "CONFIRMED" || row.status === "REPLACEMENT_CONFIRMED")
     ) {
       await enqueueDutySyncConfirmIntent(
         tx,

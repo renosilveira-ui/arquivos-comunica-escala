@@ -45,8 +45,26 @@ describe("rearme de confirmação após mudança de horário", () => {
     expect(rewrite).toBeGreaterThan(-1);
     expect(rearm).toBeGreaterThan(rewrite);
     expect(shifts.slice(rewrite, rearm)).toContain("previousSnapshot");
+    expect(shifts.slice(rewrite, rearm)).toContain(
+      "reconfirmRequired: windowChanged",
+    );
     expect(shifts).toContain("rearmedConfirmationCount");
     expect(shifts).toContain("if (windowChanged)");
+  });
+
+  it("não redeclara automaticamente e versiona o duty-sync pela confirmação", () => {
+    const lifecycleSync = readFileSync(
+      "server/sso/duty-sync-lifecycle.ts",
+      "utf8",
+    );
+
+    expect(lifecycleSync).toContain("!input.reconfirmRequired");
+    expect(lifecycleSync).toContain(":cycle:${confirmationToken}");
+    expect(
+      router.match(
+        /dedupKey: dutySync(?:Confirm|Withdraw|ReplacementConfirm)DedupKey\([\s\S]*?current\.confirmation\.confirmationToken,\n\s*\)/g,
+      ),
+    ).toHaveLength(4);
   });
 
   it("materializa novamente somente quando due e cria nova deduplicação", () => {

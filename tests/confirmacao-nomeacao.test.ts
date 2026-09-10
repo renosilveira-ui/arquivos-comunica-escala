@@ -554,7 +554,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
     const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}`;
+      `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}:cycle:${conf.confirmationToken}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = null;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -595,7 +595,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
     const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`;
+      `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}:cycle:${conf.confirmationToken}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = "not-a-canonical-uuid";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -639,7 +639,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular("ON_CALL");
     const conf = await nominated(assignmentId, shiftId);
     const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}`;
+      `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}:cycle:${conf.confirmationToken}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = null;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -673,7 +673,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       expect(active).toEqual([{ professionalId: subProId }]);
       await expectAuditEvidence("TRANSFER_ACCEPTED", assignmentId);
       await expectSuppressedDutySyncEvidence({
-        dedupKey: `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`,
+        dedupKey: `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}:cycle:${conf.confirmationToken}`,
         confirmationId: conf.id,
         targetUserId: titularUserId,
         action: "WITHDRAW",
@@ -699,7 +699,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
     const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}`;
+      `duty-confirmation:${conf.id}:duty-sync:confirmed:${titularUserId}:cycle:${conf.confirmationToken}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = organizationId;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -746,7 +746,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await pending(assignmentId, shiftId);
     const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}`;
+      `duty-confirmation:${conf.id}:duty-sync:withdraw:${titularUserId}:cycle:${conf.confirmationToken}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = organizationId;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -796,7 +796,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     const { shiftId, assignmentId } = await shiftWithTitular("ON_CALL");
     const conf = await nominated(assignmentId, shiftId);
     const dedupKey =
-      `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}`;
+      `duty-confirmation:${conf.id}:duty-sync:replacement-confirmed:${subUserId}:cycle:${conf.confirmationToken}`;
     dutySyncMockState.useReal = true;
     orgMappingState.organizationId = organizationId;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
