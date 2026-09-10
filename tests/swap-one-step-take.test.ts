@@ -411,6 +411,39 @@ describe("take em um passo: quem assume leva o plantão", () => {
     expect(row?.status).toBe("APPROVED");
   });
 
+  it("profissional que recusou oferta aberta não consegue aceitá-la depois", async () => {
+    const shift = await createOccupiedShift(offerer, 31, "Clínica Médica");
+    const created = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    const swapRequestId = Number(created.id);
+
+    await expect(callerFor(peer).reject({ swapRequestId })).resolves.toEqual({
+      ok: true,
+    });
+    await expect(
+      callerFor(peer).accept({ swapRequestId }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "Você já recusou esta oferta.",
+    });
+
+    const [open] = await db
+      .select({ status: swapRequests.status })
+      .from(swapRequests)
+      .where(eq(swapRequests.id, swapRequestId))
+      .limit(1);
+    expect(open?.status).toBe("PENDING");
+    await expectStillOwnedByOfferer(shift.shiftId);
+
+    await expect(callerFor(peerTwo).accept({ swapRequestId })).resolves.toEqual(
+      { ok: true },
+    );
+    await expectTransferred(swapRequestId, shift.shiftId, peerTwo);
+  });
+
   it("coordenador GESTOR com manager_scope e sem ACL não assume o plantão", async () => {
     const shift = await createOccupiedShift(offerer, 2, "Clínica Médica");
     const created = await callerFor(offerer).offer({
