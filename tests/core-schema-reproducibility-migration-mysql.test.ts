@@ -3,8 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 
-const TEST_SERVER_URL =
-  process.env.CORE_SCHEMA_REPRO_MIGRATION_TEST_SERVER_URL;
+const TEST_SERVER_URL = process.env.CORE_SCHEMA_REPRO_MIGRATION_TEST_SERVER_URL;
 const DATABASE_PREFIX = "escala_core_schema_repro_";
 
 type TestServer = {
@@ -325,6 +324,23 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
     });
   });
 
+  it("recusa teto de produtividade unsigned antes do primeiro DDL", async () => {
+    await withSchema(async (database) => {
+      await database.query(`
+        ALTER TABLE shift_instances
+          ADD COLUMN modality ENUM('PLANTAO','SOBREAVISO')
+            NOT NULL DEFAULT 'PLANTAO',
+          ADD COLUMN coverage_type ENUM('URGENCIA_EMERGENCIA','ELETIVAS') NULL,
+          ADD COLUMN payment_model ENUM(
+            'FIXO','FIXO_PRODUTIVIDADE_TETO',
+            'FIXO_PRODUTIVIDADE_SEM_TETO','PRODUTIVIDADE_PURA'
+          ) NOT NULL DEFAULT 'FIXO',
+          ADD COLUMN productivity_cap_brl DECIMAL(12,2) UNSIGNED NULL
+      `);
+      await expectPreflightRejectionWithoutSchemaChange(database);
+    });
+  });
+
   it("recusa índice de modalidade homônimo com ordem incompatível", async () => {
     await withSchema(async (database) => {
       await database.query(`
@@ -453,14 +469,65 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
         "ALTER TABLE shift_instances MODIFY COLUMN id INT NOT NULL",
       );
 
-      await expect(database.query(migration.slice(ddlStart))).rejects.toMatchObject(
-        {
-          code: "ER_NO_SUCH_TABLE",
-          message: expect.stringContaining(
-            "core_schema_reproducibility_postflight_failed",
-          ),
-        },
+      await expect(
+        database.query(migration.slice(ddlStart)),
+      ).rejects.toMatchObject({
+        code: "ER_NO_SUCH_TABLE",
+        message: expect.stringContaining(
+          "core_schema_reproducibility_postflight_failed",
+        ),
+      });
+    });
+  });
+
+  it("recusa FK extra concorrente no postflight", async () => {
+    await withSchema(async (database) => {
+      const postflightStart = migration.indexOf(
+        "SET @csr_postflight_shift_instances_table_collation",
       );
+      expect(postflightStart).toBeGreaterThan(0);
+
+      await database.query(migration.slice(0, postflightStart));
+      await database.query(`
+        ALTER TABLE institution_config
+        ADD CONSTRAINT unexpected_concurrent_institution_config_fk
+          FOREIGN KEY (institution_id) REFERENCES institutions(id)
+          ON DELETE CASCADE
+      `);
+      const [driftCounts] = await database.query<RowDataPacket[]>(`
+        SELECT
+          (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+           WHERE CONSTRAINT_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'institution_config'
+             AND CONSTRAINT_TYPE = 'FOREIGN KEY') AS foreign_key_constraints,
+          (SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+           WHERE CONSTRAINT_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'institution_config'
+             AND REFERENCED_TABLE_NAME IS NOT NULL) AS foreign_key_columns,
+          (SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS
+           WHERE CONSTRAINT_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'institution_config') AS referential_constraints,
+          (SELECT COUNT(*) FROM information_schema.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'institution_config') AS index_rows
+      `);
+      expect(driftCounts).toEqual([
+        {
+          foreign_key_constraints: 2,
+          foreign_key_columns: 2,
+          referential_constraints: 2,
+          index_rows: 4,
+        },
+      ]);
+
+      await expect(
+        database.query(migration.slice(postflightStart)),
+      ).rejects.toMatchObject({
+        code: "ER_NO_SUCH_TABLE",
+        message: expect.stringContaining(
+          "core_schema_reproducibility_postflight_failed",
+        ),
+      });
     });
   });
 });

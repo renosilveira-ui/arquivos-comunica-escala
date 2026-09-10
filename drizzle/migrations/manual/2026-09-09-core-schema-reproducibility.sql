@@ -154,6 +154,7 @@ SET @csr_modality_columns_contract_matches := (
         AND TABLE_NAME = 'shift_instances'
         AND COLUMN_NAME = 'productivity_cap_brl'
         AND DATA_TYPE = 'decimal'
+        AND CAST(COLUMN_TYPE AS BINARY) = CAST('decimal(12,2)' AS BINARY)
         AND NUMERIC_PRECISION = 12
         AND NUMERIC_SCALE = 2
         AND IS_NULLABLE = 'YES'
@@ -545,6 +546,7 @@ SET @csr_postflight_contract_matches := (
       AND TABLE_NAME = 'shift_instances'
       AND COLUMN_NAME = 'productivity_cap_brl'
       AND DATA_TYPE = 'decimal'
+      AND CAST(COLUMN_TYPE AS BINARY) = CAST('decimal(12,2)' AS BINARY)
       AND NUMERIC_PRECISION = 12
       AND NUMERIC_SCALE = 2
       AND IS_NULLABLE = 'YES'
@@ -640,6 +642,20 @@ SET @csr_postflight_contract_matches := (
      AND SUB_PART IS NULL
      AND UPPER(INDEX_TYPE) = 'BTREE'
      AND IS_VISIBLE = 'YES') = 1
+  AND
+  (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+   WHERE CONSTRAINT_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'institution_config'
+     AND CONSTRAINT_TYPE = 'FOREIGN KEY') = 1
+  AND
+  (SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+   WHERE CONSTRAINT_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'institution_config'
+     AND REFERENCED_TABLE_NAME IS NOT NULL) = 1
+  AND
+  (SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS
+   WHERE CONSTRAINT_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'institution_config') = 1
   AND
   (SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
    WHERE CONSTRAINT_SCHEMA = DATABASE()
