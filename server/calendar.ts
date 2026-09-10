@@ -2,6 +2,11 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { activeShiftCounts } from "./shift-capacity";
+import {
+  canReadRosterMonth,
+  loadRosterMonthStatuses,
+  rosterMonthKey,
+} from "./roster-read-visibility";
 import { shiftCapacitySummary } from "../lib/shift-capacity";
 import {
   dayKeyBrt,
@@ -65,24 +70,15 @@ async function resolveCalendarAccess(
   }
 
   // 1. Buscar status do mês
-  const rosterResult = await db.execute<any>(
-    sql`SELECT status FROM monthly_rosters 
-        WHERE institution_id = ${institutionId} 
-        AND hospital_id = ${hospitalId} 
-        AND ${sql.identifier("year_month")} = ${yearMonth}
-        LIMIT 1`,
-  );
-  const rosterRows = rowsFromExecute<any>(rosterResult);
-  const monthStatus = (rosterRows[0]?.status || "DRAFT") as
-    "DRAFT" | "PUBLISHED" | "LOCKED";
+  const monthStatuses = await loadRosterMonthStatuses(db, institutionId, [
+    { hospitalId, yearMonth },
+  ]);
+  const monthStatus =
+    monthStatuses.get(rosterMonthKey(hospitalId, yearMonth)) ?? "DRAFT";
 
   // Um gestor lendo fora de sua manager_scope pelo próprio vínculo clínico
   // segue a mesma regra de publicação de um USER.
-  if (
-    !context.canManage &&
-    monthStatus !== "PUBLISHED" &&
-    monthStatus !== "LOCKED"
-  ) {
+  if (!canReadRosterMonth(context.canManage, monthStatus)) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Você não tem permissão para acessar este calendário",

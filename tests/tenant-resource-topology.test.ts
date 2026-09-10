@@ -1118,11 +1118,8 @@ describe("hierarquia institution → hospital → sector", () => {
     const myRows = mine.weeks.flatMap((week) =>
       week.days.flatMap((day) => day.groups.flatMap((group) => group.shifts)),
     );
-    expect(myRows.map((row) => row.id)).toEqual([publicationShiftAId]);
-    expect(myRows[0]).toMatchObject({
-      professionalNames: [`Topology recipient-a`],
-      isMine: true,
-    });
+    // Este mês ainda é DRAFT: a própria alocação não antecipa publicação.
+    expect(myRows).toEqual([]);
   });
 
   it("getActiveShift/getNextShift não usam assignment ligado a shift de hierarquia contaminada", async () => {
