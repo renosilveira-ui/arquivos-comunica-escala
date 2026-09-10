@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 import {
   assertConnectedDatabaseName,
@@ -431,7 +432,7 @@ describe("standard test destructive target fence", () => {
       "tsx scripts/prepare-standard-test-database.ts",
     );
     expect(packageJson.scripts["test:whatsapp-account-ownership-mysql"]).toBe(
-      "vitest run --config vitest.whatsapp-account.config.ts tests/whatsapp-account-ownership-mysql.test.ts",
+      "vitest run --config vitest.whatsapp-account.config.ts",
     );
 
     const whatsappConfig = readFileSync(
@@ -443,38 +444,65 @@ describe("standard test destructive target fence", () => {
     );
     expect(whatsappConfig).toContain('DATABASE_URL: ""');
 
-    const whatsappRunner = readFileSync(
+    const whatsappSuite = readFileSync(
       new URL(
         "../tests/whatsapp-account-ownership-mysql.test.ts",
         import.meta.url,
       ),
       "utf8",
     );
-    expect(whatsappRunner).not.toContain('password: "root"');
-    expect(whatsappRunner).not.toContain("DROP DATABASE IF EXISTS");
-    expect(
-      whatsappRunner.match(/assertDisposableTestTargetMarker\(/g),
-    ).toHaveLength(4);
+    const disposableRunner = readFileSync(
+      new URL(
+        "../tests/helpers/disposable-mysql-child-runner.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(whatsappSuite).not.toContain('password: "root"');
+    expect(whatsappSuite).not.toContain("DROP DATABASE");
+    expect(whatsappSuite).not.toMatch(/pool\.query\([^)]*(?:DELETE|DROP)/s);
+    expect(disposableRunner).not.toContain("DROP DATABASE IF EXISTS");
+    expect(disposableRunner).toContain("assertCreationReceipt()");
+    expect(disposableRunner).toContain("qualifiedChildMarkerSelect");
 
     const workflow = readFileSync(
       new URL("../.github/workflows/ci.yml", import.meta.url),
       "utf8",
     );
-    for (const step of [
+    type WorkflowStep = {
+      env?: Record<string, string>;
+      name?: string;
+      run?: string;
+    };
+    const parsedWorkflow = parseYaml(workflow) as {
+      jobs?: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = parsedWorkflow.jobs?.["ci-core"]?.steps;
+    expect(Array.isArray(steps)).toBe(true);
+    const expectedEnv = {
+      NODE_ENV: "test",
+      TEST_DATABASE_ALLOW_DESTRUCTIVE: "1",
+      TEST_DATABASE_URL: "mysql://root:root@127.0.0.1:3306/escalas_test",
+      TEST_DATABASE_EXPECTED_NAME: "escalas_test",
+      TEST_DATABASE_DISPOSABLE_MARKER:
+        "ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}",
+    };
+    for (const stepName of [
       "Prepare disposable standard-test target",
       "Validate WhatsApp account ownership in a disposable child target",
       "Test",
     ]) {
-      expect(workflow).toMatch(
-        new RegExp(
-          `- name: ${step}\\n[\\s\\S]*?NODE_ENV: test[\\s\\S]*?` +
-            `TEST_DATABASE_ALLOW_DESTRUCTIVE: "1"[\\s\\S]*?` +
-            "TEST_DATABASE_URL: mysql://root:root@127\\.0\\.0\\.1:3306/escalas_test[\\s\\S]*?" +
-            "TEST_DATABASE_EXPECTED_NAME: escalas_test[\\s\\S]*?" +
-            "TEST_DATABASE_DISPOSABLE_MARKER:",
-        ),
-      );
+      const matches = steps?.filter((step) => step.name === stepName) ?? [];
+      expect(matches, `workflow step ${stepName}`).toHaveLength(1);
+      expect(matches[0]?.env).toEqual(expectedEnv);
     }
+    expect(
+      steps?.find(
+        (step) =>
+          step.name ===
+          "Validate WhatsApp account ownership in a disposable child target",
+      )?.run,
+    ).toBe("pnpm test:whatsapp-account-ownership-mysql");
   });
 });
 

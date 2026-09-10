@@ -1,8 +1,9 @@
 import { defineConfig } from "vitest/config";
 import { validateStandardTestDestructiveTarget } from "./scripts/destructive-target-fence";
 
-const validatedParentTarget =
-  validateStandardTestDestructiveTarget(process.env);
+const validatedParentTarget = validateStandardTestDestructiveTarget(
+  process.env,
+);
 const parentDbUrl = validatedParentTarget.databaseUrl;
 
 /** Banco-filho exclusivo; bloqueia DATABASE_URL ambiente e exige o pai marcado. */
@@ -11,7 +12,10 @@ export default defineConfig({
     environment: "node",
     setupFiles: [],
     fileParallelism: false,
-    include: ["tests/whatsapp-account-ownership-mysql.test.ts"],
+    include: [
+      "tests/disposable-mysql-child-runner.test.ts",
+      "tests/whatsapp-account-ownership-mysql.test.ts",
+    ],
     testTimeout: 15_000,
     hookTimeout: 30_000,
     env: {
