@@ -172,6 +172,7 @@ export default defineConfig({
       "tests/whatsapp-ready-for-nl-homonym.test.ts",
       "tests/whatsapp-ready-for-nl-driver-outcome.test.ts",
       "tests/whatsapp-ready-for-nl-driver-source.test.ts",
+      "tests/whatsapp-operational-retention.test.ts",
       "tests/whatsapp-continuation-interpreter.test.ts",
       "tests/whatsapp-continuation-source.test.ts",
       "tests/whatsapp-continuation-migration.test.ts",
