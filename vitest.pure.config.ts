@@ -192,6 +192,7 @@ export default defineConfig({
       "tests/shift-details-paused-query.test.ts",
       "tests/personal-calendar-check-hardening.test.ts",
       "tests/personal-calendar-migration-sequence.test.ts",
+      "tests/legacy-assignment-writers-source.test.ts",
       "tests/civil-date-contract.test.ts",
     ],
   },
