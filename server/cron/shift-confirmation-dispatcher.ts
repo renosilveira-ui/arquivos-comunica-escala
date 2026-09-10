@@ -47,6 +47,7 @@ import {
 import { processPendingDutySyncs } from "../sso/duty-sync";
 import { resolveTrustedSsoTargetUrl } from "../sso/url-policy";
 import { processPendingComunicaPlusOutbox } from "../integrations/comunica-plus";
+import { processPendingAuthRecoveryEmails } from "../auth-recovery";
 
 const RECHECK_DELAY_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -82,6 +83,7 @@ export async function tick(now: Date = new Date()) {
       processPendingPushDeliveries(now),
       processPendingDutySyncs(now),
       processPendingComunicaPlusOutbox(now),
+      processPendingAuthRecoveryEmails(now),
     ]);
 
     // 4. Push de início de plantão (confirmados cujo plantão começou agora)

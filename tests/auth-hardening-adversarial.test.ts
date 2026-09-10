@@ -1,11 +1,20 @@
 import { createHash } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { and, eq, inArray, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import express, { type Express } from "express";
 import request from "supertest";
 import {
   auditTrail,
+  authRecoveryRequests,
   hospitals,
   institutions,
   passwordResets,
@@ -21,9 +30,9 @@ import {
 import { sdk } from "../server/_core/sdk";
 import { sessionInstanceProof } from "../server/_core/session-instance";
 import * as auditService from "../server/audit-trail";
-import * as dbService from "../server/db";
 import { getDb } from "../server/db";
-import { mailer } from "../server/mailer";
+import type { MailMessage, MailResult } from "../server/mailer";
+import { processPendingAuthRecoveryEmails } from "../server/auth-recovery";
 import { authRouter } from "../server/routes/auth";
 import {
   ASSIGNMENT_WRITE_TRANSACTION_CONFIG,
@@ -37,6 +46,13 @@ const PASSWORD = "SenhaOriginal123";
 
 function resetHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function recoveryMailTransport(result: MailResult) {
+  const sendMail = vi
+    .fn<(message: MailMessage) => Promise<MailResult>>()
+    .mockResolvedValue(result);
+  return { sendMail };
 }
 
 describe("auth hardening adversarial", () => {
@@ -189,7 +205,12 @@ describe("auth hardening adversarial", () => {
     deleteRaceShiftId = shift.id;
   });
 
+  beforeEach(async () => {
+    await db.delete(authRecoveryRequests);
+  });
+
   afterAll(async () => {
+    await db.delete(authRecoveryRequests);
     await db
       .delete(shiftAssignmentsV2)
       .where(eq(shiftAssignmentsV2.shiftInstanceId, deleteRaceShiftId));
@@ -334,6 +355,43 @@ describe("auth hardening adversarial", () => {
     }
   });
 
+  it("login usa sentinela para hash ausente, malformado ou acima do custo suportado", async () => {
+    const target = usersByKind.get("revoked-link")!;
+    const [original] = await db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, target.id));
+    const compare = vi.spyOn(bcrypt, "compare");
+    const invalidHashes = [
+      null,
+      "$2b$12$curto",
+      `$2b$13$${"A".repeat(53)}`,
+    ] as const;
+
+    try {
+      for (const passwordHash of invalidHashes) {
+        await db
+          .update(users)
+          .set({ passwordHash })
+          .where(eq(users.id, target.id));
+        const response = await login(target.email);
+        expect(response.status).toBe(401);
+      }
+      expect(compare).toHaveBeenCalledTimes(invalidHashes.length);
+      expect(
+        compare.mock.calls.every(([, hash]) =>
+          /^\$2b\$12\$/.test(String(hash)),
+        ),
+      ).toBe(true);
+    } finally {
+      compare.mockRestore();
+      await db
+        .update(users)
+        .set({ passwordHash: original!.passwordHash })
+        .where(eq(users.id, target.id));
+    }
+  });
+
   it("credenciais de conta órfã ou PI adulterada falham sem write nem audit no tenant 1", async () => {
     const orphan = usersByKind.get("orphan")!;
     let poisonedProfessionalId: number | null = null;
@@ -348,9 +406,10 @@ describe("auth hardening adversarial", () => {
       })
       .from(users)
       .where(eq(users.id, orphan.id));
-    const sendSpy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+    const transport = recoveryMailTransport({
+      delivered: false,
+      transport: "console",
+    });
 
     const assertNoCredentialWrite = async () => {
       const [current] = await db
@@ -408,7 +467,19 @@ describe("auth hardening adversarial", () => {
             .send({ email: orphan.email })
         ).body,
       ).toEqual({ ok: true });
-      expect(sendSpy).not.toHaveBeenCalled();
+      await processPendingAuthRecoveryEmails(new Date(), transport);
+      expect(transport.sendMail).not.toHaveBeenCalled();
+      expect(
+        await db
+          .select({
+            state: authRecoveryRequests.state,
+            errorCode: authRecoveryRequests.lastErrorCode,
+          })
+          .from(authRecoveryRequests),
+      ).toContainEqual({
+        state: "SKIPPED",
+        errorCode: "RECIPIENT_NOT_ELIGIBLE",
+      });
 
       const orphanResetToken = `orphan-reset-${STAMP}`;
       await db.insert(passwordResets).values({
@@ -468,10 +539,10 @@ describe("auth hardening adversarial", () => {
             .send({ email: orphan.email })
         ).body,
       ).toEqual({ ok: true });
-      expect(sendSpy).not.toHaveBeenCalled();
+      await processPendingAuthRecoveryEmails(new Date(), transport);
+      expect(transport.sendMail).not.toHaveBeenCalled();
       await assertNoCredentialWrite();
     } finally {
-      sendSpy.mockRestore();
       await db
         .delete(professionalInstitutions)
         .where(eq(professionalInstitutions.userId, orphan.id));
@@ -563,55 +634,51 @@ describe("auth hardening adversarial", () => {
     }
   });
 
-  it("forgot in-flight não recria link depois que change-password revoga a credencial", async () => {
+  it("worker não ativa link aceito pelo provedor depois que a credencial muda em voo", async () => {
     const target = usersByKind.get("forgot-race")!;
     const session = await login(target.email);
     expect(session.status).toBe(200);
     const sessionInstance = await sessionInstanceOf(cookieOf(session));
     const newPassword = "SenhaVencedoraForgotRace123";
-    const originalGetUserByEmail = dbService.getUserByEmail;
-    let signalSnapshotRead!: () => void;
-    let releaseForgot!: () => void;
-    const snapshotRead = new Promise<void>((resolve) => {
-      signalSnapshotRead = resolve;
+    let signalDeliveryStarted!: () => void;
+    let releaseDelivery!: () => void;
+    const deliveryStarted = new Promise<void>((resolve) => {
+      signalDeliveryStarted = resolve;
     });
-    const forgotGate = new Promise<void>((resolve) => {
-      releaseForgot = resolve;
+    const deliveryGate = new Promise<void>((resolve) => {
+      releaseDelivery = resolve;
     });
-    let gated = false;
-    const userSpy = vi
-      .spyOn(dbService, "getUserByEmail")
-      .mockImplementation(async (email: string) => {
-        const user = await originalGetUserByEmail(email);
-        if (!gated && email === target.email) {
-          gated = true;
-          signalSnapshotRead();
-          await forgotGate;
-        }
-        return user;
-      });
-    const sendSpy = vi
-      .spyOn(mailer, "sendMail")
-      .mockResolvedValue({ delivered: false, transport: "console" });
+    const sendMail = vi.fn<(message: MailMessage) => Promise<MailResult>>(
+      async () => {
+        signalDeliveryStarted();
+        await deliveryGate;
+        return { delivered: true, transport: "resend" };
+      },
+    );
 
     try {
-      const forgot = request(app)
+      const forgotResponse = await request(app)
         .post("/api/auth/forgot-password")
-        .send({ email: target.email })
-        .then((response) => response);
-      await snapshotRead;
+        .send({ email: target.email });
+      expect(forgotResponse.status).toBe(200);
+      expect(forgotResponse.body).toEqual({ ok: true });
+      expect(sendMail).not.toHaveBeenCalled();
+
+      const worker = processPendingAuthRecoveryEmails(new Date(), { sendMail });
+      await deliveryStarted;
+      const token = sendMail.mock.calls[0]![0].text.match(
+        /reset-password\?token=([0-9a-f]{64})/,
+      )![1];
+
       const change = await request(app)
         .post("/api/auth/change-password")
         .set("Cookie", cookieOf(session))
         .set("x-client-session-instance", sessionInstance)
         .send({ currentPassword: PASSWORD, newPassword });
       expect(change.status).toBe(200);
-      releaseForgot();
+      releaseDelivery();
+      await worker;
 
-      const forgotResponse = await forgot;
-      expect(forgotResponse.status).toBe(200);
-      expect(forgotResponse.body).toEqual({ ok: true });
-      expect(sendSpy).not.toHaveBeenCalled();
       expect(
         await db
           .select({ id: passwordResets.id })
@@ -620,23 +687,25 @@ describe("auth hardening adversarial", () => {
       ).toHaveLength(0);
       expect(
         await db
-          .select({ id: auditTrail.id })
-          .from(auditTrail)
-          .where(
-            and(
-              eq(auditTrail.entityId, target.id),
-              eq(
-                auditTrail.description,
-                "Pedido de redefinição de senha (esqueci minha senha)",
-              ),
-            ),
-          ),
-      ).toHaveLength(0);
+          .select({
+            state: authRecoveryRequests.state,
+            errorCode: authRecoveryRequests.lastErrorCode,
+          })
+          .from(authRecoveryRequests)
+          .where(eq(authRecoveryRequests.targetUserId, target.id)),
+      ).toEqual([
+        { state: "REVOKED", errorCode: "CREDENTIAL_STATE_CHANGED" },
+      ]);
+      expect(
+        (
+          await request(app)
+            .post("/api/auth/reset-password")
+            .send({ token, newPassword: "SenhaQueNaoPodeVencer123" })
+        ).status,
+      ).toBe(400);
       expect((await login(target.email, newPassword)).status).toBe(200);
     } finally {
-      releaseForgot();
-      userSpy.mockRestore();
-      sendSpy.mockRestore();
+      releaseDelivery();
     }
   });
 

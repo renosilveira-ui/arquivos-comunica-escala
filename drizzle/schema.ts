@@ -1193,6 +1193,136 @@ export const professionalInstitutions = mysqlTable(
 );
 
 /**
+ * Outbox durável e estado dos links de recuperação de credencial.
+ *
+ * O pedido público nasce sem userId para que conta existente e inexistente
+ * executem a mesma escrita. O endereço e o token em claro existem apenas no
+ * payload autenticado/cifrado; ACTIVE conserva somente os hashes necessários
+ * à validação do resgate. ADMIN_INITIATED permanece PENDING_DELIVERY até o
+ * provedor aceitar o e-mail e a autoridade/identidade serem revalidadas.
+ *
+ * Migração manual:
+ * drizzle/migrations/manual/2026-09-10-auth-recovery-requests.sql
+ */
+export const authRecoveryRequests = mysqlTable(
+  "auth_recovery_requests",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    kind: mysqlEnum("kind", ["SELF_SERVICE", "ADMIN_INITIATED"]).notNull(),
+    state: mysqlEnum("state", [
+      "QUEUED",
+      "PROCESSING",
+      "PENDING_DELIVERY",
+      "ACTIVE",
+      "USED",
+      "REVOKED",
+      "SKIPPED",
+      "DEAD",
+    ])
+      .notNull()
+      .default("QUEUED"),
+    targetUserId: int("target_user_id"),
+    targetMembershipId: int("target_membership_id"),
+    requestedByUserId: int("requested_by_user_id"),
+    requestedByMembershipId: int("requested_by_membership_id"),
+    institutionId: int("institution_id"),
+    expectedTargetSessionVersion: int("expected_target_session_version"),
+    expectedActorSessionVersion: int("expected_actor_session_version"),
+    emailHash: binaryVarchar("email_hash", { length: 64 }),
+    tokenHash: binaryVarchar("token_hash", { length: 64 }),
+    sealedPayload: text("sealed_payload"),
+    expiresAt: datetime("expires_at"),
+    availableAt: datetime("available_at").notNull(),
+    leaseToken: binaryVarchar("lease_token", { length: 36 }),
+    leaseUntil: datetime("lease_until"),
+    attemptCount: int("attempt_count").notNull().default(0),
+    providerAcceptedAt: datetime("provider_accepted_at"),
+    usedAt: datetime("used_at"),
+    lastErrorCode: varchar("last_error_code", { length: 80 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqAuthRecoveryTokenHash: unique("uniq_auth_recovery_token_hash").on(
+      table.tokenHash,
+    ),
+    idxAuthRecoveryReady: index("idx_auth_recovery_ready").on(
+      table.kind,
+      table.state,
+      table.availableAt,
+      table.id,
+    ),
+    idxAuthRecoveryTarget: index("idx_auth_recovery_target").on(
+      table.targetUserId,
+      table.state,
+      table.id,
+    ),
+    fkAuthRecoveryTargetUser: foreignKey({
+      columns: [table.targetUserId],
+      foreignColumns: [users.id],
+      name: "fk_auth_recovery_target_user",
+    }),
+    fkAuthRecoveryTargetMembership: foreignKey({
+      columns: [table.targetMembershipId],
+      foreignColumns: [professionalInstitutions.id],
+      name: "fk_auth_recovery_target_membership",
+    }),
+    fkAuthRecoveryActorUser: foreignKey({
+      columns: [table.requestedByUserId],
+      foreignColumns: [users.id],
+      name: "fk_auth_recovery_actor_user",
+    }),
+    fkAuthRecoveryActorMembership: foreignKey({
+      columns: [table.requestedByMembershipId],
+      foreignColumns: [professionalInstitutions.id],
+      name: "fk_auth_recovery_actor_membership",
+    }),
+    fkAuthRecoveryInstitution: foreignKey({
+      columns: [table.institutionId],
+      foreignColumns: [institutions.id],
+      name: "fk_auth_recovery_institution",
+    }),
+    chkAuthRecoveryAttempts: check(
+      "chk_auth_recovery_attempts",
+      sql`${table.attemptCount} >= 0`,
+    ),
+    chkAuthRecoveryAdminBinding: check(
+      "chk_auth_recovery_admin_binding",
+      sql`(
+        ${table.kind} = 'SELF_SERVICE'
+        OR (
+          ${table.targetUserId} IS NOT NULL
+          AND ${table.targetMembershipId} IS NOT NULL
+          AND ${table.requestedByUserId} IS NOT NULL
+          AND ${table.requestedByMembershipId} IS NOT NULL
+          AND ${table.institutionId} IS NOT NULL
+          AND ${table.expectedTargetSessionVersion} IS NOT NULL
+          AND ${table.expectedActorSessionVersion} IS NOT NULL
+          AND ${table.emailHash} IS NOT NULL
+          AND ${table.tokenHash} IS NOT NULL
+        )
+      )`,
+    ),
+    chkAuthRecoveryActiveBinding: check(
+      "chk_auth_recovery_active_binding",
+      sql`(
+        ${table.state} NOT IN ('ACTIVE', 'USED')
+        OR (
+          ${table.targetUserId} IS NOT NULL
+          AND ${table.targetMembershipId} IS NOT NULL
+          AND ${table.expectedTargetSessionVersion} IS NOT NULL
+          AND ${table.emailHash} IS NOT NULL
+          AND ${table.tokenHash} IS NOT NULL
+          AND ${table.expiresAt} IS NOT NULL
+        )
+      )`,
+    ),
+  }),
+);
+
+export type AuthRecoveryRequest = typeof authRecoveryRequests.$inferSelect;
+
+/**
  * Controle de acesso de profissionais (permissões TI)
  * Define quais hospitais/setores cada profissional pode atuar
  */
