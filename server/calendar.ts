@@ -12,6 +12,7 @@ import {
   dayKeyBrt,
   dayWindowBrt,
   isValidDayKeyBrt,
+  isValidYearMonthBrt,
   monthWindowBrt,
   yearMonthFromDayKey,
 } from "./local-time";
@@ -145,7 +146,7 @@ export const calendarRouter = router({
         hospitalId: z.number(),
         sectorId: z.number(),
         scheduleContextId: z.number().int().positive().optional(),
-        yearMonth: z.string().regex(/^\d{4}-\d{2}$/), // YYYY-MM
+        yearMonth: z.string().refine(isValidYearMonthBrt, "mês civil inválido"), // YYYY-MM
       }),
     )
     .query(async ({ ctx, input }) => {

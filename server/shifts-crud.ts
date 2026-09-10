@@ -23,6 +23,7 @@ import {
   dayKeyBrt,
   dayWindowBrt,
   isValidDayKeyBrt,
+  isValidYearMonthBrt,
   mondayOfKey,
   monthWindowBrt,
   weekdayOfKey,
@@ -289,6 +290,9 @@ const civilDateKeyInput = z
   .string()
   .regex(DATE_ONLY, "YYYY-MM-DD")
   .refine(isValidDayKeyBrt, "data civil inválida");
+const civilYearMonthInput = z
+  .string()
+  .refine(isValidYearMonthBrt, "mês civil inválido");
 
 const replicateRangeInput = z.object({
   hospitalId: z.number().int(),
@@ -310,8 +314,8 @@ const calendarReplicationInput = z.object({
   hospitalId: z.number().int().positive(),
   sectorId: z.number().int().positive().optional(),
   scheduleContextId: z.number().int().positive().optional(),
-  sourceMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
-  targetMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+  sourceMonth: civilYearMonthInput,
+  targetMonth: civilYearMonthInput,
   rule: z.enum([
     "FULL",
     "REMOVE_WEEKENDS",
@@ -329,7 +333,7 @@ const openMonthShiftsInput = z.object({
   hospitalId: z.number().int().positive(),
   sectorId: z.number().int().positive(),
   scheduleContextId: z.number().int().positive().optional(),
-  yearMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+  yearMonth: civilYearMonthInput,
   mode: z.enum(["all-applicable", "nights-only", "weekends-only", "custom"]),
   templateNames: z
     .array(z.enum(["Manhã", "Tarde", "Noite"]))
@@ -3708,7 +3712,7 @@ export const shiftsRouter = router({
       z.object({
         institutionId: z.number().int(),
         hospitalId: z.number().int(),
-        yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+        yearMonth: civilYearMonthInput,
         readinessAcknowledgement: readinessAcknowledgementInput.optional(),
       }),
     )
@@ -3795,7 +3799,7 @@ export const shiftsRouter = router({
     .input(
       z.object({
         hospitalId: z.number().int(),
-        yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+        yearMonth: civilYearMonthInput,
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -3838,7 +3842,7 @@ export const shiftsRouter = router({
       z.object({
         hospitalId: z.number().int().positive(),
         sectorId: z.number().int().positive(),
-        yearMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+        yearMonth: civilYearMonthInput,
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -3880,7 +3884,7 @@ export const shiftsRouter = router({
       z.object({
         institutionId: z.number().int(),
         hospitalId: z.number().int(),
-        yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+        yearMonth: civilYearMonthInput,
       }),
     )
     .mutation(async ({ ctx, input }) => {

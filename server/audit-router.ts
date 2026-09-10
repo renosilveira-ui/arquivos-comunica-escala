@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
-import { dayWindowBrt } from "./local-time";
+import { dayWindowBrt, isValidDayKeyBrt } from "./local-time";
 import { sql } from "drizzle-orm";
 import { getTenantActorFromContext } from "./_core/policy";
 
@@ -113,8 +113,14 @@ export const auditRouter = router({
           shiftInstanceId: z.number().int().optional(),
           hospitalId: z.number().int().optional(),
           sectorId: z.number().int().optional(),
-          fromDate: z.string().optional(), // ISO date YYYY-MM-DD
-          toDate: z.string().optional(),
+          fromDate: z
+            .string()
+            .refine(isValidDayKeyBrt, "data civil inválida")
+            .optional(), // ISO date YYYY-MM-DD
+          toDate: z
+            .string()
+            .refine(isValidDayKeyBrt, "data civil inválida")
+            .optional(),
           actions: z.array(z.string()).optional(),
           limit: z.number().min(1).max(500).default(100),
           offset: z.number().min(0).default(0),
