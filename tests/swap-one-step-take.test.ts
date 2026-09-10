@@ -411,6 +411,49 @@ describe("take em um passo: quem assume leva o plantão", () => {
     expect(row?.status).toBe("APPROVED");
   });
 
+  it("oferta vencida é persistida como expirada e não bloqueia nova oferta", async () => {
+    const shift = await createOccupiedShift(offerer, 31, "Clínica Médica");
+    const expired = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+    await db
+      .update(swapRequests)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(swapRequests.id, Number(expired.id)));
+
+    const replacement = await callerFor(offerer).offer({
+      type: "CESSAO",
+      fromShiftInstanceId: shift.shiftId,
+      fromAssignmentId: shift.assignmentId,
+    });
+
+    const rows = await db
+      .select({
+        id: swapRequests.id,
+        status: swapRequests.status,
+        version: swapRequests.version,
+      })
+      .from(swapRequests)
+      .where(eq(swapRequests.fromAssignmentId, shift.assignmentId));
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: Number(expired.id),
+          status: "EXPIRED",
+          version: 2,
+        }),
+        expect.objectContaining({
+          id: Number(replacement.id),
+          status: "PENDING",
+          version: 1,
+        }),
+      ]),
+    );
+    expect(rows.filter((row) => row.status === "PENDING")).toHaveLength(1);
+  });
+
   it("coordenador GESTOR com manager_scope e sem ACL não assume o plantão", async () => {
     const shift = await createOccupiedShift(offerer, 2, "Clínica Médica");
     const created = await callerFor(offerer).offer({
