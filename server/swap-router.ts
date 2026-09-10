@@ -31,6 +31,10 @@ import {
   listAuthorizedScheduleContexts,
 } from "./schedule-contexts";
 import {
+  listReadableSwapPage,
+  loadSwapListDisplayRows,
+} from "./swap-read-batch";
+import {
   actorClinicallyCoversOfferedShiftSql,
   plantonistaAccessCoversShiftSql,
 } from "./plantonista-shift-eligibility";
@@ -546,40 +550,6 @@ async function resolveSwapReadView(
     }
     throw error;
   }
-}
-
-async function filterReadableSwaps(
-  db: any,
-  actor: TenantActor,
-  swaps: SwapRow[],
-): Promise<readonly { swap: SwapRow; view: SwapReadView }[]> {
-  const readable: { swap: SwapRow; view: SwapReadView }[] = [];
-  for (const swap of swaps) {
-    try {
-      const view = await resolveSwapReadView(db, actor, swap);
-      readable.push({ swap, view });
-    } catch (error) {
-      if (!isExpectedSwapVisibilityDenial(error)) throw error;
-      // Omissões de rotina (FORBIDDEN/NOT_FOUND de terceiros) são esperadas e
-      // silenciosas. Já a omissão por alocação de origem inativa é a classe
-      // que mascarava "não vejo minha oferta": registra-se (sem PII) para
-      // diagnóstico, mantendo a leitura resiliente.
-      if (
-        error instanceof TRPCError &&
-        error.cause instanceof StaleCanonicalAssignmentError
-      ) {
-        console.warn(
-          "[swaps.read] oferta omitida por alocação de origem inativa",
-          JSON.stringify({
-            swapId: swap.id,
-            status: swap.status,
-            institutionId: swap.institutionId,
-          }),
-        );
-      }
-    }
-  }
-  return readable;
 }
 
 function staleAcceptedResidualListItem(swap: SwapRow) {
@@ -2430,11 +2400,21 @@ export const swapRouter = router({
   list: protectedProcedure
     .input(
       z.object({
-        status: z.string().optional(),
+        status: z
+          .enum([
+            "PENDING",
+            "ACCEPTED",
+            "APPROVED",
+            "CANCELLED",
+            "EXPIRED",
+            "REJECTED_BY_PEER",
+            "REJECTED_BY_MANAGER",
+          ])
+          .optional(),
         type: z.enum(["SWAP", "TRANSFER", "CESSAO"]).optional(),
         role: z.enum(["OFFERER", "RECEIVER", "ANY"]).default("ANY"),
-        limit: z.number().min(1).max(200).default(50),
-        offset: z.number().min(0).default(0),
+        limit: z.number().int().min(1).max(200).default(50),
+        offset: z.number().int().min(0).max(10_000).default(0),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -2445,168 +2425,90 @@ export const swapRouter = router({
           message: "DB unavailable",
         });
 
-      const userId = ctx.user!.id;
       const institutionId = ctx.institutionId;
       const actor = await getTenantActorFromContext(ctx);
-      if (!actor.professionalId)
+      if (!actor.professionalId) {
         throw topologyDenied("Ator sem identidade profissional canônica");
+      }
 
-      // Filtros (status/type/role e "só os meus" para não-gestor) são
-      // aplicados inline no SQL abaixo.
-
-      const rows = await db.execute(sql`
-        SELECT
-          sr.id,
-          sr.type,
-          sr.status,
-          sr.reason,
-          sr.review_note        AS reviewNote,
-          sr.expires_at         AS expiresAt,
-          sr.created_at         AS createdAt,
-          sr.reviewed_at        AS reviewedAt,
-          sr.from_professional_id AS fromProfessionalId,
-          sr.to_professional_id   AS toProfessionalId,
-          sr.from_user_id         AS fromUserId,
-          sr.to_user_id           AS toUserId,
-          sr.from_shift_instance_id AS fromShiftInstanceId,
-          sr.to_shift_instance_id   AS toShiftInstanceId,
-          -- from professional
-          fp.name               AS fromProfessionalName,
-          fp.role               AS fromProfessionalRole,
-          -- to professional
-          tp.name               AS toProfessionalName,
-          tp.role               AS toProfessionalRole,
-          -- from shift
-          fsi.label             AS fromShiftLabel,
-          fsi.start_at          AS fromShiftStartAt,
-          fsi.end_at            AS fromShiftEndAt,
-          fh.name               AS fromHospitalName,
-          fs.name               AS fromSectorName,
-          -- to shift (SWAP only)
-          tsi.label             AS toShiftLabel,
-          tsi.start_at          AS toShiftStartAt,
-          tsi.end_at            AS toShiftEndAt,
-          th.name               AS toHospitalName,
-          ts.name               AS toSectorName,
-          -- reviewer
-          ru.name               AS reviewerName
-        FROM swap_requests sr
-        JOIN professionals fp       ON fp.id  = sr.from_professional_id
-        LEFT JOIN professionals tp  ON tp.id  = sr.to_professional_id
-        JOIN shift_instances fsi    ON fsi.id = sr.from_shift_instance_id
-        JOIN hospitals fh           ON fh.id  = fsi.hospital_id
-        JOIN sectors fs             ON fs.id  = fsi.sector_id
-        LEFT JOIN shift_instances tsi ON tsi.id = sr.to_shift_instance_id
-        LEFT JOIN hospitals th      ON th.id  = tsi.hospital_id
-        LEFT JOIN sectors ts        ON ts.id  = tsi.sector_id
-        LEFT JOIN users ru          ON ru.id  = sr.reviewed_by_user_id
-        WHERE 1=1
-          AND sr.institution_id = ${institutionId}
-          ${input.status ? sql`AND sr.status = ${input.status}` : sql``}
-          ${input.type ? sql`AND sr.type = ${input.type}` : sql``}
-          ${input.role === "OFFERER" ? sql`AND sr.from_user_id = ${userId}` : sql``}
-          ${input.role === "RECEIVER" ? sql`AND sr.to_user_id = ${userId}` : sql``}
-          ${
-            !isInstitutionManager(actor)
-              ? sql`AND (sr.from_professional_id = ${actor.professionalId} OR sr.to_professional_id = ${actor.professionalId})`
-              : sql``
-          }
-        ORDER BY sr.created_at DESC
-        LIMIT ${input.limit}
-        OFFSET ${input.offset}
-      `);
-
-      const data = (rows as any)[0] as any[];
-      const candidateIds = data
-        .map((row) => Number(row.id))
-        .filter(Number.isInteger);
-      const candidateSwaps = candidateIds.length
-        ? await db
-            .select()
-            .from(swapRequests)
-            .where(
-              and(
-                eq(swapRequests.institutionId, institutionId),
-                inArray(swapRequests.id, candidateIds),
-              ),
-            )
-        : [];
-      const readableSwaps = await filterReadableSwaps(
+      const readablePage = await listReadableSwapPage(db, actor, input);
+      const fullIds = readablePage
+        .filter((entry) => entry.view === "FULL")
+        .map((entry) => entry.swap.id);
+      const displayRows = await loadSwapListDisplayRows(
         db,
-        actor,
-        candidateSwaps,
+        institutionId,
+        fullIds,
       );
-      const readableById = new Map(
-        readableSwaps.map((entry) => [entry.swap.id, entry]),
+      const displayById = new Map(
+        displayRows.map((row) => [Number(row.id), row]),
       );
 
-      return data
-        .filter((r: any) => readableById.has(Number(r.id)))
-        .map((r: any) => {
-          const readable = readableById.get(Number(r.id));
-          if (!readable) {
-            throw new Error("SWAP_READABILITY_INTEGRITY_FAILURE");
-          }
-          if (readable.view === "STALE_ACCEPTED_PARTICIPANT") {
-            return staleAcceptedResidualListItem(readable.swap);
-          }
-          const status = r.status;
-          const isOwner =
-            Number(r.fromUserId) === actor.userId &&
-            Number(r.fromProfessionalId) === actor.professionalId;
-          const isRecipient =
-            Number(r.toUserId) === actor.userId &&
-            Number(r.toProfessionalId) === actor.professionalId;
-          const canCancel =
-            (status === "PENDING" && isOwner) ||
-            (status === "ACCEPTED" && (isOwner || isRecipient));
-          return {
-            id: r.id,
-            type: r.type,
-            status,
-            reason: r.reason,
-            reviewNote: r.reviewNote,
-            expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
-            createdAt: new Date(r.createdAt),
-            reviewedAt: r.reviewedAt ? new Date(r.reviewedAt) : null,
-            fromProfessional: {
-              id: r.fromProfessionalId,
-              name: r.fromProfessionalName,
-              role: r.fromProfessionalRole,
-            },
-            toProfessional: r.toProfessionalId
-              ? {
-                  id: r.toProfessionalId,
-                  name: r.toProfessionalName,
-                  role: r.toProfessionalRole,
-                }
-              : null,
-            fromShift: {
-              id: r.fromShiftInstanceId,
-              label: r.fromShiftLabel,
-              startAt: new Date(r.fromShiftStartAt),
-              endAt: new Date(r.fromShiftEndAt),
-              hospitalName: r.fromHospitalName,
-              sectorName: r.fromSectorName,
-            },
-            toShift: r.toShiftInstanceId
-              ? {
-                  id: r.toShiftInstanceId,
-                  label: r.toShiftLabel,
-                  startAt: new Date(r.toShiftStartAt),
-                  endAt: new Date(r.toShiftEndAt),
-                  hospitalName: r.toHospitalName,
-                  sectorName: r.toSectorName,
-                }
-              : null,
-            reviewerName: r.reviewerName ?? null,
-            // Sinal de interface, nunca autorização: approveByOwner revalida
-            // dono, vínculo e topologia dentro da transação de escrita.
-            awaitingMyApproval: status === "ACCEPTED" && isOwner,
-            canCancel,
-            cancellationOnly: false,
-          };
-        });
+      return readablePage.map((readable) => {
+        if (readable.view === "STALE_ACCEPTED_PARTICIPANT") {
+          return staleAcceptedResidualListItem(readable.swap);
+        }
+        const r = displayById.get(readable.swap.id);
+        if (!r) {
+          throw new Error("SWAP_READABILITY_INTEGRITY_FAILURE");
+        }
+        const status = r.status;
+        const isOwner =
+          Number(r.fromUserId) === actor.userId &&
+          Number(r.fromProfessionalId) === actor.professionalId;
+        const isRecipient =
+          Number(r.toUserId) === actor.userId &&
+          Number(r.toProfessionalId) === actor.professionalId;
+        const canCancel =
+          (status === "PENDING" && isOwner) ||
+          (status === "ACCEPTED" && (isOwner || isRecipient));
+        return {
+          id: r.id,
+          type: r.type,
+          status,
+          reason: r.reason,
+          reviewNote: r.reviewNote,
+          expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
+          createdAt: new Date(r.createdAt),
+          reviewedAt: r.reviewedAt ? new Date(r.reviewedAt) : null,
+          fromProfessional: {
+            id: r.fromProfessionalId,
+            name: r.fromProfessionalName,
+            role: r.fromProfessionalRole,
+          },
+          toProfessional: r.toProfessionalId
+            ? {
+                id: r.toProfessionalId,
+                name: r.toProfessionalName,
+                role: r.toProfessionalRole,
+              }
+            : null,
+          fromShift: {
+            id: r.fromShiftInstanceId,
+            label: r.fromShiftLabel,
+            startAt: new Date(r.fromShiftStartAt),
+            endAt: new Date(r.fromShiftEndAt),
+            hospitalName: r.fromHospitalName,
+            sectorName: r.fromSectorName,
+          },
+          toShift: r.toShiftInstanceId
+            ? {
+                id: r.toShiftInstanceId,
+                label: r.toShiftLabel,
+                startAt: new Date(r.toShiftStartAt),
+                endAt: new Date(r.toShiftEndAt),
+                hospitalName: r.toHospitalName,
+                sectorName: r.toSectorName,
+              }
+            : null,
+          reviewerName: r.reviewerName ?? null,
+          // Sinal de interface, nunca autorização: approveByOwner revalida
+          // dono, vínculo e topologia dentro da transação de escrita.
+          awaitingMyApproval: status === "ACCEPTED" && isOwner,
+          canCancel,
+          cancellationOnly: false,
+        };
+      });
     }),
 
   // ── getById ───────────────────────────────────────────────────────────────

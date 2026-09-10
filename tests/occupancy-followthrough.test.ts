@@ -24,7 +24,7 @@ import {
 import { getDb } from "../server/db";
 import { editorRouter } from "../server/editor";
 import { appRouter } from "../server/routers";
-import { yearMonthBrt } from "../server/local-time";
+import { dayKeyBrt, yearMonthBrt } from "../server/local-time";
 import {
   ensureTestAnesthesiaSpecialty,
   openTestScale,
@@ -63,6 +63,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
   let medicoProfessionalId: number;
   let inviteeUserId: number;
   let inviteeProfessionalId: number;
+  let vacancyDate: string;
 
   const plusCaller = () =>
     appRouter.createCaller({
@@ -558,6 +559,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
       .from(shiftInstances)
       .where(eq(shiftInstances.id, allowlistShiftId))
       .limit(1);
+    vacancyDate = dayKeyBrt(localShift.startAt);
     await db.insert(monthlyRosters).values({
       institutionId,
       hospitalId,
@@ -639,7 +641,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
       .set({ status: "VAGO" })
       .where(eq(shiftInstances.id, allowlistShiftId));
 
-    const vacancies = await plusCaller().shiftInstances.listVacancies({});
+    const vacancies = await plusCaller().shiftInstances.listVacancies({ date: vacancyDate });
     const ids = vacancies.map((row) => row.shiftInstanceId);
     expect(ids).toContain(allowlistShiftId);
     expect(ids).toContain(allCfmShiftId);
@@ -650,7 +652,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
   });
 
   it("T5 allowlist vazia preserva ocupação com ACL setorial e credencial", async () => {
-    const vacancies = await userCaller().shiftInstances.listVacancies({});
+    const vacancies = await userCaller().shiftInstances.listVacancies({ date: vacancyDate });
     expect(vacancies.map((row) => row.shiftInstanceId)).toContain(
       emptyShiftId,
     );
@@ -678,7 +680,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
   });
 
   it("vagas PLUS sem specialty não oferecem CTA; write recusa depois de lista stale", async () => {
-    const emptyList = await plusCaller().shiftInstances.listVacancies({});
+    const emptyList = await plusCaller().shiftInstances.listVacancies({ date: vacancyDate });
     expect(emptyList.map((row) => row.shiftInstanceId)).not.toContain(
       allowlistShiftId,
     );
@@ -690,7 +692,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
         specialty: "Anestesiologia",
       })
       .where(eq(professionals.id, plusProfessionalId));
-    const listed = await plusCaller().shiftInstances.listVacancies({});
+    const listed = await plusCaller().shiftInstances.listVacancies({ date: vacancyDate });
     expect(listed.map((row) => row.shiftInstanceId)).toContain(allowlistShiftId);
 
     await db
@@ -756,19 +758,19 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
     });
 
     const residentVacancies = await residentCaller().shiftInstances.listVacancies(
-      {},
+      { date: vacancyDate },
     );
     expect(residentVacancies.map((row) => row.shiftInstanceId)).toContain(
       profileShiftId,
     );
-    const userVacancies = await userCaller().shiftInstances.listVacancies({});
+    const userVacancies = await userCaller().shiftInstances.listVacancies({ date: vacancyDate });
     expect(userVacancies.map((row) => row.shiftInstanceId)).not.toContain(
       profileShiftId,
     );
   });
 
   it("GESTOR_MEDICO com manager_scope e especialidade vê vaga acionável", async () => {
-    const vacancies = await medicoCaller().shiftInstances.listVacancies({});
+    const vacancies = await medicoCaller().shiftInstances.listVacancies({ date: vacancyDate });
     const ids = vacancies.map((row) => row.shiftInstanceId);
     expect(ids).toContain(allowlistShiftId);
     expect(ids).not.toContain(allCfmShiftId);
@@ -776,7 +778,7 @@ describe("follow-through #422: lista de ocupação ⊆ write", () => {
   });
 
   it("convite pendente com especialidade correta aparece e assume", async () => {
-    const vacancies = await inviteeCaller().shiftInstances.listVacancies({});
+    const vacancies = await inviteeCaller().shiftInstances.listVacancies({ date: vacancyDate });
     expect(vacancies.map((row) => row.shiftInstanceId)).toContain(
       allowlistShiftId,
     );

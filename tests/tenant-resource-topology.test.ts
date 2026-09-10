@@ -1030,7 +1030,7 @@ describe("hierarquia institution → hospital → sector", () => {
   });
 
   it("listVacancies omite shift cuja instituição não corresponde ao hospital/setor exibido", async () => {
-    const rows = await appAs(recipientAUserId).shiftInstances.listVacancies({});
+    const rows = await appAs(recipientAUserId).shiftInstances.listVacancies({ date: dayKeyBrt(publicationStart) });
     expect(rows.some((row) => row.shiftInstanceId === corruptNotificationShiftId)).toBe(false);
   });
 
