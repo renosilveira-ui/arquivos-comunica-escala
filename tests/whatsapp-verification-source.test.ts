@@ -102,6 +102,32 @@ describe("WhatsApp Verify — source contracts", () => {
     expect(twilioAdapter).not.toMatch(/diagnostics:[\s\S]{0,80}message/);
   });
 
+  it("logs do Verify não carregam telefone nem hash enumerável do E.164", () => {
+    expect(service).not.toMatch(/addressHash|e164AuditHash/);
+    expect(domain).not.toMatch(/e164AuditHash/);
+
+    const logProviderFailure = service.slice(
+      service.indexOf("function logProviderFailure("),
+      service.indexOf("export type WhatsAppVerificationAppFailure"),
+    );
+    expect(logProviderFailure).toContain("kind: failed.kind");
+    expect(logProviderFailure).toContain("code: failed.code");
+    expect(logProviderFailure).toContain("payload.providerHttpStatus");
+    expect(logProviderFailure).toContain("payload.providerErrorCode");
+    expect(logProviderFailure).not.toMatch(/\be164\b|phone|normalizedAddress/i);
+
+    const verificationLogs = [
+      ...service.matchAll(/logSafe\(\{([\s\S]*?)\}\);/g),
+    ]
+      .map((match) => match[1] ?? "")
+      .filter((payload) => payload.includes("whatsapp_verify_"))
+      .join("\n");
+    expect(verificationLogs).toContain("providerStatus");
+    expect(verificationLogs).not.toMatch(
+      /addressHash|e164AuditHash|phone|normalizedAddress|\.e164/i,
+    );
+  });
+
   it("diagnóstico Twilio é numérico e só no log server-side", () => {
     expect(twilioAdapter).toContain("extractSafeTwilioVerifyDiagnostics");
     expect(twilioAdapter).toContain("Number.isFinite");

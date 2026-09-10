@@ -11,7 +11,6 @@ import { logger } from "./_core/logger";
 import { maskE164 } from "../lib/phone-e164";
 import {
   assertOperableWhatsAppUser,
-  e164AuditHash,
   getActiveWhatsAppChannelForUser,
   markWhatsAppContactVerified,
   upsertUserWhatsAppContact,
@@ -98,7 +97,6 @@ function logSafe(payload: Record<string, unknown>): void {
 function logProviderFailure(
   event: "whatsapp_verify_start_failed" | "whatsapp_verify_check_failed",
   userId: number,
-  e164: string,
   failed: {
     kind: WhatsAppVerificationFailureKind;
     code: WhatsAppVerificationFailureCode;
@@ -112,7 +110,6 @@ function logProviderFailure(
     event,
     userId,
     channel: "WHATSAPP",
-    addressHash: e164AuditHash(e164),
     kind: failed.kind,
     code: failed.code,
   };
@@ -286,7 +283,6 @@ export async function startWhatsAppVerification(input: {
     logProviderFailure(
       "whatsapp_verify_start_failed",
       input.userId,
-      channel.e164,
       started,
     );
     return fail(started.kind, started.code);
@@ -296,7 +292,6 @@ export async function startWhatsAppVerification(input: {
     event: "whatsapp_verify_start_ok",
     userId: input.userId,
     channel: "WHATSAPP",
-    addressHash: e164AuditHash(channel.e164),
     providerStatus: started.status,
   });
 
@@ -362,7 +357,6 @@ export async function checkWhatsAppVerification(input: {
     logProviderFailure(
       "whatsapp_verify_check_failed",
       input.userId,
-      channel.e164,
       checked,
     );
     return fail(checked.kind, checked.code);
@@ -378,7 +372,6 @@ export async function checkWhatsAppVerification(input: {
       event: "whatsapp_verify_check_not_approved",
       userId: input.userId,
       channel: "WHATSAPP",
-      addressHash: e164AuditHash(channel.e164),
       providerStatus: checked.status,
     });
     return fail("USER_ERROR", mapped);
@@ -405,7 +398,6 @@ export async function checkWhatsAppVerification(input: {
     event: "whatsapp_verify_check_approved",
     userId: input.userId,
     channel: "WHATSAPP",
-    addressHash: e164AuditHash(after.e164),
   });
 
   return {

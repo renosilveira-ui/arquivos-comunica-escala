@@ -5,7 +5,6 @@
  * (após Twilio Verify status=approved) pode preenchê-lo.
  * Mutations de perfil NUNCA marcam verificado.
  */
-import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "./db";
@@ -38,10 +37,6 @@ export async function assertOperableWhatsAppUser(userId: number): Promise<void> 
     });
   }
   await requireOperableWhatsAppUser(db, userId);
-}
-
-export function e164AuditHash(e164: string): string {
-  return createHash("sha256").update(e164).digest("hex").slice(0, 16);
 }
 
 function isDuplicateKeyError(error: unknown): boolean {
