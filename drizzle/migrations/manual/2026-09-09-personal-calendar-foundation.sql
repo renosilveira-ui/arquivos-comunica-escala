@@ -513,8 +513,27 @@ SET @pc_contract_postflight_mismatches := (
     OR actual_contract.contract_hash <> expected_contract.contract_hash
 );
 
+-- ENFORCED não participa dos fingerprints baseline históricos. Validá-lo em
+-- separado evita que uma cláusula exatamente igual, porém desabilitada, seja
+-- aceita pelo hash. CHECK extra ainda é recusado pelo fingerprint integral.
+SET @pc_contract_unenforced_checks := (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
+    AND CONSTRAINT_TYPE = 'CHECK'
+    AND TABLE_NAME IN (
+      'personal_calendar_alert_rules',
+      'personal_calendar_items',
+      'personal_calendar_occurrence_exceptions',
+      'personal_calendar_occurrences',
+      'personal_calendar_recurrences'
+    )
+    AND ENFORCED <> 'YES'
+);
+
 SET @ddl := IF(
-  @pc_contract_postflight_mismatches = 0,
+  @pc_contract_postflight_mismatches = 0
+    AND @pc_contract_unenforced_checks = 0,
   'SELECT 1',
   'SELECT JSON_EXTRACT(''PERSONAL_CALENDAR_SCHEMA_CONTRACT_MISMATCH'', ''$'')'
 );

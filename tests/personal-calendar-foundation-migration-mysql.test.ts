@@ -691,6 +691,30 @@ describeWithIsolatedMysql(
       }
     });
 
+    it("recusa CHECK baseline exato quando não está ENFORCED", async () => {
+      const temporary = await createTemporaryDatabase(admin);
+      try {
+        await temporary.connection.query(migration);
+        await temporary.connection.query(
+          "ALTER TABLE personal_calendar_items ALTER CHECK chk_pc_item_title NOT ENFORCED",
+        );
+
+        await expect(
+          temporary.connection.query(migration),
+        ).rejects.toMatchObject({
+          code: "ER_INVALID_JSON_TEXT_IN_PARAM",
+          sql: expect.stringContaining(
+            "PERSONAL_CALENDAR_SCHEMA_CONTRACT_MISMATCH",
+          ),
+        });
+      } finally {
+        await temporary.connection.end();
+        await admin.query(
+          `DROP DATABASE IF EXISTS ${quoteIdentifier(temporary.schemaName)}`,
+        );
+      }
+    });
+
     it("preserva dados na sequência foundation → hardening → reruns", async () => {
       const temporary = await createTemporaryDatabase(admin);
       try {

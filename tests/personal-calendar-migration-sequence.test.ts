@@ -114,6 +114,17 @@ describe("sequência das migrations do calendário pessoal", () => {
     );
   });
 
+  it("recusa qualquer CHECK desabilitado sem alterar os hashes históricos", () => {
+    expect(foundation).toContain("SET @pc_contract_unenforced_checks := (");
+    expect(foundation).toContain("AND ENFORCED <> 'YES'");
+    expect(foundation).toContain(
+      "AND @pc_contract_unenforced_checks = 0",
+    );
+    expect(foundation).toMatch(
+      /TABLE_NAME IN \([\s\S]*personal_calendar_alert_rules[\s\S]*personal_calendar_items[\s\S]*personal_calendar_occurrence_exceptions[\s\S]*personal_calendar_occurrences[\s\S]*personal_calendar_recurrences[\s\S]*\)/,
+    );
+  });
+
   it("mantém um gate MySQL isolado na ordem foundation → hardening → reruns", () => {
     const start = mysqlSequenceTest.indexOf(
       "async function runFoundationHardeningRerunSequence",
