@@ -17,6 +17,7 @@
 
 import type { Server } from "http";
 import type { Logger } from "./logger";
+import { safeErrorDiagnostic } from "./safe-error";
 
 export interface ShutdownOptions {
   server: Pick<Server, "close">;
@@ -71,7 +72,10 @@ export function installShutdownHandlers(
     const httpDrainPromise = new Promise<void>((resolve) => {
       server.close((err) => {
         if (err) {
-          logger.warn({ err: err.message }, "server.close reported error");
+          logger.warn(
+            safeErrorDiagnostic(err, "application"),
+            "server.close reported error",
+          );
         } else {
           logger.info("http server stopped accepting connections");
         }
@@ -88,7 +92,7 @@ export function installShutdownHandlers(
         await onBeforeExit();
       } catch (err) {
         logger.error(
-          { err: err instanceof Error ? err.message : String(err) },
+          safeErrorDiagnostic(err, "application"),
           "onBeforeExit hook failed",
         );
       }
