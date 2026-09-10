@@ -148,7 +148,8 @@ export function OpenMonthShiftsButton({
     currentSnapshotKey: capacitySnapshotKey,
     hydratedSnapshotKey: capacityHydration?.snapshotKey ?? null,
     querySucceeded: capacityRules.isSuccess,
-    queryFetching: capacityRules.isFetching,
+    queryFetchStatus: capacityRules.fetchStatus,
+    hasResolvedData: capacityRules.data !== undefined,
     queryFailed: capacityRules.isError,
     invalidCapacity,
   });
@@ -160,6 +161,8 @@ export function OpenMonthShiftsButton({
       capacityScopeKey == null ||
       capacitySnapshotKey == null ||
       !capacityRules.isSuccess ||
+      capacityRules.data === undefined ||
+      capacityRules.fetchStatus !== "idle" ||
       capacityHydration?.snapshotKey === capacitySnapshotKey
     ) {
       return;
@@ -184,6 +187,7 @@ export function OpenMonthShiftsButton({
     capacityDirty,
     capacityHydration,
     capacityRules.data,
+    capacityRules.fetchStatus,
     capacityRules.isSuccess,
     capacityScopeKey,
     capacitySnapshotKey,
@@ -468,10 +472,12 @@ export function OpenMonthShiftsButton({
                     </Text>
                   </View>
                 ) : null}
-                {capacityState === "error" ? (
+                {capacityState === "error" || capacityState === "unresolved" ? (
                   <View style={{ gap: theme.space[2] }}>
                     <Text accessibilityRole="alert" style={{ color: theme.colors.danger }}>
-                      Não foi possível conferir a capacidade desta escala.
+                      {capacityState === "unresolved"
+                        ? "A capacidade ainda não foi confirmada. Reconecte e tente novamente."
+                        : "Não foi possível conferir a capacidade desta escala."}
                     </Text>
                     <AppButton
                       title="Tentar novamente"
@@ -528,7 +534,10 @@ export function OpenMonthShiftsButton({
                           </View>
                           <TextInput
                             accessibilityLabel={`${name}: profissionais necessários neste mês`}
-                            editable={!openMonthShifts.isPending}
+                            editable={
+                              (capacityState === "ready" || capacityState === "invalid") &&
+                              !openMonthShifts.isPending
+                            }
                             keyboardType="number-pad"
                             value={capacityValues[name]}
                             placeholder="Regra"
