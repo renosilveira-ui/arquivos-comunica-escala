@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -14,10 +14,14 @@ import * as Haptics from "expo-haptics";
 import { X } from "lucide-react-native";
 import { trpc } from "@/lib/trpc";
 import { theme } from "@/lib/theme";
+import { useAuth } from "@/hooks/use-auth";
 import { useTenantState } from "@/lib/tenant-state";
+import { useScreenActionLease } from "@/hooks/use-screen-action-lease";
+import type { ScreenActionLease } from "@/lib/screen-action-lease";
 import { MAX_SHIFT_CAPACITY } from "@/lib/shift-capacity";
 import {
   openMonthCapacityScopeKey,
+  openMonthCapacitySnapshotKey,
   resolveOpenMonthCapacityState,
 } from "@/lib/open-month-capacity-state";
 import { invalidateOfficialScaleAndVacancyQueries } from "@/lib/official-scale-vacancy-query-refresh";
@@ -63,6 +67,7 @@ export function OpenMonthShiftsButton({
   onChanged,
 }: Props) {
   const router = useRouter();
+  const { user } = useAuth();
   const { activeInstitutionId } = useTenantState();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<OpenMonthShiftsMode>("all-applicable");
@@ -72,12 +77,22 @@ export function OpenMonthShiftsButton({
     "Noite",
   ]);
   const [capacityValues, setCapacityValues] = useState(emptyCapacityValues);
-  const [capacityHydratedFor, setCapacityHydratedFor] = useState<string | null>(
-    null,
-  );
+  const [capacityHydration, setCapacityHydration] = useState<{
+    scopeKey: string;
+    snapshotKey: string;
+  } | null>(null);
+  const [capacityDirty, setCapacityDirty] = useState(false);
   const feedback = useActionFeedback();
   const utils = trpc.useUtils();
   const openMonthShifts = trpc.shifts.openMonthShifts.useMutation();
+  const actionLease = useScreenActionLease({
+    userId: user?.id,
+    contextKey:
+      open && activeInstitutionId != null
+        ? `${activeInstitutionId}:${selectedContext.hospitalId}:${selectedContext.sectorId}:${selectedContext.scheduleContextId}:${monthKey}`
+        : null,
+  });
+  const openMonthLeaseRef = useRef<ScreenActionLease | null>(null);
   const capacityRules = trpc.scheduleCapacity.capacityRules.useQuery(
     {
       scheduleContextId: selectedContext.scheduleContextId,
@@ -125,10 +140,15 @@ export function OpenMonthShiftsButton({
     activeInstitutionId,
     selectedContext.scheduleContextId,
   );
+  const capacitySnapshotKey = openMonthCapacitySnapshotKey(
+    capacityScopeKey,
+    capacityRules.dataUpdatedAt,
+  );
   const capacityState = resolveOpenMonthCapacityState({
-    currentScopeKey: capacityScopeKey,
-    hydratedScopeKey: capacityHydratedFor,
+    currentSnapshotKey: capacitySnapshotKey,
+    hydratedSnapshotKey: capacityHydration?.snapshotKey ?? null,
     querySucceeded: capacityRules.isSuccess,
+    queryFetching: capacityRules.isFetching,
     queryFailed: capacityRules.isError,
     invalidCapacity,
   });
@@ -138,25 +158,35 @@ export function OpenMonthShiftsButton({
     if (
       !open ||
       capacityScopeKey == null ||
+      capacitySnapshotKey == null ||
       !capacityRules.isSuccess ||
-      capacityHydratedFor === capacityScopeKey
+      capacityHydration?.snapshotKey === capacitySnapshotKey
     ) {
       return;
     }
-    const next = emptyCapacityValues();
-    for (const name of OPEN_MONTH_SHIFT_TEMPLATE_NAMES) {
-      const rule = capacityRules.data.find((item) => item.name === name);
-      if (!rule) continue;
-      const unique = new Set(rule.capacities);
-      next[name] = unique.size === 1 ? String(rule.capacities[0]) : "";
+    const sameScope = capacityHydration?.scopeKey === capacityScopeKey;
+    if (!sameScope || !capacityDirty) {
+      const next = emptyCapacityValues();
+      for (const name of OPEN_MONTH_SHIFT_TEMPLATE_NAMES) {
+        const rule = capacityRules.data.find((item) => item.name === name);
+        if (!rule) continue;
+        const unique = new Set(rule.capacities);
+        next[name] = unique.size === 1 ? String(rule.capacities[0]) : "";
+      }
+      setCapacityValues(next);
+      setCapacityDirty(false);
     }
-    setCapacityValues(next);
-    setCapacityHydratedFor(capacityScopeKey);
+    setCapacityHydration({
+      scopeKey: capacityScopeKey,
+      snapshotKey: capacitySnapshotKey,
+    });
   }, [
-    capacityHydratedFor,
+    capacityDirty,
+    capacityHydration,
     capacityRules.data,
     capacityRules.isSuccess,
     capacityScopeKey,
+    capacitySnapshotKey,
     open,
   ]);
 
@@ -165,7 +195,8 @@ export function OpenMonthShiftsButton({
     setMode("all-applicable");
     setCustomNames(["Manhã", "Tarde", "Noite"]);
     setCapacityValues(emptyCapacityValues());
-    setCapacityHydratedFor(null);
+    setCapacityHydration(null);
+    setCapacityDirty(false);
   }
 
   function openModal() {
@@ -194,6 +225,22 @@ export function OpenMonthShiftsButton({
   }
 
   async function confirm() {
+    if (
+      !capacityReady ||
+      plannedCount === 0 ||
+      openMonthShifts.isPending ||
+      actionLease.isCurrent(openMonthLeaseRef.current)
+    ) {
+      return;
+    }
+    const lease = actionLease.capture();
+    if (!lease) {
+      feedback.error(
+        "Sua sessão mudou antes do envio. Confira a instituição ativa e tente novamente.",
+      );
+      return;
+    }
+    openMonthLeaseRef.current = lease;
     try {
       const result = await openMonthShifts.mutateAsync({
         hospitalId: selectedContext.hospitalId,
@@ -209,16 +256,36 @@ export function OpenMonthShiftsButton({
             : [{ templateName, requiredCapacity: Number(raw) }];
         }),
       });
-      await Promise.all([
+      if (
+        openMonthLeaseRef.current !== lease ||
+        !actionLease.isCurrent(lease)
+      ) {
+        return;
+      }
+      await Promise.allSettled([
         invalidateOfficialScaleAndVacancyQueries(utils),
         utils.shifts.hasMonthShifts.invalidate(),
         utils.filters.hasMonthShifts.invalidate(),
         utils.shifts.rosterStatus.invalidate(),
       ]);
+      if (
+        openMonthLeaseRef.current !== lease ||
+        !actionLease.isCurrent(lease)
+      ) {
+        return;
+      }
+      openMonthLeaseRef.current = null;
       onChanged?.();
       feedback.success(openMonthShiftsToast(result.created, result.skipped));
       close();
     } catch (err) {
+      if (
+        openMonthLeaseRef.current !== lease ||
+        !actionLease.isCurrent(lease)
+      ) {
+        return;
+      }
+      openMonthLeaseRef.current = null;
       feedback.error((err as Error).message);
     }
   }
@@ -416,7 +483,8 @@ export function OpenMonthShiftsButton({
                     />
                   </View>
                 ) : null}
-                {capacityRules.isSuccess && capacityHydratedFor === capacityScopeKey
+                {capacityRules.isSuccess &&
+                capacityHydration?.snapshotKey === capacitySnapshotKey
                   ? visibleCapacityNames.map((name) => {
                       const rule = capacityRules.data.find(
                         (item) => item.name === name,
@@ -464,12 +532,13 @@ export function OpenMonthShiftsButton({
                             keyboardType="number-pad"
                             value={capacityValues[name]}
                             placeholder="Regra"
-                            onChangeText={(value) =>
+                            onChangeText={(value) => {
+                              setCapacityDirty(true);
                               setCapacityValues((current) => ({
                                 ...current,
                                 [name]: value,
-                              }))
-                            }
+                              }));
+                            }}
                             style={{
                               width: 72,
                               minHeight: 44,

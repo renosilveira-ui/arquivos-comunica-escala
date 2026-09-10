@@ -141,7 +141,11 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("capacityOverrides");
     expect(button).toContain("MAX_SHIFT_CAPACITY");
     expect(button).toContain("WEEKDAY_SHORT_LABELS");
-    expect(button).toContain("capacityHydratedFor === capacityScopeKey");
+    expect(button).toContain("openMonthCapacitySnapshotKey");
+    expect(button).toContain("capacityHydration?.snapshotKey");
+    expect(button).toContain("capacityRules.dataUpdatedAt");
+    expect(button).toContain("capacityRules.isFetching");
+    expect(button).toContain("setCapacityDirty(true)");
     expect(button).toContain("resolveOpenMonthCapacityState");
     expect(button).toContain("!capacityReady");
     expect(button).toContain("capacityRules.refetch");

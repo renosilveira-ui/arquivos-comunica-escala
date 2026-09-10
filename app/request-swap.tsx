@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   Text,
   View,
@@ -19,6 +19,9 @@ import { uiAlert } from "@/lib/ui/alert";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
 import { toLocalISODateString } from "@/lib/datetime-utils";
 import { formatHospitalTimeRange } from "@/lib/hospital-time";
+import { useTenantState } from "@/lib/tenant-state";
+import { useScreenActionLease } from "@/hooks/use-screen-action-lease";
+import type { ScreenActionLease } from "@/lib/screen-action-lease";
 import {
   applyExplicitFromShiftChange,
   applyExplicitOperationTypeChange,
@@ -72,6 +75,7 @@ export default function RequestSwapScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ type?: string; fromShiftId?: string }>();
   const utils = trpc.useUtils();
+  const { activeInstitutionId } = useTenantState();
 
   const [type, setType] = useState<OfferType>("SWAP");
   const [selectedFrom, setSelectedFrom] = useState<ShiftInstance | null>(null);
@@ -82,6 +86,14 @@ export default function RequestSwapScreen() {
   });
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const actionLease = useScreenActionLease({
+    userId: user?.id,
+    contextKey:
+      activeInstitutionId == null || selectedFrom == null
+        ? null
+        : `${activeInstitutionId}:${selectedFrom.hospitalId}:${selectedFrom.sectorId}:${selectedFrom.id}`,
+  });
+  const offerLeaseRef = useRef<ScreenActionLease | null>(null);
 
   useEffect(() => {
     if (params.type === "SWAP" || params.type === "TRANSFER") {
@@ -122,22 +134,7 @@ export default function RequestSwapScreen() {
   );
   const recipientList = parseEligibleOfferRecipientList(recipientsQuery.data);
   const feedback = useActionFeedback();
-  const offerMutation = trpc.swaps.offer.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.swaps.list.invalidate(),
-        utils.swaps.listAvailable.invalidate(),
-        utils.swaps.countActionable.invalidate(),
-      ]);
-      feedback.success(
-        type === "SWAP" ? "Troca oferecida. Você será avisado da resposta." : "Repasse oferecido. Você será avisado da resposta.",
-      );
-      router.back();
-    },
-    onError: (mutationError) => {
-      setError(mutationError.message || "Erro ao enviar oferta");
-    },
-  });
+  const offerMutation = trpc.swaps.offer.useMutation();
 
   const { myShifts, otherShifts } = useMemo(() => {
     const proId = professional?.id;
@@ -189,7 +186,13 @@ export default function RequestSwapScreen() {
     setSelectedTo(null);
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
+    if (
+      offerMutation.isPending ||
+      actionLease.isCurrent(offerLeaseRef.current)
+    ) {
+      return;
+    }
     if (!professional?.id) {
       uiAlert("Atenção", "Profissional não encontrado para seu usuário.");
       return;
@@ -224,7 +227,52 @@ export default function RequestSwapScreen() {
       body.toProfessionalId = directed.toProfessionalId;
     }
 
-    offerMutation.mutate(body);
+    const lease = actionLease.capture();
+    if (!lease) {
+      setError(
+        "Sua sessão mudou antes do envio. Confira a instituição ativa e tente novamente.",
+      );
+      return;
+    }
+    offerLeaseRef.current = lease;
+    offerMutation.mutate(body, {
+      onSuccess: async (_data, variables) => {
+        if (
+          offerLeaseRef.current !== lease ||
+          !actionLease.isCurrent(lease)
+        ) {
+          return;
+        }
+        await Promise.allSettled([
+          utils.swaps.list.invalidate(),
+          utils.swaps.listAvailable.invalidate(),
+          utils.swaps.countActionable.invalidate(),
+        ]);
+        if (
+          offerLeaseRef.current !== lease ||
+          !actionLease.isCurrent(lease)
+        ) {
+          return;
+        }
+        offerLeaseRef.current = null;
+        feedback.success(
+          variables.type === "SWAP"
+            ? "Troca oferecida. Você será avisado da resposta."
+            : "Repasse oferecido. Você será avisado da resposta.",
+        );
+        router.back();
+      },
+      onError: (mutationError) => {
+        if (
+          offerLeaseRef.current !== lease ||
+          !actionLease.isCurrent(lease)
+        ) {
+          return;
+        }
+        offerLeaseRef.current = null;
+        setError(mutationError.message || "Erro ao enviar oferta");
+      },
+    });
   };
 
   const formatShiftDate = (value: Date | string) => {
