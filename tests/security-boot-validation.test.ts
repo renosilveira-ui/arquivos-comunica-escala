@@ -281,6 +281,48 @@ describe("Frente 2.1 - production boot validation", () => {
         "AUTH_RECOVERY_ENCRYPTION previous and current secrets must differ",
       );
     });
+
+    it("alinha current/previous ao teto runtime de 1024 bytes", () => {
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "r".repeat(1024),
+          },
+        }),
+      ).toEqual([]);
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "r".repeat(1025),
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET must be at most 1024 bytes long",
+      );
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID: "staging-v0",
+            AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: "p".repeat(1025),
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET must be at most 1024 bytes long",
+      );
+      expect(
+        collectProductionSecretIssues({
+          env: {
+            ...VALID_PRODUCTION_ENV,
+            AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: "á".repeat(513),
+          },
+        }),
+      ).toContain(
+        "AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET must be at most 1024 bytes long",
+      );
+    });
   });
 
   describe("production environment - localhost URLs", () => {

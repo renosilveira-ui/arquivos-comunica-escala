@@ -89,6 +89,8 @@ export default defineConfig({
       "tests/auth-lifecycle-pure.test.ts",
       "tests/auth-recovery-migration-source.test.ts",
       "tests/auth-recovery-worker-source.test.ts",
+      "tests/auth-recovery-dispatcher.test.ts",
+      "tests/graceful-shutdown-pure.test.ts",
       "tests/security-boot-validation.test.ts",
       "tests/request-deadline.test.ts",
       "tests/trpc-batch-limit.test.ts",

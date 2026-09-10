@@ -8,7 +8,9 @@ deploy nem alteração de segredo.
 1. Manter o auto-deploy suspenso ou a revisão sem merge.
 2. Configurar no mesmo serviço `AUTH_RECOVERY_ENCRYPTION_CURRENT_KID` e
    `AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET` (mínimo 32 bytes, diferente
-   de `COOKIE_SECRET`). Não configurar `PREVIOUS_*` na primeira ativação.
+   de `COOKIE_SECRET`, máximo 1024 bytes). Não configurar `PREVIOUS_*` na
+   primeira ativação. O mesmo intervalo de 32–1024 bytes vale para
+   `AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET` durante rotação.
 3. Em schema efêmero MySQL 8 criado pelo runner cercado, executar duas vezes
    `2026-09-10-auth-recovery-requests.sql`. O manifest legível embutido deve
    coincidir integralmente com o catálogo de colunas, índices, FKs e CHECKs
@@ -55,6 +57,12 @@ gate objetivo antes de staging/auto-deploy.
   o worker depois converte o estado expirado para `REVOKED`.
 - `USED`, `REVOKED`, `SKIPPED` e `DEAD`: estados terminais sem payload em claro
   ou selado. O histórico mínimo é 180 dias; a purga é aprovação separada.
+
+Recuperação `SELF_SERVICE` é deliberadamente account-wide: a linha durável
+`auth_recovery_requests` vincula conta, versão de sessão, e-mail e token por
+hash, mas mantém `target_membership_id = NULL`. Assim, uma conta `APPROVED`
+ainda sem escala consegue recuperar a credencial sem criar ou eleger
+instituição implicitamente. Somente `ADMIN_INITIATED` exige e revalida a PI.
 
 Perda simultânea das chaves atual e anterior torna os payloads pendentes
 irrecuperáveis; o worker os encerra fail-closed e nunca tenta outro segredo.

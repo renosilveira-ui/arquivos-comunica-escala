@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAIL_HTTP_TIMEOUT_MS, mailer } from "../server/mailer";
+import {
+  MAIL_HTTP_TIMEOUT_MS,
+  mailer,
+  parseProviderCorrelationId,
+} from "../server/mailer";
 
 const SAMPLE = {
   to: "medico@test.local",
@@ -153,6 +157,61 @@ describe("mailer via Resend", () => {
     expect(result).toEqual({ kind: "ACCEPTED", transport: "resend" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("aceita correlation ID opaco ASCII com exatamente 128 caracteres", async () => {
+    withResendKey();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
+    const providerCorrelationId = `id:${"A".repeat(123)}.x`;
+    expect(providerCorrelationId).toHaveLength(128);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ id: providerCorrelationId }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+
+    await expect(mailer.sendMail(SAMPLE)).resolves.toEqual({
+      kind: "ACCEPTED",
+      transport: "resend",
+      providerCorrelationId,
+    });
+  });
+
+  it.each([
+    ["comprimento 129", "a".repeat(129)],
+    ["unicode", "correlação"],
+    ["espaço", "provider id"],
+    ["newline final", "provider-id\n"],
+    ["fora da allowlist", "provider/id"],
+    ["vazio", ""],
+  ])("ignora correlation ID inválido: %s", async (_case, invalidId) => {
+    withResendKey();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ id: invalidId }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+
+    await expect(mailer.sendMail(SAMPLE)).resolves.toEqual({
+      kind: "ACCEPTED",
+      transport: "resend",
+    });
+    expect(parseProviderCorrelationId(invalidId)).toBeUndefined();
   });
 
   it("Resend HTTP 4xx → REJECTED", async () => {

@@ -262,7 +262,7 @@ async function startServer() {
   installShutdownHandlers({
     server,
     logger,
-    onBeforeExit: () => {
+    onBeforeExit: async () => {
       try {
         stopConfirmationCron();
       } catch (err) {
@@ -271,8 +271,9 @@ async function startServer() {
           "stopConfirmationCron failed",
         );
       }
+      let authRecoveryDrain = Promise.resolve();
       try {
-        stopAuthRecoveryCron();
+        authRecoveryDrain = stopAuthRecoveryCron();
       } catch (err) {
         logger.error(
           { err: err instanceof Error ? err.message : String(err) },
@@ -285,6 +286,14 @@ async function startServer() {
         logger.error(
           { err: err instanceof Error ? err.message : String(err) },
           "stopWhatsAppNlDriver failed",
+        );
+      }
+      try {
+        await authRecoveryDrain;
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopAuthRecoveryCron failed",
         );
       }
     },

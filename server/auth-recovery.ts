@@ -12,11 +12,7 @@ import {
   professionalInstitutions,
   users,
 } from "../drizzle/schema";
-import {
-  lockCanonicalAuditMembership,
-  readCanonicalAuditMembership,
-  type AuditMembershipSnapshot,
-} from "./auth-audit-membership";
+import { readCanonicalAuditMembership } from "./auth-audit-membership";
 import { getDb } from "./db";
 import { resolveTrustedPublicBaseUrl } from "./_core/public-url";
 import {
@@ -50,6 +46,18 @@ export const AUTH_RECOVERY_DELIVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000] as const;
 
 type RecoveryPayload = { email: string; token?: string };
+type AuthRecoveryKind = typeof authRecoveryRequests.$inferSelect.kind;
+
+/** SELF_SERVICE é account-wide; somente o fluxo admin pertence a um tenant. */
+export function hasValidAuthRecoveryMembershipBinding(
+  kind: AuthRecoveryKind,
+  targetMembershipId: number | null,
+): boolean {
+  return kind === "SELF_SERVICE"
+    ? targetMembershipId === null
+    : Number.isInteger(targetMembershipId) && (targetMembershipId ?? 0) > 0;
+}
+
 export type AuthRecoveryMailTransport = {
   sendMail(
     message: MailMessage,
@@ -58,6 +66,7 @@ export type AuthRecoveryMailTransport = {
 };
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type RecoveryWriteDb = Pick<Db, "insert" | "update">;
+type RecoveryQueryDb = Pick<Db, "select">;
 
 function affectedRows(result: unknown): number {
   if (Array.isArray(result)) {
@@ -387,13 +396,31 @@ async function resolveSingleActiveUser(db: Db, normalizedEmail: string) {
   return rows[0]!;
 }
 
+/**
+ * Preserva o fail-closed para topologia corrompida, mas admite a conta que
+ * ainda não recebeu nenhum vínculo institucional. O resultado nunca elege uma
+ * PI para a recuperação: ele apenas distingue "sem escala" de "PI inválida".
+ */
+async function hasSelfServiceAccountTopology(
+  db: RecoveryQueryDb,
+  userId: number,
+) {
+  if (await readCanonicalAuditMembership(db, userId)) return true;
+  const [nonCanonicalMembership] = await db
+    .select({ id: professionalInstitutions.id })
+    .from(professionalInstitutions)
+    .where(eq(professionalInstitutions.userId, userId))
+    .limit(1)
+    .for("update");
+  return !nonCanonicalMembership;
+}
+
 async function bindSelfServiceRequest(
   db: Db,
   row: typeof authRecoveryRequests.$inferSelect,
   leaseToken: string,
   payload: Required<RecoveryPayload>,
   user: typeof users.$inferSelect,
-  membership: AuditMembershipSnapshot,
 ): Promise<typeof authRecoveryRequests.$inferSelect | null> {
   const tokenHash = hashAuthRecoveryValue(payload.token);
   const emailHash = hashAuthRecoveryValue(payload.email);
@@ -414,7 +441,9 @@ async function bindSelfServiceRequest(
     ) {
       return false;
     }
-    await lockCanonicalAuditMembership(tx, lockedUser.id, membership);
+    if (!(await hasSelfServiceAccountTopology(tx, lockedUser.id))) {
+      return false;
+    }
     const [lockedRequest] = await tx
       .select()
       .from(authRecoveryRequests)
@@ -427,14 +456,14 @@ async function bindSelfServiceRequest(
       lockedRequest.requestActorKind !== "UNAUTHENTICATED" ||
       lockedRequest.state !== "PROCESSING" ||
       lockedRequest.leaseToken !== leaseToken ||
-      lockedRequest.tokenHash !== tokenHash
+      lockedRequest.tokenHash !== tokenHash ||
+      lockedRequest.targetMembershipId !== null
     ) {
       return false;
     }
     if (
       lockedRequest.targetUserId !== null &&
       (lockedRequest.targetUserId !== lockedUser.id ||
-        lockedRequest.targetMembershipId !== membership.membershipId ||
         lockedRequest.expectedTargetSessionVersion !==
           lockedUser.sessionVersion ||
         lockedRequest.emailHash !== emailHash)
@@ -445,7 +474,9 @@ async function bindSelfServiceRequest(
       .update(authRecoveryRequests)
       .set({
         targetUserId: lockedUser.id,
-        targetMembershipId: membership.membershipId,
+        // Recuperação self-service é da conta, não de um tenant. A
+        // própria linha durável preserva a trilha sem inventar/eleger PI.
+        targetMembershipId: null,
         expectedTargetSessionVersion: lockedUser.sessionVersion,
         emailHash,
       })
@@ -585,12 +616,12 @@ async function activateAcceptedRequest(
   row: typeof authRecoveryRequests.$inferSelect,
   leaseToken: string,
   payload: Required<RecoveryPayload>,
-  membership?: AuditMembershipSnapshot,
 ): Promise<boolean> {
   if (
     !row.targetUserId ||
     row.expectedTargetSessionVersion === null ||
     !row.emailHash ||
+    !hasValidAuthRecoveryMembershipBinding(row.kind, row.targetMembershipId) ||
     (row.kind === "SELF_SERVICE" &&
       row.requestActorKind !== "UNAUTHENTICATED") ||
     (row.kind === "ADMIN_INITIATED" &&
@@ -630,10 +661,13 @@ async function activateAcceptedRequest(
       ) {
         return false;
       }
-      if (row.kind === "SELF_SERVICE") {
-        if (!membership) return false;
-        await lockCanonicalAuditMembership(tx, lockedUser.id, membership);
-      } else {
+      if (
+        row.kind === "SELF_SERVICE" &&
+        !(await hasSelfServiceAccountTopology(tx, lockedUser.id))
+      ) {
+        return false;
+      }
+      if (row.kind === "ADMIN_INITIATED") {
         if (
           !row.requestedByUserId ||
           !row.requestedByMembershipId ||
@@ -712,10 +746,12 @@ async function activateAcceptedRequest(
             ),
             eq(authRecoveryRequests.kind, row.kind),
             eq(authRecoveryRequests.targetUserId, row.targetUserId!),
-            eq(
-              authRecoveryRequests.targetMembershipId,
-              row.targetMembershipId!,
-            ),
+            row.targetMembershipId === null
+              ? isNull(authRecoveryRequests.targetMembershipId)
+              : eq(
+                  authRecoveryRequests.targetMembershipId,
+                  row.targetMembershipId,
+                ),
             eq(
               authRecoveryRequests.expectedTargetSessionVersion,
               row.expectedTargetSessionVersion,
@@ -822,7 +858,6 @@ async function processClaimedRequest(
 
   let targetUserId = claimed.targetUserId;
   let selfUser: typeof users.$inferSelect | null = null;
-  let selfMembership: AuditMembershipSnapshot | null = null;
   if (claimed.kind === "SELF_SERVICE") {
     selfUser = await resolveSingleActiveUser(db, payload.email);
     if (!selfUser) {
@@ -832,17 +867,6 @@ async function processClaimedRequest(
         leaseToken,
         "SKIPPED",
         "RECIPIENT_NOT_FOUND",
-      );
-      return;
-    }
-    selfMembership = await readCanonicalAuditMembership(db, selfUser.id);
-    if (!selfMembership) {
-      await markTerminal(
-        db,
-        claimed.id,
-        leaseToken,
-        "SKIPPED",
-        "RECIPIENT_NOT_ELIGIBLE",
       );
       return;
     }
@@ -867,7 +891,6 @@ async function processClaimedRequest(
           leaseToken,
           payload,
           selfUser!,
-          selfMembership!,
         );
         if (!bound) {
           await markTerminal(
@@ -940,7 +963,6 @@ async function processClaimedRequest(
         currentRow,
         leaseToken,
         payload,
-        selfMembership ?? undefined,
       );
       if (!activated) {
         await markTerminal(
