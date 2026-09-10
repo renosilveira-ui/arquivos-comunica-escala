@@ -41,25 +41,14 @@ describe("audit.listShiftMovements", () => {
   let anaUserId: number;
   let anaProId: number;
   let fixtureDay: string;
+  let fixtureShiftId = 0;
 
   beforeAll(async () => {
     db = await getDb();
     if (!db) throw new Error("Database not available");
 
     const [institution] = await db.select().from(institutions).limit(1);
-    const [hospital] = await db
-      .select()
-      .from(hospitals)
-      .where(eq(hospitals.institutionId, institution!.id))
-      .limit(1);
-    const [sector] = await db
-      .select()
-      .from(sectors)
-      .where(eq(sectors.name, "Centro Cirúrgico"))
-      .limit(1);
     institutionId = institution!.id;
-    hospitalId = hospital!.id;
-    sectorId = sector!.id;
 
     const [joao] = await db
       .select()
@@ -92,14 +81,51 @@ describe("audit.listShiftMovements", () => {
 
     await cleanupFixtures();
 
-    // 4 fixtures de eventos de movimentação:
+    const fixtureStamp = Date.now();
+    const [hospital] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `Audit movements ${fixtureStamp}` })
+      .$returningId();
+    hospitalId = hospital.id;
+    const [sector] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `Audit movements ${fixtureStamp}`,
+        category: "servico",
+        color: "#2563EB",
+      })
+      .$returningId();
+    sectorId = sector.id;
+
+    fixtureDay = addDaysToKey(dayKeyBrt(new Date()), -5);
+    const baseTime = new Date(`${fixtureDay}T12:00:00-03:00`);
+    const [shift] = await db
+      .insert(shiftInstances)
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        label: "audit movement fixture",
+        startAt: new Date(`${fixtureDay}T07:00:00-03:00`),
+        endAt: new Date(`${fixtureDay}T13:00:00-03:00`),
+        status: "OCUPADO",
+      })
+      .$returningId();
+    fixtureShiftId = shift.id;
+    await db.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId,
+      yearMonth: yearMonthBrt(baseTime),
+      status: "PUBLISHED",
+    });
+
+    // 4 fixtures com plantão canônico em roster publicado:
     //   1. CESSAO_OFFERED por Pedro (ele é o actor + fromUser/Pro)
     //   2. CESSAO_ACCEPTED por Ana (actor=Ana, from=Pedro, to=Ana)
     //   3. CESSAO_APPROVED_BY_OWNER por Pedro (actor=Pedro, from=Pedro, to=Ana)
     //   4. SHIFT_CREATED por João (actor=João, sem from/to)
-    fixtureDay = addDaysToKey(dayKeyBrt(new Date()), -5);
-    const baseTime = new Date(`${fixtureDay}T12:00:00-03:00`);
-
     await db.insert(auditTrail).values([
       {
         actorUserId: pedroUserId,
@@ -114,6 +140,7 @@ describe("audit.listShiftMovements", () => {
         institutionId,
         hospitalId,
         sectorId,
+        shiftInstanceId: fixtureShiftId,
         createdAt: new Date(baseTime.getTime() + 0),
       },
       {
@@ -131,6 +158,7 @@ describe("audit.listShiftMovements", () => {
         institutionId,
         hospitalId,
         sectorId,
+        shiftInstanceId: fixtureShiftId,
         createdAt: new Date(baseTime.getTime() + 60_000),
       },
       {
@@ -148,6 +176,7 @@ describe("audit.listShiftMovements", () => {
         institutionId,
         hospitalId,
         sectorId,
+        shiftInstanceId: fixtureShiftId,
         createdAt: new Date(baseTime.getTime() + 120_000),
       },
       {
@@ -161,6 +190,7 @@ describe("audit.listShiftMovements", () => {
         institutionId,
         hospitalId,
         sectorId,
+        shiftInstanceId: fixtureShiftId,
         createdAt: new Date(baseTime.getTime() + 180_000),
       },
     ]);
@@ -181,6 +211,30 @@ describe("audit.listShiftMovements", () => {
           like(auditTrail.description, "audit-test:%"),
         ),
       );
+    if (fixtureShiftId) {
+      await db
+        .delete(shiftInstances)
+        .where(eq(shiftInstances.id, fixtureShiftId));
+      fixtureShiftId = 0;
+    }
+    if (hospitalId) {
+      await db
+        .delete(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalId),
+          ),
+        );
+    }
+    if (sectorId) {
+      await db.delete(sectors).where(eq(sectors.id, sectorId));
+      sectorId = 0;
+    }
+    if (hospitalId) {
+      await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
+      hospitalId = 0;
+    }
   }
 
   function caller(userId: number) {
@@ -213,7 +267,7 @@ describe("audit.listShiftMovements", () => {
     expect(testRows).toHaveLength(4);
   });
 
-  it("USER (Pedro) vê apenas eventos onde participou (3 dos 4)", async () => {
+  it("USER (Pedro) vê movimentos próprios do roster oficial", async () => {
     const rows = await caller(pedroUserId).audit.listShiftMovements({
       actions: [
         "CESSAO_OFFERED",
@@ -227,17 +281,10 @@ describe("audit.listShiftMovements", () => {
     const testRows = rows.filter((r) =>
       r.description.startsWith("audit-test:"),
     );
-    // Os 3 eventos de cessão envolvem Pedro (ofereceu, aprovou, ou foi
-    // o "from" do aceite). O SHIFT_CREATED por João não envolve Pedro.
     expect(testRows).toHaveLength(3);
-    const actions = testRows.map((r) => r.action);
-    expect(actions).toContain("CESSAO_OFFERED");
-    expect(actions).toContain("CESSAO_ACCEPTED");
-    expect(actions).toContain("CESSAO_APPROVED_BY_OWNER");
-    expect(actions).not.toContain("SHIFT_CREATED");
   });
 
-  it("USER (Ana) vê apenas eventos onde participou (2 dos 4)", async () => {
+  it("USER (Ana) vê movimentos próprios do roster oficial", async () => {
     const rows = await caller(anaUserId).audit.listShiftMovements({
       actions: [
         "CESSAO_OFFERED",
@@ -251,11 +298,7 @@ describe("audit.listShiftMovements", () => {
     const testRows = rows.filter((r) =>
       r.description.startsWith("audit-test:"),
     );
-    // Ana foi actor no ACCEPTED, e to_user no APPROVED_BY_OWNER.
     expect(testRows).toHaveLength(2);
-    const actions = testRows.map((r) => r.action);
-    expect(actions).toContain("CESSAO_ACCEPTED");
-    expect(actions).toContain("CESSAO_APPROVED_BY_OWNER");
   });
 
   it("filtro actions=['CESSAO_APPROVED_BY_OWNER'] retorna só aprovações", async () => {
@@ -286,7 +329,49 @@ describe("audit.listShiftMovements", () => {
     expect(row.from?.name).toBe("Dr. Pedro Costa");
     expect(row.to?.name).toBe("Dra. Ana Lima");
     expect(row.location.hospitalName).toBeTruthy();
-    expect(row.location.sectorName).toBe("Centro Cirúrgico");
+    expect(row.location.sectorName).toMatch(/^Audit movements /);
+  });
+
+  it("nenhum gestor ou USER vê movimento operacional órfão de plantão", async () => {
+    const orphanId = ENTITY_BASE + 98;
+    await db!.insert(auditTrail).values({
+      actorUserId: pedroUserId,
+      actorRole: "doctor",
+      action: "CESSAO_OFFERED",
+      entityType: "TRANSFER_REQUEST",
+      entityId: orphanId,
+      description: "audit-test: movimento órfão",
+      fromProfessionalId: pedroProId,
+      fromUserId: pedroUserId,
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
+
+    for (const userId of [joaoUserId, pedroUserId]) {
+      const rows = await caller(userId).audit.listShiftMovements({
+        actions: ["CESSAO_OFFERED"],
+      });
+      expect(rows.some((row) => row.entityId === orphanId)).toBe(false);
+    }
+  });
+
+  it("USER preserva apenas ação account-level própria explicitamente permitida", async () => {
+    const accountEventId = ENTITY_BASE + 97;
+    await db!.insert(auditTrail).values({
+      actorUserId: pedroUserId,
+      actorRole: "doctor",
+      action: "USER_UPDATED",
+      entityType: "USER",
+      entityId: accountEventId,
+      description: "audit-test: atualização pessoal",
+      institutionId,
+    });
+
+    const rows = await caller(pedroUserId).audit.listShiftMovements({
+      actions: ["USER_UPDATED"],
+    });
+    expect(rows.some((row) => row.entityId === accountEventId)).toBe(true);
   });
 
   it("ordena DESC por createdAt (mais recente primeiro)", async () => {

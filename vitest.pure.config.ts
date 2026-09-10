@@ -51,6 +51,7 @@ export default defineConfig({
       "tests/schedule-context-readers-source.test.ts",
       "tests/notification-shift-routing.test.ts",
       "tests/assignment-push-signal.test.ts",
+      "tests/draft-notification-fence-rework-source.test.ts",
       "tests/schedule-invite-response-signal.test.ts",
       "tests/bulk-import-structured-guard.test.ts",
       "tests/replacement-candidates-schedule-context.test.ts",

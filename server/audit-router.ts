@@ -16,8 +16,8 @@ import { getTenantActorFromContext } from "./_core/policy";
  *
  * Modelo de acesso:
  *   - GESTOR_PLUS / admin → vê toda a instituição.
- *   - GESTOR_MEDICO → vê apenas eventos no seu manager_scope (hospital
- *     ou setor jurisdicionado). Aplicado via WHERE em hospitalId/sectorId.
+ *   - GESTOR_MEDICO → união do que veria como USER com eventos no seu
+ *     manager_scope (hospital ou setor jurisdicionado).
  *   - USER → vê apenas eventos onde foi actor, fromProfessional ou
  *     toProfessional (movimentações sobre o próprio plantão dele).
  *
@@ -92,24 +92,40 @@ const SHIFT_MOVEMENT_ACTIONS = [
   "CESSAO_CANCELLED",
 ] as const;
 
+// Únicos eventos sem plantão que podem participar da visão pessoal. Ações
+// institucionais/configuracionais não viram autoridade positiva por ausência
+// de shiftInstanceId; novas ações account-level precisam ser classificadas
+// explicitamente aqui antes de serem expostas a USER.
+const SELF_VISIBLE_ACCOUNT_ACTIONS = [
+  "USER_CREATED",
+  "USER_UPDATED",
+  "USER_ROLE_CHANGED",
+  "SSO_JIT_LINK_CREATED",
+] as const;
+
 export const auditRouter = router({
   listShiftMovements: protectedProcedure
     .input(
-      z.object({
-        shiftInstanceId: z.number().int().optional(),
-        hospitalId: z.number().int().optional(),
-        sectorId: z.number().int().optional(),
-        fromDate: z.string().optional(), // ISO date YYYY-MM-DD
-        toDate: z.string().optional(),
-        actions: z.array(z.string()).optional(),
-        limit: z.number().min(1).max(500).default(100),
-        offset: z.number().min(0).default(0),
-      }).optional(),
+      z
+        .object({
+          shiftInstanceId: z.number().int().optional(),
+          hospitalId: z.number().int().optional(),
+          sectorId: z.number().int().optional(),
+          fromDate: z.string().optional(), // ISO date YYYY-MM-DD
+          toDate: z.string().optional(),
+          actions: z.array(z.string()).optional(),
+          limit: z.number().min(1).max(500).default(100),
+          offset: z.number().min(0).default(0),
+        })
+        .optional(),
     )
     .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
       }
 
       const userId = ctx.user!.id;
@@ -126,28 +142,75 @@ export const auditRouter = router({
       const defaultFrom = new Date(now);
       defaultFrom.setDate(defaultFrom.getDate() - 30);
       // Dias no relógio do hospital (-03:00); toDate inclusivo até 23:59:59.
-      const fromDate = input?.fromDate ? dayWindowBrt(input.fromDate).start : defaultFrom;
-      const toDate = input?.toDate ? new Date(dayWindowBrt(input.toDate).end.getTime() - 1000) : now;
+      const fromDate = input?.fromDate
+        ? dayWindowBrt(input.fromDate).start
+        : defaultFrom;
+      const toDate = input?.toDate
+        ? new Date(dayWindowBrt(input.toDate).end.getTime() - 1000)
+        : now;
 
       const actionsFilter =
         input?.actions && input.actions.length > 0
           ? input.actions
           : SHIFT_MOVEMENT_ACTIONS;
 
-      // Manager scope rows — collect upfront se necessário pra GESTOR_MEDICO.
-      let managerScopeWhere = sql``;
-      if (isLocalManager && actor.professionalId) {
+      const participantWhere = sql`(
+        at.actor_user_id = ${userId}
+        OR at.from_user_id = ${userId}
+        OR at.to_user_id = ${userId}
+      )`;
+      const shiftMovementActionsSql = sql.join(
+        SHIFT_MOVEMENT_ACTIONS.map((action) => sql`${action}`),
+        sql`, `,
+      );
+      const accountActionsSql = sql.join(
+        SELF_VISIBLE_ACCOUNT_ACTIONS.map((action) => sql`${action}`),
+        sql`, `,
+      );
+      // Nesta trilha, nenhum papel transforma um evento sem plantão em fato
+      // operacional canônico. A única exceção é a allowlist account-level;
+      // novas ações ficam ocultas até serem classificadas explicitamente.
+      const operationalShapeWhere = sql`AND (
+        at.shift_instance_id IS NOT NULL
+        OR at.action IN (${accountActionsSql})
+      )`;
+      const ownOfficialVisibilityWhere = sql`(
+        (
+          at.action IN (${accountActionsSql})
+          AND at.shift_instance_id IS NULL
+        )
+        OR (
+          at.action IN (${shiftMovementActionsSql})
+          AND at.shift_instance_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM shift_instances audit_shift_visibility
+            JOIN monthly_rosters audit_roster_visibility
+              ON audit_roster_visibility.institution_id = audit_shift_visibility.institution_id
+             AND audit_roster_visibility.hospital_id = audit_shift_visibility.hospital_id
+             AND audit_roster_visibility.year_month = DATE_FORMAT(
+               DATE_SUB(audit_shift_visibility.start_at, INTERVAL 3 HOUR),
+               '%Y-%m'
+             )
+             AND audit_roster_visibility.status IN ('PUBLISHED', 'LOCKED')
+            WHERE audit_shift_visibility.id = at.shift_instance_id
+              AND audit_shift_visibility.institution_id = at.institution_id
+          )
+        )
+      )`;
+
+      let actorVisibilityWhere = sql``;
+      if (!isInstitutionWide && isLocalManager && actor.professionalId) {
         const scopes = await db.execute<any>(
           sql`SELECT hospital_id, sector_id FROM manager_scope
               WHERE manager_professional_id = ${actor.professionalId}
                 AND institution_id = ${institutionId}
                 AND active = 1`,
         );
-        const scopeRows = (scopes as any)[0] as { hospital_id: number; sector_id: number | null }[];
-        if (scopeRows.length === 0) {
-          // Gestor sem scope ativo: trata como USER.
-          return [];
-        }
+        const scopeRows = (scopes as any)[0] as {
+          hospital_id: number;
+          sector_id: number | null;
+        }[];
         // Constrói OR de (hospitalId, sectorId) — null sectorId = hospital inteiro.
         const conditions = scopeRows.map((s) => {
           const currentTopology =
@@ -163,37 +226,20 @@ export const auditRouter = router({
             OR ((at.shift_instance_id IS NULL OR si.id IS NULL) AND ${historicalTopology})
           )`;
         });
-        const orList = sql.join(conditions, sql` OR `);
-        managerScopeWhere = sql`AND (${orList})`;
-      }
-
-      let userOnlyWhere = sql``;
-      if (!isInstitutionWide && !isLocalManager) {
-        // USER. Vê apenas eventos próprios e nunca antecipa detalhes de uma
-        // escala ausente/DRAFT. Eventos sem plantão preservam o contrato da
-        // trilha account-level; eventos de turno exigem publicação atual.
-        userOnlyWhere = sql`AND (
-          at.actor_user_id = ${userId}
-          OR at.from_user_id = ${userId}
-          OR at.to_user_id = ${userId}
-        )
-        AND (
-          at.shift_instance_id IS NULL
-          OR EXISTS (
-            SELECT 1
-            FROM shift_instances audit_shift_visibility
-            JOIN monthly_rosters audit_roster_visibility
-              ON audit_roster_visibility.institution_id = audit_shift_visibility.institution_id
-             AND audit_roster_visibility.hospital_id = audit_shift_visibility.hospital_id
-             AND audit_roster_visibility.year_month = DATE_FORMAT(
-               DATE_SUB(audit_shift_visibility.start_at, INTERVAL 3 HOUR),
-               '%Y-%m'
-             )
-             AND audit_roster_visibility.status IN ('PUBLISHED', 'LOCKED')
-            WHERE audit_shift_visibility.id = at.shift_instance_id
-              AND audit_shift_visibility.institution_id = at.institution_id
-          )
+        const managerScopeVisibility =
+          conditions.length > 0
+            ? sql`(${sql.join(conditions, sql` OR `)})`
+            : sql`0 = 1`;
+        actorVisibilityWhere = sql`AND (
+          ${managerScopeVisibility}
+          OR (${participantWhere} AND ${ownOfficialVisibilityWhere})
         )`;
+      } else if (!isInstitutionWide) {
+        // USER e GESTOR_MEDICO sem identidade profissional só preservam a
+        // visão pessoal: evento operacional exige plantão em roster oficial;
+        // evento sem plantão exige ação account-level explicitamente segura.
+        actorVisibilityWhere = sql`AND ${participantWhere}
+          AND ${ownOfficialVisibilityWhere}`;
       }
 
       const fromIso = fromDate.toISOString().slice(0, 19).replace("T", " ");
@@ -239,12 +285,15 @@ export const auditRouter = router({
                                         AND si.institution_id = at.institution_id
             WHERE at.institution_id = ${institutionId}
               AND at.created_at BETWEEN ${fromIso} AND ${toIso}
-              AND at.action IN (${sql.join(actionsFilter.map((a) => sql`${a}`), sql`, `)})
+              AND at.action IN (${sql.join(
+                actionsFilter.map((a) => sql`${a}`),
+                sql`, `,
+              )})
               ${input?.shiftInstanceId ? sql`AND at.shift_instance_id = ${input.shiftInstanceId}` : sql``}
               ${input?.hospitalId ? sql`AND at.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId ? sql`AND at.sector_id = ${input.sectorId}` : sql``}
-              ${managerScopeWhere}
-              ${userOnlyWhere}
+              ${operationalShapeWhere}
+              ${actorVisibilityWhere}
             ORDER BY at.created_at DESC
             LIMIT ${input?.limit ?? 100}
             OFFSET ${input?.offset ?? 0}`,

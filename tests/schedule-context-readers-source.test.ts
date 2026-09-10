@@ -74,7 +74,9 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
     expect(source).toContain("isNull(scheduleInvites.declinedAt)");
     expect(eligible).toContain("accessCoversScheduleContext");
     expect(eligible).toContain("managerScopeCoversContext");
-    expect(eligible).toContain("assertProfessionalQualificationMatchesScheduleContext");
+    expect(eligible).toContain(
+      "assertProfessionalQualificationMatchesScheduleContext",
+    );
     expect(eligible).not.toContain("listAssumableScheduleContextIds");
   });
 
@@ -83,7 +85,8 @@ describe("wiring fail-closed dos leitores multi-contexto", () => {
 
     expect(
       source.match(/listAuthorizedScheduleContexts\(actor, db\)/g)?.length,
-    ).toBeGreaterThanOrEqual(3);
+    ).toBeGreaterThanOrEqual(2);
+    expect(source).toContain("listReadableScheduleContexts(actor, db)");
     expect(source).toContain("pi.user_id = p.user_id");
     expect(source).toContain(
       "COALESCE(pi.role_in_institution, 'USER') AS roleInInstitution",

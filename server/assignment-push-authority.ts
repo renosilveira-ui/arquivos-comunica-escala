@@ -4,6 +4,7 @@ import {
   monthlyRosters,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -142,6 +143,16 @@ export async function requireAuthorizedAssignmentLifecycleRecipient(
         eq(shiftInstances.institutionId, shiftAssignmentsV2.institutionId),
         eq(shiftInstances.hospitalId, shiftAssignmentsV2.hospitalId),
         eq(shiftInstances.sectorId, shiftAssignmentsV2.sectorId),
+      ),
+    )
+    .innerJoin(
+      scheduleContexts,
+      and(
+        eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+        eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+        eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+        eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+        eq(scheduleContexts.active, true),
       ),
     )
     .innerJoin(
