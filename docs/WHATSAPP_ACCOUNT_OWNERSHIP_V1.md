@@ -145,27 +145,25 @@ novo nem pelos testes locais. Não executar rollout misto como se fosse seguro.
 
 ## Evidência local e limites
 
-O gate descartável está excluído do `vitest.config.ts` padrão. Na integração
-coordenada com a frente do runner destrutivo, adicionar ao CI a execução explícita
-de `vitest.whatsapp-account.config.ts`. Esta frente não modifica workflow nem
-executa CI/build. As regressões legadas permanecem no teste padrão; a config
-legada aqui permite verificá-las também sem seed global ou banco compartilhado.
+O gate descartável está excluído do `vitest.config.ts` padrão e é executado
+explicitamente pela CI via `vitest.whatsapp-account.config.ts`. As regressões
+anteriores permanecem na suíte padrão; não existe runner MySQL paralelo com
+credenciais ou ciclo de vida próprios.
 
 ```sh
 pnpm exec vitest run --config vitest.whatsapp-account.config.ts
-pnpm exec vitest run --config vitest.whatsapp-account-legacy.config.ts
 pnpm exec vitest run --config vitest.pure.config.ts tests/whatsapp-verification-provider.test.ts tests/whatsapp-verification-source.test.ts tests/whatsapp-verification-rate-limit.test.ts tests/whatsapp-contact-source.test.ts tests/user-contact-channels-migration.test.ts
 pnpm typecheck
 pnpm lint
 git diff --check
 ```
 
-As duas configs MySQL criam nomes exclusivos em `127.0.0.1` (MySQL 8, root/root
-do ambiente descartável de desenvolvimento), não leem DATABASE_URL e removem
-apenas o banco que a própria execução criou. A suíte legada usa scaffolding das
-cinco tabelas auxiliares, não certifica o schema institucional inteiro; contato,
-desafio e auditoria usam suas migrations reais. A matriz cobre ownership,
-sessionVersion, falha de auditoria, unicidade e interleavings de start/check.
+A config MySQL exige `NODE_ENV=test`, opt-in destrutivo, URL do alvo pai local,
+nome esperado e marcador descartável. Ela valida os cinco valores pela cerca
+compartilhada, deriva um schema filho exclusivo e só permite criar/remover esse
+filho mediante recibo de ownership. Contato, desafio e auditoria usam suas
+migrations reais. A matriz cobre ownership, sessionVersion, falha de auditoria,
+unicidade e interleavings de start/check.
 
 Mocks provam o contrato local, não elegibilidade/templates da conta Twilio,
 entrega real de OTP, configuração staging ou experiência E2E em dispositivo.

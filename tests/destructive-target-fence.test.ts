@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 
@@ -443,6 +443,32 @@ describe("standard test destructive target fence", () => {
       /validateStandardTestDestructiveTarget\(\s*process\.env,?\s*\)/,
     );
     expect(whatsappConfig).toContain('DATABASE_URL: ""');
+
+    const repositoryRoot = new URL("..", import.meta.url);
+    const whatsappConfigs = readdirSync(repositoryRoot)
+      .filter((name) => /^vitest\.whatsapp.*\.config\.ts$/.test(name))
+      .sort();
+    expect(whatsappConfigs).toEqual(["vitest.whatsapp-account.config.ts"]);
+    for (const configName of whatsappConfigs) {
+      const config = readFileSync(new URL(configName, repositoryRoot), "utf8");
+      expect(config, configName).toContain(
+        "validateStandardTestDestructiveTarget",
+      );
+      expect(config, configName).toContain('DATABASE_URL: ""');
+    }
+
+    const whatsappMysqlHelpers = readdirSync(
+      new URL("../tests/helpers", import.meta.url),
+    ).filter((name) => /whatsapp.*mysql.*\.ts$/i.test(name));
+    expect(whatsappMysqlHelpers).toEqual([]);
+    expect(
+      existsSync(
+        new URL(
+          "../tests/helpers/whatsapp-account-legacy-mysql-setup.ts",
+          import.meta.url,
+        ),
+      ),
+    ).toBe(false);
 
     const whatsappSuite = readFileSync(
       new URL(
