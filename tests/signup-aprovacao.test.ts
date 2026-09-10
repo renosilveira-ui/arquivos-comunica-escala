@@ -29,7 +29,7 @@ import {
   sectors,
   users,
 } from "../drizzle/schema";
-import { hashScheduleInviteCode } from "../lib/schedule-invite-code";
+import { hashLegacyScheduleInviteCode } from "../lib/schedule-invite-code";
 import { resolveInstitutionForUser } from "../server/_core/tenant";
 import { getDb } from "../server/db";
 import { adminRouter } from "../server/routes/admin";
@@ -911,7 +911,8 @@ describe("auto-cadastro público e aprovação", () => {
       institutionId,
       hospitalId: hospitalA,
       sectorId: recoverySectorId,
-      codeHash: hashScheduleInviteCode(recoveryCode),
+      codeHash: hashLegacyScheduleInviteCode(recoveryCode),
+      codeHashVersion: "SHA256_V1",
       createdByUserId: adminId,
       invitedUserId: user.id,
       invitedEmail: email,
@@ -943,7 +944,8 @@ describe("auto-cadastro público e aprovação", () => {
       institutionId,
       hospitalId: hospitalA,
       sectorId: recoverySectorId,
-      codeHash: hashScheduleInviteCode("WRONG234"),
+      codeHash: hashLegacyScheduleInviteCode("WRONG234"),
+      codeHashVersion: "SHA256_V1",
       createdByUserId: adminId,
       invitedUserId: metadataIndependentUser.id,
       invitedEmail: `signup-invite-wrong-${STAMP}@test.local`,
@@ -975,7 +977,7 @@ describe("auto-cadastro público e aprovação", () => {
     expect(session.status).toBe(200);
     await db.update(scheduleInvites)
       .set({ expiresAt: new Date(Date.now() - 60_000) })
-      .where(eq(scheduleInvites.codeHash, hashScheduleInviteCode(recoveryCode)));
+      .where(eq(scheduleInvites.codeHash, hashLegacyScheduleInviteCode(recoveryCode)));
     const expired = await request(app)
       .post("/api/auth/redeem-invite")
       .set("Cookie", cookieOf(session))
@@ -985,7 +987,7 @@ describe("auto-cadastro público e aprovação", () => {
       .where(eq(professionalInstitutions.userId, user.id))).toEqual([]);
     await db.update(scheduleInvites)
       .set({ expiresAt: new Date(Date.now() + 86_400_000) })
-      .where(eq(scheduleInvites.codeHash, hashScheduleInviteCode(recoveryCode)));
+      .where(eq(scheduleInvites.codeHash, hashLegacyScheduleInviteCode(recoveryCode)));
     const joined = await request(app)
       .post("/api/auth/redeem-invite")
       .set("Cookie", cookieOf(session))
@@ -1048,7 +1050,8 @@ describe("auto-cadastro público e aprovação", () => {
       institutionId,
       hospitalId: hospitalA,
       sectorId: extraSector.id,
-      codeHash: hashScheduleInviteCode(secondCode),
+      codeHash: hashLegacyScheduleInviteCode(secondCode),
+      codeHashVersion: "SHA256_V1",
       createdByUserId: adminId,
       invitedUserId: user.id,
       invitedEmail: email,
