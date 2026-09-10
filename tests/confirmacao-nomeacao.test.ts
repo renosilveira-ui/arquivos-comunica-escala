@@ -1118,7 +1118,7 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
     expect(queuedPushMock).not.toHaveBeenCalled();
   });
 
-  it("acceptNomination falha fechado se o turno já excedeu o limite operacional", async () => {
+  it("acceptNomination troca o titular sem ampliar ocupação em turno legado inconsistente", async () => {
     const { shiftId, assignmentId } = await shiftWithTitular();
     const conf = await nominated(assignmentId, shiftId);
     await db.insert(shiftAssignmentsV2).values(
@@ -1135,17 +1135,57 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
       })),
     );
 
+    const activeBefore = await db
+      .select({ id: shiftAssignmentsV2.id })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+
     await expect(
       confirmationRouter
         .createCaller(ctx(subUserId))
         .acceptNomination(nominationRouteInput(conf)),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
+    ).resolves.toMatchObject({ ok: true, status: "REPLACEMENT_CONFIRMED" });
     const [after] = await db
       .select({ status: dutyConfirmations.status })
       .from(dutyConfirmations)
       .where(eq(dutyConfirmations.id, conf.id));
-    expect(after.status).toBe("NOMINATED");
-    expect(queuedPushMock).not.toHaveBeenCalled();
+    expect(after.status).toBe("REPLACEMENT_CONFIRMED");
+    const [original] = await db
+      .select({ isActive: shiftAssignmentsV2.isActive })
+      .from(shiftAssignmentsV2)
+      .where(eq(shiftAssignmentsV2.id, assignmentId));
+    expect(original.isActive).toBe(false);
+    const activeAfter = await db
+      .select({ professionalId: shiftAssignmentsV2.professionalId })
+      .from(shiftAssignmentsV2)
+      .where(
+        and(
+          eq(shiftAssignmentsV2.shiftInstanceId, shiftId),
+          eq(shiftAssignmentsV2.isActive, true),
+        ),
+      );
+    expect(activeAfter).toHaveLength(activeBefore.length);
+    expect(
+      activeAfter.filter((assignment) => assignment.professionalId === subProId),
+    ).toHaveLength(1);
+    expect(queuedPushMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          data: expect.objectContaining({
+            type: "replacement_accepted",
+            institutionId,
+          }),
+        }),
+      }),
+      expect.any(Date),
+      expect.anything(),
+    );
+    expect(vi.mocked(enqueueDutySync)).toHaveBeenCalledTimes(2);
   });
 
   it("duas aceitações sobrepostas do mesmo substituto têm um único vencedor", async () => {
@@ -1975,13 +2015,16 @@ describe("confirmação pré-plantão e indicação de substituto", () => {
           confirmationToken: firstCycle.confirmationToken,
           nominationEpoch: firstCycle.recheckAt!.toISOString(),
         }),
-      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      ).resolves.toBeNull();
       await expect(
         replacement.getNomination({
           confirmationToken: secondCycle.confirmationToken,
           nominationEpoch: secondCycle.recheckAt!.toISOString(),
         }),
-      ).resolves.toMatchObject({ confirmation: { status: "NOMINATED" } });
+      ).resolves.toMatchObject({
+        status: "NOMINATED",
+        confirmationToken: secondCycle.confirmationToken,
+      });
     } finally {
       nowSpy.mockRestore();
     }
