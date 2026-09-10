@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { dutyConfirmations } from "../drizzle/schema";
 import type { getDb } from "./db";
 import { requireValidDutyConfirmation } from "./confirmation-integrity";
@@ -23,36 +23,55 @@ export async function rearmDutyConfirmationsAfterShiftWindowChange(
   input: {
     institutionId: number;
     shiftInstanceId: number;
-    assignmentIds: readonly number[];
+    activeAssignments: readonly {
+      id: number;
+      professionalId: number;
+    }[];
   },
 ): Promise<number> {
-  const assignmentIds = [...new Set(input.assignmentIds)].sort(
-    (left, right) => left - right,
+  const activeAssignmentIds = new Set(
+    input.activeAssignments.map((assignment) => assignment.id),
   );
-  if (assignmentIds.length === 0) return 0;
+  const activeProfessionalIds = new Set(
+    input.activeAssignments.map((assignment) => assignment.professionalId),
+  );
+  if (activeAssignmentIds.size === 0) return 0;
 
-  const snapshots = await tx
+  const shiftSnapshots = await tx
     .select({
       id: dutyConfirmations.id,
       assignmentId: dutyConfirmations.assignmentId,
       status: dutyConfirmations.status,
       confirmationToken: dutyConfirmations.confirmationToken,
+      replacementProfessionalId: dutyConfirmations.replacementProfessionalId,
     })
     .from(dutyConfirmations)
     .where(
       and(
         eq(dutyConfirmations.institutionId, input.institutionId),
         eq(dutyConfirmations.shiftInstanceId, input.shiftInstanceId),
-        inArray(dutyConfirmations.assignmentId, assignmentIds),
       ),
     )
     .orderBy(dutyConfirmations.id);
 
+  const snapshots = shiftSnapshots.filter(
+    (snapshot) =>
+      activeAssignmentIds.has(snapshot.assignmentId) ||
+      (snapshot.status === "REPLACEMENT_CONFIRMED" &&
+        snapshot.replacementProfessionalId !== null &&
+        activeProfessionalIds.has(snapshot.replacementProfessionalId)),
+  );
+
   for (const snapshot of snapshots) {
+    const replacementCycle =
+      snapshot.status === "REPLACEMENT_CONFIRMED" &&
+      snapshot.replacementProfessionalId !== null &&
+      activeProfessionalIds.has(snapshot.replacementProfessionalId);
     await requireValidDutyConfirmation(tx, snapshot.id, {
       allowedStatuses: [snapshot.status],
       expectedInstitutionId: input.institutionId,
-      requireOriginalAssignmentActive: true,
+      requireOriginalAssignmentActive: !replacementCycle,
+      requireEffectiveAssignment: replacementCycle,
       lockForUpdate: true,
     });
     const [updated] = await tx

@@ -296,7 +296,24 @@ export async function dispatchConfirmations(now: Date) {
     )
     .leftJoin(
       dutyConfirmations,
-      eq(dutyConfirmations.assignmentId, shiftAssignmentsV2.id),
+      and(
+        eq(dutyConfirmations.institutionId, shiftAssignmentsV2.institutionId),
+        eq(
+          dutyConfirmations.shiftInstanceId,
+          shiftAssignmentsV2.shiftInstanceId,
+        ),
+        or(
+          eq(dutyConfirmations.assignmentId, shiftAssignmentsV2.id),
+          and(
+            eq(dutyConfirmations.status, "REPLACEMENT_CONFIRMED"),
+            eq(
+              dutyConfirmations.replacementProfessionalId,
+              shiftAssignmentsV2.professionalId,
+            ),
+            eq(dutyConfirmations.replacementUserId, professionals.userId),
+          ),
+        ),
+      ),
     )
     .where(
       and(
