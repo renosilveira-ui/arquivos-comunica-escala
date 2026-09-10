@@ -52,6 +52,7 @@ export default defineConfig({
       "tests/notification-shift-routing.test.ts",
       "tests/confirmation-nomination-epoch.test.ts",
       "tests/confirmation-recheck-epoch-source.test.ts",
+      "tests/confirmation-shift-rearm-source.test.ts",
       "tests/assignment-push-signal.test.ts",
       "tests/draft-notification-fence-rework-source.test.ts",
       "tests/schedule-invite-response-signal.test.ts",
