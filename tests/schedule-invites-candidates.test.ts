@@ -316,7 +316,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     beforeEach(() => {
       mailSpy = vi
         .spyOn(mailer, "sendMail")
-        .mockResolvedValue({ delivered: true, transport: "resend" });
+        .mockResolvedValue({ kind: "ACCEPTED", transport: "resend" });
     });
 
     afterEach(() => {

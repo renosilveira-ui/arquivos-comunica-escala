@@ -36,9 +36,7 @@ export default function ScheduleInvitesScreen() {
           hospitalId: selectedScale.hospitalId,
           sectorId: selectedScale.sectorId,
           name:
-            appliedLooksLikeEmail || !appliedSearch
-              ? undefined
-              : appliedSearch,
+            appliedLooksLikeEmail || !appliedSearch ? undefined : appliedSearch,
           email: appliedLooksLikeEmail ? appliedSearch : undefined,
         }
       : { hospitalId: 1, sectorId: 1 },
@@ -71,11 +69,11 @@ export default function ScheduleInvitesScreen() {
       ]);
       const failedNote =
         result.failed.length > 0
-          ? ` ${result.failed.length} não saíram.`
+          ? ` ${result.failed.length} não foram aceitos.`
           : "";
       uiAlert(
-        "Convites enviados",
-        `${result.sent.length} convite(s) de 24 horas saíram por e-mail.${failedNote}`,
+        "Pedidos aceitos",
+        `${result.sent.length} pedido(s) de convite foram aceitos pelo provedor; a entrega na caixa postal não é comprovada.${failedNote}`,
       );
     } catch (error) {
       uiAlert(
@@ -106,8 +104,8 @@ export default function ScheduleInvitesScreen() {
           }}
         >
           Convite desta escala — hospital e setor que você selecionar abaixo.
-          Quem criou conta e ainda espera uma escala já aparece na lista.
-          Cada convite vale 24 horas, de uso único, no e-mail da conta.
+          Quem criou conta e ainda espera uma escala já aparece na lista. Cada
+          convite vale 24 horas, de uso único, no e-mail da conta.
         </Text>
 
         <Text
@@ -119,14 +117,18 @@ export default function ScheduleInvitesScreen() {
         >
           Sua escala
         </Text>
-        {scales.isLoading ? <ActivityIndicator color={theme.colors.primary} /> : null}
+        {scales.isLoading ? (
+          <ActivityIndicator color={theme.colors.primary} />
+        ) : null}
         {scales.isError ? (
           <QueryErrorState
             title="Não foi possível carregar suas escalas"
             onRetry={() => scales.refetch()}
           />
         ) : null}
-        {!scales.isLoading && !scales.isError && (scales.data ?? []).length === 0 ? (
+        {!scales.isLoading &&
+        !scales.isError &&
+        (scales.data ?? []).length === 0 ? (
           <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
             Você ainda não gerencia nenhuma escala. O coordenador precisa
             cadastrá-lo como gestor daquele setor.
@@ -153,13 +155,20 @@ export default function ScheduleInvitesScreen() {
                 backgroundColor: theme.colors.surface,
                 borderRadius: theme.radius.md,
                 borderWidth: 1,
-                borderColor: selected ? theme.colors.primary : theme.colors.border,
+                borderColor: selected
+                  ? theme.colors.primary
+                  : theme.colors.border,
                 padding: theme.space[4],
                 marginBottom: theme.space[2],
                 minHeight: 44,
               }}
             >
-              <Text style={{ fontWeight: theme.weight.bold, color: theme.colors.textPrimary }}>
+              <Text
+                style={{
+                  fontWeight: theme.weight.bold,
+                  color: theme.colors.textPrimary,
+                }}
+              >
                 {scale.hospitalName} — {scale.sectorName}
               </Text>
             </Pressable>
@@ -227,7 +236,9 @@ export default function ScheduleInvitesScreen() {
             {!candidates.isLoading &&
             !candidates.isError &&
             (candidates.data ?? []).length === 0 ? (
-              <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
+              <Text
+                style={{ ...theme.text.body, color: theme.colors.textMuted }}
+              >
                 Nenhum médico elegível nesta lista. Confira se a especialidade
                 combina com a escala ou refine a busca pelo nome.
               </Text>
@@ -242,16 +253,28 @@ export default function ScheduleInvitesScreen() {
                     backgroundColor: theme.colors.surface,
                     borderRadius: theme.radius.md,
                     borderWidth: 1,
-                    borderColor: checked ? theme.colors.primary : theme.colors.border,
+                    borderColor: checked
+                      ? theme.colors.primary
+                      : theme.colors.border,
                     padding: theme.space[4],
                     marginBottom: theme.space[2],
                     minHeight: 44,
                   }}
                 >
-                  <Text style={{ fontWeight: theme.weight.semibold, color: theme.colors.textPrimary }}>
+                  <Text
+                    style={{
+                      fontWeight: theme.weight.semibold,
+                      color: theme.colors.textPrimary,
+                    }}
+                  >
                     {candidate.name ?? "Médico"}
                   </Text>
-                  <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
+                  <Text
+                    style={{
+                      ...theme.text.caption,
+                      color: theme.colors.textMuted,
+                    }}
+                  >
                     {candidate.specialtyLabel ?? "Especialidade não informada"}
                     {checked ? " · selecionado" : ""}
                   </Text>
@@ -282,17 +305,19 @@ export default function ScheduleInvitesScreen() {
             marginBottom: theme.space[2],
           }}
         >
-          Convites enviados
+          Convites emitidos
         </Text>
         {active.isError ? (
           <QueryErrorState
-            title="Não foi possível carregar os convites enviados"
+            title="Não foi possível carregar os convites emitidos"
             onRetry={() => active.refetch()}
           />
         ) : null}
-        {!active.isLoading && !active.isError && (active.data ?? []).length === 0 ? (
+        {!active.isLoading &&
+        !active.isError &&
+        (active.data ?? []).length === 0 ? (
           <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
-            Nenhum convite ativo. Selecione os médicos e envie o e-mail.
+            Nenhum convite ativo. Selecione os médicos e solicite o envio.
           </Text>
         ) : null}
         {(active.data ?? []).map((invite) => (
@@ -310,10 +335,14 @@ export default function ScheduleInvitesScreen() {
             <Text style={{ fontWeight: theme.weight.semibold }}>
               {invite.invitedName ?? "Médico convidado"}
             </Text>
-            <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
+            <Text
+              style={{ ...theme.text.caption, color: theme.colors.textMuted }}
+            >
               {invite.hospitalName} — {invite.sectorName}
             </Text>
-            <Text style={{ ...theme.text.caption, color: theme.colors.textMuted }}>
+            <Text
+              style={{ ...theme.text.caption, color: theme.colors.textMuted }}
+            >
               {invite.redeemedCount >= invite.maxRedemptions
                 ? "Já utilizado"
                 : `Válido até ${new Date(invite.expiresAt).toLocaleString("pt-BR")}`}

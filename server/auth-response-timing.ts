@@ -1,8 +1,10 @@
 export const SIGNUP_NEUTRAL_RESPONSE_FLOOR_MS = 1_000;
 
 /**
- * Contrato mensurável de piso de resposta. Um recuo do relógio não pode
- * transformar a mitigação anti-enumeração em espera ilimitada.
+ * Piso uniforme de resposta para reduzir atalhos grosseiros. Um segundo não
+ * prova indistinguibilidade temporal nem substitui rate limiting, forma HTTP
+ * uniforme e monitoramento; um recuo do relógio também não pode gerar espera
+ * ilimitada.
  */
 export function signupNeutralResponseDelayMs(
   startedAtMs: number,

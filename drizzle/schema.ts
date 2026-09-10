@@ -658,10 +658,7 @@ export const whatsappInboundMessages = mysqlTable(
      * Authority of apply is continuation_outcome, not this pointer alone.
      */
     continuationPendingId: int("continuation_pending_id"),
-    continuationOutcome: mysqlEnum("continuation_outcome", [
-      "APPLIED",
-      "NOOP",
-    ]),
+    continuationOutcome: mysqlEnum("continuation_outcome", ["APPLIED", "NOOP"]),
   },
   (table) => ({
     uniqWhatsappInboundProviderMessage: unique(
@@ -688,7 +685,8 @@ export const whatsappInboundMessages = mysqlTable(
   }),
 );
 
-export type WhatsappInboundMessage = typeof whatsappInboundMessages.$inferSelect;
+export type WhatsappInboundMessage =
+  typeof whatsappInboundMessages.$inferSelect;
 export type InsertWhatsappInboundMessage =
   typeof whatsappInboundMessages.$inferInsert;
 
@@ -1065,11 +1063,7 @@ export const sectorServiceSpecialties = mysqlTable(
     }),
     fkSectorServiceSpecialtyTopology: foreignKey({
       columns: [table.institutionId, table.hospitalId, table.sectorId],
-      foreignColumns: [
-        sectors.institutionId,
-        sectors.hospitalId,
-        sectors.id,
-      ],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
       name: "fk_sector_service_specialty_topology",
     }),
   }),
@@ -1137,9 +1131,9 @@ export const professionals = mysqlTable(
     idxProfessionalsMedicalSpecialty: index(
       "idx_professionals_medical_specialty",
     ).on(table.medicalSpecialtyId),
-    idxProfessionalsProfessionCode: index("idx_professionals_profession_code").on(
-      table.professionCode,
-    ),
+    idxProfessionalsProfessionCode: index(
+      "idx_professionals_profession_code",
+    ).on(table.professionCode),
     chkProfessionalsAtMostOneMedicalQualification: check(
       "chk_professionals_at_most_one_medical_qualification",
       sql`(${table.medicalSpecialtyId} is null or ${table.operationalProfileCode} is null)`,
@@ -1198,8 +1192,8 @@ export const professionalInstitutions = mysqlTable(
  * O pedido público nasce sem userId para que conta existente e inexistente
  * executem a mesma escrita. O endereço e o token em claro existem apenas no
  * payload autenticado/cifrado; ACTIVE conserva somente os hashes necessários
- * à validação do resgate. ADMIN_INITIATED permanece PENDING_DELIVERY até o
- * provedor aceitar o e-mail e a autoridade/identidade serem revalidadas.
+ * à validação do resgate. Ambos os tipos usam QUEUED/PROCESSING; ACTIVE só
+ * nasce após aceitação do provedor e revalidação da identidade/autoridade.
  *
  * Migração manual:
  * drizzle/migrations/manual/2026-09-10-auth-recovery-requests.sql
@@ -1209,10 +1203,14 @@ export const authRecoveryRequests = mysqlTable(
   {
     id: int("id").primaryKey().autoincrement(),
     kind: mysqlEnum("kind", ["SELF_SERVICE", "ADMIN_INITIATED"]).notNull(),
+    /** Proveniência auditável; SELF_SERVICE jamais se atribui à conta-alvo. */
+    requestActorKind: mysqlEnum("request_actor_kind", [
+      "UNAUTHENTICATED",
+      "AUTHENTICATED_ADMIN",
+    ]).notNull(),
     state: mysqlEnum("state", [
       "QUEUED",
       "PROCESSING",
-      "PENDING_DELIVERY",
       "ACTIVE",
       "USED",
       "REVOKED",
@@ -1229,27 +1227,35 @@ export const authRecoveryRequests = mysqlTable(
     expectedTargetSessionVersion: int("expected_target_session_version"),
     expectedActorSessionVersion: int("expected_actor_session_version"),
     emailHash: binaryVarchar("email_hash", { length: 64 }),
-    tokenHash: binaryVarchar("token_hash", { length: 64 }),
+    tokenHash: binaryVarchar("token_hash", { length: 64 }).notNull(),
     sealedPayload: text("sealed_payload"),
     expiresAt: datetime("expires_at"),
     availableAt: datetime("available_at").notNull(),
+    deliveryDeadlineAt: datetime("delivery_deadline_at").notNull(),
     leaseToken: binaryVarchar("lease_token", { length: 36 }),
     leaseUntil: datetime("lease_until"),
     attemptCount: int("attempt_count").notNull().default(0),
     providerAcceptedAt: datetime("provider_accepted_at"),
     usedAt: datetime("used_at"),
+    finishedAt: datetime("finished_at"),
     lastErrorCode: varchar("last_error_code", { length: 80 }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+    activeSlot: tinyint("active_slot"),
   },
   (table) => ({
     uniqAuthRecoveryTokenHash: unique("uniq_auth_recovery_token_hash").on(
       table.tokenHash,
     ),
+    uniqAuthRecoveryActiveTarget: unique("uniq_auth_recovery_active_target").on(
+      table.targetUserId,
+      table.activeSlot,
+    ),
     idxAuthRecoveryReady: index("idx_auth_recovery_ready").on(
       table.kind,
       table.state,
       table.availableAt,
+      table.deliveryDeadlineAt,
       table.id,
     ),
     idxAuthRecoveryTarget: index("idx_auth_recovery_target").on(
@@ -1284,14 +1290,23 @@ export const authRecoveryRequests = mysqlTable(
     }),
     chkAuthRecoveryAttempts: check(
       "chk_auth_recovery_attempts",
-      sql`${table.attemptCount} >= 0`,
+      sql`${table.attemptCount} >= 0 AND ${table.attemptCount} <= 5`,
     ),
-    chkAuthRecoveryAdminBinding: check(
-      "chk_auth_recovery_admin_binding",
+    chkAuthRecoveryActorBinding: check(
+      "chk_auth_recovery_actor_binding",
       sql`(
-        ${table.kind} = 'SELF_SERVICE'
+        (
+          ${table.kind} = 'SELF_SERVICE'
+          AND ${table.requestActorKind} = 'UNAUTHENTICATED'
+          AND ${table.requestedByUserId} IS NULL
+          AND ${table.requestedByMembershipId} IS NULL
+          AND ${table.institutionId} IS NULL
+          AND ${table.expectedActorSessionVersion} IS NULL
+        )
         OR (
-          ${table.targetUserId} IS NOT NULL
+          ${table.kind} = 'ADMIN_INITIATED'
+          AND ${table.requestActorKind} = 'AUTHENTICATED_ADMIN'
+          AND ${table.targetUserId} IS NOT NULL
           AND ${table.targetMembershipId} IS NOT NULL
           AND ${table.requestedByUserId} IS NOT NULL
           AND ${table.requestedByMembershipId} IS NOT NULL
@@ -1314,7 +1329,90 @@ export const authRecoveryRequests = mysqlTable(
           AND ${table.emailHash} IS NOT NULL
           AND ${table.tokenHash} IS NOT NULL
           AND ${table.expiresAt} IS NOT NULL
+          AND ${table.providerAcceptedAt} IS NOT NULL
+          AND ${table.sealedPayload} IS NULL
+          AND ${table.leaseToken} IS NULL
+          AND ${table.leaseUntil} IS NULL
         )
+      )`,
+    ),
+    chkAuthRecoveryStatePayload: check(
+      "chk_auth_recovery_state_payload",
+      sql`(
+        (
+          ${table.state} = 'QUEUED'
+          AND ${table.sealedPayload} IS NOT NULL
+          AND ${table.leaseToken} IS NULL
+          AND ${table.leaseUntil} IS NULL
+          AND ${table.providerAcceptedAt} IS NULL
+          AND ${table.expiresAt} IS NULL
+          AND ${table.usedAt} IS NULL
+          AND ${table.finishedAt} IS NULL
+          AND ${table.attemptCount} < 5
+        )
+        OR (
+          ${table.state} = 'PROCESSING'
+          AND ${table.sealedPayload} IS NOT NULL
+          AND ${table.leaseToken} IS NOT NULL
+          AND ${table.leaseUntil} IS NOT NULL
+          AND ${table.providerAcceptedAt} IS NULL
+          AND ${table.expiresAt} IS NULL
+          AND ${table.usedAt} IS NULL
+          AND ${table.finishedAt} IS NULL
+          AND ${table.attemptCount} >= 1
+        )
+        OR (
+          ${table.state} = 'ACTIVE'
+          AND ${table.sealedPayload} IS NULL
+          AND ${table.leaseToken} IS NULL
+          AND ${table.leaseUntil} IS NULL
+          AND ${table.usedAt} IS NULL
+          AND ${table.finishedAt} IS NULL
+          AND ${table.expiresAt} > ${table.providerAcceptedAt}
+        )
+        OR (
+          ${table.state} = 'USED'
+          AND ${table.sealedPayload} IS NULL
+          AND ${table.leaseToken} IS NULL
+          AND ${table.leaseUntil} IS NULL
+          AND ${table.usedAt} IS NOT NULL
+          AND ${table.finishedAt} IS NOT NULL
+          AND ${table.usedAt} = ${table.finishedAt}
+        )
+        OR (
+          ${table.state} = 'REVOKED'
+          AND ${table.sealedPayload} IS NULL
+          AND ${table.leaseToken} IS NULL
+          AND ${table.leaseUntil} IS NULL
+          AND ${table.usedAt} IS NULL
+          AND ${table.finishedAt} IS NOT NULL
+        )
+        OR (
+          ${table.state} IN ('SKIPPED', 'DEAD')
+          AND ${table.sealedPayload} IS NULL
+          AND ${table.leaseToken} IS NULL
+          AND ${table.leaseUntil} IS NULL
+          AND ${table.providerAcceptedAt} IS NULL
+          AND ${table.expiresAt} IS NULL
+          AND ${table.usedAt} IS NULL
+          AND ${table.finishedAt} IS NOT NULL
+        )
+      )`,
+    ),
+    chkAuthRecoveryDeadline: check(
+      "chk_auth_recovery_deadline",
+      sql`${table.deliveryDeadlineAt} > ${table.availableAt}`,
+    ),
+    chkAuthRecoveryHashes: check(
+      "chk_auth_recovery_hashes",
+      sql`${table.tokenHash} REGEXP '^[0-9a-f]{64}$'
+        AND (${table.emailHash} IS NULL OR ${table.emailHash} REGEXP '^[0-9a-f]{64}$')`,
+    ),
+    chkAuthRecoveryActiveSlot: check(
+      "chk_auth_recovery_active_slot",
+      sql`(
+        (${table.state} = 'ACTIVE' AND ${table.activeSlot} = 1)
+        OR (${table.state} <> 'ACTIVE' AND ${table.activeSlot} IS NULL)
       )`,
     ),
   }),
@@ -3357,29 +3455,32 @@ export const monthlyRostersRelations = relations(monthlyRosters, ({ one }) => ({
   }),
 }));
 
-export const swapRequestsRelations = relations(swapRequests, ({ one, many }) => ({
-  institution: one(institutions, {
-    fields: [swapRequests.institutionId],
-    references: [institutions.id],
+export const swapRequestsRelations = relations(
+  swapRequests,
+  ({ one, many }) => ({
+    institution: one(institutions, {
+      fields: [swapRequests.institutionId],
+      references: [institutions.id],
+    }),
+    hospital: one(hospitals, {
+      fields: [swapRequests.hospitalId],
+      references: [hospitals.id],
+    }),
+    sector: one(sectors, {
+      fields: [swapRequests.sectorId],
+      references: [sectors.id],
+    }),
+    fromProfessional: one(professionals, {
+      fields: [swapRequests.fromProfessionalId],
+      references: [professionals.id],
+    }),
+    toProfessional: one(professionals, {
+      fields: [swapRequests.toProfessionalId],
+      references: [professionals.id],
+    }),
+    dismissals: many(swapRequestDismissals),
   }),
-  hospital: one(hospitals, {
-    fields: [swapRequests.hospitalId],
-    references: [hospitals.id],
-  }),
-  sector: one(sectors, {
-    fields: [swapRequests.sectorId],
-    references: [sectors.id],
-  }),
-  fromProfessional: one(professionals, {
-    fields: [swapRequests.fromProfessionalId],
-    references: [professionals.id],
-  }),
-  toProfessional: one(professionals, {
-    fields: [swapRequests.toProfessionalId],
-    references: [professionals.id],
-  }),
-  dismissals: many(swapRequestDismissals),
-}));
+);
 
 export const swapRequestDismissalsRelations = relations(
   swapRequestDismissals,

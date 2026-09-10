@@ -40,6 +40,10 @@ import {
   stopConfirmationCron,
 } from "../cron/shift-confirmation-dispatcher";
 import {
+  startAuthRecoveryCron,
+  stopAuthRecoveryCron,
+} from "../cron/auth-recovery-dispatcher";
+import {
   startWhatsAppNlDriver,
   stopWhatsAppNlDriver,
 } from "../integrations/whatsapp/ready-for-nl-driver";
@@ -251,6 +255,7 @@ async function startServer() {
       "api server listening",
     );
     startConfirmationCron();
+    startAuthRecoveryCron();
     startWhatsAppOperationalPayloadRetention();
     startWhatsAppNlDriver();
   });
@@ -274,6 +279,14 @@ async function startServer() {
         logger.error(
           { err: err instanceof Error ? err.message : String(err) },
           "stopWhatsAppOperationalPayloadRetention failed",
+        );
+      }
+      try {
+        stopAuthRecoveryCron();
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopAuthRecoveryCron failed",
         );
       }
       try {

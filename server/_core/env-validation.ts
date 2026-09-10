@@ -19,6 +19,8 @@ const PLACEHOLDER_SECRETS: Record<string, readonly string[]> = {
 const REQUIRED_IN_PRODUCTION: readonly string[] = [
   "COOKIE_SECRET",
   "DATABASE_URL",
+  "AUTH_RECOVERY_ENCRYPTION_CURRENT_KID",
+  "AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET",
 ];
 
 const COMUNICA_OUTBOUND_REQUIRED: readonly string[] = [
@@ -30,6 +32,8 @@ const COMUNICA_OUTBOUND_REQUIRED: readonly string[] = [
 
 const MIN_LENGTHS: Record<string, number> = {
   COOKIE_SECRET: 32,
+  AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET: 32,
+  AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET: 32,
 };
 
 const NO_LOCALHOST_URLS: readonly string[] = [
@@ -53,6 +57,46 @@ export function collectProductionSecretIssues(
   if (env.NODE_ENV !== "production") return [];
 
   const issues: string[] = [];
+  const currentKid = (env.AUTH_RECOVERY_ENCRYPTION_CURRENT_KID ?? "").trim();
+  const previousKid = (env.AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID ?? "").trim();
+  const previousSecret = (
+    env.AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET ?? ""
+  ).trim();
+  const currentSecret = (
+    env.AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET ?? ""
+  ).trim();
+  const cookieSecret = (env.COOKIE_SECRET ?? "").trim();
+  if (currentKid && !/^[a-zA-Z0-9_-]{1,32}$/.test(currentKid)) {
+    issues.push("AUTH_RECOVERY_ENCRYPTION_CURRENT_KID has invalid format");
+  }
+  if (Boolean(previousKid) !== Boolean(previousSecret)) {
+    issues.push(
+      "AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID and SECRET must be set together",
+    );
+  }
+  if (previousKid && !/^[a-zA-Z0-9_-]{1,32}$/.test(previousKid)) {
+    issues.push("AUTH_RECOVERY_ENCRYPTION_PREVIOUS_KID has invalid format");
+  }
+  if (previousKid && previousKid === currentKid) {
+    issues.push(
+      "AUTH_RECOVERY_ENCRYPTION previous and current KIDs must differ",
+    );
+  }
+  if (currentSecret && currentSecret === cookieSecret) {
+    issues.push(
+      "AUTH_RECOVERY_ENCRYPTION_CURRENT_SECRET must differ from COOKIE_SECRET",
+    );
+  }
+  if (previousSecret && previousSecret === cookieSecret) {
+    issues.push(
+      "AUTH_RECOVERY_ENCRYPTION_PREVIOUS_SECRET must differ from COOKIE_SECRET",
+    );
+  }
+  if (currentSecret && previousSecret && currentSecret === previousSecret) {
+    issues.push(
+      "AUTH_RECOVERY_ENCRYPTION previous and current secrets must differ",
+    );
+  }
   const sessionBindingFlag = (env.SESSION_EXACT_BINDING_SUPPORTED ?? "").trim();
   if (
     sessionBindingFlag &&
@@ -90,8 +134,14 @@ export function collectProductionSecretIssues(
 
   for (const [key, min] of Object.entries(MIN_LENGTHS)) {
     const value = (env[key] ?? "").trim();
-    if (value && value.length < min) {
-      issues.push(`${key} must be at least ${min} characters long`);
+    const byteMeasured = key.startsWith("AUTH_RECOVERY_ENCRYPTION_");
+    const measuredLength = byteMeasured
+      ? Buffer.byteLength(value, "utf8")
+      : value.length;
+    if (value && measuredLength < min) {
+      issues.push(
+        `${key} must be at least ${min} ${byteMeasured ? "bytes" : "characters"} long`,
+      );
     }
   }
 

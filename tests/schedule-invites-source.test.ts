@@ -39,13 +39,38 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).not.toContain("node:crypto");
   });
 
-  it("não confirma o convite se o correio não entregou, inclusive sem chave", () => {
+  it("resgate prova um único professional e recusa não resolve identidade ambígua", () => {
+    const source = readFileSync("server/routes/auth.ts", "utf8");
+    const redeem = source.slice(
+      source.indexOf('"/redeem-invite"'),
+      source.indexOf('"/decline-invite"'),
+    );
+    const decline = source.slice(source.indexOf('"/decline-invite"'));
+    expect(redeem).toContain("requireSingleInviteProfessionalId");
+    expect(redeem).toContain("const professionalRows = await tx");
+    expect(redeem).not.toMatch(/from\(professionals\)[\s\S]{0,180}limit\(1\)/);
+    expect(redeem).toContain("await lockCurrentInviteActor(tx, authUser)");
+    expect(decline).toContain("await lockCurrentInviteActor(tx, authUser)");
+    expect(decline).not.toContain("requireSingleInviteProfessionalId");
+  });
+
+  it("não confirma o convite sem ACCEPTED e preserva o estado tri-state", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
-    expect(source).toContain("const delivery = await mailer.sendMail(mail)");
-    expect(source).toContain("if (!delivery.delivered)");
-    expect(source).toContain("O e-mail de convite não saiu. Tente novamente.");
+    expect(source).toContain("const delivery = await mailer.sendMail(mail, {");
+    expect(source).toContain("idempotencyKey: codeHash");
+    expect(source).toContain('if (delivery.kind === "REJECTED")');
+    expect(source).toContain('if (delivery.kind === "UNKNOWN")');
+    expect(source).toContain(
+      "O provedor não aceitou o pedido de envio. Tente novamente.",
+    );
+    expect(source).toContain(
+      "entrega na caixa postal não é comprovada nesta integração",
+    );
+    expect(source).toContain(
+      "O resultado do pedido de envio foi inconclusivo; o convite foi revogado.",
+    );
     expect(source).not.toContain(
-      'delivery.transport === "resend" && !delivery.delivered',
+      'delivery.transport === "resend" && delivery.kind !== "ACCEPTED"',
     );
   });
 
