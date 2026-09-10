@@ -76,6 +76,7 @@ export default defineConfig({
       "tests/sala-recuperacao-shift-blueprint.test.ts",
       "tests/open-month-shifts.test.ts",
       "tests/open-month-capacity-state.test.ts",
+      "tests/open-month-capacity-paused.test.ts",
       "tests/screen-action-lease.test.ts",
       "tests/mobile-form-consistency.test.ts",
       "tests/schedule-invite-mail.test.ts",

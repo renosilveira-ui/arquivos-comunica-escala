@@ -144,7 +144,9 @@ describe("wiring do botão na Agenda", () => {
     expect(button).toContain("openMonthCapacitySnapshotKey");
     expect(button).toContain("capacityHydration?.snapshotKey");
     expect(button).toContain("capacityRules.dataUpdatedAt");
-    expect(button).toContain("capacityRules.isFetching");
+    expect(button).toContain("queryFetchStatus: capacityRules.fetchStatus");
+    expect(button).toContain('capacityRules.fetchStatus !== "idle"');
+    expect(button).toContain("hasResolvedData: capacityRules.data !== undefined");
     expect(button).toContain("setCapacityDirty(true)");
     expect(button).toContain("resolveOpenMonthCapacityState");
     expect(button).toContain("!capacityReady");

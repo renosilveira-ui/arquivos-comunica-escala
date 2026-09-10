@@ -1,4 +1,9 @@
-export type OpenMonthCapacityState = "loading" | "error" | "invalid" | "ready";
+export type OpenMonthCapacityState =
+  | "loading"
+  | "unresolved"
+  | "error"
+  | "invalid"
+  | "ready";
 
 export function openMonthCapacityScopeKey(
   institutionId: number | null,
@@ -25,15 +30,20 @@ export function resolveOpenMonthCapacityState(input: {
   currentSnapshotKey: string | null;
   hydratedSnapshotKey: string | null;
   querySucceeded: boolean;
-  queryFetching: boolean;
+  queryFetchStatus: "fetching" | "paused" | "idle" | undefined;
+  hasResolvedData: boolean;
   queryFailed: boolean;
   invalidCapacity: boolean;
 }): OpenMonthCapacityState {
   if (input.queryFailed) return "error";
+  // isFetching=false também ocorre offline/paused. Só idle confirma que a
+  // leitura acabou; cache presente durante uma pausa não é prova suficiente.
+  if (input.queryFetchStatus === "fetching") return "loading";
+  if (input.queryFetchStatus !== "idle") return "unresolved";
   if (
     input.currentSnapshotKey == null ||
     !input.querySucceeded ||
-    input.queryFetching ||
+    !input.hasResolvedData ||
     input.hydratedSnapshotKey !== input.currentSnapshotKey
   ) {
     return "loading";
