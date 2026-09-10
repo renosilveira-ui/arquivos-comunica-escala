@@ -3,7 +3,7 @@ import { z } from "zod";
 import { professionals, scheduleInvites } from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
 import { getDb } from "./db";
-import { dayWindowBrt } from "./local-time";
+import { dayWindowBrt, isValidDayKeyBrt } from "./local-time";
 import {
   listAssumableScheduleContextIds,
   qualificationMatches,
@@ -24,7 +24,7 @@ type VacancyDb = Pick<
 export const actionableVacancyFiltersSchema = z.object({
   hospitalId: z.number().int().positive().optional(),
   sectorId: z.number().int().positive().optional(),
-  date: z.string().optional(),
+  date: z.string().refine(isValidDayKeyBrt, "data civil inválida").optional(),
   shiftLabel: z.string().nullish(),
   modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
   coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),

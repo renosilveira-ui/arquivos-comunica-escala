@@ -178,6 +178,7 @@ export default defineConfig({
       "tests/personal-calendar-domain.test.ts",
       "tests/calendar-holidays.test.ts",
       "tests/calendar-auxiliary-router.test.ts",
+      "tests/civil-date-contract.test.ts",
     ],
   },
 });

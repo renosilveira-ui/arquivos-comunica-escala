@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
-import { dayWindowBrt } from "./local-time";
+import { dayWindowBrt, isValidDayKeyBrt } from "./local-time";
 import { sql } from "drizzle-orm";
 import { getTenantActorFromContext } from "./_core/policy";
 
@@ -95,21 +95,32 @@ const SHIFT_MOVEMENT_ACTIONS = [
 export const auditRouter = router({
   listShiftMovements: protectedProcedure
     .input(
-      z.object({
-        shiftInstanceId: z.number().int().optional(),
-        hospitalId: z.number().int().optional(),
-        sectorId: z.number().int().optional(),
-        fromDate: z.string().optional(), // ISO date YYYY-MM-DD
-        toDate: z.string().optional(),
-        actions: z.array(z.string()).optional(),
-        limit: z.number().min(1).max(500).default(100),
-        offset: z.number().min(0).default(0),
-      }).optional(),
+      z
+        .object({
+          shiftInstanceId: z.number().int().optional(),
+          hospitalId: z.number().int().optional(),
+          sectorId: z.number().int().optional(),
+          fromDate: z
+            .string()
+            .refine(isValidDayKeyBrt, "data civil inválida")
+            .optional(), // ISO date YYYY-MM-DD
+          toDate: z
+            .string()
+            .refine(isValidDayKeyBrt, "data civil inválida")
+            .optional(),
+          actions: z.array(z.string()).optional(),
+          limit: z.number().min(1).max(500).default(100),
+          offset: z.number().min(0).default(0),
+        })
+        .optional(),
     )
     .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "DB unavailable",
+        });
       }
 
       const userId = ctx.user!.id;
@@ -126,8 +137,12 @@ export const auditRouter = router({
       const defaultFrom = new Date(now);
       defaultFrom.setDate(defaultFrom.getDate() - 30);
       // Dias no relógio do hospital (-03:00); toDate inclusivo até 23:59:59.
-      const fromDate = input?.fromDate ? dayWindowBrt(input.fromDate).start : defaultFrom;
-      const toDate = input?.toDate ? new Date(dayWindowBrt(input.toDate).end.getTime() - 1000) : now;
+      const fromDate = input?.fromDate
+        ? dayWindowBrt(input.fromDate).start
+        : defaultFrom;
+      const toDate = input?.toDate
+        ? new Date(dayWindowBrt(input.toDate).end.getTime() - 1000)
+        : now;
 
       const actionsFilter =
         input?.actions && input.actions.length > 0
@@ -143,7 +158,10 @@ export const auditRouter = router({
                 AND institution_id = ${institutionId}
                 AND active = 1`,
         );
-        const scopeRows = (scopes as any)[0] as { hospital_id: number; sector_id: number | null }[];
+        const scopeRows = (scopes as any)[0] as {
+          hospital_id: number;
+          sector_id: number | null;
+        }[];
         if (scopeRows.length === 0) {
           // Gestor sem scope ativo: trata como USER.
           return [];
@@ -207,7 +225,10 @@ export const auditRouter = router({
             LEFT JOIN shift_instances si ON si.id = at.shift_instance_id
             WHERE at.institution_id = ${institutionId}
               AND at.created_at BETWEEN ${fromIso} AND ${toIso}
-              AND at.action IN (${sql.join(actionsFilter.map((a) => sql`${a}`), sql`, `)})
+              AND at.action IN (${sql.join(
+                actionsFilter.map((a) => sql`${a}`),
+                sql`, `,
+              )})
               ${input?.shiftInstanceId ? sql`AND at.shift_instance_id = ${input.shiftInstanceId}` : sql``}
               ${input?.hospitalId ? sql`AND at.hospital_id = ${input.hospitalId}` : sql``}
               ${input?.sectorId ? sql`AND at.sector_id = ${input.sectorId}` : sql``}

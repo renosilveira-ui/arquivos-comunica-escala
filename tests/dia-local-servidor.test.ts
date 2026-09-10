@@ -29,7 +29,18 @@ import {
 } from "./helpers/open-test-scale";
 import { calendarRouter } from "../server/calendar";
 import { getDb } from "../server/db";
-import { addDaysToKey, addMonthsYearMonth, dayKeyBrt, dayWindowBrt, isValidDayKeyBrt, mondayOfKey, monthWindowBrt, weekdayOfKey, yearMonthBrt, yearMonthFromDayKey } from "../server/local-time";
+import {
+  addDaysToKey,
+  addMonthsYearMonth,
+  dayKeyBrt,
+  dayWindowBrt,
+  isValidDayKeyBrt,
+  mondayOfKey,
+  monthWindowBrt,
+  weekdayOfKey,
+  yearMonthBrt,
+  yearMonthFromDayKey,
+} from "../server/local-time";
 import { appRouter } from "../server/routers";
 import { shiftsRouter } from "../server/shifts-crud";
 
@@ -97,7 +108,8 @@ describe("consultas por dia usam o dia do hospital", () => {
   // "Cinderela" 22:00–04:00 no relógio do hospital.
   const base = new Date();
   const D = (() => {
-    const y = base.getMonth() + 1 === 12 ? base.getFullYear() + 1 : base.getFullYear();
+    const y =
+      base.getMonth() + 1 === 12 ? base.getFullYear() + 1 : base.getFullYear();
     const m = base.getMonth() + 1 === 12 ? 1 : base.getMonth() + 2;
     return `${y}-${String(m).padStart(2, "0")}-20`;
   })();
@@ -106,7 +118,17 @@ describe("consultas por dia usam o dia do hospital", () => {
   lateEnd.setUTCHours(lateEnd.getUTCHours() + 6);
 
   const ctx = (userId: number, role: "manager" | "doctor") =>
-    ({ user: { id: userId, role, name: "T", email: `${userId}@t.local`, sessionVersion: 1 }, institutionId, allowedInstitutionIds: [institutionId] }) as any;
+    ({
+      user: {
+        id: userId,
+        role,
+        name: "T",
+        email: `${userId}@t.local`,
+        sessionVersion: 1,
+      },
+      institutionId,
+      allowedInstitutionIds: [institutionId],
+    }) as any;
 
   beforeAll(async () => {
     const conn = await getDb();
@@ -114,20 +136,77 @@ describe("consultas por dia usam o dia do hospital", () => {
     db = conn;
     const [inst] = await db
       .insert(institutions)
-      .values({ name: `DL Tenant ${stamp}`, cnpj: `${stamp}`.slice(-14).padStart(14, "0"), legalName: `DL ${stamp}`, tradeName: `DL${stamp}`.slice(0, 20), isActive: true })
+      .values({
+        name: `DL Tenant ${stamp}`,
+        cnpj: `${stamp}`.slice(-14).padStart(14, "0"),
+        legalName: `DL ${stamp}`,
+        tradeName: `DL${stamp}`.slice(0, 20),
+        isActive: true,
+      })
       .$returningId();
     institutionId = inst.id;
-    const [h] = await db.insert(hospitals).values({ institutionId, name: `DL Hospital ${stamp}` }).$returningId();
+    const [h] = await db
+      .insert(hospitals)
+      .values({ institutionId, name: `DL Hospital ${stamp}` })
+      .$returningId();
     hospitalId = h.id;
-    const [sec] = await db.insert(sectors).values({ institutionId, hospitalId, name: `DL Setor ${stamp}`, category: "cirurgico", color: "#2563EB" }).$returningId();
+    const [sec] = await db
+      .insert(sectors)
+      .values({
+        institutionId,
+        hospitalId,
+        name: `DL Setor ${stamp}`,
+        category: "cirurgico",
+        color: "#2563EB",
+      })
+      .$returningId();
     sectorId = sec.id;
     anesthesiaId = await ensureTestAnesthesiaSpecialty(db);
-    scheduleContextId = await openTestScale(db, { institutionId, hospitalId, sectorId });
-    const person = async (tag: string, role: "manager" | "doctor", link: "GESTOR_PLUS" | "USER") => {
-      const [u] = await db.insert(users).values({ name: `DL ${tag} ${stamp}`, email: `dl-${tag}-${stamp}@test.local`, passwordHash: "test", role }).$returningId();
-      const [p] = await db.insert(professionals).values({ userId: u.id, name: `DL ${tag} ${stamp}`, role: "Médico", userRole: link, medicalSpecialtyId: anesthesiaId, specialty: "Anestesiologia" }).$returningId();
-      await db.insert(professionalInstitutions).values({ professionalId: p.id, userId: u.id, institutionId, roleInInstitution: link, isPrimary: true, active: true });
-      await db.insert(professionalAccess).values({ institutionId, professionalId: p.id, hospitalId, sectorId, canAccess: true });
+    scheduleContextId = await openTestScale(db, {
+      institutionId,
+      hospitalId,
+      sectorId,
+    });
+    const person = async (
+      tag: string,
+      role: "manager" | "doctor",
+      link: "GESTOR_PLUS" | "USER",
+    ) => {
+      const [u] = await db
+        .insert(users)
+        .values({
+          name: `DL ${tag} ${stamp}`,
+          email: `dl-${tag}-${stamp}@test.local`,
+          passwordHash: "test",
+          role,
+        })
+        .$returningId();
+      const [p] = await db
+        .insert(professionals)
+        .values({
+          userId: u.id,
+          name: `DL ${tag} ${stamp}`,
+          role: "Médico",
+          userRole: link,
+          medicalSpecialtyId: anesthesiaId,
+          specialty: "Anestesiologia",
+        })
+        .$returningId();
+      await db.insert(professionalInstitutions).values({
+        professionalId: p.id,
+        userId: u.id,
+        institutionId,
+        roleInInstitution: link,
+        isPrimary: true,
+        active: true,
+      });
+      await db.insert(professionalAccess).values({
+        institutionId,
+        professionalId: p.id,
+        hospitalId,
+        sectorId,
+        canAccess: true,
+      });
       return { userId: u.id, proId: p.id };
     };
     const m = await person("gestor", "manager", "GESTOR_PLUS");
@@ -139,36 +218,66 @@ describe("consultas por dia usam o dia do hospital", () => {
 
     const [s] = await db
       .insert(shiftInstances)
-      .values({ institutionId, hospitalId, sectorId, scheduleContextId, label: "Cinderela", startAt: lateStart, endAt: lateEnd, status: "VAGO" })
+      .values({
+        institutionId,
+        hospitalId,
+        sectorId,
+        scheduleContextId,
+        label: "Cinderela",
+        startAt: lateStart,
+        endAt: lateEnd,
+        status: "VAGO",
+      })
       .$returningId();
     lateShiftId = s.id;
   });
 
   afterAll(async () => {
-    const mine = await db.select({ id: shiftInstances.id }).from(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
+    const mine = await db
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.institutionId, institutionId));
     const ids = mine.map((s) => s.id);
     if (ids.length) {
-      await db.delete(shiftAssignmentsV2).where(inArray(shiftAssignmentsV2.shiftInstanceId, ids));
+      await db
+        .delete(shiftAssignmentsV2)
+        .where(inArray(shiftAssignmentsV2.shiftInstanceId, ids));
       await db.delete(shiftInstances).where(inArray(shiftInstances.id, ids));
     }
     const pros = [managerProId, doctorProId];
-    await db.delete(professionalAccess).where(inArray(professionalAccess.professionalId, pros));
-    await db.delete(managerScope).where(inArray(managerScope.managerProfessionalId, pros));
-    await db.delete(professionalInstitutions).where(inArray(professionalInstitutions.professionalId, pros));
+    await db
+      .delete(professionalAccess)
+      .where(inArray(professionalAccess.professionalId, pros));
+    await db
+      .delete(managerScope)
+      .where(inArray(managerScope.managerProfessionalId, pros));
+    await db
+      .delete(professionalInstitutions)
+      .where(inArray(professionalInstitutions.professionalId, pros));
     await db.delete(professionals).where(inArray(professionals.id, pros));
-    await db.delete(scheduleContexts).where(eq(scheduleContexts.id, scheduleContextId));
+    await db
+      .delete(scheduleContexts)
+      .where(eq(scheduleContexts.id, scheduleContextId));
     await db.delete(sectors).where(eq(sectors.id, sectorId));
     await db.delete(hospitals).where(eq(hospitals.id, hospitalId));
     await db.delete(institutions).where(eq(institutions.id, institutionId));
-    await db.delete(users).where(inArray(users.id, [managerUserId, doctorUserId]));
+    await db
+      .delete(users)
+      .where(inArray(users.id, [managerUserId, doctorUserId]));
   });
 
   it("listVacancies e summaryCounts: plantão das 22h é do dia D, não de D+1", async () => {
     const app = appRouter.createCaller(ctx(doctorUserId, "doctor"));
     const onD = await app.shiftInstances.listVacancies({ date: D });
-    const onD1 = await app.shiftInstances.listVacancies({ date: addDaysToKey(D, 1) });
-    expect(onD.map((v: any) => v.id ?? v.shiftInstanceId)).toContain(lateShiftId);
-    expect(onD1.map((v: any) => v.id ?? v.shiftInstanceId)).not.toContain(lateShiftId);
+    const onD1 = await app.shiftInstances.listVacancies({
+      date: addDaysToKey(D, 1),
+    });
+    expect(onD.map((v: any) => v.id ?? v.shiftInstanceId)).toContain(
+      lateShiftId,
+    );
+    expect(onD1.map((v: any) => v.id ?? v.shiftInstanceId)).not.toContain(
+      lateShiftId,
+    );
 
     const cD = await app.filters.summaryCounts({ date: D });
     const cD1 = await app.filters.summaryCounts({ date: addDaysToKey(D, 1) });
@@ -178,9 +287,17 @@ describe("consultas por dia usam o dia do hospital", () => {
 
   it("calendar.getDay(D) encontra o plantão e NÃO auto-cria turnos", async () => {
     const cal = calendarRouter.createCaller(ctx(managerUserId, "manager"));
-    const day = await cal.getDay({ institutionId, hospitalId, sectorId, date: D });
+    const day = await cal.getDay({
+      institutionId,
+      hospitalId,
+      sectorId,
+      date: D,
+    });
     expect(day.shifts.map((s) => s.shiftInstanceId)).toEqual([lateShiftId]);
-    const all = await db.select({ id: shiftInstances.id }).from(shiftInstances).where(eq(shiftInstances.institutionId, institutionId));
+    const all = await db
+      .select({ id: shiftInstances.id })
+      .from(shiftInstances)
+      .where(eq(shiftInstances.institutionId, institutionId));
     expect(all).toHaveLength(1);
   });
 
@@ -217,7 +334,11 @@ describe("consultas por dia usam o dia do hospital", () => {
     const selectSpy = vi.spyOn(db, "select");
     const res = await (async () => {
       try {
-        const result = await shifts.listAgenda({ startDate: monday, weeks: 1, scope: "geral" });
+        const result = await shifts.listAgenda({
+          startDate: monday,
+          weeks: 1,
+          scope: "geral",
+        });
         expect(selectSpy.mock.calls.length).toBeLessThan(10);
         return result;
       } finally {
@@ -229,7 +350,9 @@ describe("consultas por dia usam o dia do hospital", () => {
     const day = res.weeks[0].days.find((d) => d.date === D)!;
     expect(day).toBeTruthy();
     expect(day.dow).toBe(weekdayOfKey(D));
-    expect(day.groups.flatMap((g) => g.shifts.map((s) => s.id))).toEqual([lateShiftId]);
+    expect(day.groups.flatMap((g) => g.shifts.map((s) => s.id))).toEqual([
+      lateShiftId,
+    ]);
     const next = res.weeks[0].days.find((d) => d.date === addDaysToKey(D, 1));
     expect(next?.groups ?? []).toHaveLength(0);
   });

@@ -8,7 +8,12 @@ import { getDb } from "./db";
 import { activeShiftCounts } from "./shift-capacity";
 import { shiftCapacitySummary } from "../lib/shift-capacity";
 import { rowsFromExecute } from "./_core/db-results";
-import { dayWindowBrt, monthWindowBrt } from "./local-time";
+import {
+  dayWindowBrt,
+  isValidDayKeyBrt,
+  isValidYearMonthBrt,
+  monthWindowBrt,
+} from "./local-time";
 import { eq, and, gte, isNull, sql, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
@@ -486,7 +491,7 @@ export const filtersRouter = router({
     .input(
       z.object({
         hospitalId: z.number().int().positive(),
-        yearMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM"),
+        yearMonth: z.string().refine(isValidYearMonthBrt, "mês civil inválido"),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -520,7 +525,7 @@ export const filtersRouter = router({
   summaryCounts: protectedProcedure
     .input(
       z.object({
-        date: z.string(),
+        date: z.string().refine(isValidDayKeyBrt, "data civil inválida"),
         scheduleContextId: z.number().int().positive().optional(),
       }),
     )
@@ -633,7 +638,7 @@ export const filtersRouter = router({
   actionableVacancyCounts: protectedProcedure
     .input(
       actionableVacancyFiltersSchema.extend({
-        date: z.string(),
+        date: z.string().refine(isValidDayKeyBrt, "data civil inválida"),
       }),
     )
     .query(async ({ input, ctx }) => {

@@ -11,6 +11,14 @@
 export const SCHEDULE_TIME_ZONE_OFFSET = "-03:00";
 const OFFSET_MS = 3 * 60 * 60 * 1000;
 const DAY_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const YEAR_MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
+
+function formatCivilYear(year: number): string {
+  if (!Number.isSafeInteger(year) || year < 1 || year > 9999) {
+    throw new RangeError("Ano civil fora do intervalo 0001-9999");
+  }
+  return String(year).padStart(4, "0");
+}
 
 /** Valida uma data civil real, sem aceitar o overflow permissivo de `Date`. */
 export function isValidDayKeyBrt(dayKey: string): boolean {
@@ -44,6 +52,21 @@ function assertValidDayKeyBrt(dayKey: string): void {
   }
 }
 
+/** Valida uma chave mensal real no mesmo calendário civil das datas. */
+export function isValidYearMonthBrt(yearMonth: string): boolean {
+  const match = YEAR_MONTH_PATTERN.exec(yearMonth);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  return year >= 1 && year <= 9999 && month >= 1 && month <= 12;
+}
+
+function assertValidYearMonthBrt(yearMonth: string): void {
+  if (!isValidYearMonthBrt(yearMonth)) {
+    throw new RangeError("Mês civil inválido; use YYYY-MM com um mês real");
+  }
+}
+
 /** Mesmo instante, deslocado para que os getters UTC leiam o relógio de parede. */
 function asWallClock(date: Date): Date {
   return new Date(date.getTime() - OFFSET_MS);
@@ -52,7 +75,7 @@ function asWallClock(date: Date): Date {
 /** "YYYY-MM-DD" do instante no relógio do hospital. */
 export function dayKeyBrt(date: Date): string {
   const w = asWallClock(date);
-  return `${w.getUTCFullYear()}-${String(w.getUTCMonth() + 1).padStart(2, "0")}-${String(w.getUTCDate()).padStart(2, "0")}`;
+  return `${formatCivilYear(w.getUTCFullYear())}-${String(w.getUTCMonth() + 1).padStart(2, "0")}-${String(w.getUTCDate()).padStart(2, "0")}`;
 }
 
 /** "YYYY-MM" do instante no relógio do hospital. */
@@ -87,33 +110,53 @@ export function dayWindowBrt(dayKey: string): { start: Date; end: Date } {
 
 /** Soma meses civis em uma chave "YYYY-MM" (aritmética pura, sem Date). */
 export function addMonthsYearMonth(yearMonth: string, delta: number): string {
+  assertValidYearMonthBrt(yearMonth);
+  if (!Number.isSafeInteger(delta)) {
+    throw new RangeError("Deslocamento mensal deve ser um inteiro seguro");
+  }
   const [year, month] = yearMonth.split("-").map(Number);
   const total = year * 12 + (month - 1) + delta;
   const nextYear = Math.floor(total / 12);
   const nextMonth = ((total % 12) + 12) % 12;
-  return `${nextYear}-${String(nextMonth + 1).padStart(2, "0")}`;
+  return `${formatCivilYear(nextYear)}-${String(nextMonth + 1).padStart(2, "0")}`;
 }
 
 /** Janela [início, fim) de um mês "YYYY-MM" no relógio do hospital. */
 export function monthWindowBrt(yearMonth: string): { start: Date; end: Date } {
-  const start = new Date(`${yearMonth}-01T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`);
+  assertValidYearMonthBrt(yearMonth);
+  const start = new Date(
+    `${yearMonth}-01T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`,
+  );
   const next = addMonthsYearMonth(yearMonth, 1);
-  return { start, end: new Date(`${next}-01T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`) };
+  return {
+    start,
+    end: new Date(`${next}-01T00:00:00${SCHEDULE_TIME_ZONE_OFFSET}`),
+  };
 }
 
 /** Chave "YYYY-MM-DD" deslocada n dias (aritmética pura, sem fuso). */
 export function addDaysToKey(dayKey: string, days: number): string {
   assertValidDayKeyBrt(dayKey);
+  if (!Number.isSafeInteger(days)) {
+    throw new RangeError("Deslocamento diário deve ser um inteiro seguro");
+  }
   const [y, m, d] = dayKey.split("-").map(Number);
-  const t = new Date(Date.UTC(y, m - 1, d + days));
-  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
+  const t = new Date(0);
+  t.setUTCHours(0, 0, 0, 0);
+  // Date.UTC trata 0..99 como 1900..1999; setUTCFullYear preserva o ano civil.
+  t.setUTCFullYear(y, m - 1, d);
+  t.setUTCDate(t.getUTCDate() + days);
+  return `${formatCivilYear(t.getUTCFullYear())}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
 }
 
 /** Dia da semana da chave (0 = domingo … 6 = sábado). */
 export function weekdayOfKey(dayKey: string): number {
   assertValidDayKeyBrt(dayKey);
   const [y, m, d] = dayKey.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(y, m - 1, d);
+  return date.getUTCDay();
 }
 
 /** Segunda-feira da semana da chave. */

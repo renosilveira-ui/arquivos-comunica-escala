@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { rowsFromExecute } from "./_core/db-results";
-import { dayKeyBrt, dayWindowBrt } from "./local-time";
+import { dayKeyBrt, dayWindowBrt, isValidDayKeyBrt } from "./local-time";
 import { assertMonthNotLockedForUpdate } from "./month-guards";
 import { eq, and, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -548,7 +548,10 @@ const shiftAssignmentsRouter = router({
         .object({
           hospitalId: z.number().optional(),
           sectorId: z.number().optional(),
-          date: z.string().optional(),
+          date: z
+            .string()
+            .refine(isValidDayKeyBrt, "data civil inválida")
+            .optional(),
           shiftLabel: z.string().nullish(),
           modality: z.enum(["PLANTAO", "SOBREAVISO"]).optional(),
           coverageType: z.enum(["URGENCIA_EMERGENCIA", "ELETIVAS"]).optional(),
