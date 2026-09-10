@@ -571,6 +571,49 @@ describe("recusa explícita de convite nominal", () => {
     expect(access).toHaveLength(0);
   });
 
+  it("falha fechado quando o vínculo user_id aponta para professional de outro usuário", async () => {
+    const target = await createIdentity("crossed-membership-target", institutionA, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalA,
+      sectorId: sectorA,
+      withAccess: false,
+    });
+    const other = await createIdentity("crossed-membership-owner", institutionB, {
+      roleInInstitution: "USER",
+      hospitalId: hospitalB,
+      sectorId: sectorB,
+      withAccess: false,
+    });
+    await db
+      .update(professionalInstitutions)
+      .set({ professionalId: other.professionalId })
+      .where(
+        and(
+          eq(professionalInstitutions.userId, target.userId),
+          eq(professionalInstitutions.institutionId, institutionA),
+        ),
+      );
+
+    const { inviteId, code } = await createInvite(
+      institutionA,
+      hospitalA,
+      sectorA,
+      creator.userId,
+      target.userId,
+    );
+    const session = await login(target.email);
+    const redeemed = await redeemInvite(code, cookieOf(session));
+
+    expect(redeemed.status).toBe(409);
+    expect(redeemed.body.error).toContain("Identidade profissional inconsistente");
+    expect((await inviteRow(inviteId))?.redeemedCount).toBe(0);
+    const access = await db
+      .select({ id: professionalAccess.id })
+      .from(professionalAccess)
+      .where(eq(professionalAccess.professionalId, target.professionalId));
+    expect(access).toHaveLength(0);
+  });
+
   it("outro convite do mesmo usuário não é afetado", async () => {
     const first = await createInvite(
       institutionA,

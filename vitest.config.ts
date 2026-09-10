@@ -43,6 +43,7 @@ export default defineConfig({
       "tests/whatsapp-inbound-nl-poll-index-mysql.test.ts",
       "tests/professional-identity-migration-mysql.test.ts",
       "tests/institution-feature-entitlements-migration-mysql.test.ts",
+      "tests/schedule-invite-issuance-fence-migration-mysql.test.ts",
       "tests/whatsapp-continuation-migration-mysql.test.ts",
     ],
   },

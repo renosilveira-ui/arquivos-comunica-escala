@@ -39,29 +39,51 @@ describe("wiring fail-closed dos convites nominais", () => {
     expect(source).not.toContain("node:crypto");
   });
 
-  it("não confirma o convite se o correio não entregou, inclusive sem chave", () => {
+  it("só confirma após aceite do provedor e ativação local", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
-    expect(source).toContain("delivery = await mailer.sendMail(mail)");
-    expect(source).toContain("if (!delivery.delivered)");
-    expect(source).toContain("O e-mail de convite não saiu. Tente novamente.");
-    expect(source).toContain("DELIVERY_ACCEPTED_ACTIVATION_FAILED");
+    expect(source).toContain("providerResult = await mailer.sendMail(mail)");
+    expect(source).toContain(
+      "const providerAccepted = providerResult.delivered",
+    );
+    expect(source).toContain("if (!providerAccepted)");
+    expect(source).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
     expect(source).toContain("assertManagerScopeAccessForUpdate");
     expect(source).toContain("{ db: tx, strict: true }");
-    expect(source).toContain("nenhuma transação SQL");
-    expect(source).toContain("contrato hash-only");
-    expect(source).not.toContain(
-      'delivery.transport === "resend" && !delivery.delivered',
-    );
+    expect(source).toContain("aceite/enfileiramento pelo provedor");
+    expect(source).toContain("accepted,");
+    expect(source).not.toContain("withScheduleInviteIssuanceMutex");
+    expect(source).not.toContain("GET_LOCK");
+    expect(source).not.toContain("getConnection()");
   });
 
   it("a lista padrão inclui a sala de espera e filtra por nome sem acento", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
     expect(source).toContain("foldCandidateSearch");
-    expect(source).toContain("notExists");
-    expect(source).toContain("eq(professionalInstitutions.active, true)");
+    expect(source).toContain("row.active && row.institutionId");
+    expect(source).toContain(
+      "canonicalProfessionalByUser.get(row.userId) !== row.professionalId",
+    );
     expect(source).toContain("name: z.string().trim().max(120).optional()");
     expect(source).toContain(
       'foldCandidateSearch(row.name ?? "").includes(nameNeedle)',
+    );
+  });
+
+  it("documenta e materializa uma fence durável sem persistir segredo", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    const schema = readFileSync("drizzle/schema.ts", "utf8");
+    const migration = readFileSync(
+      "drizzle/migrations/manual/2026-09-10-schedule-invite-issuance-fences.sql",
+      "utf8",
+    );
+    expect(source).toContain("scheduleInviteIssuanceFences");
+    expect(schema).toContain("schedule_invite_issuance_fences");
+    expect(migration).toContain("schedule_invite_issuance_fences");
+    expect(schema).toContain("uniq_schedule_invite_issuance_scope");
+    expect(migration).toContain("PROVIDER_ACCEPTED_ACTIVATION_FAILED");
+    expect(migration).toContain("Aplicar ANTES do runtime");
+    expect(migration).not.toMatch(
+      /\b(code_hash|invited_email|plaintext_code|provider_payload)\b/i,
     );
   });
 

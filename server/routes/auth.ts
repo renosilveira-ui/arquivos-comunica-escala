@@ -3701,6 +3701,18 @@ authRouter.post(
 
     try {
       const joined = await db.transaction(async (tx) => {
+        // Ordem compartilhada com a emissão: user → professional → invite.
+        // Sem este gate, o resgate poderia segurar a identidade enquanto uma
+        // emissão segura o usuário e ambos aguardariam um ao outro.
+        const [lockedUser] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, authUser.id))
+          .limit(1)
+          .for("update");
+        if (!lockedUser) {
+          throw new ScheduleInviteError(409, "Profissional não encontrado");
+        }
         const professionalRows = await tx
           .select({
             id: professionals.id,

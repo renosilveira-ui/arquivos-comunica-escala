@@ -1594,6 +1594,104 @@ export const scheduleInvites = mysqlTable(
 
 export type ScheduleInvite = typeof scheduleInvites.$inferSelect;
 
+/**
+ * Fence durável da emissão de convite nominal.
+ *
+ * A linha serializa somente a preparação/ativação no banco. Nenhuma
+ * transação nem conexão do pool permanece aberta durante a chamada ao
+ * provedor de e-mail. `generation` impede que uma resposta atrasada ative um
+ * código depois de outra tentativa ter assumido o mesmo destinatário.
+ *
+ * Migração manual (obrigatoriamente antes do runtime):
+ * drizzle/migrations/manual/2026-09-10-schedule-invite-issuance-fences.sql
+ */
+export const scheduleInviteIssuanceFences = mysqlTable(
+  "schedule_invite_issuance_fences",
+  {
+    id: int("id").primaryKey().autoincrement(),
+    institutionId: int("institution_id").notNull(),
+    hospitalId: int("hospital_id").notNull(),
+    sectorId: int("sector_id").notNull(),
+    invitedUserId: int("invited_user_id").notNull(),
+    generation: int("generation", { unsigned: true }).notNull().default(0),
+    state: mysqlEnum("state", [
+      "IDLE",
+      "PREPARING",
+      "PROVIDER_ACCEPTED",
+      "ACTIVE",
+      "PROVIDER_REJECTED",
+      "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+    ])
+      .notNull()
+      .default("IDLE"),
+    leaseExpiresAt: timestamp("lease_expires_at"),
+    providerAcceptedAt: timestamp("provider_accepted_at"),
+    failureCode: varchar("failure_code", { length: 64 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    uniqScheduleInviteIssuanceScope: unique(
+      "uniq_schedule_invite_issuance_scope",
+    ).on(
+      table.institutionId,
+      table.hospitalId,
+      table.sectorId,
+      table.invitedUserId,
+    ),
+    fkScheduleInviteIssuanceHospitalTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId],
+      foreignColumns: [hospitals.institutionId, hospitals.id],
+      name: "fk_schedule_invite_issuance_hospital_topology",
+    }),
+    fkScheduleInviteIssuanceSectorTopology: foreignKey({
+      columns: [table.institutionId, table.hospitalId, table.sectorId],
+      foreignColumns: [sectors.institutionId, sectors.hospitalId, sectors.id],
+      name: "fk_schedule_invite_issuance_sector_topology",
+    }),
+    fkScheduleInviteIssuanceInvitedUser: foreignKey({
+      columns: [table.invitedUserId],
+      foreignColumns: [users.id],
+      name: "fk_schedule_invite_issuance_invited_user",
+    }).onDelete("cascade"),
+    chkScheduleInviteIssuanceGeneration: check(
+      "chk_schedule_invite_issuance_generation",
+      sql`(
+        (${table.state} = 'IDLE' AND ${table.generation} = 0)
+        OR
+        (${table.state} <> 'IDLE' AND ${table.generation} > 0)
+      )`,
+    ),
+    chkScheduleInviteIssuanceLeaseShape: check(
+      "chk_schedule_invite_issuance_lease_shape",
+      sql`(
+        (${table.state} IN ('PREPARING', 'PROVIDER_ACCEPTED') AND ${table.leaseExpiresAt} IS NOT NULL)
+        OR
+        (${table.state} NOT IN ('PREPARING', 'PROVIDER_ACCEPTED') AND ${table.leaseExpiresAt} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceAcceptedShape: check(
+      "chk_schedule_invite_issuance_accepted_shape",
+      sql`(
+        (${table.state} IN ('PROVIDER_ACCEPTED', 'ACTIVE', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.providerAcceptedAt} IS NOT NULL)
+        OR
+        (${table.state} NOT IN ('PROVIDER_ACCEPTED', 'ACTIVE', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.providerAcceptedAt} IS NULL)
+      )`,
+    ),
+    chkScheduleInviteIssuanceFailureShape: check(
+      "chk_schedule_invite_issuance_failure_shape",
+      sql`(
+        (${table.state} IN ('PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NOT NULL)
+        OR
+        (${table.state} NOT IN ('PROVIDER_REJECTED', 'PROVIDER_ACCEPTED_ACTIVATION_FAILED') AND ${table.failureCode} IS NULL)
+      )`,
+    ),
+  }),
+);
+
+export type ScheduleInviteIssuanceFence =
+  typeof scheduleInviteIssuanceFences.$inferSelect;
+
 // ========================================
 // INSTÂNCIAS DE TURNO E ALOCAÇÕES (V2)
 // ========================================

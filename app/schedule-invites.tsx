@@ -71,11 +71,13 @@ export default function ScheduleInvitesScreen() {
       ]);
       const failedNote =
         result.failed.length > 0
-          ? ` ${result.failed.length} não saíram.`
+          ? ` ${result.failed.length} não foram ativados.`
           : "";
       uiAlert(
-        "Convites enviados",
-        `${result.sent.length} convite(s) de 24 horas saíram por e-mail.${failedNote}`,
+        result.accepted.length > 0
+          ? "Convites aceitos pelo provedor"
+          : "Nenhum convite ativado",
+        `${result.accepted.length} convite(s) de 24 horas foram aceitos pelo provedor de e-mail e ativados. A entrega final depende do provedor.${failedNote}`,
       );
     } catch (error) {
       uiAlert(
@@ -282,11 +284,11 @@ export default function ScheduleInvitesScreen() {
             marginBottom: theme.space[2],
           }}
         >
-          Convites enviados
+          Convites ativos
         </Text>
         {active.isError ? (
           <QueryErrorState
-            title="Não foi possível carregar os convites enviados"
+            title="Não foi possível carregar os convites ativos"
             onRetry={() => active.refetch()}
           />
         ) : null}

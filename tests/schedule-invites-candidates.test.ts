@@ -17,6 +17,7 @@ import {
   professionalInstitutions,
   professionals,
   scheduleContexts,
+  scheduleInviteIssuanceFences,
   scheduleInvites,
   sectors,
   users,
@@ -25,6 +26,7 @@ import { getDb } from "../server/db";
 import { mailer } from "../server/mailer";
 import { appRouter } from "../server/routers";
 import * as auditTrail from "../server/audit-trail";
+import { __scheduleInviteTestHooks } from "../server/schedule-invites";
 import {
   hashScheduleInviteCode,
   normalizeScheduleInviteCode,
@@ -345,6 +347,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     });
 
     afterEach(() => {
+      __scheduleInviteTestHooks.afterActivationFenceLocked = undefined;
       mailSpy.mockRestore();
     });
 
@@ -380,13 +383,15 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     it("recusa convidar médico de hospital irmão informado direto por id", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
-        await expect(
-          caller().scheduleInvites.create({
-            hospitalId,
-            sectorId,
-            userIds: [otherHospitalUserId],
-          }),
-        ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+        const result = await caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [otherHospitalUserId],
+        });
+        expect(result.accepted).toHaveLength(0);
+        expect(result.failed).toEqual([
+          { userId: otherHospitalUserId, error: "Médico não encontrado" },
+        ]);
         // Rejeitado antes de qualquer envio: nenhuma tentativa de e-mail.
         expect(mailSpy).not.toHaveBeenCalled();
         // Observabilidade: a recusa por id inelegível deixa sinal (sem PII).
@@ -401,13 +406,15 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
     });
 
     it("recusa convidar médico travado em outra instituição por id", async () => {
-      await expect(
-        caller().scheduleInvites.create({
-          hospitalId,
-          sectorId,
-          userIds: [otherHouseUserId],
-        }),
-      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      const result = await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [otherHouseUserId],
+      });
+      expect(result.accepted).toHaveLength(0);
+      expect(result.failed).toEqual([
+        { userId: otherHouseUserId, error: "Médico não encontrado" },
+      ]);
       expect(mailSpy).not.toHaveBeenCalled();
     });
 
@@ -424,16 +431,16 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         ],
       });
 
-      const sentIds = result.sent.map((row) => row.userId);
+      const acceptedIds = result.accepted.map((row) => row.userId);
       const failedIds = result.failed.map((row) => row.userId);
 
       // Não pode over-bloquear: sala de espera E membro da casa continuam
       // convidáveis pelo create.
-      expect(sentIds).toContain(waitingUserId);
-      expect(sentIds).toContain(houseUserId);
-      expect(sentIds).not.toContain(otherHospitalUserId);
-      expect(sentIds).not.toContain(otherHouseUserId);
-      expect(sentIds).not.toContain(alreadyInScaleUserId);
+      expect(acceptedIds).toContain(waitingUserId);
+      expect(acceptedIds).toContain(houseUserId);
+      expect(acceptedIds).not.toContain(otherHospitalUserId);
+      expect(acceptedIds).not.toContain(otherHouseUserId);
+      expect(acceptedIds).not.toContain(alreadyInScaleUserId);
       expect(failedIds).toEqual(
         expect.arrayContaining([
           otherHospitalUserId,
@@ -469,17 +476,61 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         sectorId,
       });
       expect(listed.map((row) => row.userId)).not.toContain(target.userId);
-      await expect(
-        caller().scheduleInvites.create({
-          hospitalId,
-          sectorId,
-          userIds: [target.userId],
-        }),
-      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      const result = await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      expect(result.accepted).toHaveLength(0);
+      expect(result.failed).toEqual([
+        { userId: target.userId, error: "Médico não encontrado" },
+      ]);
       expect(mailSpy).not.toHaveBeenCalled();
     });
 
-    it("falha de uma nova entrega preserva o convite ativo anterior", async () => {
+    it("omite vínculo institucional cujo professional pertence a outro usuário", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `crossed-membership-target-${Date.now()}`,
+        name: "Vínculo Profissional Cruzado",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      const other = await createDoctor({
+        stamp: Date.now(),
+        label: `crossed-membership-other-${Date.now()}`,
+        name: "Outro Dono do Profissional",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      await db.insert(professionalInstitutions).values({
+        professionalId: other.professionalId,
+        userId: target.userId,
+        institutionId,
+        roleInInstitution: "USER",
+        isPrimary: true,
+        active: true,
+      });
+
+      const listed = await caller().scheduleInvites.listCandidates({
+        hospitalId,
+        sectorId,
+      });
+      expect(listed.map((row) => row.userId)).not.toContain(target.userId);
+
+      const result = await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      expect(result.accepted).toHaveLength(0);
+      expect(result.failed).toEqual([
+        { userId: target.userId, error: "Médico não encontrado" },
+      ]);
+      expect(mailSpy).not.toHaveBeenCalled();
+    });
+
+    it("convite ativo impõe cooldown e nunca é substituído silenciosamente", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
         label: `preserve-${Date.now()}`,
@@ -495,23 +546,20 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       const before = await activeInvitesFor(target.userId);
       expect(before).toHaveLength(1);
 
-      mailSpy.mockResolvedValueOnce({
-        delivered: false,
-        transport: "resend",
-        error: "HTTP 503",
+      const providerCallsBeforeRetry = mailSpy.mock.calls.length;
+      const retry = await caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
       });
-      await expect(
-        caller().scheduleInvites.create({
-          hospitalId,
-          sectorId,
-          userIds: [target.userId],
-        }),
-      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+      expect(retry.accepted).toHaveLength(0);
+      expect(retry.failed[0]?.error).toContain("Já existe um convite ativo");
+      expect(mailSpy).toHaveBeenCalledTimes(providerCallsBeforeRetry);
       expect(await activeInvitesFor(target.userId)).toEqual(before);
     });
 
-    it("A sucesso lento e B falha rápida mantêm A ativo", async () => {
+    it("A lento e B concorrente: somente A chega ao provedor e pode confirmar sucesso", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
         label: `success-failure-${Date.now()}`,
@@ -519,23 +567,17 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         specialtyId: anesthesiaId,
         specialtyLabel: "Anestesiologia",
       });
-      mailSpy
-        .mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              setTimeout(
-                () => resolve({ delivered: true, transport: "resend" }),
-                40,
-              );
-            }),
-        )
-        .mockResolvedValueOnce({
-          delivered: false,
-          transport: "resend",
-          error: "HTTP 503",
-        });
+      mailSpy.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            setTimeout(
+              () => resolve({ delivered: true, transport: "resend" }),
+              40,
+            );
+          }),
+      );
 
-      const [attemptA, attemptB] = await Promise.allSettled([
+      const [attemptA, attemptB] = await Promise.all([
         caller().scheduleInvites.create({
           hospitalId,
           sectorId,
@@ -547,8 +589,10 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
           userIds: [target.userId],
         }),
       ]);
-      expect(attemptA.status).toBe("fulfilled");
-      expect(attemptB.status).toBe("rejected");
+      expect(attemptA.accepted).toHaveLength(1);
+      expect(attemptB.accepted).toHaveLength(0);
+      expect(attemptB.failed[0]?.error).toContain("em andamento");
+      expect(mailSpy).toHaveBeenCalledTimes(1);
       const firstCode = inviteCodeFromMailCall(0);
       expect(await activeInvitesFor(target.userId)).toEqual([
         expect.objectContaining({
@@ -559,7 +603,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       ]);
     });
 
-    it("duas entregas concorrentes deixam ativo o último código efetivamente entregue", async () => {
+    it("duas requisições concorrentes nunca confirmam dois códigos", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
         label: `both-success-${Date.now()}`,
@@ -567,7 +611,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         specialtyId: anesthesiaId,
         specialtyLabel: "Anestesiologia",
       });
-      const deliveredCodes: string[] = [];
+      const acceptedCodes: string[] = [];
       mailSpy.mockImplementation(async (message) => {
         const match = message.text.match(
           /cole o convite: ([A-Z2-9]{4}-[A-Z2-9]{4})/,
@@ -576,7 +620,7 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         if (mailSpy.mock.calls.length === 1) {
           await new Promise((resolve) => setTimeout(resolve, 40));
         }
-        deliveredCodes.push(match[1]);
+        acceptedCodes.push(match[1]);
         return { delivered: true, transport: "resend" };
       });
 
@@ -592,19 +636,24 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
           userIds: [target.userId],
         }),
       ]);
-      expect(attempts.every((attempt) => attempt.sent.length === 1)).toBe(true);
-      expect(deliveredCodes).toHaveLength(2);
-      const lastDelivered = deliveredCodes.at(-1)!;
+      expect(
+        attempts.reduce((sum, attempt) => sum + attempt.accepted.length, 0),
+      ).toBe(1);
+      expect(
+        attempts.reduce((sum, attempt) => sum + attempt.failed.length, 0),
+      ).toBe(1);
+      expect(acceptedCodes).toHaveLength(1);
+      const onlyAcceptedCode = acceptedCodes[0]!;
       expect(await activeInvitesFor(target.userId)).toEqual([
         expect.objectContaining({
           codeHash: hashScheduleInviteCode(
-            normalizeScheduleInviteCode(lastDelivered),
+            normalizeScheduleInviteCode(onlyAcceptedCode),
           ),
         }),
       ]);
     });
 
-    it("revogação de autoridade enquanto B aguarda o mutex bloqueia A e B", async () => {
+    it("revogação de autoridade durante a rede impede ativação", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
         label: `revoked-authority-${Date.now()}`,
@@ -613,38 +662,27 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         specialtyLabel: "Anestesiologia",
       });
       let releaseFirst!: () => void;
+      let markMailStarted!: () => void;
       const firstCanFinish = new Promise<void>((resolve) => {
         releaseFirst = resolve;
       });
+      const mailStarted = new Promise<void>((resolve) => {
+        markMailStarted = resolve;
+      });
       mailSpy
         .mockImplementationOnce(async () => {
+          markMailStarted();
           await firstCanFinish;
           return { delivered: true, transport: "resend" };
         })
         .mockResolvedValue({ delivered: true, transport: "resend" });
 
-      const attemptA = caller()
-        .scheduleInvites.create({
-          hospitalId,
-          sectorId,
-          userIds: [target.userId],
-        })
-        .then(
-          (value) => ({ status: "fulfilled" as const, value }),
-          (reason: unknown) => ({ status: "rejected" as const, reason }),
-        );
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      const attemptB = caller()
-        .scheduleInvites.create({
-          hospitalId,
-          sectorId,
-          userIds: [target.userId],
-        })
-        .then(
-          (value) => ({ status: "fulfilled" as const, value }),
-          (reason: unknown) => ({ status: "rejected" as const, reason }),
-        );
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      const attemptA = caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
+      await mailStarted;
 
       try {
         await db
@@ -659,18 +697,9 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
             ),
           );
         releaseFirst();
-        const attempts = await Promise.all([attemptA, attemptB]);
-        expect(attempts.map((attempt) => attempt.status)).toEqual([
-          "rejected",
-          "rejected",
-        ]);
-        for (const attempt of attempts) {
-          if (attempt.status === "rejected") {
-            expect(attempt.reason).toMatchObject({
-              code: expect.stringMatching(/^(FORBIDDEN|CONFLICT)$/),
-            });
-          }
-        }
+        const result = await attemptA;
+        expect(result.accepted).toHaveLength(0);
+        expect(result.failed[0]?.error).toContain("não foi ativado");
         expect(await activeInvitesFor(target.userId)).toHaveLength(0);
       } finally {
         releaseFirst();
@@ -715,16 +744,11 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         return { delivered: true, transport: "resend" };
       });
 
-      const attempt = caller()
-        .scheduleInvites.create({
-          hospitalId,
-          sectorId,
-          userIds: [target.userId],
-        })
-        .then(
-          (value) => ({ status: "fulfilled" as const, value }),
-          (reason: unknown) => ({ status: "rejected" as const, reason }),
-        );
+      const attempt = caller().scheduleInvites.create({
+        hospitalId,
+        sectorId,
+        userIds: [target.userId],
+      });
       await mailStarted;
 
       // Se uma transação SQL estivesse aberta durante a rede, esta escrita
@@ -739,14 +763,12 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
       releaseMail();
 
       const result = await attempt;
-      expect(result.status).toBe("rejected");
-      if (result.status === "rejected") {
-        expect(result.reason).toMatchObject({ code: "BAD_REQUEST" });
-      }
+      expect(result.accepted).toHaveLength(0);
+      expect(result.failed[0]?.error).toContain("não foi ativado");
       expect(await activeInvitesFor(target.userId)).toHaveLength(0);
     });
 
-    it("exceção de transporte preserva o convite anterior", async () => {
+    it("exceção de transporte não ativa convite e retorna falha por destinatário", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
         label: `transport-crash-${Date.now()}`,
@@ -754,26 +776,18 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         specialtyId: anesthesiaId,
         specialtyLabel: "Anestesiologia",
       });
-      await caller().scheduleInvites.create({
+      mailSpy.mockRejectedValueOnce(new Error("simulated transport crash"));
+      const result = await caller().scheduleInvites.create({
         hospitalId,
         sectorId,
         userIds: [target.userId],
       });
-      const before = await activeInvitesFor(target.userId);
-      expect(before).toHaveLength(1);
-
-      mailSpy.mockRejectedValueOnce(new Error("simulated transport crash"));
-      await expect(
-        caller().scheduleInvites.create({
-          hospitalId,
-          sectorId,
-          userIds: [target.userId],
-        }),
-      ).rejects.toBeTruthy();
-      expect(await activeInvitesFor(target.userId)).toEqual(before);
+      expect(result.accepted).toHaveLength(0);
+      expect(result.failed[0]?.error).toContain("não aceitou");
+      expect(await activeInvitesFor(target.userId)).toHaveLength(0);
     });
 
-    it("falha de ativação após aceite do provedor faz rollback e preserva o convite anterior", async () => {
+    it("falha de ativação após aceite fica durável e não confirma sucesso", async () => {
       const target = await createDoctor({
         stamp: Date.now(),
         label: `activation-crash-${Date.now()}`,
@@ -781,29 +795,266 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         specialtyId: anesthesiaId,
         specialtyLabel: "Anestesiologia",
       });
-      await caller().scheduleInvites.create({
-        hospitalId,
-        sectorId,
-        userIds: [target.userId],
-      });
-      const before = await activeInvitesFor(target.userId);
-      expect(before).toHaveLength(1);
-
       const auditSpy = vi
         .spyOn(auditTrail, "recordAudit")
         .mockRejectedValueOnce(new Error("simulated activation crash"));
       try {
-        await expect(
+        const result = await caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        });
+        expect(result.accepted).toHaveLength(0);
+        expect(result.failed[0]?.error).toContain("não foi ativado");
+        expect(await activeInvitesFor(target.userId)).toHaveLength(0);
+        const [fence] = await db
+          .select({
+            state: scheduleInviteIssuanceFences.state,
+            failureCode: scheduleInviteIssuanceFences.failureCode,
+            providerAcceptedAt:
+              scheduleInviteIssuanceFences.providerAcceptedAt,
+          })
+          .from(scheduleInviteIssuanceFences)
+          .where(
+            and(
+              eq(scheduleInviteIssuanceFences.institutionId, institutionId),
+              eq(scheduleInviteIssuanceFences.hospitalId, hospitalId),
+              eq(scheduleInviteIssuanceFences.sectorId, sectorId),
+              eq(scheduleInviteIssuanceFences.invitedUserId, target.userId),
+            ),
+          );
+        expect(fence).toMatchObject({
+          state: "PROVIDER_ACCEPTED_ACTIVATION_FAILED",
+          failureCode: "ACTIVATION_EXCEPTION",
+          providerAcceptedAt: expect.any(Date),
+        });
+      } finally {
+        auditSpy.mockRestore();
+      }
+    });
+
+    it("lê revogação corrente feita dentro da segunda transação", async () => {
+      const target = await createDoctor({
+        stamp: Date.now(),
+        label: `second-tx-current-read-${Date.now()}`,
+        name: "Leitura Corrente na Ativação",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+      });
+      __scheduleInviteTestHooks.afterActivationFenceLocked = async () => {
+        await db
+          .update(managerScope)
+          .set({ active: false })
+          .where(
+            and(
+              eq(managerScope.institutionId, institutionId),
+              eq(managerScope.managerProfessionalId, managerProfessionalId),
+              eq(managerScope.hospitalId, hospitalId),
+              eq(managerScope.sectorId, sectorId),
+            ),
+          );
+      };
+
+      try {
+        const result = await caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [target.userId],
+        });
+        expect(result.accepted).toHaveLength(0);
+        expect(result.failed[0]?.error).toContain("não foi ativado");
+        expect(await activeInvitesFor(target.userId)).toHaveLength(0);
+      } finally {
+        __scheduleInviteTestHooks.afterActivationFenceLocked = undefined;
+        await db
+          .update(managerScope)
+          .set({ active: true })
+          .where(
+            and(
+              eq(managerScope.institutionId, institutionId),
+              eq(managerScope.managerProfessionalId, managerProfessionalId),
+              eq(managerScope.hospitalId, hospitalId),
+              eq(managerScope.sectorId, sectorId),
+            ),
+          );
+      }
+    });
+
+    it("dez chamadas lentas não retêm as dez conexões do pool", async () => {
+      const targets = await Promise.all(
+        Array.from({ length: 10 }, (_, index) =>
+          createDoctor({
+            stamp: Date.now() + index,
+            label: `pool-${index}-${Date.now()}`,
+            name: `Pool Livre ${index}`,
+            specialtyId: anesthesiaId,
+            specialtyLabel: "Anestesiologia",
+          }),
+        ),
+      );
+      let started = 0;
+      let markAllStarted!: () => void;
+      let releaseProvider!: () => void;
+      const allStarted = new Promise<void>((resolve) => {
+        markAllStarted = resolve;
+      });
+      const providerCanFinish = new Promise<void>((resolve) => {
+        releaseProvider = resolve;
+      });
+      mailSpy.mockImplementation(async () => {
+        started += 1;
+        if (started === targets.length) markAllStarted();
+        await providerCanFinish;
+        return { delivered: true, transport: "resend" };
+      });
+
+      const requests = Promise.all(
+        targets.map((target) =>
           caller().scheduleInvites.create({
             hospitalId,
             sectorId,
             userIds: [target.userId],
           }),
-        ).rejects.toThrow("simulated activation crash");
-        expect(await activeInvitesFor(target.userId)).toEqual(before);
+        ),
+      );
+      try {
+        await Promise.race([
+          allStarted,
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("As chamadas não chegaram ao provedor")),
+              8_000,
+            ),
+          ),
+        ]);
+        const probe = await Promise.race([
+          db.execute(sql`SELECT 1`).then(() => "available" as const),
+          new Promise<"exhausted">((resolve) =>
+            setTimeout(() => resolve("exhausted"), 500),
+          ),
+        ]);
+        expect(probe).toBe("available");
       } finally {
-        auditSpy.mockRestore();
+        releaseProvider();
       }
+      const results = await requests;
+      expect(
+        results.reduce((sum, result) => sum + result.accepted.length, 0),
+      ).toBe(10);
+    }, 15_000);
+
+    it("ordena os locks quando dois gestores convidam um ao outro", async () => {
+      const secondManager = await createDoctor({
+        stamp: Date.now(),
+        label: `cross-manager-${Date.now()}`,
+        name: "Segundo Gestor Concorrente",
+        specialtyId: anesthesiaId,
+        specialtyLabel: "Anestesiologia",
+        institutionId,
+      });
+      await db
+        .update(users)
+        .set({ role: "manager" })
+        .where(eq(users.id, secondManager.userId));
+      await db
+        .update(professionals)
+        .set({ userRole: "GESTOR_MEDICO" })
+        .where(eq(professionals.id, secondManager.professionalId));
+      await db
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "GESTOR_MEDICO" })
+        .where(
+          and(
+            eq(
+              professionalInstitutions.professionalId,
+              secondManager.professionalId,
+            ),
+            eq(professionalInstitutions.userId, secondManager.userId),
+            eq(professionalInstitutions.institutionId, institutionId),
+          ),
+        );
+      await db.insert(managerScope).values({
+        institutionId,
+        managerProfessionalId: secondManager.professionalId,
+        hospitalId,
+        sectorId,
+        active: true,
+      });
+      const [secondManagerSession] = await db
+        .select({ sessionVersion: users.sessionVersion })
+        .from(users)
+        .where(eq(users.id, secondManager.userId));
+      const secondCaller = appRouter.createCaller({
+        user: {
+          id: secondManager.userId,
+          role: "manager",
+          name: "Segundo Gestor Concorrente",
+          email: `segundo-gestor-${secondManager.userId}@test.local`,
+          sessionVersion: secondManagerSession!.sessionVersion,
+        },
+        institutionId,
+        allowedInstitutionIds: [institutionId],
+      } as never);
+
+      let providerCalls = 0;
+      let markBothStarted!: () => void;
+      let releaseProvider!: () => void;
+      const bothStarted = new Promise<void>((resolve) => {
+        markBothStarted = resolve;
+      });
+      const providerCanFinish = new Promise<void>((resolve) => {
+        releaseProvider = resolve;
+      });
+      mailSpy.mockImplementation(async () => {
+        providerCalls += 1;
+        if (providerCalls === 2) markBothStarted();
+        await providerCanFinish;
+        return { delivered: true, transport: "resend" };
+      });
+
+      const requests = [
+        caller().scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [secondManager.userId],
+        }),
+        secondCaller.scheduleInvites.create({
+          hospitalId,
+          sectorId,
+          userIds: [managerUserId],
+        }),
+      ];
+      let startFailure: unknown;
+      try {
+        await Promise.race([
+          bothStarted,
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("As duas emissões não alcançaram o provedor")),
+              3_000,
+            ),
+          ),
+        ]);
+      } catch (error) {
+        startFailure = error;
+      } finally {
+        releaseProvider();
+      }
+      const settled = await Promise.allSettled(requests);
+      if (startFailure) throw startFailure;
+
+      expect(settled).toEqual([
+        expect.objectContaining({ status: "fulfilled" }),
+        expect.objectContaining({ status: "fulfilled" }),
+      ]);
+      const results = settled.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      expect(
+        results.reduce((sum, result) => sum + result.accepted.length, 0),
+      ).toBe(2);
+      expect(await activeInvitesFor(secondManager.userId)).toHaveLength(1);
+      expect(await activeInvitesFor(managerUserId)).toHaveLength(1);
     });
 
     it("serializa reemissões concorrentes e preserva exatamente um convite ativo", async () => {
@@ -825,7 +1076,13 @@ describe("scheduleInvites.listCandidates — sala de espera e busca por nome", (
         ),
       );
       expect(attempts).toHaveLength(6);
-      expect(attempts.every((attempt) => attempt.sent.length === 1)).toBe(true);
+      expect(
+        attempts.reduce((sum, attempt) => sum + attempt.accepted.length, 0),
+      ).toBe(1);
+      expect(
+        attempts.reduce((sum, attempt) => sum + attempt.failed.length, 0),
+      ).toBe(5);
+      expect(mailSpy).toHaveBeenCalledTimes(1);
 
       const active = await db
         .select({ id: scheduleInvites.id })

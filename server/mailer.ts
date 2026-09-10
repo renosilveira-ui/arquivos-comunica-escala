@@ -18,6 +18,11 @@ export interface MailMessage {
 }
 
 export interface MailResult {
+  /**
+   * Nome legado. Em transporte HTTP, `true` prova apenas aceite/enfileiramento
+   * pelo provedor; entrega final depende de evento posterior e não é
+   * observada por este adapter.
+   */
   delivered: boolean;
   transport: "resend" | "console";
   error?: string;
@@ -69,6 +74,7 @@ async function sendViaResend(apiKey: string, from: string, msg: MailMessage): Pr
       console.error(`[mailer] Resend respondeu ${res.status}`);
       return { delivered: false, transport: "resend", error: `HTTP ${res.status}` };
     }
+    // HTTP 2xx da Resend é aceite/enfileiramento, não entrega final.
     return { delivered: true, transport: "resend" };
   } catch (err) {
     if (isTimeoutOrAbort(err)) {
