@@ -120,6 +120,33 @@ function isMysqlDuplicateKey(error: unknown): boolean {
   );
 }
 
+async function assertOpenSwapNotDismissedByActor(
+  db: any,
+  swap: SwapRow,
+  actor: TenantActor,
+): Promise<void> {
+  if (!isOpenSwapOffer(swap)) return;
+
+  const [dismissal] = await db
+    .select({ id: swapRequestDismissals.id })
+    .from(swapRequestDismissals)
+    .where(
+      and(
+        eq(swapRequestDismissals.swapRequestId, swap.id),
+        eq(swapRequestDismissals.institutionId, swap.institutionId),
+        eq(swapRequestDismissals.userId, actor.userId),
+      ),
+    )
+    .limit(1);
+
+  if (dismissal) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Você já recusou esta oferta.",
+    });
+  }
+}
+
 export function isExpectedSwapVisibilityDenial(error: unknown): boolean {
   return (
     error instanceof TRPCError &&
@@ -1936,6 +1963,7 @@ export const swapRouter = router({
         false,
         expectedSessionVersion,
       );
+      await assertOpenSwapNotDismissedByActor(db, swap, actor);
       assertSwapShiftsNotStarted(
         preflight.source.shift,
         preflight.toTuple?.shift ?? null,
@@ -2005,6 +2033,7 @@ export const swapRouter = router({
           true,
           expectedSessionVersion,
         );
+        await assertOpenSwapNotDismissedByActor(tx, current, actor);
         assertSwapShiftsNotStarted(
           locked.source.shift,
           locked.toTuple?.shift ?? null,
