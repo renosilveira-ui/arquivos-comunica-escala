@@ -608,7 +608,7 @@ function EditUserModal({
   const [managerScopes, setManagerScopes] = useState<ManagerScopeDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // Redefinição de senha (frente A3): enviada por e-mail ao usuário.
+  // Redefinição de senha: link de uso único enviado ao usuário.
   const [resetting, setResetting] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
 
@@ -637,7 +637,7 @@ function EditUserModal({
   const handleResetPassword = async () => {
     if (!editUser) return;
     const confirmed = await confirmAction(
-      `Redefinir a senha de ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual deixa de valer. Uma senha temporária será enviada por e-mail e o usuário terá que trocá-la no próximo login.`,
+      `Enviar um link de redefinição para ${editUser.name ?? editUser.email ?? "este usuário"}?\n\nA senha atual continuará válida até que o usuário abra o link e escolha uma nova senha. O link é de uso único e expira em 30 minutos.`,
     );
     if (!confirmed) return;
     setResetting(true);
@@ -926,7 +926,7 @@ function EditUserModal({
             )}
           </TouchableOpacity>
 
-          {/* Redefinir senha (senha temporária + troca obrigatória) */}
+          {/* Redefinir senha por link de uso único */}
           <View
             style={{
               marginTop: theme.space[4],
@@ -951,9 +951,9 @@ function EditUserModal({
                     color: theme.colors.textSecondary,
                   }}
                 >
-                  Senha temporária enviada por e-mail para{" "}
-                  {editUser.email ?? "o usuário"}. A senha atual deixou de valer
-                  e será obrigatório trocá-la no próximo login.
+                  Link de redefinição enviado por e-mail para{" "}
+                  {editUser.email ?? "o usuário"}. A senha atual continua válida
+                  até o resgate do link.
                 </Text>
               </View>
             ) : (
@@ -961,7 +961,7 @@ function EditUserModal({
                 onPress={handleResetPassword}
                 disabled={resetting}
                 accessibilityRole="button"
-                accessibilityLabel="Redefinir senha do usuário"
+                accessibilityLabel="Enviar link de redefinição de senha"
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
@@ -986,7 +986,7 @@ function EditUserModal({
                         color: theme.colors.warning,
                       }}
                     >
-                      Redefinir senha
+                      Enviar link de redefinição
                     </Text>
                   </>
                 )}

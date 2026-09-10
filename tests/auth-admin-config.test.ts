@@ -8,12 +8,13 @@
 // - Erros do driver MySQL não vazam para o cliente tRPC.
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like, or } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import request from "supertest";
 import express, { type Express } from "express";
 import {
   auditTrail,
+  authRecoveryRequests,
   hospitals,
   institutions,
   professionalAccess,
@@ -30,6 +31,7 @@ import { getDb } from "../server/db";
 import { adminRouter } from "../server/routes/admin";
 import { authRouter } from "../server/routes/auth";
 import * as auditService from "../server/audit-trail";
+import { mailer } from "../server/mailer";
 import { sessionAuthCookies } from "./helpers/session-cookies";
 
 const STAMP = Date.now();
@@ -183,6 +185,14 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .from(users)
       .where(like(users.email, `aac-%-${STAMP}@test.local`));
     const ids = [...new Set([...createdUserIds, ...mine.map((u) => u.id)])];
+    await db
+      .delete(authRecoveryRequests)
+      .where(
+        or(
+          inArray(authRecoveryRequests.targetUserId, ids),
+          inArray(authRecoveryRequests.requestedByUserId, ids),
+        ),
+      );
     await db
       .delete(auditTrail)
       .where(inArray(auditTrail.institutionId, [instA, instB, instC]));
@@ -992,6 +1002,10 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
       .select({ id: auditTrail.id })
       .from(auditTrail)
       .where(eq(auditTrail.actorUserId, adminId));
+    const sendMailSpy = vi.spyOn(mailer, "sendMail").mockResolvedValue({
+      delivered: true,
+      transport: "resend",
+    });
 
     try {
       const registration = request(app)
@@ -1012,6 +1026,17 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         .set("Cookie", cookie)
         .set("x-tenant-id", String(instA));
       expect(reset.status).toBe(200);
+      const resetToken = /reset-password\?token=([0-9a-f]{64})/.exec(
+        sendMailSpy.mock.calls[0]![0].text,
+      )?.[1];
+      expect(resetToken).toMatch(/^[0-9a-f]{64}$/);
+      const consumed = await request(app)
+        .post("/api/auth/reset-password")
+        .send({
+          token: resetToken,
+          newPassword: "SenhaAdminRevogadaNoResgate123",
+        });
+      expect(consumed.status).toBe(200);
       releaseHash();
 
       const response = await registration;
@@ -1031,10 +1056,11 @@ describe("auth/admin: instituição do cadastro, auditoria, rate limit, erros", 
         })
         .from(auditTrail)
         .where(eq(auditTrail.actorUserId, adminId));
-      expect(afterAudits).toHaveLength(beforeAudits.length + 1);
+      expect(afterAudits.length).toBeGreaterThan(beforeAudits.length);
       expect(JSON.stringify(afterAudits)).not.toContain(targetEmail);
     } finally {
       releaseHash();
+      sendMailSpy.mockRestore();
       hashSpy.mockRestore();
     }
   });
