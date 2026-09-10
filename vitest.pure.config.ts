@@ -121,6 +121,7 @@ export default defineConfig({
       "tests/operational-query-refresh.test.ts",
       "tests/operational-screen-state.test.ts",
       "tests/tenant-permission-fallbacks.test.ts",
+      "tests/professional-identity-fence.test.ts",
       "tests/query-error-presentation.test.ts",
       "tests/web-verified-session.test.ts",
       "tests/institution-roles.test.ts",

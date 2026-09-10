@@ -52,6 +52,36 @@ import {
   listActionableVacancyRows,
 } from "./vacancy-actionability";
 
+type TenantProfessionalRow = {
+  professional: typeof professionals.$inferSelect;
+};
+
+export function selectUniqueTenantProfessional(
+  rows: readonly TenantProfessionalRow[],
+  expectedProfessionalId?: number | null,
+): typeof professionals.$inferSelect | null {
+  if (rows.length > 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Vínculo profissional institucional ambíguo",
+    });
+  }
+
+  const professional = rows[0]?.professional ?? null;
+  if (
+    professional &&
+    expectedProfessionalId != null &&
+    professional.id !== expectedProfessionalId
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Identidade profissional diverge do tenant autenticado",
+    });
+  }
+
+  return professional;
+}
+
 // ─── professionals ────────────────────────────────────────────────────────────
 
 export const professionalsRouter = router({
@@ -73,31 +103,40 @@ export const professionalsRouter = router({
         });
       }
 
-      if (isSelf) {
-        const [pro] = await db
-          .select()
-          .from(professionals)
-          .where(eq(professionals.userId, input.userId));
-        return pro ?? null;
-      }
-
-      // Gestor só enxerga profissionais com vínculo ativo na instituição do
-      // contexto — sem isto ids sequenciais enumeravam o cadastro de todo o
-      // banco, de qualquer tenant (auditoria 22/08, M3).
-      const [pro] = await db
+      // Self e terceiros atravessam a mesma identidade institucional canônica.
+      // Consultar professionals apenas por userId reintroduziria uma identidade
+      // global ambígua; LIMIT 1 esconderia corrupção em vez de falhar fechado.
+      const tenantRows = await db
         .select({ professional: professionals })
-        .from(professionals)
+        .from(professionalInstitutions)
         .innerJoin(
-          professionalInstitutions,
+          professionals,
           and(
             eq(professionalInstitutions.professionalId, professionals.id),
+            eq(professionalInstitutions.userId, professionals.userId),
+          ),
+        )
+        .where(
+          and(
+            eq(professionalInstitutions.userId, input.userId),
             eq(professionalInstitutions.institutionId, ctx.institutionId),
             eq(professionalInstitutions.active, true),
           ),
-        )
-        .where(eq(professionals.userId, input.userId))
-        .limit(1);
-      return pro?.professional ?? null;
+        );
+
+      const expectedProfessionalId = isSelf
+        ? (ctx.tenantProfessionalId ?? actor.professionalId)
+        : undefined;
+      if (isSelf && expectedProfessionalId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Identidade profissional do tenant não encontrada",
+        });
+      }
+      return selectUniqueTenantProfessional(
+        tenantRows,
+        expectedProfessionalId,
+      );
     }),
 
   // Única leitura deliberadamente independente do tenant: o Listener usa a
