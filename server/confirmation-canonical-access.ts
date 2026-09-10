@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { professionalAccess, scheduleContexts } from "../drizzle/schema";
 import { plantonistaAccessCoversShiftSql } from "./plantonista-shift-eligibility";
 import { accessCoversScheduleContext } from "./schedule-contexts";
@@ -91,13 +91,19 @@ export async function findCanonicalConfirmationAccessId(
         eq(professionalAccess.institutionId, input.institutionId),
         eq(professionalAccess.hospitalId, input.hospitalId),
         eq(professionalAccess.canAccess, true),
+        admissionPolicy === "QUALIFICATION_ALLOWLIST"
+          ? eq(professionalAccess.sectorId, input.sectorId)
+          : or(
+              isNull(professionalAccess.sectorId),
+              eq(professionalAccess.sectorId, input.sectorId),
+            ),
         input.accessId != null
           ? eq(professionalAccess.id, input.accessId)
           : undefined,
       ),
     )
     .orderBy(professionalAccess.id)
-    .limit(64);
+    .limit(1);
   const rows = (
     input.lockForUpdate ? await accessQuery.for("update") : await accessQuery
   ) as {

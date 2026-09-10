@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
+import { findCanonicalConfirmationAccessId } from "../server/confirmation-canonical-access";
 import {
   accessCoversContext,
   accessCoversScheduleContext,
@@ -50,6 +52,76 @@ function legacyBroadContext(sectorId: number): ActiveScheduleContext {
 }
 
 const professionalId = 55;
+
+type ConfirmationAccessRow = {
+  id: number;
+  institutionId: number;
+  professionalId: number;
+  hospitalId: number;
+  sectorId: number | null;
+  canAccess: boolean;
+};
+
+function confirmationAccessDb(
+  admissionPolicy: ActiveScheduleContext["admissionPolicy"],
+  allRows: ConfirmationAccessRow[],
+) {
+  const accessWhere = vi.fn();
+  const accessLimit = vi.fn();
+  const lock = vi.fn();
+  let selectCount = 0;
+
+  const db = {
+    select: vi.fn(() => {
+      const isContextQuery = selectCount++ === 0;
+      return {
+        from: () => ({
+          where: (condition: unknown) => {
+            if (isContextQuery) {
+              return {
+                limit: () => Promise.resolve([{ admissionPolicy }]),
+              };
+            }
+
+            accessWhere(condition);
+            return {
+              orderBy: () => ({
+                limit: (limit: number) => {
+                  accessLimit(limit);
+                  const sql = new MySqlDialect().sqlToQuery(
+                    condition as never,
+                  ).sql;
+                  const hasSectorPredicate = sql.includes(
+                    "`professional_access`.`sector_id`",
+                  );
+                  const eligibleRows = hasSectorPredicate
+                    ? allRows.filter((row) =>
+                        admissionPolicy === "QUALIFICATION_ALLOWLIST"
+                          ? row.sectorId === 101
+                          : row.sectorId === null || row.sectorId === 101,
+                      )
+                    : allRows;
+                  const promise = Promise.resolve(
+                    eligibleRows.slice(0, limit),
+                  ) as Promise<ConfirmationAccessRow[]> & {
+                    for: (kind: string) => Promise<ConfirmationAccessRow[]>;
+                  };
+                  promise.for = async (kind: string) => {
+                    lock(kind);
+                    return eligibleRows.slice(0, limit);
+                  };
+                  return promise;
+                },
+              }),
+            };
+          },
+        }),
+      };
+    }),
+  };
+
+  return { db, accessWhere, accessLimit, lock };
+}
 
 describe("accessCoversScheduleContext — regra canônica allowlist", () => {
   const salaRecuperacao = allowlistContext(101);
@@ -214,6 +286,110 @@ describe("accessCoversScheduleContext — regra canônica allowlist", () => {
         allowlistContext(101),
       ),
     ).toBe(true);
+  });
+});
+
+describe("acesso canônico de confirmação — paginação segura", () => {
+  const input = {
+    professionalId,
+    institutionId: 1,
+    hospitalId: 100,
+    sectorId: 101,
+    scheduleContextId: 10,
+  };
+
+  it("encontra acesso válido depois de 64 entradas sem leitura ilimitada", async () => {
+    const rows: ConfirmationAccessRow[] = Array.from(
+      { length: 64 },
+      (_, index) => ({
+        id: index + 1,
+        institutionId: 1,
+        professionalId,
+        hospitalId: 100,
+        sectorId: 200 + index,
+        canAccess: true,
+      }),
+    );
+    rows.push({
+      id: 65,
+      institutionId: 1,
+      professionalId,
+      hospitalId: 100,
+      sectorId: 101,
+      canAccess: true,
+    });
+    const { db, accessWhere, accessLimit } = confirmationAccessDb(
+      "ALL_CFM_SPECIALTIES",
+      rows,
+    );
+
+    await expect(
+      findCanonicalConfirmationAccessId(db as never, input),
+    ).resolves.toBe(65);
+    expect(accessLimit).toHaveBeenCalledWith(1);
+
+    const query = new MySqlDialect().sqlToQuery(
+      accessWhere.mock.calls[0]![0] as never,
+    );
+    expect(query.sql).toContain(
+      "(`professional_access`.`sector_id` is null or `professional_access`.`sector_id` = ?)",
+    );
+    expect(query.params).toContain(101);
+  });
+
+  it("allowlist exige setor exato no SQL e mantém o lock FOR UPDATE", async () => {
+    const rows: ConfirmationAccessRow[] = [
+      {
+        id: 70,
+        institutionId: 1,
+        professionalId,
+        hospitalId: 100,
+        sectorId: null,
+        canAccess: true,
+      },
+      {
+        id: 71,
+        institutionId: 1,
+        professionalId,
+        hospitalId: 100,
+        sectorId: 101,
+        canAccess: true,
+      },
+    ];
+    const { db, accessWhere, lock } = confirmationAccessDb(
+      "QUALIFICATION_ALLOWLIST",
+      rows,
+    );
+
+    await expect(
+      findCanonicalConfirmationAccessId(db as never, {
+        ...input,
+        accessId: 71,
+        lockForUpdate: true,
+      }),
+    ).resolves.toBe(71);
+    expect(lock).toHaveBeenCalledWith("update");
+
+    const query = new MySqlDialect().sqlToQuery(
+      accessWhere.mock.calls[0]![0] as never,
+    );
+    expect(query.sql).toContain("`professional_access`.`sector_id` = ?");
+    expect(query.sql).not.toContain(
+      "`professional_access`.`sector_id` is null",
+    );
+    expect(query.sql).toContain("`professional_access`.`id` = ?");
+    expect(query.params).toContain(71);
+  });
+
+  it("mantém defesa em profundidade e remove o corte anterior de 64", () => {
+    const source = readFileSync(
+      "server/confirmation-canonical-access.ts",
+      "utf8",
+    );
+    expect(source).toContain("accessCoversScheduleContext");
+    expect(source).toContain('accessQuery.for("update")');
+    expect(source).toContain("eq(professionalAccess.id, input.accessId)");
+    expect(source).not.toContain(".limit(64)");
   });
 });
 
