@@ -766,7 +766,12 @@ export function isOneWay(type: SwapType): boolean {
  * consistent CESSAO_* timeline (was emitting TRANSFER_* before).
  */
 export type AuditPhase =
-  "OFFERED" | "ACCEPTED" | "REJECTED" | "APPROVED_BY_OWNER" | "CANCELLED";
+  | "OFFERED"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "APPROVED_BY_OWNER"
+  | "CANCELLED"
+  | "EXPIRED";
 export function auditNames(
   type: SwapType,
   phase: AuditPhase,
@@ -777,16 +782,19 @@ export function auditNames(
     | "SWAP_REJECTED"
     | "SWAP_APPROVED_BY_OWNER"
     | "SWAP_CANCELLED"
+    | "SWAP_EXPIRED"
     | "TRANSFER_OFFERED"
     | "TRANSFER_ACCEPTED"
     | "TRANSFER_REJECTED"
     | "TRANSFER_APPROVED_BY_OWNER"
     | "TRANSFER_CANCELLED"
+    | "TRANSFER_EXPIRED"
     | "CESSAO_OFFERED"
     | "CESSAO_ACCEPTED"
     | "CESSAO_REJECTED"
     | "CESSAO_APPROVED_BY_OWNER"
-    | "CESSAO_CANCELLED";
+    | "CESSAO_CANCELLED"
+    | "CESSAO_EXPIRED";
   entityType: "SWAP_REQUEST" | "TRANSFER_REQUEST";
   label: "Troca" | "Repasse" | "Cessão";
 } {
@@ -797,6 +805,7 @@ export function auditNames(
       REJECTED: "SWAP_REJECTED",
       APPROVED_BY_OWNER: "SWAP_APPROVED_BY_OWNER",
       CANCELLED: "SWAP_CANCELLED",
+      EXPIRED: "SWAP_EXPIRED",
     } as const;
     return { action: m[phase], entityType: "SWAP_REQUEST", label: "Troca" };
   }
@@ -807,6 +816,7 @@ export function auditNames(
       REJECTED: "CESSAO_REJECTED",
       APPROVED_BY_OWNER: "CESSAO_APPROVED_BY_OWNER",
       CANCELLED: "CESSAO_CANCELLED",
+      EXPIRED: "CESSAO_EXPIRED",
     } as const;
     return {
       action: m[phase],
@@ -821,6 +831,7 @@ export function auditNames(
     REJECTED: "TRANSFER_REJECTED",
     APPROVED_BY_OWNER: "TRANSFER_APPROVED_BY_OWNER",
     CANCELLED: "TRANSFER_CANCELLED",
+    EXPIRED: "TRANSFER_EXPIRED",
   } as const;
   return { action: m[phase], entityType: "TRANSFER_REQUEST", label: "Repasse" };
 }

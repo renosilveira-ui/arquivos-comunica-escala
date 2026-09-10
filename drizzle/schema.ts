@@ -3192,13 +3192,18 @@ export const auditTrail = mysqlTable(
       "USER_CREATED",
       "USER_UPDATED",
       "USER_ROLE_CHANGED",
-      "INSTITUTION_FEATURE_UPDATED",
-      "SECTOR_SERVICE_SPECIALTIES_UPDATED",
       "SSO_JIT_LINK_CREATED",
       "PUSH_DISPATCHED",
       // Conflict
       "CONFLICT_DETECTED",
       "CONFLICT_OVERRIDDEN",
+      // Valores anexados pelas migrations históricas, nesta ordem física
+      "SECTOR_SERVICE_SPECIALTIES_UPDATED",
+      "INSTITUTION_FEATURE_UPDATED",
+      // Expiração automática de ofertas (sempre anexar para preservar ordinais)
+      "SWAP_EXPIRED",
+      "TRANSFER_EXPIRED",
+      "CESSAO_EXPIRED",
     ]).notNull(),
 
     // Contexto
@@ -3341,6 +3346,13 @@ export const swapRequests = mysqlTable(
     idxShift: index("idx_swap_shift").on(table.fromShiftInstanceId),
     idxSwapInstitutionId: index("idx_swap_institution_id").on(
       table.institutionId,
+      table.id,
+    ),
+    idxSwapExpiryReoffer: index("idx_swap_expiry_reoffer").on(
+      table.institutionId,
+      table.fromAssignmentId,
+      table.status,
+      table.expiresAt,
       table.id,
     ),
   }),

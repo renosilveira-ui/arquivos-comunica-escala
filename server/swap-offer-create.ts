@@ -6,7 +6,7 @@
  * passam por aqui — sem atalho de transporte.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
 import { getDb } from "./db";
 import { swapRequests } from "../drizzle/schema";
 import { recordAudit } from "./audit-trail";
@@ -21,6 +21,7 @@ import {
   lockSwapAssignmentsForUpdate,
   lockSwapShiftsForUpdate,
   requireCanonicalAssignmentTuple,
+  requireCanonicalProfessional,
   requireCanonicalShift,
   requireCanonicalShiftOccupant,
   requireProfessionalCanReceiveShift,
@@ -51,6 +52,105 @@ export type CreateSwapOfferActor = {
 };
 
 export type CreateSwapOfferResult = SwapRow;
+
+type SwapOfferDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+async function expireStaleSwapOffersBeforeReoffer(input: {
+  db: SwapOfferDb;
+  fromAssignmentId: number;
+  institutionId: number;
+  userId: number;
+  professionalId: number;
+  expectedSessionVersion: number;
+}): Promise<void> {
+  const cutoff = new Date();
+  await input.db.transaction(async (tx) => {
+    // Esta transação bloqueia a oferta vencida e, depois, a identidade
+    // canônica do ator. Ela termina antes de a transação de criação adquirir
+    // mês → turno → alocação → identidade; portanto nunca mantém lock de
+    // oferta enquanto tenta adquirir os locks de agenda. Não fundir as duas
+    // transações sem redesenhar e provar a ordem global de locks.
+    const expiredOffers = await tx
+      .select()
+      .from(swapRequests)
+      .where(
+        and(
+          eq(swapRequests.fromAssignmentId, input.fromAssignmentId),
+          eq(swapRequests.institutionId, input.institutionId),
+          eq(swapRequests.fromUserId, input.userId),
+          eq(swapRequests.fromProfessionalId, input.professionalId),
+          inArray(swapRequests.status, ["PENDING", "ACCEPTED"]),
+          isNotNull(swapRequests.expiresAt),
+          lt(swapRequests.expiresAt, cutoff),
+        ),
+      )
+      .orderBy(swapRequests.id)
+      .for("update");
+    if (expiredOffers.length === 0) return;
+
+    const currentActor = await requireCanonicalProfessional(tx, {
+      institutionId: input.institutionId,
+      professionalId: input.professionalId,
+      userId: input.userId,
+      expectedSessionVersion: input.expectedSessionVersion,
+      lockForUpdate: true,
+    });
+
+    for (const expired of expiredOffers) {
+      const [updated] = await tx
+        .update(swapRequests)
+        .set({
+          status: "EXPIRED",
+          reviewedByUserId: input.userId,
+          reviewedAt: cutoff,
+          reviewNote: "AUTO_EXPIRED: oferta vencida antes de reoferta",
+          version: expired.version + 1,
+        })
+        .where(
+          and(
+            eq(swapRequests.id, expired.id),
+            eq(swapRequests.institutionId, input.institutionId),
+            eq(swapRequests.status, expired.status),
+            eq(swapRequests.version, expired.version),
+            isNotNull(swapRequests.expiresAt),
+            lt(swapRequests.expiresAt, cutoff),
+          ),
+        );
+      if (updated.affectedRows !== 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "A oferta vencida mudou durante a reoferta.",
+        });
+      }
+
+      const expiryAudit = auditNames(expired.type, "EXPIRED");
+      await recordAudit(
+        {
+          action: expiryAudit.action,
+          entityType: expiryAudit.entityType,
+          entityId: expired.id,
+          actorUserId: input.userId,
+          actorRole: currentActor.roleInInstitution,
+          description: `${expiryAudit.label} expirada automaticamente antes da reoferta`,
+          fromProfessionalId: expired.fromProfessionalId,
+          toProfessionalId: expired.toProfessionalId ?? undefined,
+          fromUserId: expired.fromUserId,
+          toUserId: expired.toUserId ?? undefined,
+          shiftInstanceId: expired.fromShiftInstanceId,
+          hospitalId: expired.hospitalId,
+          sectorId: expired.sectorId ?? undefined,
+          institutionId: expired.institutionId,
+          metadata: {
+            lifecycleReason: "AUTO_EXPIRED",
+            previousStatus: expired.status,
+            trigger: "REOFFER",
+          },
+        },
+        { db: tx, strict: true },
+      );
+    }
+  });
+}
 
 /**
  * Cria oferta SWAP / CESSAO / TRANSFER (aberta ou dirigida).
@@ -173,6 +273,15 @@ export async function createSwapOffer(
     input.type === "SWAP"
       ? `Troca oferecida: turno #${input.fromShiftInstanceId} ↔ turno #${input.toShiftInstanceId}`
       : `${offerAudit.label} oferecida: turno #${input.fromShiftInstanceId}`;
+
+  await expireStaleSwapOffersBeforeReoffer({
+    db,
+    fromAssignmentId: input.fromAssignmentId,
+    institutionId,
+    userId,
+    professionalId: actor.professionalId,
+    expectedSessionVersion,
+  });
 
   return db.transaction(async (tx) => {
     const monthTargets: MonthLockTarget[] = [

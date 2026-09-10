@@ -44,7 +44,10 @@ export interface AuditEntry {
     | "SSO_JIT_LINK_CREATED"
     | "PUSH_DISPATCHED"
     | "CONFLICT_DETECTED"
-    | "CONFLICT_OVERRIDDEN";
+    | "CONFLICT_OVERRIDDEN"
+    | "SWAP_EXPIRED"
+    | "TRANSFER_EXPIRED"
+    | "CESSAO_EXPIRED";
   entityType:
     | "SHIFT_INSTANCE"
     | "SHIFT_ASSIGNMENT"

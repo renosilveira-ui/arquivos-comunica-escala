@@ -129,6 +129,8 @@ export default defineConfig({
       "tests/swap-offer-actions.test.ts",
       "tests/swap-offer-create-live-mutex-source.test.ts",
       "tests/swap-capacity-guard-source.test.ts",
+      "tests/swap-expiry-audit-source.test.ts",
+      "tests/swap-expiry-audit-migration.test.ts",
       "tests/swap-list-eligible-recipients-source.test.ts",
       "tests/directed-offer-recipient-picker.test.ts",
       "tests/swap-offer-badge-refresh.test.ts",

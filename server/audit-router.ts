@@ -61,6 +61,9 @@ const ACTION_LABEL: Record<string, string> = {
   CESSAO_REJECTED: "Cessão recusada",
   CESSAO_APPROVED_BY_OWNER: "Cessão aprovada pelo dono",
   CESSAO_CANCELLED: "Cessão cancelada",
+  SWAP_EXPIRED: "Troca expirada",
+  TRANSFER_EXPIRED: "Repasse expirado",
+  CESSAO_EXPIRED: "Cessão expirada",
 };
 
 // Subset focado em movimentação de plantão. Eventos de roster, user
@@ -92,6 +95,9 @@ const SHIFT_MOVEMENT_ACTIONS = [
   "CESSAO_REJECTED",
   "CESSAO_APPROVED_BY_OWNER",
   "CESSAO_CANCELLED",
+  "SWAP_EXPIRED",
+  "TRANSFER_EXPIRED",
+  "CESSAO_EXPIRED",
 ] as const;
 
 // Únicos eventos sem plantão que podem participar da visão pessoal. Ações
