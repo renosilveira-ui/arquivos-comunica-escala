@@ -1,11 +1,10 @@
-import { useState, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   Text,
   View,
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Switch,
   Platform,
   Modal,
   Pressable,
@@ -28,15 +27,14 @@ import {
   ChevronRight,
   Calendar,
   Clock,
-  Repeat,
   CheckCircle2,
   Building2,
   MapPin,
   Stethoscope,
 } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { formatDateBR } from "@/lib/datetime";
 import {
+  formatLocalISODateBR,
   fromLocalISODateString,
   normalizeToNoon,
   toLocalISODateString,
@@ -52,6 +50,8 @@ import {
   groupScheduleContexts,
   scheduleContextMutationFields,
 } from "@/lib/schedule-context-selection";
+import { useScreenActionLease } from "@/hooks/use-screen-action-lease";
+import type { ScreenActionLease } from "@/lib/screen-action-lease";
 // Modalidade — opções estruturadas adicionadas pelo PR #61 do backend.
 type Modality = "PLANTAO" | "SOBREAVISO";
 type CoverageType = "URGENCIA_EMERGENCIA" | "ELETIVAS";
@@ -98,10 +98,6 @@ function getSafeDateParam(
 ): string | undefined {
   if (typeof value !== "string") return undefined;
   return DATE_REGEX.test(value) ? value : undefined;
-}
-
-function formatLocalDateBR(dateKey: string): string {
-  return formatDateBR(fromLocalISODateString(dateKey));
 }
 
 function getMonthLabel(month: Date): string {
@@ -174,12 +170,6 @@ export default function CreateShiftScreen() {
   >(undefined);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Repetição automática
-  const [enableRepeat, setEnableRepeat] = useState(false);
-  const [repeatWeeks, setRepeatWeeks] = useState("1");
-  const [repeatEndDate, setRepeatEndDate] = useState("");
-
-  const [notes, setNotes] = useState("");
   const [requiredCapacity, setRequiredCapacity] = useState("");
 
   // Modalidade (PR #61): defaults pareiam com os defaults do DB.
@@ -226,6 +216,14 @@ export default function CreateShiftScreen() {
     [contextHierarchy],
   );
   const { data: templates } = trpc.shifts.listTemplates.useQuery();
+  const actionLease = useScreenActionLease({
+    userId: user?.id,
+    contextKey:
+      activeInstitutionId == null || selectedScheduleContext == null
+        ? null
+        : `${activeInstitutionId}:${selectedScheduleContext.id}`,
+  });
+  const createLeaseRef = useRef<ScreenActionLease | null>(null);
   const availableTemplates = useMemo(
     () =>
       getShiftTemplatesForSector(
@@ -300,23 +298,10 @@ export default function CreateShiftScreen() {
     setSelectedTemplateId((preferredTemplate ?? availableTemplates[0]).id);
   }, [availableTemplates, params.shift, selectedTemplateId]);
 
-  // Mutation para criar escala
-  const createShift = trpc.shifts.create.useMutation({
-    onSuccess: () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      utils.shifts.listByPeriod.invalidate();
-      void invalidateOfficialScaleAndVacancyQueries(utils);
-      router.back();
-    },
-    onError: (error) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      console.error("Erro ao criar escala:", error);
-      const message = error.message || "Tente novamente em instantes.";
-      setFormError(message);
-      feedback.error(message);
-    },
-  });
+  // Mutation para criar escala. Os efeitos de conclusão ficam vinculados à
+  // lease capturada por envio, evitando que uma resposta antiga use a lease
+  // de uma ação mais nova após troca de conta ou instituição.
+  const createShift = trpc.shifts.create.useMutation();
 
   const handleSelectHospital = (hospitalId: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -351,7 +336,12 @@ export default function CreateShiftScreen() {
   };
 
   const handleCreateShift = () => {
-    if (createShift.isPending) return;
+    if (
+      createShift.isPending ||
+      actionLease.isCurrent(createLeaseRef.current)
+    ) {
+      return;
+    }
     setFormError(null);
 
     if (!selectedScheduleContext || !selectedDate) {
@@ -371,16 +361,6 @@ export default function CreateShiftScreen() {
     ) {
       showFormError(`Informe uma capacidade entre 1 e ${MAX_SHIFT_CAPACITY}.`);
       return;
-    }
-
-    // Validar data de término de repetição
-    if (enableRepeat && repeatEndDate) {
-      const startDate = fromLocalISODateString(selectedDate);
-      const endDate = fromLocalISODateString(repeatEndDate);
-      if (endDate <= startDate) {
-        showFormError("A data limite precisa ser posterior à data inicial.");
-        return;
-      }
     }
 
     // Validações de modalidade (light-touch — server enforça as regras duras).
@@ -404,21 +384,72 @@ export default function CreateShiftScreen() {
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    createShift.mutate({
-      date: selectedDate,
-      shiftTemplateId: selectedTemplate.id,
-      ...(requiredCapacity !== ""
-        ? { requiredCapacity: Number(requiredCapacity) }
-        : {}),
-      ...scheduleContextMutationFields(selectedScheduleContext),
-      modality,
-      coverageType: modality === "PLANTAO" ? coverageType : null,
-      paymentModel,
-      productivityCapBrl:
-        paymentModel === "FIXO_PRODUTIVIDADE_TETO" && productivityCapBrl
-          ? productivityCapBrl
-          : null,
-    });
+    const lease = actionLease.capture();
+    if (!lease) {
+      showFormError(
+        "Sua sessão mudou antes do envio. Confira a instituição ativa e tente novamente.",
+      );
+      return;
+    }
+    createLeaseRef.current = lease;
+
+    createShift.mutate(
+      {
+        date: selectedDate,
+        shiftTemplateId: selectedTemplate.id,
+        ...(requiredCapacity !== ""
+          ? { requiredCapacity: Number(requiredCapacity) }
+          : {}),
+        ...scheduleContextMutationFields(selectedScheduleContext),
+        modality,
+        coverageType: modality === "PLANTAO" ? coverageType : null,
+        paymentModel,
+        productivityCapBrl:
+          paymentModel === "FIXO_PRODUTIVIDADE_TETO" && productivityCapBrl
+            ? productivityCapBrl
+            : null,
+      },
+      {
+        onSuccess: async () => {
+          if (
+            createLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Success,
+          );
+          await Promise.allSettled([
+            utils.shifts.listByPeriod.invalidate(),
+            invalidateOfficialScaleAndVacancyQueries(utils),
+          ]);
+          if (
+            createLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          createLeaseRef.current = null;
+          router.back();
+        },
+        onError: (error) => {
+          if (
+            createLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          createLeaseRef.current = null;
+          void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Error,
+          );
+          const message = error.message || "Tente novamente em instantes.";
+          setFormError(message);
+          feedback.error(message);
+        },
+      },
+    );
   };
 
   const handleBack = () => {
@@ -668,7 +699,7 @@ export default function CreateShiftScreen() {
                 <View>
                   <Text style={styles.label}>Data selecionada</Text>
                   <Text style={styles.dateValue}>
-                    {formatLocalDateBR(selectedDateValue)}
+                    {formatLocalISODateBR(selectedDateValue)}
                   </Text>
                 </View>
                 <Text style={styles.dateAction}>Alterar</Text>
@@ -868,7 +899,7 @@ export default function CreateShiftScreen() {
                 />
                 <SummaryLine
                   label="Data"
-                  value={formatLocalDateBR(selectedDateValue)}
+                  value={formatLocalISODateBR(selectedDateValue)}
                 />
                 <SummaryLine
                   label="Turno"
@@ -903,69 +934,12 @@ export default function CreateShiftScreen() {
               </View>
             </FormSection>
 
-            <FormSection
-              title="Repetição"
-              icon={<Repeat size={22} color={theme.colors.textPrimary} />}
-            >
-              <View style={styles.switchRow}>
-                <View style={styles.switchText}>
-                  <Text style={styles.bodyStrong}>Repetir Escala</Text>
-                  <Text style={styles.bodyMuted}>
-                    Cria novas escalas em semanas futuras.
-                  </Text>
-                </View>
-                <Switch
-                  value={enableRepeat}
-                  onValueChange={(value) => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setEnableRepeat(value);
-                  }}
-                  trackColor={{
-                    false: theme.colors.border,
-                    true: theme.colors.primary,
-                  }}
-                  thumbColor={theme.colors.surface}
-                />
-              </View>
-
-              {enableRepeat ? (
-                <View style={styles.fieldStack}>
-                  <View>
-                    <Text style={styles.label}>Repetir a cada (semanas)</Text>
-                    <TextInput
-                      value={repeatWeeks}
-                      onChangeText={setRepeatWeeks}
-                      placeholder="1"
-                      keyboardType="number-pad"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={styles.textInput}
-                    />
-                  </View>
-                  <View>
-                    <Text style={styles.label}>Data limite</Text>
-                    <TextInput
-                      value={repeatEndDate}
-                      onChangeText={setRepeatEndDate}
-                      placeholder="AAAA-MM-DD"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={styles.textInput}
-                    />
-                  </View>
-                </View>
-              ) : null}
-            </FormSection>
-
-            <FormSection title="Observações">
-              <TextInput
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="Informações adicionais..."
-                placeholderTextColor={theme.colors.textMuted}
-                multiline
-                numberOfLines={4}
-                textAlignVertical="top"
-                style={[styles.textInput, styles.notesInput]}
-              />
+            <FormSection title="Sobre esta criação">
+              <Text style={styles.helperText}>
+                Este formulário salva somente o plantão selecionado. Repetição
+                e observações ficarão disponíveis quando puderem ser gravadas
+                de forma confiável na escala oficial.
+              </Text>
             </FormSection>
 
             <TouchableOpacity
@@ -1028,10 +1002,10 @@ export default function CreateShiftScreen() {
             <Text style={styles.sheetSubtitle}>
               Data selecionada:{" "}
               {tempDate
-                ? formatLocalDateBR(
+                ? formatLocalISODateBR(
                     toLocalISODateString(normalizeToNoon(tempDate)),
                   )
-                : formatLocalDateBR(selectedDate || today)}
+                : formatLocalISODateBR(selectedDate || today)}
             </Text>
 
             <DateTimePicker
@@ -1241,7 +1215,7 @@ function WebCalendarModal({
 
           <View style={styles.calendarFooter}>
             <Text style={styles.dialogSubtitle}>
-              Data selecionada: {formatLocalDateBR(selectedDate)}
+              Data selecionada: {formatLocalISODateBR(selectedDate)}
             </Text>
             <SheetButton
               label="Cancelar"
@@ -1465,9 +1439,6 @@ const styles = StyleSheet.create({
     ...theme.text.bodyLg,
     color: theme.colors.textPrimary,
   },
-  notesInput: {
-    minHeight: theme.space[20] + theme.space[6],
-  },
   summaryStack: {
     gap: theme.space[3],
   },
@@ -1480,24 +1451,6 @@ const styles = StyleSheet.create({
     ...theme.text.bodyLg,
     color: theme.colors.textPrimary,
     fontWeight: theme.weight.semibold,
-  },
-  switchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.space[4],
-  },
-  switchText: {
-    flex: 1,
-  },
-  bodyStrong: {
-    ...theme.text.bodyLg,
-    color: theme.colors.textPrimary,
-    fontWeight: theme.weight.semibold,
-  },
-  bodyMuted: {
-    ...theme.text.body,
-    color: theme.colors.textMuted,
   },
   helperText: {
     ...theme.text.body,

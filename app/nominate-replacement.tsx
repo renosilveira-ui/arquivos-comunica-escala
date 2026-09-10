@@ -8,7 +8,7 @@ import {
   Platform,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { UserPlus, Search, Check } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useActionFeedback } from "@/hooks/use-action-feedback";
@@ -19,6 +19,9 @@ import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { theme } from "@/lib/theme";
 import { resolveOperationalListState } from "@/lib/operational-screen-state";
+import { useTenantState } from "@/lib/tenant-state";
+import { useScreenActionLease } from "@/hooks/use-screen-action-lease";
+import type { ScreenActionLease } from "@/lib/screen-action-lease";
 
 export default function NominateReplacementScreen() {
   const { user } = useAuth();
@@ -26,6 +29,15 @@ export default function NominateReplacementScreen() {
   const params = useLocalSearchParams<{ token: string }>();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const { activeInstitutionId } = useTenantState();
+  const actionLease = useScreenActionLease({
+    userId: user?.id,
+    contextKey:
+      activeInstitutionId != null && params.token
+        ? `${activeInstitutionId}:${params.token}`
+        : null,
+  });
+  const nominationLeaseRef = useRef<ScreenActionLease | null>(null);
 
   const candidatesQuery =
     trpc.confirmations.listReplacementCandidates.useQuery(
@@ -43,17 +55,8 @@ export default function NominateReplacementScreen() {
   });
 
   const feedback = useActionFeedback();
-  const nominateMutation = trpc.confirmations.nominateReplacement.useMutation({
-    onSuccess: (data) => {
-      feedback.success(
-        `${data.replacementName} foi notificado e tem 30 minutos para aceitar.`,
-      );
-      router.replace("/(tabs)/agenda" as any);
-    },
-    onError: (err) => {
-      feedback.error(err.message);
-    },
-  });
+  const nominateMutation =
+    trpc.confirmations.nominateReplacement.useMutation();
 
   const filtered = useMemo(() => {
     const list = professionals ?? [];
@@ -61,15 +64,61 @@ export default function NominateReplacementScreen() {
     if (!q) return list;
     return list.filter((p) => p.name.toLocaleLowerCase("pt-BR").includes(q));
   }, [professionals, search]);
+  const selectedProfessional = useMemo(
+    () => professionals?.find((professional) => professional.id === selectedId),
+    [professionals, selectedId],
+  );
 
   const handleNominate = () => {
-    if (!selectedId || !params.token) return;
+    if (
+      candidatesState !== "READY" ||
+      nominateMutation.isPending ||
+      actionLease.isCurrent(nominationLeaseRef.current)
+    ) {
+      return;
+    }
+    if (!selectedProfessional || !params.token) return;
     if (Platform.OS !== "web")
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    nominateMutation.mutate({
-      confirmationToken: params.token,
-      replacementProfessionalId: selectedId,
-    });
+    const lease = actionLease.capture();
+    if (!lease) {
+      feedback.error(
+        "Sua sessão mudou antes do envio. Confira a instituição ativa e tente novamente.",
+      );
+      return;
+    }
+    nominationLeaseRef.current = lease;
+    nominateMutation.mutate(
+      {
+        confirmationToken: params.token,
+        replacementProfessionalId: selectedProfessional.id,
+      },
+      {
+        onSuccess: (data) => {
+          if (
+            nominationLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          nominationLeaseRef.current = null;
+          feedback.success(
+            `${data.replacementName} foi notificado e tem 30 minutos para aceitar.`,
+          );
+          router.replace("/(tabs)/agenda" as any);
+        },
+        onError: (err) => {
+          if (
+            nominationLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          nominationLeaseRef.current = null;
+          feedback.error(err.message);
+        },
+      },
+    );
   };
 
   return (
@@ -232,8 +281,8 @@ export default function NominateReplacementScreen() {
           icon={<UserPlus size={20} color="#FFFFFF" />}
           onPress={handleNominate}
           disabled={
-            candidatesState === "ERROR" ||
-            !selectedId ||
+            candidatesState !== "READY" ||
+            !selectedProfessional ||
             nominateMutation.isPending
           }
           loading={nominateMutation.isPending}

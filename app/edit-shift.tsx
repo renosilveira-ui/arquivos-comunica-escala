@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ScrollView,
   Text,
@@ -17,14 +17,18 @@ import { theme } from "@/lib/theme";
 import { MAX_SHIFT_CAPACITY } from "@/lib/shift-capacity";
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
+import { useScreenActionLease } from "@/hooks/use-screen-action-lease";
 import { trpc } from "@/lib/trpc";
+import { useTenantState } from "@/lib/tenant-state";
+import type { ScreenActionLease } from "@/lib/screen-action-lease";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { uiAlert } from "@/lib/ui/alert";
 import { ChevronLeft, Save, Calendar, Clock } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { formatDateBR, formatTimeBR, toISODateString } from "@/lib/datetime";
+import { formatTimeBR } from "@/lib/datetime";
 import {
+  formatLocalISODateBR,
   fromLocalISODateString,
   normalizeToNoon,
   toLocalISODateString,
@@ -84,6 +88,7 @@ const PRODUCTIVITY_CAP_REGEX = /^\d+(\.\d{1,2})?$/;
 export default function EditShiftScreen() {
   const { user, isLoading: authLoading } = useAuth();
   const { can, isLoading: permissionsLoading } = usePermissions();
+  const { activeInstitutionId } = useTenantState();
   const router = useRouter();
   const params = useLocalSearchParams();
   const shiftId = Number(params.id);
@@ -106,7 +111,6 @@ export default function EditShiftScreen() {
   const [startTime, setStartTime] = useState("");
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
-  const [notes, setNotes] = useState("");
   const [requiredCapacity, setRequiredCapacity] = useState("");
   const [editReason, setEditReason] = useState("");
 
@@ -147,22 +151,18 @@ export default function EditShiftScreen() {
   const { data: monthRoster, hasShifts: monthHasShifts } =
     usePublishedMonthRoster(shiftData?.hospitalId, startDate || undefined);
   const utils = trpc.useUtils();
-
-  // Mutation para atualizar escala
-  const updateShift = trpc.shifts.update.useMutation({
-    onSuccess: async () => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await Promise.all([
-        utils.shifts.get.invalidate({ id: shiftId }),
-        invalidateOfficialScaleAndVacancyQueries(utils),
-      ]);
-      router.back();
-    },
-    onError: (error) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      uiAlert("Erro", error.message || "Erro ao atualizar escala");
-    },
+  const actionLease = useScreenActionLease({
+    userId: user?.id,
+    contextKey:
+      activeInstitutionId != null && shiftData != null
+        ? `${activeInstitutionId}:${shiftData.hospitalId}:${shiftData.sectorId}:${shiftId}`
+        : null,
   });
+  const updateLeaseRef = useRef<ScreenActionLease | null>(null);
+
+  // Mutation para atualizar escala. O retorno só pode atuar na mesma conta,
+  // instituição, topologia e tela que iniciaram o envio.
+  const updateShift = trpc.shifts.update.useMutation();
 
   useEffect(() => {
     setEditReason("");
@@ -178,9 +178,9 @@ export default function EditShiftScreen() {
       );
       const start = new Date(shiftData.startAt);
       const end = new Date(shiftData.endAt);
-      setStartDate(toISODateString(start));
+      setStartDate(toLocalISODateString(start));
       setStartTime(formatTimeBR(start));
-      setEndDate(toISODateString(end));
+      setEndDate(toLocalISODateString(end));
       setEndTime(formatTimeBR(end));
 
       // Hidratar modalidade vinda do backend (PR #61).
@@ -284,6 +284,12 @@ export default function EditShiftScreen() {
   };
 
   const handleSave = () => {
+    if (
+      updateShift.isPending ||
+      actionLease.isCurrent(updateLeaseRef.current)
+    ) {
+      return;
+    }
     if (!startDate || !startTime || !endDate || !endTime) {
       uiAlert("Erro", "Preencha todos os campos obrigatórios");
       return;
@@ -353,22 +359,71 @@ export default function EditShiftScreen() {
       uiAlert("Atenção", `Informe de 1 a ${MAX_SHIFT_CAPACITY} profissionais.`);
       return;
     }
-    updateShift.mutate({
-      id: shiftId,
-      ...(requiredCapacity !== ""
-        ? { requiredCapacity: Number(requiredCapacity) }
-        : {}),
-      startAt: startDateTime.toISOString(),
-      endAt: endDateTime.toISOString(),
-      modality,
-      coverageType: modality === "PLANTAO" ? coverageType : null,
-      paymentModel,
-      productivityCapBrl:
-        paymentModel === "FIXO_PRODUTIVIDADE_TETO" && productivityCapBrl
-          ? productivityCapBrl
-          : null,
-      ...(trimmedReason ? { reason: trimmedReason } : {}),
-    });
+    const lease = actionLease.capture();
+    if (!lease) {
+      uiAlert(
+        "Atenção",
+        "Sua sessão mudou antes do envio. Confira a instituição ativa e tente novamente.",
+      );
+      return;
+    }
+    updateLeaseRef.current = lease;
+    updateShift.mutate(
+      {
+        id: shiftId,
+        ...(requiredCapacity !== ""
+          ? { requiredCapacity: Number(requiredCapacity) }
+          : {}),
+        startAt: startDateTime.toISOString(),
+        endAt: endDateTime.toISOString(),
+        modality,
+        coverageType: modality === "PLANTAO" ? coverageType : null,
+        paymentModel,
+        productivityCapBrl:
+          paymentModel === "FIXO_PRODUTIVIDADE_TETO" && productivityCapBrl
+            ? productivityCapBrl
+            : null,
+        ...(trimmedReason ? { reason: trimmedReason } : {}),
+      },
+      {
+        onSuccess: async () => {
+          if (
+            updateLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Success,
+          );
+          await Promise.allSettled([
+            utils.shifts.get.invalidate({ id: shiftId }),
+            invalidateOfficialScaleAndVacancyQueries(utils),
+          ]);
+          if (
+            updateLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          updateLeaseRef.current = null;
+          router.back();
+        },
+        onError: (error) => {
+          if (
+            updateLeaseRef.current !== lease ||
+            !actionLease.isCurrent(lease)
+          ) {
+            return;
+          }
+          updateLeaseRef.current = null;
+          void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Error,
+          );
+          uiAlert("Erro", error.message || "Erro ao atualizar escala");
+        },
+      },
+    );
   };
 
   if (permissionState === "LOADING") {
@@ -624,7 +679,7 @@ export default function EditShiftScreen() {
                   <Text
                     style={{ fontSize: 16, color: theme.colors.textPrimary }}
                   >
-                    {formatDateBR(startDate) || "DD/MM/AAAA"}
+                    {formatLocalISODateBR(startDate) || "DD/MM/AAAA"}
                   </Text>
                 </TouchableOpacity>
                 {showStartDatePicker && (
@@ -751,7 +806,7 @@ export default function EditShiftScreen() {
                   <Text
                     style={{ fontSize: 16, color: theme.colors.textPrimary }}
                   >
-                    {formatDateBR(endDate) || "DD/MM/AAAA"}
+                    {formatLocalISODateBR(endDate) || "DD/MM/AAAA"}
                   </Text>
                 </TouchableOpacity>
                 {showEndDatePicker && (
@@ -1035,7 +1090,6 @@ export default function EditShiftScreen() {
             )}
           </TintedGlassCard>
 
-          {/* Observações */}
           <TintedGlassCard variant="light">
             <Text
               style={{
@@ -1045,27 +1099,19 @@ export default function EditShiftScreen() {
                 marginBottom: 16,
               }}
             >
-              Observações
+              Sobre esta edição
             </Text>
-            <TextInput
-              value={notes}
-              onChangeText={setNotes}
-              placeholder="Adicione observações sobre a escala..."
-              placeholderTextColor={theme.colors.textMuted}
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
+            <Text
               style={{
-                backgroundColor: theme.colors.surfaceAlt,
-                borderRadius: 12,
-                padding: 12,
-                fontSize: 16,
-                color: theme.colors.textPrimary,
-                borderWidth: 1,
-                borderColor: theme.colors.border,
-                minHeight: 100,
+                fontSize: 14,
+                lineHeight: 20,
+                color: theme.colors.textSecondary,
               }}
-            />
+            >
+              Esta tela altera apenas os campos salvos pela escala oficial.
+              Observações não ficam editáveis até que o sistema possa
+              persistir esse conteúdo com segurança.
+            </Text>
           </TintedGlassCard>
 
           {requiresPublishedMonthReason(monthRoster?.status, monthHasShifts) ? (
@@ -1189,10 +1235,12 @@ export default function EditShiftScreen() {
             >
               Data selecionada:{" "}
               {tempStartDate
-                ? formatDateBR(
+                ? formatLocalISODateBR(
                     toLocalISODateString(normalizeToNoon(tempStartDate)),
                   )
-                : formatDateBR(startDate || toLocalISODateString(new Date()))}
+                : formatLocalISODateBR(
+                    startDate || toLocalISODateString(new Date()),
+                  )}
             </Text>
 
             <DateTimePicker
@@ -1302,10 +1350,12 @@ export default function EditShiftScreen() {
             >
               Data selecionada:{" "}
               {tempEndDate
-                ? formatDateBR(
+                ? formatLocalISODateBR(
                     toLocalISODateString(normalizeToNoon(tempEndDate)),
                   )
-                : formatDateBR(endDate || toLocalISODateString(new Date()))}
+                : formatLocalISODateBR(
+                    endDate || toLocalISODateString(new Date()),
+                  )}
             </Text>
 
             <DateTimePicker

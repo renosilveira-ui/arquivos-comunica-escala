@@ -3,6 +3,8 @@
  * Complementa lib/datetime.ts com funções específicas para normalização
  */
 
+import { formatDateBR } from "./datetime";
+
 /**
  * Normaliza uma data para 12:00 local (meio-dia)
  * Evita problemas de timezone ao armazenar apenas a data (sem hora)
@@ -46,4 +48,10 @@ export function toLocalISODateString(date: Date): string {
 export function fromLocalISODateString(dateString: string): Date {
   const [year, month, day] = dateString.split("-").map(Number);
   return new Date(year, month - 1, day, 12, 0, 0, 0);
+}
+
+/** Formata uma data civil YYYY-MM-DD sem interpretá-la como UTC. */
+export function formatLocalISODateBR(dateString: string): string {
+  if (!dateString) return "";
+  return formatDateBR(fromLocalISODateString(dateString));
 }

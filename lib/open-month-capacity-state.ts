@@ -7,18 +7,34 @@ export function openMonthCapacityScopeKey(
   return institutionId == null ? null : `${institutionId}:${scheduleContextId}`;
 }
 
+export function openMonthCapacitySnapshotKey(
+  scopeKey: string | null,
+  dataUpdatedAt: number,
+): string | null {
+  if (
+    scopeKey == null ||
+    !Number.isFinite(dataUpdatedAt) ||
+    dataUpdatedAt <= 0
+  ) {
+    return null;
+  }
+  return `${scopeKey}@${dataUpdatedAt}`;
+}
+
 export function resolveOpenMonthCapacityState(input: {
-  currentScopeKey: string | null;
-  hydratedScopeKey: string | null;
+  currentSnapshotKey: string | null;
+  hydratedSnapshotKey: string | null;
   querySucceeded: boolean;
+  queryFetching: boolean;
   queryFailed: boolean;
   invalidCapacity: boolean;
 }): OpenMonthCapacityState {
   if (input.queryFailed) return "error";
   if (
-    input.currentScopeKey == null ||
+    input.currentSnapshotKey == null ||
     !input.querySucceeded ||
-    input.hydratedScopeKey !== input.currentScopeKey
+    input.queryFetching ||
+    input.hydratedSnapshotKey !== input.currentSnapshotKey
   ) {
     return "loading";
   }
