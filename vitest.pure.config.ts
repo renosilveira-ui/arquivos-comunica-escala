@@ -179,6 +179,7 @@ export default defineConfig({
       "tests/calendar-holidays.test.ts",
       "tests/calendar-auxiliary-router.test.ts",
       "tests/destructive-target-fence.test.ts",
+      "tests/core-schema-reproducibility-migration.test.ts",
     ],
   },
 });
