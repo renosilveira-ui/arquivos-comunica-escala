@@ -395,6 +395,8 @@ describe("auth hardening adversarial", () => {
   it("conta APPROVED sem PI recupera credencial account-wide; PI adulterada segue fail-closed", async () => {
     const orphan = usersByKind.get("orphan")!;
     let poisonedProfessionalId: number | null = null;
+    let canonicalProfessionalId: number | null = null;
+    let secondInstitutionId: number | null = null;
     const session = await login(orphan.email);
     expect(session.status).toBe(200);
     const cookie = cookieOf(session);
@@ -410,6 +412,7 @@ describe("auth hardening adversarial", () => {
       kind: "ACCEPTED",
       transport: "resend",
     });
+    const afterEnqueue = () => new Date(Date.now() + 1_000);
 
     const assertNoCredentialWrite = async () => {
       const [current] = await db
@@ -518,9 +521,24 @@ describe("auth hardening adversarial", () => {
             .send({ email: orphan.email })
         ).body,
       ).toEqual({ ok: true });
-      await processPendingAuthRecoveryEmails(new Date(), transport);
+      await processPendingAuthRecoveryEmails(afterEnqueue(), transport);
       expect(transport.sendMail).not.toHaveBeenCalled();
       await assertNoCredentialWrite();
+      expect(
+        await db
+          .select({
+            state: authRecoveryRequests.state,
+            targetMembershipId: authRecoveryRequests.targetMembershipId,
+            lastErrorCode: authRecoveryRequests.lastErrorCode,
+          })
+          .from(authRecoveryRequests),
+      ).toEqual([
+        {
+          state: "REVOKED",
+          targetMembershipId: null,
+          lastErrorCode: "IDENTITY_CHANGED",
+        },
+      ]);
 
       await db
         .delete(professionalInstitutions)
@@ -537,7 +555,7 @@ describe("auth hardening adversarial", () => {
             .send({ email: orphan.email })
         ).body,
       ).toEqual({ ok: true });
-      await processPendingAuthRecoveryEmails(new Date(), transport);
+      await processPendingAuthRecoveryEmails(afterEnqueue(), transport);
       expect(transport.sendMail).toHaveBeenCalledTimes(1);
       const token = transport.sendMail.mock.calls[0]![0].text.match(
         /reset-password\?token=([0-9a-f]{64})/,
@@ -577,6 +595,78 @@ describe("auth hardening adversarial", () => {
       ).toHaveLength(0);
       expect((await login(orphan.email, newPassword)).status).toBe(200);
       expect((await login(orphan.email, PASSWORD)).status).toBe(401);
+
+      const [canonicalProfessional] = await db
+        .insert(professionals)
+        .values({
+          userId: orphan.id,
+          name: `Professional canônico ${STAMP}`,
+          role: "Médico",
+          userRole: "USER",
+        })
+        .$returningId();
+      canonicalProfessionalId = canonicalProfessional.id;
+      await db.insert(professionalInstitutions).values({
+        userId: orphan.id,
+        professionalId: canonicalProfessionalId,
+        institutionId,
+        roleInInstitution: "USER",
+        isPrimary: true,
+        active: true,
+      });
+      const [secondPoisonedProfessional] = await db
+        .insert(professionals)
+        .values({
+          userId: usersByKind.get("change")!.id,
+          name: `Second professional adulterado ${STAMP}`,
+          role: "Médico",
+          userRole: "USER",
+        })
+        .$returningId();
+      poisonedProfessionalId = secondPoisonedProfessional.id;
+      const [secondInstitution] = await db
+        .insert(institutions)
+        .values({
+          name: `Second institution ${STAMP}`,
+          cnpj: `${STAMP}52`.slice(-14).padStart(14, "0"),
+          legalName: `Second institution ${STAMP}`,
+          tradeName: `SI${STAMP}`.slice(0, 20),
+          isActive: true,
+        })
+        .$returningId();
+      secondInstitutionId = secondInstitution.id;
+      await db.insert(professionalInstitutions).values({
+        userId: orphan.id,
+        professionalId: poisonedProfessionalId,
+        institutionId: secondInstitutionId,
+        roleInInstitution: "USER",
+        isPrimary: false,
+        active: true,
+      });
+      expect(
+        (
+          await request(app)
+            .post("/api/auth/forgot-password")
+            .send({ email: orphan.email })
+        ).body,
+      ).toEqual({ ok: true });
+      await processPendingAuthRecoveryEmails(afterEnqueue(), transport);
+      expect(transport.sendMail).toHaveBeenCalledTimes(1);
+      const blockedRows = await db
+        .select({
+          state: authRecoveryRequests.state,
+          errorCode: authRecoveryRequests.lastErrorCode,
+        })
+        .from(authRecoveryRequests)
+        .where(eq(authRecoveryRequests.state, "REVOKED"));
+      expect(blockedRows).toHaveLength(2);
+      expect(
+        blockedRows.every(
+          (row) =>
+            row.state === "REVOKED" && row.errorCode === "IDENTITY_CHANGED",
+        ),
+      ).toBe(true);
+      expect((await login(orphan.email, newPassword)).status).toBe(200);
     } finally {
       await db
         .delete(professionalInstitutions)
@@ -585,6 +675,16 @@ describe("auth hardening adversarial", () => {
         await db
           .delete(professionals)
           .where(eq(professionals.id, poisonedProfessionalId));
+      }
+      if (canonicalProfessionalId !== null) {
+        await db
+          .delete(professionals)
+          .where(eq(professionals.id, canonicalProfessionalId));
+      }
+      if (secondInstitutionId !== null) {
+        await db
+          .delete(institutions)
+          .where(eq(institutions.id, secondInstitutionId));
       }
     }
   });
@@ -669,78 +769,99 @@ describe("auth hardening adversarial", () => {
     }
   });
 
-  it("worker não ativa link aceito pelo provedor depois que a credencial muda em voo", async () => {
+  it("revogação durante egress não reabre recovery aceita, desconhecida ou rejeitada", async () => {
     const target = usersByKind.get("forgot-race")!;
-    const session = await login(target.email);
-    expect(session.status).toBe(200);
-    const sessionInstance = await sessionInstanceOf(cookieOf(session));
-    const newPassword = "SenhaVencedoraForgotRace123";
-    let signalDeliveryStarted!: () => void;
-    let releaseDelivery!: () => void;
-    const deliveryStarted = new Promise<void>((resolve) => {
-      signalDeliveryStarted = resolve;
-    });
-    const deliveryGate = new Promise<void>((resolve) => {
-      releaseDelivery = resolve;
-    });
-    const sendMail = vi.fn<(message: MailMessage) => Promise<MailResult>>(
-      async () => {
-        signalDeliveryStarted();
-        await deliveryGate;
-        return { kind: "ACCEPTED", transport: "resend" };
+    const deliveryOutcomes: readonly MailResult[] = [
+      { kind: "ACCEPTED", transport: "resend" },
+      { kind: "UNKNOWN", transport: "resend", reason: "TIMEOUT" },
+      {
+        kind: "REJECTED",
+        transport: "resend",
+        reason: "HTTP_CLIENT_REJECTION",
       },
-    );
+    ];
+    let currentPassword = PASSWORD;
 
-    try {
-      const forgotResponse = await request(app)
-        .post("/api/auth/forgot-password")
-        .send({ email: target.email });
-      expect(forgotResponse.status).toBe(200);
-      expect(forgotResponse.body).toEqual({ ok: true });
-      expect(sendMail).not.toHaveBeenCalled();
+    for (const [index, deliveryOutcome] of deliveryOutcomes.entries()) {
+      const session = await login(target.email, currentPassword);
+      expect(session.status).toBe(200);
+      const sessionInstance = await sessionInstanceOf(cookieOf(session));
+      const newPassword = `SenhaVencedoraForgotRace${index}A`;
+      let signalDeliveryStarted!: () => void;
+      let releaseDelivery!: () => void;
+      const deliveryStarted = new Promise<void>((resolve) => {
+        signalDeliveryStarted = resolve;
+      });
+      const deliveryGate = new Promise<void>((resolve) => {
+        releaseDelivery = resolve;
+      });
+      const sendMail = vi.fn<(message: MailMessage) => Promise<MailResult>>(
+        async () => {
+          signalDeliveryStarted();
+          await deliveryGate;
+          return deliveryOutcome;
+        },
+      );
 
-      const worker = processPendingAuthRecoveryEmails(new Date(), { sendMail });
-      await deliveryStarted;
-      const token = sendMail.mock.calls[0]![0].text.match(
-        /reset-password\?token=([0-9a-f]{64})/,
-      )![1];
+      try {
+        const forgotResponse = await request(app)
+          .post("/api/auth/forgot-password")
+          .send({ email: target.email });
+        expect(forgotResponse.status).toBe(200);
+        expect(forgotResponse.body).toEqual({ ok: true });
+        expect(sendMail).not.toHaveBeenCalled();
 
-      const change = await request(app)
-        .post("/api/auth/change-password")
-        .set("Cookie", cookieOf(session))
-        .set("x-client-session-instance", sessionInstance)
-        .send({ currentPassword: PASSWORD, newPassword });
-      expect(change.status).toBe(200);
-      releaseDelivery();
-      await worker;
+        const worker = processPendingAuthRecoveryEmails(
+          new Date(Date.now() + 1_000),
+          { sendMail },
+        );
+        await deliveryStarted;
+        const token = sendMail.mock.calls[0]![0].text.match(
+          /reset-password\?token=([0-9a-f]{64})/,
+        )![1];
 
-      expect(
-        await db
-          .select({ id: passwordResets.id })
-          .from(passwordResets)
-          .where(eq(passwordResets.userId, target.id)),
-      ).toHaveLength(0);
-      expect(
-        await db
+        const change = await request(app)
+          .post("/api/auth/change-password")
+          .set("Cookie", cookieOf(session))
+          .set("x-client-session-instance", sessionInstance)
+          .send({ currentPassword, newPassword });
+        expect(change.status).toBe(200);
+        releaseDelivery();
+        await worker;
+
+        expect(
+          await db
+            .select({ id: passwordResets.id })
+            .from(passwordResets)
+            .where(eq(passwordResets.userId, target.id)),
+        ).toHaveLength(0);
+        const recoveryRows = await db
           .select({
             state: authRecoveryRequests.state,
             errorCode: authRecoveryRequests.lastErrorCode,
           })
           .from(authRecoveryRequests)
-          .where(eq(authRecoveryRequests.targetUserId, target.id)),
-      ).toEqual([
-        { state: "REVOKED", errorCode: "CREDENTIAL_STATE_CHANGED" },
-      ]);
-      expect(
-        (
-          await request(app)
-            .post("/api/auth/reset-password")
-            .send({ token, newPassword: "SenhaQueNaoPodeVencer123" })
-        ).status,
-      ).toBe(400);
-      expect((await login(target.email, newPassword)).status).toBe(200);
-    } finally {
-      releaseDelivery();
+          .where(eq(authRecoveryRequests.targetUserId, target.id));
+        expect(recoveryRows).toHaveLength(index + 1);
+        expect(
+          recoveryRows.every(
+            (row) =>
+              row.state === "REVOKED" &&
+              row.errorCode === "CREDENTIAL_STATE_CHANGED",
+          ),
+        ).toBe(true);
+        expect(
+          (
+            await request(app)
+              .post("/api/auth/reset-password")
+              .send({ token, newPassword: "SenhaQueNaoPodeVencer123" })
+          ).status,
+        ).toBe(400);
+        expect((await login(target.email, newPassword)).status).toBe(200);
+        currentPassword = newPassword;
+      } finally {
+        releaseDelivery();
+      }
     }
   });
 
