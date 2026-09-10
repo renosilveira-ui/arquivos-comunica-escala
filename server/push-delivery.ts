@@ -2,7 +2,9 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   dutyConfirmations,
   hospitals,
+  monthlyRosters,
   notifications,
+  scheduleContexts,
   sectors,
   shiftInstances,
 } from "../drizzle/schema";
@@ -76,6 +78,11 @@ import {
   ACCOUNT_WIDE_BADGE_VERSION,
   isAccountWideBadgeNotificationType,
 } from "../lib/account-wide-native-badge";
+import {
+  nextRosterPublicationRecheckAt,
+  PUSH_PUBLICATION_DEFERRED_MESSAGE,
+} from "./roster-publication-push-wakeup";
+import { yearMonthBrt } from "./local-time";
 
 const TRACKING_VERSION = 1 as const;
 const SUBMISSION_LEASE_MS = 2 * 60_000;
@@ -85,11 +92,9 @@ const MAX_SUBMISSION_ATTEMPTS = 3;
 const MAX_RECEIPT_ATTEMPTS = 3;
 const DELIVERY_BATCH_SIZE = 10;
 const DELIVERY_CONCURRENCY = 5;
-const PUSH_AUTHORITY_RETRY_MESSAGE = "Falha temporária ao validar autoridade do destinatário";
+const PUSH_AUTHORITY_RETRY_MESSAGE =
+  "Falha temporária ao validar autoridade do destinatário";
 const PUSH_AUTHORITY_REVOKED_MESSAGE = "Autoridade do destinatário revogada";
-const PUSH_PUBLICATION_DEFERRED_MESSAGE =
-  "Entrega aguardando publicação da escala";
-const PUSH_PUBLICATION_RECHECK_MS = 5 * 60_000;
 const PUSH_OPERATIONAL_WINDOW_EXPIRED_MESSAGE =
   "Notificação suprimida após o início do plantão";
 const DUTY_CONFIRMATION_STATUSES: readonly DutyConfirmationStatus[] = [
@@ -101,12 +106,8 @@ const DUTY_CONFIRMATION_STATUSES: readonly DutyConfirmationStatus[] = [
   "REPLACEMENT_CONFIRMED",
   "REPLACEMENT_DECLINED",
 ];
-const DUTY_CONFIRMATION_RECIPIENTS: readonly DutyConfirmationRecipientAuthority[] = [
-  "ORIGINAL",
-  "REPLACEMENT",
-  "EFFECTIVE",
-  "MANAGER",
-];
+const DUTY_CONFIRMATION_RECIPIENTS: readonly DutyConfirmationRecipientAuthority[] =
+  ["ORIGINAL", "REPLACEMENT", "EFFECTIVE", "MANAGER"];
 const DUTY_CONFIRMATION_PURPOSES = [
   "CONFIRMATION_REQUEST",
   "NOMINATION_REQUEST",
@@ -155,7 +156,12 @@ const DUTY_CONFIRMATION_PURPOSE_POLICY: Record<
   MANAGER_ESCALATION: {
     payloadType: "manager_confirmation_escalation",
     recipientKind: "MANAGER",
-    allowedStatuses: ["PENDING", "DECLINED", "NOMINATED", "REPLACEMENT_DECLINED"],
+    allowedStatuses: [
+      "PENDING",
+      "DECLINED",
+      "NOMINATED",
+      "REPLACEMENT_DECLINED",
+    ],
   },
 };
 
@@ -197,10 +203,7 @@ type ReceiptCheckingState = Omit<TicketAcceptedState, "phase"> & {
 };
 
 type PendingTrackingState =
-  | QueuedState
-  | SubmittingState
-  | TicketAcceptedState
-  | ReceiptCheckingState;
+  QueuedState | SubmittingState | TicketAcceptedState | ReceiptCheckingState;
 
 type TerminalTrackingState = TrackingBase & {
   phase: "PROVIDER_ACCEPTED" | "FAILED";
@@ -211,7 +214,8 @@ type TerminalTrackingState = TrackingBase & {
 export type TrackedPushResult = {
   notificationId: number;
   status: "PENDING" | "SENT" | "FAILED";
-  phase: PendingTrackingState["phase"] | TerminalTrackingState["phase"] | "UNKNOWN";
+  phase:
+    PendingTrackingState["phase"] | TerminalTrackingState["phase"] | "UNKNOWN";
   ticketAccepted: boolean;
   providerAccepted: boolean;
 };
@@ -253,15 +257,19 @@ export type PushDeliveryExecutionOptions = Readonly<{
   /** Test hook: relógio fresco do guard imediatamente anterior ao Expo. */
   authorityDecisionNow?: () => Date;
   /** Test hook: pausa depois da leitura do estado e antes do CAS de claim. */
-  beforeSubmissionClaim?: (point: Readonly<{
-    notificationId: number;
-    sourceRevision: number;
-  }>) => Promise<void>;
+  beforeSubmissionClaim?: (
+    point: Readonly<{
+      notificationId: number;
+      sourceRevision: number;
+    }>,
+  ) => Promise<void>;
   /** Test hook: pausa o owner imediatamente antes de renovar seu fencing token. */
-  beforeSubmissionLeaseRenew?: (point: Readonly<{
-    notificationId: number;
-    sourceRevision: number;
-  }>) => Promise<void>;
+  beforeSubmissionLeaseRenew?: (
+    point: Readonly<{
+      notificationId: number;
+      sourceRevision: number;
+    }>,
+  ) => Promise<void>;
 }>;
 
 function submissionLeaseMs(options?: PushDeliveryExecutionOptions): number {
@@ -312,14 +320,19 @@ function inferLegacyPurpose(
 ): DutyConfirmationPushPurpose | null {
   const matches = DUTY_CONFIRMATION_PURPOSES.filter((purpose) => {
     const policy = DUTY_CONFIRMATION_PURPOSE_POLICY[purpose];
-    return policy.payloadType === payloadData.type && policy.recipientKind === recipientKind;
+    return (
+      policy.payloadType === payloadData.type &&
+      policy.recipientKind === recipientKind
+    );
   });
   return matches.length === 1 ? matches[0] : null;
 }
 
 function isDutyConfirmationPayload(payloadData: PayloadData): boolean {
   return DUTY_CONFIRMATION_PURPOSES.some(
-    (purpose) => DUTY_CONFIRMATION_PURPOSE_POLICY[purpose].payloadType === payloadData.type,
+    (purpose) =>
+      DUTY_CONFIRMATION_PURPOSE_POLICY[purpose].payloadType ===
+      payloadData.type,
   );
 }
 
@@ -334,7 +347,8 @@ function parseShiftSnapshot(value: unknown): DutyShiftSnapshot | null {
     !snapshot.label.trim() ||
     typeof snapshot.startAt !== "string" ||
     typeof snapshot.endAt !== "string"
-  ) return null;
+  )
+    return null;
   const startAt = new Date(snapshot.startAt);
   const endAt = new Date(snapshot.endAt);
   if (
@@ -343,7 +357,8 @@ function parseShiftSnapshot(value: unknown): DutyShiftSnapshot | null {
     startAt.toISOString() !== snapshot.startAt ||
     endAt.toISOString() !== snapshot.endAt ||
     endAt <= startAt
-  ) return null;
+  )
+    return null;
   return snapshot as DutyShiftSnapshot;
 }
 
@@ -357,10 +372,15 @@ function dutyConfirmationAuthorityMatchesPurpose(
   return (
     policy.payloadType === payloadData.type &&
     policy.recipientKind === authority.recipientKind &&
-    authority.allowedStatuses.every((status) => policy.allowedStatuses.includes(status)) &&
-    new Set(authority.allowedStatuses).size === authority.allowedStatuses.length &&
-    (!requirePayloadConfirmationId || payloadConfirmationId === authority.confirmationId) &&
-    (payloadConfirmationId === undefined || payloadConfirmationId === authority.confirmationId)
+    authority.allowedStatuses.every((status) =>
+      policy.allowedStatuses.includes(status),
+    ) &&
+    new Set(authority.allowedStatuses).size ===
+      authority.allowedStatuses.length &&
+    (!requirePayloadConfirmationId ||
+      payloadConfirmationId === authority.confirmationId) &&
+    (payloadConfirmationId === undefined ||
+      payloadConfirmationId === authority.confirmationId)
   );
 }
 
@@ -391,19 +411,18 @@ function parseDutyConfirmationAuthority(
   ) {
     return null;
   }
-  const recipientKind = authority.recipientKind as DutyConfirmationRecipientAuthority;
+  const recipientKind =
+    authority.recipientKind as DutyConfirmationRecipientAuthority;
   const purpose =
     typeof authority.purpose === "string" &&
-    DUTY_CONFIRMATION_PURPOSES.includes(authority.purpose as DutyConfirmationPushPurpose)
-      ? authority.purpose as DutyConfirmationPushPurpose
+    DUTY_CONFIRMATION_PURPOSES.includes(
+      authority.purpose as DutyConfirmationPushPurpose,
+    )
+      ? (authority.purpose as DutyConfirmationPushPurpose)
       : inferLegacyPurpose(payloadData, recipientKind);
   if (!purpose) return null;
   const normalized = { ...authority, purpose } as DutyConfirmationPushAuthority;
-  return dutyConfirmationAuthorityMatchesPurpose(
-    normalized,
-    payloadData,
-    false,
-  )
+  return dutyConfirmationAuthorityMatchesPurpose(normalized, payloadData, false)
     ? normalized
     : null;
 }
@@ -430,7 +449,8 @@ function parseAuthority(
   }
   if (authority.kind === "VACANCY_BROADCAST") {
     const parsed = parseVacancyBroadcastPushAuthority(authority);
-    return parsed && vacancyBroadcastAuthorityMatchesPayload(parsed, payloadData)
+    return parsed &&
+      vacancyBroadcastAuthorityMatchesPayload(parsed, payloadData)
       ? parsed
       : null;
   }
@@ -472,7 +492,8 @@ function isCanonicalIsoDate(value: unknown): value is string {
 
 function isExpoReceiptTarget(value: unknown): value is ExpoReceiptTarget {
   const target = asRecord(value);
-  return !!target &&
+  return (
+    !!target &&
     typeof target.ticketId === "string" &&
     !!target.ticketId.trim() &&
     Number.isSafeInteger(target.pushTokenId) &&
@@ -480,7 +501,8 @@ function isExpoReceiptTarget(value: unknown): value is ExpoReceiptTarget {
     Number.isSafeInteger(target.expectedUserId) &&
     (target.expectedUserId as number) > 0 &&
     typeof target.tokenFingerprint === "string" &&
-    /^[a-f0-9]{64}$/.test(target.tokenFingerprint);
+    /^[a-f0-9]{64}$/.test(target.tokenFingerprint)
+  );
 }
 
 function parseAccountWideBadgeVersion(
@@ -695,8 +717,11 @@ function phaseOf(value: unknown): TrackedPushResult["phase"] {
 
 function isDuplicateEntry(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  if ("code" in error && (error as { code?: unknown }).code === "ER_DUP_ENTRY") return true;
-  return "cause" in error && isDuplicateEntry((error as { cause?: unknown }).cause);
+  if ("code" in error && (error as { code?: unknown }).code === "ER_DUP_ENTRY")
+    return true;
+  return (
+    "cause" in error && isDuplicateEntry((error as { cause?: unknown }).cause)
+  );
 }
 
 function revisionPredicate(state: PendingTrackingState) {
@@ -714,15 +739,15 @@ function isSubmissionRetryable(result: PushSendResult): boolean {
   if (
     result.status === "SERVICE_ERROR" ||
     result.status === "NO_REGISTERED_TOKENS"
-  ) return true;
+  )
+    return true;
   return result.tickets.some(
-    (ticket) => ticket.state === "TICKET_REJECTED" && ticket.retryability === "RETRYABLE",
+    (ticket) =>
+      ticket.state === "TICKET_REJECTED" && ticket.retryability === "RETRYABLE",
   );
 }
 
-function isManagerEscalation(
-  state: Pick<TrackingBase, "authority">,
-): boolean {
+function isManagerEscalation(state: Pick<TrackingBase, "authority">): boolean {
   return state.authority?.purpose === "MANAGER_ESCALATION";
 }
 
@@ -748,7 +773,10 @@ function syncAccountWideNativeBadgeSnapshot(
   dispatchAccountWideNativeBadgeSnapshot(row.userId, row.institutionId);
 }
 
-async function loadNotification(db: Pick<Db, "select">, id: number): Promise<NotificationRow | null> {
+async function loadNotification(
+  db: Pick<Db, "select">,
+  id: number,
+): Promise<NotificationRow | null> {
   const [row] = await db
     .select()
     .from(notifications)
@@ -780,7 +808,8 @@ function assertSameTrackedIntent(
     row.title === input.payload.title &&
     (row.body ?? "") === input.payload.body &&
     (row.deepLink ?? null) === (input.deepLink ?? null) &&
-    canonicalJson(storedState?.authority ?? null) === canonicalJson(input.authority ?? null);
+    canonicalJson(storedState?.authority ?? null) ===
+      canonicalJson(input.authority ?? null);
   const storedMatchesCanonical =
     storedPayload !== null &&
     canonicalJson(storedPayload) === canonicalJson(authoritativePayload);
@@ -887,13 +916,15 @@ async function upgradeLegacyVacancySubmissionState(
   state: QueuedState | SubmittingState,
 ): Promise<QueuedState | SubmittingState | null> {
   return db.transaction(async (tx) => {
-    const authority =
-      await requireAuthorizedLegacyVacancyBroadcastAuthority(tx, {
+    const authority = await requireAuthorizedLegacyVacancyBroadcastAuthority(
+      tx,
+      {
         expectedUserId: row.userId,
         institutionId: row.institutionId,
         shiftInstanceId: row.shiftInstanceId as number,
         payloadData: state.payloadData,
-      });
+      },
+    );
     const payloadData = withAuthoritativePushRecipient(
       {
         ...state.payloadData,
@@ -1166,6 +1197,16 @@ async function requireCanonicalShiftPushContext(
     })
     .from(shiftInstances)
     .innerJoin(
+      scheduleContexts,
+      and(
+        eq(scheduleContexts.id, shiftInstances.scheduleContextId),
+        eq(scheduleContexts.institutionId, shiftInstances.institutionId),
+        eq(scheduleContexts.hospitalId, shiftInstances.hospitalId),
+        eq(scheduleContexts.sectorId, shiftInstances.sectorId),
+        eq(scheduleContexts.active, true),
+      ),
+    )
+    .innerJoin(
       hospitals,
       and(
         eq(hospitals.id, shiftInstances.hospitalId),
@@ -1216,7 +1257,9 @@ async function claimSubmission(
       : {}),
     ...(state.authority ? { authority: state.authority } : {}),
     phase: "SUBMITTING",
-    leaseUntil: new Date(now.getTime() + submissionLeaseMs(options)).toISOString(),
+    leaseUntil: new Date(
+      now.getTime() + submissionLeaseMs(options),
+    ).toISOString(),
   };
   if (process.env.NODE_ENV === "test") {
     await options?.beforeSubmissionClaim?.({
@@ -1297,12 +1340,17 @@ async function requeueSubmissionAfterInfrastructureFailure(
       : {}),
     ...(claimed.authority ? { authority: claimed.authority } : {}),
     phase: "QUEUED",
-    availableAt: new Date(now.getTime() + retryDelayMs(claimed.attemptCount)).toISOString(),
+    availableAt: new Date(
+      now.getTime() + retryDelayMs(claimed.attemptCount),
+    ).toISOString(),
     lastError: PUSH_AUTHORITY_RETRY_MESSAGE,
   };
   await db
     .update(notifications)
-    .set({ providerReceipt: queued, errorMessage: PUSH_AUTHORITY_RETRY_MESSAGE })
+    .set({
+      providerReceipt: queued,
+      errorMessage: PUSH_AUTHORITY_RETRY_MESSAGE,
+    })
     .where(
       and(
         eq(notifications.id, row.id),
@@ -1318,6 +1366,54 @@ async function requeueSubmissionUntilRosterPublication(
   claimed: SubmittingState,
   now: Date,
 ): Promise<void> {
+  let availableAt = nextRosterPublicationRecheckAt(now);
+  if (row.shiftInstanceId != null) {
+    try {
+      const [shift] = await db
+        .select({
+          hospitalId: shiftInstances.hospitalId,
+          startAt: shiftInstances.startAt,
+        })
+        .from(shiftInstances)
+        .where(
+          and(
+            eq(shiftInstances.id, row.shiftInstanceId),
+            eq(shiftInstances.institutionId, row.institutionId),
+          ),
+        )
+        .limit(1);
+      if (!shift) {
+        // Turno removido deve voltar imediatamente à guarda canônica e falhar.
+        availableAt = now;
+      } else {
+        const [roster] = await db
+          .select({ status: monthlyRosters.status })
+          .from(monthlyRosters)
+          .where(
+            and(
+              eq(monthlyRosters.institutionId, row.institutionId),
+              eq(monthlyRosters.hospitalId, shift.hospitalId),
+              eq(monthlyRosters.yearMonth, yearMonthBrt(shift.startAt)),
+            ),
+          )
+          .limit(1);
+        // Fecha a corrida publicação-versus-requeue: se a publicação venceu,
+        // a intenção volta agora; se ocorrer depois deste read, o wake-up da
+        // própria publicação encontrará a row QUEUED. Nunca dorme além do
+        // início operacional.
+        availableAt =
+          roster?.status === "PUBLISHED" || roster?.status === "LOCKED"
+            ? now
+            : nextRosterPublicationRecheckAt(now, shift.startAt);
+      }
+    } catch {
+      // Falha transitória desta otimização preserva o recheck periódico e não
+      // consome tentativa de provedor.
+      console.error(
+        `[PushDelivery] PUBLICATION_DEADLINE_LOOKUP_FAILED notification=${row.id}`,
+      );
+    }
+  }
   const queued: QueuedState = {
     trackingVersion: TRACKING_VERSION,
     revision: claimed.revision + 1,
@@ -1330,9 +1426,7 @@ async function requeueSubmissionUntilRosterPublication(
       : {}),
     ...(claimed.authority ? { authority: claimed.authority } : {}),
     phase: "QUEUED",
-    availableAt: new Date(
-      now.getTime() + PUSH_PUBLICATION_RECHECK_MS,
-    ).toISOString(),
+    availableAt: availableAt.toISOString(),
     lastError: PUSH_PUBLICATION_DEFERRED_MESSAGE,
   };
   await db
@@ -1386,7 +1480,9 @@ async function processSubmission(
     // Se o CAS falhar junto com a infraestrutura, o lease continua sendo o
     // fallback recuperável. Nenhuma falha genérica vira revogação.
     await requeueSubmissionAfterInfrastructureFailure(db, row, claimed, now);
-    console.error(`[PushDelivery] AUTHORITY_PREFLIGHT_RETRY notification=${row.id}`);
+    console.error(
+      `[PushDelivery] AUTHORITY_PREFLIGHT_RETRY notification=${row.id}`,
+    );
     return;
   }
 
@@ -1447,7 +1543,9 @@ async function processSubmission(
       return;
     }
     await requeueSubmissionAfterInfrastructureFailure(db, row, claimed, now);
-    console.error(`[PushDelivery] SUBMISSION_AUTHORITY_RETRY notification=${row.id}`);
+    console.error(
+      `[PushDelivery] SUBMISSION_AUTHORITY_RETRY notification=${row.id}`,
+    );
     return;
   }
   if (submissionClaimLost) return;
@@ -1484,14 +1582,20 @@ async function processSubmission(
     if (persisted.affectedRows === 1) {
       syncAccountWideNativeBadgeSnapshot(row, next);
     }
-    if (persisted.affectedRows === 1 && claimed.authority?.purpose === "CONFIRMATION_REQUEST") {
+    if (
+      persisted.affectedRows === 1 &&
+      claimed.authority?.purpose === "CONFIRMATION_REQUEST"
+    ) {
       await db
         .update(dutyConfirmations)
         .set({ notifiedAt: now })
         .where(
           and(
             eq(dutyConfirmations.id, claimed.authority.confirmationId),
-            inArray(dutyConfirmations.status, claimed.authority.allowedStatuses),
+            inArray(
+              dutyConfirmations.status,
+              claimed.authority.allowedStatuses,
+            ),
             isNull(dutyConfirmations.notifiedAt),
           ),
         );
@@ -1509,12 +1613,14 @@ async function processSubmission(
         .where(
           and(
             eq(dutyConfirmations.id, claimed.authority.confirmationId),
-            inArray(dutyConfirmations.status, claimed.authority.allowedStatuses),
+            inArray(
+              dutyConfirmations.status,
+              claimed.authority.allowedStatuses,
+            ),
             isNull(dutyConfirmations.ssoTriggeredAt),
           ),
         );
-      const shiftStartDedupKey =
-        `duty-confirmation:${claimed.authority.confirmationId}:shift-start:${claimed.authority.expectedUserId}`;
+      const shiftStartDedupKey = `duty-confirmation:${claimed.authority.confirmationId}:shift-start:${claimed.authority.expectedUserId}`;
       if (row.dedupKey === shiftStartDedupKey) {
         // O disparo imediato pode ter devolvido o claim para NULL e o worker
         // obtido o ticket depois da janela de cinco minutos. O outbox impede
@@ -1525,7 +1631,10 @@ async function processSubmission(
           .where(
             and(
               eq(dutyConfirmations.id, claimed.authority.confirmationId),
-              inArray(dutyConfirmations.status, claimed.authority.allowedStatuses),
+              inArray(
+                dutyConfirmations.status,
+                claimed.authority.allowedStatuses,
+              ),
               isNull(dutyConfirmations.startPushSentAt),
             ),
           );
@@ -1550,7 +1659,9 @@ async function processSubmission(
         : {}),
       ...(claimed.authority ? { authority: claimed.authority } : {}),
       phase: "QUEUED",
-      availableAt: new Date(now.getTime() + retryDelayMs(claimed.attemptCount)).toISOString(),
+      availableAt: new Date(
+        now.getTime() + retryDelayMs(claimed.attemptCount),
+      ).toISOString(),
       lastError: submission.message,
     };
     await db
@@ -1681,7 +1792,10 @@ async function processReceiptCheck(
           .where(
             and(
               eq(dutyConfirmations.id, claimed.authority.confirmationId),
-              inArray(dutyConfirmations.status, claimed.authority.allowedStatuses),
+              inArray(
+                dutyConfirmations.status,
+                claimed.authority.allowedStatuses,
+              ),
               eq(dutyConfirmations.managerNotified, false),
             ),
           );
@@ -1693,7 +1807,8 @@ async function processReceiptCheck(
   const receiptAttempts = claimed.receiptAttempts + 1;
   const terminalEvidence = receipts.every(
     (receipt) =>
-      receipt.state === "RECEIPT_REJECTED" && receipt.retryability === "TERMINAL",
+      receipt.state === "RECEIPT_REJECTED" &&
+      receipt.retryability === "TERMINAL",
   );
   if (
     isManagerEscalation(claimed) &&
@@ -1710,7 +1825,8 @@ async function processReceiptCheck(
       ...(claimed.authority ? { authority: claimed.authority } : {}),
       phase: "QUEUED",
       availableAt: new Date(
-        now.getTime() + retryDelayMs(Math.max(claimed.attemptCount, receiptAttempts)),
+        now.getTime() +
+          retryDelayMs(Math.max(claimed.attemptCount, receiptAttempts)),
       ).toISOString(),
       lastError: terminalEvidence
         ? "Receipt gerencial rejeitado; nova submissão agendada"
@@ -1745,7 +1861,10 @@ async function processReceiptCheck(
     };
     await db
       .update(notifications)
-      .set({ providerReceipt: pending, errorMessage: "Receipt do provedor ainda não confirmado" })
+      .set({
+        providerReceipt: pending,
+        errorMessage: "Receipt do provedor ainda não confirmado",
+      })
       .where(
         and(
           eq(notifications.id, row.id),
@@ -1816,17 +1935,18 @@ async function processTrackedRow(
     // desse owner e poderia provocar uma segunda submissão após o lease.
     if (!legacySubmissionDue) return;
     try {
-      const upgraded = legacySubmission.kind === "VACANCY_BROADCAST"
-        ? await upgradeLegacyVacancySubmissionState(
-            db,
-            row,
-            legacySubmission.state,
-          )
-        : await upgradeLegacySwapSubmissionState(
-            db,
-            row,
-            legacySubmission.state,
-          );
+      const upgraded =
+        legacySubmission.kind === "VACANCY_BROADCAST"
+          ? await upgradeLegacyVacancySubmissionState(
+              db,
+              row,
+              legacySubmission.state,
+            )
+          : await upgradeLegacySwapSubmissionState(
+              db,
+              row,
+              legacySubmission.state,
+            );
       if (!upgraded) return;
       providerReceipt = upgraded;
     } catch (error) {
@@ -1852,7 +1972,9 @@ async function processTrackedRow(
         },
         errorMessage: "Estado persistido do outbox de push e invalido",
       })
-      .where(and(eq(notifications.id, row.id), eq(notifications.status, "PENDING")));
+      .where(
+        and(eq(notifications.id, row.id), eq(notifications.status, "PENDING")),
+      );
     return;
   }
 
@@ -1869,7 +1991,8 @@ async function processTrackedRow(
     return;
   }
   if (state.phase === "TICKET_ACCEPTED") {
-    if (new Date(state.receiptDueAt) <= now) await processReceiptCheck(db, row, state, now);
+    if (new Date(state.receiptDueAt) <= now)
+      await processReceiptCheck(db, row, state, now);
     return;
   }
   if (new Date(state.leaseUntil) <= now) {
@@ -1882,7 +2005,8 @@ async function trackedResult(
   notificationId: number,
 ): Promise<TrackedPushResult> {
   const row = await loadNotification(db, notificationId);
-  if (!row) throw new Error(`Notificação rastreada ${notificationId} não encontrada`);
+  if (!row)
+    throw new Error(`Notificação rastreada ${notificationId} não encontrada`);
   const phase = phaseOf(row.providerReceipt);
   return {
     notificationId,
@@ -1926,9 +2050,10 @@ async function persistTrackedPushIntent(
         "Purpose, confirmationId, tenant ou destinatario invalido no push rastreado",
       );
     }
-    const authorityInstitutionId = input.authority.kind === "DUTY_CONFIRMATION"
-      ? input.authority.shiftSnapshot.institutionId
-      : input.authority.institutionId;
+    const authorityInstitutionId =
+      input.authority.kind === "DUTY_CONFIRMATION"
+        ? input.authority.shiftSnapshot.institutionId
+        : input.authority.institutionId;
     if (payloadInstitutionId !== authorityInstitutionId) {
       throw new Error("Tenant da autoridade não corresponde ao push rastreado");
     }
@@ -1939,7 +2064,9 @@ async function persistTrackedPushIntent(
       input.authority.kind !== "DUTY_CONFIRMATION" &&
       input.shiftInstanceId !== input.authority.shiftInstanceId
     ) {
-      throw new Error("Plantão da autoridade não corresponde ao push rastreado");
+      throw new Error(
+        "Plantão da autoridade não corresponde ao push rastreado",
+      );
     }
   }
   const initial: QueuedState = {
@@ -1984,7 +2111,8 @@ async function persistTrackedPushIntent(
   }
 
   const row = await loadNotification(db, notificationId);
-  if (!row) throw new Error(`Notificação rastreada ${notificationId} não encontrada`);
+  if (!row)
+    throw new Error(`Notificação rastreada ${notificationId} não encontrada`);
   assertSameTrackedIntent(row, input, insertedNew);
   if (
     row.status === "FAILED" &&
@@ -2001,7 +2129,12 @@ async function persistTrackedPushIntent(
         errorMessage: null,
         sentAt: null,
       })
-      .where(and(eq(notifications.id, notificationId), eq(notifications.status, "FAILED")));
+      .where(
+        and(
+          eq(notifications.id, notificationId),
+          eq(notifications.status, "FAILED"),
+        ),
+      );
   }
   return notificationId;
 }
@@ -2016,7 +2149,7 @@ export async function enqueueTrackedPushNotification(
   now = new Date(),
   dbOverride?: EnqueueDb,
 ): Promise<TrackedPushResult> {
-  const db = dbOverride ?? await getDb();
+  const db = dbOverride ?? (await getDb());
   if (!db) throw new Error("Database not available");
   const notificationId = await persistTrackedPushIntent(db, input, now);
   return trackedResult(db, notificationId);
@@ -2036,7 +2169,8 @@ export async function sendTrackedPushNotification(
   if (!db) throw new Error("Database not available");
   const notificationId = await persistTrackedPushIntent(db, input, now);
   const row = await loadNotification(db, notificationId);
-  if (!row) throw new Error(`Notificação rastreada ${notificationId} não encontrada`);
+  if (!row)
+    throw new Error(`Notificação rastreada ${notificationId} não encontrada`);
   await processTrackedRow(db, row, now, options);
   return trackedResult(db, notificationId);
 }
@@ -2113,11 +2247,14 @@ export async function processPendingPushDeliveries(
           try {
             await processTrackedRow(db, row, now, options);
             const after = await loadNotification(db, row.id);
-            if (after && JSON.stringify(after.providerReceipt) !== before) processed += 1;
+            if (after && JSON.stringify(after.providerReceipt) !== before)
+              processed += 1;
           } catch {
             // Uma row defeituosa não pode bloquear as demais entregas do lote;
             // o lease/CAS mantém a row recuperável no próximo tick.
-            console.error(`[PushDelivery] ROW_PROCESSING_FAILED notification=${row.id}`);
+            console.error(
+              `[PushDelivery] ROW_PROCESSING_FAILED notification=${row.id}`,
+            );
           }
         }
       },
