@@ -102,6 +102,7 @@ export default defineConfig({
       "tests/graceful-shutdown-pure.test.ts",
       "tests/forgot-password-rate-limit.test.ts",
       "tests/security-boot-validation.test.ts",
+      "tests/safe-error-logging.test.ts",
       "tests/request-deadline.test.ts",
       "tests/trpc-batch-limit.test.ts",
       "tests/trpc-web-session-gate.test.ts",

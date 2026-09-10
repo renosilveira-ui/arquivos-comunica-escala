@@ -15,11 +15,28 @@
 //      em vez de matar o processo em silêncio.
 
 import { createRequire } from "node:module";
-import type { ErrorRequestHandler, NextFunction, Request, Response } from "express";
+import type {
+  ErrorRequestHandler,
+  NextFunction,
+  Request,
+  Response,
+} from "express";
+import { safeErrorDiagnostic } from "./safe-error";
 
 type Logger = { error: (obj: Record<string, unknown>, msg: string) => void };
 
-const ASYNC_FORWARDING_MARKER = Symbol.for("escalas.async-route-forwarding.installed");
+const ASYNC_FORWARDING_MARKER = Symbol.for(
+  "escalas.async-route-forwarding.installed",
+);
+const SAFE_HTTP_METHODS = new Set([
+  "DELETE",
+  "GET",
+  "HEAD",
+  "OPTIONS",
+  "PATCH",
+  "POST",
+  "PUT",
+]);
 
 export function installAsyncRouteForwarding(): void {
   const require = createRequire(import.meta.url);
@@ -37,8 +54,15 @@ export function installAsyncRouteForwarding(): void {
   if (Layer.prototype[ASYNC_FORWARDING_MARKER]) return;
   Layer.prototype[ASYNC_FORWARDING_MARKER] = true;
   const original = Layer.prototype.handle_request;
-  Layer.prototype.handle_request = function (this: { handle: unknown }, req, res, next) {
-    const fn = this.handle as ((...args: unknown[]) => unknown) & { length: number };
+  Layer.prototype.handle_request = function (
+    this: { handle: unknown },
+    req,
+    res,
+    next,
+  ) {
+    const fn = this.handle as ((...args: unknown[]) => unknown) & {
+      length: number;
+    };
     if (fn.length > 3) return next(); // handlers de erro (err, req, res, next)
     let out: unknown;
     try {
@@ -55,27 +79,41 @@ export function installAsyncRouteForwarding(): void {
 
 export function createErrorHandler(logger: Logger): ErrorRequestHandler {
   return (err, req, res, next) => {
-    const message = err instanceof Error ? err.message : String(err);
+    const routeTemplate =
+      typeof req.route?.path === "string" ? req.route.path : undefined;
     logger.error(
-      { err: message, method: req.method, path: req.path, stack: err instanceof Error ? err.stack : undefined },
+      {
+        ...safeErrorDiagnostic(err, "application"),
+        method: SAFE_HTTP_METHODS.has(req.method) ? req.method : "OTHER",
+        routeTemplate,
+      },
       "unhandled route error",
     );
-    if (res.headersSent) return next(err);
-    res.status(500).json({ error: "Erro interno no servidor. Tente novamente em instantes." });
+    if (res.headersSent) {
+      const forwarded = new Error("response failed after headers were sent");
+      forwarded.stack = undefined;
+      return next(forwarded);
+    }
+    res.status(500).json({
+      error: "Erro interno no servidor. Tente novamente em instantes.",
+    });
   };
 }
 
 export function installProcessGuards(logger: Logger): void {
   process.on("unhandledRejection", (reason) => {
     logger.error(
-      { err: reason instanceof Error ? reason.message : String(reason), stack: reason instanceof Error ? reason.stack : undefined },
+      { ...safeErrorDiagnostic(reason, "application") },
       "unhandled promise rejection (processo mantido vivo)",
     );
   });
   process.on("uncaughtException", (err) => {
     // Estado pode estar corrompido: loga com contexto e deixa o Render
     // reiniciar — mas nunca em silêncio.
-    logger.error({ err: err.message, stack: err.stack }, "uncaught exception — encerrando");
+    logger.error(
+      { ...safeErrorDiagnostic(err, "application") },
+      "uncaught exception — encerrando",
+    );
     process.exit(1);
   });
 }
