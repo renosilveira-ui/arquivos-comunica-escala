@@ -53,6 +53,9 @@ describe("rearme de confirmação após mudança de horário", () => {
     expect(shifts).toContain(
       "windowChanged || nextDutyType !== previousDutyType",
     );
+    expect(shifts).toContain(
+      "const activeAssignments = confirmationCycleChanged",
+    );
   });
 
   it("não redeclara automaticamente e versiona o duty-sync pela confirmação", () => {

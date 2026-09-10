@@ -2585,7 +2585,15 @@ export const shiftsRouter = router({
         const windowChanged =
           effectiveStartAt.getTime() !== locked.startAt.getTime() ||
           effectiveEndAt.getTime() !== locked.endAt.getTime();
-        const activeAssignments = windowChanged
+        const nextDutyType =
+          (patch.modality ?? locked.modality) === "SOBREAVISO"
+            ? "SOBREAVISO"
+            : "PLANTAO";
+        const previousDutyType =
+          locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
+        const confirmationCycleChanged =
+          windowChanged || nextDutyType !== previousDutyType;
+        const activeAssignments = confirmationCycleChanged
           ? await tx
               .select({
                 id: shiftAssignmentsV2.id,
@@ -2654,14 +2662,6 @@ export const shiftsRouter = router({
             sectorId: locked.sectorId,
           });
         }
-        const nextDutyType =
-          (patch.modality ?? locked.modality) === "SOBREAVISO"
-            ? "SOBREAVISO"
-            : "PLANTAO";
-        const previousDutyType =
-          locked.modality === "SOBREAVISO" ? "SOBREAVISO" : "PLANTAO";
-        const confirmationCycleChanged =
-          windowChanged || nextDutyType !== previousDutyType;
         let rearmedConfirmationCount = 0;
         if (confirmationCycleChanged) {
           await enqueueDutySyncIntervalRewrite(tx, {
