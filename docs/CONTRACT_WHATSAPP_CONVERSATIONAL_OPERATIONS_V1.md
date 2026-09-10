@@ -389,8 +389,8 @@ Estado real (eligibility):
 
 PARK lifecycle (opção B do inbound): `processing_status` permanece
 `READY_FOR_NL`; `operational_text` permanece até o TTL 24h; occupancy
-exclui da discovery; nenhuma mensagem nova altera essa row. Sweep
-O loop de retenção alcança PARK (a mesma retenção de qualquer inbound
+exclui da discovery; nenhuma mensagem nova altera essa row. O loop de
+retenção alcança PARK (a mesma retenção de qualquer inbound
 uncleared, não um TTL extra do driver). Cardinalidade uncleared PARK ≤ volume
 24h quando o processo permanece ativo e o sweep acompanha a entrada. 100 / 1k
 / 10k msgs/dia → teto ~3k / 30k / 300k rows uncleared em 30d **sem** sweep;
