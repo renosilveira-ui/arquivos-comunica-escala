@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../server/_core/logger";
 import {
+  createWhatsAppPayloadRetentionLoop,
   isWhatsAppOperationalPayloadRetentionRunning,
   runWhatsAppOperationalPayloadRetentionTick,
   startWhatsAppOperationalPayloadRetention,
@@ -57,6 +58,30 @@ const emptyPending = {
   payloadsCleared: 0,
   batchSize: 500,
 } as const;
+const emptyTick = {
+  inbound: {
+    available: true,
+    batches: 1,
+    selected: 0,
+    cleared: 0,
+    capped: false,
+  },
+  pending: {
+    available: true,
+    batches: 1,
+    selected: 0,
+    expired: 0,
+    payloadsCleared: 0,
+    capped: false,
+  },
+  stopped: false,
+  durationMs: 0,
+} as const;
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 describe("WhatsApp — retenção operacional autônoma", () => {
   beforeEach(() => {
@@ -64,6 +89,7 @@ describe("WhatsApp — retenção operacional autônoma", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -221,6 +247,92 @@ describe("WhatsApp — retenção operacional autônoma", () => {
     expect(clearPendingBatch).not.toHaveBeenCalled();
   });
 
+  it("stop durante sleep cancela timer e espera o loop terminar", async () => {
+    vi.useFakeTimers();
+    const runTick = vi.fn().mockResolvedValue(emptyTick);
+    const log = vi.fn();
+    const loop = createWhatsAppPayloadRetentionLoop({
+      runTick,
+      delayMs: () => 60_000,
+      log,
+    });
+
+    loop.start();
+    await flushMicrotasks();
+    expect(runTick).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+
+    const firstStop = loop.stop();
+    const repeatedStop = loop.stop();
+    await Promise.all([firstStop, repeatedStop]);
+    expect(loop.isRunning()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(
+      log.mock.calls.filter(
+        ([entry]) => entry.event === "whatsapp_payload_retention_stopped",
+      ),
+    ).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runTick).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop durante tick aguarda o trabalho corrente e não cria timer", async () => {
+    vi.useFakeTimers();
+    let release: ((value: typeof emptyTick) => void) | undefined;
+    const blocked = new Promise<typeof emptyTick>((resolve) => {
+      release = resolve;
+    });
+    const runTick = vi.fn().mockReturnValue(blocked);
+    const loop = createWhatsAppPayloadRetentionLoop({
+      runTick,
+      delayMs: () => 60_000,
+      log: () => undefined,
+    });
+
+    loop.start();
+    let drained = false;
+    const stopping = loop.stop().then(() => {
+      drained = true;
+    });
+    await flushMicrotasks();
+    expect(drained).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+
+    release?.(emptyTick);
+    await stopping;
+    expect(drained).toBe(true);
+    expect(loop.isRunning()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("restart após stop não revive geração nem timer antigos", async () => {
+    vi.useFakeTimers();
+    const runTick = vi.fn().mockResolvedValue(emptyTick);
+    const loop = createWhatsAppPayloadRetentionLoop({
+      runTick,
+      delayMs: () => 1_000,
+      log: () => undefined,
+    });
+
+    loop.start();
+    await flushMicrotasks();
+    expect(runTick).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    await loop.stop();
+    expect(vi.getTimerCount()).toBe(0);
+
+    loop.start();
+    await flushMicrotasks();
+    expect(runTick).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(runTick).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await loop.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("agenda entre cinco e quinze minutos e boot não depende do driver NL", () => {
     expect(whatsappPayloadRetentionDelayMs(() => 0)).toBe(
       WHATSAPP_PAYLOAD_RETENTION_MIN_INTERVAL_MS,
@@ -253,8 +365,14 @@ describe("WhatsApp — retenção operacional autônoma", () => {
       "whatsappRetentionDrain = stopWhatsAppOperationalPayloadRetention()",
     );
     expect(bootSource).toContain("await whatsappRetentionDrain");
-    expect(retentionSource.indexOf("runWhatsAppOperationalPayloadRetentionTick"))
-      .toBeLessThan(retentionSource.indexOf("whatsappPayloadRetentionDelayMs()"));
+    const loopStart = retentionSource.indexOf("async function runLoop");
+    const loopBody = retentionSource.slice(
+      loopStart,
+      retentionSource.indexOf("return {", loopStart),
+    );
+    expect(loopBody.indexOf("await runTick")).toBeLessThan(
+      loopBody.indexOf("await sleep"),
+    );
   });
 
   it("helpers fazem SELECT ordenado, limite e UPDATE com CAS", () => {
