@@ -1753,6 +1753,7 @@ export const scheduleInvitesRouter = router({
     const actor = await getTenantActorFromContext(ctx);
     const db = await getDb();
     if (!db) throw new Error("Database not available");
+    const now = new Date();
     const authorized = await listAuthorizedScheduleContexts(actor);
     const manageable = new Set(
       authorized
@@ -1795,6 +1796,8 @@ export const scheduleInvitesRouter = router({
           eq(scheduleInvites.institutionId, actor.institutionId),
           isNull(scheduleInvites.revokedAt),
           isNull(scheduleInvites.declinedAt),
+          gt(scheduleInvites.expiresAt, now),
+          sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`,
         ),
       );
     return rows.filter((row) =>

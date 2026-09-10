@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { appRouter } from "../server/routers";
 import {
   foldCandidateSearch,
@@ -61,6 +62,76 @@ describe("scheduleInvites no appRouter", () => {
       roleInInstitution: "GESTOR_MEDICO",
       isGlobalAdmin: false,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("lista somente convites vigentes e resgatáveis do tenant e escopo gerenciado", async () => {
+    const now = new Date("2026-09-10T12:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    mocks.listAuthorizedScheduleContexts.mockResolvedValue([
+      { hospitalId: 10, sectorId: 20, canManage: true },
+      { hospitalId: 10, sectorId: 21, canManage: false },
+    ]);
+
+    const rows = [
+      {
+        id: 1,
+        hospitalId: 10,
+        sectorId: 20,
+        hospitalName: "Hospital A",
+        sectorName: "Setor gerenciado",
+        invitedUserId: 51,
+        invitedName: "Convidado válido",
+        maxRedemptions: 3,
+        redeemedCount: 1,
+        expiresAt: new Date("2026-09-11T12:00:00.000Z"),
+        createdAt: new Date("2026-09-10T10:00:00.000Z"),
+      },
+      {
+        id: 2,
+        hospitalId: 10,
+        sectorId: 21,
+        hospitalName: "Hospital A",
+        sectorName: "Setor não gerenciado",
+        invitedUserId: 52,
+        invitedName: "Convidado fora do escopo",
+        maxRedemptions: 3,
+        redeemedCount: 0,
+        expiresAt: new Date("2026-09-11T12:00:00.000Z"),
+        createdAt: new Date("2026-09-10T10:00:00.000Z"),
+      },
+    ];
+    const where = vi.fn().mockResolvedValue(rows);
+    const builder = {
+      from: vi.fn(),
+      innerJoin: vi.fn(),
+      leftJoin: vi.fn(),
+      where,
+    };
+    builder.from.mockReturnValue(builder);
+    builder.innerJoin.mockReturnValue(builder);
+    builder.leftJoin.mockReturnValue(builder);
+    mocks.getDb.mockResolvedValue({
+      select: vi.fn(() => builder),
+    });
+
+    await expect(caller().scheduleInvites.listActive()).resolves.toEqual([
+      rows[0],
+    ]);
+
+    const query = new MySqlDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(query.sql).toContain("`schedule_invites`.`institution_id` = ?");
+    expect(query.sql).toContain("`schedule_invites`.`revoked_at` is null");
+    expect(query.sql).toContain("`schedule_invites`.`declined_at` is null");
+    expect(query.sql).toContain("`schedule_invites`.`expires_at` > ?");
+    expect(query.sql).toContain(
+      "`schedule_invites`.`redeemed_count` < `schedule_invites`.`max_redemptions`",
+    );
+    expect(query.params).toEqual([4, "2026-09-10 12:00:00.000"]);
   });
 
   it("recusa gerar convite de setor que o ator não gerencia", async () => {

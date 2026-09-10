@@ -118,6 +118,29 @@ describe("wiring fail-closed dos convites nominais", () => {
     );
   });
 
+  it("listActive limita a população SQL a convites canonicamente ativos", () => {
+    const source = readFileSync("server/schedule-invites.ts", "utf8");
+    const listActive = source.slice(
+      source.indexOf("listActive: protectedProcedure"),
+      source.indexOf("listCandidates: protectedProcedure"),
+    );
+    expect(listActive).toContain("const now = new Date()");
+    expect(listActive).toContain(
+      "eq(scheduleInvites.institutionId, actor.institutionId)",
+    );
+    expect(listActive).toContain("isNull(scheduleInvites.revokedAt)");
+    expect(listActive).toContain("isNull(scheduleInvites.declinedAt)");
+    expect(listActive).toContain("gt(scheduleInvites.expiresAt, now)");
+    expect(listActive).toContain(
+      "sql`${scheduleInvites.redeemedCount} < ${scheduleInvites.maxRedemptions}`",
+    );
+    expect(listActive).toContain(".filter((context) => context.canManage)");
+    expect(listActive).toContain(
+      "manageable.has(`${row.hospitalId}:${row.sectorId}`)",
+    );
+    expect(listActive.match(/new Date\(\)/g)).toHaveLength(1);
+  });
+
   it("materializa outbox e journal append-only sem persistir código/e-mail", () => {
     const source = readFileSync("server/schedule-invites.ts", "utf8");
     const schema = readFileSync("drizzle/schema.ts", "utf8");
