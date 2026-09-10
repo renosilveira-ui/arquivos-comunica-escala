@@ -9,6 +9,7 @@ import {
   hospitals,
   institutionFeatureEntitlements,
   institutions,
+  monthlyRosters,
   professionalAccess,
   professionalInstitutions,
   professionals,
@@ -186,6 +187,27 @@ describe("entitlement institucional de leitura entre escalas", () => {
     hospitalA1Id = hospitalA1.id;
     hospitalA2Id = hospitalA2.id;
     hospitalBId = hospitalB.id;
+    // O entitlement amplia a leitura entre escalas publicadas, não rascunhos.
+    await db.insert(monthlyRosters).values([
+      {
+        institutionId: institutionAId,
+        hospitalId: hospitalA1Id,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      },
+      {
+        institutionId: institutionAId,
+        hospitalId: hospitalA2Id,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      },
+      {
+        institutionId: institutionBId,
+        hospitalId: hospitalBId,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      },
+    ]);
 
     const makeSector = async (
       institutionId: number,
@@ -369,6 +391,11 @@ describe("entitlement institucional de leitura entre escalas", () => {
 
   afterAll(async () => {
     if (!db) return;
+    await db
+      .delete(monthlyRosters)
+      .where(
+        inArray(monthlyRosters.institutionId, [institutionAId, institutionBId]),
+      );
     try {
       await db.execute(sql.raw(`DROP TRIGGER IF EXISTS \`${triggerName}\``));
     } catch {
