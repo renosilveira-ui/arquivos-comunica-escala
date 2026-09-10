@@ -502,7 +502,15 @@ describe("autoridade atual no outbox de confirmação", () => {
       providerReceipt: {
         trackingVersion: 1,
         revision: 1,
-        payloadData: { type: "duty_confirmation", confirmationId },
+        // O payload precisa ser canônico — inclusive o token do ciclo — para
+        // que a única incoerência sob teste seja o expectedUserId. Um payload
+        // incompleto pararia antes, no parse, e mediria outra coisa.
+        payloadData: {
+          type: "duty_confirmation",
+          confirmationId,
+          confirmationToken,
+          institutionId,
+        },
         attemptCount: 0,
         phase: "QUEUED",
         availableAt: now.toISOString(),
@@ -621,7 +629,14 @@ describe("autoridade atual no outbox de confirmação", () => {
       providerReceipt: {
         trackingVersion: 1,
         revision: 1,
-        payloadData: { type: "duty_confirmation", confirmationId },
+        // Legado é a autoridade sem purpose e sem token de ciclo; o payload,
+        // esse sim, sempre carregou o token da rota de confirmação.
+        payloadData: {
+          type: "duty_confirmation",
+          confirmationId,
+          confirmationToken,
+          institutionId,
+        },
         attemptCount: 0,
         phase: "QUEUED",
         availableAt: now.toISOString(),

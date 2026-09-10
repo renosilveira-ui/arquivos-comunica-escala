@@ -14,6 +14,7 @@ import {
   managerScope,
   monthlyRosters,
   notifications,
+  professionalAccess,
   professionalInstitutions,
   professionals,
   pushTokens,
@@ -194,6 +195,15 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     const requester = await createProfessional("requester", "USER");
     requesterUserId = requester.userId;
     requesterProfessionalId = requester.professionalId;
+    // Aprovar uma vaga transforma a candidatura em alocação oficial, então a
+    // autoridade revalida a ACL clínica do solicitante antes de notificar.
+    // Acesso hospital-wide (sector_id NULL) é o vínculo mínimo realista.
+    await db.insert(professionalAccess).values({
+      institutionId,
+      professionalId: requester.professionalId,
+      hospitalId: hospitalAId,
+      canAccess: true,
+    });
     const managerA = await createProfessional("manager-a", "GESTOR_MEDICO");
     managerAUserId = managerA.userId;
     managerAProfessionalId = managerA.professionalId;
@@ -851,6 +861,9 @@ describe("autoridade atual no outbox de solicitação de vaga", () => {
     await db
       .delete(managerScope)
       .where(inArray(managerScope.managerProfessionalId, professionalIds));
+    await db
+      .delete(professionalAccess)
+      .where(inArray(professionalAccess.professionalId, professionalIds));
     await db
       .delete(professionalInstitutions)
       .where(inArray(professionalInstitutions.professionalId, professionalIds));
