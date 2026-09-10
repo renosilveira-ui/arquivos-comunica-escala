@@ -1083,15 +1083,12 @@ authRouter.post(
                 tx,
                 lockedUser.id,
               );
+              // Mesmo desfecho da troca de senha autenticada: o ciclo legado
+              // sai inteiro do banco. Marcar como usado deixaria hash de token
+              // órfão sobrevivendo à credencial que ele destravava.
               await tx
-                .update(passwordResets)
-                .set({ usedAt })
-                .where(
-                  and(
-                    eq(passwordResets.userId, lockedUser.id),
-                    isNull(passwordResets.usedAt),
-                  ),
-                );
+                .delete(passwordResets)
+                .where(eq(passwordResets.userId, lockedUser.id));
               await revokeOutstandingAuthRecoveryRequests(
                 tx,
                 lockedUser.id,
