@@ -1064,6 +1064,10 @@ describe("sinal de oferta de plantão", () => {
     installSuccessfulExpoTransport();
     await registerPushToken(gestor);
     const shift = await createOccupiedShift(gestor, 45, "Clínica Médica");
+    await db
+      .update(shiftInstances)
+      .set({ requiredCapacity: 2 })
+      .where(eq(shiftInstances.id, shift.shiftId));
     await db.insert(shiftAssignmentsV2).values({
       shiftInstanceId: shift.shiftId,
       institutionId,
