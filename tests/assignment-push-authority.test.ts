@@ -12,6 +12,7 @@ import { and, eq } from "drizzle-orm";
 import {
   hospitals,
   institutions,
+  monthlyRosters,
   notifications,
   professionalAccess,
   professionalInstitutions,
@@ -30,6 +31,8 @@ import { getDb } from "../server/db";
 import {
   enqueueTrackedPushNotification,
   processPendingPushDeliveries,
+  sendTrackedPushNotification,
+  type TrackedPushInput,
 } from "../server/push-delivery";
 import { drainAccountWideNativeBadgeSnapshotDispatches } from "../server/notifications-service";
 
@@ -190,6 +193,12 @@ describe("autoridade atual no outbox de alocação", () => {
       })
       .$returningId();
     assignmentId = assignment.id;
+    await db.insert(monthlyRosters).values({
+      institutionId,
+      hospitalId: hospitalAId,
+      yearMonth: "2032-09",
+      status: "PUBLISHED",
+    });
   });
 
   beforeEach(async () => {
@@ -249,6 +258,15 @@ describe("autoridade atual no outbox de alocação", () => {
       .update(sectors)
       .set({ name: `Setor A ${stamp}` })
       .where(eq(sectors.id, sectorAId));
+    await db
+      .insert(monthlyRosters)
+      .values({
+        institutionId,
+        hospitalId: hospitalAId,
+        yearMonth: "2032-09",
+        status: "PUBLISHED",
+      })
+      .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
   });
 
   afterEach(async () => {
@@ -269,6 +287,9 @@ describe("autoridade atual no outbox de alocação", () => {
     await db
       .delete(shiftAssignmentsV2)
       .where(eq(shiftAssignmentsV2.id, assignmentId));
+    await db
+      .delete(monthlyRosters)
+      .where(eq(monthlyRosters.institutionId, institutionId));
     await db.delete(shiftInstances).where(eq(shiftInstances.id, shiftId));
     await db
       .delete(professionalAccess)
@@ -296,6 +317,41 @@ describe("autoridade atual no outbox de alocação", () => {
     };
   }
 
+  function assignedIntent(): TrackedPushInput {
+    return {
+      institutionId,
+      userId,
+      shiftInstanceId: shiftId,
+      dedupKey: `shift-assigned:${shiftId}:${professionalId}:${assignmentId}`,
+      deepLink: `/shift-details?id=${shiftId}`,
+      payload: {
+        title: "Novo plantão na sua escala",
+        body: `Você foi escalado em Hospital A ${stamp} · Setor A ${stamp}, 12/09/2032, 07:00–13:00.`,
+        data: {
+          type: "shift_assigned",
+          institutionId,
+          hospitalId: hospitalAId,
+          sectorId: sectorAId,
+          shiftInstanceId: shiftId,
+          assignmentId,
+          professionalId,
+          userId,
+        },
+      },
+      authority: {
+        kind: "ASSIGNMENT_LIFECYCLE",
+        purpose: "ASSIGNED",
+        assignmentId,
+        expectedUserId: userId,
+        professionalId,
+        institutionId,
+        hospitalId: hospitalAId,
+        sectorId: sectorAId,
+        shiftInstanceId: shiftId,
+      },
+    };
+  }
+
   function operationalMessage(type: string): Record<string, unknown> | null {
     for (const [, options] of fetchMock.mock.calls) {
       const raw = (options as RequestInit | undefined)?.body;
@@ -307,10 +363,282 @@ describe("autoridade atual no outbox de alocação", () => {
     return null;
   }
 
+  function operationalMessageCount(type: string): number {
+    return fetchMock.mock.calls.filter(([, options]) => {
+      const raw = (options as RequestInit | undefined)?.body;
+      if (typeof raw !== "string") return false;
+      const body = JSON.parse(raw) as Record<string, unknown>;
+      const data = body.data as Record<string, unknown> | undefined;
+      return data?.type === type;
+    }).length;
+  }
+
   async function processQueued(): Promise<void> {
     await processPendingPushDeliveries(new Date(Date.now() + 1_000));
     await drainAccountWideNativeBadgeSnapshotDispatches();
   }
+
+  it.each(["ABSENT", "DRAFT"] as const)(
+    "%s: mantém a notificação retida sem consumir tentativa ou chamar o provedor",
+    async (status) => {
+      await db
+        .delete(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionId),
+            eq(monthlyRosters.hospitalId, hospitalAId),
+          ),
+        );
+      if (status === "DRAFT") {
+        await db.insert(monthlyRosters).values({
+          institutionId,
+          hospitalId: hospitalAId,
+          yearMonth: "2032-09",
+          status: "DRAFT",
+        });
+      }
+      await enqueueShiftAssignedPush({
+        db,
+        assignmentId,
+        professionalId,
+        shift: shiftInput(),
+      });
+
+      await processQueued();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      const [row] = await db
+        .select({
+          status: notifications.status,
+          receipt: notifications.providerReceipt,
+          errorMessage: notifications.errorMessage,
+        })
+        .from(notifications)
+        .where(
+          eq(
+            notifications.dedupKey,
+            `shift-assigned:${shiftId}:${professionalId}:${assignmentId}`,
+          ),
+        );
+      expect(row.status).toBe("PENDING");
+      expect(row.receipt).toMatchObject({
+        phase: "QUEUED",
+        attemptCount: 0,
+        lastError: "Entrega aguardando publicação da escala",
+      });
+      expect(row.errorMessage).toBe("Entrega aguardando publicação da escala");
+    },
+  );
+
+  it("entrega uma única vez depois da transição DRAFT → PUBLISHED", async () => {
+    await db
+      .update(monthlyRosters)
+      .set({ status: "DRAFT" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+        ),
+      );
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+    await processQueued();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await db
+      .update(monthlyRosters)
+      .set({ status: "PUBLISHED" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+        ),
+      );
+    await processPendingPushDeliveries(new Date(Date.now() + 6 * 60_000));
+    await drainAccountWideNativeBadgeSnapshotDispatches();
+
+    expect(operationalMessage("shift_assigned")).not.toBeNull();
+    expect(operationalMessageCount("shift_assigned")).toBe(1);
+  });
+
+  it("encerra sem retry uma fila DRAFT nunca publicada quando o plantão começa", async () => {
+    await db
+      .update(monthlyRosters)
+      .set({ status: "DRAFT" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+        ),
+      );
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+    await processQueued();
+
+    await sendTrackedPushNotification(
+      assignedIntent(),
+      new Date("2032-09-12T10:00:00.000Z"),
+    );
+
+    const dedupKey =
+      `shift-assigned:${shiftId}:${professionalId}:${assignmentId}`;
+    const [expired] = await db
+      .select({
+        status: notifications.status,
+        receipt: notifications.providerReceipt,
+        errorMessage: notifications.errorMessage,
+      })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, dedupKey));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(expired.status).toBe("FAILED");
+    expect(expired.errorMessage).toBe(
+      "Notificação suprimida após o início do plantão",
+    );
+    expect(expired.receipt).toMatchObject({
+      phase: "FAILED",
+      attemptCount: 0,
+      evidence: {
+        reason: "OPERATIONAL_WINDOW_EXPIRED",
+        operationalDeadline: "2032-09-12T10:00:00.000Z",
+      },
+    });
+
+    await sendTrackedPushNotification(
+      assignedIntent(),
+      new Date("2032-10-12T10:00:00.000Z"),
+    );
+    const [afterRetryWindow] = await db
+      .select({ receipt: notifications.providerReceipt })
+      .from(notifications)
+      .where(eq(notifications.dedupKey, dedupKey));
+    expect(afterRetryWindow.receipt).toEqual(expired.receipt);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("não ressuscita a notificação quando a escala é publicada depois do início", async () => {
+    await db
+      .update(monthlyRosters)
+      .set({ status: "DRAFT" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+        ),
+      );
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+    await processQueued();
+    await db
+      .update(monthlyRosters)
+      .set({ status: "PUBLISHED" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+        ),
+      );
+
+    await sendTrackedPushNotification(
+      assignedIntent(),
+      new Date("2032-09-12T10:00:01.000Z"),
+    );
+
+    const [row] = await db
+      .select({
+        status: notifications.status,
+        receipt: notifications.providerReceipt,
+      })
+      .from(notifications)
+      .where(
+        eq(
+          notifications.dedupKey,
+          `shift-assigned:${shiftId}:${professionalId}:${assignmentId}`,
+        ),
+      );
+    expect(row.status).toBe("FAILED");
+    expect(row.receipt).toMatchObject({
+      phase: "FAILED",
+      attemptCount: 0,
+      evidence: { reason: "OPERATIONAL_WINDOW_EXPIRED" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("revalida com relógio fresco se o guard final atravessa o início do plantão", async () => {
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+
+    await sendTrackedPushNotification(
+      assignedIntent(),
+      new Date("2032-09-12T09:59:59.000Z"),
+      {
+        authorityDecisionNow: () =>
+          new Date("2032-09-12T10:00:00.001Z"),
+      },
+    );
+
+    const [row] = await db
+      .select({
+        status: notifications.status,
+        receipt: notifications.providerReceipt,
+      })
+      .from(notifications)
+      .where(
+        eq(
+          notifications.dedupKey,
+          `shift-assigned:${shiftId}:${professionalId}:${assignmentId}`,
+        ),
+      );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(row.status).toBe("FAILED");
+    expect(row.receipt).toMatchObject({
+      phase: "FAILED",
+      attemptCount: 0,
+      terminalAt: "2032-09-12T10:00:00.001Z",
+      evidence: {
+        reason: "OPERATIONAL_WINDOW_EXPIRED",
+        operationalDeadline: "2032-09-12T10:00:00.000Z",
+        decisionAt: "2032-09-12T10:00:00.001Z",
+      },
+    });
+  });
+
+  it("LOCKED permite entregar a alocação oficial já consolidada", async () => {
+    await db
+      .update(monthlyRosters)
+      .set({ status: "LOCKED" })
+      .where(
+        and(
+          eq(monthlyRosters.institutionId, institutionId),
+          eq(monthlyRosters.hospitalId, hospitalAId),
+        ),
+      );
+    await enqueueShiftAssignedPush({
+      db,
+      assignmentId,
+      professionalId,
+      shift: shiftInput(),
+    });
+    await processQueued();
+    expect(operationalMessage("shift_assigned")).not.toBeNull();
+  });
 
   it("exibe hospital e setor canônicos ao profissional alocado", async () => {
     await enqueueShiftAssignedPush({

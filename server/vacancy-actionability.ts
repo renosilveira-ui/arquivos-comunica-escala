@@ -1,6 +1,10 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { professionals, scheduleInvites } from "../drizzle/schema";
+import {
+  managerScope,
+  professionals,
+  scheduleInvites,
+} from "../drizzle/schema";
 import { rowsFromExecute } from "./_core/db-results";
 import { getDb } from "./db";
 import { dayWindowBrt } from "./local-time";
@@ -70,6 +74,7 @@ export type ActionableVacancyCounts = {
 type VacancyActor = {
   userId: number;
   professionalId: number;
+  isGlobalAdmin: boolean;
   /**
    * The caller has already been resolved by getTenantActorFromContext, which
    * proves active membership in this institution. Keep the role as a closed
@@ -95,7 +100,10 @@ async function listActionableScheduleContextIds(input: {
   db: VacancyDb;
   institutionId: number;
   actor: VacancyActor;
-}): Promise<Set<number>> {
+}): Promise<{
+  actionableContextIds: Set<number>;
+  manageableContextIds: Set<number>;
+}> {
   const activeContexts = await selectActiveScheduleContexts(
     input.db,
     input.institutionId,
@@ -113,15 +121,61 @@ async function listActionableScheduleContextIds(input: {
       contextsPerTopology.get(`${context.hospitalId}:${context.sectorId}`) ===
       1,
   );
-  if (canonicalContexts.length === 0) return new Set();
+  if (canonicalContexts.length === 0) {
+    return {
+      actionableContextIds: new Set(),
+      manageableContextIds: new Set(),
+    };
+  }
 
-  if (input.actor.roleInInstitution === "GESTOR_PLUS") {
-    return filterOccupiableScheduleContextIds(
-      input.db,
-      input.actor.professionalId,
-      canonicalContexts,
-      new Set(canonicalContexts.map((context) => context.id)),
-    );
+  const manageableContextIds = new Set<number>();
+  if (
+    input.actor.isGlobalAdmin ||
+    input.actor.roleInInstitution === "GESTOR_PLUS"
+  ) {
+    for (const context of canonicalContexts) {
+      manageableContextIds.add(context.id);
+    }
+  } else if (input.actor.roleInInstitution === "GESTOR_MEDICO") {
+    const scopes = await input.db
+      .select({
+        hospitalId: managerScope.hospitalId,
+        sectorId: managerScope.sectorId,
+      })
+      .from(managerScope)
+      .where(
+        and(
+          eq(managerScope.institutionId, input.institutionId),
+          eq(managerScope.managerProfessionalId, input.actor.professionalId),
+          eq(managerScope.active, true),
+        ),
+      );
+    for (const context of canonicalContexts) {
+      if (
+        scopes.some(
+          (scope) =>
+            scope.hospitalId === context.hospitalId &&
+            (scope.sectorId === null || scope.sectorId === context.sectorId),
+        )
+      ) {
+        manageableContextIds.add(context.id);
+      }
+    }
+  }
+
+  if (
+    input.actor.isGlobalAdmin ||
+    input.actor.roleInInstitution === "GESTOR_PLUS"
+  ) {
+    return {
+      actionableContextIds: await filterOccupiableScheduleContextIds(
+        input.db,
+        input.actor.professionalId,
+        canonicalContexts,
+        new Set(canonicalContexts.map((context) => context.id)),
+      ),
+      manageableContextIds,
+    };
   }
 
   const assumedContextIds = new Set(
@@ -167,12 +221,15 @@ async function listActionableScheduleContextIds(input: {
       contextIds.add(context.id);
     }
   }
-  return filterOccupiableScheduleContextIds(
-    input.db,
-    input.actor.professionalId,
-    canonicalContexts,
-    contextIds,
-  );
+  return {
+    actionableContextIds: await filterOccupiableScheduleContextIds(
+      input.db,
+      input.actor.professionalId,
+      canonicalContexts,
+      contextIds,
+    ),
+    manageableContextIds,
+  };
 }
 
 /**
@@ -231,16 +288,24 @@ export async function listActionableVacancyRows(input: {
     ({ start: startOfDay, end: endOfDay } = dayWindowBrt(input.filters.date));
   }
 
-  const assumableContextIds = await listActionableScheduleContextIds({
-    db: input.db,
-    institutionId: input.institutionId,
-    actor: input.actor,
-  });
-  if (assumableContextIds.size === 0) return [];
+  const { actionableContextIds, manageableContextIds } =
+    await listActionableScheduleContextIds({
+      db: input.db,
+      institutionId: input.institutionId,
+      actor: input.actor,
+    });
+  if (actionableContextIds.size === 0) return [];
   const assumableContextIdList = sql.join(
-    [...assumableContextIds].map((contextId) => sql`${contextId}`),
+    [...actionableContextIds].map((contextId) => sql`${contextId}`),
     sql`, `,
   );
+  const draftManagerPredicate =
+    manageableContextIds.size > 0
+      ? sql`OR si.schedule_context_id IN (${sql.join(
+          [...manageableContextIds].map((contextId) => sql`${contextId}`),
+          sql`, `,
+        )})`
+      : sql``;
 
   const rows = await input.db.execute<ActionableVacancyRow>(
     sql`SELECT
@@ -277,13 +342,24 @@ export async function listActionableVacancyRows(input: {
           -- IDs = admissão topológica ∩ qualificationMatches do ator.
           -- assumeVacancy revalida; a lista não substitui o write.
           AND si.schedule_context_id IN (${assumableContextIdList})
-          -- Mês trancado não oferece vagas (start_at em UTC → mês do hospital, -03:00)
+          -- USER só age em PUBLISHED. Gestor pode operar o próprio DRAFT;
+          -- LOCKED permanece bloqueado para todos.
           AND NOT EXISTS (
             SELECT 1 FROM monthly_rosters mr
             WHERE mr.institution_id = si.institution_id
               AND mr.hospital_id = si.hospital_id
               AND mr.year_month = DATE_FORMAT(DATE_SUB(si.start_at, INTERVAL 3 HOUR), '%Y-%m')
               AND mr.status = 'LOCKED'
+          )
+          AND (
+            EXISTS (
+              SELECT 1 FROM monthly_rosters mr
+              WHERE mr.institution_id = si.institution_id
+                AND mr.hospital_id = si.hospital_id
+                AND mr.year_month = DATE_FORMAT(DATE_SUB(si.start_at, INTERVAL 3 HOUR), '%Y-%m')
+                AND mr.status = 'PUBLISHED'
+            )
+            ${draftManagerPredicate}
           )
           AND (SELECT COUNT(*) FROM shift_assignments_v2 a
             WHERE a.shift_instance_id = si.id AND a.is_active = true) < COALESCE(si.required_capacity, 1)

@@ -157,6 +157,30 @@ export async function assertOfficialRoster(
   return roster.status;
 }
 
+/**
+ * Confirma publicação editável do mês. LOCKED é oficial para leitura, mas
+ * não autoriza ações que criam novas solicitações ou avisos de vaga.
+ */
+export async function assertPublishedRoster(
+  db: MonthReadDb,
+  institutionId: number,
+  hospitalId: number,
+  date: Date,
+): Promise<void> {
+  const status = await assertOfficialRoster(
+    db,
+    institutionId,
+    hospitalId,
+    date,
+  );
+  if (status !== "PUBLISHED") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala trancada — esta ação não está mais disponível.",
+    });
+  }
+}
+
 async function lockMonthRowsForUpdate(
   tx: MonthLockDb,
   targets: readonly MonthLockTarget[],
@@ -233,6 +257,66 @@ export async function assertMonthNotLockedForUpdate(
   date: Date,
 ): Promise<void> {
   await assertMonthsNotLockedForUpdate(tx, [{ institutionId, hospitalId, date }]);
+}
+
+/**
+ * Cerca transacional das ações de vaga do plantonista. PUBLISHED é o único
+ * estado ordinário acionável; um gestor com jurisdição atual pode operar o
+ * DRAFT pelo fluxo gerencial. LOCKED nunca aceita nova ação.
+ *
+ * O mês ausente é materializado como DRAFT pelo mutex canônico e, portanto,
+ * permanece fail-closed sem depender de gap locks do MySQL.
+ */
+export async function assertVacancyActionMonthForUpdate(
+  tx: MonthLockDb,
+  institutionId: number,
+  hospitalId: number,
+  date: Date,
+  canManage: boolean,
+): Promise<"DRAFT" | "PUBLISHED"> {
+  const [roster] = await lockMonthRowsForUpdate(tx, [
+    { institutionId, hospitalId, date },
+  ]);
+  if (!roster) {
+    throw new Error("Falha ao travar o mês da solicitação de vaga");
+  }
+  if (roster.status === "LOCKED") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Escala trancada — não é possível solicitar este plantão.",
+    });
+  }
+  if (roster.status !== "PUBLISHED" && !canManage) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `A escala de ${roster.yearMonth} ainda não foi publicada.`,
+    });
+  }
+  return roster.status;
+}
+
+/**
+ * Avisos de vaga só podem nascer enquanto o mês está PUBLISHED. O lock torna
+ * a decisão atômica com lockMonth e impede emissão nova depois de LOCKED.
+ */
+export async function assertPublishedRosterForUpdate(
+  tx: MonthLockDb,
+  institutionId: number,
+  hospitalId: number,
+  date: Date,
+): Promise<void> {
+  const [roster] = await lockMonthRowsForUpdate(tx, [
+    { institutionId, hospitalId, date },
+  ]);
+  if (roster?.status !== "PUBLISHED") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        roster?.status === "LOCKED"
+          ? "Escala trancada — não é possível avisar uma nova vaga."
+          : `A escala de ${yearMonthBrt(date)} ainda não foi publicada.`,
+    });
+  }
 }
 
 /**

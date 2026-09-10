@@ -12,6 +12,8 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   hospitals,
   institutions,
+  managerScope,
+  monthlyRosters,
   personalCalendarAlertRules,
   personalCalendarItems,
   personalCalendarOccurrences,
@@ -19,6 +21,7 @@ import {
   personalCalendarRecurrences,
   professionalInstitutions,
   professionals,
+  scheduleContexts,
   sectors,
   shiftAssignmentsV2,
   shiftInstances,
@@ -88,6 +91,8 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
   let sectorA1Id: number;
   let sectorA2Id: number;
   let sectorBId: number;
+  let contextA1Id: number;
+  let ownerShiftA1Id: number;
   const shiftIds: number[] = [];
 
   const callerFor = (userId: number, sessionVersion = 1) =>
@@ -190,6 +195,27 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
       .$returningId();
     hospitalBId = hospitalB.id;
 
+    await db.insert(monthlyRosters).values([
+      {
+        institutionId: institutionAId,
+        hospitalId: hospitalA1Id,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      },
+      {
+        institutionId: institutionAId,
+        hospitalId: hospitalA2Id,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      },
+      {
+        institutionId: institutionBId,
+        hospitalId: hospitalBId,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      },
+    ]);
+
     const [sectorA1] = await db
       .insert(sectors)
       .values({
@@ -223,6 +249,18 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
       })
       .$returningId();
     sectorBId = sectorB.id;
+
+    const [contextA1] = await db
+      .insert(scheduleContexts)
+      .values({
+        institutionId: institutionAId,
+        hospitalId: hospitalA1Id,
+        sectorId: sectorA1Id,
+        admissionPolicy: "ALL_CFM_SPECIALTIES",
+        active: true,
+      })
+      .$returningId();
+    contextA1Id = contextA1.id;
 
     const [owner] = await db
       .insert(users)
@@ -319,15 +357,21 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
       },
     ]);
 
-    await createShift({
-      institutionId: institutionAId,
-      hospitalId: hospitalA1Id,
-      sectorId: sectorA1Id,
-      professionalId: ownerProfessionalAId,
-      startsAtUtc: "2026-09-10T12:30:00.000Z",
-      endsAtUtc: "2026-09-10T15:00:00.000Z",
-      label: "Plantão próprio A1",
-    });
+    ownerShiftA1Id = (
+      await createShift({
+        institutionId: institutionAId,
+        hospitalId: hospitalA1Id,
+        sectorId: sectorA1Id,
+        professionalId: ownerProfessionalAId,
+        startsAtUtc: "2026-09-10T12:30:00.000Z",
+        endsAtUtc: "2026-09-10T15:00:00.000Z",
+        label: "Plantão próprio A1",
+      })
+    ).shiftInstanceId;
+    await db
+      .update(shiftInstances)
+      .set({ scheduleContextId: contextA1Id })
+      .where(eq(shiftInstances.id, ownerShiftA1Id));
     await createShift({
       institutionId: institutionAId,
       hospitalId: hospitalA2Id,
@@ -414,6 +458,14 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
         .delete(shiftInstances)
         .where(inArray(shiftInstances.id, shiftIds));
     }
+    await db
+      .delete(monthlyRosters)
+      .where(
+        inArray(monthlyRosters.institutionId, [institutionAId, institutionBId]),
+      );
+    await db
+      .delete(managerScope)
+      .where(eq(managerScope.managerProfessionalId, ownerProfessionalAId));
     const professionalIds = [
       ownerProfessionalAId,
       ownerProfessionalBId,
@@ -425,6 +477,9 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
     await db
       .delete(professionals)
       .where(inArray(professionals.id, professionalIds));
+    await db
+      .delete(scheduleContexts)
+      .where(eq(scheduleContexts.id, contextA1Id));
     await db
       .delete(users)
       .where(inArray(users.id, [ownerUserId, otherUserId, standaloneUserId]));
@@ -859,6 +914,151 @@ describe("Agenda pessoal — API account-wide e conflitos próprios", () => {
         label: "Plantão próprio B",
       }),
     ]);
+  });
+
+  it("aplica a publicação e a gestão atual aos conflitos account-wide", async () => {
+    const caller = callerFor(ownerUserId);
+    const item = await caller.personalCalendar.createItem({
+      clientMutationId: `publication-fence:${stamp}`,
+      item: appointment("2026-09-10", "09:00", "11:00", {
+        title: "Compromisso cercado",
+      }),
+      recurrence: noRecurrence,
+      alertOffsets: noAlerts,
+    });
+    const rosterWhere = and(
+      eq(monthlyRosters.institutionId, institutionAId),
+      eq(monthlyRosters.hospitalId, hospitalA1Id),
+      eq(monthlyRosters.yearMonth, "2026-09"),
+    );
+    const conflictInput = {
+      item: conflictAppointment("2026-09-10", "09:00", "11:00"),
+      recurrence: noRecurrence,
+      window: { fromDate: "2026-09-10", toDate: "2026-09-10" },
+    };
+    const hasOwnShiftConflict = async () => {
+      const checked =
+        await caller.personalCalendar.checkConflicts(conflictInput);
+      const listed = await caller.personalCalendar.listWindow({
+        fromDate: "2026-09-10",
+        toDate: "2026-09-10",
+      });
+      return {
+        check: checked.occurrences[0].conflict.conflicts.some(
+          (conflict) =>
+            conflict.kind === "SHIFT" &&
+            conflict.shiftInstanceId === ownerShiftA1Id,
+        ),
+        list: listed.occurrences
+          .find((occurrence) => occurrence.itemId === item.item.id)!
+          .conflict.conflicts.some(
+            (conflict) =>
+              conflict.kind === "SHIFT" &&
+              conflict.shiftInstanceId === ownerShiftA1Id,
+          ),
+      };
+    };
+
+    try {
+      await db.delete(monthlyRosters).where(rosterWhere);
+      expect(await hasOwnShiftConflict()).toEqual({
+        check: false,
+        list: false,
+      });
+
+      await db.insert(monthlyRosters).values({
+        institutionId: institutionBId,
+        hospitalId: hospitalA1Id,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      });
+      expect(await hasOwnShiftConflict()).toEqual({
+        check: false,
+        list: false,
+      });
+      await db
+        .delete(monthlyRosters)
+        .where(
+          and(
+            eq(monthlyRosters.institutionId, institutionBId),
+            eq(monthlyRosters.hospitalId, hospitalA1Id),
+          ),
+        );
+
+      await db.insert(monthlyRosters).values({
+        institutionId: institutionAId,
+        hospitalId: hospitalA1Id,
+        yearMonth: "2026-09",
+        status: "DRAFT",
+      });
+      expect(await hasOwnShiftConflict()).toEqual({
+        check: false,
+        list: false,
+      });
+
+      await db
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "GESTOR_MEDICO" })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, ownerProfessionalAId),
+            eq(professionalInstitutions.institutionId, institutionAId),
+          ),
+        );
+      await db.insert(managerScope).values({
+        institutionId: institutionAId,
+        managerProfessionalId: ownerProfessionalAId,
+        hospitalId: hospitalA1Id,
+        sectorId: sectorA1Id,
+        active: true,
+      });
+      expect(await hasOwnShiftConflict()).toEqual({ check: true, list: true });
+
+      await db
+        .delete(managerScope)
+        .where(eq(managerScope.managerProfessionalId, ownerProfessionalAId));
+      await db
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "USER" })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, ownerProfessionalAId),
+            eq(professionalInstitutions.institutionId, institutionAId),
+          ),
+        );
+      expect(await hasOwnShiftConflict()).toEqual({
+        check: false,
+        list: false,
+      });
+
+      for (const status of ["PUBLISHED", "LOCKED"] as const) {
+        await db.update(monthlyRosters).set({ status }).where(rosterWhere);
+        expect(await hasOwnShiftConflict()).toEqual({
+          check: true,
+          list: true,
+        });
+      }
+    } finally {
+      await db
+        .delete(managerScope)
+        .where(eq(managerScope.managerProfessionalId, ownerProfessionalAId));
+      await db
+        .update(professionalInstitutions)
+        .set({ roleInInstitution: "USER" })
+        .where(
+          and(
+            eq(professionalInstitutions.professionalId, ownerProfessionalAId),
+            eq(professionalInstitutions.institutionId, institutionAId),
+          ),
+        );
+      await db.delete(monthlyRosters).where(rosterWhere);
+      await db.insert(monthlyRosters).values({
+        institutionId: institutionAId,
+        hospitalId: hospitalA1Id,
+        yearMonth: "2026-09",
+        status: "PUBLISHED",
+      });
+    }
   });
 
   it("falha fechado para topologia contaminada, outra conta e vínculo revogado", async () => {

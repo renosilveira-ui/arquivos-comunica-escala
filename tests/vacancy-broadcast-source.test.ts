@@ -92,6 +92,7 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(notify).toContain("assertCanManageInstitutionSchedule");
     expect(notify).toContain("assertManagerScopeAccess");
     expect(notify).toContain("assertManagerScopeAccessForUpdate");
+    expect(notify).toContain("assertPublishedRosterForUpdate");
     expect(notify).toContain('locked.status !== "VAGO"');
     expect(notify).toContain("hasShiftVacancy");
     expect(notify).toContain("assertShiftAssignmentCapacityForUpdate");
@@ -99,6 +100,7 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(notify).toContain("enqueueVacancyAvailableSignals");
     expect(notify).toContain("recentVacancyBroadcastExists");
     const signal = readFileSync("server/vacancy-broadcast-signal.ts", "utf8");
+    expect(signal).toContain("assertPublishedRoster");
     expect(signal).toContain("vacancyBroadcastStillCoolingDown");
     expect(signal).toContain("orderBy(desc(notifications.createdAt))");
     expect(signal).not.toContain("vacancyBroadcastCooldownBucket");
@@ -140,6 +142,7 @@ describe("aviso de plantão vago — contratos de fonte", () => {
     expect(sql).not.toContain("manager_scope");
     expect(sql).not.toContain("role_in_institution");
     expect(sql).toContain("plantonistaQualificationMatchesContextSql");
+    expect(sql).toContain("mr.status = 'PUBLISHED'");
     expect(wrapper).toContain(
       "return queryEligibleProfessionalUserIdsForShift(db, shift)",
     );
@@ -151,8 +154,12 @@ describe("aviso de plantão vago — contratos de fonte", () => {
 
   it("UI do gestor só mostra Avisar equipe em plantão vago", () => {
     const details = readFileSync("app/shift-details.tsx", "utf8");
-    expect(details).toMatch(/label=\{\s*notifyVacancy\.isPending\s*\?\s*"Enviando aviso\.\.\."\s*:\s*"Avisar equipe"\s*\}/);
-    expect(details).toMatch(/apiShiftData\?\.remainingCapacity\s*\?\?[\s\S]*?\)\s*>\s*0/);
+    expect(details).toMatch(
+      /label=\{\s*notifyVacancy\.isPending\s*\?\s*"Enviando aviso\.\.\."\s*:\s*"Avisar equipe"\s*\}/,
+    );
+    expect(details).toMatch(
+      /apiShiftData\?\.remainingCapacity\s*\?\?[\s\S]*?\)\s*>\s*0/,
+    );
     expect(details).toContain("trpc.shifts.notifyVacancy");
     expect(details).toContain("vacancyBroadcastFeedbackMessage");
   });

@@ -149,22 +149,50 @@ export const auditRouter = router({
           return [];
         }
         // Constrói OR de (hospitalId, sectorId) — null sectorId = hospital inteiro.
-        const conditions = scopeRows.map((s) =>
-          s.sector_id == null
-            ? sql`(at.hospital_id = ${s.hospital_id})`
-            : sql`(at.hospital_id = ${s.hospital_id} AND at.sector_id = ${s.sector_id})`,
-        );
+        const conditions = scopeRows.map((s) => {
+          const currentTopology =
+            s.sector_id == null
+              ? sql`si.hospital_id = ${s.hospital_id}`
+              : sql`si.hospital_id = ${s.hospital_id} AND si.sector_id = ${s.sector_id}`;
+          const historicalTopology =
+            s.sector_id == null
+              ? sql`at.hospital_id = ${s.hospital_id}`
+              : sql`at.hospital_id = ${s.hospital_id} AND at.sector_id = ${s.sector_id}`;
+          return sql`(
+            (at.shift_instance_id IS NOT NULL AND si.id IS NOT NULL AND ${currentTopology})
+            OR ((at.shift_instance_id IS NULL OR si.id IS NULL) AND ${historicalTopology})
+          )`;
+        });
         const orList = sql.join(conditions, sql` OR `);
         managerScopeWhere = sql`AND (${orList})`;
       }
 
       let userOnlyWhere = sql``;
       if (!isInstitutionWide && !isLocalManager) {
-        // USER. Vê apenas eventos onde é actor / from / to.
+        // USER. Vê apenas eventos próprios e nunca antecipa detalhes de uma
+        // escala ausente/DRAFT. Eventos sem plantão preservam o contrato da
+        // trilha account-level; eventos de turno exigem publicação atual.
         userOnlyWhere = sql`AND (
           at.actor_user_id = ${userId}
           OR at.from_user_id = ${userId}
           OR at.to_user_id = ${userId}
+        )
+        AND (
+          at.shift_instance_id IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM shift_instances audit_shift_visibility
+            JOIN monthly_rosters audit_roster_visibility
+              ON audit_roster_visibility.institution_id = audit_shift_visibility.institution_id
+             AND audit_roster_visibility.hospital_id = audit_shift_visibility.hospital_id
+             AND audit_roster_visibility.year_month = DATE_FORMAT(
+               DATE_SUB(audit_shift_visibility.start_at, INTERVAL 3 HOUR),
+               '%Y-%m'
+             )
+             AND audit_roster_visibility.status IN ('PUBLISHED', 'LOCKED')
+            WHERE audit_shift_visibility.id = at.shift_instance_id
+              AND audit_shift_visibility.institution_id = at.institution_id
+          )
         )`;
       }
 
@@ -203,8 +231,12 @@ export const auditRouter = router({
             LEFT JOIN professionals tp ON tp.id = at.to_professional_id
             LEFT JOIN users au         ON au.id = at.actor_user_id
             LEFT JOIN hospitals h      ON h.id  = at.hospital_id
+                                      AND h.institution_id = at.institution_id
             LEFT JOIN sectors s        ON s.id  = at.sector_id
+                                      AND s.institution_id = at.institution_id
+                                      AND s.hospital_id = at.hospital_id
             LEFT JOIN shift_instances si ON si.id = at.shift_instance_id
+                                        AND si.institution_id = at.institution_id
             WHERE at.institution_id = ${institutionId}
               AND at.created_at BETWEEN ${fromIso} AND ${toIso}
               AND at.action IN (${sql.join(actionsFilter.map((a) => sql`${a}`), sql`, `)})

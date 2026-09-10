@@ -393,7 +393,7 @@ describe("integridade transacional", () => {
     const failed = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
     expect(ok).toHaveLength(1);
     expect(failed).toHaveLength(1);
-    expect(String(failed[0].reason?.message)).toMatch(/assumido por outro|não está disponível|Limite de 1 profissionais/);
+    expect(String(failed[0].reason?.message)).toMatch(/assumido por outro|não está disponível|não está vago|Limite de 1 profissionais/);
 
     const active = await db!
       .select()
@@ -411,6 +411,10 @@ describe("integridade transacional", () => {
     const firstShiftId = await createShift("2027-06-30", "Overlap A", "22:00:00", "04:00:00");
     const secondShiftId = await createShift("2027-07-01", "Overlap B", "00:00:00", "06:00:00");
     extraShiftIds.push(firstShiftId, secondShiftId);
+    await db!.insert(monthlyRosters).values([
+      { institutionId, hospitalId, yearMonth: "2027-06", status: "PUBLISHED" },
+      { institutionId, hospitalId, yearMonth: "2027-07", status: "PUBLISHED" },
+    ]);
     const caller = appRouter.createCaller(ctxFor(alice, "doctor"));
 
     const results = await Promise.allSettled([

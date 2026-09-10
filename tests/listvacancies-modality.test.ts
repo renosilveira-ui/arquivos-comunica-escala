@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../server/db";
-import { professionals, shiftInstances } from "../drizzle/schema";
+import { monthlyRosters, professionals, shiftInstances } from "../drizzle/schema";
 import { appRouter } from "../server/routers";
+import { yearMonthBrt } from "../server/local-time";
 
 /**
  * `shiftInstances.listVacancies` agora:
@@ -31,6 +32,44 @@ describe("shiftInstances.listVacancies — modality output + filter", () => {
       .limit(1);
     if (!pedro) throw new Error("Pedro do seed não encontrado");
     userId = pedro.userId!;
+
+    const visibleSeedShifts = await db
+      .select({
+        institutionId: shiftInstances.institutionId,
+        hospitalId: shiftInstances.hospitalId,
+        startAt: shiftInstances.startAt,
+      })
+      .from(shiftInstances)
+      .where(
+        and(
+          eq(shiftInstances.institutionId, 1),
+          eq(shiftInstances.status, "VAGO"),
+          inArray(shiftInstances.label, [
+            "Plantão Manhã (VAGO)",
+            "Plantão Retroativo (5 dias atrás)",
+          ]),
+        ),
+      );
+    const rosterKeys = new Map(
+      visibleSeedShifts.map((shift) => {
+        const yearMonth = yearMonthBrt(shift.startAt);
+        return [
+          `${shift.institutionId}:${shift.hospitalId}:${yearMonth}`,
+          {
+            institutionId: shift.institutionId,
+            hospitalId: shift.hospitalId,
+            yearMonth,
+            status: "PUBLISHED" as const,
+          },
+        ];
+      }),
+    );
+    if (rosterKeys.size > 0) {
+      await db
+        .insert(monthlyRosters)
+        .values([...rosterKeys.values()])
+        .onDuplicateKeyUpdate({ set: { status: "PUBLISHED" } });
+    }
   });
 
   function caller() {
