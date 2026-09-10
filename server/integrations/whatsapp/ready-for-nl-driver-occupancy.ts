@@ -15,7 +15,7 @@
  *
  * PARK é terminal operacional deste source: status permanece READY_FOR_NL;
  * occupancy exclui da discovery; payload segue o TTL inbound (24h) e o
- * sweep `clearExpiredWhatsAppInboundPayloads` (P3 inbound, job futuro).
+ * loop autônomo de retenção do payload (independente do driver NL).
  * PARK não estende retenção além do TTL B1.
  *
  * WHATSAPP_B2D_INDEX_REQUIRED: o poll a ≥10k rows usa filesort no

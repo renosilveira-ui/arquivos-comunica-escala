@@ -170,9 +170,12 @@ describe("WhatsApp pending intent — source contracts", () => {
       /if\s*\(\s*!db\s*\)[\s\S]{0,80}?return\s*\{\s*expired:\s*0,\s*payloadsCleared:\s*0/,
     );
     const cleanupStart = store.indexOf(
-      "export async function clearExpiredWhatsAppPendingIntents",
+      "export async function clearExpiredWhatsAppPendingIntentBatch",
     );
-    const cleanup = store.slice(cleanupStart);
+    const cleanup = store.slice(
+      cleanupStart,
+      store.indexOf("type IntendedAdvanceFields", cleanupStart),
+    );
     expect(cleanup).toContain('ok: true');
     expect(cleanup).toContain('persistenceFailed("cleanup")');
     expect(cleanup).not.toMatch(/return\s*\{\s*expired:\s*0/);

@@ -43,6 +43,10 @@ import {
   startWhatsAppNlDriver,
   stopWhatsAppNlDriver,
 } from "../integrations/whatsapp/ready-for-nl-driver";
+import {
+  startWhatsAppOperationalPayloadRetention,
+  stopWhatsAppOperationalPayloadRetention,
+} from "../integrations/whatsapp/operational-payload-retention";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -247,13 +251,14 @@ async function startServer() {
       "api server listening",
     );
     startConfirmationCron();
+    startWhatsAppOperationalPayloadRetention();
     startWhatsAppNlDriver();
   });
 
   installShutdownHandlers({
     server,
     logger,
-    onBeforeExit: () => {
+    onBeforeExit: async () => {
       try {
         stopConfirmationCron();
       } catch (err) {
@@ -262,12 +267,29 @@ async function startServer() {
           "stopConfirmationCron failed",
         );
       }
+      let whatsappRetentionDrain = Promise.resolve();
+      try {
+        whatsappRetentionDrain = stopWhatsAppOperationalPayloadRetention();
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopWhatsAppOperationalPayloadRetention failed",
+        );
+      }
       try {
         stopWhatsAppNlDriver();
       } catch (err) {
         logger.error(
           safeErrorDiagnostic(err, "application"),
           "stopWhatsAppNlDriver failed",
+        );
+      }
+      try {
+        await whatsappRetentionDrain;
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "stopWhatsAppOperationalPayloadRetention failed",
         );
       }
     },
