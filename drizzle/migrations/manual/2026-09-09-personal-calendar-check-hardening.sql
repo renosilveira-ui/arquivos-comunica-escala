@@ -1,123 +1,31 @@
 -- 2026-09-09 — fecha bypasses de NULL nos CHECKs do calendário pessoal.
+-- MySQL aceita TRUE ou UNKNOWN em CHECK. O contrato exige TRUE nos cinco
+-- invariantes, sem corrigir/apagar dados existentes. Nomes/tabelas ausentes e
+-- linhas incompatíveis abortam antes de qualquer DDL.
 --
--- MySQL considera CHECK satisfeito quando a expressão resulta TRUE ou UNKNOWN.
--- As versões iniciais de cinco regras usavam comparações com colunas nullable
--- sem exigir IS NOT NULL; pares parciais e recorrências incompletas podiam,
--- portanto, ser aceitos como UNKNOWN. Esta migration não corrige nem apaga
--- dados: ela falha antes do DDL caso encontre uma linha incompatível.
+-- Cada hash fixa TODO o CHECK_CLAUSE serializado pelo MySQL 8/utf8mb4:
+-- agrupamentos, operadores e literais são preservados, sem LIKE ou remoção
+-- de parênteses. Serialização desconhecida falha fechada no postflight.
+-- CHECK divergente, parcial ou NOT ENFORCED é reinstalado após o preflight;
+-- apenas contrato integralmente igual e ENFORCED permite o no-op do rerun.
 
-SET @pc_check_tables_match := (
-  (SELECT COUNT(*) FROM information_schema.TABLES
-   WHERE TABLE_SCHEMA = DATABASE()
-     AND TABLE_NAME = 'personal_calendar_items'
-     AND UPPER(ENGINE) = 'INNODB') = 1
-  AND
-  (SELECT COUNT(*) FROM information_schema.TABLES
-   WHERE TABLE_SCHEMA = DATABASE()
-     AND TABLE_NAME = 'personal_calendar_recurrences'
-     AND UPPER(ENGINE) = 'INNODB') = 1
-);
-
-SET @pc_check_constraints_match := (
-  (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND TABLE_NAME = 'personal_calendar_items'
-     AND CONSTRAINT_TYPE = 'CHECK'
-     AND CONSTRAINT_NAME IN (
-       'chk_pc_item_location',
-       'chk_pc_item_location_binding',
-       'chk_pc_item_shape'
-     )) = 3
-  AND
-  (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND TABLE_NAME = 'personal_calendar_recurrences'
-     AND CONSTRAINT_TYPE = 'CHECK'
-     AND CONSTRAINT_NAME IN (
-       'chk_pc_recurrence_weekdays',
-       'chk_pc_recurrence_termination'
-     )) = 2
-);
-
-SET @pc_check_invalid_item_rows := (
-  SELECT COUNT(*)
-  FROM personal_calendar_items
-  WHERE (latitude IS NULL) <> (longitude IS NULL)
-    OR (location_provider IS NULL) <> (location_external_id IS NULL)
-    OR (
-      kind = 'BIRTHDAY'
-      AND (birthday_month IS NULL OR birthday_day IS NULL)
-    )
-);
-
-SET @pc_check_invalid_recurrence_rows := (
-  SELECT COUNT(*)
-  FROM personal_calendar_recurrences
-  WHERE (frequency = 'WEEKLY' AND weekdays_mask IS NULL)
-    OR (termination = 'COUNT' AND occurrence_count IS NULL)
-);
-
-SET @pc_check_preflight_matches := (
-  @pc_check_tables_match = 1
-  AND @pc_check_constraints_match = 1
-  AND @pc_check_invalid_item_rows = 0
-  AND @pc_check_invalid_recurrence_rows = 0
-);
-
-SET @pc_check_guard_sql := IF(
-  @pc_check_preflight_matches = 1,
-  'SELECT 1',
-  'SELECT * FROM personal_calendar_check_hardening_preflight_failed WHERE 1 = 0'
-);
-PREPARE pc_check_guard_stmt FROM @pc_check_guard_sql;
-EXECUTE pc_check_guard_stmt;
-DEALLOCATE PREPARE pc_check_guard_stmt;
-
-SET @pc_item_checks_hardened := (
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_item_location'
-     AND LOWER(CHECK_CLAUSE) LIKE '%latitude%is not null%'
-     AND LOWER(CHECK_CLAUSE) LIKE '%longitude%is not null%') = 1
-  AND
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_item_location_binding'
-     AND LOWER(CHECK_CLAUSE) LIKE '%location_provider%is not null%'
-     AND LOWER(CHECK_CLAUSE) LIKE '%location_external_id%is not null%') = 1
-  AND
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_item_shape'
-     AND LOWER(CHECK_CLAUSE) LIKE '%birthday_month%is not null%'
-     AND LOWER(CHECK_CLAUSE) LIKE '%birthday_day%is not null%') = 1
-);
-
-SET @pc_item_check_ddl := IF(
-  @pc_item_checks_hardened = 1,
-  'SELECT 1',
-  'ALTER TABLE personal_calendar_items
-    DROP CHECK chk_pc_item_location,
-    DROP CHECK chk_pc_item_location_binding,
-    DROP CHECK chk_pc_item_shape,
-    ADD CONSTRAINT chk_pc_item_location CHECK (
-      (latitude IS NULL AND longitude IS NULL)
+SET @pc_item_location_expression := '(latitude IS NULL AND longitude IS NULL)
       OR (
         latitude IS NOT NULL AND longitude IS NOT NULL
         AND latitude BETWEEN -90 AND 90
         AND longitude BETWEEN -180 AND 180
-      )
-    ),
-    ADD CONSTRAINT chk_pc_item_location_binding CHECK (
-      (location_provider IS NULL AND location_external_id IS NULL)
+      )';
+SET @pc_item_location_hash := 'a239ce6e4c45bf09f114680b1613f896f4daa47c09d5d87ce699bc7cbff6e035';
+
+SET @pc_item_location_binding_expression := '(location_provider IS NULL AND location_external_id IS NULL)
       OR (
         location_provider IS NOT NULL AND location_external_id IS NOT NULL
         AND CHAR_LENGTH(TRIM(location_provider)) BETWEEN 1 AND 32
         AND CHAR_LENGTH(TRIM(location_external_id)) BETWEEN 1 AND 191
-      )
-    ),
-    ADD CONSTRAINT chk_pc_item_shape CHECK (
-      (
+      )';
+SET @pc_item_location_binding_hash := '14c5f5c368be2307644859a654b024051d277460fb74daed522d514a6b41e428';
+
+SET @pc_item_shape_expression := '(
         kind = ''APPOINTMENT''
         AND start_local_date IS NOT NULL
         AND end_local_date IS NOT NULL
@@ -177,42 +85,10 @@ SET @pc_item_check_ddl := IF(
             ELSE 31
           END
         AND (birthday_year IS NULL OR birthday_year BETWEEN 1800 AND 2200)
-      )
-    )'
-);
-PREPARE pc_item_check_stmt FROM @pc_item_check_ddl;
-EXECUTE pc_item_check_stmt;
-DEALLOCATE PREPARE pc_item_check_stmt;
+      )';
+SET @pc_item_shape_hash := 'c18b09d3ece929f1ba6e2a49f87336f86d92117eea6a33a07226e8e17c4d39c6';
 
-SET @pc_recurrence_checks_hardened := (
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_recurrence_weekdays'
-     AND LOWER(CHECK_CLAUSE) LIKE '%weekdays_mask%is not null%') = 1
-  AND
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_recurrence_termination'
-     AND LOWER(CHECK_CLAUSE) LIKE '%occurrence_count%is not null%') = 1
-);
-
-SET @pc_recurrence_check_ddl := IF(
-  @pc_recurrence_checks_hardened = 1,
-  'SELECT 1',
-  'ALTER TABLE personal_calendar_recurrences
-    DROP CHECK chk_pc_recurrence_weekdays,
-    DROP CHECK chk_pc_recurrence_termination,
-    ADD CONSTRAINT chk_pc_recurrence_weekdays CHECK (
-      (
-        frequency = ''WEEKLY''
-        AND weekdays_mask IS NOT NULL
-        AND weekdays_mask BETWEEN 1 AND 127
-      )
-      OR
-      (frequency <> ''WEEKLY'' AND weekdays_mask IS NULL)
-    ),
-    ADD CONSTRAINT chk_pc_recurrence_termination CHECK (
-      (
+SET @pc_recurrence_termination_expression := '(
         termination = ''NEVER''
         AND until_local_date IS NULL
         AND occurrence_count IS NULL
@@ -229,48 +105,163 @@ SET @pc_recurrence_check_ddl := IF(
         AND until_local_date IS NULL
         AND occurrence_count IS NOT NULL
         AND occurrence_count BETWEEN 1 AND 10000
+      )';
+SET @pc_recurrence_termination_hash := 'a1a1e7eb573714242ae54a0f3d7d1f2843f168a14b32c00b02bec8a5912d506a';
+
+SET @pc_recurrence_weekdays_expression := '(
+        frequency = ''WEEKLY''
+        AND weekdays_mask IS NOT NULL
+        AND weekdays_mask BETWEEN 1 AND 127
       )
-    )'
-);
-PREPARE pc_recurrence_check_stmt FROM @pc_recurrence_check_ddl;
-EXECUTE pc_recurrence_check_stmt;
-DEALLOCATE PREPARE pc_recurrence_check_stmt;
+      OR
+      (frequency <> ''WEEKLY'' AND weekdays_mask IS NULL)';
+SET @pc_recurrence_weekdays_hash := 'ba05bc5c8081dec382148e370c1ae611a0f5edfc18fe152337ee3e53794e1487';
 
-SET @pc_check_postflight_matches := (
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_item_location'
-     AND LOWER(CHECK_CLAUSE) LIKE '%latitude%is not null%'
-     AND LOWER(CHECK_CLAUSE) LIKE '%longitude%is not null%') = 1
+SET @pc_check_tables_match := (
+  (SELECT COUNT(*) FROM information_schema.TABLES
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'personal_calendar_items'
+     AND UPPER(ENGINE) = 'INNODB') = 1
   AND
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_item_location_binding'
-     AND LOWER(CHECK_CLAUSE) LIKE '%location_provider%is not null%'
-     AND LOWER(CHECK_CLAUSE) LIKE '%location_external_id%is not null%') = 1
-  AND
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_item_shape'
-     AND LOWER(CHECK_CLAUSE) LIKE '%birthday_month%is not null%'
-     AND LOWER(CHECK_CLAUSE) LIKE '%birthday_day%is not null%') = 1
-  AND
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_recurrence_weekdays'
-     AND LOWER(CHECK_CLAUSE) LIKE '%weekdays_mask%is not null%') = 1
-  AND
-  (SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
-   WHERE CONSTRAINT_SCHEMA = DATABASE()
-     AND CONSTRAINT_NAME = 'chk_pc_recurrence_termination'
-     AND LOWER(CHECK_CLAUSE) LIKE '%occurrence_count%is not null%') = 1
+  (SELECT COUNT(*) FROM information_schema.TABLES
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'personal_calendar_recurrences'
+     AND UPPER(ENGINE) = 'INNODB') = 1
 );
 
-SET @pc_check_postflight_sql := IF(
-  @pc_check_postflight_matches = 1,
+SET @pc_check_constraints_match := (
+  (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+   WHERE CONSTRAINT_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'personal_calendar_items'
+     AND CONSTRAINT_TYPE = 'CHECK'
+     AND CONSTRAINT_NAME IN (
+       'chk_pc_item_location',
+       'chk_pc_item_location_binding',
+       'chk_pc_item_shape'
+     )) = 3
+  AND
+  (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+   WHERE CONSTRAINT_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'personal_calendar_recurrences'
+     AND CONSTRAINT_TYPE = 'CHECK'
+     AND CONSTRAINT_NAME IN (
+       'chk_pc_recurrence_weekdays',
+       'chk_pc_recurrence_termination'
+     )) = 2
+);
+
+SET @pc_target_sql := IF(
+  @pc_check_tables_match = 1 AND @pc_check_constraints_match = 1,
+  'SELECT 1',
+  'SELECT * FROM personal_calendar_check_hardening_preflight_failed WHERE 1 = 0'
+);
+PREPARE pc_target_stmt FROM @pc_target_sql;
+EXECUTE pc_target_stmt;
+DEALLOCATE PREPARE pc_target_stmt;
+
+SET @pc_catalog_sql := 'SELECT
+  COALESCE(SUM(CASE WHEN
+      (tc.TABLE_NAME = ''personal_calendar_items''
+        AND tc.CONSTRAINT_NAME = ''chk_pc_item_location''
+        AND tc.ENFORCED = ''YES''
+        AND SHA2(cc.CHECK_CLAUSE, 256) = @pc_item_location_hash)
+      OR (tc.TABLE_NAME = ''personal_calendar_items''
+        AND tc.CONSTRAINT_NAME = ''chk_pc_item_location_binding''
+        AND tc.ENFORCED = ''YES''
+        AND SHA2(cc.CHECK_CLAUSE, 256) = @pc_item_location_binding_hash)
+      OR (tc.TABLE_NAME = ''personal_calendar_items''
+        AND tc.CONSTRAINT_NAME = ''chk_pc_item_shape''
+        AND tc.ENFORCED = ''YES''
+        AND SHA2(cc.CHECK_CLAUSE, 256) = @pc_item_shape_hash)
+    THEN 1 ELSE 0 END), 0) = 3,
+  COALESCE(SUM(CASE WHEN
+      (tc.TABLE_NAME = ''personal_calendar_recurrences''
+        AND tc.CONSTRAINT_NAME = ''chk_pc_recurrence_termination''
+        AND tc.ENFORCED = ''YES''
+        AND SHA2(cc.CHECK_CLAUSE, 256) = @pc_recurrence_termination_hash)
+      OR (tc.TABLE_NAME = ''personal_calendar_recurrences''
+        AND tc.CONSTRAINT_NAME = ''chk_pc_recurrence_weekdays''
+        AND tc.ENFORCED = ''YES''
+        AND SHA2(cc.CHECK_CLAUSE, 256) = @pc_recurrence_weekdays_hash)
+    THEN 1 ELSE 0 END), 0) = 2
+INTO @pc_item_checks_hardened, @pc_recurrence_checks_hardened
+FROM information_schema.TABLE_CONSTRAINTS tc
+JOIN information_schema.CHECK_CONSTRAINTS cc
+  ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+  AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
+  AND tc.CONSTRAINT_TYPE = ''CHECK''
+  AND tc.TABLE_NAME IN (''personal_calendar_items'', ''personal_calendar_recurrences'')';
+PREPARE pc_catalog_stmt FROM @pc_catalog_sql;
+EXECUTE pc_catalog_stmt;
+DEALLOCATE PREPARE pc_catalog_stmt;
+
+SET @pc_item_rows_sql := CONCAT(
+  'SELECT COUNT(*) INTO @pc_invalid_item_rows FROM personal_calendar_items WHERE ((',
+  @pc_item_location_expression, ') AND (',
+  @pc_item_location_binding_expression, ') AND (',
+  @pc_item_shape_expression,
+  ')) IS NOT TRUE'
+);
+PREPARE pc_item_rows_stmt FROM @pc_item_rows_sql;
+EXECUTE pc_item_rows_stmt;
+DEALLOCATE PREPARE pc_item_rows_stmt;
+
+SET @pc_recurrence_rows_sql := CONCAT(
+  'SELECT COUNT(*) INTO @pc_invalid_recurrence_rows FROM personal_calendar_recurrences WHERE ((',
+  @pc_recurrence_termination_expression, ') AND (',
+  @pc_recurrence_weekdays_expression,
+  ')) IS NOT TRUE'
+);
+PREPARE pc_recurrence_rows_stmt FROM @pc_recurrence_rows_sql;
+EXECUTE pc_recurrence_rows_stmt;
+DEALLOCATE PREPARE pc_recurrence_rows_stmt;
+
+SET @pc_preflight_sql := IF(
+  @pc_invalid_item_rows = 0 AND @pc_invalid_recurrence_rows = 0,
+  'SELECT 1',
+  'SELECT * FROM personal_calendar_check_hardening_preflight_failed WHERE 1 = 0'
+);
+PREPARE pc_preflight_stmt FROM @pc_preflight_sql;
+EXECUTE pc_preflight_stmt;
+DEALLOCATE PREPARE pc_preflight_stmt;
+
+SET @pc_item_ddl := IF(
+  @pc_item_checks_hardened = 1,
+  'SELECT 1',
+  CONCAT(
+    'ALTER TABLE personal_calendar_items DROP CHECK chk_pc_item_location, DROP CHECK chk_pc_item_location_binding, DROP CHECK chk_pc_item_shape, ',
+    'ADD CONSTRAINT chk_pc_item_location CHECK (', @pc_item_location_expression, ') ENFORCED', ', ',
+    'ADD CONSTRAINT chk_pc_item_location_binding CHECK (', @pc_item_location_binding_expression, ') ENFORCED', ', ',
+    'ADD CONSTRAINT chk_pc_item_shape CHECK (', @pc_item_shape_expression, ') ENFORCED'
+  )
+);
+PREPARE pc_item_ddl_stmt FROM @pc_item_ddl;
+EXECUTE pc_item_ddl_stmt;
+DEALLOCATE PREPARE pc_item_ddl_stmt;
+
+SET @pc_recurrence_ddl := IF(
+  @pc_recurrence_checks_hardened = 1,
+  'SELECT 1',
+  CONCAT(
+    'ALTER TABLE personal_calendar_recurrences DROP CHECK chk_pc_recurrence_termination, DROP CHECK chk_pc_recurrence_weekdays, ',
+    'ADD CONSTRAINT chk_pc_recurrence_termination CHECK (', @pc_recurrence_termination_expression, ') ENFORCED', ', ',
+    'ADD CONSTRAINT chk_pc_recurrence_weekdays CHECK (', @pc_recurrence_weekdays_expression, ') ENFORCED'
+  )
+);
+PREPARE pc_recurrence_ddl_stmt FROM @pc_recurrence_ddl;
+EXECUTE pc_recurrence_ddl_stmt;
+DEALLOCATE PREPARE pc_recurrence_ddl_stmt;
+
+PREPARE pc_catalog_stmt FROM @pc_catalog_sql;
+EXECUTE pc_catalog_stmt;
+DEALLOCATE PREPARE pc_catalog_stmt;
+
+SET @pc_postflight_sql := IF(
+  @pc_item_checks_hardened = 1 AND @pc_recurrence_checks_hardened = 1,
   'SELECT 1',
   'SELECT * FROM personal_calendar_check_hardening_postflight_failed WHERE 1 = 0'
 );
-PREPARE pc_check_postflight_stmt FROM @pc_check_postflight_sql;
-EXECUTE pc_check_postflight_stmt;
-DEALLOCATE PREPARE pc_check_postflight_stmt;
+PREPARE pc_postflight_stmt FROM @pc_postflight_sql;
+EXECUTE pc_postflight_stmt;
+DEALLOCATE PREPARE pc_postflight_stmt;
