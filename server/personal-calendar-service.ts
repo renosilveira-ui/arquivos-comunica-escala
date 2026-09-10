@@ -14,6 +14,7 @@ import {
   lte,
   ne,
   or,
+  sql,
 } from "drizzle-orm";
 
 import {
@@ -35,11 +36,16 @@ import {
 } from "../drizzle/schema";
 import type { getDb } from "./db";
 import {
+  PersonalCalendarValidationError,
+  addCivilDays,
+  dateKeyToOrdinal,
   generatePersonalCalendarOccurrences,
+  personalCalendarConflictSearchWindows,
   personalCalendarAlertOffsetsSchema,
   personalCalendarIntervalsOverlap,
   personalCalendarItemDraftSchema,
   personalCalendarRecurrenceSchema,
+  validatePersonalCalendarOccurrenceWindow,
   validatePersonalCalendarSeries,
   type GeneratedPersonalCalendarOccurrence,
   type PersonalCalendarItemDraft,
@@ -57,6 +63,10 @@ const MAX_WINDOW_OCCURRENCES = 10_000;
 const MAX_SHIFT_CONFLICT_ROWS = 5_000;
 const MAX_CONFLICT_DETAILS = 200;
 const MAX_CONFLICT_COMPARISONS = 100_000;
+const MAX_INTERNAL_CONFLICT_ENVELOPE_DAYS = 1_102;
+const MAX_INTERNAL_CONFLICT_SEGMENT_DAYS = 366;
+const MIN_PERSONAL_CALENDAR_DATE = "1800-01-01";
+const MAX_PERSONAL_CALENDAR_DATE = "2200-12-31";
 const EMPTY_CONFLICT_FINGERPRINT = createHash("sha256")
   .update("[]")
   .digest("hex");
@@ -156,6 +166,17 @@ function versionConflict(): never {
 
 function queryOverload(message: string): never {
   throw new TRPCError({ code: "PRECONDITION_FAILED", message });
+}
+
+function validatedOccurrenceWindow(
+  window: PersonalCalendarOccurrenceWindow,
+): PersonalCalendarOccurrenceWindow {
+  try {
+    return validatePersonalCalendarOccurrenceWindow(window);
+  } catch (error) {
+    if (!(error instanceof PersonalCalendarValidationError)) throw error;
+    throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+  }
 }
 
 function affectedRows(result: unknown): number {
@@ -784,6 +805,10 @@ async function activeBundlesForWindow(
             or(
               ne(personalCalendarRecurrences.termination, "UNTIL"),
               gte(personalCalendarRecurrences.untilLocalDate, window.fromDate),
+              and(
+                eq(personalCalendarItems.kind, "APPOINTMENT"),
+                sql<boolean>`DATE_ADD(${personalCalendarRecurrences.untilLocalDate}, INTERVAL DATEDIFF(${personalCalendarItems.endLocalDate}, ${personalCalendarItems.startLocalDate}) DAY) >= ${window.fromDate}`,
+              ),
             ),
           ),
           eq(personalCalendarItems.kind, "BIRTHDAY"),
@@ -852,6 +877,142 @@ function viewsForWindow(
     }
   }
   return views.sort(
+    (left, right) =>
+      left.startsAtUtc.getTime() - right.startsAtUtc.getTime() ||
+      left.itemId - right.itemId ||
+      left.occurrenceKey.localeCompare(right.occurrenceKey),
+  );
+}
+
+function clampPersonalCalendarDate(dateKey: string): string {
+  if (dateKey < MIN_PERSONAL_CALENDAR_DATE)
+    return MIN_PERSONAL_CALENDAR_DATE;
+  if (dateKey > MAX_PERSONAL_CALENDAR_DATE)
+    return MAX_PERSONAL_CALENDAR_DATE;
+  return dateKey;
+}
+
+function utcDateKey(instantMs: number): string {
+  return new Date(instantMs).toISOString().slice(0, 10);
+}
+
+function conflictTargetWindows(
+  occurrences: readonly PersonalCalendarOccurrenceView[],
+): PersonalCalendarOccurrenceWindow[] {
+  const busy = occurrences.filter(
+    (occurrence) =>
+      occurrence.kind === "APPOINTMENT" && occurrence.availability === "BUSY",
+  );
+  if (busy.length === 0) return [];
+  const fromDate = clampPersonalCalendarDate(
+    utcDateKey(
+      Math.min(...busy.map((occurrence) => occurrence.startsAtUtc.getTime())),
+    ),
+  );
+  const toDate = clampPersonalCalendarDate(
+    utcDateKey(
+      Math.max(...busy.map((occurrence) => occurrence.endsAtUtc.getTime())) - 1,
+    ),
+  );
+  const fromOrdinal = dateKeyToOrdinal(fromDate);
+  const toOrdinal = dateKeyToOrdinal(toDate);
+  const totalDays = toOrdinal - fromOrdinal + 1;
+  if (totalDays < 1 || totalDays > MAX_INTERNAL_CONFLICT_ENVELOPE_DAYS) {
+    queryOverload(
+      "O intervalo efetivo dos compromissos é grande demais para uma análise segura.",
+    );
+  }
+
+  const windows: PersonalCalendarOccurrenceWindow[] = [];
+  for (
+    let offset = 0;
+    offset < totalDays;
+    offset += MAX_INTERNAL_CONFLICT_SEGMENT_DAYS
+  ) {
+    const segmentDays = Math.min(
+      MAX_INTERNAL_CONFLICT_SEGMENT_DAYS,
+      totalDays - offset,
+    );
+    windows.push({
+      fromDate: addCivilDays(fromDate, offset),
+      toDate: addCivilDays(fromDate, offset + segmentDays - 1),
+    });
+  }
+  return windows;
+}
+
+function conflictSourceWindow(
+  targetWindows: readonly PersonalCalendarOccurrenceWindow[],
+): PersonalCalendarOccurrenceWindow | null {
+  if (targetWindows.length === 0) return null;
+  const windows = targetWindows.flatMap((window) =>
+    personalCalendarConflictSearchWindows(window),
+  );
+  return {
+    fromDate: windows[0].fromDate,
+    toDate: windows[windows.length - 1].toDate,
+  };
+}
+
+function viewsForConflictSearch(
+  bundles: readonly PersonalCalendarStoredBundle[],
+  targetWindows: readonly PersonalCalendarOccurrenceWindow[],
+): PersonalCalendarOccurrenceView[] {
+  const unique = new Map<string, PersonalCalendarOccurrenceView>();
+  for (const targetWindow of targetWindows) {
+    for (const segment of personalCalendarConflictSearchWindows(targetWindow)) {
+      for (const occurrence of viewsForWindow(bundles, segment)) {
+        unique.set(occurrenceIdentity(occurrence), occurrence);
+        if (unique.size > MAX_WINDOW_OCCURRENCES) {
+          queryOverload(
+            "A Agenda gera ocorrências demais para uma consulta segura.",
+          );
+        }
+      }
+    }
+  }
+  return [...unique.values()].sort(
+    (left, right) =>
+      left.startsAtUtc.getTime() - right.startsAtUtc.getTime() ||
+      left.itemId - right.itemId ||
+      left.occurrenceKey.localeCompare(right.occurrenceKey),
+  );
+}
+
+function comparisonOccurrencesForTargets(
+  targets: readonly PersonalCalendarOccurrenceView[],
+  candidates: readonly PersonalCalendarOccurrenceView[],
+): PersonalCalendarOccurrenceView[] {
+  const busyTargets = targets.filter(
+    (occurrence) =>
+      occurrence.kind === "APPOINTMENT" && occurrence.availability === "BUSY",
+  );
+  if (busyTargets.length === 0) return [...targets];
+
+  const envelopeStart = Math.min(
+    ...busyTargets.map((occurrence) => occurrence.startsAtUtc.getTime()),
+  );
+  const envelopeEnd = Math.max(
+    ...busyTargets.map((occurrence) => occurrence.endsAtUtc.getTime()),
+  );
+  const targetIdentities = new Set(targets.map(occurrenceIdentity));
+  const unique = new Map<string, PersonalCalendarOccurrenceView>();
+  for (const occurrence of [...targets, ...candidates]) {
+    const identity = occurrenceIdentity(occurrence);
+    const isTarget = targetIdentities.has(identity);
+    const mayConflict =
+      occurrence.kind === "APPOINTMENT" &&
+      occurrence.availability === "BUSY" &&
+      occurrence.startsAtUtc.getTime() < envelopeEnd &&
+      occurrence.endsAtUtc.getTime() > envelopeStart;
+    if (isTarget || mayConflict) {
+      unique.set(identity, occurrence);
+    }
+  }
+  if (unique.size > MAX_WINDOW_OCCURRENCES) {
+    queryOverload("A Agenda gera ocorrências demais para uma consulta segura.");
+  }
+  return [...unique.values()].sort(
     (left, right) =>
       left.startsAtUtc.getTime() - right.startsAtUtc.getTime() ||
       left.itemId - right.itemId ||
@@ -1040,6 +1201,8 @@ async function conflictsByOccurrence(
   db: ReadDb,
   ownerUserId: number,
   occurrences: readonly PersonalCalendarOccurrenceView[],
+  shiftWindowOccurrences: readonly PersonalCalendarOccurrenceView[] =
+    occurrences,
 ): Promise<Map<string, PersonalCalendarConflictResult>> {
   const result = new Map<string, PersonalCalendarConflictDetail[]>();
   const busy = occurrences.filter(
@@ -1057,16 +1220,26 @@ async function conflictsByOccurrence(
     );
   }
 
-  let fromUtcMs = busy[0].startsAtUtc.getTime();
-  let toUtcMs = busy[0].endsAtUtc.getTime();
-  for (let index = 1; index < busy.length; index += 1) {
-    const occurrence = busy[index];
-    fromUtcMs = Math.min(fromUtcMs, occurrence.startsAtUtc.getTime());
-    toUtcMs = Math.max(toUtcMs, occurrence.endsAtUtc.getTime());
+  const shiftWindowBusy = shiftWindowOccurrences.filter(
+    (occurrence) =>
+      occurrence.kind === "APPOINTMENT" && occurrence.availability === "BUSY",
+  );
+  let shifts: OwnShift[] = [];
+  if (shiftWindowBusy.length > 0) {
+    let fromUtcMs = shiftWindowBusy[0].startsAtUtc.getTime();
+    let toUtcMs = shiftWindowBusy[0].endsAtUtc.getTime();
+    for (let index = 1; index < shiftWindowBusy.length; index += 1) {
+      const occurrence = shiftWindowBusy[index];
+      fromUtcMs = Math.min(fromUtcMs, occurrence.startsAtUtc.getTime());
+      toUtcMs = Math.max(toUtcMs, occurrence.endsAtUtc.getTime());
+    }
+    shifts = await loadOwnShifts(
+      db,
+      ownerUserId,
+      new Date(fromUtcMs),
+      new Date(toUtcMs),
+    );
   }
-  const fromUtc = new Date(fromUtcMs);
-  const toUtc = new Date(toUtcMs);
-  const shifts = await loadOwnShifts(db, ownerUserId, fromUtc, toUtc);
   let comparisonCount = 0;
   const consumeComparison = () => {
     comparisonCount += 1;
@@ -1128,15 +1301,26 @@ export async function listPersonalCalendarWindow(input: {
   ownerUserId: number;
   window: PersonalCalendarOccurrenceWindow;
 }): Promise<PersonalCalendarWindowResult> {
+  const window = validatedOccurrenceWindow(input.window);
   const bundles = await activeBundlesForWindow(
     input.db,
     input.ownerUserId,
-    input.window,
+    window,
   );
-  const occurrences = viewsForWindow(bundles, input.window);
+  const occurrences = viewsForWindow(bundles, window);
+  const targetWindows = conflictTargetWindows(occurrences);
+  const sourceWindow = conflictSourceWindow(targetWindows);
+  const conflictBundles = sourceWindow
+    ? await activeBundlesForWindow(input.db, input.ownerUserId, sourceWindow)
+    : [];
+  const comparisonOccurrences = comparisonOccurrencesForTargets(
+    occurrences,
+    viewsForConflictSearch(conflictBundles, targetWindows),
+  );
   const conflictByIdentity = await conflictsByOccurrence(
     input.db,
     input.ownerUserId,
+    comparisonOccurrences,
     occurrences,
   );
   return {
@@ -1165,13 +1349,11 @@ export async function checkPersonalCalendarDraftConflicts(input: {
     conflict: PersonalCalendarConflictResult;
   }[];
 }> {
+  const window = validatedOccurrenceWindow(input.window);
   const validated = validatePersonalCalendarSeries(
     input.item,
     input.recurrence,
   );
-  const existing = (
-    await activeBundlesForWindow(input.db, input.ownerUserId, input.window)
-  ).filter((bundle) => bundle.id !== input.excludeItemId);
   const draftBundle: PersonalCalendarStoredBundle = {
     id: 0,
     clientMutationId: "preview",
@@ -1183,24 +1365,34 @@ export async function checkPersonalCalendarDraftConflicts(input: {
     recurrence: validated.recurrence,
     alertOffsets: [],
   };
-  const draftOccurrences = viewsForWindow([draftBundle], input.window);
-  const existingOccurrences = viewsForWindow(existing, input.window);
+  const draftOccurrences = viewsForWindow([draftBundle], window);
+  const targetWindows = conflictTargetWindows(draftOccurrences);
+  const sourceWindow = conflictSourceWindow(targetWindows);
+  const existing = (
+    sourceWindow
+      ? await activeBundlesForWindow(
+          input.db,
+          input.ownerUserId,
+          sourceWindow,
+        )
+      : []
+  ).filter((bundle) => bundle.id !== input.excludeItemId);
+  const existingOccurrences = viewsForConflictSearch(existing, targetWindows);
   if (
     draftOccurrences.length + existingOccurrences.length >
     MAX_WINDOW_OCCURRENCES
   ) {
     queryOverload("A Agenda gera ocorrências demais para uma consulta segura.");
   }
-  const allOccurrences = [...draftOccurrences, ...existingOccurrences].sort(
-    (left, right) =>
-      left.startsAtUtc.getTime() - right.startsAtUtc.getTime() ||
-      left.itemId - right.itemId ||
-      left.occurrenceKey.localeCompare(right.occurrenceKey),
+  const allOccurrences = comparisonOccurrencesForTargets(
+    draftOccurrences,
+    existingOccurrences,
   );
   const conflicts = await conflictsByOccurrence(
     input.db,
     input.ownerUserId,
     allOccurrences,
+    draftOccurrences,
   );
   return {
     occurrences: draftOccurrences.map((occurrence) => ({

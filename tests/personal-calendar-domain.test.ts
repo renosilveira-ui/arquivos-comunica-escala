@@ -5,6 +5,7 @@ import {
   civilDateTimeToInstant,
   generatePersonalCalendarOccurrences,
   personalCalendarAlertOffsetsSchema,
+  personalCalendarConflictSearchWindows,
   personalCalendarIntervalsOverlap,
   personalCalendarItemBlocksTime,
   personalCalendarItemDraftSchema,
@@ -280,6 +281,19 @@ describe("agenda pessoal — relógio civil e fuso IANA", () => {
         "Asia/Kathmandu",
       ).instant.toISOString(),
     ).toBe("2026-09-10T03:15:00.000Z");
+  });
+
+  it("cobre dois dias civis nas bordas sem ampliar a janela pública", () => {
+    expect(
+      personalCalendarConflictSearchWindows({
+        fromDate: "2026-09-10",
+        toDate: "2026-09-10",
+      }),
+    ).toEqual([
+      { fromDate: "2026-09-08", toDate: "2026-09-09" },
+      { fromDate: "2026-09-10", toDate: "2026-09-10" },
+      { fromDate: "2026-09-11", toDate: "2026-09-12" },
+    ]);
   });
 });
 

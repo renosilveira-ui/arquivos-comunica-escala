@@ -7,6 +7,7 @@ const MAX_APPOINTMENT_SPAN_DAYS = 366;
 const MAX_ALERT_RULES = 8;
 const MAX_GENERATED_OCCURRENCES = 10_000;
 const MAX_TIME_ZONE_FORMATTERS = 256;
+const MAX_TIME_ZONE_CIVIL_DATE_SKEW_DAYS = 2;
 const MIN_USER_YEAR = 1800;
 const MAX_USER_YEAR = 2200;
 
@@ -656,6 +657,67 @@ export const personalCalendarOccurrenceWindowSchema = z
   })
   .strict();
 
+export function validatePersonalCalendarOccurrenceWindow(
+  rawWindow: unknown,
+): PersonalCalendarOccurrenceWindow {
+  const window = personalCalendarOccurrenceWindowSchema.parse(rawWindow);
+  const fromOrdinal = dateKeyToOrdinal(window.fromDate);
+  const toOrdinal = dateKeyToOrdinal(window.toDate);
+  if (toOrdinal < fromOrdinal) {
+    throw new PersonalCalendarValidationError(
+      "INVALID_RANGE",
+      "A janela termina antes de começar.",
+    );
+  }
+  if (toOrdinal - fromOrdinal + 1 > MAX_QUERY_DAYS) {
+    throw new PersonalCalendarValidationError(
+      "QUERY_WINDOW_TOO_LARGE",
+      `A consulta pode abranger no máximo ${MAX_QUERY_DAYS} dias.`,
+    );
+  }
+  return window;
+}
+
+function dateKeyFromOrdinal(ordinal: number): string {
+  const date = new Date(ordinal * DAY_MS);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Um mesmo instante pode cair em datas civis separadas por até dois dias nos
+ * extremos dos fusos IANA (UTC-12 a UTC+14). A busca interna usa segmentos
+ * curtos nas bordas para não ampliar o limite público de 366 dias.
+ */
+export function personalCalendarConflictSearchWindows(
+  rawWindow: unknown,
+): PersonalCalendarOccurrenceWindow[] {
+  const window = validatePersonalCalendarOccurrenceWindow(rawWindow);
+  const fromOrdinal = dateKeyToOrdinal(window.fromDate);
+  const toOrdinal = dateKeyToOrdinal(window.toDate);
+
+  const minOrdinal = dateKeyToOrdinal(`${MIN_USER_YEAR}-01-01`);
+  const maxOrdinal = dateKeyToOrdinal(`${MAX_USER_YEAR}-12-31`);
+  const windows: PersonalCalendarOccurrenceWindow[] = [];
+  if (fromOrdinal > minOrdinal) {
+    windows.push({
+      fromDate: dateKeyFromOrdinal(
+        Math.max(minOrdinal, fromOrdinal - MAX_TIME_ZONE_CIVIL_DATE_SKEW_DAYS),
+      ),
+      toDate: dateKeyFromOrdinal(fromOrdinal - 1),
+    });
+  }
+  windows.push(window);
+  if (toOrdinal < maxOrdinal) {
+    windows.push({
+      fromDate: dateKeyFromOrdinal(toOrdinal + 1),
+      toDate: dateKeyFromOrdinal(
+        Math.min(maxOrdinal, toOrdinal + MAX_TIME_ZONE_CIVIL_DATE_SKEW_DAYS),
+      ),
+    });
+  }
+  return windows;
+}
+
 function startDateFor(item: PersonalCalendarItemDraft): string {
   if (item.kind === "BIRTHDAY") {
     const year = item.birthdayYear ?? MIN_USER_YEAR;
@@ -1078,21 +1140,7 @@ export function generatePersonalCalendarOccurrences(
     rawItem,
     rawRecurrence,
   );
-  const window = personalCalendarOccurrenceWindowSchema.parse(rawWindow);
-  const fromOrdinal = dateKeyToOrdinal(window.fromDate);
-  const toOrdinal = dateKeyToOrdinal(window.toDate);
-  if (toOrdinal < fromOrdinal) {
-    throw new PersonalCalendarValidationError(
-      "INVALID_RANGE",
-      "A janela termina antes de começar.",
-    );
-  }
-  if (toOrdinal - fromOrdinal + 1 > MAX_QUERY_DAYS) {
-    throw new PersonalCalendarValidationError(
-      "QUERY_WINDOW_TOO_LARGE",
-      `A consulta pode abranger no máximo ${MAX_QUERY_DAYS} dias.`,
-    );
-  }
+  const window = validatePersonalCalendarOccurrenceWindow(rawWindow);
 
   const windowStart = civilDateTimeToInstant(
     window.fromDate,
