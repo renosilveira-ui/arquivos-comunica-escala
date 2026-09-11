@@ -1,4 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
@@ -6,6 +9,11 @@ import mysql, { type Connection, type RowDataPacket } from "mysql2/promise";
 const TEST_SERVER_URL =
   process.env.CORE_SCHEMA_REPRO_MIGRATION_TEST_SERVER_URL;
 const DATABASE_PREFIX = "escala_core_schema_repro_";
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+const drizzleKitPath = resolve(
+  repositoryRoot,
+  "node_modules/drizzle-kit/bin.cjs",
+);
 
 type TestServer = {
   host: string;
@@ -58,6 +66,39 @@ const migration = readFileSync(
 );
 const server = parseTestServer(TEST_SERVER_URL);
 const describeWithMysql = server ? describe : describe.skip;
+
+function databaseUrlFor(schema: string): string {
+  if (!server) throw new Error("Servidor MySQL local não configurado.");
+  const host = server.host.includes(":") ? `[${server.host}]` : server.host;
+  return `mysql://${encodeURIComponent(server.user)}:${encodeURIComponent(server.password)}@${host}:${server.port}/${schema}`;
+}
+
+function runFreshSchemaPush(schema: string) {
+  const result = spawnSync(
+    process.execPath,
+    [drizzleKitPath, "push", "--force"],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DATABASE_URL: databaseUrlFor(schema),
+        DATABASE_SSL: "false",
+        NODE_ENV: "test",
+      },
+    },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0 || result.signal) {
+    const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
+      .replace(/mysql:\/\/[^:\s/]+:[^@\s/]+@/giu, "mysql://***:***@")
+      .trim()
+      .slice(-4_000);
+    throw new Error(
+      `drizzle-kit push falhou no schema descartável de reprodutibilidade (status ${String(result.status)}, sinal ${String(result.signal)})${diagnostic ? `\n${diagnostic}` : ""}`,
+    );
+  }
+}
 
 describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
   let admin: Connection;
@@ -226,4 +267,48 @@ describeWithMysql("reprodutibilidade central em MySQL isolado", () => {
       expect(modalityColumns).toEqual([]);
     });
   });
+
+  it("aceita o schema que o Drizzle instala hoje, sem reinstalar nada", async () => {
+    // Os outros casos partem de uma `shift_instances` mínima e exercitam só o
+    // ramo "contrato ausente". Uma instalação real chega pelo `drizzle-kit
+    // push` com as colunas de modalidade e a institution_config já presentes,
+    // ou seja pelo ramo em que o preflight compara o manifesto com a forma
+    // que o catálogo devolve — e é exatamente aí que um literal transcrito do
+    // DDL, em vez de lido do INFORMATION_SCHEMA, derruba a comparação e faz a
+    // migration abortar em banco saudável.
+    const schema = databaseName();
+    await admin.query(`CREATE DATABASE ${quoteIdentifier(schema)}`);
+    createdSchemas.add(schema);
+    runFreshSchemaPush(schema);
+    const database = await mysql.createConnection({
+      ...server!,
+      database: schema,
+      multipleStatements: true,
+    });
+    try {
+      await database.query(migration);
+      await database.query(migration);
+
+      const [modality] = await database.query<RowDataPacket[]>(`
+        SELECT COUNT(*) AS total
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'shift_instances'
+          AND COLUMN_NAME IN (
+            'modality', 'coverage_type', 'payment_model',
+            'productivity_cap_brl'
+          )
+      `);
+      expect(Number(modality[0]?.total)).toBe(4);
+      const [config] = await database.query<RowDataPacket[]>(`
+        SELECT COUNT(*) AS total
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'institution_config'
+      `);
+      expect(Number(config[0]?.total)).toBe(5);
+    } finally {
+      await database.end();
+    }
+  }, 120_000);
 });
