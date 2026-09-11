@@ -237,9 +237,12 @@ tela Google Agenda e, automaticamente, a cada 15 minutos por conta conectada
 `docs/operations/google-calendar-sync.md`). Decisão do PO em 12/09/2026. O resultado do `syncNow` traz
 `importedCreated / importedUpdated / importedRemoved / importOk`.
 
-**Onde aparece.** Aba Agenda → vista **Compromissos**: feriados, plantões
-da pessoa, compromissos criados aqui e os importados (com a etiqueta "Do
-seu Google Agenda · edite lá"), por dia, no mês navegado.
+**Onde aparece.** Aba Agenda → vista **Compromissos**, em folha de mês (a
+mesma moldura do Panorama): traços por dia — navy plantão meu, azul
+compromisso, âmbar feriado — e, ao tocar no dia, o detalhe: feriado,
+plantões da pessoa, compromissos criados aqui e os importados (com a
+etiqueta "Do seu Google Agenda · edite lá"). Decisão do PO em 12/09/2026:
+"prefiro em formato de calendário".
 
 Migração: `drizzle/migrations/manual/2026-09-12-personal-calendar-google-import.sql`
 (aditiva, InnoDB, não toca nas tabelas da fundação da agenda).

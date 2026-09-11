@@ -1,38 +1,53 @@
-import { useMemo } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { Pressable, Text, View } from "react-native";
 import { Plus } from "lucide-react-native";
 
+import {
+  CalendarFrame,
+  CalendarLegend,
+  DayNumeral,
+  numeral,
+} from "@/components/agenda/CalendarSheet";
+import {
+  WEEKDAY_HEADERS,
+  formatSelectedDay,
+} from "@/components/agenda/MonthAgenda";
 import { OccurrenceRow } from "@/components/agenda/PersonalCalendarDaySection";
 import { ShiftRowCard } from "@/components/agenda/ShiftRowCard";
 import { QueryErrorState } from "@/components/ui/QueryErrorState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import type { MobileAgendaWeek } from "@/lib/agenda-mobile-day";
+import { MAX_AGENDA_DAY_TICKS } from "@/lib/agenda-overflow";
 import {
   groupOccurrencesByDay,
   type PersonalCalendarOccurrenceLike,
 } from "@/lib/personal-calendar-view";
+import { shiftTickColor } from "@/lib/shift-visual";
 import { theme } from "@/lib/theme";
 import { trpc } from "@/lib/trpc";
 
 /**
- * "Compromissos": o calendário que centraliza tudo.
+ * "Compromissos": o calendário que centraliza tudo — em FORMATO DE CALENDÁRIO.
  *
- * Decisão do PO em 11/09/2026: o Escala+ é o centro da gestão de tempo do
- * médico. Num único lugar, por dia: feriado, plantões, compromissos (os
- * criados aqui e os que vieram do Google), lembretes e aniversários.
+ * Decisão do PO (11/09/2026): o Escala+ é o centro da gestão de tempo do
+ * médico. E, em 12/09: "prefiro em formato de calendário". Então esta vista
+ * é a mesma folha de mês do Panorama (moldura, furos, réguas, legenda na
+ * faixa navy), só que a folha é da PESSOA: por dia, feriado, plantões dela,
+ * compromissos criados aqui e os que vieram do Google.
  *
- * ## Por que é uma terceira vista, e não um filtro da escala
+ * ## O que a folha mostra em cada dia
  *
- * Lista e Panorama são duas apresentações do MESMO dado — a escala do
- * tenant. Compromisso pessoal é outro domínio, privado da conta. Misturar os
- * dois como "filtro" sugeriria que compromisso é um tipo de plantão. Aqui
- * eles convivem no mesmo dia, mas cada um com a sua cara: plantão usa o
- * cartão da escala; compromisso usa a linha da agenda pessoal.
+ * Traços, como no Panorama — presença e quantidade de relance:
+ *   - navy: plantão meu (mesma cor que "Meu" na escala);
+ *   - azul: compromisso (daqui ou do Google);
+ *   - âmbar: feriado.
+ * Até três traços; daí "+n". Tocar no dia abre o detalhe embaixo.
  *
  * ## O que este componente NÃO faz
  *
  * Não busca a escala: recebe as semanas que a aba Agenda já carregou, porque
  * duas consultas iguais na mesma tela é o que faz o celular parecer lento.
+ * Não mostra plantão de terceiros: "Geral" é assunto de Lista e Panorama.
  */
 
 type Props = {
@@ -45,6 +60,18 @@ type Props = {
   onCreate: (dayKey: string) => void;
 };
 
+type DayShift = MobileAgendaWeek["days"][number]["groups"][number]["shifts"][number];
+
+const LEGEND = [
+  {
+    label: "Plantão",
+    color: theme.colors.brand,
+    backdropColor: theme.colors.onDark.text,
+  },
+  { label: "Compromisso", color: theme.colors.info },
+  { label: "Feriado", color: theme.colors.warning },
+] as const;
+
 function monthWindow(monthKey: string): { fromDate: string; toDate: string } {
   const [y, m] = monthKey.split("-").map(Number);
   const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -54,18 +81,14 @@ function monthWindow(monthKey: string): { fromDate: string; toDate: string } {
   };
 }
 
-function dayLabel(dayKey: string, timeZone: string): string {
-  try {
-    const [y, m, d] = dayKey.split("-").map(Number);
-    return new Intl.DateTimeFormat("pt-BR", {
-      timeZone,
-      weekday: "short",
-      day: "2-digit",
-      month: "short",
-    }).format(new Date(Date.UTC(y, m - 1, d, 12)));
-  } catch {
-    return dayKey;
-  }
+function gridWindow(weeks: readonly MobileAgendaWeek[]): {
+  fromDate: string;
+  toDate: string;
+} | null {
+  const first = weeks[0]?.days[0]?.date;
+  const lastWeek = weeks[weeks.length - 1];
+  const last = lastWeek?.days[lastWeek.days.length - 1]?.date;
+  return first && last ? { fromDate: first, toDate: last } : null;
 }
 
 export function UnifiedCalendar({
@@ -77,7 +100,12 @@ export function UnifiedCalendar({
   onOccurrencePress,
   onCreate,
 }: Props) {
-  const window = useMemo(() => monthWindow(monthKey), [monthKey]);
+  // A janela de compromissos cobre a GRADE (6 semanas), não só o mês: os
+  // dias esmaecidos de borda também mostram o que há neles, como no Panorama.
+  const window = useMemo(
+    () => gridWindow(weeks) ?? monthWindow(monthKey),
+    [weeks, monthKey],
+  );
 
   const listQuery = trpc.personalCalendar.listWindow.useQuery(window, {
     staleTime: 30_000,
@@ -87,28 +115,22 @@ export function UnifiedCalendar({
     { staleTime: 24 * 60 * 60 * 1000 },
   );
 
-  // Plantões do mês, por dia, só os meus: a vista é da PESSOA. "Geral"
-  // continua sendo assunto de Lista e Panorama.
-  const shiftsByDay = useMemo(() => {
-    const map = new Map<string, MobileAgendaWeek["days"][number]["groups"]>();
+  const myShiftsByDay = useMemo(() => {
+    const map = new Map<string, DayShift[]>();
     for (const week of weeks) {
       for (const day of week.days) {
-        if (day.date < window.fromDate || day.date > window.toDate) continue;
-        const mine = day.groups
-          .map((group) => ({
-            ...group,
-            shifts: group.shifts.filter((shift) => shift.isMine),
-          }))
-          .filter((group) => group.shifts.length > 0);
+        const mine = day.groups.flatMap((group) =>
+          group.shifts.filter((shift) => shift.isMine),
+        );
         if (mine.length) map.set(day.date, mine);
       }
     }
     return map;
-  }, [weeks, window.fromDate, window.toDate]);
+  }, [weeks]);
 
-  const groups = useMemo(() => {
+  const groupByDay = useMemo(() => {
     if (!listQuery.data) return null;
-    const base = groupOccurrencesByDay({
+    const groups = groupOccurrencesByDay({
       fromDate: window.fromDate,
       toDate: window.toDate,
       occurrences: listQuery.data
@@ -117,23 +139,23 @@ export function UnifiedCalendar({
       timeZone,
       includeEmptyDays: true,
     });
-    // Dia sem nada de nenhum tipo sai da lista: no mês, o vazio é ruído.
-    return base.filter(
-      (group) =>
-        group.occurrences.length > 0 ||
-        group.holidayName !== null ||
-        shiftsByDay.has(group.dayKey) ||
-        group.dayKey === todayKey,
-    );
+    return new Map(groups.map((group) => [group.dayKey, group]));
   }, [
     listQuery.data,
     holidaysQuery.data,
     window.fromDate,
     window.toDate,
     timeZone,
-    shiftsByDay,
-    todayKey,
   ]);
+
+  // Dia selecionado: hoje quando pertence ao mês, senão dia 1 — igual ao
+  // Panorama, para o polegar não precisar reaprender.
+  const [selected, setSelected] = useState<string>(() =>
+    todayKey.startsWith(monthKey) ? todayKey : `${monthKey}-01`,
+  );
+  useEffect(() => {
+    setSelected(todayKey.startsWith(monthKey) ? todayKey : `${monthKey}-01`);
+  }, [monthKey, todayKey]);
 
   if (listQuery.isError) {
     return (
@@ -146,108 +168,278 @@ export function UnifiedCalendar({
       />
     );
   }
-  if (!groups) return <SkeletonList count={4} />;
+  if (!groupByDay) return <SkeletonList count={4} />;
+
+  const selectedShifts = myShiftsByDay.get(selected) ?? [];
+  const selectedGroup = groupByDay.get(selected);
+  const selectedOccurrences = selectedGroup?.occurrences ?? [];
+  const selectedHoliday = selectedGroup?.holidayName ?? null;
+  const selectedEmpty =
+    selectedShifts.length === 0 && selectedOccurrences.length === 0;
 
   return (
-    <View style={{ gap: theme.space[3], paddingBottom: theme.space[20] }}>
-      {groups.map((group) => {
-        const shiftGroups = shiftsByDay.get(group.dayKey) ?? [];
-        const isToday = group.dayKey === todayKey;
-        const empty = shiftGroups.length === 0 && group.occurrences.length === 0;
-        return (
-          <View key={group.dayKey} style={{ gap: theme.space[2] }}>
+    <View style={{ paddingBottom: theme.space[10] }}>
+      <CalendarFrame>
+        <CalendarLegend items={[...LEGEND]} />
+
+        <View
+          style={{ flexDirection: "row", backgroundColor: theme.colors.brand }}
+        >
+          {WEEKDAY_HEADERS.map((h, i) => (
+            <View
+              key={h}
+              style={{
+                flex: 1,
+                paddingVertical: theme.space[1] + 2,
+                alignItems: "center",
+                borderLeftWidth: i === 0 ? 0 : 1,
+                borderLeftColor: theme.colors.onDark.divider,
+              }}
+            >
+              <Text
+                style={{
+                  ...theme.text.eyebrow,
+                  fontSize: 10,
+                  letterSpacing: 1,
+                  fontWeight: theme.weight.bold,
+                  color: theme.colors.onDark.textMuted,
+                }}
+              >
+                {h}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        {weeks.map((week) => (
+          <View key={week.weekStart} style={{ flexDirection: "row" }}>
+            {week.days.map((day, i) => {
+              const inMonth = day.date.startsWith(monthKey);
+              const isToday = day.date === todayKey;
+              const isSelected = day.date === selected;
+              const isWeekend = day.dow === 0 || day.dow === 6;
+              const shifts = myShiftsByDay.get(day.date) ?? [];
+              const group = groupByDay.get(day.date);
+              const occurrences = group?.occurrences ?? [];
+              const holiday = group?.holidayName ?? null;
+
+              const ticks = shifts.map((s) => shiftTickColor(s.status, true));
+              for (let k = 0; k < occurrences.length; k += 1) {
+                ticks.push(theme.colors.info);
+              }
+              if (holiday) ticks.push(theme.colors.warning);
+              const extra = ticks.length - MAX_AGENDA_DAY_TICKS;
+              const dayNum = parseInt(day.date.slice(8, 10), 10);
+
+              const parts: string[] = [];
+              if (shifts.length) {
+                parts.push(
+                  `${shifts.length} ${shifts.length === 1 ? "plantão" : "plantões"}`,
+                );
+              }
+              if (occurrences.length) {
+                parts.push(
+                  `${occurrences.length} ${occurrences.length === 1 ? "compromisso" : "compromissos"}`,
+                );
+              }
+              if (holiday) parts.push(`feriado, ${holiday}`);
+
+              return (
+                <Pressable
+                  key={day.date}
+                  onPress={() => setSelected(day.date)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  accessibilityLabel={`${formatSelectedDay(day.date)}${isToday ? ", hoje" : ""}, ${parts.length ? parts.join(", ") : "nada marcado"}`}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: 52,
+                    paddingTop: 5,
+                    paddingBottom: 4,
+                    paddingHorizontal: 3,
+                    borderTopWidth: 1,
+                    borderTopColor: theme.colors.gridLine,
+                    borderLeftWidth: i === 0 ? 0 : 1,
+                    borderLeftColor: theme.colors.gridLine,
+                    backgroundColor: isSelected
+                      ? theme.colors.paperSelected
+                      : isWeekend && inMonth
+                        ? theme.colors.paperWeekend
+                        : "transparent",
+                    alignItems: "center",
+                    gap: 4,
+                    opacity: pressed ? 0.8 : 1,
+                  })}
+                >
+                  <DayNumeral
+                    day={dayNum}
+                    size={24}
+                    emphasis={
+                      !inMonth
+                        ? "muted"
+                        : isToday
+                          ? "today"
+                          : shifts.length
+                            ? "mine"
+                            : "plain"
+                    }
+                  />
+                  <View style={{ alignItems: "center", gap: 2 }}>
+                    {ticks.slice(0, MAX_AGENDA_DAY_TICKS).map((color, t) => (
+                      <View
+                        key={t}
+                        style={{
+                          width: 16,
+                          height: 3,
+                          borderRadius: 2,
+                          backgroundColor: inMonth
+                            ? color
+                            : theme.colors.border,
+                        }}
+                      />
+                    ))}
+                    {extra > 0 ? (
+                      <Text
+                        style={{
+                          ...numeral,
+                          fontSize: 11,
+                          lineHeight: 12,
+                          fontWeight: theme.weight.bold,
+                          color: theme.colors.textSecondary,
+                        }}
+                      >
+                        +{extra} itens
+                      </Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
+      </CalendarFrame>
+
+      {/* Detalhe do dia selecionado */}
+      <View style={{ marginTop: theme.space[3] + 1, gap: theme.space[2] + 1 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: theme.space[2],
+            paddingHorizontal: 2,
+            minHeight: 44,
+          }}
+        >
+          <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
             <View
               style={{
                 flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                minHeight: 44,
+                alignItems: "baseline",
+                gap: theme.space[2],
               }}
             >
-              <View style={{ gap: 2, flex: 1 }}>
-                <Text
-                  style={{
-                    fontSize: theme.text.titleSm.fontSize,
-                    fontWeight: "700",
-                    color: isToday
-                      ? theme.colors.primary
-                      : theme.colors.textPrimary,
-                    textTransform: "capitalize",
-                  }}
-                >
-                  {dayLabel(group.dayKey, timeZone)}
-                  {isToday ? " · hoje" : ""}
-                </Text>
-                {group.holidayName ? (
-                  <Text
-                    style={{
-                      fontSize: theme.text.caption.fontSize,
-                      color: theme.colors.textSecondary,
-                    }}
-                  >
-                    Feriado · {group.holidayName}
-                  </Text>
-                ) : null}
-              </View>
-              <TouchableOpacity
-                onPress={() => onCreate(group.dayKey)}
-                accessibilityRole="button"
-                accessibilityLabel={`Novo compromisso em ${dayLabel(group.dayKey, timeZone)}`}
-                style={{
-                  width: 44,
-                  height: 44,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Plus size={18} color={theme.colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-
-            {shiftGroups.map((groupOfShifts) =>
-              groupOfShifts.shifts.map((shift) => (
-                <ShiftRowCard
-                  key={`shift-${shift.id}`}
-                  shift={shift}
-                  onPress={() => onShiftPress(shift.id)}
-                />
-              )),
-            )}
-
-            {group.occurrences.map((occurrence) => (
-              <OccurrenceRow
-                key={`${occurrence.itemId}:${occurrence.occurrenceKey}`}
-                occurrence={occurrence}
-                timeZone={timeZone}
-                onPress={onOccurrencePress}
-              />
-            ))}
-
-            {empty ? (
               <Text
                 style={{
-                  fontSize: theme.text.caption.fontSize,
-                  color: theme.colors.textMuted,
+                  ...theme.text.titleSm,
+                  fontWeight: theme.weight.bold,
+                  color: theme.colors.textPrimary,
                 }}
               >
-                Nada marcado.
+                {formatSelectedDay(selected)}
+              </Text>
+              {selected === todayKey ? (
+                <Text
+                  style={{
+                    ...theme.text.eyebrow,
+                    fontSize: 10,
+                    fontWeight: theme.weight.bold,
+                    textTransform: "uppercase",
+                    color: theme.colors.brand,
+                  }}
+                >
+                  Hoje
+                </Text>
+              ) : null}
+            </View>
+            {selectedHoliday ? (
+              <Text
+                style={{
+                  ...theme.text.caption,
+                  color: theme.colors.textSecondary,
+                }}
+              >
+                Feriado · {selectedHoliday}
               </Text>
             ) : null}
           </View>
-        );
-      })}
-      {groups.length === 0 ? (
-        <Text
-          style={{
-            fontSize: theme.text.body.fontSize,
-            color: theme.colors.textSecondary,
-            textAlign: "center",
-            paddingVertical: theme.space[8],
-          }}
-        >
-          Nenhum plantão, compromisso ou feriado neste mês.
-        </Text>
-      ) : null}
+          <Pressable
+            onPress={() => onCreate(selected)}
+            accessibilityRole="button"
+            accessibilityLabel={`Novo compromisso em ${formatSelectedDay(selected)}`}
+            style={({ pressed }) => ({
+              flexDirection: "row",
+              alignItems: "center",
+              gap: theme.space[1],
+              minHeight: 44,
+              paddingHorizontal: theme.space[3],
+              borderRadius: theme.radius.md + 2,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: theme.colors.surface,
+              opacity: pressed ? 0.8 : 1,
+            })}
+          >
+            <Plus size={16} color={theme.colors.brand} />
+            <Text
+              style={{
+                ...theme.text.body,
+                fontSize: 13.5,
+                fontWeight: theme.weight.semibold,
+                color: theme.colors.brand,
+              }}
+            >
+              Novo
+            </Text>
+          </Pressable>
+        </View>
+
+        {selectedShifts.map((shift) => (
+          <ShiftRowCard
+            key={`shift-${shift.id}`}
+            shift={shift}
+            context="actionable"
+            onPress={() => onShiftPress(shift.id)}
+          />
+        ))}
+
+        {selectedOccurrences.map((occurrence) => (
+          <OccurrenceRow
+            key={`${occurrence.itemId}:${occurrence.occurrenceKey}`}
+            occurrence={occurrence}
+            timeZone={timeZone}
+            onPress={onOccurrencePress}
+          />
+        ))}
+
+        {selectedEmpty ? (
+          <View
+            style={{
+              paddingVertical: theme.space[6],
+              alignItems: "center",
+              backgroundColor: theme.colors.surfaceAlt,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              borderRadius: theme.radius.md + 2,
+            }}
+          >
+            <Text style={{ ...theme.text.body, color: theme.colors.textMuted }}>
+              {selectedHoliday
+                ? "Feriado. Nada marcado neste dia."
+                : "Nada marcado neste dia."}
+            </Text>
+          </View>
+        ) : null}
+      </View>
     </View>
   );
 }
