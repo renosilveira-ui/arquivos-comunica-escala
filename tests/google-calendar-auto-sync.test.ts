@@ -174,6 +174,14 @@ describe("sincronização automática com o Google Agenda", () => {
       );
     expect(cursor?.syncCursor).toMatch(/^sync-/);
 
+    // O que veio do Google não volta para o Google: nenhum dos três vira
+    // evento no calendário Escala+ (seria duplicata na conta do médico).
+    const mirrored = await db
+      .select({ sourceKind: externalCalendarEventLinks.sourceKind })
+      .from(externalCalendarEventLinks)
+      .where(eq(externalCalendarEventLinks.userId, connectedUserId));
+    expect(mirrored.filter((m) => m.sourceKind === "PERSONAL_ITEM")).toHaveLength(0);
+
     const linked = await link(connectedUserId);
     expect(linked?.linkState).toBe(EXTERNAL_LINK_STATES.connected);
     expect(linked?.lastSyncedAt).not.toBeNull();

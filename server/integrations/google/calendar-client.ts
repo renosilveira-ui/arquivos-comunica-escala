@@ -1,11 +1,9 @@
 import {
   ESCALA_CALENDAR_SUMMARY,
-  type CalendarSyncCursor,
   type ExternalCalendarChangePage,
   type ExternalCalendarEvent,
   type ExternalCalendarProvider,
   type ExternalCalendarRef,
-  type ExternalCalendarWriteRequest,
   type OAuthTokenGrant,
 } from "../providers/calendar-provider";
 import {
@@ -262,8 +260,11 @@ export function createGoogleCalendarProvider(
       if (input.cursor.kind === "SYNC_TOKEN") {
         query.set("syncToken", input.cursor.token);
       } else {
+        // Só timeMin. `orderBy` é incompatível com sync token, e o Google
+        // exige que a leitura inicial use os mesmos parâmetros da incremental
+        // — com `orderBy` aqui, o `nextSyncToken` simplesmente não vinha, e
+        // toda sincronização relia a janela inteira (staging, 11/09).
         query.set("timeMin", input.cursor.since.toISOString());
-        query.set("orderBy", "startTime");
       }
 
       const result = await request(`${path}?${query.toString()}`, {

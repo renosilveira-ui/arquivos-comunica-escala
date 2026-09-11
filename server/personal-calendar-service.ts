@@ -129,6 +129,8 @@ export type PersonalCalendarConflictResult = {
 export type PersonalCalendarWindowResult = {
   occurrences: (PersonalCalendarOccurrenceView & {
     conflict: PersonalCalendarConflictResult;
+    /** De onde veio: criado aqui ou importado do Google (somente leitura). */
+    source: "LOCAL" | "GOOGLE";
   })[];
   sourceItemCount: number;
 };

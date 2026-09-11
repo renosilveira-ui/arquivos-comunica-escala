@@ -33,11 +33,17 @@ fazem o mesmo é como um bug entra sem ninguém ver.
 
 ## Paginação e cursor
 
-O Google só entrega o sync token na **última** página. A importação segue
-até 4 páginas de 250 por execução (teto de 1000 eventos). Acima do teto não
-guarda cursor: a próxima leitura recomeça do zero — correto, só mais caro — e
-importa os mais próximos no tempo. Antes desta mudança, uma conta com mais de
-uma página ficava com cursor vazio para sempre e relia tudo a cada ciclo.
+O Google só entrega o sync token na **última** página, e **não o entrega**
+quando a leitura inicial usa `orderBy` (parâmetro incompatível com sync
+token). A leitura completa usa só `timeMin`; a importação segue até 4
+páginas de 250 por execução (teto de 1000 eventos). Acima do teto não guarda
+cursor: a próxima leitura recomeça do zero — correto, só mais caro. Antes
+destas duas correções, toda conta ficava com cursor vazio para sempre e relia
+a janela inteira a cada ciclo.
+
+**Laço evitado.** Compromisso importado do Google (`source = GOOGLE`) nunca
+é exportado de volta para o calendário Escala+. Sem isso o médico via cada
+compromisso duas vezes na própria conta.
 
 ## O que aparece no log
 
